@@ -35,7 +35,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `options` | array of strings | human steps | `[]` | The answers a person picks from | `["open", "stop"]` |
 | `approves` | array of strings | no | `[]` | Human steps only: the irreversible steps this answer approves | `["open-pr"]` |
 | `command` | table | no | none | Human steps only: a command an answer runs once. `argv`, the program and its arguments; `target`, `worktree` or a name in [`[asks.targets]`](factory.md#asks), default `worktree`; `runs`, the options that run it. See [Runbooks](#runbooks) | `{ argv = ["cargo", "test"], target = "repo", runs = ["run"] }` |
-| `action` | string | code steps | | The built-in action: `open-pr`, `open-issue` or `run` | `"open-pr"` |
+| `action` | string | code steps | | The built-in action: `open-pr`, `open-issue`, `run` or `start-batch` | `"open-pr"` |
 | `run` | string | `run` actions | | The command a `run` action runs with `sh -c` | `"scripts/poll.sh"` |
 | `next` | table of strings | yes | | Each outcome and where it leads: a step id, `done` or `stop` | `{ passed = "done", failed = "stop" }` |
 | `by` | table of `code`, `model`, `human` or `asleep` | no | the step's `decides` | Who decides an outcome's edge, where it differs from the step's decider | `{ passed = "asleep" }` |
@@ -156,6 +156,15 @@ next = { run = "tag", skip = "tag", abort = "stop" }
 
 `priory add` or `priory request --workflow <runbook>` starts one, and the desk shows its current
 step as an ask.
+
+## Batches
+
+A batch's planning workflow, the factory's [`[batch] workflow`](factory.md#batch), ends a model step
+with a result that carries `batch`, the plan. The human step right after it asks the go: its
+question and text come from the plan, such as `Start batch 4: 8 tasks from 9 issues, and close 2?`.
+The answer that leads to a `start-batch` step starts the batch, which creates one task per entry,
+and its outcome is `started` or `failed`. A `failed` start leads back to the go, with its error in
+the question. `examples/batches/` plans issues this way. See [batches.md](../daemon/batches.md).
 
 ## Steps after the merge
 

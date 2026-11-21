@@ -1,0 +1,39 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+start = "plan"
+
+# The planner only reads: the issues, the code and the tasks that already hold an issue.
+[[steps]]
+id = "plan"
+decides = "model"
+agent = "planner"
+effect = "read"
+prompt = "Plan these issues into a batch. Send the plan with result(batch)."
+next = { planned = "go" }
+
+# The go approves the whole batch: its tasks, their order and the closes. It approves no entry's
+# pull request; each entry still meets its own workflow's gates.
+[[steps]]
+id = "go"
+decides = "human"
+effect = "none"
+options = ["go", "drop"]
+approves = ["start", "close"]
+next = { go = "start", drop = "stop" }
+
+# Creates one task per entry, which starts agents, in one transaction.
+[[steps]]
+id = "start"
+decides = "code"
+action = "start-batch"
+effect = "irreversible"
+next = { started = "close", failed = "go" }
+
+# A closed issue notifies everyone who watches it.
+[[steps]]
+id = "close"
+decides = "model"
+agent = "planner"
+effect = "irreversible"
+prompt = "Close the issues the plan lists as done, each with its reason and evidence. Read each issue again first, and skip one that changed since the plan. Report each one in progress as you go, then end with closed and one evidence line per issue: closed, skipped with why, or failed."
+guard = { allow = ["linear-write", "gh-issue-comment"] }
+next = { closed = "done" }
