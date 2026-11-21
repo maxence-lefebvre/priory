@@ -33,7 +33,9 @@ A going batch shows as one `batch` row, until it ends. Its `task` and `key` are 
 task's. A held entry whose every open condition is a batch edge leaves `items`: the batch row stands
 for it. An entry held on a condition with an open ask, such as the ask a failed predecessor raises,
 keeps its own `held` row and its Release button. A `batch` row never ranks as the next thing, since
-it asks for nothing. See [batches.md](batches.md).
+it asks for nothing. See [batches.md](batches.md). The web Desk and the Herdr Desk show it under
+Also waiting with a muted tile and the `layers` icon, its counts as the main line and its `Next:`
+sentence as a caption. On the web, its key opens the planning task.
 
 ## Unrouted events
 
