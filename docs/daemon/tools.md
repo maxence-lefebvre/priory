@@ -20,9 +20,12 @@ wait or both. A `result` after an open ask or wait is refused, as is a second `a
 `wait`. An ask and a wait side by side wake the task on the first answer or event (see An ask
 beside a wait in [waits.md](waits.md)).
 
-### `result(outcome, summary, evidence?, commit?, reason?, branches?, risk?, goal?, testing?, brief?, verification?, feedback?)`
+### `result(outcome, summary, evidence?, commit?, reason?, branches?, risk?, goal?, testing?, brief?, verification?, feedback?, batch?)`
 
 `result` stores the run's result and ends the step. Nothing can change or delete a stored result.
+
+`batch` is a batch's plan, sent by its planning task. The daemon checks it and stores it with the
+batch, or refuses the result with what to fix; [batches.md](batches.md) lists the checks.
 
 The outcome must be a key of the step's `next`, or the error lists the valid outcomes. For a step
 with `next = { passed = "approve-pr", failed = "stop" }`, a call looks like this:
@@ -665,7 +668,8 @@ transaction then records the action run and moves the task by `next[status]` (se
 Moving on). A `run` action records itself first and runs in the background (see The `run` action).
 An action that is not built yet blocks the task with `action <name> is not built yet`.
 
-The built-in actions are `open-pr`, `open-issue` and `run`. `open-pr` opens one pull request per
+The built-in actions are `open-pr`, `open-issue`, `run` and `start-batch`. `start-batch` creates a
+batch's tasks and records itself in one transaction; [batches.md](batches.md) describes it. `open-pr` opens one pull request per
 branch of the latest result's `branches`, bottom first, or for the task's branch alone without it.
 For each branch:
 
