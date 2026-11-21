@@ -3,12 +3,17 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 /// Subscribes `task` to `resource`: the task owns it until it closes, the task retires, or
 /// `unsubscribe`. Refused while another active task owns it; a done task's subscription yields.
+/// With `expected`, refused once the state moved past that revision, as `--expected`.
 pub fn subscribe(
     db: &mut Connection,
     task: i64,
     resource: &str,
+    expected: Option<i64>,
 ) -> rusqlite::Result<Result<String, String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if let Err(stale) = crate::state::expect_revision(&tx, expected) {
+        return Ok(Err(stale));
+    }
     let state: Option<String> = tx
         .query_row("SELECT state FROM tasks WHERE id = ?1", [task], |row| {
             row.get(0)
@@ -39,6 +44,27 @@ pub fn subscribe(
     }
     tx.commit()?;
     Ok(Ok(format!("task {task} subscribes to {resource}")))
+}
+
+/// `POST /api/subscribe` on the daemon's socket: `{"subscribe": {"task", "resource", "expected"}}`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Line {
+    pub subscribe: Request,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Request {
+    pub task: i64,
+    pub resource: String,
+    /// The state's revision the client showed, as `--expected`: a newer state refuses it.
+    pub expected: Option<i64>,
+}
+
+/// Subscribes as `priory subscribe` does, once the state is still at the revision the client showed.
+pub fn apply(db: &mut Connection, request: &Request) -> rusqlite::Result<Result<String, String>> {
+    subscribe(db, request.task, &request.resource, request.expected)
 }
 
 /// Ends `task`'s subscription to `resource`. What it owns otherwise, such as its key, a pull
@@ -78,7 +104,7 @@ pub(crate) fn tool(db: &mut Connection, call: &Call) -> rusqlite::Result<Result<
         Err(error) => return Ok(Err(error)),
     };
     match call.tool.as_str() {
-        "subscribe" => subscribe(db, task, &resource),
+        "subscribe" => subscribe(db, task, &resource, None),
         _ => unsubscribe(db, task, &resource),
     }
 }

@@ -4,6 +4,24 @@ import { autolink, prStack } from "./priory.js";
 
 // The runs History shows, newest first.
 const HISTORY = 10;
+// The events the Inbox shows, newest first; `priory task ID` prints every one.
+const INBOX = 20;
+
+// What a prompt's state reads as, as the web view's inbox.js words it; a test keeps the two the same.
+const PROMPTS = /** @type {Record<string, string>} */ ({
+  confirmed: "delivered as prompt", queued: "still queued", attempted: "being typed", uncertain: "typed, unconfirmed", withdrawn: "prompt withdrawn",
+});
+const PROMPT_TILES = /** @type {Record<string, string>} */ ({ confirmed: "done", queued: "queued", attempted: "running", uncertain: "blocked", withdrawn: "dropped" });
+
+/** What one inbox event did, as `priory task ID` prints it. @param {any} event @param {number} task */
+function handled(event, task) {
+  const own = event.task === task;
+  const prompt = PROMPTS[event.prompt] || (event.outcome === "kept" && own ? "for its next run" : "");
+  let text = prompt ? `${event.outcome}, ${prompt}` : event.outcome;
+  if (event.wait != null) text += `, fired wait ${event.wait}`;
+  if (event.task != null && !own) text += ` (routed to task ${event.task})`;
+  return text;
+}
 
 const sameDay = (/** @type {string} */ iso, /** @type {number} */ now) => new Date(iso).toDateString() === new Date(now).toDateString();
 const clock = (/** @type {string} */ iso) => new Date(iso).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
@@ -51,6 +69,13 @@ export function taskView(task, { now, links = [] }) {
       checks: checksLine(pr.checks ?? []),
     } : null,
     stack: prStack(task.stack, pr).entries,
+    inbox: (task.inbox ?? []).slice(0, INBOX).map((/** @type {any} */ event) => ({
+      id: event.seq,
+      tile: PROMPT_TILES[event.prompt] || (event.outcome === "kept" && event.task === task.id ? "asleep" : "ready"),
+      text: `${event.type} ${event.subject ?? ""}`.trim(),
+      note: `${handled(event, task.id)} · ${when(event.time, now)}`,
+    })),
+    inboxTotal: (task.inbox ?? []).length,
     history: [...(task.runs ?? [])].reverse().slice(0, HISTORY).map((run) => ({
       id: run.id,
       tile: run.ended ? run.end || "moved" : "running",
