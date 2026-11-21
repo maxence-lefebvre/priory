@@ -9981,12 +9981,16 @@ fn a_restarted_intake_resumes_a_wait_only_repository_where_it_stopped() {
 }
 
 /// Waits until the daemon answers on its socket.
-/// Runs `priory <args>` until a daemon replies to it, past the socket a crashed one left.
+/// Runs `priory <args>` until a daemon replies to it, past the socket a crashed one left and a
+/// connection a restarting one reset.
 fn once_listening(setup: &Setup, args: &[&str]) -> Exit {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let exit = setup.priory(args);
-        if !String::from_utf8_lossy(&exit.stderr).contains("no priory daemon listens") {
+        let said = String::from_utf8_lossy(&exit.stderr);
+        // A restarting daemon resets a connection that reached the socket before its start ended.
+        if !said.contains("no priory daemon listens") && !said.contains("Connection reset by peer")
+        {
             return exit;
         }
         assert!(Instant::now() < deadline, "the daemon never listened");
