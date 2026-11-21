@@ -112,8 +112,9 @@ feedback items https://github.com/owner/name/pull/57#discussion_r803, https://gi
 An item written by the login `gh api user` names, the account the intake runs as and so the
 factory's person, goes to the person: the rule does not name it, the agent need not sort it, and
 the next result records it as `persons-call` with no ask. Only an item with `own` true is the
-person's, so a Linear or issue comment never is. The agent's own replies post as the same account,
-so they are recorded the same way. No factory key names another login.
+person's, so a Linear or issue comment never is. The agent's own replies post as the same account:
+an item with `own` true written while a run of the task ran is the agent's, as routing reads it,
+and no class is recorded for it. No factory key names another login.
 
 The task keeps each class, and a later result can sort an item again. `priory task <id> --json`
 gives them as `triage` (see [Task in detail](../reference/serve.md#task-in-detail)), and the task
