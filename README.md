@@ -54,21 +54,21 @@ On a phone, an ask opens as a page with its recommendation and options. Scrollin
 
 ![The same ask scrolled to its pull request, checks and inbox events in dark mode, with the answer bar fixed at the bottom: "2 options" and "open, Recommended".](docs/images/web-view-answer-bar-390-dark.png)
 
-The desk shows a going batch as one row, with its counts and which entries start next.
+The desk shows a batch in progress as one row, with its counts and which entries start next.
 
 ![The desk on a phone in light mode, scrolled to a stopped task and the batch row "Invoice exports: 1 merged, 2 started, 1 planned. Next: task 9 starts when task 8 merges."](docs/images/web-view-batch-390-light.png)
 
-The inbox groups events that reached no task by the resource they name, with the command that routes the next one.
+The inbox groups unrouted events by resource and offers actions to subscribe an existing task or request a new one.
 
 ![The inbox on a 1440 px screen in light mode: unrouted events grouped by resource, each with its task and a button to subscribe the task or request a new one.](docs/images/web-view-inbox-1440-light.png)
 
 ![The inbox on a phone in dark mode.](docs/images/web-view-inbox-390-dark.png)
 
-Flows draw each workflow and mark who decides each edge. Costs show spend, merges and your attention.
+Flows draw each workflow and mark who decides each edge and which step is irreversible. Costs show spend, merges and your attention.
 
-![Flows on a 1440 px screen in light mode: the review workflow, with the steps risk, review and submit, and the edges between them.](docs/images/web-view-flows-1440-light.png)
+![The implement workflow in Flows on a 1440 px screen in light mode, from implement to approve-pr to open-pr, with model decisions as dashed arrows, human decisions as solid arrows and a padlock on the irreversible step open-pr.](docs/images/web-view-flows-1440-light.png)
 
-![Flows on a phone in dark mode.](docs/images/web-view-flows-390-dark.png)
+![The implement workflow in Flows on a phone in dark mode.](docs/images/web-view-flows-390-dark.png)
 
 ![Costs on a 1440 px screen in light mode: cost this week, merges, cost per merge, a bar for each day, a table by workflow, and the minutes of your attention per merge.](docs/images/web-view-costs-1440-light.png)
 
