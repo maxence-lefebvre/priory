@@ -666,6 +666,38 @@ Settings, then Appearance. It holds:
   sideways on a phone.
 - Headers in `--type-caption`, `--text-3`, sentence case.
 
+### Reports panel
+
+The web view's `/reports`: the report written last, as the Herdr [Bonjour](#bonjour) panel shows
+it. Both use one view model, so sections, picks and threads read the same in both. On a phone it
+sits under More.
+
+- **Header**: the greeting in the display role, then one `--text-2` line with the date, a link to
+  the task that wrote it and "Since 18:00. 2 picks to agree.", then a 6 px `--action` progress bar
+  on `--raised` with "1 of 4 agreed". A report with no pick shows no bar.
+- **Sections** in the report's own order, each a `.sect` with its title and its count. Section
+  chips sit under the header and stick to the top. From 1024 px they become a 200 px list on the
+  left, sticky, with each section's count.
+- **Row**: its tile, its key in mono, its text, then a caption line with its meta, owner and time.
+  The key and the text take the factory's autolinks.
+- **Pick**: a segmented control on `--raised`. The recommended option shows a `check` in
+  `--action-text`, and the pick's note follows in a caption. A tap turns the option solid `--emph`
+  with a `check` and dims the other picks; a bar at the bottom says `Picking "Take"` with Undo for
+  4 s, as an answer's does. Nothing is sent before the 4 s end. An agreed pick folds to one line:
+  a `check` in `--ok-text`, "Picked Take." and what the workflow did with it.
+- **Threads** follow the Bonjour rules, with Reply and Resolve as ghost buttons in the card. A row
+  with an id ends with a Comment ghost button. It opens the comment field under the row, with
+  Cancel and Comment. Reply opens the same field, with "Replying in thread 3" above it.
+
+| State | What shows |
+| ----- | ---------- |
+| empty | "No report yet. A workflow writes one with the `report` tool or `priory report put`." |
+| loading | The frame's: the report loads with the desk's listings, so it shows once they do |
+| offline | The stale strip. Picks and comment buttons are disabled, and each open pick says "Reconnect to pick." |
+| picking | The chosen option solid, the Undo bar for 4 s, then the bar without Undo while it sends |
+| refused pick | The report redraws, and the row says why in `--warn-text`, naming the option: "Take: Already picked Later." or "Take: The report changed to revision 5. Read it and pick again." |
+| refused comment | The row says why in `--warn-text`, and the field keeps its text |
+
 ### Buttons and inputs
 
 | Kind      | Fill            | Text            | Edge             | Use                                  |
