@@ -814,6 +814,8 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
   code steps, `user` for human steps. Done steps show a check in `--ok-text`. The current step is
   solid `--emph` with a live dot. Future steps are in `--text-3`. An irreversible step has a
   1.5 px `--danger-text` edge and the `lock` icon.
+- **Feedback**, in the pull request section: each review feedback item the agent sorted, as a
+  history row with its link and its class in plain words: "trivial", "nothing to do" or "your call".
 - **Inbox**, after the pull request: the events routed to the task, newest first, at most 20, as
   history rows. Each shows a tile for its prompt (`done` delivered, `queued` still queued, `running`
   being typed, `prompt` unconfirmed, `dropped` withdrawn, `asleep` kept for the next run, `ready`

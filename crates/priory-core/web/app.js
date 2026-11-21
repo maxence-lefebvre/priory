@@ -10,7 +10,7 @@ import { KINDS, edgeStyle, lockBadge, nodeShape, timeline, ungatedPairs } from "
 import { handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { actionNote, batchParts, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
-import { TASK_FACETS, TASK_VIEWS, filtered, olderPart, taskViews } from "./tasks.js";
+import { TASK_FACETS, TASK_VIEWS, filtered, olderPart, taskViews, triageWords } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
 
@@ -1297,7 +1297,7 @@ function triageList(triage) {
   if (!triage?.length) return "";
   const label = (item) => item.replace(/^https:\/\/github\.com\//, "");
   const named = (item) => (item.startsWith("https://") ? html`<a class="autolink" href="${item}" rel="noopener noreferrer" target="_blank">${label(item)}</a>` : item);
-  return html`<p class="meta">Feedback, as the agent sorted it</p><ol class="hist" aria-label="Review feedback items">${triage.map((entry) => html`<li>${tile(TRIAGE_TILES[entry.class] || "queued", "sm")}<span>${named(entry.item)}</span><span>${entry.class}</span></li>`)}</ol>`;
+  return html`<p class="meta">Feedback, as the agent sorted it</p><ol class="hist" aria-label="Review feedback items">${triage.map((entry) => html`<li>${tile(TRIAGE_TILES[entry.class] || "queued", "sm")}<span>${named(entry.item)}</span><span>${triageWords(entry.class)}</span></li>`)}</ol>`;
 }
 
 const PULL_TILES = { merged: "done", closed: "dropped" };

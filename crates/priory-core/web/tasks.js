@@ -36,3 +36,8 @@ export const filtered = (items, picks, facets = /** @type {any} */ (TASK_FACETS)
  * shows history. @param {{ view: string, history: string, older: number | undefined, picked: boolean }} list
  */
 export const olderPart = ({ view, history, older = 0, picked }) => ({ counted: picked ? 0 : older, unloaded: view === history ? older : 0 });
+
+const TRIAGE_WORDS = { "nothing-to-do": "nothing to do", "persons-call": "your call" };
+
+/** A feedback item's class as the task page words it. */
+export const triageWords = (triage) => TRIAGE_WORDS[triage] || triage;
