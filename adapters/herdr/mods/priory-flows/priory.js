@@ -211,6 +211,15 @@ export function sentNote(ask) {
 /** Who answered, as the views say it: a person, or `agent:<lead>`. Null when unrecorded. @param {string | null | undefined} by */
 export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : "a person");
 
+// Copied from crates/priory-core/web/inbox.js; a test keeps the two the same.
+const SOURCES = { github: "GitHub", linear: "Linear", slack: "Slack", factory: "" };
+
+/** An event's type in plain words: `linear.issue.updated` reads "Linear issue updated". */
+export function eventWords(type) {
+  const [source, ...rest] = type.split(".");
+  return [SOURCES[source] ?? source, ...rest].filter(Boolean).join(" ").replaceAll("_", " ");
+}
+
 /**
  * A task's `stack` for the views; one pull request keeps the single PR look. Only `latest`, the
  * task's `pull_request`, has known checks.

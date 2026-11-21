@@ -27,7 +27,7 @@ test("reads the unrouted groups and shows each with its owner, its events and th
   assert.deepEqual(herdr.argv[0], ["inbox", "--unrouted", "--json"]);
   const shown = text(drawn());
   assert.match(shown, /Unrouted 3/);
-  assert.match(shown, /github:owner\/repo#8 1 task 12 dropped github:owner\/repo#8 github\.issue_comment\.created owner\/repo#8 Nov 17, 11:30 Still broken on mobile\./);
+  assert.match(shown, /github:owner\/repo#8 1 task 12 dropped github:owner\/repo#8 GitHub issue comment created owner\/repo#8 Nov 17, 11:30 Still broken on mobile\./);
   assert.match(shown, /No task ever owned: 1 linear event\./);
 });
 

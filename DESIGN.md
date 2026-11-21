@@ -835,6 +835,7 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
 
 ### Task detail and workflow grid
 
+- On a phone the task page's back link goes to the Tasks panel, as the batch page's does.
 - Context line: task key in mono, the task's state tile and word, workflow, lane, band, and
   "batch 4" linking to the batch page when the task is a batch's entry or planning task.
 - Title in `--type-task`, then the task's reason in its role's text color.
@@ -1285,7 +1286,8 @@ What runs next and why.
 - Then Running, the bands in order (Blocker, Now, Today, Later, or the factory's names), Held with
   each hold's reason, and Last day, folded.
 - Each waiting row shows its position in its band and why it has not started, in its role's text
-  color. A grip in a fixed trailing lane, and `Shift J` and `Shift K`, reorder a band.
+  color. A task with its own wait reason, such as "Waits for its claim to reach the log.", says
+  that reason, in its row and in Up next, where "on room" is left out. A grip in a fixed trailing lane, and `Shift J` and `Shift K`, reorder a band.
 - An opened row offers Move…, Hold… and Cancel…, and Open task.
 
 ### Bonjour

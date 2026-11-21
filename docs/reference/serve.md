@@ -549,7 +549,7 @@ of the factory in `DIR`, and `priory queue --json` lists no schedule firings.
 
 | `kind` | `at` | `why` |
 | ------ | ---- | ----- |
-| `queued` | Now: it starts once there is room | `first in the queue`, `a band above it`, or `queue position <n>` |
+| `queued` | Now: it starts once there is room | The task's own wait reason when it has one, such as `waits for its claim to reach the log`; else `first in the queue`, `a band above it`, or `queue position <n>` |
 | `held` | The end of its time hold, once time is all it still waits for | `held until <time>` |
 | `scheduled` | The trigger's [next firing](../intake/schedule.md#next-firing) | `schedule <trigger> fires` |
 
