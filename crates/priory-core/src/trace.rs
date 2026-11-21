@@ -157,6 +157,15 @@ pub(crate) fn ended(
         data["grade"] = json!(outcome);
     }
     if let Some(agent) = agent {
+        if let Some(run) = run {
+            data["kit_hash"] = tx
+                .query_row("SELECT kit_hash FROM runs WHERE id = ?1", [run], |row| {
+                    row.get::<_, Option<String>>(0)
+                })
+                .optional()?
+                .flatten()
+                .map_or(Value::Null, Value::from);
+        }
         data["harness"] = json!(agent.value.harness);
         data["model"] = json!(ended.model.or_else(|| agent.value.model.clone()));
         data["tokens"] = ended

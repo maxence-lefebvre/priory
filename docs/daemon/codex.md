@@ -30,6 +30,8 @@ fires at startup, so its paste and confirmation stay as they are.
 | Built-in question tool (R6.4) | `PreToolUse` deny on `AskUserQuestion` | `PreToolUse` deny on `request_user_input`, which Codex offers only in plan collaboration mode, which Priory never sets |
 | Tool guard | `PreToolUse` hook on `Bash` and `mcp__.*` | the same hook on every tool. Codex 0.170 blocks a command or tool call that a `PreToolUse` hook denies; no test runs real Codex, so whether its shell tool and MCP calls reach the hook is unchecked |
 | Model, effort, agent body and the factory's writing guide | `--model`, `--effort`, `--append-system-prompt` | `-c model`, `-c model_reasoning_effort`, `-c developer_instructions` |
+| The factory's `instructions.md` | before the body, through `--append-system-prompt-file` | before the body, in `developer_instructions`, which `priory check` keeps under 8192 bytes ([skills.md](skills.md)) |
+| The factory's skills | `--plugin-dir` | none yet |
 
 `defaultMode` maps to Codex's sandbox and approvals. `approvals_reviewer` is always set, so a user
 config that routes approvals to Codex's reviewer does not decide a `manual` run's prompts:
