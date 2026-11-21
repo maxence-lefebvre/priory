@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 58;
+const VERSION: i64 = 59;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1035,6 +1035,40 @@ END;
 PRAGMA user_version = 58;
 ";
 
+// A routed ask whose lead task ends or blocks without answering returns to the person: it loses
+// its lead and is asked again as its next revision, which pushes it. Every alarm the desk ranks
+// pushes too: an intake failure, an uncertain prompt and an uncertain command, with the desk kind
+// in `push_queue.state`. A stack's gate records whether its checks are green, so the daemon tells
+// once when the whole stack is.
+const SCHEMA_59: &str = "
+ALTER TABLE waits ADD COLUMN green INTEGER;
+CREATE TRIGGER IF NOT EXISTS ask_returns_from_its_lead AFTER UPDATE OF state ON tasks
+  WHEN NEW.trigger = 'priory/lead' AND NEW.state IN ('done', 'failed', 'dropped', 'blocked')
+  AND NEW.state IS NOT OLD.state BEGIN
+  UPDATE asks SET routed = NULL, revision = revision + 1,
+    question = question || ' (' || routed || ' did not answer: its task is ' || NEW.state || ')'
+  WHERE routed IS NOT NULL AND answer IS NULL AND withdrawn IS NULL
+  AND (id, revision) = (SELECT json_extract(data, '$.ask'), json_extract(data, '$.revision')
+    FROM inbox WHERE inbox.id = NEW.source);
+END;
+CREATE TRIGGER IF NOT EXISTS push_an_intake_failure AFTER INSERT ON inbox
+  WHEN NEW.type = 'priory.report' AND NEW.subject = 'intake'
+  AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
+  INSERT INTO push_queue (kind, item, state) VALUES ('alarm', NEW.seq, 'report');
+END;
+CREATE TRIGGER IF NOT EXISTS push_an_uncertain_prompt AFTER UPDATE OF state ON outbox
+  WHEN NEW.state = 'uncertain' AND OLD.state IS NOT 'uncertain'
+  AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
+  INSERT INTO push_queue (kind, item, state) VALUES ('alarm', NEW.id, 'prompt');
+END;
+CREATE TRIGGER IF NOT EXISTS push_an_uncertain_command AFTER UPDATE OF status ON actions
+  WHEN NEW.status = 'uncertain' AND OLD.status IS NOT 'uncertain' AND NEW.action = 'answer'
+  AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
+  INSERT INTO push_queue (kind, item, state) VALUES ('alarm', NEW.id, 'command');
+END;
+PRAGMA user_version = 59;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1044,7 +1078,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
-    SCHEMA_58,
+    SCHEMA_58, SCHEMA_59,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1985,6 +2019,17 @@ pub(crate) fn admissible<'r>(
                     Ok(measured) => {
                         let short = room::wait(measured, share, promised, need);
                         let reason = short.as_ref().map(|short| short.reason.clone());
+                        // A lead that can never fit never answers: dropping it returns its ask.
+                        if let Some(reason) = reason.as_ref().filter(|_| {
+                            admission.trigger == crate::tools::LEAD_TRIGGER
+                                && !room::fits_ever(measured, share, need)
+                        }) {
+                            db.execute(
+                                "UPDATE tasks SET state = 'dropped', reason = ?2 WHERE id = ?1",
+                                params![admission.task, reason],
+                            )?;
+                            continue;
+                        }
                         // A task that can never fit would hold the queue forever.
                         if short.is_some() && room::fits_ever(measured, share, need) {
                             head = Some(admission.task);

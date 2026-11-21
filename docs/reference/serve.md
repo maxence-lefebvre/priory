@@ -41,6 +41,8 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /api/tasks/{id}/resume` | `priory resume ID` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
 | `POST /api/tasks/{id}/revive` | `priory revive ID [--step STEP]` | as above |
 | `POST /api/tasks/{id}/cancel` | `priory cancel ID [--expected N]` | as above |
+| `POST /api/tasks/{id}/release` | `priory release ID [--expected N]` | as above |
+| `POST /api/inbox/{seq}/read` | `priory inbox read SEQ` | as above |
 | `POST /api/tasks/{id}/say` | `priory say ID TEXT` | as above |
 | `POST /api/reports/pick` | `priory report pick PICK OPTION --expected N` | `{"ok": "<what the CLI prints>"}` |
 | `POST /api/reports/comment` | `priory report comment ROW --expected N TEXT` | as above |
@@ -107,7 +109,9 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/tasks/{id}/resume` | `{}` |
 | `POST /api/tasks/{id}/revive` | optionally `step`, a string: the step to restart at, as `--step` |
 | `POST /api/tasks/{id}/cancel` | optionally `revision`, an integer: the state's revision the client showed, as `--expected`. A newer state gets `409` |
+| `POST /api/tasks/{id}/release` | optionally `revision`, an integer, as `--expected`. A newer state gets `409` |
 | `POST /api/tasks/{id}/say` | `text`, a string: what the task's agent hears |
+| `POST /api/inbox/{seq}/read` | `{}`: marks the report read, so its row leaves the desk. A sequence number that is not a report gets `422` |
 | `POST /api/reports/pick` | `pick`, the pick's id, `option`, one of its options, and `revision`, the report's revision the client showed |
 | `POST /api/reports/comment` | `row`, the row's id, `text`, a string, and `revision`, the report's revision the client showed. A comment verb takes `text` only with `comment` and `reply`, and `revision` only with `comment` |
 | `POST /api/reports/reply` | `comment`, an integer, and `text`, a string |

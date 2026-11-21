@@ -175,14 +175,18 @@ queues a notification in the same transaction as the change, and only while a br
 
 - for a new ask, from a step, an agent or outside, and for an ask asked again, such as an
   approval whose branch moved;
-- for a task that turns `blocked` or `failed`, an alarm.
+- for a task that turns `blocked` or `failed`, an alarm;
+- for every other item the desk ranks as an alarm: a report the intake posts when a poll fails, a
+  prompt that turned `uncertain`, and an answer's command that turned `uncertain`.
 
 The daemon sends the queue one notification at a time. Before it sends one, it reads the item
 again, and sends nothing when the ask closed, the task left that state, or a person snoozed it.
 A queue left by a stopped daemon goes out when the next one starts.
 
 Each notification carries the ask's title, or the task's key and step or state, and the path that
-opens it, `/asks/<id>` or `/tasks/<id>`. It never carries the question, which can quote a result's
+opens it, `/asks/<id>` or `/tasks/<id>`. Another alarm carries the desk's title for it, such as
+`the intake fails to poll github` or `task cli:docs-1 prompt`, and its task's path, or `/` for an
+intake report. It never carries the question, which can quote a result's
 summary, nor a brief, plan, option, command or answer: the push service and the phone's lock screen
 see only that line. The
 payload is encrypted for the browser, so the push service cannot read it either.

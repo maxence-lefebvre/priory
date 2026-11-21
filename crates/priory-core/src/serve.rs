@@ -388,7 +388,8 @@ fn route(
 }
 
 /// A path that writes, each the twin of a CLI verb. An ask is named by its number or, for an
-/// outside ask, its name. `Act` is a desk action on a task: `resume`, `revive`, `cancel` or `say`.
+/// outside ask, its name. `Act` is a desk action on a task: `resume`, `revive`, `cancel`, `release`
+/// or `say`. `Read` marks a report read.
 enum Write<'a> {
     Answer(&'a str),
     Dismiss(&'a str),
@@ -402,6 +403,7 @@ enum Write<'a> {
     TodoAdd,
     TodoDone(i64),
     Seen,
+    Read(i64),
 }
 
 impl<'a> Write<'a> {
@@ -426,10 +428,16 @@ impl<'a> Write<'a> {
         {
             return id.parse().ok().map(Write::TodoDone);
         }
+        if let Some(seq) = path
+            .strip_prefix("/api/inbox/")
+            .and_then(|rest| rest.strip_suffix("/read"))
+        {
+            return seq.parse().ok().map(Write::Read);
+        }
         if let Some((task, act)) = path
             .strip_prefix("/api/tasks/")
             .and_then(|rest| rest.split_once('/'))
-            .filter(|(_, act)| ["resume", "revive", "cancel", "say"].contains(act))
+            .filter(|(_, act)| ["resume", "revive", "cancel", "release", "say"].contains(act))
         {
             return Some(Write::Act(task, act));
         }
@@ -676,14 +684,14 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
             let takes = match *act {
                 "say" => body.text.is_some() && body.step.is_none() && body.revision.is_none(),
                 "revive" => body.text.is_none() && body.revision.is_none(),
-                "cancel" => body.text.is_none() && body.step.is_none(),
+                "cancel" | "release" => body.text.is_none() && body.step.is_none(),
                 _ => body.text.is_none() && body.step.is_none() && body.revision.is_none(),
             };
             if !takes {
                 let fields = match *act {
                     "say" => "text",
                     "revive" => "an optional step",
-                    "cancel" => "an optional revision",
+                    "cancel" | "release" => "an optional revision",
                     _ => "no field",
                 };
                 return Err(Reply::error(400, &format!("{act} takes {fields}")));
@@ -722,6 +730,10 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
             let Empty {} = serde_json::from_slice(body).map_err(bad)?;
             let change = todo::Change::Done(*id);
             Ok((line(&todo::Line { todo: change }), Sent::Nothing))
+        }
+        Write::Read(seq) => {
+            let Empty {} = serde_json::from_slice(body).map_err(bad)?;
+            Ok((line(&crate::post::ReadLine { read: *seq }), Sent::Nothing))
         }
         Write::Seen => {
             let body: SeenBody = serde_json::from_slice(body).map_err(bad)?;
