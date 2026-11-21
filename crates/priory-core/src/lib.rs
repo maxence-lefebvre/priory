@@ -11,6 +11,7 @@ mod model;
 mod otlp;
 pub mod post;
 pub mod progress;
+mod push;
 pub mod report;
 mod room;
 mod route;

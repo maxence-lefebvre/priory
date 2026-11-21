@@ -22,6 +22,7 @@ $PRIORY_HOME/
   handlers/                    where stall handler calls run (see health.md)
   summaries/                   where summarizer calls run (see search.md)
   models/                      the embedding model's files (see search.md)
+  push/                        the Web Push key pair and the requests in flight (see serve.md)
 ```
 
 ### Clones
@@ -60,6 +61,15 @@ full line within 2 seconds, so a silent client cannot stop the others.
 
 `daemon.lock` allows one daemon per home. A second daemon waits up to 5 seconds for the lock, then
 refuses to start.
+
+### Push keys
+
+The daemon makes `push/`, readable by its owner only, with the VAPID key pair that signs Web Push
+notifications. `vapid.key` holds the private key, mode `0600`, written once and whole; `vapid.pub`
+holds the public key that `GET /api/push/key` serves, written again from it on every start. Delete both files
+to make a new pair: every browser then has to turn notifications on again. The private key never
+leaves the file: it is not logged, printed or sent. While a notification goes out, `push/` also
+holds its request's header and body files, which the daemon removes once `curl` ends.
 
 ## Command timeout
 

@@ -28,6 +28,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/reports/latest` | `priory report show --json` | the [report](#report) written last |
 | `/api/reports/{task}` | `priory report show TASK --json` | the task's [report](#report) |
 | `/api/events?since=REV` | `priory wait --since REV` | `{"revision": N}` once it differs from `REV`. See [below](#apievents) |
+| `/api/push/key` | | `{"key": "<base64url>"}`, the daemon's VAPID public key. See [Notifications](#notifications) |
 | `POST /api/asks/{id}/answer` | `priory answer ID TEXT --revision N` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
 | `POST /api/asks/{id}/dismiss` | `priory dismiss --expected N ID` | as above |
 | `POST /api/snooze` | `priory snooze KIND ID (--for D \| --until T \| --clear)` | as above |
@@ -63,10 +64,10 @@ or a reason, is untrusted: render it as text.
 | `411` | A `POST` has no `Content-Length`, or uses `Transfer-Encoding` |
 | `413` | A `GET` has a body; a write's body is over 16 KiB; a webhook's is over 1 MiB |
 | `415` | A write's `Content-Type` is not `application/json` |
-| `422` | The daemon refused a write for another reason, such as an option a step does not take, or a request's unknown workflow or bad `repo`. A request the bus could not take gets `422` too, with the bus's error |
+| `422` | The daemon refused a write for another reason, such as an option a step does not take, or a request's unknown workflow or bad `repo`, or a push subscription it does not take. A request the bus could not take gets `422` too, with the bus's error |
 | `431` | The request head is over 8 KiB or 32 headers |
 | `500` | The state could not be read, a delivery could not be published, or Priory failed while answering. The server keeps serving |
-| `503` | 4 requests already wait on `/api/events` and this one would wait too; or a write found no daemon on its socket, as under `priory serve` alone. It comes with `Retry-After: 1` |
+| `503` | 4 requests already wait on `/api/events` and this one would wait too; or a write found no daemon on its socket, as under `priory serve` alone; or `/api/push/key` before a daemon made the key pair. It comes with `Retry-After: 1` |
 | `504` | A write reached the daemon, which did not reply within 10 seconds. It may have applied it |
 
 An error's body is `{"error": "<why>"}`.
@@ -105,6 +106,8 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/reports/comment` | `row`, the row's id, `text`, a string, and `revision`, the report's revision the client showed. A comment verb takes `text` only with `comment` and `reply`, and `revision` only with `comment` |
 | `POST /api/reports/reply` | `comment`, an integer, and `text`, a string |
 | `POST /api/reports/resolve`, `POST /api/reports/reopen` | `comment`, an integer |
+| `POST /api/push/subscribe` | the browser's `PushSubscription.toJSON()`: `endpoint`, a string, `keys`, an object of `p256dh` and `auth`, base64url strings, and optionally `expirationTime`, which is ignored. See [Notifications](#notifications) |
+| `POST /api/push/unsubscribe` | `endpoint`, a string |
 
 In `/api/asks/{id}`, `{id}` is the ask's `id` as `/api/asks` lists it: its number, or an outside
 ask's name, and `revision` is the ask's `revision` the client showed. In `/api/tasks/{id}`, `{id}` is
@@ -363,16 +366,48 @@ With `web = true`, the server sends these without the token:
 | `/boot.js`, `/app.js`, `/asks.js`, `/add.js`, `/links.js`, `/reports.js` | `text/javascript; charset=utf-8` |
 | `/app.css`, `/tokens/structure.css`, `/tokens/themes.css` | `text/css; charset=utf-8` |
 | `/fonts/<file>.woff2` | `font/woff2` |
-| `/favicon.ico`, `/favicon.svg`, `/apple-touch-icon.png` | the image's type |
+| `/sw.js`, the service worker | `text/javascript; charset=utf-8` |
+| `/manifest.webmanifest` | `application/manifest+json` |
+| `/favicon.ico`, `/favicon.svg`, `/apple-touch-icon.png`, `/icon-192.png`, `/icon-512.png`, `/icon-maskable-192.png`, `/icon-maskable-512.png` | the image's type |
 | any other path outside `/hooks`, such as `/` or `/asks/42` | the page, `text/html; charset=utf-8` |
 
 An unknown file under `/fonts/` or `/tokens/`, or at the top level with a `.` in its name, such as
 `/nothing.js`, gets `404`.
 
 Every file carries `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src
-'self'; font-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none';
-frame-ancestors 'none'`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. The
+'self'; font-src 'self'; img-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src
+'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. The
 page loads nothing from another host.
+
+## Notifications
+
+[serve.md](../daemon/serve.md#notifications) explains when the daemon sends a notification.
+
+`GET /api/push/key` returns `{"key": "<base64url>"}`: the uncompressed P-256 public key, 65 bytes,
+that a browser passes to `PushManager.subscribe` as `applicationServerKey`. Before a daemon made the
+key pair, it returns `503`.
+
+`POST /api/push/subscribe` stores the browser's subscription, or replaces the keys of one with the
+same `endpoint`. The daemon refuses it with `422` when:
+
+- `endpoint` is not an `https://` URL, with no port and no user info, on one of the push
+  services browsers use: `push.apple.com`, `fcm.googleapis.com`, `push.services.mozilla.com` or
+  `notify.windows.com`, or a name under one of them;
+- `keys.p256dh` is not a base64url P-256 public key, or `keys.auth` is not a base64url 16 byte
+  secret;
+- 20 other subscriptions exist.
+
+`POST /api/push/unsubscribe` drops the subscription with that `endpoint`, and answers `200` even
+when none had it. Both reply `{"ok": "subscribed"}` or `{"ok": "unsubscribed"}`.
+
+Each notification is a Web Push message encrypted as RFC 8291 says (`Content-Encoding:
+aes128gcm`), signed with VAPID (RFC 8292), with `TTL: 86400` and `Urgency: high`. Its plaintext is
+JSON with two fields and nothing else:
+
+| Field | For a new ask | For an alarm |
+| ----- | ------------- | ------------ |
+| `title` | the ask's title, cut to 120 characters; without one, `task <key> asks at <step>`, or `ask <name>` for an outside ask | `task <key> <state>`, such as `task gh:o/r#42 blocked` |
+| `url` | `/asks/<id>` | `/tasks/<id>` |
 
 ## Report
 
