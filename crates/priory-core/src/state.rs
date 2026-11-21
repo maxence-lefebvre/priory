@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 69;
+const VERSION: i64 = 70;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1192,6 +1192,23 @@ const SCHEMA_69: &str = concat!(
 "
 );
 
+const SCHEMA_70: &str = "
+CREATE TABLE idle_compactions (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent    TEXT NOT NULL,
+  session  TEXT NOT NULL,
+  tmux     TEXT NOT NULL,
+  started  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  ready    INTEGER NOT NULL DEFAULT 0,
+  typed    TEXT,
+  ended    TEXT,
+  ended_as TEXT
+);
+CREATE UNIQUE INDEX one_live_idle_compaction ON idle_compactions (session) WHERE ended IS NULL;
+ALTER TABLE shared_sessions ADD COLUMN definition TEXT;
+PRAGMA user_version = 70;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1202,7 +1219,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
-    SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69,
+    SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -2195,7 +2212,10 @@ pub(crate) fn admissible<'r>(
             Some((name, agent)) if matches!(agent.session, Session::Shared) => serving(db, name)?
                 .map(|task| {
                     format!("waits for agent {name}: its shared session serves task {task}")
-                }),
+                })
+                .or(crate::idle::compacting(db, name)?.then(|| {
+                    format!("waits for agent {name}: its shared session is being compacted")
+                })),
             _ => None,
         };
         // A pause holds only new tasks: a woken, resumed or revived one is `ready` and goes on.
@@ -2519,6 +2539,10 @@ pub(crate) struct NewRun<'a> {
     pub ending: &'a str,
     /// The session is the agent's shared one, which other tasks' runs resume too.
     pub shared: bool,
+    /// What the agent's shared session starts with, which a later run compares its own against.
+    pub definition: &'a str,
+    /// The line telling a resumed shared session what changed in its agent.
+    pub changed: Option<&'a str>,
     /// Derives the lane of a task again, once, now that its branch is known.
     pub lanes: &'a Lanes,
 }
@@ -2552,6 +2576,17 @@ pub(crate) fn resumable(
         |row| row.get(0),
     )
     .optional()
+}
+
+/// What the shared `session` started with, if it was recorded.
+pub(crate) fn definition(db: &Connection, session: &str) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        "SELECT definition FROM shared_sessions WHERE session = ?1",
+        [session],
+        |row| row.get(0),
+    )
+    .optional()
+    .map(Option::flatten)
 }
 
 /// The harness's own id for `session`, when it differs from Priory's, as Codex's thread id does.
@@ -2648,9 +2683,9 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
 /// Records the run's session as its agent's shared one, and names the task in its first prompt.
 fn share(tx: &Transaction, run: &NewRun) -> rusqlite::Result<()> {
     tx.execute(
-        "INSERT INTO shared_sessions (agent, session) VALUES (?1, ?2)
-         ON CONFLICT (agent) DO UPDATE SET session = excluded.session",
-        params![run.agent, run.session],
+        "INSERT INTO shared_sessions (agent, session, definition) VALUES (?1, ?2, ?3)
+         ON CONFLICT (agent) DO UPDATE SET session = excluded.session, definition = excluded.definition",
+        params![run.agent, run.session, run.definition],
     )?;
     let (key, trigger): (String, String) = tx.query_row(
         "SELECT key, trigger FROM tasks WHERE id = ?1",
@@ -2661,6 +2696,10 @@ fn share(tx: &Transaction, run: &NewRun) -> rusqlite::Result<()> {
         "This is task {} ({key}), from trigger {trigger}, in the worktree {}. Earlier turns of this conversation may belong to other tasks.",
         run.task, run.worktree
     );
+    let intro = match run.changed {
+        Some(changed) => format!("{changed}\n{intro}"),
+        None => intro,
+    };
     let prepended = tx.execute(
         "UPDATE outbox SET text = ?2 || char(10) || text WHERE id =
          (SELECT min(id) FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0)",
@@ -2798,7 +2837,9 @@ pub(crate) fn signal(
         )
         .optional()?
     else {
-        return Ok(None);
+        let kill = crate::idle::signal(&tx, signal)?;
+        tx.commit()?;
+        return Ok(kill);
     };
     tx.execute(
         &format!("UPDATE runs SET signaled = {NOW} WHERE id = ?1"),
