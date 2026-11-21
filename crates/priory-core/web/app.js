@@ -875,10 +875,10 @@ function taskSections(task) {
   if (pr) {
     sections.push(["pr", "PR", sect("pr", "workflow", `#${pr.number} ${pr.title || ""}`, pr.review || "",
       html`<p class="meta">${pr.branch} into ${pr.base}, head <span class="mono">${String(pr.head_sha).slice(0, 7)}</span>, ${pr.state}</p>
-      <ol class="hist">${pr.checks.map((check) => html`<li>${tile(check.conclusion === "success" ? "done" : "failed", "sm")}<span>${check.name}</span><span>${check.conclusion}</span></li>`)}</ol>${prStackList(task.stack, pr)}`)]);
+      <ol class="hist">${pr.checks.map((check) => html`<li>${tile(check.conclusion === "success" ? "done" : "failed", "sm")}<span>${check.name}</span><span>${check.conclusion}</span></li>`)}</ol>${prStackList(task.stack, pr)}${triageList(task.triage)}`)]);
   } else if (prs(task)) {
     // The summary needs the pull request's events; the stack does not.
-    sections.push(["pr", "PR", sect("pr", "workflow", prs(task), "", prStackList(task.stack, null))]);
+    sections.push(["pr", "PR", sect("pr", "workflow", prs(task), "", html`${prStackList(task.stack, null)}${triageList(task.triage)}`)]);
   }
   if (task.runs?.length) {
     sections.push(["trace", "Trace", sect("trace", "runs", "Trace", "", html`<ol class="hist">${task.runs.map((run) => {
@@ -888,6 +888,14 @@ function taskSections(task) {
     })}</ol>`)]);
   }
   return sections;
+}
+
+// How the agent sorted each review feedback item: trivial, nothing-to-do or persons-call.
+function triageList(triage) {
+  if (!triage?.length) return "";
+  const label = (item) => item.replace(/^https:\/\/github\.com\//, "");
+  const named = (item) => (item.startsWith("https://") ? html`<a class="autolink" href="${item}" rel="noopener noreferrer" target="_blank">${label(item)}</a>` : item);
+  return html`<p class="meta">Feedback, as the agent sorted it</p><ol class="hist" aria-label="Review feedback items">${triage.map((entry) => html`<li><span>${named(entry.item)}</span><span class="tag">${entry.class}</span></li>`)}</ol>`;
 }
 
 const PULL_TILES = { merged: "done", closed: "dropped" };

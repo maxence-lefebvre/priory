@@ -221,6 +221,10 @@ Feedback reopened this done task as generation 2: U0123 replied in slack:C0123:1
 The task is `ready`, so its next run resumes the session of the step's agent. The daemon appends a
 `factory.task.reopened` trace record (see [trace.md](trace.md)).
 
+A prompt that carries feedback, on a reopen or any wake, ends with the rule to sort each item as
+`trivial`, `nothing-to-do` or `persons-call`, and the result records the classes (see [Review
+feedback](tools.md#review-feedback)).
+
 Limits:
 
 - A pull request closed and reopened on GitHub keeps its close in the inbox, so it reopens nothing.
