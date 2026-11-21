@@ -1211,6 +1211,10 @@ fn request(args: Vec<String>) -> ExitCode {
     let Some(factory) = load(&dir) else {
         return ExitCode::FAILURE;
     };
+    if let Err(error) = related(request.relates()) {
+        eprintln!("priory request: {error}");
+        return ExitCode::FAILURE;
+    }
     match request::run(&factory, &request, None) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -1227,6 +1231,10 @@ fn add(args: Vec<String>) -> ExitCode {
     let Some(factory) = load(&dir) else {
         return ExitCode::FAILURE;
     };
+    if let Err(error) = related(&add.relates) {
+        eprintln!("priory add: {error}");
+        return ExitCode::FAILURE;
+    }
     match request::add(&factory, &add) {
         Ok(key) => {
             println!("{key}");
@@ -1236,6 +1244,18 @@ fn add(args: Vec<String>) -> ExitCode {
             eprintln!("priory add: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Refuses `--relates` to a task the state file does not hold, before anything is published.
+fn related(relates: &[request::Relation]) -> Result<(), String> {
+    if relates.is_empty() {
+        return Ok(());
+    }
+    let db = state::open()?;
+    match relate::missing(&db, relates).map_err(|error| error.to_string())? {
+        Some(missing) => Err(missing),
+        None => Ok(()),
     }
 }
 
