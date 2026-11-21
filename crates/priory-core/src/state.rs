@@ -5,13 +5,14 @@ use herdr_bus::Message;
 use priory_factory::explain;
 use priory_factory::factory::{Factory, Loaded, Session, Workflow};
 use priory_factory::lanes::{Lanes, Subject};
+use priory_intake::intake::PR_CLOSED as CLOSED;
 use priory_runtime::room::Room;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 47;
+const VERSION: i64 = 48;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -812,10 +813,28 @@ const SCHEMA_46: &str = "CREATE TABLE IF NOT EXISTS row_comments (
 PRAGMA user_version = 46;
 ";
 
+// The resources a task subscribes to, beside its ownership in `owns`: polled and woken on until
+// the resource closes, the task retires or unsubscribes. `owned` is what a task owns either way.
+const SCHEMA_47: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS subscriptions (
+  task     INTEGER NOT NULL REFERENCES tasks (id),
+  resource TEXT NOT NULL,
+  created  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  PRIMARY KEY (task, resource)
+);
+CREATE INDEX IF NOT EXISTS subscriptions_by_resource ON subscriptions (resource);
+CREATE VIEW IF NOT EXISTS owned AS
+  SELECT task, resource FROM owns UNION SELECT task, resource FROM subscriptions;
+",
+    bumps!("subscriptions"),
+    "PRAGMA user_version = 47;
+"
+);
+
 // The browsers that get Web Push notifications, and the notifications the daemon has yet to send.
 // Triggers queue a new ask, an ask asked again, and a task that turns blocked or failed, only while
 // a browser subscribes.
-const SCHEMA_47: &str = "CREATE TABLE IF NOT EXISTS push_subscriptions (
+const SCHEMA_48: &str = "CREATE TABLE IF NOT EXISTS push_subscriptions (
   endpoint TEXT PRIMARY KEY,
   p256dh   TEXT NOT NULL,
   auth     TEXT NOT NULL,
@@ -842,7 +861,7 @@ CREATE TRIGGER IF NOT EXISTS push_an_alarm AFTER UPDATE OF state ON tasks
   AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
   INSERT INTO push_queue (kind, item, state) VALUES ('alarm', NEW.id, NEW.state);
 END;
-PRAGMA user_version = 47;
+PRAGMA user_version = 48;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -852,7 +871,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_18, SCHEMA_19, SCHEMA_20, SCHEMA_21, SCHEMA_22, SCHEMA_23, SCHEMA_24, SCHEMA_25,
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
-    SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47,
+    SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1039,25 +1058,14 @@ pub(crate) fn handle(
             }
             (Some(id), "created")
         }
-        Decision::Keep(id) if route::tick(message, factory) => {
-            // A human step or a daemon's checks gate has no agent turn for a tick to wake.
-            let asleep_at: Option<(String, String)> = tx
-                .query_row(
-                    "SELECT workflow, step FROM tasks WHERE id = ?1 AND state = 'asleep'
-                     AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND daemon)",
-                    [id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?;
-            let wakes = asleep_at.is_some_and(|(workflow, step)| {
-                factory
-                    .workflows
-                    .get(&workflow)
-                    .and_then(|workflow| workflow.value.step(&step))
-                    .is_some_and(|step| step.decides == priory_factory::factory::Decider::Model)
-            });
-            (Some(id), if wakes { "woke" } else { "coalesced" })
-        }
+        Decision::Keep(id) if route::tick(message, factory) => (
+            Some(id),
+            if wakes(&tx, id, factory)? {
+                "woke"
+            } else {
+                "coalesced"
+            },
+        ),
         Decision::Keep(id) if message.kind == priory_intake::request::REQUESTED => {
             (Some(id), "said")
         }
@@ -1109,12 +1117,21 @@ pub(crate) fn handle(
         crate::post::report(&tx, "linear", &refiltered(&message.data))?;
     }
     crate::hold::event(&tx, &resources)?;
-    // The keyed task keeps the event; another task that shares the resource hears it through its wait.
+    // The keyed task keeps the event; another task that shares the resource hears it through its
+    // wait or its subscription.
     for other in owners.iter().filter(|other| Some(other.id) != task) {
-        crate::tools::event(&tx, other.id, seq)?;
+        if !crate::tools::event(&tx, other.id, seq)? {
+            delivered(&tx, other.id, message, &resources, None, factory)?;
+        }
     }
     match (task, outcome) {
-        (Some(task), "kept") => drop(crate::tools::event(&tx, task, seq)?),
+        (Some(task), "kept") => {
+            if !crate::tools::event(&tx, task, seq)?
+                && delivered(&tx, task, message, &resources, Some(seq), factory)?
+            {
+                tx.execute("UPDATE inbox SET outcome = 'woke' WHERE seq = ?1", [seq])?;
+            }
+        }
         (Some(task), "woke") => {
             let line = line(
                 &message.kind,
@@ -1145,8 +1162,82 @@ pub(crate) fn handle(
         }
         _ => {}
     }
+    // After the delivery above, so the close reaches its subscribers.
+    if message.kind == CLOSED {
+        tx.execute(
+            "DELETE FROM subscriptions WHERE resource = ?1",
+            [resources.first()],
+        )?;
+    }
     tx.commit()?;
     Ok(None)
+}
+
+/// Whether `task` sleeps where an event can wake it: asleep at a model step, with no daemon's
+/// checks gate, since a human step or a gate has no agent turn to wake.
+fn wakes(tx: &Transaction, task: i64, factory: &Factory) -> rusqlite::Result<bool> {
+    let asleep_at: Option<(String, String)> = tx
+        .query_row(
+            "SELECT workflow, step FROM tasks WHERE id = ?1 AND state = 'asleep'
+             AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND daemon)",
+            [task],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    Ok(asleep_at.is_some_and(|(workflow, step)| {
+        factory
+            .workflows
+            .get(&workflow)
+            .and_then(|workflow| workflow.value.step(&step))
+            .is_some_and(|step| step.decides == priory_factory::factory::Decider::Model)
+    }))
+}
+
+/// Delivers `message` to `task` when it subscribes to a resource of `resources` and no wait took
+/// it: a wake while it sleeps where an event can wake it, else a queued prompt while it runs. `kept`
+/// is the inbox entry when `task` kept the message, whose own prompt is already queued. Returns
+/// whether it woke the task.
+fn delivered(
+    tx: &Transaction,
+    task: i64,
+    message: &Message,
+    resources: &[String],
+    kept: Option<i64>,
+    factory: &Factory,
+) -> rusqlite::Result<bool> {
+    if !subscribes(tx, task, resources)? {
+        return Ok(false);
+    }
+    let line = line(
+        &message.kind,
+        message.subject.as_deref(),
+        &message.data.to_string(),
+    );
+    if wakes(tx, task, factory)? {
+        crate::tools::wake_on(tx, task, &line, kept)?;
+        return Ok(true);
+    }
+    if kept.is_none() {
+        tx.execute(
+            "INSERT INTO outbox (task, text) SELECT id, ?2 FROM tasks WHERE id = ?1 AND state = 'running'",
+            params![task, line],
+        )?;
+    }
+    Ok(false)
+}
+
+/// Whether `task` subscribes to any of `resources` with no open wait on them: a wait on the
+/// resource decides which of its events wake the task.
+fn subscribes(tx: &Transaction, task: i64, resources: &[String]) -> rusqlite::Result<bool> {
+    let resources = serde_json::to_string(resources).expect("resources serialize");
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM subscriptions WHERE task = ?1
+           AND resource IN (SELECT value FROM json_each(?2)))
+         AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL
+           AND resource IN (SELECT value FROM json_each(?2)))",
+        params![task, resources],
+        |row| row.get(0),
+    )
 }
 
 /// The factory's bands, highest first, as the daemon last recorded them.
@@ -1276,7 +1367,7 @@ pub(crate) fn taken(
 ) -> rusqlite::Result<Option<String>> {
     let owns = tx
         .query_row(
-            "SELECT 1 FROM owns WHERE task = ?1 AND resource = ?2",
+            "SELECT 1 FROM owned WHERE task = ?1 AND resource = ?2",
             params![task, resource],
             |_| Ok(()),
         )
@@ -1293,8 +1384,8 @@ fn owners(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Vec<Task>>
     let resources = serde_json::to_string(resources).expect("resources serialize");
     tx.prepare(
         "SELECT DISTINCT tasks.id, tasks.key IN (SELECT value FROM json_each(?1)) AS keyed
-         FROM owns JOIN tasks ON tasks.id = owns.task
-         WHERE owns.resource IN (SELECT value FROM json_each(?1))
+         FROM owned JOIN tasks ON tasks.id = owned.task
+         WHERE owned.resource IN (SELECT value FROM json_each(?1))
          AND tasks.state NOT IN ('done', 'failed', 'dropped') ORDER BY keyed DESC, tasks.id",
     )?
     .query_map([resources], |row| Ok(Task { id: row.get(0)? }))?

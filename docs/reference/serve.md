@@ -259,6 +259,7 @@ The fields of [Tasks](#tasks), plus `repo` and `branch`, and these arrays, oldes
 | `asks` | An ask, as in [Asks](#asks) |
 | `waits` | `id`, `run`, `kind`, `resource`, `until`, `target`, `created`, `fired`, `withdrawn` |
 | `results` | `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha`, `reason`, `created` |
+| `subscriptions` | `resource`, `created`: what the task subscribes to now. Empty once it fails or is dropped |
 
 And these objects:
 

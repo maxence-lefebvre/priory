@@ -31,6 +31,7 @@ A task gets its resources at these moments:
 | Its first run starts | its branch | `github:owner/name@priory/3` |
 | A wait of its names a pull request | that pull request | `github:owner/name#57` |
 | A wait of its names a Linear issue or a Slack thread | that issue or thread | `linear:ENG-7`, `slack:C0123:1763500000.000100` |
+| It subscribes, with the `subscribe` tool or `priory subscribe` | that resource, until `unsubscribe` | `github:owner/name#57` |
 
 GitHub numbers issues and pull requests from one sequence per repository, so
 `github:owner/name#42` names either an issue or a pull request.
@@ -88,6 +89,7 @@ Each inbox entry gets one of these outcomes:
 | A review, comment or review thread comment, with no active task owning a resource it names, and a done task it reopens | `reopened` | that task, now `ready` at its reopen step |
 | `priory.task.requested.cli`, with an active task owning its key, at a model step whose agent started | `said` | that task, which hears the text as `priory say` sends it |
 | `github.pull_request.review_request_removed` with `reviewed: false`, with an active task whose key is its review key | `withdrew` | that task, now `dropped`, its live run ended |
+| Any other, with an active task asleep at a model step subscribing to a resource it names, that fires no wait | `woke` | that task, now `ready` (see [tools.md](tools.md#subscribeon-and-unsubscribeon)) |
 | Any other, with an active task owning a resource it names | `kept` | that task                   |
 | `factory.task.requested`, no active task  | `created` | a new task, `queued` at its workflow's start |
 | `factory.task.requested`, malformed       | `ignored` | none                                         |
@@ -111,6 +113,10 @@ What happens to a `kept` message depends on the task's state:
 - If the message satisfies the task's open wait, the wait fires in any active state (see
   [waits.md](waits.md)). An asleep task wakes. A ready, blocked or held task keeps its state, and
   its next run gets the prompt.
+- If the task subscribes to a resource the message names and has no open wait on it, an asleep
+  task at a model step wakes with it, and the outcome becomes `woke`. Another active task that subscribes to
+  it gets it too: a prompt of its own while it runs, or a wake while it sleeps (see
+  [tools.md](tools.md#subscribeon-and-unsubscribeon)).
 - Any other kept message waits for the task's next run, which reads it in its first prompt.
 
 ## Schedule firings
