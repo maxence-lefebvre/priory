@@ -14,16 +14,18 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
 - `adapters/herdr/lib/priory.js`: the module every mod uses to read and act. It is the only code
   that runs `priory`.
 - `adapters/herdr/mods/priory-tabs/`: the Priory bar. It sits left of Herdr's own tab bar, opens or
-  focuses the Desk and Bonjour tabs, shows or hides the Asks and Queue panels, and attaches to a
-  task's terminal.
+  focuses the Desk, Bonjour, Costs and Flows tabs, shows or hides the Asks and Queue panels, and
+  attaches to a task's terminal.
 - `adapters/herdr/mods/priory-desk/`: the Desk panel. See [The Desk panel](#the-desk-panel).
 - `adapters/herdr/mods/priory-asks/`: the Asks panel. See [The Asks panel](#the-asks-panel).
 - `adapters/herdr/mods/priory-queue/`: the Queue panel. See [The Queue panel](#the-queue-panel).
 - `adapters/herdr/mods/priory-bonjour/`: the Bonjour panel. See
   [The Bonjour panel](#the-bonjour-panel).
-- `adapters/herdr/layouts/priory.json`: Herdr's default layout with the Priory bar in the top bar,
-  and Asks and Queue in the side panel stack, 420 px wide by default, between 280 and 900. Desk and
-  Bonjour open as tabs in the center, from the Priory bar.
+- `adapters/herdr/mods/priory-costs/`: the Costs panel. See [The Costs panel](#the-costs-panel).
+- `adapters/herdr/mods/priory-flows/`: the Flows panel. See [The Flows panel](#the-flows-panel).
+- `adapters/herdr/layouts/priory.json`: Herdr's default layout with the Priory bar, 420 px wide, in
+  the top bar, and Asks and Queue in the side panel stack, 420 px wide by default, between 280 and
+  900. Desk, Bonjour, Costs and Flows open as tabs in the center, from the Priory bar.
 - `adapters/herdr/install`: links the mods and the layout into Herdr's folder. See
   [Installing](#installing).
 - `adapters/herdr/test/`: `node --test` tests for the module and the install script, run against a
@@ -42,6 +44,11 @@ with Priory's colors keeps a copy of `lib/tokens.js`. The Desk and Queue panels 
 `lib/add.js`, the Add action's view model, and `lib/add-form.js`, its form. A test fails when a copy differs from the
 library. After you change a file in `lib/`, copy it into every mod that carries it.
 
+The Costs and Flows panels keep the web view's own view models: `mods/priory-costs/view.js` is a
+copy of `crates/priory-core/web/costs.js`, and `mods/priory-flows/view.js` of `flows.js`. A test
+fails when a copy differs from the web file. After you change one, copy it into its mod. Herdr's
+engine has no `Intl`, so these files format numbers and dates by hand.
+
 The adapter depends on no Priory crate, and no crate depends on it. It needs Node.js only for its
 tests.
 
@@ -57,8 +64,8 @@ Herdr reloads them when their files change.
 - Any other file or link at a target stops the script before it links anything. Move that file away
   and run it again.
 
-The layout names the Asks and Queue panel mods, and the Priory bar opens the Desk and Bonjour
-mods. Until a mod is installed, its block or tab stays empty.
+The layout names the Asks and Queue panel mods, and the Priory bar opens the Desk, Bonjour, Costs
+and Flows mods. Until a mod is installed, its block or tab stays empty.
 
 Herdr writes `gpui-kit.d.ts` and `jsconfig.json` into each mod folder it loads. Through the links,
 they land in your checkout, and Git ignores them.
@@ -74,11 +81,11 @@ state database and never writes a file in the factory.
   `theme` is `indigo`, `ink`, `parchment` or `abbey`, and defaults to `indigo`. `binary` defaults
   to `~/.local/bin/priory-oss`, and a leading `~` means the home folder on Priory's machine. A name
   without a slash is looked up on the `PATH`. `machine` defaults to the machine Herdr runs on. `factory` is the folder
-  that `queue` and `schedules` read for up next. The program must find its state file, so set
+  that `queue` and `schedules` read for up next, `costs` reads its prices from, and `flows` draws. The program must find its state file, so set
   `PRIORY_DB` in the environment, or name a wrapper script that sets it.
 - **Reading.** A mod runs the CLI with Herdr's `exec` and parses its JSON: `priory desk --all --json`,
-  `asks --all --json`, `tasks --json`, `queue --json`, `schedules --json`, `links --json` and
-  `report show --json`. Each answer carries the state's `revision`. `report show --json` wraps the
+  `asks --all --json`, `tasks --json`, `queue --json`, `schedules --json`, `links --json`,
+  `report show --json`, `costs [--by SPLIT] --json`, `report attention --json` and `flows --json`. Each answer carries the state's `revision`. `report show --json` wraps the
   report as `{"revision": STATE, "report": {...}}`: the outer `revision` is the state's, and the
   report's own `revision` is the one `report pick --expected` takes. Then the mod runs
   `priory wait --since REVISION`, which returns as soon as the state changes, or after 25 s, and
@@ -385,6 +392,46 @@ The board's older and newer arrows, search and Change are left out. Priory keeps
 report of each task, so there is no older report to open. A pick's first choice stands, so Change
 has no verb to run. Comments on rows stay hidden until Priory stores them.
 
+The web view's Reports panel draws the same report with the same view model, so Herdr has no
+separate Reports panel: Bonjour is it.
+
+## The Costs panel
+
+`mods/priory-costs/` is the Costs panel. The Priory bar opens it as a tab in the center stack.
+DESIGN.md's "Costs panel" section holds its visual rules; this section says how it works.
+
+- **Files.** `view.js`, a copy of the web view's `costs.js`, turns the two reports into tiles, bars,
+  the split table and each task's time, with no drawing and no IO. `main.js` draws them with
+  gpui-kit. The node tests in `test/costs.test.js` check `view.js` against JSON captured from a real
+  `priory costs --json` and `priory report attention --json`.
+- **Reading.** The panel reads `priory costs FACTORY --by SPLIT --json` and
+  `priory report attention --json` together, then waits with `priory wait` and reads again, at
+  most once a minute. When a call fails, it keeps the last read, says why, and shows "Costs as
+  read" with the time of that read. It shows that line too while the read is over a minute old.
+- **Views.** From 1024 px Costs and Attention sit side by side, with a hairline between them.
+  Below, the header's Costs and Attention chips pick one.
+- **Costs.** This week's cost, merges and cost per merge against last week, what is not in the
+  cost, one bar per day of both weeks, and this week split by workflow, agent, model, machine or
+  repo. A split chip reads the costs again with that `--by`. While priory is unreachable, the
+  chips are disabled.
+- **Attention.** Your minutes per merge, the ask waits and where each task's time went.
+
+## The Flows panel
+
+`mods/priory-flows/` is the Flows panel. The Priory bar opens it as a tab in the center stack.
+DESIGN.md's "Flows panel" section holds its visual rules; this section says how it works.
+
+- **Files.** `view.js`, a copy of the web view's `flows.js`, lays out each workflow and gives each
+  node and edge its outline as an SVG path. `path.js` turns those paths into gpui-kit `PathBuilder`
+  calls, scaled to the pane. `main.js` paints them. The node tests in `test/flows.test.js` check
+  both against JSON captured from a real `priory flows DIR --json`.
+- **Reading.** The panel reads `priory flows FACTORY --json` once, as the web view reads
+  `/api/flows`: the factory's workflows change only when its files do. "Read again" in the header
+  reads it again. When the read fails, the panel says why and offers Retry.
+- **Drawing.** The key, then each workflow: its name and step count, the drawing at most 560 px
+  wide, the paths that reach an irreversible step with no person's decision, and "Steps as text",
+  which lists every step and where each outcome leads.
+
 ## Data each panel needs
 
 Each list below names the fields a panel reads. Times are RFC 3339 strings. A field in *italics*
@@ -489,6 +536,14 @@ name: it draws the sections in the order the report gives them.
   [reports.md](../daemon/reports.md#comment-on-a-row).
 - Max's Rayon factory lists Reading, Slack notes, Sentry and Backlog, then To agree, Blocked and
   Moved.
+
+### Costs and Flows
+
+- Costs: `priory costs --json` and `priory report attention --json`, the objects `/api/costs` and
+  `/api/attention` serve; see [serve.md's Costs](../reference/serve.md#costs) and
+  [Attention](../reference/serve.md#attention).
+- Flows: `priory flows --json`, the object `/api/flows` serves; see
+  [serve.md's Flows](../reference/serve.md#flows).
 
 ## Writing another adapter
 

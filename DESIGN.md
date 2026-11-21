@@ -965,8 +965,8 @@ run.
 
 Priory's panels also ship as Herdr mods (R8.6). A mod renders natively with gpui-kit, in a pane
 beside other panes, with a fine pointer. It keeps this file's structure, tokens, state tiles, copy
-and ask rules. This section lists only what differs, and the four panels the adapter ships first:
-Desk, Asks, Queue and Bonjour. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
+and ask rules. This section lists only what differs, and the panels the adapter ships: Desk, Asks,
+Queue, Bonjour, Costs and Flows. Bonjour is also the web view's Reports panel. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
 the adapter lives, how it reads and acts, and the data each panel needs. The approved boards are in
 `~/shared/priory-round-6/` on the author's machine.
 
@@ -1089,6 +1089,28 @@ The morning dossier. It opens as a tab in the center stack.
   turns the button into Reply, with "Replying in thread 3" above the field and Cancel beside it.
   A refused comment says why under the row in `--warn-text`. While the field has focus it keeps
   every letter; Escape returns to the panel.
+
+### Costs
+
+The web's [Costs panel](#costs-panel), as a tab in the center stack.
+
+- From 1024 px Costs and Attention sit side by side. Below, Costs and Attention chips in the
+  header pick one, as saved views do.
+- The Split by `select` becomes a row of chips, `workflow` to `repo`, beside the split's title.
+- The day chart and each task's bar are drawn with elements, not SVG. The week line is a dashed
+  `--text-3` edge before this week's first bar. Waiting on you keeps its `--wait` stripes.
+- Loading reads "Reading costs…", with no skeleton.
+
+### Flows
+
+The web's [Flows panel](#flows-panel), as a tab in the center stack.
+
+- Nodes and edges paint with gpui-kit paths in the web's shapes, dashes, weights and colors, scaled
+  to the pane, at most 560 px wide.
+- gpui-kit turns no text, so a lane's outcome sits upright beside its lane, clipped to 10
+  characters, and the drawing keeps 76 px on its right for it.
+- "Steps as text" is a button that shows or hides the list under the drawing. "Read again" in the
+  header reads the flows again.
 
 ### Open questions
 

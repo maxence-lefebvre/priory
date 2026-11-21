@@ -182,8 +182,9 @@ implement	implement	passed	gate-passed
 A workflow `docs` with `guard = { allow = ["git-push-default"] }` and a model step run by `writer`
 adds the row `writer	git-push-default	docs	allowed by the workflow`.
 
-`--json` prints the same rows as one object. `GET /api/flows` serves the same object with each
-workflow's steps and edges added, and the web view's Flows panel draws them:
+`--json` prints the same rows as one object. `priory flows [DIR] --json` prints the same object with
+each workflow's steps and edges added, as `GET /api/flows` serves it, and the Flows panels of the web
+view and the Herdr adapter draw them:
 
 ```json
 {

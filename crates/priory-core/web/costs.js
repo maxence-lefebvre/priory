@@ -1,8 +1,13 @@
 // The view model of the web view's Costs panel: `/api/costs` and `/api/attention` in, stat tiles,
-// bars and table rows out. No drawing, no IO.
+// bars and table rows out. No drawing, no IO. adapters/herdr/mods/priory-costs/view.js is a copy; a
+// test keeps the two the same. Herdr's engine has no Intl, so numbers and dates format by hand.
 
-const usd = new Intl.NumberFormat("en", { style: "currency", currency: "USD" });
-export const money = (/** @type {number | null} */ value) => (value == null ? "-" : usd.format(value));
+const grouped = (/** @type {string} */ digits) => digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+export const money = (/** @type {number | null} */ value) => {
+  if (value == null) return "-";
+  const [whole, cents] = Math.abs(value).toFixed(2).split(".");
+  return `${value < 0 ? "-" : ""}$${grouped(whole)}.${cents}`;
+};
 
 /** The change from `before` to `now`, or null when either is missing or `before` is 0. @param {number | null} now @param {number | null} before */
 function delta(now, before) {
@@ -25,7 +30,10 @@ export function costTiles(costs) {
 
 const plural = (/** @type {number} */ count, /** @type {string} */ word) => (count ? `${count} ${word}${count === 1 ? "" : "s"}` : `no ${word}`);
 // A `day` is a local date with no zone, so it is read and written as UTC to stay the same date.
-const dayName = (/** @type {string} */ day, /** @type {Intl.DateTimeFormatOptions} */ options) => new Date(`${day}T00:00:00Z`).toLocaleDateString("en", { timeZone: "UTC", ...options });
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const weekday = (/** @type {string} */ day) => WEEKDAYS[new Date(`${day}T00:00:00Z`).getUTCDay()];
+const longDay = (/** @type {string} */ day) => `${weekday(day)}, ${MONTHS[Number(day.slice(5, 7)) - 1]} ${Number(day.slice(8))}`;
 
 /** One bar per day, scaled to the busiest day, with a sentence for screen readers. @param {any} costs */
 export function dayBars(costs) {
@@ -37,19 +45,18 @@ export function dayBars(costs) {
     const cost = day.cost_usd == null ? "no priced tokens" : money(day.cost_usd);
     return {
       day: day.day,
-      weekday: dayName(day.day, { weekday: "short" }),
+      weekday: weekday(day.day),
       date: String(Number(day.day.slice(8))),
       fraction: max ? (day.cost_usd ?? 0) / max : 0,
       merges: day.merges,
       current: day.day >= first,
-      text: `${dayName(day.day, { weekday: "short", month: "short", day: "numeric" })}: ${cost}, ${plural(day.merges, "merge")}`,
+      text: `${longDay(day.day)}: ${cost}, ${plural(day.merges, "merge")}`,
     };
   });
 }
 
 export const SPLITS = ["workflow", "agent", "model", "machine", "repo"];
-const count = new Intl.NumberFormat("en");
-const tokenCount = (/** @type {any} */ tokens) => count.format(tokens.input + tokens.output + tokens.cache_read + tokens.cache_write);
+const tokenCount = (/** @type {any} */ tokens) => grouped(String(tokens.input + tokens.output + tokens.cache_read + tokens.cache_write));
 const records = (/** @type {number} */ n) => `${n} record${n === 1 ? "" : "s"}`;
 
 /** The current window split by `costs.by`, and what in it has no cost. @param {any} costs */
