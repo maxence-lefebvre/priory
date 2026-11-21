@@ -190,6 +190,19 @@ fn tools() -> Value {
             "inputSchema": { "type": "object", "properties": { "on": condition.clone() }, "required": ["on"] },
         },
         {
+            "name": "relate",
+            "description": "Record how your task relates to another: it builds-on it, fixes what it merged, takes-up it after it was dropped or failed, or only relates to it. Find the other task with search. It does not end your turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "enum": ["builds-on", "fixes", "takes-up", "relates"], "description": "How your task relates to the other." },
+                    "task": { "type": "integer", "description": "The other task's id." },
+                },
+                "required": ["kind", "task"],
+                "additionalProperties": false,
+            },
+        },
+        {
             "name": "compact",
             "description": "Compact this conversation when its context runs long, then end your turn. Priory types /compact once you are idle, then a prompt that names your task and step so you carry on.",
             "inputSchema": {

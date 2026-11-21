@@ -1041,6 +1041,7 @@ Schema: [`factory.task.requested.json`](../schemas/events/factory.task.requested
 | `repo` | string or null, optional | `priory request --repo` for a CLI request; the pull request's repository for a review request. Those sources only |
 | `hold` | object, optional | The trigger's `hold` or `priory request --hold`. See [triggers.md](triggers.md#hold) |
 | `tldr` | string, optional | `priory request --tldr` |
+| `relates` | array, optional | `priory request` or `priory add --relates`: each `{ "kind", "task" }`, the relation's kind and the other task's id. See [relations.md](../daemon/relations.md) |
 | `intervention` | `plan` or `hands-off`, optional | `priory request` or `priory add --intervention`; the task takes its trigger's when absent |
 | `scheduled` | RFC 3339, optional | When the firing was due. Schedule sources only |
 | `prompt` | string or null, optional | The trigger's `prompt`. Schedule sources only |

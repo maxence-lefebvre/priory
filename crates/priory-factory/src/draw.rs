@@ -75,7 +75,7 @@ fn declaration(index: usize, step: &Step) -> String {
 }
 
 /// Mermaid reads `#name;` as an entity and a bare `"` or `|` as syntax.
-fn label(text: &str) -> String {
+pub fn label(text: &str) -> String {
     text.replace('#', "#35;")
         .replace('"', "#quot;")
         .replace('|', "#124;")

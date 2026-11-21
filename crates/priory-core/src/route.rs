@@ -36,6 +36,8 @@ pub(crate) struct NewTask {
     #[serde(default)]
     pub tldr: Option<String>,
     #[serde(default)]
+    pub relates: Vec<priory_intake::request::Relation>,
+    #[serde(default)]
     pub intervention: Option<priory_factory::factory::Intervention>,
     #[serde(skip)]
     pub lead: Option<String>,

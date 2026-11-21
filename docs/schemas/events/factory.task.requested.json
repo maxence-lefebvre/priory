@@ -130,6 +130,26 @@
       ],
       "description": "One value, or a list of them; null reads as none, as the single values it replaced did."
     },
+    "Relation": {
+      "additionalProperties": false,
+      "description": "A relation a request asks its new task to have: `--relates KIND:TASK`.",
+      "properties": {
+        "kind": {
+          "description": "`builds-on`, `fixes`, `takes-up` or `relates`.",
+          "type": "string"
+        },
+        "task": {
+          "description": "The other task's id.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "task"
+      ],
+      "type": "object"
+    },
     "TaskRequested": {
       "additionalProperties": false,
       "description": "A request for a task. Only this message creates a task.",
@@ -185,6 +205,16 @@
           "description": "The trigger's `prompt`, or null without one. Schedule sources only.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "relates": {
+          "description": "How the new task relates to existing ones, from `priory request --relates`. The daemon skips\na relation to a task that does not exist.",
+          "items": {
+            "$ref": "#/definitions/Relation"
+          },
+          "type": [
+            "array",
             "null"
           ]
         },
