@@ -15820,7 +15820,7 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
     let given = b.priory(&["give", "github:owner/repo#1", "b"]);
     assert_eq!(
         String::from_utf8_lossy(&given.stdout),
-        "github:owner/repo#1 given to runner b: it moves when a reads the log\n",
+        "github:owner/repo#1 given to runner b: b takes it and a drops it as each reads the log\n",
         "{}",
         String::from_utf8_lossy(&given.stderr)
     );

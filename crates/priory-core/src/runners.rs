@@ -135,14 +135,14 @@ fn claimed(
         None => None,
     };
     let request = data["request"].as_str().unwrap_or_default();
-    let fresh = tx
-        .query_row(
-            "SELECT 1 FROM claimed_requests WHERE request = ?1",
-            [request],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_none();
+    // Every runner records the log in its order, so inbox positions compare alike everywhere.
+    let at = tx
+        .query_row("SELECT seq FROM inbox WHERE id = ?1", [request], |row| {
+            row.get::<_, i64>(0)
+        })
+        .optional()?;
+    let won = current.as_ref().and_then(|current| current.won);
+    let fresh = at.is_some_and(|at| won.is_none_or(|won| at > won));
     let claim = Claim {
         from: data["from"].as_str(),
         given,
@@ -158,27 +158,24 @@ fn claimed(
         crate::state::record(tx, message, None, "refused", None)?;
         return Ok(None);
     }
+    let seq = crate::state::record(tx, message, None, "claimed", None)?;
     tx.execute(
-        "INSERT INTO claims (key, runner, request) VALUES (?1, ?2, ?3)
+        "INSERT INTO claims (key, runner, request, won) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT (key) DO UPDATE SET runner = excluded.runner, request = excluded.request,
-           hold = 'waiting', published = NULL",
-        params![key, runner, request],
+           hold = 'waiting', published = NULL, won = excluded.won",
+        params![key, runner, request, seq],
     )?;
-    // The request, and any other of the key that waited for this claim, are this incarnation's.
+    // The request, then each later one of the key that no task here took, are this task's.
     let mut pending: Vec<String> = tx
         .prepare(
-            "SELECT id FROM inbox WHERE outcome = 'claiming' AND subject = ?1 AND id != ?2
+            "SELECT id FROM inbox WHERE subject = ?1 AND id != ?2
+               AND outcome IN ('claiming', 'elsewhere')
+               AND seq > (SELECT seq FROM inbox WHERE id = ?2)
              ORDER BY seq",
         )?
         .query_map([key, request], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     pending.insert(0, request.to_owned());
-    for id in &pending {
-        tx.execute(
-            "INSERT OR IGNORE INTO claimed_requests (request) VALUES (?1)",
-            [id],
-        )?;
-    }
     let mut kill = None;
     // Any copy of the task here stops, so the key runs on one runner only.
     if runner != me
@@ -208,11 +205,15 @@ fn claimed(
         let Some(request) = stored(tx, id)? else {
             continue;
         };
-        tx.execute("DELETE FROM inbox WHERE id = ?1", [id])?;
-        kill = kill.or(crate::state::handle_in(tx, &request, trace, counter)?);
+        kill = kill.or(crate::state::route_in(tx, &request, trace, counter)?);
     }
-    let task = crate::state::keyed(tx, Some(&key.to_owned()))?.map(|task| task.id);
-    crate::state::record(tx, message, task.filter(|_| runner == me), "claimed", None)?;
+    if runner == me {
+        let task = crate::state::keyed(tx, Some(&key.to_owned()))?.map(|task| task.id);
+        tx.execute(
+            "UPDATE inbox SET task = ?2 WHERE seq = ?1",
+            params![seq, task],
+        )?;
+    }
     Ok(kill)
 }
 
@@ -301,16 +302,19 @@ fn lease(tx: &Transaction, runner: &str) -> rusqlite::Result<Option<Timestamp>> 
 struct Owned {
     runner: String,
     hold: Hold,
+    /// Where in the log the claim that made it the owner sits.
+    won: Option<i64>,
 }
 
 fn owner(tx: &Transaction, key: &str) -> rusqlite::Result<Option<Owned>> {
     tx.query_row(
-        "SELECT runner, hold FROM claims WHERE key = ?1",
+        "SELECT runner, hold, won FROM claims WHERE key = ?1",
         [key],
         |row| {
             Ok(Owned {
                 runner: row.get(0)?,
                 hold: Hold::parse(&row.get::<_, String>(1)?),
+                won: row.get(2)?,
             })
         },
     )
@@ -390,10 +394,11 @@ pub(crate) fn tick(
     Ok(())
 }
 
-/// Whether this runner may start the first run of `task` now. A task the log still holds as
-/// `waiting` could be taken over, so its runner first says it keeps it and starts it only once it
-/// read that back: a takeover published before then wins, and drops the task here.
-pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Result<bool> {
+/// Whether this runner may start the first run of `task` now, or `None` while no claim of its key
+/// is on the log yet, as for a task it adopts. A task the log still holds as `waiting` could be
+/// taken over, so its runner first says it keeps it and starts it only once it read that back: a
+/// takeover published before then wins, and drops the task here.
+pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Result<Option<bool>> {
     let tx = db.transaction()?;
     let claim = tx
         .query_row(
@@ -409,9 +414,12 @@ pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Res
             },
         )
         .optional()?;
-    let Some((key, _, published)) = claim.filter(|(_, hold, _)| hold == "waiting") else {
-        return Ok(true);
+    let Some((key, hold, published)) = claim else {
+        return Ok(None);
     };
+    if hold != "waiting" {
+        return Ok(Some(true));
+    }
     if published.as_deref() != Some("kept") {
         let held = json!({ "key": key, "runner": me, "hold": "kept" });
         let now = intake::now().unwrap_or_else(|_| Timestamp::now());
@@ -422,7 +430,7 @@ pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Res
         )?;
     }
     tx.commit()?;
-    Ok(false)
+    Ok(Some(false))
 }
 
 /// Claims the keys of this runner's active tasks that no runner holds yet, such as the tasks of a
@@ -510,7 +518,7 @@ pub fn give(db: &Connection, key: &str, runner: &str) -> Result<String, String> 
         json!({ "key": key, "runner": runner, "request": request, "from": from, "given": true });
     publish(&Message::new(CLAIMED, claim).subject(key))?;
     Ok(format!(
-        "{key} given to runner {runner}: it moves when {from} reads the log"
+        "{key} given to runner {runner}: {runner} takes it and {from} drops it as each reads the log"
     ))
 }
 

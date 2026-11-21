@@ -1148,14 +1148,12 @@ CREATE TABLE IF NOT EXISTS claims (
   runner    TEXT NOT NULL,
   request   TEXT NOT NULL,
   hold      TEXT NOT NULL DEFAULT 'waiting',
-  published TEXT
+  published TEXT,
+  won       INTEGER
 );
 CREATE TABLE IF NOT EXISTS leases (
   runner TEXT PRIMARY KEY,
   alive  INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS claimed_requests (
-  request TEXT PRIMARY KEY
 );
 CREATE TABLE IF NOT EXISTS sends (
   id      INTEGER PRIMARY KEY,
@@ -1311,7 +1309,6 @@ pub(crate) fn handle_in(
     trace: &crate::trace::Trace,
     counter: Option<&crate::embed::Counter>,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let factory = trace.factory;
     let seen = tx
         .query_row(
             "SELECT 1 FROM inbox WHERE id = ?1",
@@ -1322,6 +1319,17 @@ pub(crate) fn handle_in(
     if seen.is_some() {
         return Ok(None);
     }
+    route_in(tx, message, trace, counter)
+}
+
+/// Routes `message` in `tx` and records it, or records its new route when the inbox holds it.
+pub(crate) fn route_in(
+    tx: &Transaction,
+    message: &Message,
+    trace: &crate::trace::Trace,
+    counter: Option<&crate::embed::Counter>,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let factory = trace.factory;
     if route::outsider(message) {
         record(tx, message, None, "outsider", None)?;
         return Ok(None);
@@ -1529,9 +1537,12 @@ pub(crate) fn record(
     outcome: &str,
     outbox: Option<i64>,
 ) -> rusqlite::Result<i64> {
-    tx.execute(
+    tx.query_row(
         "INSERT INTO inbox (id, type, subject, time, data, links, task, outcome, outbox)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT (id) DO UPDATE SET task = excluded.task, outcome = excluded.outcome,
+           outbox = excluded.outbox
+         RETURNING seq",
         params![
             message.id.to_string(),
             message.kind,
@@ -1543,8 +1554,8 @@ pub(crate) fn record(
             outcome,
             outbox
         ],
-    )?;
-    Ok(tx.last_insert_rowid())
+        |row| row.get(0),
+    )
 }
 
 /// Subscribes the task whose branch is the head of the open pull request `message` names, on the

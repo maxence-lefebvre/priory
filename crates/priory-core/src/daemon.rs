@@ -933,10 +933,13 @@ fn tend(
         let Some(admission) = state::admissible(db, factory, share, room)? else {
             break;
         };
-        if let Some(me) = &trace.runner
-            && !runners::cleared(db, me, admission.task)?
-        {
-            continue;
+        if let Some(me) = &trace.runner {
+            match runners::cleared(db, me, admission.task)? {
+                Some(true) => {}
+                Some(false) => continue,
+                // Its claim is not on the log yet: the next tick tries again.
+                None => break,
+            }
         }
         if let Err(reason) = start(db, factory, home, scope, &admission)? {
             state::block(db, trace, admission.task, "failed", &reason)?;

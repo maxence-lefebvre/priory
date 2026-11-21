@@ -45,9 +45,10 @@ wins. The winner creates the task from the request it stored. The others record 
 later request for the key goes to it: `elsewhere` on the others' inboxes.
 
 A key whose task ended, done, failed or dropped, is free again: a new request claims it afresh. A
-claim of a request that won once never wins again, so a runner that reads the log late does not
-start a finished task over. Another request of the key that arrived while the claim was pending
-goes to the winner's task, as it would had the task existed.
+claim of a request that came before the key's last winning claim never wins, so a runner that reads
+the log late does not start a finished task over. Another request of the key that arrived while the
+claim was pending goes to the winner's task, as it would had the task existed. A task that moves
+gets those requests again on its new runner.
 
 ## Holds and leases
 
@@ -101,7 +102,7 @@ priory give <key> <runner>
 
 publishes a claim of the key for `<runner>`, from the runner that owns it, whatever the hold and the
 lease. Use it to move a started task off a runner that will not come back. It prints
-`<key> given to runner <runner>: it moves when <owner> reads the log`.
+`<key> given to runner <runner>: <runner> takes it and <owner> drops it as each reads the log`.
 
 Each runner acts when it reads the claim. The new owner starts the task over from its request. The
 old owner ends its live run and drops its copy with the reason `given to runner <runner>`. If the
@@ -122,5 +123,7 @@ a runner file.
   on the old runner.
 - A code step's `run` action starts without the `kept` check, so a crash in the second between its
   start and the next `kept` leaves that task `waiting` on the log.
+- `priory give` checks that the runner it names was heard from, not that it still has a runner
+  file. A claim for a runner without one is refused when each runner reads it.
 - This runner's `priory asks` and desk list only its own asks.
 - Each runner adds one alive message a minute to `factory.intake`.

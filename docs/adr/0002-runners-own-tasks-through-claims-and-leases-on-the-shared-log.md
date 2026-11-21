@@ -44,8 +44,9 @@ request it stored in its inbox. Every other runner records the owner. A request 
 owned already goes to the owner, as a second request goes to an active task today.
 
 A claim message has an id derived from the request and the runner, so a daemon that restarts and
-claims again adds nothing. A claim of a request that won once never wins again, so a runner that
-reads the log late does not start a finished task over.
+claims again adds nothing. A claim of a request that came before the key's last winning claim
+never wins, so a runner that reads the log late does not start a finished task over. Each runner
+records the log in its order, so it judges that alike.
 
 ### Leases
 
@@ -111,8 +112,7 @@ trait, as ADR 0001 left them.
 ## Consequences
 
 - One migration adds a `claims` table (key, owner, request, hold, hold published), a `leases`
-  table (runner, last alive time), a `claimed_requests` table and a `sends` table, the messages
-  queued for the log.
+  table (runner, last alive time) and a `sends` table, the messages queued for the log.
 - A runner keeps every started task through any absence. Only tasks that never started move after
   30 minutes, so no task runs on two runners unless a person gives a started one away.
 - A started task on a runner that never comes back waits for `priory give`.
