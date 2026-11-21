@@ -672,3 +672,20 @@ fn a_step_record_missing_a_field_a_trial_needs_is_skipped() {
         (1, 0, 0)
     );
 }
+
+#[test]
+fn an_ask_lists_with_a_null_estimate_when_the_history_cannot_be_read() {
+    let setup = Setup::new("broken-history", 1);
+    let event = json!({ "id": "broken", "type": "factory.step.ended", "time": "yesterday",
+                        "data": { "task": "1", "workflow": "implement", "step": "open-pr",
+                                  "effect": "irreversible", "outcome": "opened" } });
+    setup.sql(
+        "INSERT INTO trace (id, type, time, event) VALUES ('broken', 'factory.step.ended', 'yesterday', ?1)",
+        &[&event.to_string()],
+    );
+    setup.ask(1, 1, "approve-pr");
+
+    let ask = setup.listed_ask(1);
+    assert_eq!(ask["risk"], json!(["irreversible"]));
+    assert_eq!(ask["risk_estimate"], Value::Null);
+}

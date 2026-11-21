@@ -44,26 +44,26 @@ const LETS: &str = "(SELECT json_array(gate.workflow, gate.lets) FROM irreversib
        WHERE gate.workflow = tasks.workflow AND gate.step = asks.step AND asks.kind = 'step'
          AND gate.lets != '')";
 
-/// Gives each ask with `lets` its `risk_estimate`, the own row of the step its answer lets run,
-/// and drops `lets`. It reads the trace only when one ask has it.
-fn risk_estimates(db: &Connection, asks: &mut [Value]) -> rusqlite::Result<()> {
+/// Gives each ask with `lets` its `risk_estimate`, null when the trace cannot be read.
+fn risk_estimates(db: &Connection, asks: &mut [Value]) {
     let lets = |ask: &mut Value| {
         let lets = ask.as_object_mut()?.remove("lets")?;
         serde_json::from_str::<(String, String)>(lets.as_str()?).ok()
     };
     let wanted: Vec<_> = asks.iter_mut().map(lets).collect();
     if wanted.iter().all(Option::is_none) {
-        return Ok(());
+        return;
     }
     let risk = priory_intake::intake::now()
         .and_then(|now| crate::risk::recent(db, &crate::risk::Gates::default(), now))
-        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))?;
+        .ok();
     for (ask, lets) in asks.iter_mut().zip(wanted) {
         if let Some((workflow, step)) = lets {
-            ask["risk_estimate"] = risk.estimate(&workflow, &step);
+            ask["risk_estimate"] = risk
+                .as_ref()
+                .map_or(Value::Null, |risk| risk.estimate(&workflow, &step));
         }
     }
-    Ok(())
 }
 
 /// A desk item's group in the ranking (see `RANKS`), null for the queue.
@@ -713,7 +713,7 @@ fn asks_of(
         object.insert("free_text".to_owned(), free_text.into());
     }
     if let Some(asks) = asks.as_array_mut() {
-        risk_estimates(db, asks)?;
+        risk_estimates(db, asks);
     }
     Ok(asks)
 }
@@ -1245,7 +1245,7 @@ pub fn desk(
         .count();
     routed_to(db, list)?;
     acts(db, list)?;
-    risk_estimates(db, list)?;
+    risk_estimates(db, list);
     if let Some(me) = crate::runners::me(db)? {
         for item in list.iter_mut().filter(|item| item["kind"] == "ask") {
             item["runner"] = json!(me);
