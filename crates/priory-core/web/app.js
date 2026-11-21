@@ -241,8 +241,19 @@ function keep() {
   } catch {}
 }
 
+// The service worker cannot read local storage, so it gets its own copy of the token to tell the
+// daemon about a subscription the push service replaced. Signing out drops it.
+function keepTokenForWorker(token) {
+  if (!("caches" in window)) return;
+  caches.open("priory-push")
+    .then((cache) => (token ? cache.put("/api/worker/token", new Response(token)) : cache.delete("/api/worker/token")))
+    .catch(() => {});
+}
+if (state.token) keepTokenForWorker(state.token);
+
 function signOut(reason) {
   for (const key of ["priory.token", "priory.snapshot"]) localStorage.removeItem(key);
+  keepTokenForWorker(null);
   // A refresh still in flight must not store what this device just dropped.
   state.refreshes++;
   Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, flowsError: null, all: { asks: false, tasks: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
@@ -2120,6 +2131,7 @@ document.addEventListener("submit", (event) => {
   const token = new FormData(event.target).get("token").trim();
   if (!token) return;
   localStorage.setItem("priory.token", token);
+  keepTokenForWorker(token);
   Object.assign(state, { token, signInError: null });
   refresh();
 });

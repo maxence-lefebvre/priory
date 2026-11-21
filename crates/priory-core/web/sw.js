@@ -40,6 +40,32 @@ function own(path) {
   }
 }
 
+// What the worker keeps between its starts: the page's token, and the ids of the last notifications.
+// The keys sit under /api, which the fetch handler never serves from a cache.
+const KEPT = "priory-push";
+const TOKEN = "/api/worker/token";
+const SEEN = "/api/worker/seen";
+const SEEN_KEPT = 50;
+
+async function keptText(key) {
+  const hit = await (await caches.open(KEPT)).match(key);
+  return hit ? hit.text() : null;
+}
+
+// Whether a notification with this id came before, and records it. A daemon stopped mid-send, or a
+// retry after a lost answer, sends the same id again.
+async function seenBefore(id) {
+  if (typeof id !== "string" || !id) return false;
+  let seen = [];
+  try {
+    seen = JSON.parse((await keptText(SEEN)) || "[]");
+  } catch {}
+  if (seen.includes(id)) return true;
+  const cache = await caches.open(KEPT);
+  await cache.put(SEEN, new Response(JSON.stringify([...seen, id].slice(-SEEN_KEPT))));
+  return false;
+}
+
 self.addEventListener("push", (event) => {
   let notice = {};
   try {
@@ -47,7 +73,35 @@ self.addEventListener("push", (event) => {
   } catch {}
   const url = own(notice.url);
   const body = typeof notice.title === "string" ? notice.title : "Something needs you.";
-  event.waitUntil(self.registration.showNotification("Priory", { body, tag: url, data: { url }, icon: "/icon-192.png" }));
+  // A copy still shows, as a browser that subscribed with userVisibleOnly needs, but silently and in
+  // the first one's place, so it never alerts twice.
+  event.waitUntil(seenBefore(notice.id).catch(() => false).then((again) =>
+    self.registration.showNotification("Priory", { body, tag: url, data: { url }, icon: "/icon-192.png", ...(again ? { silent: true } : {}) })));
+});
+
+// The push service replaced or expired the subscription: subscribe again with the same key and
+// tell the daemon, with the token the page kept for the worker. Without one, the page sends the
+// new subscription the next time its Notifications screen opens.
+async function resubscribe(old, given) {
+  const token = await keptText(TOKEN);
+  const send = (path, body) => fetch(path, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  let fresh = given || null;
+  if (!fresh) {
+    let key = old?.options?.applicationServerKey || null;
+    if (!key && token) {
+      const response = await fetch("/api/push/key", { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+      if (response.ok) key = Uint8Array.from(atob((await response.json()).key.replace(/-/g, "+").replace(/_/g, "/")), (char) => char.charCodeAt(0));
+    }
+    if (!key) return;
+    fresh = await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+  }
+  if (!token) return;
+  await send("/api/push/subscribe", fresh.toJSON());
+  if (old?.endpoint && old.endpoint !== fresh.endpoint) await send("/api/push/unsubscribe", { endpoint: old.endpoint });
+}
+
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil(resubscribe(event.oldSubscription, event.newSubscription).catch(() => {}));
 });
 
 self.addEventListener("notificationclick", (event) => {
