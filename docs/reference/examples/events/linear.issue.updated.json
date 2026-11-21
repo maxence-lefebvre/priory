@@ -1,0 +1,24 @@
+{
+  "id": "0b8f4c2e-5d1a-5e7b-9c3f-2a6d8e1f4b70",
+  "type": "linear.issue.updated",
+  "subject": "ENG-7",
+  "time": "2026-11-17T12:40:05.210Z",
+  "data": {
+    "issue": "ENG-7",
+    "linear_id": "e4a7b2c9-3f1d-4a6e-8b5c-9d0e1f2a3b4c",
+    "title": "Export fails on an empty project",
+    "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project",
+    "team": "ENG",
+    "project": "Desktop",
+    "project_id": "c1d5e0a2-3b4f-4e8a-9a61-7f20d4b8e913",
+    "state": "In Progress",
+    "labels": ["agent", "bug"],
+    "changed": ["title", "description"],
+    "description": "Exporting a project with no files crashes the app. Steps: create a project, open Export, press Save.",
+    "actor": "Ada Lovelace",
+    "time": "2026-11-17T12:40:05.210Z",
+    "baseline": false,
+    "triggers": []
+  },
+  "links": [{ "label": "issue", "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project" }]
+}

@@ -517,6 +517,26 @@ pub struct LinearStateChanged {
     pub source: Source,
 }
 
+/// An entry of a Linear issue's history that edits its title, description, labels, assignee or
+/// priority, for an issue a task owns or subscribes to. It never names a trigger.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct LinearIssueUpdated {
+    #[serde(flatten)]
+    pub issue: LinearIssue,
+    /// The fields the entry changed, of `title`, `description`, `labels`, `assignee` and
+    /// `priority`.
+    pub changed: Vec<String>,
+    /// The first 200 characters of the issue's description when the entry changed it, as the
+    /// intake read it, not as the entry left it: Linear records no description text in history.
+    /// Null otherwise.
+    pub description: Option<String>,
+    /// The Linear display name of who edited it.
+    pub actor: Option<String>,
+    #[serde(flatten)]
+    pub source: Source,
+}
+
 /// A Linear issue whose blocker changed, since Linear does not update an issue when its blocker
 /// closes.
 #[derive(JsonSchema)]

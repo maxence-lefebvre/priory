@@ -10751,6 +10751,88 @@ fn a_linear_wait_makes_an_intake_without_linear_triggers_poll_linear_for_its_iss
     assert!(!typed[1].contains("elsewhere"), "{typed:?}");
 }
 
+/// Linear issue `issue` as the issues stream reads it, with one history entry `change` made now.
+fn linear_edited(issue: &str, change: serde_json::Value) -> serde_json::Value {
+    let now = herdr_bus::Timestamp::now().to_string();
+    let mut entry = json!({ "id": format!("history-{issue}"), "createdAt": now, "actor": { "displayName": "Ana" } });
+    entry
+        .as_object_mut()
+        .unwrap()
+        .extend(change.as_object().unwrap().clone());
+    json!({
+        "id": format!("issue-{issue}"), "identifier": issue, "title": "Export fails on an empty project",
+        "description": format!("{}\n\nSteps follow.", "The export crashes. ".repeat(20)),
+        "url": format!("https://linear.app/acme/issue/{issue}"),
+        "createdAt": "2026-11-17T09:00:00.000Z", "updatedAt": now,
+        "team": { "key": "ENG" }, "project": null, "state": { "name": "In Progress" },
+        "labels": { "nodes": [] }, "creator": { "displayName": "max" },
+        "history": { "nodes": [entry] },
+        "inverseRelations": { "nodes": [], "pageInfo": { "hasNextPage": false } },
+        "relations": { "nodes": [] }
+    })
+}
+
+#[test]
+fn an_edit_of_a_linear_tasks_issue_wakes_it_with_the_changed_fields() {
+    let mut setup = Setup::new("linear-edited");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    setup.publish(&request.subject("linear:ENG-7"));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let edit = json!({
+        "fromTitle": "Export fails", "toTitle": "Export fails on an empty project",
+        "updatedDescription": true, "fromPriority": 3, "toPriority": 1
+    });
+    setup.answer_curl(&[
+        (
+            "query Issues",
+            linear_page(
+                "issues",
+                json!([
+                    linear_edited("ENG-8", edit.clone()),
+                    linear_edited("ENG-7", edit)
+                ]),
+            ),
+        ),
+        ("query Comments", linear_page("comments", json!([]))),
+    ]);
+
+    setup.intake();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("linear.issue.updated ENG-7 {")
+            && typed[1].contains(r#""changed":["title","description","priority"]"#)
+            && typed[1].contains(r#""title":"Export fails on an empty project""#)
+            && typed[1].contains(r#""description":"The export crashes. "#)
+            && !typed[1].contains("Steps follow."),
+        "{typed:?}"
+    );
+    let updated: Vec<String> = setup
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 100,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "linear.issue.updated")
+        .inspect(|stored| conform::conforms(&serde_json::to_value(&stored.message).unwrap()))
+        .map(|stored| stored.message.subject.unwrap_or_default())
+        .collect();
+    assert_eq!(
+        updated,
+        ["ENG-7"],
+        "an issue no task watches publishes none"
+    );
+}
+
 #[test]
 fn a_pull_request_wait_makes_an_intake_without_github_triggers_poll_its_repository() {
     let setup = asleep_on("review-intake", on_pull_7("review"));
