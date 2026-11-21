@@ -1314,8 +1314,20 @@ const SCHEMA_74: &str = concat!(
 "
 );
 
-// Versions 75 to 78 are held by open pull requests; these slots keep the numbering until they land.
-const SCHEMA_75: &str = "PRAGMA user_version = 75;";
+// While the daemon cannot reach the log: since when, and the last error. No row while it can.
+const SCHEMA_75: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS log_link (
+  id    INTEGER PRIMARY KEY CHECK (id = 1),
+  since TEXT NOT NULL,
+  error TEXT NOT NULL
+);
+",
+    bumps!("log_link"),
+    "PRAGMA user_version = 75;
+"
+);
+
+// Versions 76 to 78 are held by #203, #206 and #209; these slots keep the numbering until they land.
 const SCHEMA_76: &str = "PRAGMA user_version = 76;";
 const SCHEMA_77: &str = "PRAGMA user_version = 77;";
 const SCHEMA_78: &str = "PRAGMA user_version = 78;";
