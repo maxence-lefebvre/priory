@@ -6,7 +6,7 @@ import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
 import { dossier, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
-import { KINDS, edgeStyle, nodeShape, timeline, ungatedPairs } from "./flows.js";
+import { KINDS, edgeStyle, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
 import { handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { actionNote, batchParts, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
@@ -1885,7 +1885,8 @@ const flowNode = (node) => {
   }
   const shape = nodeShape(node.kind, node.width, node.height);
   const second = node.gate ? clip(node.gate, 24) : KIND_WORD[node.kind] ?? node.kind;
-  const lock = node.kind === "irreversible" ? html`<g class="flock" transform="translate(${node.width - 40} 6)" aria-hidden="true">${icon("lock", "s15")}</g>` : "";
+  const badge = lockBadge(node.width);
+  const lock = node.kind === "irreversible" ? html`<svg class="ico flock" x="${badge.x}" y="${badge.y}" width="${badge.size}" height="${badge.size}" viewBox="0 0 24 24" aria-hidden="true">${raw(ICONS.lock)}</svg>` : "";
   return html`<g transform="translate(${node.x} ${node.y})" class="fnode k-${node.kind}"><title>${node.label}: ${KIND_WORD[node.kind] ?? node.kind}${node.gate ? `, ${node.gate}` : ""}</title>
     <path d="${shape.d}"/><text x="${node.width / 2}" y="${node.height / 2 - 3}" text-anchor="middle" class="fl1">${clip(node.label, 20)}</text>
     <text x="${node.width / 2}" y="${node.height / 2 + 13}" text-anchor="middle" class="fl2">${second}</text>${lock}</g>`;
