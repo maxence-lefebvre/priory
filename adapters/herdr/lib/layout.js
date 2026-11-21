@@ -3,8 +3,8 @@
 
 /**
  * Where each panel opens, and the mod that shows it. A narrow panel gets an aside, which the Priory
- * bar and a key toggle. A wide one opens as a tab in the center, beside `main`. A panel without a
- * mod gets a `priory-elsewhere` block. `terminal` is `main`, which is always in the center.
+ * bar and a key toggle. A wide one opens as a tab in the center, beside `main`. `terminal` is
+ * `main`, which is always in the center.
  * @type {Record<string, { place: "aside" | "tab" | "main", mod?: string }>}
  */
 export const PANELS = {
@@ -15,7 +15,7 @@ export const PANELS = {
   workflow: { place: "tab", mod: "priory-flows" },
   costs: { place: "tab", mod: "priory-costs" },
   tasks: { place: "tab", mod: "priory-tasks" },
-  runs: { place: "tab" },
+  runs: { place: "tab", mod: "priory-runs" },
   inbox: { place: "tab", mod: "priory-inbox" },
   terminal: { place: "main" },
 };
@@ -62,7 +62,7 @@ export function layout(name, view, frame) {
   const main = pathTo(root, "main")?.at(-1);
   const herdrPanel = pathTo(root, "panel")?.at(-1);
   if (!body || !main || !herdrPanel) throw new Error("the frame needs a work-body block holding a main block and Herdr's panel");
-  const block = (/** @type {string} */ panel) => ({ id: panel, type: "block", content: { mod: PANELS[panel].mod ?? "priory-elsewhere", props: { panel } } });
+  const block = (/** @type {string} */ panel) => ({ id: panel, type: "block", content: { mod: PANELS[panel].mod, props: { panel } } });
   const tabs = names.filter((panel) => PANELS[panel].place === "tab").map(block);
   const asides = names.filter((panel) => PANELS[panel].place === "aside").map((panel, at) => (
     { id: `aside-${panel}`, type: "column", size: { px: 360 }, min: 280, max: 700, ...(at ? { hidden: true } : {}), children: [block(panel)] }

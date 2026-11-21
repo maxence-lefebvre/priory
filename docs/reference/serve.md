@@ -25,7 +25,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/tasks?all=1` | `priory tasks --json` | `tasks`: an array of [tasks](#tasks), and `older` |
 | `/api/tasks?pr=RESOURCE` | | `tasks`: the active tasks that hold a pull request. See [Tasks that hold a pull request](#tasks-that-hold-a-pull-request) |
 | `/api/tasks/{id}` | `priory task ID --json` | one [task in detail](#task-in-detail) |
-| `/api/runs?all=1` | | `runs`: an array of [runs](#runs), newest first, and `older` |
+| `/api/runs?all=1` | `priory runs --json` | `runs`: an array of [runs](#runs), newest first, and `older` |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
 | `/api/batches` | `priory batch show --json` | `batches`: every batch, newest first, without its entries and closes. See [batches.md](../daemon/batches.md#priory-batch-show) |
 | `/api/batches/{id}` | `priory batch show ID --json` | one batch with its entries, closes and splits. `ID` is the batch's id or its key |
@@ -391,8 +391,8 @@ of `goal`, `acceptanceCriteria` (each `{ "id", "description", "required" }`), `l
 ## Runs
 
 The runs still live and those started in the last 7 days, newest first. Without `all=1`, `older`,
-an integer, is the number of ended runs left out. `priory runs` prints the same runs without the
-task, result and trace fields. Each run:
+an integer, is the number of ended runs left out. `priory runs --json` prints every run, as `?all=1` does;
+`priory runs` prints them as a table, without the task, result and trace fields. Each run:
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |

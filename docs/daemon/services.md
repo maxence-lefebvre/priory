@@ -60,7 +60,8 @@ retired task (see Retiring asleep tasks).
 `priory tasks --lane L` prints only the tasks in lane `L`.
 `priory runs` prints each run: id, task, step, tmux session, harness session (a Codex run's thread),
 started, ended, how it ended, and the hash of the factory's skills and instructions it got (see
-[skills.md](skills.md)). `priory outbox` prints each prompt: id, task, run, state and text,
+[skills.md](skills.md)). `priory runs --json` prints every run as `/api/runs?all=1` serves it, with its task,
+outcome, model and tokens. `priory outbox` prints each prompt: id, task, run, state and text,
 with newlines shown as `\n`. `priory asks` and `priory waits` are described under Tools, `priory memory`
 under Memory gate, `priory actions` under Code steps, and `priory desk` under Desk. They read
 `PRIORY_DB` and print `-` for an empty cell, tab-separated after a header line.

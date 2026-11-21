@@ -115,11 +115,17 @@ export default class PrioryTask extends View {
       .child(div().flex_none().font_family(font.mono).text_size(S["type-mono"][0]).text_color(t["text-2"]).child(task.key))
       .child(div().flex_none().text_size(S["type-caption"][0]).text_color(t[ROLE[task.state] ?? "text-2"]).child(task.state))
       .child(div().flex_1())
-      // Attach stays its own action: it opens the live run's terminal, where Open task opens this panel.
-      .child(Button.new("attach").h(S["control-fine"] - 4).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-card"])
-        .border(1).border_color(t["control-line"]).bg(t.surface).text_color(t.text).text_size(S["type-small"][0]).font_weight(600)
-        .hover((s) => s.bg(t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
-        .on_click(() => setShared("priory.attach", { task: task.id, at: Date.now() })).child("Attach"));
+      // Watch and Attach open the live run's terminal, where Open task opens this panel. Watch cannot type, so it comes first.
+      .child(this.terminalButton("watch", "Watch", true, task.id, t))
+      .child(this.terminalButton("attach", "Attach", false, task.id, t));
+  }
+
+  /** @param {string} id @param {string} label @param {boolean} readOnly @param {number} task @param {Palette} t */
+  terminalButton(id, label, readOnly, task, t) {
+    return Button.new(id).h(S["control-fine"] - 4).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-card"])
+      .border(1).border_color(t["control-line"]).bg(t.surface).text_color(t.text).text_size(S["type-small"][0]).font_weight(600)
+      .hover((s) => s.bg(t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
+      .on_click(() => setShared("priory.attach", { task, at: Date.now(), readOnly })).child(label);
   }
 
   /** @param {Palette} t */
