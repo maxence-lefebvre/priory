@@ -41,15 +41,17 @@ contract's guarantees map onto them this way:
 - `read` selects past the consumer's cursor, and `ack` moves the cursor forward only.
 - The first connection creates the tables, under an advisory lock so that two processes starting
   at once do not race.
+- When the server drops the connection, the next operation connects again and runs once more.
+  Every operation is idempotent, so the second run repeats nothing.
 
 `declare` adds nothing: herdr-bus's `Output` keeps its name private, and the tables hold every
-output. An undeclared output still holds nothing to read.
+output. Publishing on an undeclared output therefore works, where herdr-bus refuses it. Every
+Priory publisher declares first, and an output with no messages reads empty.
 
 ## Consequences
 
 - Moving a factory from herdr-bus to Postgres starts the log empty. Messages already in
   herdr-bus's file stay there, and the intake resumes each source as on its first start.
-- One publisher writes at a time across every machine. Priory publishes a few messages a minute,
-  far below what that lock allows.
+- One publisher writes at a time across every machine, to keep seqs in commit order.
 - CI runs the contract suite against a Postgres service on every push. Locally it runs when
   `PRIORY_TEST_POSTGRES_URL` is set, and skips otherwise.

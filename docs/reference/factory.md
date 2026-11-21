@@ -289,6 +289,7 @@ band = "today"                                 # its band without --band
 | `` `bands` needs at least one band, each named once `` | `bands` is empty or names a band twice |
 | `` the sweeper agent `<name>` does not exist `` | `[sweep] agent` names no folder under `agents/` |
 | `` [log] backend = "postgres" needs a priory built with `--features postgres` `` | `[log] backend = "postgres"` in a build without the Postgres adapter |
+| `` `[log] url_env` names the environment variable that holds the connection string, such as PRIORY_LOG_URL, never the string itself `` | `url_env` is not a variable name, such as a pasted URL |
 | `` the handler agent `<name>` does not exist `` | `handler` names no agent |
 | `` the handler agent `<name>` needs harness = "claude-code" `` | `handler` names a Codex agent |
 | `` the summarizer agent `<name>` does not exist `` | `[search] tldr` names no agent |

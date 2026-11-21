@@ -170,8 +170,9 @@ impl Store for Postgres {
     fn open(&self) -> Box<dyn Log> {
         let separator = if self.url.contains('?') { '&' } else { '?' };
         let url = format!(
-            "{}{separator}options=-csearch_path%3D{}",
-            self.url, self.schema
+            "{}{separator}options=-csearch_path%3D{schema}&application_name={schema}",
+            self.url,
+            schema = self.schema
         );
         Box::new(priory_intake::log::postgres::Postgres::connect(&url).unwrap())
     }
@@ -340,8 +341,7 @@ fn herdr_reads_nothing_through_a_disabled_connection_despite_a_tap() {
     assert!(log.read("daemon", OUTPUT, 1).unwrap().is_empty());
 }
 
-/// Runs every case against one adapter, each on a store of its own, or skips it when the
-/// adapter's store gives none.
+/// Runs every case against one adapter, each on a store of its own, or skips without one.
 macro_rules! contract {
     ($adapter:ident, $store:expr) => {
         contract!(@ $adapter, $store;
@@ -426,5 +426,58 @@ fn a_postgres_log_opens_the_database_its_url_variable_names() {
     assert_eq!(
         read.iter().map(|delivery| delivery.seq).collect::<Vec<_>>(),
         [seq]
+    );
+}
+
+#[cfg(feature = "postgres")]
+#[test]
+fn postgres_reconnects_after_the_server_drops_its_connection() {
+    let Some(store) = Postgres::new("reconnect") else {
+        return;
+    };
+    let log = declared(&store);
+    log.publish(OUTPUT, &event(1)).unwrap();
+    let mut client = ::postgres::Client::connect(&store.url, ::postgres::NoTls).unwrap();
+    client
+        .execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1",
+            &[&store.schema],
+        )
+        .unwrap();
+    log.publish(OUTPUT, &event(2)).unwrap();
+    assert_eq!(numbers(&*log, "daemon"), [1, 2]);
+}
+
+#[cfg(feature = "postgres")]
+#[test]
+fn postgres_concurrent_publishers_leave_no_message_behind_a_cursor() {
+    let Some(store) = Postgres::new("concurrent") else {
+        return;
+    };
+    let (publishers, each) = (4, 50);
+    let mut handled = Vec::new();
+    std::thread::scope(|scope| {
+        for publisher in 0..publishers {
+            let store = &store;
+            scope.spawn(move || {
+                let log = declared(store);
+                for n in 0..each {
+                    log.publish(OUTPUT, &event(publisher * each + n)).unwrap();
+                }
+            });
+        }
+        let log = declared(&store);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while handled.len() < (publishers * each) as usize && std::time::Instant::now() < deadline {
+            for delivery in log.read("daemon", OUTPUT, 7).unwrap() {
+                handled.push(delivery.message.data["n"].as_u64().unwrap());
+                log.ack("daemon", &delivery).unwrap();
+            }
+        }
+    });
+    handled.sort_unstable();
+    assert_eq!(
+        handled,
+        (0..u64::from(publishers * each)).collect::<Vec<_>>()
     );
 }

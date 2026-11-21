@@ -1652,3 +1652,19 @@ fn a_postgres_log_needs_a_build_with_the_postgres_feature() {
     };
     assert_eq!((postgres.code, postgres.stderr.as_str()), expected);
 }
+
+#[test]
+fn a_log_url_env_names_a_variable_never_the_url() {
+    let toml = "name = \"demo\"\n[log]\nurl_env = \"postgresql://user:secret@host/db\"\n";
+
+    let outcome = check(&factory("log-url", &with("factory.toml", toml)));
+
+    assert_eq!(
+        (outcome.code, outcome.stderr.as_str()),
+        (
+            1,
+            "factory.toml:2: `[log] url_env` names the environment variable that holds the \
+             connection string, such as PRIORY_LOG_URL, never the string itself\n"
+        )
+    );
+}

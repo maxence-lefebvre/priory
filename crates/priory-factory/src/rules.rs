@@ -107,6 +107,21 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                     .to_owned(),
             ));
         }
+        if settings
+            .value
+            .log
+            .url_env
+            .as_deref()
+            .is_some_and(|name| !variable(name))
+        {
+            problems.push(problem(
+                settings,
+                settings.lines.field("log"),
+                "`[log] url_env` names the environment variable that holds the connection \
+                 string, such as PRIORY_LOG_URL, never the string itself"
+                    .to_owned(),
+            ));
+        }
         if settings.value.webhooks.is_some() && settings.value.serve.is_none() {
             problems.push(problem(
                 settings,
