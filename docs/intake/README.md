@@ -58,7 +58,7 @@ factory such as herdr-bowtie. Each message type also has a JSON Schema in
 | [linear.md](linear.md) | Linear events, streams and API calls |
 | [slack.md](slack.md) | Slack events, the channel stream, API calls and the "Queue in Priory" message shortcut |
 | [schedule.md](schedule.md) | `schedule.fired` and when a schedule trigger fires |
-| [webhooks.md](webhooks.md) | GitHub webhooks: the signature, what a delivery publishes, and duplicates with polling |
+| [webhooks.md](webhooks.md) | GitHub and Linear webhooks: the signature, what a delivery publishes, and duplicates with polling |
 | [watches.md](watches.md) | The Linear issues, Slack threads and pull requests an open wait makes the intake watch |
 | [cli.md](cli.md) | `priory request`, `priory add` and the `priory.task.requested.cli` event |
 | [task-requests.md](task-requests.md) | `factory.task.requested`, which creates tasks, and its `hold` |

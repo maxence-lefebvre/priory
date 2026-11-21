@@ -3,7 +3,7 @@
 
 use crate::{grades, listing, push, report, sections, snooze, state, todo, tools};
 use priory_factory::factory::{Factory, Price, Trigger};
-use priory_intake::intake::{self, Github};
+use priory_intake::intake::{self, Github, LinearWebhook};
 use priory_intake::log;
 use priory_runtime::http::{self, Reply, Request};
 use priory_runtime::runtime;
@@ -17,6 +17,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 const GITHUB: &str = "/hooks/github";
+const LINEAR: &str = "/hooks/linear";
 const INDEX: &[u8] = include_bytes!("../web/index.html");
 /// How long `/api/events` holds a request without a change, at most and by default.
 const WAIT: u64 = 25;
@@ -155,6 +156,13 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         .map(|secret| Github::new(secret, factory))
         .transpose()?
         .map(Arc::new);
+    let linear = factory
+        .linear_webhook()
+        .map(|hook| env(&hook.secret_env, "the Linear webhook's signing secret"))
+        .transpose()?
+        .map(|secret| LinearWebhook::new(secret, factory))
+        .transpose()?
+        .map(Arc::new);
     drop(state::read_only()?);
     let listener =
         TcpListener::bind(listen).map_err(|error| format!("listen on {listen}: {error}"))?;
@@ -177,7 +185,12 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         .to_string(),
         prices: factory.prices.clone(),
     });
-    let hooks: &[&str] = if github.is_some() { &[GITHUB] } else { &[] };
+    let hooks: &[&str] = match (github.is_some(), linear.is_some()) {
+        (true, true) => &[GITHUB, LINEAR],
+        (true, false) => &[GITHUB],
+        (false, true) => &[LINEAR],
+        (false, false) => &[],
+    };
     let waiters = Arc::new(AtomicUsize::new(0));
     let public = |path: &str| !path.starts_with("/api") && !path.starts_with("/hooks");
     let workers = http::serve(listener, token, hooks, public, move || {
@@ -188,11 +201,19 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         let github = github
             .clone()
             .map(|github| (github, log::open().map_err(|error| error.to_string())));
-        move |request: &Request| match &github {
-            Some((github, bus))
+        let linear = linear
+            .clone()
+            .map(|linear| (linear, log::open().map_err(|error| error.to_string())));
+        move |request: &Request| match (&github, &linear) {
+            (Some((github, bus)), _)
                 if request.method == "POST" && request.path.split('?').next() == Some(GITHUB) =>
             {
                 github.receive(bus, request)
+            }
+            (_, Some((linear, bus)))
+                if request.method == "POST" && request.path.split('?').next() == Some(LINEAR) =>
+            {
+                linear.receive(bus, request)
             }
             _ if request.method == "POST" => write(&db, &home, request),
             _ => route(
