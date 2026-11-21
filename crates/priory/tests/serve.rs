@@ -223,7 +223,12 @@ fn api(address: &str, path: &str) -> Value {
 }
 
 fn json_of(setup: &Setup, verb: &str) -> Value {
-    let output = setup.priory(&[verb, "--json"]);
+    // `serve` reads the factory, and the queue lists its workflows only when given it too.
+    let factory = setup.factory();
+    let output = match verb {
+        "queue" => setup.priory(&[verb, &factory, "--json"]),
+        _ => setup.priory(&[verb, "--json"]),
+    };
     succeeded(&output);
     serde_json::from_slice(&output.stdout).unwrap()
 }
@@ -1472,6 +1477,22 @@ fn the_queue_lists_the_factorys_bands_in_order_even_an_empty_one() {
 
     assert_eq!(queue["bands"], json!(["urgent", "normal", "someday"]));
     assert_eq!(json_of(&setup, "queue")["bands"], queue["bands"]);
+}
+
+#[test]
+fn the_queue_lists_the_factorys_workflows_so_a_view_can_offer_them() {
+    let mut setup = Setup::new("queue-workflows", SERVE);
+    fs::write(setup.dir.join("factory/workflows/review.toml"), WORKFLOW).unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let queue = api(&address, "/api/queue");
+
+    assert_eq!(queue["workflows"], json!(["implement", "review"]));
+    assert_eq!(json_of(&setup, "queue")["workflows"], queue["workflows"]);
+    let output = setup.priory(&["queue", "--json"]);
+    succeeded(&output);
+    let without_factory: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(without_factory["workflows"], json!([]));
 }
 
 #[test]

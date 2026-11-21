@@ -1,5 +1,7 @@
 // The Queue panel's view model: `priory queue DIR --json` in, rows and states out. No drawing, no IO.
 
+import { autolink } from "./priory.js";
+
 const title = (/** @type {string} */ name) => name.charAt(0).toUpperCase() + name.slice(1);
 const clock = (/** @type {string} */ iso) => new Date(iso).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 
@@ -16,6 +18,7 @@ function age(iso, now) {
 }
 
 /** @typedef {{ paused?: string | null, banner?: string | null }} Room `paused` and `banner` from `priory desk --json` */
+/** @typedef {{ pattern: string, url: string }[]} Links the rules `priory links` lists */
 
 /** "paused since TIME[: REASON]" as the person reads it. @param {string} paused */
 function pausedSince(paused) {
@@ -61,9 +64,11 @@ function counted(tasks, field) {
 /**
  * The saved views with their counts, and the chosen view's sections, each left out when empty.
  * @param {any} queue
- * @param {{ view: string, now: number, room?: Room, facets?: { lane?: string, band?: string } }} options
+ * @param {{ view: string, now: number, room?: Room, links?: Links, facets?: { lane?: string, band?: string } }} options
  */
-export function queueList(queue, { view, now, room = {}, facets = {} }) {
+export function queueList(queue, { view, now, room = {}, links = [], facets = {} }) {
+  /** A row's title, and its spans with the factory's links. @param {any} task */
+  const titled = (task) => ({ title: task.title, titleSpans: autolink(task.title ?? "", links, null) });
   const all = queue.waiting.filter((/** @type {any} */ task) => task.state !== "held");
   // Running runs and ended tasks carry no lane or band, so a facet leaves them out.
   const faceted = Boolean(facets.lane || facets.band);
@@ -79,14 +84,14 @@ export function queueList(queue, { view, now, room = {}, facets = {} }) {
     id: task.id,
     tile: task.state,
     key: task.key,
-    title: task.title,
+    ...titled(task),
     step: task.step,
     position: task.band_position,
     why: why(task, all[all.indexOf(task) - 1], room),
   });
   const bands = [...new Set(waiting.map((/** @type {any} */ task) => task.band))].map((band) =>
     section(`band-${band}`, title(band), waiting.filter((/** @type {any} */ task) => task.band === band), waitingRow));
-  const running = section("running", "Running", runs, (run) => ({ id: run.task, tile: "running", key: run.key, title: run.title, step: run.step, run: run.run, age: age(run.started, now) }));
+  const running = section("running", "Running", runs, (run) => ({ id: run.task, tile: "running", key: run.key, ...titled(run), step: run.step, run: run.run, age: age(run.started, now) }));
   /** @type {Map<number, string>} */
   const keys = new Map([...queue.waiting, ...queue.ended].map((task) => [task.id, task.key]));
   for (const run of queue.running) keys.set(run.task, run.key);
@@ -94,14 +99,14 @@ export function queueList(queue, { view, now, room = {}, facets = {} }) {
     id: task.id,
     tile: "held",
     key: task.key,
-    title: task.title,
+    ...titled(task),
     step: task.step,
     band: title(task.band),
     why: { text: title(task.reason ?? "held"), tone: "held" },
     conditions: (task.conditions ?? []).map((/** @type {any} */ item) => condition(item, keys, now)),
   }));
   const ended = section("ended", "Last day", done, (task) => ({
-    id: task.id, tile: task.state, key: task.key, title: task.title, step: task.step, age: age(task.ended, now), why: { text: task.reason ?? task.state, tone: "muted" },
+    id: task.id, tile: task.state, key: task.key, ...titled(task), step: task.step, age: age(task.ended, now), why: { text: task.reason ?? task.state, tone: "muted" },
   }));
   const sections = { next: [running, ...bands, holds, ended], held: [holds], ended: [ended], all: [running, ...bands, holds, ended] }[view] ?? [];
   const paused = room.paused ? pausedSince(room.paused) : null;

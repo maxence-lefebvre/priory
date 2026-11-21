@@ -278,7 +278,7 @@ function itemRow(item) {
   return html`<div class="row">
     ${tile(kind)}
     <span class="l1">${key}<span>${item.step || ""}</span><span>${item.kind}</span><span class="age">${timeTag(item.since)}</span></span>
-    <span class="l2 r t-${role(kind)}">${item.what}</span>${stopped ? taskActs(item.task, item.kind) : ""}</div>`;
+    <span class="l2 r t-${role(kind)}">${autolinked(item.what, null)}</span>${stopped ? taskActs(item.task, item.kind) : ""}</div>`;
 }
 
 // An asleep task with what each of its open waits waits on, and since when.
@@ -296,7 +296,7 @@ function taskRow(task) {
   return html`<div class="row">
     ${tile(task.state)}
     <span class="l1"><span class="mono">${task.key}</span><span>${task.workflow} ${task.step}</span><span>${task.state}</span><span class="age">${timeTag(task.since)}</span></span>
-    <span class="l2 r ${task.reason ? `t-${role(task.state)}` : ""}">${task.reason || task.tldr || task.lane || ""}</span></div>`;
+    <span class="l2 r ${task.reason ? `t-${role(task.state)}` : ""}">${autolinked(task.reason || task.tldr || task.title || task.lane || "", task.repo)}</span></div>`;
 }
 
 function runRow(run) {
@@ -689,11 +689,11 @@ function taskPage(id) {
   return html`${back}<div class="scroll"><div class="ask task">
     <p class="ctx">${tile(task.state, "sm")}<span class="mono">${task.key}</span><span>${task.state}</span><span>${task.workflow} ${task.step}</span><span>${task.lane || ""}</span><span>${task.band || ""}</span></p>
     <h2 class="question">${autolinked(task.tldr || task.brief?.title || task.brief?.request?.split("\n")[0] || task.key, task.repo)}</h2>
-    ${task.reason ? html`<p class="text t-${role(task.state)}">${task.reason}</p>` : ""}
+    ${task.reason ? html`<p class="text t-${role(task.state)}">${autolinked(task.reason, task.repo)}</p>` : ""}
     ${taskActs(task.id, task.state)}${say}</div>${sections}</div>`;
 }
 
-// Brief, Plan, PR and Trace, each left out when the task lacks it. Agent text shows as plain text.
+// Brief, Plan, PR and Trace, each left out when the task lacks it. Agent text shows with its autolinks.
 function taskSections(task) {
   if (!task) return [];
   const sections = [];
@@ -701,13 +701,13 @@ function taskSections(task) {
   const { request, result } = task.brief || {};
   if (request || result) {
     sections.push(["brief", "Brief", sect("brief", "file-text", "Brief", result ? `${result.step}, run ${result.run}` : "",
-      html`${request ? html`<p class="meta">The request</p><p class="text">${request}</p>` : ""}${result ? html`<p class="text">${result.summary}</p>` : ""}`)]);
+      html`${request ? html`<p class="meta">The request</p><p class="text">${autolinked(request, task.repo)}</p>` : ""}${result ? html`<p class="text">${autolinked(result.summary, task.repo)}</p>` : ""}`)]);
   }
   const progress = task.progress;
   const plan = task.plan ? [`${task.plan.step}, run ${task.plan.run}`, task.plan.summary]
     : progress ? ["progress", [progress.goal && `Goal: ${progress.goal}`, ...(progress.acceptanceCriteria || []).map((c) => `- ${c.id}: ${c.description}`),
       progress.latestChange && `Latest change: ${progress.latestChange}`, progress.nextAction && `Next: ${progress.nextAction}`].filter(Boolean).join("\n")] : null;
-  if (plan) sections.push(["plan", "Plan", sect("plan", "check", "Plan", plan[0], html`<p class="text">${plan[1]}</p>`)]);
+  if (plan) sections.push(["plan", "Plan", sect("plan", "check", "Plan", plan[0], html`<p class="text">${autolinked(plan[1], task.repo)}</p>`)]);
   const pr = task.pull_request;
   if (pr) {
     sections.push(["pr", "PR", sect("pr", "workflow", `#${pr.number} ${pr.title || ""}`, pr.review || "",
