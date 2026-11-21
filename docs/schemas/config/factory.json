@@ -290,6 +290,22 @@
           "description": "Whether `listen` may be an address beyond this machine.",
           "type": "boolean"
         },
+        "redact_env": {
+          "default": [],
+          "description": "More environment variables whose values the terminal hides, besides the factory's secrets.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "terminal": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Terminal"
+            }
+          ],
+          "description": "Whether a token holder may watch a run's terminal, its screen with known secrets hidden."
+        },
         "token_env": {
           "default": "PRIORY_TOKEN",
           "description": "The environment variable that holds the token clients send, never the token itself.",
@@ -402,6 +418,21 @@
         "otlp"
       ],
       "type": "object"
+    },
+    "Terminal": {
+      "description": "What the HTTP server lets a token holder do with a run's terminal.",
+      "oneOf": [
+        {
+          "const": "watch",
+          "description": "Read its screen at `GET /api/runs/{id}/screen`.",
+          "type": "string"
+        },
+        {
+          "const": "off",
+          "description": "Serve no screen.",
+          "type": "string"
+        }
+      ]
     },
     "Webhooks": {
       "additionalProperties": false,

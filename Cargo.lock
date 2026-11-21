@@ -1931,6 +1931,7 @@ dependencies = [
  "priory-intake",
  "priory-runtime",
  "proptest",
+ "regex",
  "rusqlite",
  "schemars",
  "serde",

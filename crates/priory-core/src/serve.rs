@@ -1,8 +1,8 @@
 //! The HTTP server over the state: `/api` as JSON, with `web` the web view's files, and with a
 //! GitHub webhook its signed deliveries.
 
-use crate::{grades, listing, push, report, sections, snooze, state, todo, tools};
-use priory_factory::factory::{Factory, Price, Trigger};
+use crate::{grades, listing, push, report, screen, sections, snooze, state, todo, tools};
+use priory_factory::factory::{Factory, Price, Terminal, Trigger};
 use priory_intake::intake::{self, Github, LinearWebhook};
 use priory_intake::log;
 use priory_runtime::http::{self, Reply, Request};
@@ -23,6 +23,8 @@ const INDEX: &[u8] = include_bytes!("../web/index.html");
 const WAIT: u64 = 25;
 /// Requests `/api/events` holds at once: half the workers, so listings always find a free one.
 const WAITERS: usize = http::WORKERS / 2;
+/// Screens read at once, so a hung tmux server holds at most this many workers.
+const SNAPSHOTS: usize = 2;
 
 macro_rules! asset {
     ($path:literal, $kind:expr, $source:literal) => {
@@ -189,6 +191,9 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         })
         .to_string(),
         prices: factory.prices.clone(),
+        terminal: config.terminal,
+        secrets: screen::secrets(&factory.secret_envs()),
+        snapshots: AtomicUsize::new(0),
     });
     let hooks: &[&str] = match (github.is_some(), linear.is_some()) {
         (true, true) => &[GITHUB, LINEAR],
@@ -263,6 +268,11 @@ struct Served {
     /// `GET /api/request`: what the Add control prefills and offers.
     request: String,
     prices: BTreeMap<String, Price>,
+    terminal: Terminal,
+    /// The secret values the terminal hides, read when the server starts.
+    secrets: Vec<String>,
+    /// Screens being read now.
+    snapshots: AtomicUsize,
 }
 
 fn route(
@@ -306,6 +316,12 @@ fn route(
         Ok(db) => db,
         Err(error) => return Reply::error(500, error),
     };
+    if let Some(run) = path
+        .strip_prefix("/api/runs/")
+        .and_then(|rest| rest.strip_suffix("/screen"))
+    {
+        return terminal(db, served, run, query);
+    }
     let read = match path {
         "/api/events" => return events(db, query, waiters),
         "/api/batches" => return batches(db, None),
@@ -429,6 +445,35 @@ fn route(
 }
 
 /// Every batch, or the one `which` names, as `priory batch show --json` prints it.
+/// `GET /api/runs/{id}/screen`: the run's screen, read by at most `SNAPSHOTS` requests at once.
+fn terminal(db: &Connection, served: &Served, run: &str, query: &str) -> Reply {
+    let Ok(run) = run.parse() else {
+        return Reply::error(404, "no such path");
+    };
+    if served.terminal == Terminal::Off {
+        return Reply::error(404, "[serve] terminal = \"off\" serves no screen");
+    }
+    let taken = served.snapshots.fetch_add(1, Ordering::SeqCst);
+    let _slot = Slot(&served.snapshots);
+    if taken >= SNAPSHOTS {
+        return Reply::error(503, "too many screens are being read; retry in a second");
+    }
+    let have = query.split('&').find_map(|pair| pair.strip_prefix("have="));
+    match screen::read(db, &state::Attach::Run(run), &served.secrets) {
+        Ok(shown) => Reply::json(200, screen::reply(shown, have).to_string()),
+        Err(error) => Reply::error(404, &error),
+    }
+}
+
+/// A screen being read, given back when its request ends, even by a panic.
+struct Slot<'a>(&'a AtomicUsize);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 fn batches(db: &Connection, which: Option<&str>) -> Reply {
     let _snapshot = db.unchecked_transaction();
     match crate::batch::show(db, which) {
@@ -1107,7 +1152,7 @@ fn week_ago() -> Result<Option<String>, Reply> {
 }
 
 /// A query value with its `%XX` escapes and `+` decoded; none when an escape or the UTF-8 is broken.
-fn decode(value: &str) -> Option<String> {
+pub(crate) fn decode(value: &str) -> Option<String> {
     let mut bytes = Vec::with_capacity(value.len());
     let mut rest = value.as_bytes();
     while let Some((&byte, tail)) = rest.split_first() {

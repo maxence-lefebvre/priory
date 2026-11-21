@@ -213,6 +213,23 @@ pub struct Serve {
     /// `chrome-extension://<id>`. They still send the token.
     #[serde(default)]
     pub extension_origins: Vec<String>,
+    /// Whether a token holder may watch a run's terminal, its screen with known secrets hidden.
+    #[serde(default)]
+    pub terminal: Terminal,
+    /// More environment variables whose values the terminal hides, besides the factory's secrets.
+    #[serde(default)]
+    pub redact_env: Vec<String>,
+}
+
+/// What the HTTP server lets a token holder do with a run's terminal.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Terminal {
+    /// Read its screen at `GET /api/runs/{id}/screen`.
+    #[default]
+    Watch,
+    /// Serve no screen.
+    Off,
 }
 
 fn listen() -> SocketAddr {
@@ -1640,6 +1657,29 @@ impl Factory {
             .as_ref()?
             .linear
             .as_ref()
+    }
+
+    /// The environment variables that hold a secret the factory reads, defaults included, then the
+    /// ones `[serve] redact_env` lists.
+    pub fn secret_envs(&self) -> Vec<String> {
+        let serve = self.serve();
+        let mut names = vec![
+            serve.map_or_else(token_env, |serve| serve.token_env.clone()),
+            self.github_webhook()
+                .map_or_else(secret_env, |hook| hook.secret_env.clone()),
+            self.linear_webhook()
+                .map_or_else(linear_secret_env, |hook| hook.secret_env.clone()),
+            self.slack_shortcut()
+                .map_or_else(app_token_env, |shortcut| shortcut.token_env.clone()),
+            self.log().url_env().to_owned(),
+        ];
+        names.extend(self.otlp_headers_env().map(str::to_owned));
+        names.extend(
+            serve
+                .iter()
+                .flat_map(|serve| serve.redact_env.iter().cloned()),
+        );
+        names
     }
 
     /// The Slack message shortcut's settings; none takes no shortcut.
