@@ -2418,12 +2418,21 @@ function current() {
   return first;
 }
 
+const shownTab = (children, list) => children.find((child) => leaves(child).includes(list)) || children[0];
+
+// The panels `tree` draws: each tabs node shows one child.
+function shownPanels(node, list) {
+  if (node.panel) return [node.panel];
+  const [kind, children] = Object.entries(node)[0];
+  return kind === "tabs" ? shownPanels(shownTab(children, list), list) : children.flatMap((child) => shownPanels(child, list));
+}
+
 // The view file's tree, for a layout that is not a plain set of tabs.
 function tree(node, list) {
   if (node.panel) return listPanel(node.panel, true);
   const [kind, children] = Object.entries(node)[0];
   if (kind !== "tabs") return html`<div class="tree tree-${kind}">${children.map((child) => tree(child, list))}</div>`;
-  const shown = children.find((child) => leaves(child).includes(list)) || children[0];
+  const shown = shownTab(children, list);
   const strip = children.map((child) => {
     const panel = leaves(child)[0];
     return html`<a href="${panel === "desk" ? "/" : `/${panel}`}" aria-current="${child === shown ? "page" : "false"}">${icon(PANELS[panel][1], "s20")}${PANELS[panel][0]}</a>`;
@@ -2551,7 +2560,7 @@ function page() {
   const layoutNode = view().layout;
   const plain = layoutNode.tabs?.every((child) => child.panel);
   const main = plain ? listPanel(list, true) : tree(layoutNode, list);
-  return html`${staleStrip()}${top}<div class="wide">${nav("rail")}${main}${drawer(true, plain ? [list] : leaves(layoutNode))}</div>`;
+  return html`${staleStrip()}${top}<div class="wide">${nav("rail")}${main}${drawer(true, plain ? [list] : shownPanels(layoutNode, list))}</div>`;
 }
 
 const notFound = () => html`<p class="empty">No such page. Go back to the <a class="ghost" href="/">Desk</a>.</p>`;
