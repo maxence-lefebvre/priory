@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""Stage the repository's Markdown as an mdBook source folder.
+
+Copies GETTING_STARTED.md and docs/ into site/build/src, writes SUMMARY.md from the docs folders
+and their README files, builds the home page from site/home.md, and points links to files outside
+the book at GitHub.
+"""
+
+import os
+import re
+import shutil
+import sys
+from pathlib import Path
+
+REPO = "https://github.com/maxence-lefebvre/priory"
+ROOT = Path(__file__).resolve().parent.parent
+SITE = ROOT / "site"
+
+# (title, folder, pages placed first); the remaining pages of the folder follow in README link order.
+GROUPS = [
+    ("Start", None, ["GETTING_STARTED.md", "docs/testing-a-factory.md", "docs/evaluating-a-prompt.md"]),
+    ("Reference", "docs/reference", ["docs/reference/README.md"]),
+    ("The daemon", "docs/daemon", ["docs/daemon/README.md"]),
+    ("The intake", "docs/intake", ["docs/intake/README.md"]),
+    ("Adapters", "docs/adapters", []),
+    ("Decisions", None, ["docs/prd.md"]),
+    ("Architecture decisions", "docs/adr", []),
+    ("Design notes", "docs/design", []),
+]
+EXTRA_REFERENCE = ["docs/trace-schema.md"]
+
+LINK = re.compile(r"(!?\[[^\]]*\]\()([^)\s]+)((?:\s+\"[^\"]*\")?\))")
+REF_DEF = re.compile(r"^(\s{0,3}\[[^\]]+\]:\s+)(\S+)(.*)$")
+INCLUDE = re.compile(r"<!-- include (\S+) \"([^\"]+)\" -->")
+
+
+def title_of(path):
+    for line in (ROOT / path).read_text(encoding="utf-8").splitlines():
+        if line.startswith("# "):
+            return line[2:].strip()
+    return Path(path).stem
+
+
+def readme_order(folder):
+    readme = ROOT / folder / "README.md"
+    if not readme.exists():
+        return []
+    names = re.findall(r"\]\(([a-z0-9-]+\.md)[)#]", readme.read_text(encoding="utf-8"))
+    return [f"{folder}/{name}" for name in dict.fromkeys(names) if (ROOT / folder / name).exists()]
+
+
+def chapters():
+    """Return [(group title, [page paths])] covering every Markdown page directly in docs folders."""
+    placed, groups = set(), []
+    for title, folder, first in GROUPS:
+        pages = list(first)
+        if folder:
+            rest = readme_order(folder) + sorted(
+                p.relative_to(ROOT).as_posix() for p in (ROOT / folder).glob("*.md")
+            )
+            pages = list(dict.fromkeys(pages + rest))
+        if title == "Reference":
+            pages += EXTRA_REFERENCE
+        pages = [p for p in pages if p not in placed]
+        placed.update(pages)
+        groups.append((title, pages))
+    loose = sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "docs").glob("*.md"))
+    missing = [p for p in loose if p not in placed]
+    if missing:
+        sys.exit(f"build.py: place these pages in GROUPS: {', '.join(missing)}")
+    return groups
+
+
+def summary(groups):
+    lines = ["# Summary", "", "[Overview](index.md)", ""]
+    for title, pages in groups:
+        lines += [f"# {title}", ""]
+        lines += [f"- [{title_of(p)}]({p})" for p in pages]
+        lines.append("")
+    return "\n".join(lines)
+
+
+def rewrite_target(target, source, pages):
+    """Map a link found in repository file `source` to a link that works from its staged copy."""
+    if re.match(r"^[a-z][a-z0-9+.-]*:", target, re.I) or target.startswith("#"):
+        return target
+    path, _, fragment = target.partition("#")
+    resolved = (ROOT / Path(source).parent / path).resolve()
+    try:
+        rel = resolved.relative_to(ROOT).as_posix()
+    except ValueError:
+        return target
+    if resolved.is_dir() and (resolved / "README.md").exists() and f"{rel}/README.md" in pages:
+        rel = f"{rel}/README.md"
+    if rel == "README.md":
+        rel = "index.md"
+    suffix = f"#{fragment}" if fragment else ""
+    copied = rel.startswith("docs/") and resolved.is_file() and not rel.endswith(".md")
+    if rel == "index.md" or rel in pages or copied:
+        return os.path.relpath(rel, Path(source).parent.as_posix() or ".") + suffix
+    kind = "tree" if resolved.is_dir() else "blob"
+    return f"{REPO}/{kind}/main/{rel}{suffix}"
+
+
+def rewrite_links(text, source, pages):
+    out, fenced = [], False
+    for line in text.split("\n"):
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        if not fenced:
+            line = LINK.sub(lambda m: m[1] + rewrite_target(m[2], source, pages) + m[3], line)
+            line = REF_DEF.sub(lambda m: m[1] + rewrite_target(m[2], source, pages) + m[3], line)
+        out.append(line)
+    return "\n".join(out)
+
+
+def section(path, heading):
+    """Return the body under `## heading` in a repository file, or the intro before the first ##."""
+    lines = (ROOT / path).read_text(encoding="utf-8").splitlines()
+    if heading == "intro":
+        start = next(i for i, l in enumerate(lines) if l.startswith("</h1>")) + 1
+    else:
+        start = lines.index(f"## {heading}") + 1
+    end = next((i for i in range(start, len(lines)) if lines[i].startswith("## ")), len(lines))
+    return "\n".join(lines[start:end]).strip()
+
+
+def home(pages):
+    template = (SITE / "home.md").read_text(encoding="utf-8")
+    return INCLUDE.sub(lambda m: rewrite_links(section(m[1], m[2]), m[1], pages), template)
+
+
+def main():
+    out = SITE / "build" / "src"
+    if out.exists():
+        shutil.rmtree(out)
+    shutil.copytree(ROOT / "docs", out / "docs")
+    groups = chapters()
+    pages = {p for _, ps in groups for p in ps}
+    for page in pages:
+        text = (ROOT / page).read_text(encoding="utf-8")
+        (out / page).write_text(rewrite_links(text, page, pages), encoding="utf-8")
+    for unlisted in out.joinpath("docs").rglob("*.md"):
+        if unlisted.relative_to(out).as_posix() not in pages:
+            unlisted.unlink()
+    (out / "SUMMARY.md").write_text(summary(groups), encoding="utf-8")
+    (out / "index.md").write_text(home(pages), encoding="utf-8")
+    assets = out / "assets"
+    shutil.copytree(ROOT / "design" / "fonts", assets / "fonts", ignore=shutil.ignore_patterns("*.md"))
+    for name in ("lockup.svg", "lockup-dark.svg", "favicon.svg", "apple-touch-icon.png"):
+        shutil.copy(ROOT / "design" / "logo" / name, assets / name)
+    print(f"staged {len(pages) + 1} pages in {out.relative_to(ROOT)}")
+
+
+if __name__ == "__main__":
+    main()

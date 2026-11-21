@@ -38,10 +38,11 @@ every poll:
   The desk also holds your own to-dos, ranked after the asks.
 - Every step's outcome, tokens and time are recorded, so you can measure a workflow and its cost.
 
-## The web view, as designed
+## The web view
 
-Milestone M2 adds a web view that works on a phone. These are its design boards from
-[DESIGN.md](DESIGN.md); the view itself is not built yet.
+The daemon's HTTP server, set by `[serve]` in `factory.toml`, serves a web view that works on a
+phone: the desk, asks, reports, costs and flows. These are its design boards from
+[DESIGN.md](DESIGN.md), which the view follows.
 
 ![Three phone screens in the Indigo theme, light mode. The desk shows "3 asks need you", saved views and three asks, each with what it recommends. An ask's detail shows the question "Merge #212 into main? Checks are green at a1f3c9e.", the recommendation and three options. The same ask scrolled into its brief shows rendered Markdown and a sticky answer bar.](docs/images/web-view-phone.png)
 
@@ -58,6 +59,8 @@ Milestone M2 adds a web view that works on a phone. These are its design boards 
   notifications for new asks.
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to change Priory, the checks to run, and how pull
   requests work.
+- [maxence-lefebvre.github.io/priory](https://maxence-lefebvre.github.io/priory/): these docs as a
+  website, with search, built from `main`.
 
 ## Status
 
@@ -67,8 +70,8 @@ Priory is in early development. The milestones come from [docs/prd.md](docs/prd.
 | --------- | ----- | ------ |
 | M0 | One machine, tmux, Claude Code, CLI and GitHub intake, inbox, workflows, waits, asks, results, health | Done |
 | M1 | Linear, Slack replies, schedules, queue order, holds, revive, lanes, bands, memory gate, agents slice, retiring tasks, traces, reports, nudges, repair, Codex | Done |
-| M2 | Web view, webhooks, terminal attach, command answers, OpenTelemetry export, search | In progress: terminal attach, OpenTelemetry export and search have landed |
-| M3 | Several machines, state adapters, shared skills and memories | In progress: runners own tasks through claims and leases on one shared log |
+| M2 | Web view, webhooks, terminal attach, command answers, OpenTelemetry export, search | In progress: every feature has landed; its done-when test, one working day of asks answered from a phone only, is still open |
+| M3 | Several machines, state adapters, shared skills and memories | In progress: a Postgres event log, and runners that own tasks through claims and leases on it, have landed |
 | M4 | Risk estimate, scorers and benchmarks | Not started |
 
 ## Documentation
