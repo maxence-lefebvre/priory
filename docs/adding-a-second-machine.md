@@ -1,7 +1,7 @@
 # How to add a second machine
 
 This guide shows how to run one factory on two machines that share one event log. It assumes a
-clone of this repository with its [build prerequisites](../GETTING_STARTED.md#1-build-priory),
+clone of this repository with its [build prerequisites](../GETTING_STARTED.md#build-from-source),
 Docker on this machine, and ssh key access to the second machine. Read
 [runners.md](daemon/runners.md) first for how the two runners share tasks.
 
