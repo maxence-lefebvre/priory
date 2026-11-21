@@ -51,7 +51,14 @@ Milestone M2 adds a web view that works on a phone. These are its design boards 
 
 ## Get started
 
-- [GETTING_STARTED.md](GETTING_STARTED.md): build Priory, write a first factory, run it, and the
+Install the prebuilt `priory` for Linux (x86_64 or aarch64) or macOS on Apple silicon into
+`~/.local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/maxence-lefebvre/priory/main/install.sh | sh
+```
+
+- [GETTING_STARTED.md](GETTING_STARTED.md): install or build Priory, write a first factory, run it, and the
   day to day commands and concepts. Once the factory has a `[request]` table,
   `priory add "Fix the typo in the README"`, or `N` in the web view, queues a first task. Its
   [phone section](GETTING_STARTED.md#use-it-from-a-phone) installs the web view on a phone, with

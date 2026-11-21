@@ -1,27 +1,46 @@
 # Getting started
 
-This guide takes you from a clone of this repository to a running factory. You build Priory, write a
-factory with one agent, one workflow and one trigger, check it, then run the intake and the daemon.
+This guide takes you from nothing to a running factory. You install Priory, write a factory with
+one agent, one workflow and one trigger, check it, then run the intake and the daemon.
 
 ## Before you start
 
-Priory needs Linux, the Rust toolchain that `rust-toolchain.toml` pins, and on `PATH`: `git`,
-`tmux`, `gh` logged in to GitHub, and `claude` or `codex`.
+Priory needs Linux and, on `PATH`: `git`, `tmux`, `gh` logged in to GitHub, and `claude` or
+`codex`. Building from source also needs the Rust toolchain that `rust-toolchain.toml` pins.
 
-## 1. Build Priory
+## 1. Install Priory
 
-From the root of your clone:
+```sh
+curl -fsSL https://raw.githubusercontent.com/maxence-lefebvre/priory/main/install.sh | sh
+priory --version
+```
+
+The script downloads the binary of the latest
+[release](https://github.com/maxence-lefebvre/priory/releases) for Linux x86_64, Linux aarch64 or
+macOS on Apple silicon, checks it against its `.sha256` and installs it to `~/.local/bin`. Run
+`sh install.sh --prefix /usr/local` from a clone to install to `/usr/local/bin` instead. Set
+`PRIORY_RELEASE_URL=https://github.com/maxence-lefebvre/priory/releases/download/v0.1.0` to pick a
+release other than the latest. With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall),
+`cargo binstall --git https://github.com/maxence-lefebvre/priory priory` downloads the same binary.
+
+Each release also holds `priory-herdr.tar.gz`, the [Herdr adapter](adapters/herdr/), and
+`priory-github-extension.zip`, the [GitHub extension](adapters/github/README.md).
+
+### Build from source
+
+The release binaries leave out the cargo features. Build from your clone to get them, or to run
+an unreleased commit:
 
 ```sh
 cargo build --release
 export PATH="$PWD/target/release:$PATH"
-priory
+priory --version
 ```
 
-The last command prints the usage. To install the binary instead, `cargo install --path
-crates/priory` puts `priory` in `~/.cargo/bin`. The in-process embedding model for search sits
-behind a cargo feature: `cargo build --release --features model`. So does the Postgres event log,
-which lets several machines share one log: `--features postgres`, then `[log]` in
+To install the binary instead, `cargo install --path crates/priory` puts `priory` in
+`~/.cargo/bin`. The in-process embedding model for search sits behind a cargo feature:
+`cargo build --release --features model`. So does the Postgres event log, which lets several
+machines share one log: `--features postgres`, then `[log]` in
 [`factory.toml`](docs/reference/factory.md#log).
 
 ## 2. Write a factory
