@@ -231,6 +231,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
     let mut alive = None;
+    let mut aged = None;
     loop {
         // A runner back from away reads the log, and so drops the tasks that moved, before any run.
         drain(&*bus, &consumer, &mut db, &trace, counting.get(&home))?;
@@ -255,6 +256,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if let Some(desktop) = &mut desktop {
             notify::tick(&db, desktop)?;
         }
+        snooze::tick(&mut db, &trace)?;
+        state::age_queue(&db, &mut aged)?;
         read_states(&mut db, &mut reads)?;
         if sweep_scripts(&db, factory, &home, &mut scripts)? {
             swept = None;

@@ -133,3 +133,24 @@ pub(crate) fn snooze(
     tx.commit()?;
     Ok(Ok(format!("{kind} {id} is snoozed until {until}")))
 }
+
+/// Marks each snooze that ended, at its time or early on a change, and traces its end once. The
+/// mark bumps the state's revision, so a client waiting on it reads the item back.
+pub(crate) fn tick(db: &mut Connection, trace: &Trace) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let ended: Vec<(String, i64, i64, String)> = tx
+        .prepare(
+            "UPDATE snoozes SET ended = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+             WHERE ended IS NULL
+               AND (back IS NOT NULL OR until <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+             RETURNING kind, item, task, coalesce(back_reason, 'time')",
+        )?
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (kind, item, task, reason) in &ended {
+        trace::snooze_ended(&tx, trace, (*task, kind, *item), reason)?;
+    }
+    tx.commit()
+}

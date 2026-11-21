@@ -3521,6 +3521,60 @@ fn a_snoozed_ask_leaves_the_desk_and_asks_until_its_time_while_the_task_stays_as
     assert_eq!(setup.rows("asks").len(), 1);
 }
 
+/// The trace records of `kind`, oldest first.
+fn traced(setup: &Setup, kind: &str) -> Vec<serde_json::Value> {
+    String::from_utf8(setup.priory(&["trace"]).stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|event| event["type"] == kind)
+        .collect()
+}
+
+/// Polls the trace until it holds a record of `kind`, and returns the first.
+fn until_traced(setup: &Setup, kind: &str) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(event) = traced(setup, kind).into_iter().next() {
+            return event;
+        }
+        assert!(Instant::now() < deadline, "no {kind} record");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_snooze_ending_at_its_time_bumps_the_revision_and_is_traced() {
+    let setup = asleep_on_an_ask("snooze-ends");
+    let snoozed = setup.priory(&["snooze", "ask", "1", "--for", "4s"]);
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    let json: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    let revision = json["revision"].as_i64().unwrap().to_string();
+    let idle = setup.priory(&["wait", "--since", &revision, "--timeout", "1s"]);
+    assert_eq!(
+        String::from_utf8_lossy(&idle.stdout),
+        format!("{revision}\n")
+    );
+
+    let woke = setup.priory(&["wait", "--since", &revision, "--timeout", "30s"]);
+
+    assert_ne!(
+        String::from_utf8_lossy(&woke.stdout),
+        format!("{revision}\n")
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    assert!(json["asks"][0]["snoozed_until"].is_null(), "{json}");
+    let ended = traced(&setup, "factory.task.snooze_ended");
+    assert_eq!(
+        ended[0]["data"]["item"],
+        json!({ "kind": "ask", "id": "1" })
+    );
+    assert_eq!(ended[0]["data"]["reason"], "time");
+    assert!(traced(&setup, "factory.task.unsnoozed").is_empty());
+}
+
 #[test]
 fn clearing_a_snooze_brings_the_ask_back_and_the_trace_records_both() {
     let setup = asleep_on_an_ask("snooze-clear");
@@ -7324,6 +7378,8 @@ fn a_new_revision_of_a_snoozed_ask_brings_it_back_early() {
     let json = &json["asks"];
     assert_eq!(json[0]["back_early"]["reason"], "new revision", "{json}");
     assert!(json[0]["snoozed_until"].is_null(), "{json}");
+    let ended = until_traced(&setup, "factory.task.snooze_ended");
+    assert_eq!(ended["data"]["reason"], "new revision");
 }
 
 #[test]

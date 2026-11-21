@@ -207,6 +207,17 @@ A person snoozed a desk item of a task, or cleared its snooze. Both share `facto
 | `item`  | yes      | The desk item: `kind` is `ask`, `blocked`, `failed` or `prompt`, and `id` its id |
 | `until` | no       | When the item comes back by itself; only on `factory.task.snoozed`   |
 
+## `factory.task.snooze_ended`
+
+A snooze ended by itself: at its time, or early on a change (see
+[desk.md](daemon/desk.md#snooze)). The daemon writes one per snooze, within a second of its end. It
+shares the fields of `factory.task.snoozed`, without `until`, and adds:
+
+| Field    | Required | Meaning                                                              |
+| -------- | -------- | -------------------------------------------------------------------- |
+| `item`   | yes      | As on `factory.task.snoozed`, but `kind` is `task` for a `blocked` or `failed` item |
+| `reason` | yes      | `time`, or the early reason: `new revision`, `new failure` or `task state changed` |
+
 ## `factory.task.progressed`
 
 A task's progress changed, through the `progress` tool or `priory progress`. It shares `factory`,

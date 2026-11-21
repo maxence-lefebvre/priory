@@ -1180,9 +1180,13 @@ PRAGMA user_version = 68;
 const SCHEMA_69: &str = "PRAGMA user_version = 69;
 ";
 
-// When a person cleared a failed delivery from the desk with `priory deliver --clear`.
+// When a person cleared a failed delivery from the desk with `priory deliver --clear`, and when
+// the daemon saw a snooze end, so it traces each end once. Snoozes already over count as seen.
 const SCHEMA_70: &str = "
 ALTER TABLE deliveries ADD COLUMN cleared TEXT;
+ALTER TABLE snoozes ADD COLUMN ended TEXT;
+UPDATE snoozes SET ended = coalesce(back, until)
+  WHERE back IS NOT NULL OR until <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
 PRAGMA user_version = 70;
 ";
 
@@ -1205,6 +1209,23 @@ pub const START_ORDER: &str = "coalesce((SELECT rank FROM bands WHERE bands.name
   (SELECT count(*) FROM bands)), tasks.position IS NULL, tasks.position, tasks.id";
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
+
+/// Bumps the revision when a task ended over a day ago left the queue's `ended` list since the
+/// last call at `since`, which no write marks. The first call only notes the time.
+pub(crate) fn age_queue(db: &Connection, since: &mut Option<String>) -> rusqlite::Result<()> {
+    let now: String = db.query_row(&format!("SELECT {NOW}"), [], |row| row.get(0))?;
+    if let Some(since) = since {
+        db.execute(
+            "UPDATE revision SET value = value + 1 WHERE EXISTS (SELECT 1 FROM tasks
+               WHERE state IN ('done', 'failed', 'dropped')
+                 AND changed < strftime('%Y-%m-%dT%H:%M:%SZ', ?2, '-1 day')
+                 AND changed >= strftime('%Y-%m-%dT%H:%M:%SZ', ?1, '-1 day'))",
+            params![*since, now],
+        )?;
+    }
+    *since = Some(now);
+    Ok(())
+}
 
 pub(crate) struct Task {
     pub id: i64,

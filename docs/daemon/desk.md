@@ -242,8 +242,8 @@ future, an item that the desk does not list, and a `--clear` for an item that is
 second snooze of an item replaces the first. Snoozing changes only what a person sees: the task,
 its runs, asks and waits stay as they are, and the agent keeps waiting.
 
-The item comes back by itself at its time. No loop runs for that: each listing compares the time
-with the clock. It comes back early when something meaningful changes:
+The item comes back by itself at its time: each listing compares the time with the clock. It comes
+back early when something meaningful changes:
 
 | Item | Comes back early when | Reason |
 | ---- | --------------------- | ------ |
@@ -254,6 +254,13 @@ with the clock. It comes back early when something meaningful changes:
 
 For a `blocked`, `failed` or `prompt` item, the latest change gives the reason. For an ask, a new
 revision always does, and a task state change counts only while the ask is open and not yet back.
+
+Within a second of a snooze ending, at its time or early, the daemon marks it ended. The mark raises
+the state's revision, so a view waiting on it reads the item back (see
+[serve.md](serve.md#waiting-for-a-change)), and writes one `factory.task.snooze_ended` trace record
+with the reason, `time` for a snooze that reached its time. A person's `--clear` writes
+`factory.task.unsnoozed` instead. The record's item kind is `task` for a `blocked` or `failed`
+item, since those share one snooze.
 A task's `blocked` and `failed` items share one snooze, so a blocked task that fails keeps it.
 
 The desk and `priory asks` end each row with the item's `snoozed_until` time while it is snoozed,

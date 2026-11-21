@@ -2751,6 +2751,47 @@ fn wait_prints_the_new_revision_on_a_change_or_the_same_one_after_its_timeout() 
     assert!(!setup.priory(&["wait"]).status.success());
 }
 
+#[test]
+fn a_task_leaving_the_queues_ended_list_after_a_day_bumps_the_revision() {
+    let mut setup = Setup::new("queue-ages", SERVE);
+    succeeded(&setup.priory(&[
+        "request",
+        &setup.factory(),
+        "--repo",
+        "owner/repo",
+        "--workflow",
+        "implement",
+        "--key",
+        "docs-1",
+        "Fix the docs",
+    ]));
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    // A trigger stamps `changed` on a state change, so the time goes in a second update.
+    db.execute_batch(
+        "UPDATE tasks SET state = 'done';
+         UPDATE tasks SET changed = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 day', '+8 seconds');",
+    )
+    .unwrap();
+    setup.start(&["daemon", &setup.factory()]);
+    let queue = json_of(&setup, "queue");
+    assert_eq!(queue["ended"].as_array().unwrap().len(), 1, "{queue}");
+    let revision = queue["revision"].as_i64().unwrap().to_string();
+    let idle = setup.priory(&["wait", "--since", &revision, "--timeout", "1s"]);
+    assert_eq!(
+        String::from_utf8_lossy(&idle.stdout),
+        format!("{revision}\n")
+    );
+
+    let aged = setup.priory(&["wait", "--since", &revision, "--timeout", "30s"]);
+
+    assert_ne!(
+        String::from_utf8_lossy(&aged.stdout),
+        format!("{revision}\n")
+    );
+    assert_eq!(json_of(&setup, "queue")["ended"], json!([]));
+}
+
 /// A report with its sections out of alphabetical order, so a read in any other order shows.
 fn report() -> Value {
     json!({
