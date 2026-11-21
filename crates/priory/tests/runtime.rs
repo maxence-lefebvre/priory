@@ -260,6 +260,8 @@ impl Setup {
             // The desk's stall banner, before its header, has no tab.
             .skip_while(|line| !line.contains('\t'))
             .skip(1)
+            // The desk's Since you looked list follows its rows after a blank line.
+            .take_while(|line| args[0] != "desk" || !line.is_empty())
             .map(|line| line.split('\t').map(str::to_owned).collect())
             .collect()
     }
