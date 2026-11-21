@@ -45,8 +45,10 @@ signs you out too.
   says how old the last read is.
 - **Ask**: the open asks of the task, oldest first, with the web view's order: context, question,
   recommendation, options, Write an answer, Dismiss and Snooze. An answer waits 4 s with Undo, then
-  goes with the revision you saw. A changed question keeps your draft and says so. Keys 1 to 9 pick
-  an option while the panel has focus.
+  goes with the revision you saw. Leave the page or close the panel before then, and the panel
+  shows the answer unsent the next time it opens on that pull request, with Send and Discard. A
+  changed question keeps your draft and says so. Keys 1 to 9 pick an option while the panel has
+  focus.
 - **A command ask**: a tap on an option that runs a command opens the browser's side panel with the
   command, its folder and its revision. Run it there, within 2 min of the tap. No page can cover
   the side panel. Run reads the ask again first, and runs only when the daemon, the revision and

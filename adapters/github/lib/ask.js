@@ -40,7 +40,17 @@ export function due(draft, now) {
   return { draft: { ...draft, phase: "posting" }, path: answerPath(draft.id), body: answerBody(draft) };
 }
 
-export const answerPath = (id) => `/api/asks/${encodeURIComponent(id)}/answer`;
+/**
+ * The draft the panel keeps for its next mount: an answer still waiting on Undo comes back unsent,
+ * for the person to send or discard, since a page change ends its timer. Else null.
+ */
+export function leftUnsent(draft) {
+  if (draft?.restored) return draft;
+  if (draft?.phase !== "waiting") return null;
+  return { ...draft, phase: "unsent", restored: true, notice: `Not sent: "${draft.option ?? draft.text}". The page changed before its 4 s Undo passed.` };
+}
+
+export const answerPath =(id) => `/api/asks/${encodeURIComponent(id)}/answer`;
 
 export const answerBody = (draft, run = false) => ({
   ...(draft.option === undefined ? { text: draft.text } : { option: draft.option }),

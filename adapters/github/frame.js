@@ -1,5 +1,5 @@
 // The strip, the docked panel and the side panel: every daemon call and all agent text live here.
-import { ARM_MS, UNDO_MS, age, answerBody, answerPath, choose, due, observe, optionKey, refusal, reply, runsCommand, undo } from "./lib/ask.js";
+import { ARM_MS, UNDO_MS, age, answerBody, answerPath, choose, due, leftUnsent, observe, optionKey, refusal, reply, runsCommand, undo } from "./lib/ask.js";
 import { grade, parseGuide, scoreKey } from "./lib/guide.js";
 import { live } from "./lib/live.js";
 import { parsePr } from "./lib/pr.js";
@@ -130,7 +130,7 @@ async function read(quiet = false) {
   if (seen === S.seen && !S.unreachable) return quiet ? undefined : render();
   Object.assign(S, { seen, holders, task: detail.body, unreachable: false });
   for (const ask of S.task?.asks ?? []) S.draft = observe(S.draft, ask, Date.now());
-  if (S.draft?.phase === "sent" && !S.task?.asks?.some((ask) => ask.id === S.draft.id && ask.state === "open")) S.draft = null;
+  if ((S.draft?.phase === "sent" || S.draft?.restored) && !S.task?.asks?.some((ask) => ask.id === S.draft.id && ask.state === "open")) S.draft = null;
   put(`last:${S.pr.resource}`, { holders, task: S.task, flows: S.flows, readAt: S.readAt });
   wakeAtSnoozeEnd();
   render();
@@ -360,6 +360,10 @@ function askTab(asks) {
       h("button", { class: "btn ghost", disabled: blocked, onclick: () => snooze(ask, snoozed) }, snoozed ? "Unsnooze" : "Snooze 1 h"),
       draft?.phase === "unknown"
         ? h("button", { class: "btn ghost", onclick: () => (draft.dismiss ? dismiss(ask) : pick(ask, { ...(draft.option === undefined ? { text: draft.text } : { option: draft.option }), again: true })) }, "Send again")
+        : null,
+      draft?.restored
+        ? [h("button", { class: "btn ghost", onclick: () => pick(ask, draft.option === undefined ? { text: draft.text } : { option: draft.option }) }, "Send"),
+          h("button", { class: "btn ghost", onclick: () => { S.draft = null; render(); } }, "Discard")]
         : null),
     draft?.notice ? h("div", { class: "notice", role: "alert" }, draft.notice) : null,
     h("div", { class: "hr" }),
@@ -550,9 +554,19 @@ function outcome(ran) {
 }
 
 
+// An answer waiting on Undo outlives the frame, which a page change removes with its timer.
+let keptDraft = "null";
+function keepDraft() {
+  const kept = leftUnsent(S.draft);
+  if (JSON.stringify(kept) === keptDraft) return;
+  keptDraft = JSON.stringify(kept);
+  (kept ? put(`draft:${S.pr.resource}`, kept) : remove(`draft:${S.pr.resource}`)).catch(() => {});
+}
+
 // A redraw keeps what the person was doing: the focused field, its selection and the scroll.
 function render() {
   if (VIEW === "command") return;
+  if (VIEW === "panel" && S.pr) keepDraft();
   const focused = document.activeElement;
   const { id, selectionStart, selectionEnd } = focused ?? {};
   const scroll = document.querySelector(".body")?.scrollTop ?? 0;
@@ -581,6 +595,7 @@ async function boot() {
   if (!S.pr) return;
   const last = await get(`last:${S.pr.resource}`);
   if (last) Object.assign(S, last, { unreachable: false });
+  if (VIEW === "panel") S.draft = (await get(`draft:${S.pr.resource}`)) ?? null;
   render();
   live((message) => {
     if (message.signedIn) get("config").then((config) => { S.config = config ?? null; read(); });
