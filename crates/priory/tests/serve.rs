@@ -3755,3 +3755,28 @@ fn an_ask_asked_again_pushes_again() {
 
     setup.until_pushes(2);
 }
+
+#[test]
+fn an_ask_asked_again_before_its_first_push_went_out_pushes_once() {
+    let mut setup = Setup::new("push-superseded", SERVE);
+    setup.seed();
+    // No task starts, so none turns blocked and sends an alarm of its own.
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    setup.subscribe(&address, "https://web.push.apple.com/phone");
+
+    let mut db = setup.db();
+    let tx = db.transaction().unwrap();
+    let ask = setup.ask_more(&tx, "Approve the push?");
+    tx.execute(
+        "UPDATE asks SET revision = revision + 1 WHERE id = ?1",
+        [ask],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    setup.ask_more(&db, "Later one");
+
+    let pushes = setup.until_pushes(2);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.pushes().len(), 2, "{pushes:?}");
+}

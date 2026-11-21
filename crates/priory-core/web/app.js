@@ -181,6 +181,8 @@ async function refresh() {
     keep();
     announce(before);
   } catch (error) {
+    // A superseded call, such as one from before a sign-out, must not sign the new session out.
+    if (call !== state.refreshes) return true;
     if (error.status === 401) return signOut("The daemon refused this token. Paste the current one.");
     state.failed = error instanceof TypeError ? "the connection dropped" : error.message;
     render();
@@ -1114,7 +1116,14 @@ async function pushStatus() {
   if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return iosTab() ? "install" : "unsupported";
   if (Notification.permission === "denied") return "blocked";
   const registration = await navigator.serviceWorker.ready;
-  return (await registration.pushManager.getSubscription()) ? "on" : "off";
+  const subscription = await registration.pushManager.getSubscription();
+  if (!subscription) return "off";
+  // The browser keeps a subscription the daemon may have dropped or never stored: send it again.
+  // Only the daemon's refusal ends it; a dropped connection or a stopped daemon proves nothing.
+  const { status } = await post("/api/push/subscribe", subscription.toJSON()).catch(() => ({ status: 0 }));
+  if (status !== 422) return "on";
+  await subscription.unsubscribe().catch(() => {});
+  return "off";
 }
 
 const PUSH_NOTES = {

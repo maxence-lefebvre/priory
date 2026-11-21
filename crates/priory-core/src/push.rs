@@ -322,8 +322,8 @@ pub(crate) fn tick(db: &Connection, home: &Path, sending: &mut Sending) -> rusql
 }
 
 /// The oldest queued row and its notification as JSON, `{"title", "url"}` and nothing else. The
-/// notification is `None` once the ask closed, the task left the state that queued it, or a person
-/// snoozed the item: those send nothing.
+/// notification is `None` once the ask closed or was asked again, the task left the state that
+/// queued it, or a person snoozed the item: those send nothing.
 fn next(db: &Connection) -> rusqlite::Result<Option<(i64, Option<String>)>> {
     use rusqlite::OptionalExtension;
     let snoozed = |kind: &str, item: &str| {
@@ -334,19 +334,20 @@ fn next(db: &Connection) -> rusqlite::Result<Option<(i64, Option<String>)>> {
     };
     let queued = db
         .query_row(
-            "SELECT id, kind, item, state FROM push_queue ORDER BY id LIMIT 1",
+            "SELECT id, kind, item, revision, state FROM push_queue ORDER BY id LIMIT 1",
             [],
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
-                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ))
             },
         )
         .optional()?;
-    let Some((row, kind, item, state)) = queued else {
+    let Some((row, kind, item, revision, state)) = queued else {
         return Ok(None);
     };
     let notice = if kind == "ask" {
@@ -356,12 +357,13 @@ fn next(db: &Connection) -> rusqlite::Result<Option<(i64, Option<String>)>> {
                 "SELECT coalesce(asks.title, 'task ' || tasks.key || ' asks at ' || asks.step,
                    'ask ' || asks.name) FROM asks
                  LEFT JOIN tasks ON tasks.id = asks.task
-                 WHERE asks.id = ?1 AND asks.answer IS NULL AND asks.withdrawn IS NULL
+                 WHERE asks.id = ?1 AND asks.revision IS ?2
+                 AND asks.answer IS NULL AND asks.withdrawn IS NULL
                  AND (asks.task IS NULL OR tasks.state NOT IN ('done', 'failed', 'dropped'))
                  AND {}",
                 snoozed("ask", "asks.id")
             ),
-            [item],
+            params![item, revision],
             |row| row.get::<_, String>(0),
         )
         .optional()?

@@ -844,17 +844,18 @@ CREATE TABLE IF NOT EXISTS push_queue (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,
   kind    TEXT NOT NULL CHECK (kind IN ('ask', 'alarm')),
   item    INTEGER NOT NULL,
+  revision INTEGER,
   state   TEXT,
   created TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 CREATE TRIGGER IF NOT EXISTS push_a_new_ask AFTER INSERT ON asks
   WHEN NEW.answer IS NULL AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
-  INSERT INTO push_queue (kind, item) VALUES ('ask', NEW.id);
+  INSERT INTO push_queue (kind, item, revision) VALUES ('ask', NEW.id, NEW.revision);
 END;
 CREATE TRIGGER IF NOT EXISTS push_an_ask_asked_again AFTER UPDATE OF revision ON asks
   WHEN NEW.revision IS NOT OLD.revision AND NEW.answer IS NULL AND NEW.withdrawn IS NULL
   AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
-  INSERT INTO push_queue (kind, item) VALUES ('ask', NEW.id);
+  INSERT INTO push_queue (kind, item, revision) VALUES ('ask', NEW.id, NEW.revision);
 END;
 CREATE TRIGGER IF NOT EXISTS push_an_alarm AFTER UPDATE OF state ON tasks
   WHEN NEW.state IN ('blocked', 'failed') AND NEW.state IS NOT OLD.state
