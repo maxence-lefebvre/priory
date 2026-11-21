@@ -1335,7 +1335,7 @@ const SCHEMA_78: &str = "PRAGMA user_version = 78;";
 // Stacked batch entries: a hold condition met once another task waits on its open pull request,
 // and the task whose branch an entry starts from and bases its pull request on.
 const SCHEMA_79: &str = concat!(
-    "ALTER TABLE tasks ADD COLUMN base_task INTEGER REFERENCES tasks (id);
+    "ALTER TABLE tasks ADD COLUMN base_task INTEGER;
 CREATE TABLE holds_79 (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   task        INTEGER NOT NULL REFERENCES tasks (id),
