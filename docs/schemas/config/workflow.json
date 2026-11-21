@@ -47,6 +47,26 @@
       },
       "type": "object"
     },
+    "PlanField": {
+      "description": "A field a plan result carries beside its summary.",
+      "oneOf": [
+        {
+          "const": "goal",
+          "description": "What the change must achieve.",
+          "type": "string"
+        },
+        {
+          "const": "testing",
+          "description": "How the change is tested: the method, not the checks.",
+          "type": "string"
+        },
+        {
+          "const": "verification",
+          "description": "The commands or checks that prove the change.",
+          "type": "string"
+        }
+      ]
+    },
     "Proof": {
       "description": "A check the daemon makes before it accepts a model step's outcome.",
       "oneOf": [
@@ -139,6 +159,14 @@
           "description": "The answers a person picks from at a human step.",
           "items": {
             "type": "string"
+          },
+          "type": "array"
+        },
+        "plan_requires": {
+          "default": [],
+          "description": "The fields of a plan result that this model step's prompt or agent must ask for.",
+          "items": {
+            "$ref": "#/definitions/PlanField"
           },
           "type": "array"
         },

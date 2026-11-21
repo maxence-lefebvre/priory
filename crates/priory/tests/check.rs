@@ -332,6 +332,34 @@ fn a_model_step_must_name_an_existing_agent() {
     );
 }
 
+#[test]
+fn plan_requires_needs_each_field_in_the_prompt_or_the_agent() {
+    let required = WORKFLOW.replace(
+        "prompt = \"Implement the issue.\"",
+        "prompt = \"Plan the goal and its verification.\"\nplan_requires = [\"goal\", \"testing\", \"verification\"]",
+    );
+
+    let outcome = check(&factory(
+        "plan-requires",
+        &with("workflows/implement.toml", &required),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "workflows/implement.toml:4: step `implement`: `plan_requires` names `testing`, which neither the step's prompt nor its agent's instructions mention\n"
+    );
+    let met = required.replace("goal and its", "goal, its testing and its");
+    assert_eq!(
+        check(&factory(
+            "plan-requires-met",
+            &with("workflows/implement.toml", &met)
+        ))
+        .code,
+        0
+    );
+}
+
 fn workflow_with(name: &str, from: &str, to: &str) -> Outcome {
     let workflow = WORKFLOW.replace(from, to);
     check(&factory(name, &with("workflows/implement.toml", &workflow)))
