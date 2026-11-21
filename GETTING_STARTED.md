@@ -252,6 +252,11 @@ If you work in [Herdr](docs/adapters/herdr.md), its Desk panel shows the same de
 panel lists the same asks and answers them through these verbs. `adapters/herdr/install` links
 them into Herdr.
 
+If you review on GitHub, the [GitHub extension](adapters/github/README.md) shows the task that holds
+a pull request on its page, answers its asks, says to its agent, and walks you through the agent's
+review guide. Load `adapters/github/` unpacked in Chrome or Edge, and add its origin to
+[`[serve] extension_origins`](docs/reference/factory.md#serve).
+
 The web view's Desk shows the same desk. It opens on the next thing: the alarm or ask that ranks
 first, with why it ranks there. Under the list, Since you looked shows what happened since your last
 visit, and opening the Desk records the visit as `priory seen` does.

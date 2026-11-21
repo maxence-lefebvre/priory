@@ -21,6 +21,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/inbox` | `priory inbox --json` | `inbox`: an array of [inbox messages](#inbox) |
 | `/api/asks?band=BAND&risk=RISK&all=1` | `priory asks --json --band BAND --risk RISK` | an object: `asks`, an array of [asks](#asks), `bands` and `older` |
 | `/api/tasks?all=1` | `priory tasks --json` | `tasks`: an array of [tasks](#tasks), and `older` |
+| `/api/tasks?pr=RESOURCE` | | `tasks`: the active tasks that hold a pull request. See [Tasks that hold a pull request](#tasks-that-hold-a-pull-request) |
 | `/api/tasks/{id}` | `priory task ID --json` | one [task in detail](#task-in-detail) |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
 | `/api/views` | | an object: [Views](#views) |
@@ -62,9 +63,9 @@ or a reason, is untrusted: render it as text.
 | ---- | ---- |
 | `200` | The endpoint answered |
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
-| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
+| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`, or a `pr` that is not a pull request such as `github:owner/repo#7`; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
-| `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site |
+| `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site, and that is not one of [`[serve] extension_origins`](factory.md#serve) |
 | `404` | No such path, task, report, ask or web view file |
 | `405` | `POST` on a path that reads, or `GET` on a write. The `Allow` header names the method |
 | `408` | The request sent no byte within 1 second, or took over 5 seconds in all |
@@ -310,6 +311,28 @@ none. Each entry:
 `progress` is null until the task's agent or a person publishes one. Then it is an object with any
 of `goal`, `acceptanceCriteria` (each `{ "id", "description", "required" }`), `latestChange` and
 `nextAction`. See the `progress` tool in [tools.md](../daemon/tools.md).
+
+## Tasks that hold a pull request
+
+`/api/tasks?pr=RESOURCE` returns the active tasks that hold one pull request, as `{"revision": N,
+"tasks": [...]}`. `RESOURCE` is the pull request's resource, percent-encoded, such as
+`github%3Aowner%2Frepo%237` for `github:owner/repo#7`. The GitHub extension reads it to find the
+task to show, and to know when no task holds the pull request at all. A task can hold it in several
+ways at once (see [Resources in routing.md](../daemon/routing.md#resources-what-a-task-owns)).
+
+Each task has `id`, `key`, `workflow`, `step`, `state` and `holds`, the ways it holds the pull
+request, in this order:
+
+| `holds` | The task |
+| ------- | -------- |
+| `key` | has the pull request as its key |
+| `stack` | opened or claimed it: it is in the task's [stack](#tasks) |
+| `wait` | waits, or waited, on it |
+| `subscription` | subscribes to it now |
+| `review` | has its review key, `github:owner/repo:pulls/N:review:REVIEWER` |
+
+The tasks that hold it by `key` or `stack`, which own its branch, come first, then the others, each
+group by id. An empty `tasks` means no active task holds the pull request.
 
 ## Task in detail
 

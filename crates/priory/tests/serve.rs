@@ -1145,7 +1145,11 @@ fn the_tasks_endpoint_finds_each_active_task_holding_a_pull_request_and_how_it_h
         api(&address, "/api/tasks?pr=github%3Aowner%2Frepo%23999")["tasks"],
         json!([])
     );
-    for bad in ["linear:ENG-7", "github%3Aowner%237", "github%3Aowner%2Frepo%23x"] {
+    for bad in [
+        "linear:ENG-7",
+        "github%3Aowner%237",
+        "github%3Aowner%2Frepo%23x",
+    ] {
         let (status, body) = get(&address, &format!("/api/tasks?pr={bad}"), Some(TOKEN));
         assert_eq!(status, 400, "{bad}: {body}");
     }

@@ -483,7 +483,15 @@ mod tests {
                 Reply::json(200, "{}".to_owned())
             }
         };
-        serve(listener, "t".to_owned(), Vec::new(), &[], |_| false, handler).unwrap();
+        serve(
+            listener,
+            "t".to_owned(),
+            Vec::new(),
+            &[],
+            |_| false,
+            handler,
+        )
+        .unwrap();
 
         for _ in 0..=WORKERS {
             assert_eq!(status(address, "/panic"), "500");

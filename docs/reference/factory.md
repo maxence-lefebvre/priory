@@ -96,6 +96,7 @@ endpoints. With no `[serve]` table, nothing listens.
 | `token_env` | string | no | `"PRIORY_TOKEN"` | The environment variable that holds the token clients send. Never the token itself | `"PRIORY_WEB_TOKEN"` |
 | `web` | boolean | no | `true` | Serve the web view's files as well as `/api`. `false` serves only `/api` | `false` |
 | `public` | boolean | no | `false` | Allow a `listen` address beyond this machine | `true` |
+| `extension_origins` | array of strings | no | `[]` | The browser extensions whose pages may write, each an exact origin: `chrome-extension://` and the extension's 32-letter id. They still send the token. `priory check` refuses any other value | `["chrome-extension://ekngedcpijdeijlmffkeehilmafoikkm"]` |
 
 `public = true` exposes the factory's state to the network the address reaches. Whether a machine
 may do that is the factory owner's choice, per machine. The server speaks plain HTTP, with no TLS.

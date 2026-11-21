@@ -216,9 +216,11 @@ impl Serve {
     /// extension origin that is not exactly a Chromium extension's.
     pub fn allows(&self, listen: SocketAddr) -> Result<(), String> {
         let id = |origin: &str| {
-            origin.strip_prefix("chrome-extension://").is_some_and(|id| {
-                id.len() == 32 && id.bytes().all(|byte| (b'a'..=b'p').contains(&byte))
-            })
+            origin
+                .strip_prefix("chrome-extension://")
+                .is_some_and(|id| {
+                    id.len() == 32 && id.bytes().all(|byte| (b'a'..=b'p').contains(&byte))
+                })
         };
         if let Some(bad) = self.extension_origins.iter().find(|origin| !id(origin)) {
             return Err(format!(

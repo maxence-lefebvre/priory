@@ -354,8 +354,7 @@ fn route(
             })
         }
         "/api/tasks" if query.starts_with("pr=") => {
-            let Some((repo, number)) = decode(&query[3..]).as_deref().and_then(pull_request)
-            else {
+            let Some((repo, number)) = decode(&query[3..]).as_deref().and_then(pull_request) else {
                 return Reply::error(400, "pr is a pull request such as github:owner/repo#7");
             };
             listing::revised(db, "tasks", |db| {
@@ -1059,8 +1058,17 @@ mod tests {
 
     #[test]
     fn a_pr_parameter_names_a_github_pull_request() {
-        assert_eq!(pull_request("github:o-1/r.s#7"), Some(("o-1/r.s".to_owned(), 7)));
-        for bad in ["github:o/r", "github:o#7", "github:/r#7", "github:o/r/x#7", "linear:E-7"] {
+        assert_eq!(
+            pull_request("github:o-1/r.s#7"),
+            Some(("o-1/r.s".to_owned(), 7))
+        );
+        for bad in [
+            "github:o/r",
+            "github:o#7",
+            "github:/r#7",
+            "github:o/r/x#7",
+            "linear:E-7",
+        ] {
             assert_eq!(pull_request(bad), None, "{bad}");
         }
     }
