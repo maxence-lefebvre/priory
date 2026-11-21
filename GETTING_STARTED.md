@@ -276,7 +276,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory deliver ASK (--retry \| --clear)` | Sends a failed answer delivery again, or clears it from the desk |
 | `priory snooze KIND ID --for 2h`, `--until TIME`, `--clear` | Hides a desk item until then, or brings it back |
 | `priory todo add TEXT [--band B] [--due TIME]`, `priory todo done ID`, `priory todo list` | Adds a to-do of your own to the desk, marks it done, or lists them |
-| `priory tasks [--lane LANE] [--grade GRADE]` | Lists tasks in start order, with their grade |
+| `priory tasks [--lane LANE] [--grade GRADE]` | Lists tasks in start order, with their grade, and other runners' tasks in a factory of several |
 | `priory runs [--json]` | Lists every run; `--json` adds its task key, outcome, model and tokens |
 | `priory batch add [DIR] ISSUE...`, `priory batch show [BATCH] [--json]`, `priory batch edit BATCH --expected N ...` | Hands several issues to a planner that orders them under one go, shows each batch and its entries, and drops or moves an entry before the go (see [batches.md](docs/daemon/batches.md)) |
 | `priory tasks --graph [TASK] [--mermaid]` | Draws how tasks relate, as a tree or a Mermaid flowchart |
@@ -334,7 +334,7 @@ they start, with why each one waits. Its Move menu moves a task to the top of it
 one, or to another band, as `priory move` does. `priory queue` prints the same queue.
 
 A workflow can write a report for you, such as a morning dossier: `priory report show` prints the
-last one. The web view's Reports panel shows it, and takes its picks and row comments as
+last one, and `priory report list` lists the earlier ones. The web view's Reports panel shows it, and takes its picks and row comments as
 `priory report pick` and `priory report comment` do. See [docs/daemon/reports.md](docs/daemon/reports.md).
 
 The web view's Costs panel shows what the factory spent this week against last week, each day, and
