@@ -425,3 +425,7 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
   .report .rbody .jump { flex-direction: column; top: 0; border: 0; border-right: 1px solid var(--line); padding: 8px 12px; overflow: visible; }
   .report .rbody .jump a { justify-content: space-between; border-radius: var(--radius-md); }
 }
+@media (pointer: coarse) {
+  .rpick { gap: 8px; }
+  .rpick button { min-height: var(--control); }
+}

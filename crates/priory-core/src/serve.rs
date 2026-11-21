@@ -666,9 +666,13 @@ fn refusal(db: &Connection, sent: Sent, refused: &str) -> Reply {
 }
 
 /// The reply to a pick the daemon refused: `404` once no report holds it, `409` once its report
-/// moved past the revision sent or another choice took it. A pick recorded with this option, whose
-/// request then failed to publish, gets `422`, as does any other refusal.
+/// moved past the revision sent or another choice took it. A pick this write recorded, whose request
+/// then failed to publish, gets `422`, as does any other refusal.
 fn pick_refusal(db: &Connection, pick: &str, option: &str, sent: i64, refused: &str) -> Reply {
+    // `sections::pick` words a recorded pick so, whatever followed it.
+    if refused.starts_with(&format!("pick {pick} is {option} at revision ")) {
+        return Reply::error(422, refused);
+    }
     let found = db
         .query_row(
             "SELECT reports.revision, json_extract(row.value, '$.pick.chosen')
@@ -681,7 +685,6 @@ fn pick_refusal(db: &Connection, pick: &str, option: &str, sent: i64, refused: &
         .optional();
     match found {
         Ok(None) => Reply::error(404, refused),
-        Ok(Some((_, Some(chosen)))) if chosen == option => Reply::error(422, refused),
         Ok(Some((at, chosen))) if at != sent || chosen.is_some() => Reply::error(409, refused),
         Ok(Some(_)) => Reply::error(422, refused),
         Err(error) => Reply::error(500, &error.to_string()),

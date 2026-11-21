@@ -3373,6 +3373,8 @@ fn the_pick_endpoint_records_a_choice_and_tells_a_stale_one_by_409() {
         serde_json::from_str::<Value>(&reply).unwrap()["ok"],
         "pick 2026-11-20_sentry_fnd-2409 is Later at revision 2"
     );
+    let (same, reply) = pick("Later", 1);
+    assert_eq!(same, 409, "{reply}");
     let (again, reply) = pick("Take", 2);
     assert_eq!(again, 409, "{reply}");
     assert!(reply.contains("already Later"), "{reply}");

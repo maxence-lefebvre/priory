@@ -120,6 +120,8 @@ const state = {
   // comment field open on a row, with its text, and whether a comment verb is in flight.
   reportPending: null,
   reportNotices: new Map(),
+  // A pick's or a comment's outcome once its row has left the report.
+  reportFlash: null,
   compose: null,
   remarking: false,
   // The Add sheet: its draft and chips, the server's defaults, and where the last send got to.
@@ -175,7 +177,7 @@ async function refresh() {
     if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return true;
     const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
     state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, older, report };
-    keepPick();
+    acceptReport();
     state.task = null;
     state.snapshot = snapshot;
     announce(before);
@@ -912,29 +914,29 @@ function reportsPage(compact) {
   const jump = html`<nav class="jump" aria-label="Sections">${model.sections.map((section, i) => html`<a href="#report-${i}" aria-current="${i === 0 ? "true" : "false"}">${section.title}<span class="num">${section.count}</span></a>`)}</nav>`;
   const sections = model.sections.map((section, i) => html`<section class="sect" id="report-${i}" aria-labelledby="report-${i}-title">
     <h2 class="sh" id="report-${i}-title">${section.title}<span class="meta num">${section.count}</span></h2>
-    <ol class="rrows">${section.rows.map((row) => reportRow(model, row))}</ol></section>`);
+    <ol class="rrows">${section.rows.map(reportRow)}</ol></section>`);
   const pending = state.reportPending;
   const sending = pending ? html`<div class="sending" role="status"><span>Picking <b>"${pending.option}"</b></span>${pending.sending ? "" : html`<button class="btn secondary" data-action="pick-undo">Undo</button>`}</div>` : "";
   return html`${head}<div class="panel report" role="region" aria-label="Reports"><div class="scroll" data-sections>
     <header class="rhead"><p class="greet">${model.greeting}</p><p class="meta">${model.date}, <a href="/tasks/${model.task}">task ${model.task}</a>. ${model.since}</p>
+      ${state.reportFlash ? html`<p class="warnline" role="status">${state.reportFlash}</p>` : ""}
       ${total ? html`<p class="prog"><progress max="${total}" value="${agreed}" aria-label="Picks agreed"></progress><span class="num">${label}</span></p>` : ""}</header>
     <div class="rbody">${jump}<div>${sections}</div></div></div>${sending}</div>`;
 }
 
-function reportRow(model, row) {
-  const at = reportRows(model).indexOf(row);
+function reportRow(row) {
   const facts = [row.meta, row.owner].filter(Boolean);
   const notice = state.reportNotices.get(row.id);
   return html`<li class="rrow">
     <p class="rl1">${row.tile ? tile(row.tile, "sm") : ""}${row.key ? html`<span class="mono">${autolinked(row.key)}</span>` : ""}<span class="rtext">${autolinked(row.text)}</span></p>
     ${facts.length || row.time ? html`<p class="rl2">${facts.map((fact) => html`<span>${fact}</span>`)}${row.time ? html`<span>${row.time}</span>` : ""}</p>` : ""}
-    ${row.pick ? reportPick(row, at) : ""}
+    ${row.pick ? reportPick(row) : ""}
     ${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}
-    ${row.threads.map((thread) => reportThread(row, thread, at))}${reportCompose(row, at)}</li>`;
+    ${row.threads.map((thread) => reportThread(row, thread))}${reportCompose(row)}</li>`;
 }
 
-// Each button has an id of its row's place, so focus finds it again after a redraw.
-function reportPick(row, at) {
+// Each button's id names its pick, thread or row, so focus finds it again after a redraw.
+function reportPick(row) {
   const { pick } = row;
   if (pick.state !== "open") {
     return html`<p class="note rpicked">${icon("check", "s15")}<span><b>Picked ${pick.chosen}.</b> ${pick.note}</span></p>`;
@@ -942,32 +944,39 @@ function reportPick(row, at) {
   const pending = state.reportPending;
   const mine = pending?.pick === pick.id ? pending : null;
   const off = Boolean(state.failed || (pending && !mine));
-  return html`<div class="rpick" role="group" aria-label="Pick for ${row.key || row.text}">${pick.options.map((option, i) => {
+  return html`<div class="rpick" role="group" aria-label="Pick for ${row.key || row.text}">${pick.options.map((option) => {
     const chosen = mine?.option === option.label;
-    return html`<button id="r${at}-pick-${i}" class="${chosen ? "chosen" : ""}" data-action="pick" data-row="${row.id}" data-option="${option.label}" aria-pressed="${chosen ? "true" : "false"}" aria-disabled="${off || mine ? "true" : "false"}">${chosen || (!mine && option.recommended) ? icon("check", "s15") : ""}${option.label}</button>`;
+    return html`<button id="pick-${encodeURIComponent(pick.id)}-${encodeURIComponent(option.label)}" class="${chosen ? "chosen" : ""}" data-action="pick" data-row="${row.id}" data-option="${option.label}" aria-pressed="${chosen ? "true" : "false"}" aria-disabled="${off || mine ? "true" : "false"}">${chosen || (!mine && option.recommended) ? icon("check", "s15") : ""}${option.label}</button>`;
   })}</div>${state.failed ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to pick.</span></p>` : pick.note ? html`<p class="note">${pick.note}</p>` : ""}`;
 }
 
-function reportThread(row, thread, at) {
+function reportThread(row, thread) {
   const off = state.failed || state.remarking ? "true" : "false";
   if (thread.resolved) {
-    return html`<p class="note rresolved">${icon("check", "s15")}<span>Resolved: ${thread.text}</span><button id="r${at}-reopen-${thread.id}" class="ghost" data-action="reopen" data-row="${row.id}" data-comment="${thread.id}" aria-disabled="${off}">Reopen</button></p>`;
+    return html`<p class="note rresolved">${icon("check", "s15")}<span>Resolved: ${thread.text}</span><button id="reopen-${thread.id}" class="ghost" data-action="reopen" data-row="${row.id}" data-comment="${thread.id}" aria-disabled="${off}">Reopen</button></p>`;
   }
   const entry = (comment) => html`<li><p class="rwho"><b>${comment.author}</b>${comment.when ? html` <span>${comment.when}</span>` : ""}</p><p class="rsay">${comment.text}</p></li>`;
   return html`<div class="rthread" aria-label="Thread ${thread.id}"><ol>${entry(thread)}${thread.replies.map(entry)}</ol>
-    <p class="racts"><button id="r${at}-reply-${thread.id}" class="ghost" data-action="reply" data-row="${row.id}" data-comment="${thread.id}" aria-disabled="${off}">Reply</button><button id="r${at}-resolve-${thread.id}" class="ghost" data-action="resolve" data-row="${row.id}" data-comment="${thread.id}" aria-disabled="${off}">Resolve</button></p></div>`;
+    <p class="racts"><button id="reply-${thread.id}" class="ghost" data-action="reply" data-row="${row.id}" data-comment="${thread.id}" aria-disabled="${off}">Reply</button><button id="resolve-${thread.id}" class="ghost" data-action="resolve" data-row="${row.id}" data-comment="${thread.id}" aria-disabled="${off}">Resolve</button></p></div>`;
 }
 
 // A row without its own id takes no comments.
-function reportCompose(row, at) {
+function reportCompose(row) {
   if (!row.target) return "";
   const compose = state.compose?.row === row.id ? state.compose : null;
   const off = state.failed ? "true" : "false";
-  if (!compose) return html`<p class="racts"><button id="r${at}-compose" class="ghost" data-action="compose" data-row="${row.id}" aria-disabled="${off}">${icon("message-text", "s15")}Comment</button></p>`;
+  if (!compose) return html`<p class="racts"><button id="compose-${encodeURIComponent(row.id)}" class="ghost" data-action="compose" data-row="${row.id}" aria-disabled="${off}">${icon("message-text", "s15")}Comment</button></p>`;
   const verb = compose.replyTo == null ? "Comment" : "Reply";
   return html`<form class="writeform rcompose" data-action="remark">${compose.replyTo == null ? "" : html`<p class="note">Replying in thread ${compose.replyTo}</p>`}
     <label class="sr" for="report-draft">${verb} on this row</label><textarea id="report-draft" name="text" rows="2" placeholder="${compose.replyTo == null ? "Comment on this row" : "Reply in this thread"}">${compose.text}</textarea>
     <p class="racts"><button type="button" class="btn secondary" data-action="compose-cancel">Cancel</button><button class="btn primary" aria-disabled="${state.failed || state.remarking ? "true" : "false"}">${verb}</button></p></form>`;
+}
+
+// A note under its row, or above the sections once the row has left the report or another task's
+// report replaced it.
+function noteRow(id, text, task = state.data.report?.report.task) {
+  if (task === state.data.report?.report.task && reportRowOf(id)) state.reportNotices.set(id, text);
+  else state.reportFlash = text;
 }
 
 const reportRowOf = (id) => (state.data.report ? reportRows(dossier(state.data.report, { now: Date.now() })).find((row) => row.id === id) : null);
@@ -977,6 +986,7 @@ function pick(target) {
   const row = reportRowOf(target.dataset.row);
   if (!row || row.pick?.state !== "open" || state.reportPending || state.failed) return;
   state.reportNotices.delete(row.id);
+  state.reportFlash = null;
   const pending = { row: row.id, task: state.data.report.report.task, pick: row.pick.id, option: target.dataset.option, revision: state.data.report.report.revision, sending: false };
   pending.timer = setTimeout(() => sendPick(pending), UNDO_MS);
   state.reportPending = pending;
@@ -990,15 +1000,23 @@ function undoPick() {
   render();
 }
 
-// A new read cancels a pick still waiting out its Undo once its report no longer offers it.
-function keepPick() {
+// A new read cancels a pick still waiting out its Undo once its report no longer offers it. Another
+// task's report drops the comment field and the notes, which belong to rows of the old one.
+function acceptReport() {
+  const task = state.data.report?.report.task;
+  if (state.compose && state.compose.task !== task) state.compose = null;
+  if (task !== state.reportTask) {
+    state.reportNotices.clear();
+    state.reportFlash = null;
+    state.reportTask = task;
+  }
   const pending = state.reportPending;
   if (!pending || pending.sending) return;
   const row = state.data.report?.report.task === pending.task ? reportRowOf(pending.row) : null;
   if (row?.pick?.id === pending.pick && row.pick.state === "open") return;
   clearTimeout(pending.timer);
   state.reportPending = null;
-  if (row) state.reportNotices.set(row.id, `${pending.option} was not sent: the report changed before it went.`);
+  noteRow(pending.row, `${pending.option} was not sent: the report changed before it went.`, pending.task);
 }
 
 async function sendPick(pending) {
@@ -1011,7 +1029,7 @@ async function sendPick(pending) {
   await refresh();
   if (status === 200) return render();
   const fresh = status === 409 ? state.data.report : null;
-  state.reportNotices.set(pending.row, `${pending.option}: ${writeRefusal(status, body, () => refusal(pending, fresh, body.error))}`);
+  noteRow(pending.row, `${pending.option}: ${writeRefusal(status, body, () => refusal(pending, fresh, body.error))}`, pending.task);
   render();
 }
 
@@ -1025,37 +1043,40 @@ function writeRefusal(status, body, refused = () => `Not sent: ${body.error || `
 function compose(target) {
   const replyTo = target.dataset.comment ? Number(target.dataset.comment) : null;
   const same = state.compose?.row === target.dataset.row;
-  state.compose = { row: target.dataset.row, replyTo, text: same ? state.compose.text : "" };
+  state.compose = { task: state.data.report.report.task, row: target.dataset.row, replyTo, text: same ? state.compose.text : "" };
   render();
   document.getElementById("report-draft")?.focus();
 }
 
-// Sends one comment verb; a refusal says why under the row and keeps the draft.
-async function remark(rowId, path, body) {
+// Sends one comment verb; a refusal says why under the row and keeps the draft. `sent` runs before
+// the read that follows, so a second press cannot send the same text again.
+async function remark(rowId, path, body, sent = () => {}) {
   if (state.remarking || state.failed) return;
   state.remarking = true;
   state.reportNotices.delete(rowId);
   render();
   const { status, body: answered } = await post(path, body).catch(() => ({ status: 0, body: { error: "the connection dropped" } }));
-  state.remarking = false;
-  if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
-  if (status !== 200) state.reportNotices.set(rowId, writeRefusal(status, answered));
+  if (status === 401) {
+    state.remarking = false;
+    return signOut("The daemon refused this token. Paste the current one.");
+  }
+  if (status === 200) sent();
+  else noteRow(rowId, writeRefusal(status, answered));
   await refresh();
+  state.remarking = false;
   render();
-  return status === 200;
 }
 
 async function submitRemark() {
   const sent = state.compose;
   const row = sent && reportRowOf(sent.row);
   const text = sent?.text.trim();
-  if (!row?.target || !text) return;
-  const ok = await remark(row.id, ...(sent.replyTo == null
-    ? ["/api/reports/comment", { row: row.target, text, revision: state.data.report.report.revision }]
-    : ["/api/reports/reply", { comment: sent.replyTo, text }]));
+  if (!row?.target || !text || state.remarking) return;
   // Text typed while it was in flight stays as the next draft.
-  if (ok && state.compose === sent && sent.text.trim() === text) state.compose = null;
-  render();
+  const done = () => { if (state.compose === sent && sent.text.trim() === text) state.compose = null; };
+  await remark(row.id, ...(sent.replyTo == null
+    ? ["/api/reports/comment", { row: row.target, text, revision: state.data.report.report.revision }]
+    : ["/api/reports/reply", { comment: sent.replyTo, text }]), done);
 }
 
 function reportAct(target) {
@@ -1360,7 +1381,8 @@ function render() {
   if (state.renderedKey) state.scrolls.set(state.renderedKey, [...app.querySelectorAll(".scroll")].map((element) => element.scrollTop));
   const focused = focusKey(document.activeElement);
   const typed = app.querySelector("#token")?.value;
-  const caret = ["draft", "report-draft"].includes(document.activeElement?.id) ? [document.activeElement.id, document.activeElement.selectionStart] : undefined;
+  const field = ["draft", "report-draft"].includes(document.activeElement?.id) ? document.activeElement : null;
+  const caret = field ? [field.id, field.selectionStart, field.selectionEnd, field.selectionDirection] : undefined;
   state.observers.forEach((observer) => observer.disconnect());
   state.observers = [];
   if (state.armed && (!state.token || selectedAsk() !== String(state.armed.id))) disarm();
@@ -1376,7 +1398,7 @@ function render() {
   app.querySelectorAll(".scroll").forEach((element, i) => { element.scrollTop = scrolls[i] || 0; });
   if (typed && app.querySelector("#token")) app.querySelector("#token").value = typed;
   if (focused) [...app.querySelectorAll(focused)].find((element) => !element.closest("[inert]"))?.focus({ preventScroll: true });
-  if (caret !== undefined) app.querySelector(`#${caret[0]}`)?.setSelectionRange(caret[1], caret[1]);
+  if (caret !== undefined) app.querySelector(`#${caret[0]}`)?.setSelectionRange(caret[1], caret[2], caret[3]);
   for (const row of app.querySelectorAll("tr[data-href]")) row.addEventListener("click", () => go(row.dataset.href));
   watchSections(app);
   // The sheet lives outside #app; it redraws when the connection drops or comes back under it.
