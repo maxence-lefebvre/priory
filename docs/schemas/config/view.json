@@ -78,7 +78,8 @@
         "runs",
         "terminal",
         "workflow",
-        "reports"
+        "reports",
+        "costs"
       ],
       "type": "string"
     }

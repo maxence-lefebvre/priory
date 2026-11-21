@@ -184,7 +184,7 @@ prices them from the same `prices.toml` in `DIR` (default: the current folder).
   A pull request counts once, on the local day of its first merged close. The split has no merges.
 
 `--json` prints one object, which `GET /api/costs` also answers (see
-[the serve reference](../reference/serve.md#costs)).
+[the serve reference](../reference/serve.md#costs)). The web view's Costs panel draws it.
 
 Known limits:
 
@@ -309,7 +309,8 @@ its own run, and the rest at the task's end. A task that ended before the state 
 ends at its last state change.
 
 `--json` prints one object, which `GET /api/attention` also answers (see
-[the serve reference](../reference/serve.md#attention)).
+[the serve reference](../reference/serve.md#attention)). The web view's Costs panel draws it
+beside the costs.
 
 Known limits:
 
