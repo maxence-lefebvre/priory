@@ -425,7 +425,7 @@ one saved view, **Unrouted**, which counts the events of a task's resources it l
 `owned` groups of `/api/inbox?unrouted=1`, one per resource, newest first. A group shows the
 resource in mono with its event count, then its task as a caption line: state tile, "task 12"
 linking to the task page, state and key. Then its 5 newest events as history rows (`queued` tile,
-type in bold, subject, the event's first line in `--text-2` under them, time), and "and 3 older"
+type in plain words in bold, such as "Linear issue updated" for `linear.issue.updated`, subject, the event's first line in `--text-2` under them, time), and "and 3 older"
 past that. Under them, the one action that routes the next event, by the task's state: the task
 page's **Revive** (armed, as there) for a failed or dropped task; **Request a task** for a done
 one, which opens the [Add](#add) sheet with the task's workflow and the group's `request_text`,
@@ -435,7 +435,9 @@ thread."); **Subscribe task 12** for an active one (`POST /api/subscribe` with t
 Inbox read was at). The daemon's sentence shows under the row, as a
 desk action's note does. A last `--text-2` line counts the events no task ever owned: "No task
 ever owned: 41 github events, 6 slack events." With no owned group: "No event of a task's resource
-went unrouted. An event about an ended task's pull request or issue shows here."
+went unrouted. An event about an ended task's pull request or issue shows here." Events open
+no detail, so the empty drawer beside the panel says "Open an event's task to read what the event
+did."
 
 ### Add
 
@@ -797,7 +799,8 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
 
 ### Task detail and workflow grid
 
-- Context line: task key in mono, the task's state tile and word, workflow, lane, band.
+- Context line: task key in mono, the task's state tile and word, workflow, lane, band, and
+  "batch 4" linking to the batch page when the task is a batch's entry or planning task.
 - Title in `--type-task`, then the task's reason in its role's text color.
 - **Actions**, in `.btn secondary`: Resume and Cancel for a blocked task, Revive for a failed or
   dropped one, Cancel for any other active task. Cancel and Revive arm on the first tap, as a
@@ -815,11 +818,13 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
   code steps, `user` for human steps. Done steps show a check in `--ok-text`. The current step is
   solid `--emph` with a live dot. Future steps are in `--text-3`. An irreversible step has a
   1.5 px `--danger-text` edge and the `lock` icon.
+- **Feedback**, in the pull request section: each review feedback item the agent sorted, as a
+  history row with its link and its class in plain words: "trivial", "nothing to do" or "your call".
 - **Inbox**, after the pull request: the events routed to the task, newest first, at most 20, as
   history rows. Each shows a tile for its prompt (`done` delivered, `queued` still queued, `running`
   being typed, `prompt` unconfirmed, `dropped` withdrawn, `asleep` kept for the next run, `ready`
   otherwise), the type
-  in bold and the subject, then what it did under them in `--text-2`, worded as `priory task ID`
+  in plain words in bold, as in the Inbox panel, and the subject, then what it did under them in `--text-2`, worded as `priory task ID`
   prints it: "kept, still queued" or "woke, delivered as prompt, fired wait 3". Past 20, a note
   says "Latest 20 of 57. `priory task 7` lists every event."
 - Then the runs table and the terminal of the selected run.
@@ -828,8 +833,9 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
 
 ### Batch page and lane graph
 
-The batch page, `/batches/<id>`, opens from the desk's batch row. On a phone it sits under the Desk
-tab with a back link to the Desk; on wide screens it fills the list, as the task page does.
+The batch page, `/batches/<id>`, opens from the desk's batch row and from the task page of each of
+its tasks. On a phone it sits under the Tasks tab with a back link to the Tasks panel; on wide
+screens it fills the list, as the task page does.
 
 - Context line: the batch tile, the planning task's key in mono, which opens the task, the batch's
   state, lane, "went 5 h ago by max" and "plan rev 2".
