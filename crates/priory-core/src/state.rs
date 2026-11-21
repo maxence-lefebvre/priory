@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 79;
+const VERSION: i64 = 80;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1448,6 +1448,12 @@ CREATE TABLE IF NOT EXISTS runner (
 "
 );
 
+// The commit a task's worktree was first created from, so a later reader knows where it started.
+const SCHEMA_80: &str = "
+ALTER TABLE tasks ADD COLUMN base_sha TEXT;
+PRAGMA user_version = 80;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1459,7 +1465,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
-    SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79,
+    SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1471,6 +1477,17 @@ const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
 /// To the millisecond, so a wait's catch-up never takes an event of the prompt's second as later.
 pub(crate) const CONFIRMED: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+
+/// Stores `base` as the commit the task started from, unless it already has one.
+pub(crate) fn set_base(db: &Connection, task: i64, base: Option<&str>) -> rusqlite::Result<()> {
+    if let Some(base) = base {
+        db.execute(
+            "UPDATE tasks SET base_sha = ?2 WHERE id = ?1 AND base_sha IS NULL",
+            rusqlite::params![task, base],
+        )?;
+    }
+    Ok(())
+}
 
 /// Bumps the revision when a task ended over a day ago left the queue's `ended` list since the
 /// last call at `since`, which no write marks. The first call only notes the time.
