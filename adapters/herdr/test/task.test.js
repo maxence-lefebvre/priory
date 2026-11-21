@@ -84,8 +84,8 @@ test("the Priory bar opens a read-only terminal for Watch and a typing one for A
   herdr.reset();
   herdr.replies = { attach: "tmux attach" };
   const bar = new Tabs();
-  bar.init();
   const cx = context();
+  bar.init(cx);
   for (const readOnly of [true, false]) {
     herdr.shared.set("priory.attach", { task: 2, at: Date.now() + (readOnly ? 1 : 2), readOnly });
     draw(bar, cx);
@@ -99,8 +99,8 @@ test("the Priory bar opens the Task tab for a new request, and not for one left 
   herdr.reset();
   herdr.shared.set("priory.task.open", { task: 1, at: Date.now() - 60_000 });
   const bar = new Tabs();
-  bar.init();
   const cx = context();
+  bar.init(cx);
   draw(bar, cx);
   await settle();
   assert.deepEqual(herdr.runs, []);

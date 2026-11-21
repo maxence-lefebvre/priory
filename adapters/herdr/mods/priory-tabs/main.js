@@ -1,7 +1,9 @@
 import { View } from "gpui-kit";
 import { h_flex, Button } from "gpui-base";
-import { appHome, exec, focused, home as herdrHome, layout, notify, panes, readTextFile, run, settings, shared, spaces, theme as herdrTheme, window } from "herdr";
-import { buttons, reveal } from "./layout.js";
+import { createHash } from "crypto";
+import { unlink } from "fs/promises";
+import { appHome, checking, exec, focused, home as herdrHome, layout, layouts as layoutNames, nextCommand, notify, panes, readTextFile, run, settings, shared, spaces, theme as herdrTheme, window, writeTextFile } from "herdr";
+import { OWN_ID, buttons, layouts, reveal } from "./layout.js";
 import { priory } from "./priory.js";
 
 const theme = /** @type {() => Record<string, import("gpui-kit").Color>} */ (herdrTheme);
@@ -49,22 +51,88 @@ async function connect() {
   return { machine: on, home, client: priory({ exec, binary, on, factory: config.factory ?? null }) };
 }
 
+/** The 12 hex digits `adapters/herdr/layout` puts in a layout's root id. @param {string} views what `priory views --json` printed */
+const viewsHash = (views) => /** @type {string} */ (createHash("sha256").update(views.trim()).digest("hex")).slice(0, 12);
+
+/** The root id of a layout file's text when it is a string, or null. @param {string | null} text */
+function rootId(text) {
+  try {
+    const id = text == null ? null : JSON.parse(text).id;
+    return typeof id === "string" ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 export default class PrioryTabs extends View {
-  init() {
+  /** @param {import("gpui-kit").Context} cx */
+  init(cx) {
     /** @type {ReturnType<typeof connect> | null} */
     this.priory = null;
     // A request left in shared state by an earlier session must not attach, or open a task, on start.
     this.attached = /** @type {{ at?: number } | null} */ (shared("priory.attach"))?.at ?? 0;
     this.opened = /** @type {{ at?: number } | null} */ (shared("priory.task.open"))?.at ?? 0;
+    // herdr-app check runs init for real: no priory call.
+    if (checking()) return;
+    // The change notice's action, `priory-tabs.regenerate`, arrives here.
+    cx.spawn(async () => {
+      for (;;) if ((await nextCommand()) === "regenerate") await this.regenerate();
+    });
+    cx.spawn(async () => this.offerToRegenerate());
+  }
+
+  connect() {
+    // Connects on first use, and again after a failure, so a machine that comes back works.
+    return (this.priory ??= connect().catch((error) => { this.priory = null; throw error; }));
+  }
+
+  // Asks once, at start: a person changes views rarely, and the notice stays until clicked or closed.
+  async offerToRegenerate() {
+    const id = /** @type {{ id?: unknown } | null} */ (layout())?.id;
+    if (typeof id !== "string" || !OWN_ID.test(id)) return;
+    let views;
+    try {
+      views = await (await this.connect()).client.views();
+    } catch {
+      return;
+    }
+    if (id === `priory-generated-${viewsHash(views)}`) return;
+    notify({ title: "The view files changed", body: "Click to regenerate the Priory layouts from them.", level: "info", action: { name: "priory-tabs.regenerate" } });
+  }
+
+  // The same steps as `install` for the layouts, in the layouts folder of this Herdr. The installed priory.json is the frame.
+  async regenerate() {
+    try {
+      const folder = `${appHome()}/layouts`;
+      const views = await (await this.connect()).client.views();
+      const frame = await readTextFile(`${folder}/priory.json`);
+      if (!OWN_ID.test(rootId(frame) ?? "")) throw new Error("layouts/priory.json is not a layout this adapter wrote. Move it away, then run install again.");
+      const files = layouts(JSON.parse(views).views, JSON.parse(/** @type {string} */ (frame)), viewsHash(views));
+      /** @type {Record<string, string | null>} */
+      const old = {};
+      for (const file of Object.keys(files)) {
+        old[file] = await readTextFile(`${folder}/${file}`);
+        if (old[file] != null && !OWN_ID.test(rootId(old[file]) ?? "")) throw new Error(`layouts/${file} is not a layout this adapter wrote. Move it away, then regenerate again.`);
+      }
+      // priory.json last: a failed write leaves its old hash, so the bar offers again at the next start.
+      const order = Object.keys(files).sort((a, b) => Number(a === "priory.json") - Number(b === "priory.json"));
+      for (const file of order) await writeTextFile(`${folder}/${file}`, `${JSON.stringify(files[file], null, 2)}\n`, old[file]);
+      for (const name of layoutNames()) {
+        const file = `${name}.json`;
+        if (!name.startsWith("priory-") || Object.hasOwn(files, file)) continue;
+        if (OWN_ID.test(rootId(await readTextFile(`${folder}/${file}`)) ?? "")) await unlink(`${folder}/${file}`);
+      }
+      notify({ title: "Regenerated the Priory layouts", level: "success" });
+    } catch (error) {
+      notify({ title: "Can't regenerate the Priory layouts", body: error instanceof Error ? error.message : String(error), level: "error" });
+    }
   }
 
   // Another Priory mod asks for a task's terminal with setShared("priory.attach", { task, at: Date.now(), readOnly }).
   /** @param {number} task @param {import("herdr").SpaceInfo | undefined} space the space shown when asked @param {boolean} readOnly */
   async attach(task, space, readOnly) {
     try {
-      // Connects on first use, and again after a failure, so a machine that comes back works.
-      this.priory ??= connect().catch((error) => { this.priory = null; throw error; });
-      const { machine, home, client } = await this.priory;
+      const { machine, home, client } = await this.connect();
       if (!space || space.machine !== machine) throw new Error(`Open a space on ${machine ?? "this machine"}, where Priory runs, then attach again.`);
       const command = await client.attach(task, { readOnly });
       showMain();
