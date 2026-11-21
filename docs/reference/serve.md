@@ -319,7 +319,7 @@ group per resource, the group with the newest event first:
 | ----- | ---- | ------- |
 | `resource` | string | The resource, such as `github:owner/name#7` |
 | `task` | object | The newest task that owned it: `id`, `key`, `state`, `workflow` |
-| `events` | array | Its events, newest first: `seq`, `type`, `subject`, `time`, and `line`, the first line of its body, text or title, or null |
+| `events` | array | Its events, newest first: `seq`, `type`, `subject`, `time`, and `line`, the first line of its body, text or title, a check run's name and conclusion such as `test (ubuntu) failure`, or null |
 | `follow_up` | string or null | The command that routes its next event, each argument shell-quoted: `priory revive ID` for a failed or dropped task, `priory add --workflow WORKFLOW 'TEXT'` with the task's workflow and `request_text` for a done one, else `priory subscribe ID RESOURCE`. Null for a done task's resource that `request_text` cannot name, such as a Slack thread |
 | `request_text` | string or null | For a GitHub or Linear resource, the text of a new task keyed by it: `Follow up on URL after event SEQ`, the issue's URL, which `priory add` turns into the resource as key, and the newest event's sequence number, so each follow-up is a new request |
 
