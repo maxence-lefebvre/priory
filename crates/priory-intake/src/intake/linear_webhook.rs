@@ -23,7 +23,7 @@ pub struct LinearWebhook {
 impl LinearWebhook {
     /// Declares `factory.intake`, so a delivery can publish before the intake ever ran.
     pub fn new(secret: String, factory: &Factory) -> Result<Self, String> {
-        let bus = log::open().map_err(|error| error.to_string())?;
+        let bus = log::open(factory.log()).map_err(|error| error.to_string())?;
         bus.declare(&output()).map_err(|error| error.to_string())?;
         let triggers = factory
             .triggers

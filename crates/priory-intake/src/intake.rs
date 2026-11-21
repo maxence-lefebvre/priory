@@ -145,7 +145,7 @@ pub fn run(
         .copied()
         .filter(|(_, trigger)| trigger.reviewer.is_some())
         .collect();
-    let opened = log::open().map_err(|error| error.to_string())?;
+    let opened = log::open(factory.log()).map_err(|error| error.to_string())?;
     let bus = opened.as_ref();
     bus.declare(&output()).map_err(|error| error.to_string())?;
     // A source the triggers need that cannot start, such as one without its key, ends the intake;
