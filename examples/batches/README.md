@@ -1,8 +1,9 @@
 # Batches
 
 You hand several issues to a planner with `priory batch add`. It reads them and the code, orders
-them, and lists the ones already done. You answer one go. Each issue then becomes a task, and a task
-whose work needs another one's code starts once that one's pull request merged.
+them, and lists the ones already done. You answer one go. Each issue then becomes a task. A task whose
+work needs another one's code starts once that one's pull request merged, or, when both change the
+same files, stacks on that one's branch once its pull request waits on review.
 
 ## What it needs
 

@@ -208,11 +208,16 @@ pub fn check_repo(repo: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The task's worktree folder `name` on `priory/<name>`, from the default branch of Priory's own
-/// clone of `repo` (`owner/name`). The clone has no checkout: a person trusts it once in Claude, and
+/// The task's worktree folder `name` on `priory/<name>`, from the local branch `from` of Priory's
+/// own clone of `repo` (`owner/name`), else from its default branch. The clone has no checkout: a person trusts it once in Claude, and
 /// its worktrees inherit that trust. A worktree of that clone left on that branch by an interrupted
 /// start is reused.
-pub fn worktree(home: &Path, repo: &str, name: &str) -> Result<(PathBuf, String), String> {
+pub fn worktree(
+    home: &Path,
+    repo: &str,
+    name: &str,
+    from: Option<&str>,
+) -> Result<(PathBuf, String), String> {
     check_repo(repo)?;
     let clone = home.join("repos").join(repo);
     let branch = format!("priory/{name}");
@@ -259,11 +264,16 @@ pub fn worktree(home: &Path, repo: &str, name: &str) -> Result<(PathBuf, String)
     }
     run(git(&clone).args(["fetch", "--quiet", "origin"]))?;
     run(git(&clone).args(["remote", "set-head", "origin", "--auto"]))?;
+    let start = match from {
+        Some(from) if head(&clone, from).is_some() => format!("refs/heads/{from}"),
+        Some(from) => return Err(format!("branch {from} to start from is gone")),
+        None => "origin/HEAD".to_owned(),
+    };
     run(git(&clone)
         // Tracking the trunk would let a bare `git push` with `push.default=upstream` land on it.
         .args(["worktree", "add", "--quiet", "--no-track", "-b", &branch])
         .arg(&path)
-        .arg("origin/HEAD"))?;
+        .arg(start))?;
     Ok((path, branch))
 }
 

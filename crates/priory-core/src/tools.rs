@@ -1734,6 +1734,86 @@ fn merged(
     Ok((true, None))
 }
 
+/// Tells each task stacked on the merged pull request in `close`, the event `seq`, to rebase its
+/// open pull requests onto the merged one's base. A stacked task expects that retarget, so its
+/// bottom pull request's base becomes that base and no person is asked. The line fires the task's
+/// gate, reaches it while it runs, or reopens it when its checks already made it done.
+pub(crate) fn restack_stacked(
+    tx: &Transaction,
+    trace: &Trace,
+    seq: i64,
+    close: &Value,
+) -> rusqlite::Result<()> {
+    let (Some(repo), Some(number), Some(branch)) = (
+        close["repo"].as_str(),
+        close["pull_request"].as_u64(),
+        close["head_branch"].as_str(),
+    ) else {
+        return Ok(());
+    };
+    let resource = route::pull_request(repo, number);
+    let onto = close["base_branch"].as_str().unwrap_or("its base");
+    let stacked: Vec<(i64, String, String, String, i64)> = tx
+        .prepare(
+            "SELECT DISTINCT tasks.id, tasks.state, tasks.workflow, tasks.step, tasks.generation
+             FROM tasks JOIN pull_requests AS parent
+               ON parent.task = tasks.base_task AND parent.resource = ?1
+             JOIN pull_requests AS own ON own.task = tasks.id AND own.base = ?2
+               AND own.state = 'open'
+             WHERE tasks.state NOT IN ('failed', 'dropped') ORDER BY tasks.id",
+        )?
+        .query_map(params![resource, branch], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (task, state, workflow, step, generation) in stacked {
+        tx.execute(
+            "UPDATE pull_requests SET base = ?3 WHERE task = ?1 AND base = ?2 AND state = 'open'",
+            params![task, branch, onto],
+        )?;
+        let stack = crate::stack::of(tx, task)?;
+        let open: Vec<String> = stack
+            .iter()
+            .filter(|pull| pull.state == "open")
+            .map(|pull| format!("#{}", pull.number()))
+            .collect();
+        let text = format!("#{number} merged; rebase {} onto {onto}", listed(&open));
+        let gate: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM waits WHERE task = ?1 AND daemon AND fired IS NULL
+                 AND withdrawn IS NULL ORDER BY id LIMIT 1",
+                [task],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match (gate, state.as_str()) {
+            (Some(gate), _) => fire(tx, gate, task, &text, Some(seq))?,
+            (None, "running") => {
+                tx.execute(
+                    "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
+                    params![task, text],
+                )?;
+            }
+            (None, "done") => {
+                let bottom = stack.first().map(|pull| pull.resource.clone());
+                let bottom = bottom.unwrap_or_default();
+                let generation = reenter(tx, trace, task, &workflow, &step, generation, &bottom)?;
+                let text = format!("This done task reopened as generation {generation}: {text}");
+                wake_on(tx, task, &text, Some(seq))?;
+                trace::reopened(tx, trace, task, &bottom, Some(&bottom))?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Fires the daemon's checks wait `wait` on the event `seq` and marks its task done, or enters
 /// the step the gate waited to enter. A run a person's `say` started ends when the task is done or
 /// that step does.
@@ -3555,7 +3635,6 @@ pub(crate) fn unheard(
 /// step that opened its pull request, else its last step, with the feedback of the inbox entry
 /// `seq` as its prompt.
 pub(crate) fn reopen(tx: &Transaction, trace: &Trace, task: i64, seq: i64) -> rusqlite::Result<()> {
-    let workflows = &trace.factory.workflows;
     let (workflow, at, generation, kind, data): (String, String, i64, String, String) = tx
         .query_row(
             "SELECT tasks.workflow, tasks.step, tasks.generation, inbox.type, inbox.data
@@ -3573,6 +3652,29 @@ pub(crate) fn reopen(tx: &Transaction, trace: &Trace, task: i64, seq: i64) -> ru
         )?;
     let data: Value = serde_json::from_str(&data).expect("inbox data is JSON");
     let resource = feedback_on(&kind, &data).unwrap_or_default();
+    let generation = reenter(tx, trace, task, &workflow, &at, generation, &resource)?;
+    let place = crate::stack::place(tx, task, &resource)?;
+    let said = reopened_by(&resource, place.as_deref(), &kind, &data);
+    let text = format!("Feedback reopened this done task as generation {generation}: {said}");
+    wake_on(tx, task, &text, Some(seq))?;
+    let pull_request = FEEDBACK
+        .contains(&kind.as_str())
+        .then_some(resource.as_str());
+    trace::reopened(tx, trace, task, &resource, pull_request)
+}
+
+/// Makes the done `task` its next generation at the step whose result opened `resource`, or its
+/// workflow's `reopen` step, else the step it ended at, `at`. Returns the new generation.
+fn reenter(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    workflow: &str,
+    at: &str,
+    generation: i64,
+    resource: &str,
+) -> rusqlite::Result<i64> {
+    let workflows = &trace.factory.workflows;
     let opened: Option<String> = tx
         .query_row(
             "SELECT results.step FROM actions JOIN results ON results.run = actions.result
@@ -3583,20 +3685,13 @@ pub(crate) fn reopen(tx: &Transaction, trace: &Trace, task: i64, seq: i64) -> ru
         )
         .optional()?;
     let named = workflows
-        .get(&workflow)
+        .get(workflow)
         .and_then(|flow| flow.value.reopen.clone());
-    let target = named.or(opened).unwrap_or(at);
+    let target = named.or(opened).unwrap_or_else(|| at.to_owned());
     let generation = generation + 1;
     regenerate(tx, task, generation)?;
-    enter(tx, task, &workflow, &target, None, "", trace.factory)?;
-    let place = crate::stack::place(tx, task, &resource)?;
-    let said = reopened_by(&resource, place.as_deref(), &kind, &data);
-    let text = format!("Feedback reopened this done task as generation {generation}: {said}");
-    wake_on(tx, task, &text, Some(seq))?;
-    let pull_request = FEEDBACK
-        .contains(&kind.as_str())
-        .then_some(resource.as_str());
-    trace::reopened(tx, trace, task, &resource, pull_request)
+    enter(tx, task, workflow, &target, None, "", trace.factory)?;
+    Ok(generation)
 }
 
 /// Ends the live run of `session`, whose tmux session was gone when the daemon started, as `lost`.

@@ -447,9 +447,9 @@ A held task lists each condition of its hold, in the order it was given, under `
 
 | Field | Meaning |
 | ----- | ------- |
-| `kind` | `person`, `time`, `task`, `issue`, `merge` or `blockers` |
+| `kind` | `person`, `time`, `task`, `issue`, `merge`, `blockers`, or a batch entry's `merged` or `waiting` (see [batches.md](../daemon/batches.md)) |
 | `until` | A time condition's instant |
-| `task` | A task condition's other task |
+| `task` | The other task of a task, `merged` or `waiting` condition |
 | `resource` | `linear:<issue>` for an issue or blockers condition, `github:<owner/name>#<number>` for a merge |
 | `met` | When the condition was met, or null |
 | `met_as` | How it was met, such as `task 9 is done` or `ENG-7 is Done`, or null |

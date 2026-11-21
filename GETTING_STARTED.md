@@ -287,6 +287,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory report attention [--by workflow\|lane\|kind] [--json]` | Prints this week's person-minutes per merged pull request, how long asks waited on you, and where each task's time went |
 | `priory costs DIR [--by workflow\|agent\|model\|machine\|repo] [--json]` | Prints this week's cost against last week's, per day with merges, and split by one dimension |
 | `priory grades [--since WINDOW] [--json]` | Prints how each grade's tasks turned out, headed by green's one-shot rate against 90 % |
+| `priory report risk [DIR] [--workflow NAME] [--json]` | Prints, for each irreversible step, the share of tasks through it judged wrong and landed wrong within 30 days |
 
 Run `priory` with no arguments to print its usage.
 

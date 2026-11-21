@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 76;
+const VERSION: i64 = 77;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1345,6 +1345,39 @@ END;
 PRAGMA user_version = 76;
 ";
 
+// Stacked batch entries: a hold condition met once another task waits on its open pull request,
+// and the task whose branch an entry starts from and bases its pull request on.
+const SCHEMA_77: &str = concat!(
+    "ALTER TABLE tasks ADD COLUMN base_task INTEGER;
+CREATE TABLE holds_77 (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  task        INTEGER NOT NULL REFERENCES tasks (id),
+  reason      TEXT NOT NULL,
+  kind        TEXT NOT NULL CHECK (kind IN
+                ('person', 'time', 'task', 'merge', 'blockers', 'issue', 'merged', 'waiting')),
+  until       TEXT,
+  target      INTEGER REFERENCES tasks (id),
+  resource    TEXT,
+  if_closed   TEXT CHECK (if_closed IN ('release', 'drop', 'ask')),
+  resume      TEXT NOT NULL CHECK (resume IN ('queued', 'ready')),
+  ask         INTEGER REFERENCES asks (id),
+  created     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  met         TEXT,
+  met_as      TEXT,
+  released    TEXT,
+  released_as TEXT
+);
+INSERT INTO holds_77 SELECT id, task, reason, kind, until, target, resource, if_closed, resume, ask,
+  created, met, met_as, released, released_as FROM holds;
+DROP TABLE holds;
+ALTER TABLE holds_77 RENAME TO holds;
+CREATE INDEX open_holds ON holds (task) WHERE released IS NULL;
+",
+    bumps!("holds"),
+    "PRAGMA user_version = 77;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1356,7 +1389,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
-    SCHEMA_74, SCHEMA_75, SCHEMA_76,
+    SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1694,6 +1727,9 @@ pub(crate) fn route_in(
         crate::post::report(tx, "linear", &refiltered(&message.data))?;
     }
     crate::hold::event(tx, &resources)?;
+    if message.kind == priory_intake::intake::PR_CLOSED && message.data["merged"] == true {
+        crate::tools::restack_stacked(tx, trace, seq, &message.data)?;
+    }
     // The keyed task keeps the event; another task that shares the resource hears it through its
     // wait or its subscription. A merge that fires a gate may end a run a person's `say` started.
     let mut kill = Vec::new();
