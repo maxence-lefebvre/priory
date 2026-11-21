@@ -1055,7 +1055,7 @@ run.
 Priory's panels also ship as Herdr mods (R8.6). A mod renders natively with gpui-kit, in a pane
 beside other panes, with a fine pointer. It keeps this file's structure, tokens, state tiles, copy
 and ask rules. This section lists only what differs, and the panels the adapter ships: Desk, Asks,
-Queue, Bonjour, Costs, Flows and Task. Bonjour is also the web view's Reports panel. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
+Queue, Bonjour, Costs, Flows, Task and Inbox. Bonjour is also the web view's Reports panel. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
 the adapter lives, how it reads and acts, and the data each panel needs. The approved boards are in
 `~/shared/priory-round-6/` on the author's machine.
 
@@ -1119,7 +1119,7 @@ The calm count, then the one next thing, then the explorer list.
 
 1. **Count** in `--type-pane-count`, as the web desk's: "2 asks need you. Oldest waits 42 min. 1
    stopped. 2 snoozed. 3 events reached no task in 24 h." The last sentence shows only when the
-   count is above zero. The Unrouted view stays on the web page and in `priory inbox --unrouted`.
+   count is above zero. The Unrouted view is the [Inbox](#inbox-1) panel.
 2. **The next thing**: a card on `--surface` with the desk's `next`: an alarm or the ask that ranks
    first, why it ranks first, its recommendation, and the buttons Answer… (primary, for an ask),
    Open task, Attach and Snooze 1 h. Answer… opens the
@@ -1224,6 +1224,23 @@ open it.
 - With no task opened: "Open a task from the Desk to see it here." While it reads: "Reading task
   7…"
 - The actions, Say, Progress and the workflow grid stay on the web page for now.
+
+### Inbox
+
+The web's [Inbox](#inbox) panel, as a tab in the center stack.
+
+- A 44 px header with "Inbox" and the Unrouted chip with its count, selected, since it is the one
+  saved view.
+- Each group is a `--surface` card: the resource in mono and its count, then a button with its
+  task's 24 px tile, "task 12", its state and key, which opens the [Task](#task) panel. Then its
+  5 newest events, each its type in weight 600, subject and time on one line, and its first line in
+  `--text-2` under them.
+- The route button sits at the end of the card. Revive and Request a task act on the first press,
+  as the Desk's buttons do: Request a task adds the task with the group's text and its task's
+  workflow, with no Add card, since that text names the resource the new task must own.
+- The verb's sentence shows under the button in `--text-2`; a refusal says why. Subscribe carries
+  the revision the panel read, as the web's does.
+- While it reads: "Reading the unrouted events…"
 
 ### Open questions
 

@@ -45,7 +45,7 @@ test("the default view gives narrow panels an aside each and wide ones a tab bes
       find(FRAME, "main"),
       block("tasks", "priory-elsewhere", "tasks"),
       block("runs", "priory-elsewhere", "runs"),
-      block("inbox", "priory-elsewhere", "inbox"),
+      block("inbox", "priory-inbox", "inbox"),
       block("reports", "priory-bonjour", "reports"),
       block("workflow", "priory-flows", "workflow"),
       block("costs", "priory-costs", "costs"),

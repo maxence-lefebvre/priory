@@ -276,7 +276,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory attach TASK [--read-only]` | Attaches your terminal to a task's agent |
 | `priory resume TASK` | Resumes a blocked task |
 | `priory say TASK TEXT` | Sends a task's agent a message, waking it if it sleeps |
-| `priory subscribe TASK RESOURCE`, `priory unsubscribe TASK RESOURCE` | Routes a pull request's, Linear issue's or Slack thread's events to a task until it closes, or stops routing them. Every task already subscribes to its own key, such as the Slack thread that started it |
+| `priory subscribe TASK RESOURCE [--expected REVISION]`, `priory unsubscribe TASK RESOURCE` | Routes a pull request's, Linear issue's or Slack thread's events to a task until it closes, or stops routing them. Every task already subscribes to its own key, such as the Slack thread that started it. `--expected` refuses the subscribe once the state moved past that revision |
 | `priory pause [REASON]`, `priory unpause` | Stops new tasks from starting, then lets them start again |
 | `priory cancel TASK [--expected N]` | Drops an active task and ends its run |
 | `priory revive TASK [--step STEP]` | Restarts a failed or dropped task |
@@ -399,7 +399,7 @@ carries over between them. See [docs/daemon/runs.md](docs/daemon/runs.md).
 **Inbox and routing.** Every event the intake publishes lands in the daemon's inbox before anything
 acts on it. The daemon then finds the task the event concerns, such as the task that owns the pull
 request a check ran on. `priory task ID --json` lists the events routed to a task, and
-`priory inbox --unrouted` lists those that reached none. See
+`priory inbox --unrouted` lists those that reached none, as the web and Herdr Inbox panels do. See
 [docs/daemon/routing.md](docs/daemon/routing.md).
 
 **Waits and asks.** An agent ends a turn with one of three tools: `result` reports the step's

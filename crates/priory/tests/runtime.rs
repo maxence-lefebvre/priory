@@ -14057,6 +14057,39 @@ fn a_subscription_owned_by_another_active_task_is_refused_naming_it() {
 }
 
 #[test]
+fn a_subscription_on_a_stale_revision_is_refused_and_subscribes_nothing() {
+    let setup = Setup::new("subscribe-expected");
+    setup.publish(&requested(42));
+    route(&setup);
+    let read = revision(&setup);
+    person(&setup, "tldr", &["1", "Changed since the read"]);
+    let current = revision(&setup);
+    let subscribe = |revision: i64| {
+        setup.priory(&[
+            "subscribe",
+            "1",
+            "github:owner/repo#7",
+            "--expected",
+            &revision.to_string(),
+        ])
+    };
+
+    let stale = subscribe(read);
+
+    assert_eq!(stale.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&stale.stderr),
+        format!("priory subscribe: the state is at revision {current}, not {read}\n")
+    );
+    assert_eq!(subscriptions(&setup, "1"), ["github:owner/repo#42"]);
+    assert!(subscribe(current).status.success());
+    assert_eq!(
+        subscriptions(&setup, "1"),
+        ["github:owner/repo#42", "github:owner/repo#7"]
+    );
+}
+
+#[test]
 fn a_done_tasks_subscription_yields_to_an_active_task() {
     let mut setup = Setup::new("subscribe-yields");
     setup.calls(&[json!([subscribe("subscribe"), result("passed")])]);
