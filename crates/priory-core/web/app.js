@@ -946,7 +946,7 @@ function reportPick(row) {
   const off = Boolean(state.failed || (pending && !mine));
   return html`<div class="rpick" role="group" aria-label="Pick for ${row.key || row.text}">${pick.options.map((option) => {
     const chosen = mine?.option === option.label;
-    return html`<button id="pick-${encodeURIComponent(pick.id)}-${encodeURIComponent(option.label)}" class="${chosen ? "chosen" : ""}" data-action="pick" data-row="${row.id}" data-option="${option.label}" aria-pressed="${chosen ? "true" : "false"}" aria-disabled="${off || mine ? "true" : "false"}">${chosen || (!mine && option.recommended) ? icon("check", "s15") : ""}${option.label}</button>`;
+    return html`<button id="${focusId("pick", pick.id, option.label)}" class="${chosen ? "chosen" : ""}" data-action="pick" data-row="${row.id}" data-option="${option.label}" aria-pressed="${chosen ? "true" : "false"}" aria-disabled="${off || mine ? "true" : "false"}">${chosen || (!mine && option.recommended) ? icon("check", "s15") : ""}${option.label}</button>`;
   })}</div>${state.failed ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to pick.</span></p>` : pick.note ? html`<p class="note">${pick.note}</p>` : ""}`;
 }
 
@@ -963,14 +963,17 @@ function reportThread(row, thread) {
 // A row without its own id takes no comments.
 function reportCompose(row) {
   if (!row.target) return "";
-  const compose = state.compose?.row === row.id ? state.compose : null;
+  const compose = state.compose?.row === row.id && state.compose.task === state.data.report.report.task ? state.compose : null;
   const off = state.failed ? "true" : "false";
-  if (!compose) return html`<p class="racts"><button id="compose-${encodeURIComponent(row.id)}" class="ghost" data-action="compose" data-row="${row.id}" aria-disabled="${off}">${icon("message-text", "s15")}Comment</button></p>`;
+  if (!compose) return html`<p class="racts"><button id="${focusId("compose", row.id)}" class="ghost" data-action="compose" data-row="${row.id}" aria-disabled="${off}">${icon("message-text", "s15")}Comment</button></p>`;
   const verb = compose.replyTo == null ? "Comment" : "Reply";
   return html`<form class="writeform rcompose" data-action="remark">${compose.replyTo == null ? "" : html`<p class="note">Replying in thread ${compose.replyTo}</p>`}
     <label class="sr" for="report-draft">${verb} on this row</label><textarea id="report-draft" name="text" rows="2" placeholder="${compose.replyTo == null ? "Comment on this row" : "Reply in this thread"}">${compose.text}</textarea>
     <p class="racts"><button type="button" class="btn secondary" data-action="compose-cancel">Cancel</button><button class="btn primary" aria-disabled="${state.failed || state.remarking ? "true" : "false"}">${verb}</button></p></form>`;
 }
+
+// An id no other control's parts can spell: whitespace and quotes are escaped away.
+const focusId = (...parts) => encodeURIComponent(JSON.stringify(parts));
 
 // A note under its row, or above the sections once the row has left the report or another task's
 // report replaced it.
@@ -1001,10 +1004,10 @@ function undoPick() {
 }
 
 // A new read cancels a pick still waiting out its Undo once its report no longer offers it. Another
-// task's report drops the comment field and the notes, which belong to rows of the old one.
+// task's report drops the notes, which belong to rows of the old one; the comment field waits for
+// its own task's report.
 function acceptReport() {
   const task = state.data.report?.report.task;
-  if (state.compose && state.compose.task !== task) state.compose = null;
   if (task !== state.reportTask) {
     state.reportNotices.clear();
     state.reportFlash = null;
@@ -1042,7 +1045,7 @@ function writeRefusal(status, body, refused = () => `Not sent: ${body.error || `
 
 function compose(target) {
   const replyTo = target.dataset.comment ? Number(target.dataset.comment) : null;
-  const same = state.compose?.row === target.dataset.row;
+  const same = state.compose?.row === target.dataset.row && state.compose.task === state.data.report.report.task;
   state.compose = { task: state.data.report.report.task, row: target.dataset.row, replyTo, text: same ? state.compose.text : "" };
   render();
   document.getElementById("report-draft")?.focus();
@@ -1052,6 +1055,7 @@ function compose(target) {
 // the read that follows, so a second press cannot send the same text again.
 async function remark(rowId, path, body, sent = () => {}) {
   if (state.remarking || state.failed) return;
+  const task = state.data.report.report.task;
   state.remarking = true;
   state.reportNotices.delete(rowId);
   render();
@@ -1061,15 +1065,15 @@ async function remark(rowId, path, body, sent = () => {}) {
     return signOut("The daemon refused this token. Paste the current one.");
   }
   if (status === 200) sent();
-  else noteRow(rowId, writeRefusal(status, answered));
   await refresh();
+  if (status !== 200) noteRow(rowId, writeRefusal(status, answered), task);
   state.remarking = false;
   render();
 }
 
 async function submitRemark() {
   const sent = state.compose;
-  const row = sent && reportRowOf(sent.row);
+  const row = sent?.task === state.data.report?.report.task && reportRowOf(sent.row);
   const text = sent?.text.trim();
   if (!row?.target || !text || state.remarking) return;
   // Text typed while it was in flight stays as the next draft.
