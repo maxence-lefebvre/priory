@@ -1,7 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -966,21 +966,46 @@ fn uid() -> u32 {
     id.trim().parse().unwrap_or(u32::MAX)
 }
 
-/// Makes `dir` for the socket, readable by its owner only, or refuses one that is not a private
-/// folder of the user `owner`.
-fn private_dir(dir: &Path, owner: u32) -> Result<(), String> {
+/// Why the socket of `home` is not under the runtime directory `run`, if it is not.
+fn fallback_reason(run: Option<&Path>, home: &Path) -> Option<String> {
+    match run {
+        None => Some("XDG_RUNTIME_DIR is not set".to_owned()),
+        Some(run) if !socket_in(Some(run), home).starts_with(run) => Some(format!(
+            "the socket path under XDG_RUNTIME_DIR {} is over the 108-byte limit of a Unix socket",
+            run.display()
+        )),
+        Some(_) => None,
+    }
+}
+
+/// Makes `dir` for the socket, readable by its owner only, and tightens one of the user `owner`
+/// that others can enter. It refuses one that is not a folder or belongs to another user; `why`
+/// says why the socket is there.
+fn private_dir(dir: &Path, owner: u32, why: Option<&str>) -> Result<(), String> {
     let at = |error: std::io::Error| format!("{}: {error}", dir.display());
+    let private = fs::Permissions::from_mode(0o700);
     match fs::DirBuilder::new().mode(0o700).create(dir) {
-        Ok(()) => return Ok(()),
+        // The mode a folder gets on create can be widened by a default ACL on its parent.
+        Ok(()) => return fs::set_permissions(dir, private).map_err(at),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(at(error)),
     }
     let found = fs::symlink_metadata(dir).map_err(at)?;
-    if found.is_dir() && found.uid() == owner && found.mode() & 0o077 == 0 {
+    if found.is_dir() && found.uid() == owner {
+        if found.mode() & 0o077 != 0 {
+            fs::set_permissions(dir, private).map_err(at)?;
+        }
         return Ok(());
     }
+    let todo = match why {
+        Some(why) => format!(
+            "the socket falls back here because {why}. Remove the folder, or set XDG_RUNTIME_DIR \
+             to a short folder of your own"
+        ),
+        None => "remove the folder so the daemon can make its own".to_owned(),
+    };
     Err(format!(
-        "{}: not a private folder of this user (owner {}, mode {:o}); remove it or fix it with chmod 700",
+        "{}: not a private folder of this user (owner {}, mode {:o}); {todo}",
         dir.display(),
         found.uid(),
         found.mode() & 0o777
@@ -1018,7 +1043,13 @@ pub fn listen(home: &Path) -> Result<Listening, String> {
         std::thread::sleep(Duration::from_millis(50));
     }
     let path = socket_path(home);
-    private_dir(path.parent().unwrap_or(Path::new("/")), uid())?;
+    let run = std::env::var_os("XDG_RUNTIME_DIR").filter(|run| !run.is_empty());
+    let why = fallback_reason(run.as_deref().map(Path::new), home);
+    private_dir(
+        path.parent().unwrap_or(Path::new("/")),
+        uid(),
+        why.as_deref(),
+    )?;
     // bind creates the file before listen: renamed after, it never refuses a client that saw it.
     let bound = path.with_extension("new");
     let _ = fs::remove_file(&bound);
@@ -1167,13 +1198,46 @@ mod tests {
     fn a_socket_directory_of_another_user_is_refused() {
         let dir = std::env::temp_dir().join(format!("priory-private-{}", std::process::id()));
 
-        assert_eq!(private_dir(&dir, uid()), Ok(()));
-        let refused = private_dir(&dir, uid() + 1).unwrap_err();
+        assert_eq!(private_dir(&dir, uid(), None), Ok(()));
+        let refused = private_dir(&dir, uid() + 1, Some("XDG_RUNTIME_DIR is not set")).unwrap_err();
         fs::remove_dir(&dir).unwrap();
 
         assert!(
             refused.contains("not a private folder of this user"),
             "{refused}"
+        );
+        assert!(
+            refused.contains("falls back here because XDG_RUNTIME_DIR is not set"),
+            "{refused}"
+        );
+    }
+
+    #[test]
+    fn a_socket_directory_of_this_user_that_others_can_enter_is_tightened() {
+        let dir = std::env::temp_dir().join(format!("priory-loose-{}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o775)).unwrap();
+
+        let made = private_dir(&dir, uid(), None);
+        let mode = fs::metadata(&dir).unwrap().mode() & 0o777;
+        fs::remove_dir(&dir).unwrap();
+
+        assert_eq!(made, Ok(()));
+        assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn the_fallback_reason_names_a_runtime_directory_over_the_socket_limit() {
+        let home = std::env::temp_dir();
+        let long = PathBuf::from("/run/").join("u".repeat(90));
+
+        let why = fallback_reason(Some(&long), &home).unwrap();
+
+        assert!(why.contains("over the 108-byte limit"), "{why}");
+        assert!(why.contains(&*long.to_string_lossy()), "{why}");
+        assert_eq!(
+            fallback_reason(Some(Path::new("/run/user/1000")), &home),
+            None
         );
     }
 }
