@@ -407,7 +407,10 @@ answered by `agent:<lead>`. The asking task then wakes as after any answer. When
 refused, for example because the ask is no longer open, the result is refused with the reason, and
 the lead ends with `skipped` instead.
 
-The routed ask stays on the desk, marked `routed to <lead>`, so a person can still answer it. The
+The routed ask stays on the desk, marked `routed to <lead>` in the CLI and "with <lead>" in the web
+view and the Herdr panels, so a person can still answer it. Its detail says the lead is answering
+and that the person can answer first. Once answered, the web view and the Herdr panels name who
+answered, from `answered_by`: "by agent:<lead>", or "by a person" for `cli` and `serve`. The
 first answer stands. A person's answer or dismissal drops the lead task while it is still `queued`,
 with the reason `ask <id> was answered first` or `ask <id> was dismissed`. A lead task already
 running reads the refusal and ends `skipped`. A routed ask sends no push notification.

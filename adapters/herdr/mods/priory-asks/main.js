@@ -480,11 +480,13 @@ export default class PrioryAsks extends View {
           .child(div().font_family(this.font.mono).text_color(t["text-2"]).child(row.key ?? ""))
           .child(div().child(row.step ?? ""))
           .when(row.command, (el) => el.child(this.tag("Command", t)))
+          .when(Boolean(row.routed), (el) => el.child(this.tag(row.routed ?? "", t)))
           .child(div().flex_1())
           .child(div().whitespace_nowrap().child(row.age)))
         .child(div().whitespace_normal().text_size(TYPE.body[0]).line_height(TYPE.body[1]).font_weight(selected ? 600 : 500).child(row.text))
         .when(Boolean(row.meta), (el) => el.child(h_flex().gap(6).text_size(TYPE.caption[0]).text_color(t["text-3"])
-          .child(row.meta?.[0] ?? "").child(div().min_w_0().truncate().font_weight(600).text_color(t["text-2"]).child(row.meta?.[1] ?? ""))))
+          .child(row.meta?.[0] ?? "").child(div().min_w_0().truncate().font_weight(600).text_color(t["text-2"]).child(row.meta?.[1] ?? ""))
+          .when(Boolean(row.by), (el) => el.child(`by ${row.by}`))))
         .when(Boolean(row.snoozed), (el) => el.child(this.note("clock", row.snoozed ?? "", t["text-3"])))
         .when(Boolean(row.backEarly), (el) => el.child(this.note("rotate-ccw", row.backEarly ?? "", t["action-text"]))));
   }
@@ -519,6 +521,7 @@ export default class PrioryAsks extends View {
         .children(detail.context.map((word, index) => word === "Command" ? this.tag(word, t)
           : div().when(index === 0, (el) => el.font_family(this.font.mono).text_color(t["text-2"])).child(word))))
       .child(div().whitespace_normal().font_family(this.font.display).font_weight(700).text_size(TYPE.question[0]).line_height(TYPE.question[1]).child(linked("question", detail.questionSpans)))
+      .when(Boolean(detail.routed), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["action-text"]).child(detail.routed ?? "")))
       .when(Boolean(notice), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["warn-text"]).child(notice ?? "")))
       .when(Boolean(detail.decided), (el) => el.child(div().p(12).rounded(RADIUS.md).bg(t.raised).font_weight(600).child(detail.decided ?? "")))
       .when(Boolean(detail.ran), (el) => el.child(this.note("terminal", detail.ran?.text ?? "", detail.ran?.warn ? t["warn-text"] : t["text-2"])))
