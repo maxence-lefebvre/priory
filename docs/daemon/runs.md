@@ -13,7 +13,9 @@ has blocks the task with `step <id> is not in workflow <name>`. A human step wit
 its ask and the task falls `asleep`, as a move into the step does, so a workflow can start at a human
 step. A held task gets its ask once its hold releases it.
 
-The daemon creates the worktree, records the run and task as `running`, then starts the agent's
+The daemon creates the worktree on a new branch from `origin/HEAD`, and stores that commit as the
+task's `base_sha` the first time. A revived task keeps it, so a scorer and a benchmark know where
+the task started. The daemon then records the run and task as `running`, and starts the agent's
 harness in a detached tmux session named `priory-<task id>`, in the worktree. It first kills a
 session of that name left by an ended run, since the task has no other live run. An agent with
 `harness = "claude-code"` runs `claude` (below). One with `harness = "codex"` runs `codex` (see
