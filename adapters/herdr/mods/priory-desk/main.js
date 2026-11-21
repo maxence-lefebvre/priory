@@ -62,6 +62,9 @@ async function connect() {
   return { theme: config.theme ?? "indigo", client, links };
 }
 
+/** @param {Ui} ui @param {string | undefined} text */
+const routed = (ui, text) => div().text_size(S["type-caption"][0]).text_color(ui.t["action-text"]).child(text ?? "");
+
 /** @param {unknown} error */
 const message = (error) => (error instanceof Error ? error.message : String(error));
 
@@ -342,6 +345,7 @@ export default class PrioryDesk extends View {
         .child(div().flex_1())
         .child(div().text_color(t["text-3"]).child(`waits ${next.age}`)))
       .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(`First because ${next.why}`))
+      .when(Boolean(next.routed), (el) => el.child(routed(ui, next.routed)))
       .child(div().whitespace_normal().font_family(ui.fonts.display).text_size(S["type-pane-question"][0]).line_height(S["type-pane-question"][1] / S["type-pane-question"][0]).font_weight(650).child(linked("next-question", next.questionSpans)))
       .when(Boolean(next.recommendation || next.tradeoff), (el) => el.child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-2"])
         .child(next.recommendation ? `Recommends ${next.recommendation}. ${next.tradeoff ?? ""}` : String(next.tradeoff))))
@@ -402,6 +406,7 @@ export default class PrioryDesk extends View {
         .child(v_flex().flex_1().min_w_0().gap(2)
           .child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(row.kind === "ask" ? t.text : reasonColor).child(linked(`text-${row.id}`, row.textSpans)))
           .when(Boolean(note), (el) => el.child(note))
+          .when(Boolean(row.routed), (el) => el.child(routed(ui, row.routed)))
           .when(Boolean(row.prs), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(String(row.prs)))))
         .child(div().w(104).flex_none().truncate().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(row.recommends ?? ""))
         .child(div().w(48).flex_none().text_right().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(row.count != null ? String(row.count) : row.age ?? ""))
@@ -418,7 +423,8 @@ export default class PrioryDesk extends View {
           .child(div().whitespace_normal().max_h(2 * S["type-body"][1]).overflow_hidden().text_size(S["type-body"][0])
             .text_color(row.kind === "ask" ? t.text : reasonColor).child(linked(`text-${row.id}`, row.textSpans)))
           .when(Boolean(meta), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(String(meta))))
-          .when(Boolean(note), (el) => el.child(note)));
+          .when(Boolean(note), (el) => el.child(note))
+          .when(Boolean(row.routed), (el) => el.child(routed(ui, row.routed))));
     return v_flex().id(`row-${row.id}`).px(S["space-2"]).py(S["space-2"]).gap(S["space-2"]).min_h(S["pane-row"]).rounded(S["radius-md"])
       .border_t(1).border_color(selected ? t["action-soft"] : t.line)
       .bg(selected ? t["action-soft"] : t.bg).hover((s) => s.bg(selected ? t["action-soft"] : t.surface))

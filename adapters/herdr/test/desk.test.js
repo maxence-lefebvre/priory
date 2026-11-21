@@ -186,3 +186,14 @@ test("a task row with a stack of two or more says how many PRs; one PR or none s
   assert.deepEqual(model.sections("needs")[1].rows.map((row) => [row.key, row.prs]), [["cli:PRI-55", null]]);
   assert.deepEqual(model.sections("all")[0].rows.map((row) => row.prs).filter(Boolean), ["3 PRs"]);
 });
+
+test("an ask routed to a lead shows with the lead in its row and as the next thing, and an unrouted row is unchanged", () => {
+  const items = data.desk.items.map((item) => (item.kind === "ask" && item.id === 1 ? { ...item, routed_to: "lead" } : item));
+  const desk = { ...data.desk, items, next: { ...data.desk.ranked[1], routed_to: "lead" } };
+  const model = deskModel({ ...data, desk }, { now });
+  const rows = model.sections("needs").flatMap((section) => section.rows).filter((row) => row.kind === "ask");
+
+  assert.deepEqual(rows.map((row) => [row.id, row.routed]), [["ask:1", "with lead"], ["ask:4", undefined], ["ask:2", undefined]]);
+  assert.equal(model.next.routed, "with lead");
+  assert.equal("routed" in deskModel(data, { now }).next, false);
+});

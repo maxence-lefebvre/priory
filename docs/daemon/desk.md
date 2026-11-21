@@ -21,7 +21,8 @@
 
 The lane column is the task's lane, or `-` for a `worktree` row.
 
-In `priory desk --json`, an `ask` item carries `routed_to`: the lead it is routed to, or null.
+In `priory desk --json`, an `ask` item carries `routed_to`: the lead it is routed to, or null. The
+web Desk and the Herdr Desk show it as "with <lead>" on the ask's row and in the next thing.
 
 It lists only asks and prompts of active tasks, holds of held tasks and waiting memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
 
