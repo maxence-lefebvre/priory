@@ -1469,6 +1469,9 @@ pub const START_ORDER: &str = "coalesce((SELECT rank FROM bands WHERE bands.name
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
+/// To the millisecond, so a wait's catch-up never takes an event of the prompt's second as later.
+pub(crate) const CONFIRMED: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+
 /// Bumps the revision when a task ended over a day ago left the queue's `ended` list since the
 /// last call at `since`, which no write marks. The first call only notes the time.
 pub(crate) fn age_queue(db: &Connection, since: &mut Option<String>) -> rusqlite::Result<()> {
@@ -3253,7 +3256,7 @@ pub(crate) fn signal(
             {
                 tx.execute(
                     &format!(
-                        "UPDATE outbox SET state = 'confirmed', confirmed = {NOW} WHERE id = ?1"
+                        "UPDATE outbox SET state = 'confirmed', confirmed = {CONFIRMED} WHERE id = ?1"
                     ),
                     [id],
                 )?;
