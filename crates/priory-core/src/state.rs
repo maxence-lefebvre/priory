@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 76;
+const VERSION: i64 = 77;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1314,14 +1314,15 @@ const SCHEMA_74: &str = concat!(
 "
 );
 
-// Version 75 is held by another pull request; this slot keeps the numbering until it lands.
+// Versions 75 and 76 are held by #202 and #203; these slots keep the numbering until they land.
 const SCHEMA_75: &str = "PRAGMA user_version = 75;";
+const SCHEMA_76: &str = "PRAGMA user_version = 76;";
 
 // Every runner's asks on every desk: each ask's `version`, raised by every change its post shows,
 // and the version it last posted; the asks other runners posted; the answers and dismisses sent
 // to another runner's ask, with what became of each; and the runner this file belongs to, which
 // the listings name on its own rows. Asks closed before count as posted.
-const SCHEMA_76: &str = concat!(
+const SCHEMA_77: &str = concat!(
     "CREATE TABLE IF NOT EXISTS ask_versions (
   ask     INTEGER PRIMARY KEY,
   version INTEGER NOT NULL,
@@ -1377,7 +1378,7 @@ CREATE TABLE IF NOT EXISTS runner (
 );
 ",
     bumps!("remote_asks", "remote_submissions"),
-    "PRAGMA user_version = 76;
+    "PRAGMA user_version = 77;
 "
 );
 
@@ -1392,7 +1393,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
-    SCHEMA_74, SCHEMA_75, SCHEMA_76,
+    SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
