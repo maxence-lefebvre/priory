@@ -6,7 +6,8 @@ band = "today"
 id = "groom"
 decides = "model"
 agent = "implementer"
-prompt = "Read the ticket and grade it red, yellow or green with a one-line reason. Write the brief, and for red or yellow your plan, in your result and in .priory/brief.md."
+prompt = "Read the ticket and grade it red, yellow or green with a one-line reason. Write the brief, and for red or yellow your plan, in your result and in .priory/brief.md. Send the result's goal, testing, brief and verification fields too."
+plan_requires = ["goal", "testing", "verification"]
 effect = "reversible"
 next = { red = "approve-plan", yellow = "implement", green = "implement-green" }
 
