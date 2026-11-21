@@ -69,7 +69,7 @@ See [search.md](../daemon/search.md).
 
 ## `[telemetry]`
 
-See [trace.md](../daemon/trace.md).
+See [trace.md](../daemon/trace.md) and, for backends, [otel-recipes.md](../daemon/otel-recipes.md).
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
