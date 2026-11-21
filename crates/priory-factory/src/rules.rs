@@ -662,6 +662,7 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
             (step.prompt.is_some(), Decider::Model, "a `prompt`"),
             (!step.options.is_empty(), Decider::Human, "`options`"),
             (!step.approves.is_empty(), Decider::Human, "`approves`"),
+            (step.command.is_some(), Decider::Human, "a `command`"),
             (step.action.is_some(), Decider::Code, "an `action`"),
             (step.run.is_some(), Decider::Code, "a `run` command"),
         ];
@@ -700,6 +701,25 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
                     report(format!(
                         "`next` has outcome `{outcome}`, which is not an option"
                     ));
+                }
+                if let Some(command) = &step.command {
+                    if command.argv.first().is_none_or(String::is_empty) {
+                        report("command argv must start with a program".into());
+                    }
+                    if let Some(target) = command.target.as_deref().filter(|target| {
+                        *target != "worktree" && !factory.targets().contains(target)
+                    }) {
+                        report(format!(
+                            "command target `{target}` is not worktree nor a name in [asks.targets]"
+                        ));
+                    }
+                    for run in command
+                        .runs
+                        .iter()
+                        .filter(|run| !step.options.contains(run))
+                    {
+                        report(format!("command runs `{run}`, which is not an option"));
+                    }
                 }
             }
             Decider::Code if step.action.is_none() => {

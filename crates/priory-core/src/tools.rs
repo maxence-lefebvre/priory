@@ -2268,15 +2268,20 @@ fn enter(
                 format!("{target}: {context}")
             };
             let lead = lead_of(tx, task, target, false, workflows)?;
+            let command = step
+                .command
+                .as_ref()
+                .map(|command| serde_json::to_string(command).expect("a command serializes"));
             tx.execute(
-                "INSERT INTO asks (task, step, kind, question, options, routed)
-                 VALUES (?1, ?2, 'step', ?3, ?4, ?5)",
+                "INSERT INTO asks (task, step, kind, question, options, routed, command)
+                 VALUES (?1, ?2, 'step', ?3, ?4, ?5, ?6)",
                 params![
                     task,
                     target,
                     question,
                     serde_json::to_string(&step.options).expect("options serialize"),
-                    lead
+                    lead,
+                    command
                 ],
             )?;
             if let Some(lead) = &lead {
@@ -2349,12 +2354,18 @@ fn answer_in(
         Ok(ask) => ask,
         Err(error) => return Ok(Err(error)),
     };
-    let runs = command
-        .as_deref()
-        .filter(|_| kind == "agent")
-        .and_then(|command| serde_json::from_str::<command::Command>(command).ok())
-        .filter(|command| command.runs.contains(&answer.text));
     let options: Vec<String> = serde_json::from_str(&options).expect("options are stored as JSON");
+    let runs = match (kind.as_str(), command.as_deref(), task) {
+        ("agent", Some(stored), _) => serde_json::from_str::<command::Command>(stored).ok(),
+        ("step", Some(stored), Some(task)) => {
+            match step_command(tx, task, stored, &options, &answer.text, trace.factory)? {
+                Ok(command) => command,
+                Err(error) => return Ok(Err(format!("ask {label}: {error}"))),
+            }
+        }
+        _ => None,
+    }
+    .filter(|command| command.runs.contains(&answer.text));
     let hold = crate::hold::of_ask(tx, answer.ask)?;
     if (kind == "step" || hold.is_some()) && !options.contains(&answer.text) {
         return Ok(Err(format!(
@@ -2389,6 +2400,16 @@ fn answer_in(
         return Ok(Ok(format!("ask {label} answered")));
     };
     if let Some(runs) = runs {
+        if kind == "step" {
+            let target = answered_target(workflows, &workflow, &at, &answer.text);
+            approve(
+                tx,
+                task,
+                answer,
+                &approvals(workflows, &workflow, &at, &target),
+                head,
+            )?;
+        }
         withdraw_waits(tx, answer.ask)?;
         tx.execute(
             "INSERT INTO actions (task, step, action, status, ask, revision, command, generation)
@@ -2434,22 +2455,14 @@ fn answer_in(
         };
         enter(tx, task, &workflow, &target, None, "", workflows)?;
     } else if kind == "step" {
-        let target = step(workflows, &workflow, &at)
-            .and_then(|step| step.next.get(&answer.text))
-            .cloned()
-            .unwrap_or_else(|| format!("{at}?{}", answer.text));
-        let approved: Vec<&String> = workflows
-            .get(&workflow)
-            .and_then(|flow| Some((&flow.value, flow.value.step(&at)?)))
-            .into_iter()
-            .flat_map(|(flow, asked)| {
-                asked
-                    .approves
-                    .iter()
-                    .filter(|approved| flow.reaches(&target, approved))
-            })
-            .collect();
-        approve(tx, task, answer, &approved, head)?;
+        let target = answered_target(workflows, &workflow, &at, &answer.text);
+        approve(
+            tx,
+            task,
+            answer,
+            &approvals(workflows, &workflow, &at, &target),
+            head,
+        )?;
         trace::ended(tx, trace, task, &answer.text, None)?;
         enter(tx, task, &workflow, &target, None, "", workflows)?;
     } else {
@@ -2468,6 +2481,59 @@ fn answer_in(
         }
     }
     Ok(Ok(format!("ask {label} answered")))
+}
+
+/// Where answer `answer` to the ask of step `at` leads.
+fn answered_target(workflows: &Workflows, workflow: &str, at: &str, answer: &str) -> String {
+    step(workflows, workflow, at)
+        .and_then(|step| step.next.get(answer))
+        .cloned()
+        .unwrap_or_else(|| format!("{at}?{answer}"))
+}
+
+/// The irreversible steps that step `at` approves and `target` leads toward.
+fn approvals<'a>(
+    workflows: &'a Workflows,
+    workflow: &str,
+    at: &str,
+    target: &str,
+) -> Vec<&'a String> {
+    workflows
+        .get(workflow)
+        .and_then(|flow| Some((&flow.value, flow.value.step(at)?)))
+        .into_iter()
+        .flat_map(|(flow, asked)| {
+            asked
+                .approves
+                .iter()
+                .filter(|approved| flow.reaches(target, approved))
+        })
+        .collect()
+}
+
+/// The command a step's ask runs when answered `answer`, its target resolved against the task's
+/// worktree and the factory now, or why it cannot run.
+fn step_command(
+    tx: &Transaction,
+    task: i64,
+    stored: &str,
+    options: &[String],
+    answer: &str,
+    factory: &Factory,
+) -> rusqlite::Result<Result<Option<command::Command>, String>> {
+    let stored: Value = serde_json::from_str(stored).expect("a step command is stored as JSON");
+    if !stored["runs"]
+        .as_array()
+        .is_some_and(|runs| runs.iter().any(|run| run == answer))
+    {
+        return Ok(Ok(None));
+    }
+    let worktree: Option<String> =
+        tx.query_row("SELECT worktree FROM tasks WHERE id = ?1", [task], |row| {
+            row.get(0)
+        })?;
+    let options: Vec<&str> = options.iter().map(String::as_str).collect();
+    Ok(command::parse(&stored, &options, "", worktree.as_deref(), factory).map(Some))
 }
 
 /// An open ask, as `open_ask` finds it. An outside ask has no task, and an empty step, workflow
@@ -3351,7 +3417,7 @@ pub(crate) fn ran(
         row.get(0)
     })?;
     if kind == "answer" {
-        answer_ran(&tx, id, still, status, stdout, stderr)?;
+        answer_ran(&tx, trace, id, still, status, stdout, stderr)?;
         return tx.commit();
     }
     let (task, workflow, at): (i64, String, String) = tx.query_row(
@@ -3399,9 +3465,11 @@ pub(crate) fn ran(
 pub(crate) const UNCERTAIN: &str = "uncertain";
 
 /// Records how the command of answer action `id` ended, `done` on exit 0, and wakes its task with
-/// the exit and the tail of its output, unless the task moved on, as a cancel does.
+/// the exit and the tail of its output, unless the task moved on, as a cancel does. A step's ask
+/// moves its task by the answer once the command is done, else asks the step again.
 fn answer_ran(
     tx: &Transaction,
+    trace: &Trace,
     id: i64,
     still: bool,
     status: &str,
@@ -3441,6 +3509,28 @@ fn answer_ran(
         params![id, outcome, error, stdout, stderr],
     )?;
     if !still {
+        return Ok(());
+    }
+    let (kind, workflow, at): (String, String, String) = tx.query_row(
+        "SELECT asks.kind, tasks.workflow, coalesce(asks.step, '')
+         FROM asks JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
+        [ask],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if kind == "step" {
+        let workflows = &trace.factory.workflows;
+        if outcome == "done" {
+            let target = answered_target(workflows, &workflow, &at, &answer);
+            trace::ended(tx, trace, task, &answer, None)?;
+            enter(tx, task, &workflow, &target, None, "", workflows)?;
+            return Ok(());
+        }
+        let context = format!(
+            "answer {answer:?} ran {} in {}{how}",
+            ran.shown(),
+            ran.dir.display()
+        );
+        enter(tx, task, &workflow, &at, None, &context, workflows)?;
         return Ok(());
     }
     let answer = serde_json::to_string(&answer).expect("an answer serializes");

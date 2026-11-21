@@ -864,6 +864,8 @@ pub struct Step {
     /// The irreversible steps a human step approves.
     #[serde(default)]
     pub approves: Vec<String>,
+    /// The command a human step's answer runs, as an ask's `command`.
+    pub command: Option<StepCommand>,
     /// Each outcome and the step it leads to, or `done` or `stop`.
     pub next: BTreeMap<String, String>,
     /// Who decides an outcome's edge, where it differs from the step's decider.
@@ -876,6 +878,20 @@ pub struct Step {
     #[serde(default, deserialize_with = "duration")]
     #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub timeout: Option<Duration>,
+}
+
+/// The command a human step's answer runs once: `argv` exec'd in `target`, on the options in
+/// `runs`.
+#[derive(Debug, Deserialize, serde::Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StepCommand {
+    /// The program and its arguments, never parsed by a shell.
+    pub argv: Vec<String>,
+    /// `worktree`, the task's worktree, or a name in `[asks.targets]`; `worktree` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// The options whose answer runs it.
+    pub runs: Vec<String>,
 }
 
 /// A duration such as `90s`, `15m` or `2h`.
