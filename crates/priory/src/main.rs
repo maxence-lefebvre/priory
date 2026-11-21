@@ -78,9 +78,9 @@ fn main() -> ExitCode {
         Some("snooze") => snooze(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("serve") => serve_http(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("runs") => list(
-            "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend",
-            "SELECT id, task, step, tmux, coalesce(thread, session), started, ended, ended_as FROM runs
-             ORDER BY id",
+            "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend\tkit",
+            "SELECT id, task, step, tmux, coalesce(thread, session), started, ended, ended_as, kit_hash
+             FROM runs ORDER BY id",
         ),
         Some("outbox") => list(
             "id\ttask\trun\tstate\ttext",
@@ -2213,8 +2213,12 @@ fn check(args: Vec<OsString>) -> ExitCode {
         print_explanation(&factory, json);
         return ExitCode::SUCCESS;
     }
+    let skills = match factory.skills.len() {
+        0 => String::new(),
+        n => format!(", {}", count(n, "skill")),
+    };
     println!(
-        "ok: {}, {}, {}, {}",
+        "ok: {}, {}, {}, {}{skills}",
         count(factory.agents.len(), "agent"),
         count(factory.triggers.len(), "trigger"),
         count(factory.workflows.len(), "workflow"),

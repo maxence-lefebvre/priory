@@ -1592,6 +1592,7 @@ fn start(
             definition: &definition.to_string(),
             changed: changed.filter(|_| resume.is_some()).as_deref(),
             lanes: factory.lanes(),
+            kit_hash: crate::kit::hash(factory, &agent.value.harness).as_deref(),
         },
     )?;
     // The new run is the task's only live one, so a session of this name is an ended run's agent.
@@ -1633,7 +1634,11 @@ fn definition(factory: &Factory, agent: &factory::Agent) -> serde_json::Value {
     };
     let permissions = &agent.permissions;
     serde_json::json!({
-        "prompt": digest(serde_json::json!(body(factory, agent))),
+        // Without the factory's skills or instructions, the digest is the one sessions stored before them.
+        "prompt": match crate::kit::hash(factory, &agent.harness) {
+            None => digest(serde_json::json!(factory.prompt(agent))),
+            Some(kit) => digest(serde_json::json!([factory.prompt(agent), kit])),
+        },
         "tools": digest(serde_json::json!([
             agent.mcp_servers,
             permissions.allow,
@@ -1660,18 +1665,6 @@ fn changed(stored: &str, definition: &serde_json::Value) -> Option<String> {
     })
 }
 
-/// The agent's instructions, then the factory's writing guide.
-fn body(factory: &Factory, agent: &factory::Agent) -> String {
-    [
-        agent.body.trim_end(),
-        factory.writing.as_deref().unwrap_or("").trim(),
-    ]
-    .into_iter()
-    .filter(|part| !part.is_empty())
-    .collect::<Vec<_>>()
-    .join("\n\n")
-}
-
 /// Where and as what a harness starts.
 struct Started<'a> {
     tmux: &'a str,
@@ -1691,6 +1684,10 @@ fn launch(
     started: &Started,
 ) -> Result<(), String> {
     let permissions = serde_json::to_value(&agent.permissions).expect("permissions serialize");
+    let plugin = match agent.harness {
+        Harness::ClaudeCode => crate::kit::plugin(factory, home)?,
+        Harness::Codex => None,
+    };
     runtime::launch(
         harness(&agent.harness),
         &Launch {
@@ -1701,7 +1698,9 @@ fn launch(
             resume: started.resume,
             model: agent.model.as_deref(),
             effort: agent.effort.as_deref(),
-            body: &body(factory, agent),
+            body: &factory.prompt(agent),
+            instructions: factory.instructions(),
+            plugin: plugin.as_deref(),
             prompt: started.prompt,
             permissions,
             permission_mode: agent

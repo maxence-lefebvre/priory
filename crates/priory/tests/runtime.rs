@@ -514,12 +514,13 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     let runs = setup.rows("runs");
-    let [id, task, step, tmux, session, _started, ended, end] = &runs[0][..] else {
+    let [id, task, step, tmux, session, _started, ended, end, kit] = &runs[0][..] else {
         panic!("runs: {runs:?}");
     };
     assert_eq!(
-        [id, task, step, tmux, ended, end].map(String::as_str),
-        ["1", "1", "implement", "priory-1", "-", "-"]
+        [id, task, step, tmux, ended, end, kit].map(String::as_str),
+        ["1", "1", "implement", "priory-1", "-", "-", "-"],
+        "a factory without skills or instructions gives its runs none"
     );
     assert!(uuid::Uuid::parse_str(session).is_ok(), "session {session}");
     assert!(
@@ -554,6 +555,9 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
         ["--permission-mode", "manual"],
     ] {
         assert!(args.windows(2).any(|w| w == pair), "{pair:?} in {args:?}");
+    }
+    for flag in ["--plugin-dir", "--append-system-prompt-file"] {
+        assert!(!args.contains(&flag), "{flag} in {args:?}");
     }
     let mcp = args.windows(2).find(|w| w[0] == "--mcp-config").unwrap()[1];
     let mcp: serde_json::Value = serde_json::from_str(mcp).unwrap();
@@ -17864,4 +17868,139 @@ fn an_issue_to_close_taken_between_plan_and_go_fails_the_start() {
         asks[0][3]
     );
     assert_eq!(setup.rows("tasks").len(), 2);
+}
+
+const SKILL: &str = "---\nname: release-notes\ndescription: Writes release notes from merged pull requests.\n---\nList each change in one line.\n";
+
+impl Setup {
+    /// Gives the factory `instructions.md` and a skill, `release-notes`, with a template beside it.
+    fn kit(&self, instructions: &str) {
+        let factory = self.dir.join("factory");
+        fs::write(factory.join("instructions.md"), instructions).unwrap();
+        let skill = factory.join("skills/release-notes");
+        fs::create_dir_all(skill.join("templates")).unwrap();
+        fs::write(skill.join("SKILL.md"), SKILL).unwrap();
+        fs::write(skill.join("templates/notes.md"), b"## Changes\n\xff\n").unwrap();
+    }
+
+    /// The value after `flag` in the fake `claude`'s latest arguments.
+    fn claude_arg(&self, flag: &str) -> Option<String> {
+        let args = fs::read_to_string(self.dir.join("fake/args.log")).unwrap();
+        let args: Vec<&str> = args.lines().collect();
+        args.windows(2)
+            .find(|pair| pair[0] == flag)
+            .map(|pair| pair[1].to_owned())
+    }
+}
+
+/// Every file under `dir`, by its path inside it, as bytes.
+fn tree(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut files = Vec::new();
+    let mut folders = vec![dir.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for entry in fs::read_dir(&folder).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                folders.push(path);
+            } else {
+                let inside = path.strip_prefix(dir).unwrap().display().to_string();
+                files.push((inside, fs::read(&path).unwrap()));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+#[test]
+fn a_claude_run_gets_the_factorys_skills_as_a_plugin_and_long_instructions_through_a_file() {
+    let mut setup = Setup::new("kit-claude");
+    // Longer than the 16 KiB tmux takes in one command.
+    let instructions = "Run the gate before every result.\n".repeat(1200);
+    assert!(instructions.len() > 40 * 1000);
+    setup.kit(&instructions);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let runs = setup.until("runs", |rows| rows.len() == 1);
+    let plugin = PathBuf::from(setup.claude_arg("--plugin-dir").expect("--plugin-dir"));
+    assert!(
+        plugin.starts_with(setup.dir.join("home/kit")),
+        "{}",
+        plugin.display()
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(plugin.join(".claude-plugin/plugin.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["name"], "priory");
+    let skill = setup.dir.join("factory/skills/release-notes");
+    let copied: Vec<_> = tree(&plugin.join("skills/release-notes"));
+    assert_eq!(copied, tree(&skill), "byte for byte");
+    let system = setup
+        .claude_arg("--append-system-prompt-file")
+        .expect("--append-system-prompt-file");
+    assert_eq!(
+        fs::read_to_string(&system).unwrap(),
+        format!("{}\n\nYou implement one issue.", instructions.trim())
+    );
+    assert_eq!(setup.claude_arg("--append-system-prompt"), None);
+    let kit = runs[0][8].clone();
+    assert_eq!(kit.len(), 32, "{runs:?}");
+    let written = fs::metadata(plugin.join(".claude-plugin/plugin.json"))
+        .unwrap()
+        .modified()
+        .unwrap();
+
+    setup.publish(&requested(43));
+
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+    assert_eq!(runs[1][8], kit, "the same skills and instructions");
+    assert_eq!(
+        setup.claude_arg("--plugin-dir"),
+        Some(plugin.display().to_string())
+    );
+    let again = fs::metadata(plugin.join(".claude-plugin/plugin.json"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert_eq!(
+        again, written,
+        "a second run with the same skills writes nothing"
+    );
+}
+
+#[test]
+fn a_codex_run_gets_the_factorys_instructions_before_its_prompt_and_each_run_records_what_it_got() {
+    let mut setup = Setup::with_workflow("kit-mixed", TWO_AGENTS);
+    fs::write(setup.dir.join("factory/agents/reviewer/agent.md"), CODEX).unwrap();
+    setup.kit("Run the gate before every result.\n");
+    setup.calls(&[result("passed"), result("approved")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    assert_eq!(
+        codex_config(&setup)["developer_instructions"],
+        "Run the gate before every result.\n\nYou review one change."
+    );
+    assert!(
+        !codex_args(&setup).iter().any(|arg| arg.contains("plugin")),
+        "Codex skills wait for a later slice"
+    );
+    let runs = setup.rows("runs");
+    let (claude, codex) = (&runs[0][8], &runs[1][8]);
+    assert_eq!([claude.len(), codex.len()], [32, 32], "{runs:?}");
+    assert_ne!(claude, codex, "the Codex run got no skills");
+    let traced: Vec<serde_json::Value> = String::from_utf8(setup.priory(&["trace"]).stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|event| event["type"] == "factory.step.ended")
+        .map(|event| event["data"]["kit_hash"].clone())
+        .collect();
+    assert_eq!(traced, [json!(claude), json!(codex)]);
 }

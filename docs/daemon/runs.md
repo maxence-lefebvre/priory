@@ -26,7 +26,10 @@ Codex). Each step starts its own agent's harness, so one workflow can mix both.
   `session = "shared"` keeps one session across tasks (see Shared sessions).
 - `--model` and `--effort`: the agent's, when it sets them.
 - `--append-system-prompt`: the agent body, the Markdown after its frontmatter, then a blank line and the factory's
-  [writing guide](writing.md) when `factory.toml` sets `writing`.
+  [writing guide](writing.md) when `factory.toml` sets `writing`. With `instructions.md`, the run
+  gets `--append-system-prompt-file` instead, a file with the instructions before that text (see
+  [skills.md](skills.md)).
+- `--plugin-dir`: the factory's skills as a plugin, when it has `skills/` (see [skills.md](skills.md)).
 - `--permission-mode`: the agent's `permissions.defaultMode`, or `manual` when it sets none, whatever
   the user's own settings choose. In `manual` mode, every permission request reaches Priory's deny
   hook (see Health). In `auto` mode, Claude's auto mode decides the run's permission prompts.

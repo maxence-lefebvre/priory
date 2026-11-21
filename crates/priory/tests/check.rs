@@ -1866,3 +1866,91 @@ fn a_writing_guide_within_the_limit_passes_quietly() {
 
     assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
 }
+
+const SKILL: &str = "---\nname: release-notes\ndescription: Writes release notes from merged pull requests.\n---\nList each change in one line.\n";
+
+#[test]
+fn a_factory_with_skills_and_instructions_passes_and_counts_its_skills() {
+    let mut files = valid();
+    files.push(("skills/release-notes/SKILL.md", SKILL));
+    files.push(("skills/release-notes/template.md", "## Changes\n"));
+    files.push(("instructions.md", "Run the gate before every result.\n"));
+
+    let outcome = check(&factory("skills-valid", &files));
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+    assert_eq!(
+        outcome.stdout,
+        "ok: 1 agent, 1 trigger, 1 workflow, 1 runner, 1 skill\n"
+    );
+}
+
+#[test]
+fn a_skill_without_a_description_fails_the_check_with_its_file_and_line() {
+    let mut files = valid();
+    files.push((
+        "skills/release-notes/SKILL.md",
+        "---\nname: release-notes\n---\nList each change.\n",
+    ));
+
+    let outcome = check(&factory("skill-no-description", &files));
+
+    assert_eq!(outcome.code, 1, "{}", outcome.stderr);
+    assert!(
+        outcome.stderr.starts_with(
+            "skills/release-notes/SKILL.md:1: a skill's frontmatter needs a `description`"
+        ),
+        "{}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn a_skill_named_unlike_its_folder_fails_the_check() {
+    let mut files = valid();
+    files.push(("skills/notes/SKILL.md", SKILL));
+
+    let outcome = check(&factory("skill-misnamed", &files));
+
+    assert_eq!(outcome.code, 1, "{}", outcome.stderr);
+    assert!(
+        outcome.stderr.starts_with(
+            "skills/notes/SKILL.md:1: `name` is `release-notes`, but the skill's folder is skills/notes"
+        ),
+        "{}",
+        outcome.stderr
+    );
+}
+
+fn codex_with_instructions(name: &str, instructions: &str) -> Outcome {
+    let mut files = valid();
+    files[1] = (
+        "agents/implementer/agent.md",
+        "+++\ndescription = \"Implements one task.\"\nharness = \"codex\"\n+++\nMake the smallest correct change.\n",
+    );
+    files.push(("instructions.md", instructions));
+    check(&factory(name, &files))
+}
+
+#[test]
+fn instructions_past_the_codex_limit_fail_the_check_for_a_codex_agent_with_the_limit() {
+    let long = "a".repeat(40 * 1024);
+
+    let outcome = codex_with_instructions("codex-instructions-long", &long);
+
+    assert_eq!(outcome.code, 1, "{}", outcome.stderr);
+    assert!(
+        outcome.stderr.starts_with(
+            "agents/implementer/agent.md:3: a codex agent takes instructions.md and its own prompt on its command line, as `developer_instructions`: together they are 40995 bytes, over the limit of 8192"
+        ),
+        "{}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn instructions_within_the_codex_limit_pass_for_a_codex_agent() {
+    let outcome = codex_with_instructions("codex-instructions-short", "Run the gate.\n");
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+}

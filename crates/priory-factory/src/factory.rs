@@ -1335,7 +1335,33 @@ pub struct Factory {
     pub settings: Option<Loaded<Settings>>,
     /// The text of the file `writing` names, as it is on disk.
     pub writing: Option<String>,
+    /// `skills/<name>/`: each skill every Claude Code run gets, by its folder's name.
+    pub skills: BTreeMap<String, Loaded<Skill>>,
+    /// The text of `instructions.md`, which goes before every agent's own prompt.
+    pub instructions: Option<String>,
 }
+
+/// A skill: `skills/<name>/SKILL.md` and the files beside it.
+#[derive(Debug)]
+pub struct Skill {
+    pub description: String,
+    /// Every file of the skill's folder, by its path inside the folder, as bytes.
+    pub files: BTreeMap<PathBuf, Vec<u8>>,
+}
+
+/// The fields of a `SKILL.md` frontmatter that Priory reads. The harness reads the others.
+#[derive(Deserialize)]
+struct SkillFrontmatter {
+    name: Option<String>,
+    description: Option<String>,
+}
+
+/// The file whose text goes before every agent's own prompt.
+pub const INSTRUCTIONS: &str = "instructions.md";
+
+/// The size past which `priory check` refuses a Codex agent's instructions and prompt, which reach
+/// Codex on its command line, under tmux's 16 KiB limit with Priory's hooks and tools.
+pub const CODEX_PROMPT_LIMIT: usize = 8192;
 
 impl Factory {
     /// The factory's lanes, or the built-in ones: no rules and the `{team}/misc` fallback.
@@ -1538,6 +1564,23 @@ impl Factory {
             .is_none_or(|settings| settings.value.queue.overlap)
     }
 
+    /// The agent's own prompt, then the factory's writing guide.
+    pub fn prompt(&self, agent: &Agent) -> String {
+        [
+            agent.body.trim_end(),
+            self.writing.as_deref().unwrap_or("").trim(),
+        ]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+    }
+
+    /// `instructions.md` without its surrounding blank lines, or nothing.
+    pub fn instructions(&self) -> &str {
+        self.instructions.as_deref().unwrap_or("").trim()
+    }
+
     pub fn bands(&self) -> Vec<&str> {
         match self
             .settings
@@ -1605,6 +1648,30 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
                 at: settings.lines.field("writing").map(|line| line.to_string()),
                 message: format!("`writing` names {name}, which {}", unreadable(&error)),
             }),
+        }
+    }
+    match fs::read_to_string(dir.join(INSTRUCTIONS)) {
+        Ok(text) => factory.instructions = Some(text),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => found.problems.push(Problem {
+            file: INSTRUCTIONS.into(),
+            at: None,
+            message: format!("cannot be read: {error}"),
+        }),
+    }
+    for path in found
+        .entries("skills")
+        .into_iter()
+        .filter(|path| path.is_dir())
+    {
+        if let Some((skill, lines)) = found.skill(&path) {
+            found.define(
+                &mut factory.skills,
+                file_name(&path),
+                &path.join("SKILL.md"),
+                skill,
+                lines,
+            );
         }
     }
     for path in found
@@ -1788,6 +1855,47 @@ impl Loader<'_> {
         }
     }
 
+    /// The skill in `folder`, once its `SKILL.md` names it after the folder and describes it.
+    fn skill(&mut self, folder: &Path) -> Option<(Skill, Lines)> {
+        let file = folder.join("SKILL.md");
+        let source = self.read(&file)?;
+        let (front, lines) = self.parse_source::<SkillFrontmatter>(&file, &source)?;
+        let relative = self.relative(&file);
+        let problems = &mut *self.problems;
+        let mut missing = |message: String| {
+            problems.push(Problem {
+                file: relative.clone(),
+                at: Some("1".into()),
+                message,
+            });
+        };
+        let folder_name = file_name(folder);
+        match front.name.as_deref().map(str::trim) {
+            None | Some("") => missing("a skill's frontmatter needs a `name`".into()),
+            Some(name) if name != folder_name => missing(format!(
+                "`name` is `{name}`, but the skill's folder is skills/{folder_name}"
+            )),
+            Some(_) => {}
+        }
+        let description = match front.description.map(|text| text.trim().to_owned()) {
+            Some(text) if !text.is_empty() => text,
+            _ => {
+                missing("a skill's frontmatter needs a `description`, which tells the agent when to use it".into());
+                return None;
+            }
+        };
+        let mut files = BTreeMap::new();
+        if let Err(error) = read_tree(folder, Path::new(""), &mut files) {
+            self.problems.push(Problem {
+                file: self.relative(folder),
+                at: None,
+                message: format!("cannot be read: {error}"),
+            });
+            return None;
+        }
+        Some((Skill { description, files }, lines))
+    }
+
     fn parse<T: DeserializeOwned>(&mut self, file: &Path) -> Option<(T, Lines)> {
         let source = self.read(file)?;
         self.parse_source(file, &source)
@@ -1932,6 +2040,22 @@ pub(crate) fn line_column(text: &str, offset: usize) -> (usize, usize) {
         .map_or(0, |last| last.chars().count())
         + 1;
     (line, column)
+}
+
+/// Reads every file under `root/inside` into `files`, by its path under `root`. A linked folder is
+/// skipped, so a link cycle cannot loop.
+fn read_tree(root: &Path, inside: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) -> io::Result<()> {
+    for entry in fs::read_dir(root.join(inside))? {
+        let entry = entry?;
+        let path = inside.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            read_tree(root, &path, files)?;
+        } else if kind.is_file() || (kind.is_symlink() && root.join(&path).is_file()) {
+            files.insert(path.clone(), fs::read(root.join(&path))?);
+        }
+    }
+    Ok(())
 }
 
 fn file_name(path: &Path) -> String {
