@@ -17,7 +17,8 @@ issues, stacked entries and the web view come later.
 2. The planning agent reads the issues and the code, then sends its plan with `result(batch)`. The
    daemon checks the plan and stores it as plan revision 1.
 3. The human step after it asks the go. Its question reads `Start batch 1: 2 tasks from 3 issues,
-   and close 1?`, and its text lists the entries, their order and edges, and the closes. The batch is
+   and close 1?`, and its text lists the entries in order, each with its edges, files and brief,
+   then the closes. The batch is
    `asked`.
 4. `go` marks the batch `going` in the transaction that stores the answer. The `start-batch` code
    step then creates the entries' tasks. `drop` ends the planning task at `stop`, the batch
@@ -59,6 +60,7 @@ writes it. The daemon refuses the result, and the agent reads why:
 | `issue <issue> is in two entries; give them parts` | One issue in two entries |
 | `entry <e> waits on <other>, which the plan does not have` | A dangling edge |
 | `the plan has a loop: <e>, <f>, <e>` | A cycle |
+| `entry <e> waits on <f>, which comes after it; put <f> first` | An edge to a later entry, since the entries' order is their start order |
 | `` moment `<m>` is not merged or waiting `` | An unknown moment |
 | `` entry <e> waits on <other> at `waiting`, which Priory does not build yet; use merged `` | A stacked entry, not built yet |
 | `entry <e> is part <n> of <issue>; Priory does not split issues yet` | A split issue, not built yet |
@@ -142,4 +144,4 @@ The list has `revision` and `batches`, each batch without `entries` and `closes`
 word for its task: `planned` (no task yet, or held), `queued`, `blocked`, `started`, `merged`,
 `failed` or `dropped`. `waiting` stays 0 until stacked entries exist. `position` is the entry's place
 in the plan. `closed` is when the `close` step's result reported the issue closed, by an evidence
-line that names it and says `closed`.
+line that starts with the issue and the word `closed`, such as `ENG-43: closed`.

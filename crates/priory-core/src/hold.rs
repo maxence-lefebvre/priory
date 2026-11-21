@@ -312,17 +312,24 @@ pub(crate) fn merged(tx: &Transaction, factory: &Factory) -> rusqlite::Result<()
         }
         let question =
             format!("{lost}, and task {task} waits on it. Release the task, or drop it?");
-        tx.execute(
-            "INSERT INTO asks (task, step, kind, question, options)
-             SELECT id, step, 'agent', ?2, '[\"release\",\"drop\"]' FROM tasks WHERE id = ?1",
-            params![task, question],
-        )?;
-        tx.execute(
-            "UPDATE holds SET ask = ?2 WHERE id = ?1",
-            params![id, tx.last_insert_rowid()],
-        )?;
+        ask_person(tx, id, task, &question)?;
     }
     Ok(())
+}
+
+/// Asks a person whether to release or drop `task`, held on the condition `id` that can no
+/// longer be met.
+fn ask_person(tx: &Transaction, id: i64, task: i64, question: &str) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO asks (task, step, kind, question, options)
+         SELECT id, step, 'agent', ?2, '[\"release\",\"drop\"]' FROM tasks WHERE id = ?1",
+        params![task, question],
+    )?;
+    tx.execute(
+        "UPDATE holds SET ask = ?2 WHERE id = ?1",
+        params![id, tx.last_insert_rowid()],
+    )
+    .map(drop)
 }
 
 /// How task `other`, in `state` at `step` of `workflow`, has its code merged, if it does.
@@ -529,16 +536,7 @@ fn judge(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
             let question = format!(
                 "Pull request {closed}, and task {task} was held until it merged: {reason}. Release the task, or drop it?"
             );
-            tx.execute(
-                "INSERT INTO asks (task, step, kind, question, options)
-                 SELECT id, step, 'agent', ?2, '[\"release\",\"drop\"]' FROM tasks WHERE id = ?1",
-                params![task, question],
-            )?;
-            tx.execute(
-                "UPDATE holds SET ask = ?2 WHERE id = ?1",
-                params![id, tx.last_insert_rowid()],
-            )
-            .map(drop)
+            ask_person(tx, id, task, &question)
         }
         _ => Ok(()),
     }

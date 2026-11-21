@@ -34,6 +34,6 @@ id = "close"
 decides = "model"
 agent = "planner"
 effect = "irreversible"
-prompt = "Close the issues the plan lists as done, each with its reason and evidence. Read each issue again first, and skip one that changed since the plan. Report each one in progress as you go, then end with closed and one evidence line per issue: closed, skipped with why, or failed."
+prompt = "Close the issues the plan lists as done, each with its reason and evidence. Read each issue again first, and skip one that changed since the plan. Report each one in progress as you go, then end with closed and one evidence line per issue: `ENG-43: closed`, `ENG-44: skipped, <why>` or `ENG-45: failed, <why>`."
 guard = { allow = ["linear-write", "gh-issue-comment"] }
 next = { closed = "done" }

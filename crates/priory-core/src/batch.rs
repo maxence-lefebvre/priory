@@ -236,6 +236,20 @@ fn checked(plan: &Plan, issues: &[String]) -> Result<(), String> {
             return Err(format!("the plan has a loop: {}", cycle.join(", ")));
         }
     }
+    let mut earlier = BTreeSet::new();
+    for entry in &plan.entries {
+        if let Some(edge) = entry
+            .after
+            .iter()
+            .find(|edge| !earlier.contains(edge.entry.as_str()))
+        {
+            return Err(format!(
+                "entry {} waits on {}, which comes after it; put {} first",
+                entry.id, edge.entry, edge.entry
+            ));
+        }
+        earlier.insert(entry.id.as_str());
+    }
     Ok(())
 }
 
@@ -309,19 +323,28 @@ pub(crate) fn go_ask(tx: &Transaction, task: i64) -> rusqlite::Result<Option<(St
         let after: Vec<String> = entry
             .after
             .iter()
-            .map(|edge| format!("{} {}", edge.entry, edge.moment))
+            .map(|edge| match &edge.why {
+                Some(why) => format!("{} {} ({why})", edge.entry, edge.moment),
+                None => format!("{} {}", edge.entry, edge.moment),
+            })
             .collect();
         let after = match after.is_empty() {
             true => String::new(),
             false => format!(", after {}", after.join(" and ")),
         };
         text.push_str(&format!(
-            "\n{}. {} {}: {}{after}",
+            "\n{}. {} {}: {}{after}\n",
             at + 1,
             entry.id,
             issue_key(&entry.issue),
             entry.title
         ));
+        if !entry.files.is_empty() {
+            text.push_str(&format!("   Files: {}\n", entry.files.join(", ")));
+        }
+        for line in entry.brief.lines() {
+            text.push_str(&format!("   {line}\n"));
+        }
     }
     if !plan.close.is_empty() {
         text.push_str("\n\nClose:\n");
@@ -390,9 +413,9 @@ pub(crate) fn start(
 ) -> rusqlite::Result<Result<(), String>> {
     let found = tx
         .query_row(
-            "SELECT batches.id, batches.plan, batches.went IS NOT NULL, batches.entries_workflow,
-               tasks.band, tasks.lane, tasks.repo, tasks.trigger
-             FROM batches JOIN tasks ON tasks.id = batches.task WHERE batches.task = ?1",
+            "SELECT id, plan, went IS NOT NULL, entries_workflow,
+               plan_revision IS asked_revision, (SELECT band FROM tasks WHERE id = ?1)
+             FROM batches WHERE task = ?1",
             [task],
             |row| {
                 Ok((
@@ -400,15 +423,13 @@ pub(crate) fn start(
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, bool>(2)?,
                     row.get::<_, String>(3)?,
-                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, bool>(4)?,
                     row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, String>(7)?,
                 ))
             },
         )
         .optional()?;
-    let Some((id, plan, went, workflow, band, lane, repo, trigger)) = found else {
+    let Some((id, plan, went, workflow, approved, band)) = found else {
         return Ok(Err(format!("task {task} plans no batch")));
     };
     if went {
@@ -421,12 +442,17 @@ pub(crate) fn start(
             factory.runners.len()
         )));
     }
-    let Some(plan) = plan else {
-        return Ok(Err(format!("batch {id} has no plan")));
+    let Some(plan) = plan.filter(|_| approved) else {
+        return Ok(Err(format!("batch {id} has no plan the go approved")));
     };
     let plan: Plan = serde_json::from_str(&plan).expect("a stored plan parses");
-    for entry in &plan.entries {
-        let key = issue_key(&entry.issue);
+    let named = plan
+        .entries
+        .iter()
+        .map(|entry| &entry.issue)
+        .chain(plan.close.iter().map(|close| &close.issue));
+    for issue in named {
+        let key = issue_key(issue);
         let taken = tx
             .query_row(
                 "SELECT id, state FROM tasks WHERE key = ?1
@@ -447,29 +473,22 @@ pub(crate) fn start(
         )));
     };
     let mut tasks = BTreeMap::new();
+    let mut ordered = Vec::new();
     for entry in &plan.entries {
         let key = issue_key(&entry.issue);
         let source = uuid::Uuid::new_v4().to_string();
+        // An entry takes the planning task's place and who answers its asks.
         tx.execute(
             "INSERT INTO tasks (key, workflow, step, state, band, lane, lane_derived, trigger,
-               source, repo, entered, batch, batch_entry)
-             VALUES (?1, ?2, ?3, 'queued', ?4, ?5, 0, ?6, ?7, ?8,
-               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?9, ?10)",
-            params![
-                key,
-                workflow,
-                flow.value.start,
-                band,
-                lane,
-                trigger,
-                source,
-                repo,
-                id,
-                entry.id
-            ],
+               source, repo, intervention, lead, entered, batch, batch_entry)
+             SELECT ?1, ?2, ?3, 'queued', band, lane, 0, trigger, ?4, repo, intervention, lead,
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?5, ?6
+             FROM tasks WHERE id = ?7",
+            params![key, workflow, flow.value.start, source, id, entry.id, task],
         )?;
         let created = tx.last_insert_rowid();
         tasks.insert(entry.id.as_str(), created);
+        ordered.push(created);
         tx.execute(
             "INSERT INTO inbox (id, type, subject, time, data, links, task, outcome)
              VALUES (?1, 'priory.batch.entry', ?2, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?3,
@@ -492,24 +511,20 @@ pub(crate) fn start(
                 "INSERT OR IGNORE INTO subscriptions (task, resource) VALUES (?1, ?2)",
                 params![created, resource],
             )?;
+            tx.execute(
+                "DELETE FROM subscriptions WHERE resource = ?2 AND task != ?1
+                 AND task IN (SELECT id FROM tasks WHERE state = 'done')",
+                params![created, resource],
+            )?;
         }
         crate::relate::created(tx, created, &key, &[])?;
         for edge in &entry.after {
-            crate::relate::insert(
-                tx,
-                created,
-                "builds-on",
-                tasks[edge.entry.as_str()],
-                "priory",
-            )?;
+            let other = tasks[edge.entry.as_str()];
+            crate::relate::insert(tx, created, "builds-on", other, "priory")?;
         }
         held(tx, id, created, &entry.after, &tasks)?;
     }
-    number(
-        tx,
-        band.as_deref(),
-        &tasks.values().copied().collect::<Vec<_>>(),
-    )?;
+    number(tx, band.as_deref(), &ordered)?;
     tx.execute(
         "UPDATE batches SET state = 'going', went = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
          WHERE id = ?1",
@@ -641,6 +656,13 @@ fn one(db: &Connection, id: i64, full: bool) -> rusqlite::Result<Value> {
         }
         entries.push(shown);
     }
+    // An entry that is done with its pull request open has not merged, so the batch goes on.
+    let open = entries.iter().any(|entry| {
+        !["merged", "failed", "dropped"].contains(&entry["stage"].as_str().unwrap_or_default())
+    });
+    if batch["state"] == "ended" && open {
+        batch["state"] = json!("going");
+    }
     batch["counts"] = json!(counts);
     if !full {
         return Ok(batch);
@@ -747,13 +769,19 @@ fn closed(db: &Connection, task: i64, close: &Close) -> rusqlite::Result<Value> 
             },
         )
         .optional()?;
-    let at = reported.and_then(|(evidence, at)| {
-        evidence
-            .lines()
-            .any(|line| line.contains(&key) && line.contains("closed"))
-            .then_some(at)
-    });
+    let at = reported.and_then(|(evidence, at)| reports_closed(&evidence, &key).then_some(at));
     Ok(json!({ "issue": close.issue, "why": close.why, "evidence": close.evidence, "closed": at }))
+}
+
+/// Whether `evidence` has a line `<issue>: closed`, where the issue is `key` written either way.
+fn reports_closed(evidence: &str, key: &str) -> bool {
+    evidence.lines().any(|line| {
+        let mut words = line
+            .split_whitespace()
+            .map(|word| word.trim_matches(|c: char| ":,.;".contains(c)));
+        let issue = words.next().map(issue_key);
+        issue.as_deref() == Some(key) && words.next() == Some("closed")
+    })
 }
 
 #[cfg(test)]
@@ -791,6 +819,22 @@ mod tests {
                 let _ = checked(&plan, &issues);
             }
         }
+    }
+
+    #[test]
+    fn a_close_is_reported_by_its_own_line_only() {
+        let evidence = "linear:ENG-40: closed, fixed by #198\nENG-41: closed\nENG-4: failed, could not be closed\nENG-5 skipped: changed";
+        let closed = |key| reports_closed(evidence, key);
+        assert_eq!(
+            [
+                "linear:ENG-40",
+                "linear:ENG-41",
+                "linear:ENG-4",
+                "linear:ENG-5"
+            ]
+            .map(closed),
+            [true, true, false, false]
+        );
     }
 
     #[test]

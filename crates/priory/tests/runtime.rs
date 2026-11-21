@@ -17135,3 +17135,71 @@ fn batch_show_prints_each_batch_and_one_with_its_entries_and_closes() {
     let rows = setup.listed(&["batch", "show"]);
     assert_eq!(rows[0][..4], ["1", &key, "going", "Invoice exports"]);
 }
+
+#[test]
+fn a_plan_with_an_entry_waiting_on_a_later_one_is_refused() {
+    let entries = [
+        entry("e1", "ENG-40", &["e2"]),
+        entry("e2", "ENG-41", &[]),
+        entry("e3", "ENG-43", &[]),
+    ];
+    assert_eq!(
+        plan_refused("batch-later", json!({ "title": "t", "entries": entries })),
+        (
+            "entry e1 waits on e2, which comes after it; put e2 first".to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_go_numbers_free_entries_in_plan_order_whatever_their_ids() {
+    let entries = [
+        entry("z", "ENG-40", &[]),
+        entry("a", "ENG-41", &[]),
+        entry("m", "ENG-43", &[]),
+    ];
+    let (setup, ask) = at_the_go("batch-order", json!({ "title": "t", "entries": entries }));
+
+    person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
+
+    let tasks = setup.until("tasks", |rows| rows.len() == 4);
+    let places: Vec<_> = tasks
+        .iter()
+        .filter(|row| row[2] == "implement")
+        .map(|row| [&*row[1], &row[8]])
+        .collect();
+    assert_eq!(
+        places,
+        [
+            ["linear:ENG-40", "1"],
+            ["linear:ENG-41", "2"],
+            ["linear:ENG-43", "3"]
+        ]
+    );
+}
+
+#[test]
+fn an_issue_to_close_taken_between_plan_and_go_fails_the_start() {
+    let close = [json!({ "issue": "ENG-43", "why": "done", "evidence": "#1" })];
+    let entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &[])];
+    let (setup, ask) = at_the_go(
+        "batch-close-taken",
+        json!({ "title": "t", "entries": entries, "close": close }),
+    );
+    let mut other = requested(42);
+    other.data["key"] = json!("linear:ENG-43");
+    other.data["hold"] = json!({ "reason": "later" });
+    setup.publish(&other.subject("linear:ENG-43"));
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
+
+    let asks = setup.until("asks", |rows| rows.len() == 1 && rows[0][0] != ask);
+    assert!(
+        asks[0][3].starts_with("linear:ENG-43 has task 2 (held) since the plan"),
+        "{}",
+        asks[0][3]
+    );
+    assert_eq!(setup.rows("tasks").len(), 2);
+}
