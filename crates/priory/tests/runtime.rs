@@ -1915,6 +1915,30 @@ fn a_turn_longer_than_its_step_timeout_ends_the_run_and_blocks_its_task() {
 }
 
 #[test]
+fn a_tmux_socket_path_over_the_limit_blocks_the_task_with_the_cause_first() {
+    let mut setup = Setup::new("tmux-long");
+    let long = setup.tmux.path().join("t".repeat(100));
+    fs::create_dir_all(&long).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("TMUX_TMPDIR", long.to_str().unwrap())],
+    );
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    let reason = &tasks[0][7];
+    assert!(
+        reason.starts_with("the tmux socket path ")
+            && reason.contains("over the 108-byte limit of a Unix socket; set TMUX_TMPDIR"),
+        "{reason}"
+    );
+    assert!(!reason.contains("new-session"), "{reason}");
+}
+
+#[test]
 fn two_tasks_that_fit_both_start_without_waiting_for_each_other() {
     let mut setup = Setup::new("two-fit");
     setup.publish(&requested(42));
@@ -16274,7 +16298,10 @@ fn a_daemon_tightens_its_own_socket_directory_that_others_can_enter() {
     }
     let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default();
     assert!(socket_in_dir(&dir), "{log}");
-    assert_eq!(fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+    assert_eq!(
+        fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
 }
 
 fn socket_in_dir(dir: &Path) -> bool {

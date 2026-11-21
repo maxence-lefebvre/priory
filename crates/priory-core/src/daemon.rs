@@ -1763,6 +1763,16 @@ fn launch(
             env,
         },
     )
+    .map_err(|failed| {
+        // The full command runs to kilobytes, so it goes to the daemon's log, not the reason.
+        if let Some(command) = &failed.command {
+            eprintln!(
+                "priory daemon: starting {}: {}\n  command: {command}",
+                started.tmux, failed.reason
+            );
+        }
+        failed.reason
+    })
 }
 
 /// Compacts each shared session left idle past its agent's `idleCompactAt` before its prompt cache

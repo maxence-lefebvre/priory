@@ -633,9 +633,64 @@ fn codex_hooks(exe: &Path) -> Vec<(&'static str, serde_json::Value)> {
     ]
 }
 
+/// Why a run did not start: one line, the cause first, and the tmux command when it ran one.
+#[derive(Debug)]
+pub struct NotStarted {
+    pub reason: String,
+    pub command: Option<String>,
+}
+
+impl From<String> for NotStarted {
+    fn from(reason: String) -> Self {
+        Self {
+            reason,
+            command: None,
+        }
+    }
+}
+
+/// The socket a tmux client of this process uses: the one `TMUX` names, else
+/// `$TMUX_TMPDIR/tmux-<uid>/default`, with `/tmp` when `TMUX_TMPDIR` is unset.
+fn tmux_socket() -> PathBuf {
+    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
+    if let Some(socket) = set("TMUX").and_then(|tmux| {
+        let tmux = tmux.to_string_lossy().into_owned();
+        tmux.split(',').next().map(PathBuf::from)
+    }) {
+        return socket;
+    }
+    let dir = set("TMUX_TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+    dir.join(format!("tmux-{}", uid())).join("default")
+}
+
+/// Refuses a tmux socket path that cannot be bound, before tmux fails on it at the end of a long
+/// error.
+fn tmux_socket_fits(socket: &Path) -> Result<(), String> {
+    let length = socket.as_os_str().len();
+    if length < 108 {
+        return Ok(());
+    }
+    Err(format!(
+        "the tmux socket path {} is {length} bytes, over the 108-byte limit of a Unix socket; set \
+         TMUX_TMPDIR to a shorter folder, such as /tmp",
+        socket.display()
+    ))
+}
+
+/// `stderr` as one line.
+fn one_line(stderr: &str) -> String {
+    let lines: Vec<_> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    lines.join("; ")
+}
+
 /// Starts the harness in a detached tmux session, with hooks that report to this daemon. The same
 /// tmux command tags the new pane with the run's session id, so a crash cannot leave it untagged.
-pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), String> {
+pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> {
+    tmux_socket_fits(&tmux_socket())?;
     let exe = exe()?;
     let mut command = tmux();
     command
@@ -689,7 +744,28 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), String> {
         command.arg("--");
     }
     command.args([";", "set-option", "-p", "@priory", launch.session]);
-    run(&mut command).map(drop)
+    let shown = format!("{command:?}");
+    let failed = |reason: String| NotStarted {
+        reason,
+        command: Some(shown.clone()),
+    };
+    let output = fed_within(&mut command, None, command_timeout())
+        .map_err(|error| failed(format!("tmux new-session could not run: {error}")))?
+        .ok_or_else(|| {
+            failed(format!(
+                "tmux new-session timed out after {}s",
+                command_timeout().as_secs()
+            ))
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = one_line(&String::from_utf8_lossy(&output.stderr));
+    Err(failed(if stderr.is_empty() {
+        format!("tmux new-session failed with {}", output.status)
+    } else {
+        format!("tmux new-session failed: {stderr}")
+    }))
 }
 
 /// The MCP server that serves Priory's tools to the run: `priory mcp --session <id>`.
@@ -1224,6 +1300,23 @@ mod tests {
 
         assert_eq!(made, Ok(()));
         assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn a_tmux_error_becomes_one_line() {
+        let stderr = "error connecting to /tmp/x/default (File name too long)\n\n  more\n";
+
+        assert_eq!(
+            one_line(stderr),
+            "error connecting to /tmp/x/default (File name too long); more"
+        );
+        assert!(tmux_socket_fits(Path::new("/tmp/tmux-1000/default")).is_ok());
+        let long = PathBuf::from("/tmp").join("t".repeat(100)).join("default");
+        assert!(
+            tmux_socket_fits(&long)
+                .unwrap_err()
+                .starts_with("the tmux socket path ")
+        );
     }
 
     #[test]
