@@ -1,5 +1,11 @@
 "use strict";
 
+// mdBook's searcher.js calls this book.js helper, which this theme does not load.
+function mdbook_something_else_has_focus(e) {
+  const target = e.composedPath()[0] || e.target;
+  return /^(?:input|select|textarea)$/i.test(target.nodeName);
+}
+
 (function () {
   const html = document.documentElement;
   const dark = window.matchMedia("(prefers-color-scheme: dark)");
