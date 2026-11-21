@@ -403,7 +403,10 @@ fn a_rate_limited_connection_waits_the_retry_after_slack_sent() {
     wait_for("the retry", || stderr().contains("retrying in"));
 
     let stderr = stderr();
-    assert!(stderr.contains("ratelimited\"}; retrying in 30s"), "{stderr}");
+    assert!(
+        stderr.contains("ratelimited\"}; retrying in 30s"),
+        "{stderr}"
+    );
 }
 
 #[test]
