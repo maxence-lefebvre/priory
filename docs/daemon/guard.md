@@ -46,19 +46,21 @@ A run with no task step, such as the stall handler, is denied every guarded call
 
 | Guard | Matches |
 | ----- | ------- |
-| `gh-pr-merge` | `gh pr merge` |
-| `gh-pr-approve` | `gh pr review` with `--approve` or `-a` |
+| `gh-pr-merge` | `gh pr merge`, a `gh api` write to `repos/<owner>/<repo>/pulls/<n>/merge` or one that holds `mergePullRequest` or `enablePullRequestAutoMerge`, and MCP tools named `merge_pull_request` |
+| `gh-pr-approve` | `gh pr review` with `--approve` or `-a`, and a `gh api` write that holds `APPROVE` to a pull request's `reviews` or to `graphql` |
 | `gh-pr-comment` | `gh pr comment` |
 | `gh-issue-comment` | `gh issue comment` |
-| `gh-api-write` | `gh api` with a method other than GET, or with a field or `--input`, which make it a POST |
+| `gh-api-write` | `gh api` with a method other than GET, or with a field or `--input`, which make it a POST, other than the merges and approvals above |
 | `git-push-default` | `git push` whose destination is `main`, `master` or `origin/HEAD`'s branch, a push with no refspec from that branch, `--all`, `--branches` and wildcard refspecs |
 | `git-push-force` | `git push` with `--force`, `--force-with-lease`, `-f`, `--mirror`, `--delete`, `-d`, `--prune`, a `+refspec` or a `:branch` deletion |
 | `slack-write` | `curl` to `hooks.slack.com` or `slack.com/api/chat.*`, and `slack chat send` |
 | `linear-write` | `curl` to `api.linear.app` with a body that holds `mutation` or comes from a file, and `linear issue create`, `update`, `delete` or `comment` |
-| `mcp-write` | MCP tools named `merge_pull_request`, `add_issue_comment`, `send_message`, `slack_send_message`, `schedule_message`, `slack_schedule_message`, `save_comment`, `create_comment`, `save_issue`, `create_issue` or `update_issue`, on any server but `priory` |
+| `mcp-write` | MCP tools named `add_issue_comment`, `send_message`, `slack_send_message`, `schedule_message`, `slack_schedule_message`, `save_comment`, `create_comment`, `save_issue`, `create_issue` or `update_issue`, on any server but `priory` |
 
 A push to the task's own branch passes, and so do `--help`, `git push --dry-run` and `git push -n`. A factory adds its own guards with `[guard]` in
-`factory.toml` (see [factory.md](../reference/factory.md#guard)).
+`factory.toml` (see [factory.md](../reference/factory.md#guard)). A factory guard that matches the
+same call as `gh-pr-merge` or `gh-pr-approve`, such as one on `gh pr` or `mcp__github__*`, does not
+rename it: the call keeps its built-in guard.
 
 ## How a command is read
 

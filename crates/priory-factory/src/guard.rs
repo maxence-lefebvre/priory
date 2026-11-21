@@ -57,7 +57,6 @@ const COMMANDS: &[(&str, &[&str], &[&str])] = &[
 
 /// MCP tools that are irreversible whatever their server is named: `mcp__<server>__<tool>`.
 const TOOLS: &[&str] = &[
-    "merge_pull_request",
     "add_issue_comment",
     "send_message",
     "slack_send_message",
@@ -122,6 +121,12 @@ impl Guards {
         if server == "priory" {
             return None;
         }
+        if short == "merge_pull_request" {
+            return Some(Hit {
+                guard: "gh-pr-merge".to_owned(),
+                call: tool.to_owned(),
+            });
+        }
         let added = self
             .tools
             .iter()
@@ -153,27 +158,28 @@ impl Guards {
                 call: words.join(" "),
             })
         };
+        let built_in = COMMANDS
+            .iter()
+            .find(|(_, run, flags)| starts(words, run, flags))
+            .map(|(name, _, _)| *name)
+            .or_else(|| match words[0].as_str() {
+                "gh" => gh_api(words),
+                "git" => git_push(words, git),
+                "curl" => curl(words),
+                _ => None,
+            });
+        // A factory guard must not rename a merge or an approval, which only a person grants.
+        if let Some(name) = built_in.filter(|name| NEED_APPROVAL.contains(name)) {
+            return hit(name);
+        }
         let added = self
             .commands
             .iter()
-            .map(|guard| (guard.name.as_str(), &guard.run, &guard.flags));
-        for (name, run, flags) in added {
-            if starts(words, run, flags) {
-                return hit(name);
-            }
+            .find(|guard| starts(words, &guard.run, &guard.flags));
+        match added {
+            Some(guard) => hit(&guard.name),
+            None => built_in.and_then(hit),
         }
-        for (name, run, flags) in COMMANDS {
-            if starts(words, run, flags) {
-                return hit(name);
-            }
-        }
-        let guard = match words[0].as_str() {
-            "gh" => gh_api(words),
-            "git" => git_push(words, git),
-            "curl" => curl(words),
-            _ => None,
-        };
-        guard.and_then(hit)
     }
 }
 
@@ -233,7 +239,8 @@ fn positional(words: &[String]) -> Vec<&str> {
     positional
 }
 
-/// `gh api` that writes: a method other than GET, or a field or body, which makes it a POST.
+/// `gh api` that writes: a method other than GET, or a field or body, which makes it a POST. A
+/// merge or an approving review is named as such.
 fn gh_api(words: &[String]) -> Option<&'static str> {
     if positional(words).first() != Some(&"api") {
         return None;
@@ -258,7 +265,28 @@ fn gh_api(words: &[String]) -> Option<&'static str> {
         Some(method) => !method.eq_ignore_ascii_case("GET"),
         None => body,
     };
-    writes.then_some("gh-api-write")
+    if !writes {
+        return None;
+    }
+    let text = words.join(" ");
+    let pull = |tail: &str| {
+        words.iter().any(|word| {
+            let parts: Vec<&str> = word.trim_start_matches('/').split('/').collect();
+            matches!(parts.as_slice(), ["repos", _, _, "pulls", number, first, ..]
+                if number.parse::<u64>().is_ok() && *first == tail)
+        })
+    };
+    if pull("merge")
+        || text.contains("mergePullRequest")
+        || text.contains("enablePullRequestAutoMerge")
+    {
+        return Some("gh-pr-merge");
+    }
+    let graphql = words.iter().any(|word| word == "graphql");
+    if text.contains("APPROVE") && (pull("reviews") || graphql) {
+        return Some("gh-pr-approve");
+    }
+    Some("gh-api-write")
 }
 
 /// Whether `command` also runs a git command that moves the branch's commit, so an approval given
@@ -979,7 +1007,7 @@ mod tests {
         assert_eq!(hit("gh api -X GET repos/o/r/pulls -f state=open"), None);
         assert_eq!(
             hit("gh api -X PUT repos/o/r/pulls/12/merge").as_deref(),
-            Some("gh-api-write")
+            Some("gh-pr-merge")
         );
         assert_eq!(
             hit("gh api repos/o/r/issues/1/comments -f body=hi").as_deref(),
@@ -1066,12 +1094,72 @@ mod tests {
             guard("mcp__stripe__refund", None).as_deref(),
             Some("mcp__stripe__*")
         );
-        assert_eq!(
-            guard("mcp__github__merge_pull_request", None).as_deref(),
-            Some("mcp-write")
-        );
         assert_eq!(guard("mcp__priory__send_message", None), None);
         assert_eq!(guard("mcp__github__get_pull_request", None), None);
+    }
+
+    #[test]
+    fn a_merge_or_an_approving_review_keeps_its_guard_however_it_is_made() {
+        let guards = Guards {
+            commands: vec![
+                CommandGuard {
+                    name: "github-write".into(),
+                    run: vec!["gh".into(), "pr".into()],
+                    flags: Vec::new(),
+                },
+                CommandGuard {
+                    name: "github-api".into(),
+                    run: vec!["gh".into(), "api".into()],
+                    flags: Vec::new(),
+                },
+            ],
+            tools: vec!["mcp__github__*".into()],
+        };
+        let git = |_: Option<&str>, _: &[&str]| None;
+        let guard = |tool: &str, command: Option<&str>| {
+            guards.hits(tool, command, &git).pop().map(|hit| hit.guard)
+        };
+        let bash = |command: &str| guard("Bash", Some(command));
+
+        assert_eq!(bash("gh pr merge 12").as_deref(), Some("gh-pr-merge"));
+        assert_eq!(
+            bash("gh pr review 12 --approve").as_deref(),
+            Some("gh-pr-approve")
+        );
+        assert_eq!(bash("gh pr comment 12").as_deref(), Some("github-write"));
+        assert_eq!(
+            bash("gh api -X PUT repos/o/r/pulls/12/merge").as_deref(),
+            Some("gh-pr-merge")
+        );
+        assert_eq!(
+            bash("gh api repos/o/r/pulls/12/reviews -f event=APPROVE").as_deref(),
+            Some("gh-pr-approve")
+        );
+        assert_eq!(
+            bash("gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'")
+                .as_deref(),
+            Some("gh-pr-merge")
+        );
+        assert_eq!(
+            bash("gh api repos/o/r/issues/1/comments -f body=hi").as_deref(),
+            Some("github-api")
+        );
+        assert_eq!(
+            guard("mcp__github__merge_pull_request", None).as_deref(),
+            Some("gh-pr-merge")
+        );
+        assert_eq!(
+            guard("mcp__github__add_issue_comment", None).as_deref(),
+            Some("mcp__github__*")
+        );
+        assert_eq!(
+            Guards::default()
+                .hits("mcp__github__merge_pull_request", None, &git)
+                .pop()
+                .map(|hit| hit.guard)
+                .as_deref(),
+            Some("gh-pr-merge")
+        );
     }
 
     #[test]

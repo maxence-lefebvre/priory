@@ -12678,6 +12678,7 @@ fn a_merge_in_the_step_a_person_approved_passes_however_it_is_wrapped() {
         "env X=1 gh pr merge 12",
     ];
     let mut calls: Vec<_> = merges.iter().map(|command| bash(command)).collect();
+    calls.push(bash("gh pr comment 12 --body hi"));
     calls.push(bash("git commit -am fix && gh pr merge 12"));
     setup.calls(&[result("passed"), json!(calls)]);
     setup.publish(&requested(42));
@@ -12696,12 +12697,14 @@ fn a_merge_in_the_step_a_person_approved_passes_however_it_is_wrapped() {
             "{command}"
         );
     }
+    let unlisted = &replies[calls.len() - 1];
+    let reason = guard_denied(unlisted).unwrap_or_else(|| panic!("{unlisted}"));
+    assert!(reason.contains("gh-pr-comment"), "{reason}");
     let last = &replies[calls.len()];
     let reason = guard_denied(last).unwrap_or_else(|| panic!("{last}"));
     assert!(reason.contains("a call of its own"), "{reason}");
 }
 
-/// One autonomous irreversible model step, with `guard` as its extra lines.
 fn autonomous_build(guard: &str) -> String {
     format!(
         r#"
@@ -12744,20 +12747,28 @@ fn an_autonomous_step_that_names_no_guard_may_make_no_guarded_call() {
 fn an_autonomous_step_may_make_the_calls_it_names_but_never_a_merge() {
     let mut setup = Setup::with_workflow(
         "guard-autonomous-named",
-        &autonomous_build(r#"guard = { allow = ["gh-pr-comment"] }"#),
+        &autonomous_build(
+            r#"guard = { allow = ["gh-pr-comment", "gh-api-write", "mcp-write"] }"#,
+        ),
     );
-    setup.calls(&[json!([
-        bash("gh pr comment 12 --body hi"),
-        bash("gh pr merge 12")
-    ])]);
+    let merges = [
+        bash("gh pr merge 12"),
+        bash("gh api -X PUT repos/o/r/pulls/12/merge"),
+        json!({ "name": "mcp__github__merge_pull_request", "arguments": { "pullNumber": 12 } }),
+    ];
+    let mut calls = vec![bash("gh pr comment 12 --body hi")];
+    calls.extend(merges.clone());
+    setup.calls(&[json!(calls)]);
     setup.publish(&requested(42));
 
     setup.start();
 
-    let replies = setup.replied(2);
+    let replies = setup.replied(calls.len());
     assert_eq!(guard_denied(&replies[0]), None, "{}", replies[0]);
-    let reason = guard_denied(&replies[1]).unwrap_or_else(|| panic!("{}", replies[1]));
-    assert!(reason.contains("gh-pr-merge"), "{reason}");
+    for (call, reply) in merges.iter().zip(&replies[1..]) {
+        let reason = guard_denied(reply).unwrap_or_else(|| panic!("{call}: {reply}"));
+        assert!(reason.contains("gh-pr-merge"), "{reason}");
+    }
 }
 
 #[test]
