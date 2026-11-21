@@ -10,6 +10,8 @@ import { KINDS, edgeStyle, lockBadge, nodeShape, timeline, ungatedPairs } from "
 import { handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { actionNote, batchParts, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
+import { TASK_FACETS, TASK_VIEWS, filtered, olderPart, taskViews } from "./tasks.js";
+import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -53,6 +55,9 @@ const ICONS = {
   "message-text": '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M13 8H7"/><path d="M17 12H7"/>',
   hourglass: '<path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>',
   "corner-down-right": '<polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/>',
+  "arrow-right": '<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>',
+  "rotate-ccw": '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+  "log-out": '<path d="m16 17 5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>',
   bell: '<path d="M10.27 21a2 2 0 0 0 3.46 0"/><path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.41 13.96 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.41 5.96-2.74 7.33"/>',
   lock: '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
   costs: '<circle cx="12" cy="12" r="10"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 18V6"/>',
@@ -83,7 +88,8 @@ const STATES = {
   running: ["live", null], asleep: ["muted", "moon"], blocked: ["warn", "hand"], done: ["ok", "check"],
   failed: ["danger", "circle-x"], dropped: ["muted", "minus"], lost: ["warn", "unplug"],
   ask: ["wait", "ask"], answered: ["muted", "check"], withdrawn: ["muted", "minus"], prompt: ["warn", "hand"],
-  refused: ["warn", "x"], moved: ["muted", "check"], todo: ["wait", "square"], batch: ["muted", "layers"],
+  refused: ["warn", "x"], moved: ["muted", "arrow-right"], todo: ["wait", "square"], batch: ["muted", "layers"],
+  restarted: ["muted", "rotate-ccw"], cancelled: ["muted", "x"], exited: ["danger", "log-out"],
 };
 const role = (state) => (STATES[state] || ["muted", "circle-help"])[0];
 function tile(state, size = "") {
@@ -100,7 +106,7 @@ const PANELS = {
   inbox: ["Inbox", "inbox"], reports: ["Reports", "reports"], queue: ["Queue", "queue"],
   terminal: ["Terminal", "terminal"], workflow: ["Flows", "workflow"], costs: ["Costs", "costs"],
 };
-const CLI = { tasks: "priory tasks", runs: "priory tasks", inbox: "priory inbox", queue: "priory queue", terminal: "priory attach", workflow: "priory check --explain" };
+const CLI = { queue: "priory queue", terminal: "priory attach" };
 
 // The last listings read and when, kept on this device, so an offline start shows them with their age.
 const kept = JSON.parse(localStorage.getItem("priory.snapshot") || "null");
@@ -110,7 +116,7 @@ const state = {
   // The data came from this device, not the server: views and links are read again.
   cached: Boolean(kept),
   // The listings to read in full, once the person scrolls to their older rows.
-  all: { asks: false, tasks: false },
+  all: { asks: false, tasks: false, runs: false },
   refreshes: 0,
   updated: kept?.updated || null,
   failed: null,
@@ -192,8 +198,12 @@ async function refresh() {
   const failed = state.failed;
   const call = ++state.refreshes;
   // Older rows load again when the person scrolls back to them.
-  const history = { asks: Boolean(selectedAsk()) || (current() === "asks" && ["answered", "all"].includes(askView())), tasks: current() === "desk" && deskView() === "all" };
-  for (const listing of ["asks", "tasks"]) state.all[listing] &&= history[listing];
+  const history = {
+    asks: Boolean(selectedAsk()) || (current() === "asks" && ["answered", "all"].includes(askView())),
+    tasks: (current() === "desk" && deskView() === "all") || (current() === "tasks" && listView(TASK_VIEWS) === "ended"),
+    runs: current() === "runs" && listView(RUN_VIEWS) === "recent",
+  };
+  for (const listing of ["asks", "tasks", "runs"]) state.all[listing] &&= history[listing];
   try {
     // The server reads the views once, when it starts.
     const views = (!state.cached && state.data?.views) || (await api("/api/views"));
@@ -203,16 +213,16 @@ async function refresh() {
     // Taken before the read, so an event between that read and the visit still shows next time.
     const read = new Date().toISOString().replace(/\.\d+Z$/, "Z");
     const latest = api("/api/reports/latest").catch((error) => (error.status === 404 ? null : Promise.reject(error)));
-    const [desk, asksList, queue, tasksList, report] = await Promise.all([...["/api/desk", full("asks"), "/api/queue", full("tasks")].map(api), latest]);
+    const [desk, asksList, queue, tasksList, runsList, report] = await Promise.all([...["/api/desk", full("asks"), "/api/queue", full("tasks"), full("runs")].map(api), latest]);
     // A later call, such as the one that loads older rows, supersedes this one.
     if (call !== state.refreshes) return true;
-    const [asks, tasks] = [asksList.asks, tasksList.tasks];
-    const older = { asks: asksList.older, tasks: tasksList.older };
+    const [asks, tasks, runs] = [asksList.asks, tasksList.tasks, runsList.runs];
+    const older = { asks: asksList.older, tasks: tasksList.older, runs: runsList.older };
     if (!state.since.opened) Object.assign(state.since, { opened: read, from: desk.last_visit });
     state.since.events = mergeSince(state.since.events, desk.since_you_looked);
     // The listings are read one after another; the oldest revision makes the next wait catch what they missed.
-    state.revision = Math.min(desk.revision, asksList.revision, queue.revision, tasksList.revision, report?.revision ?? Infinity);
-    const snapshot = JSON.stringify([desk, asks, queue, tasks, older, report]);
+    state.revision = Math.min(desk.revision, asksList.revision, queue.revision, tasksList.revision, runsList.revision, report?.revision ?? Infinity);
+    const snapshot = JSON.stringify([desk, asks, queue, tasks, runs, older, report]);
     state.updated = Date.now();
     state.failed = null;
     state.cached = false;
@@ -222,7 +232,7 @@ async function refresh() {
     if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return keep(), true;
     const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
     // The Costs panel reads its own reports; a refresh keeps the last ones.
-    state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, older, report, spend: state.data?.spend ?? null, flows: state.data?.flows ?? null };
+    state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, runs, older, report, spend: state.data?.spend ?? null, flows: state.data?.flows ?? null };
     acceptReport();
     state.task = null;
     if (state.batch) state.batch.stale = true;
@@ -269,7 +279,7 @@ function signOut(reason) {
   keepTokenForWorker(null);
   // A refresh still in flight must not store what this device just dropped.
   state.refreshes++;
-  Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, flowsError: null, all: { asks: false, tasks: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
+  Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, flowsError: null, all: { asks: false, tasks: false, runs: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
   render();
 }
 
@@ -333,10 +343,10 @@ function askRow(ask, current) {
 const snoozedUntil = (ask) => `Snoozed until ${today(ask.snoozed_until) ? clock(ask.snoozed_until) : date(ask.snoozed_until)}`;
 
 // The last row of a list that left out older rows; scrolling to it loads them.
-function olderRow(listing, count, wide) {
+function olderRow(listing, count, wide, columns = 6) {
   if (!count) return "";
   const text = `Loading older ${listing}…`;
-  return wide ? html`<tr class="grp" data-older="${listing}"><td colspan="6">${text}</td></tr>` : html`<p class="empty" data-older="${listing}">${text}</p>`;
+  return wide ? html`<tr class="grp" data-older="${listing}"><td colspan="${columns}">${text}</td></tr>` : html`<p class="empty" data-older="${listing}">${text}</p>`;
 }
 
 function itemRow(item) {
@@ -704,22 +714,99 @@ const FACETS = [
   ["band", "Band", (ask) => [ask.band ?? "none"], () => [...(state.data.bands || []), "none"]],
   ["risk", "Risk", (ask) => (ask.risk?.length ? ask.risk : ["none"]), () => ["irreversible", "high", "medium", "low", "red", "yellow", "green", "none"]],
 ];
-const facetPicks = () => {
+const facetPicks = (facets = FACETS) => {
   const search = new URLSearchParams(listSearch());
-  return new Map(FACETS.map(([key]) => [key, search.get(key)]).filter(([, value]) => value));
+  return new Map(facets.map(([key]) => [key, search.get(key)]).filter(([, value]) => value));
 };
-const faceted = (asks, picks) => asks.filter((ask) => FACETS.every(([key, , values]) => !picks.has(key) || values(ask).includes(picks.get(key))));
+const faceted = (asks, picks) => filtered(asks, picks, FACETS);
 const facetQuery = (picks) => [...picks].map(([key, value]) => `&${key}=${encodeURIComponent(value)}`).join("");
 
-function facet(view, picks, [key, label, values, order]) {
+// A facet chip of the list at `base` over `items`; a facet with no order offers its values A to Z.
+function facet(view, picks, [key, label, values, order], base = "/asks", items = state.data.asks) {
   const others = new Map([...picks].filter(([other]) => other !== key));
   const picked = picks.get(key);
-  if (picked) return html`<a class="facet" aria-current="true" href="/asks?view=${view}${facetQuery(others)}" aria-label="${label}: ${picked}. Clear">${picked}${icon("x", "s13")}</a>`;
+  if (picked) return html`<a class="facet" aria-current="true" href="${base}?view=${view}${facetQuery(others)}" aria-label="${label}: ${picked}. Clear">${picked}${icon("x", "s13")}</a>`;
   const counts = new Map();
-  for (const ask of state.data.asks) for (const value of values(ask)) counts.set(value, (counts.get(value) || 0) + 1);
-  const offered = [...counts].sort(([a], [b]) => order().indexOf(a) - order().indexOf(b));
+  for (const item of items) for (const value of values(item)) counts.set(value, (counts.get(value) || 0) + 1);
+  const offered = [...counts].sort(([a], [b]) => (order ? order().indexOf(a) - order().indexOf(b) : a.localeCompare(b)));
   return html`<details class="facet"><summary aria-label="Filter by ${key}">${label}${icon("chevron-down", "s13")}</summary>
-    <div class="pick">${offered.map(([name, count]) => html`<a href="/asks?view=${view}${facetQuery(others)}&${key}=${encodeURIComponent(name)}">${name}<span class="num">${count}</span></a>`)}</div></details>`;
+    <div class="pick">${offered.map(([name, count]) => html`<a href="${base}?view=${view}${facetQuery(others)}&${key}=${encodeURIComponent(name)}">${name}<span class="num">${count}</span></a>`)}</div></details>`;
+}
+
+// The saved view the URL names, else the list's first.
+const listView = (views) => {
+  const name = new URLSearchParams(location.search).get("view");
+  return views.includes(name) ? name : views[0];
+};
+
+// Tasks (DESIGN.md, Tasks panel): every task, by saved view and facets; each row opens its page.
+const batchTag = (task) => (task.batch == null ? "" : html`<a class="tag" href="/batches/${task.batch}">${icon("layers", "s13")}batch ${task.batch}</a>`);
+const reasonShown = (task) => Boolean(task.reason) && ["blocked", "held", "failed", "dropped"].includes(task.state);
+
+function taskListRow(task) {
+  const line3 = reasonShown(task) ? html`<span class="t-${role(task.state)}">${task.reason}</span>${batchTag(task)}` : html`<span>${task.lane || ""}</span><span>${task.band || ""}</span>${batchTag(task)}`;
+  return html`<div class="row" data-href="/tasks/${task.id}">${tile(task.state)}
+    <span class="l1"><a class="mono" href="/tasks/${task.id}">${task.key}</a><span>${task.workflow} ${task.step}</span><span>${task.state}</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
+    <span class="l2 r">${task.title || task.tldr || ""}</span><span class="l3">${line3}</span><span class="chev">${icon("chevron-right", "s15")}</span></div>`;
+}
+
+function taskTableRow(task) {
+  return html`<tr data-href="/tasks/${task.id}"><td>${stateWord(task.state)}</td><td class="mono"><a href="/tasks/${task.id}">${task.key}</a></td>
+    <td class="q full"><span>${task.title || task.tldr || ""}${task.batch == null ? "" : " "}${batchTag(task)}</span>${reasonShown(task) ? html`<span class="why t-${role(task.state)}">${task.reason}</span>` : ""}</td>
+    <td>${task.workflow} <span class="t3">${task.step}</span></td><td>${task.lane || ""}</td><td>${task.band || ""}</td><td class="r">${timeTag(task.since)}</td></tr>`;
+}
+
+function tasksBody(wide) {
+  const picks = facetPicks(TASK_FACETS);
+  const current = listView(TASK_VIEWS);
+  const all = state.data.tasks;
+  const views = taskViews(filtered(all, picks));
+  const { counted, unloaded } = olderPart({ view: current, history: "ended", older: olderTasks(), picked: picks.size > 0 });
+  const chips = savedViews([
+    ["active", "Active", views.active.length, current === "active"],
+    ["blocked", "Blocked", views.blocked.length, current === "blocked"],
+    ["ended", "Ended", views.ended.length + counted, current === "ended"],
+  ], "/tasks", facetQuery(picks));
+  const facets = html`<div class="facets" aria-label="Facets">${TASK_FACETS.map((spec) => facet(current, picks, spec, "/tasks", all))}</div>`;
+  const list = views[current];
+  const empty = { active: html`No active tasks. Add one with the + button, or run <code>priory add</code>.`, blocked: "No blocked tasks. A task shows here when it needs a person to go on.", ended: "No task ended in the last 7 days. A task shows here once it is done, failed or dropped." }[current];
+  if (!list.length && !unloaded) return { views: html`${chips}${facets}`, rows: html`<p class="empty">${empty}</p>` };
+  const rows = wide
+    ? html`<table class="tbl tasks"><thead><tr><th>State</th><th>Task</th><th>Title</th><th>Workflow and step</th><th>Lane</th><th>Band</th><th class="r">Age</th></tr></thead><tbody>${list.map(taskTableRow)}${olderRow("tasks", unloaded, true, 7)}</tbody></table>`
+    : [...list.map(taskListRow), olderRow("tasks", unloaded, false)];
+  return { views: html`${chips}${facets}`, rows };
+}
+
+// Runs (DESIGN.md, Runs panel): the runs of the last 7 days, newest first; each row opens its task.
+function runListRow(run) {
+  const tokens = tokenText(run.tokens);
+  return html`<div class="row" data-href="/tasks/${run.task}">${tile(runState(run))}
+    <span class="l1"><a class="mono" href="/tasks/${run.task}">${run.key}</a><span>${run.step}</span><span>${runState(run)}</span><span class="age">${timeTag(run.started)}</span></span>
+    <span class="l2 r">${[run.agent, run.model].filter(Boolean).join(", ") || "no agent"}</span>
+    <span class="l3"><span>run ${run.run}</span>${run.outcome ? html`<span>${run.outcome}</span>` : ""}<span>${duration(run, Date.now())}</span>${tokens ? html`<span>${tokens} tokens</span>` : ""}</span>
+    <span class="chev">${icon("chevron-right", "s15")}</span></div>`;
+}
+
+function runTableRow(run) {
+  return html`<tr data-href="/tasks/${run.task}"><td>${stateWord(runState(run))}</td><td class="r">${run.run}</td><td class="mono"><a href="/tasks/${run.task}">${run.key}</a></td><td>${run.step}</td>
+    <td>${run.agent || ""} <span class="t3">${run.model || ""}</span></td><td>${run.outcome || ""}</td><td class="r">${duration(run, Date.now())}</td><td class="r">${tokenText(run.tokens)}</td><td class="r">${timeTag(run.started)}</td></tr>`;
+}
+
+function runsBody(wide) {
+  const picks = facetPicks(RUN_FACETS);
+  const current = listView(RUN_VIEWS);
+  const all = state.data.runs ?? [];
+  const views = runViews(filtered(all, picks, RUN_FACETS));
+  const { counted, unloaded } = olderPart({ view: current, history: "recent", older: state.data.older.runs, picked: picks.size > 0 });
+  const chips = savedViews([["recent", "Recent", views.recent.length + counted, current === "recent"], ["live", "Live", views.live.length, current === "live"]], "/runs", facetQuery(picks));
+  const facets = html`<div class="facets" aria-label="Facets">${RUN_FACETS.map((spec) => facet(current, picks, spec, "/runs", all))}</div>`;
+  const list = views[current];
+  const empty = current === "live" ? "No run is live. A run shows here while an agent works on a step." : "No run in the last 7 days. A run shows here once a task's step starts an agent.";
+  if (!list.length && !unloaded) return { views: html`${chips}${facets}`, rows: html`<p class="empty">${empty}</p>` };
+  const rows = wide
+    ? html`<table class="tbl runs"><thead><tr><th>State</th><th class="r">Run</th><th>Task</th><th>Step</th><th>Agent and model</th><th>Outcome</th><th class="r">Duration</th><th class="r">Tokens</th><th class="r">Started</th></tr></thead><tbody>${list.map(runTableRow)}${olderRow("runs", unloaded, true, 9)}</tbody></table>`
+    : [...list.map(runListRow), olderRow("runs", unloaded, false)];
+  return { views: html`${chips}${facets}`, rows };
 }
 
 function asksBody(wide) {
@@ -2128,8 +2215,15 @@ function listPanel(panel, wide) {
     const { views, rows } = asksBody(wide);
     return html`<div class="list" role="region" aria-label="Asks"><div class="lhead"><h1>Asks</h1></div>${views}<div class="scroll">${rows}</div>${wide ? keyHints() : ""}</div>`;
   }
+  if (OWN_PAGE_LISTS[panel]) {
+    const { views, rows } = OWN_PAGE_LISTS[panel](wide);
+    return html`<div class="list" role="region" aria-label="${PANELS[panel][0]}"><div class="lhead"><h1>${PANELS[panel][0]}</h1></div>${views}<div class="scroll">${rows}</div></div>`;
+  }
   return html`<div class="list" role="region" aria-label="${PANELS[panel][0]}"><div class="lhead"><h1>${PANELS[panel][0]}</h1></div>${laterPanel(panel)}</div>`;
 }
+
+// Lists whose rows open a page of their own, so they take the whole width, with no drawer.
+const OWN_PAGE_LISTS = { tasks: tasksBody, runs: runsBody };
 
 const keyHints = () => html`<div class="keys"><span><kbd>J</kbd><kbd>K</kbd>move</span><span><kbd>Enter</kbd>open</span><span><kbd>Esc</kbd>close</span><span><kbd>N</kbd>add</span></div>`;
 
@@ -2218,7 +2312,8 @@ function render() {
   if (typed && app.querySelector("#token")) app.querySelector("#token").value = typed;
   if (focused) [...app.querySelectorAll(focused)].find((element) => !element.closest("[inert]"))?.focus({ preventScroll: true });
   if (caret !== undefined) app.querySelector(`#${caret[0]}`)?.setSelectionRange(caret[1], caret[2], caret[3]);
-  for (const row of app.querySelectorAll("tr[data-href]")) row.addEventListener("click", () => go(row.dataset.href));
+  // A link inside a row, such as its key or batch, goes on its own.
+  for (const row of app.querySelectorAll("[data-href]")) row.addEventListener("click", (event) => { if (!event.target.closest("a")) go(row.dataset.href); });
   app.querySelectorAll("[data-grow]").forEach((part) => { part.style.flexGrow = part.dataset.grow; });
   drawLanes(app);
   watchSections(app);
@@ -2245,7 +2340,11 @@ function page() {
     if (selectedAsk()) body = askDetail(selectedAsk(), false);
     else if (here === "desk") body = deskPhone();
     else if (here === "asks") body = asksPhone();
-    else if (here === "inbox") body = html`<div class="top"><h1>Inbox</h1><span class="sp"></span>${connection()}</div>
+    else if (OWN_PAGE_LISTS[here] && !taskId) {
+      const { views, rows } = OWN_PAGE_LISTS[here](false);
+      body = html`<div class="top"><h1>${PANELS[here][0]}</h1><span class="sp"></span>${connection()}</div>
+        <div class="panel" role="region" aria-label="${PANELS[here][0]}"><div class="scroll">${views}${rows}</div></div>`;
+    } else if (here === "inbox") body = html`<div class="top"><h1>Inbox</h1><span class="sp"></span>${connection()}</div>
       <div class="panel" role="region" aria-label="Inbox"><div class="scroll">${inboxViews()}${unroutedRows()}</div></div>`;
     else if (here === "more") body = morePage();
     else if (taskId) body = taskPage(taskId);
@@ -2267,6 +2366,7 @@ function page() {
   if (utility) {
     return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}<div class="list">${utility}</div></div>${wide ? "" : nav("bar")}`;
   }
+  if (OWN_PAGE_LISTS[list]) return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}${listPanel(list, wide)}</div>${wide ? "" : nav("bar")}`;
   if (!wide) return html`${staleStrip()}${top}<div class="medium">${listPanel(list, false)}${drawer(false)}</div>${nav("bar")}`;
   const layoutNode = view().layout;
   const plain = layoutNode.tabs?.every((child) => child.panel);
@@ -2451,7 +2551,7 @@ document.addEventListener("keydown", (event) => {
     return event.target.click();
   }
   if (addSheet().open || answerSheet().open || event.target.closest("input, textarea, select") || event.metaKey || event.ctrlKey || event.altKey || !state.data) return;
-  const rows = [...document.querySelectorAll(".list [href^='/asks/'], .list tr[data-href]")];
+  const rows = [...document.querySelectorAll(".list [href^='/asks/'], .list tr[data-href^='/asks/']")];
   const hrefOf = (row) => row.getAttribute("href") || row.dataset.href;
   const at = rows.findIndex((row) => row.getAttribute("aria-current") === "true");
   if (event.key === "n" || event.key === "N") {

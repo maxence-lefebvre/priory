@@ -51,6 +51,8 @@ const WEB: &[(&str, &str, &[u8])] = &[
     asset!("/desk.js", JS, "crates/priory-core/web/desk.js"),
     asset!("/costs.js", JS, "crates/priory-core/web/costs.js"),
     asset!("/inbox.js", JS, "crates/priory-core/web/inbox.js"),
+    asset!("/tasks.js", JS, "crates/priory-core/web/tasks.js"),
+    asset!("/runs.js", JS, "crates/priory-core/web/runs.js"),
     asset!("/batches.js", JS, "crates/priory-core/web/batches.js"),
     asset!("/sw.js", JS, "crates/priory-core/web/sw.js"),
     asset!(
@@ -384,6 +386,12 @@ fn route(
         "/api/tasks" => match since(query) {
             Ok(since) => listing::revised(db, "tasks", |db| {
                 listing::recent_tasks(db, since.as_deref()).map(Some)
+            }),
+            Err(reply) => return reply,
+        },
+        "/api/runs" => match since(query) {
+            Ok(since) => listing::revised(db, "runs", |db| {
+                listing::recent_runs(db, since.as_deref()).map(Some)
             }),
             Err(reply) => return reply,
         },
@@ -1026,7 +1034,7 @@ fn since(query: &str) -> Result<Option<String>, Reply> {
     match query {
         "all=1" => Ok(None),
         "" => week_ago(),
-        _ => Err(Reply::error(400, "tasks takes one parameter: all=1")),
+        _ => Err(Reply::error(400, "this listing takes one parameter: all=1")),
     }
 }
 

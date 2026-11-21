@@ -732,18 +732,42 @@ open Priory window when there is one.
 
 ### Task row and run row
 
-- **Phone**: rows as on the desk. Line 2 is workflow and step, lane, band and age; a `blocked`,
-  `held` or `failed` row shows its reason there in the role's text color.
-- **Wide**: one line, `--row-wide` (38 px), with columns for state, key, workflow and step, lane,
-  band and age (tasks) or run id, step, agent, started, duration and state (runs). Numbers are
-  right aligned in `tabular-nums`.
+- **Phone**: rows as on the desk. Line 1 is the key, workflow and step, state and age; line 2 the
+  title. Line 3 is lane, band and the batch tag; a `blocked`, `held`, `failed` or `dropped` row
+  shows its reason there instead of lane and band, in the role's text color, and keeps the batch tag. A run row's line 2 is its agent and
+  model, line 3 its run id, outcome, duration and tokens.
+- **Wide**: a table, `--row-wide` (38 px) at least, with columns for state, key, title, workflow
+  and step, lane, band and age (tasks), or state, run id, key, step, agent and model, outcome,
+  duration, tokens and started (runs). A task's reason sits under its title. Numbers are right
+  aligned in `tabular-nums`.
+- A task that is a batch's entry or planning task carries a `.tag` with the `layers` icon, "batch
+  4", that opens the batch's page, `/batches/4`. The row's key is a link too, so a keyboard reaches
+  the task; a tap anywhere else on the row opens it.
 - A task with a stack of two or more pull requests shows `3 PRs` as a `.tag` after its state, in
   task, asleep and stopped rows. The wide desk table puts it above the row's reason. A task with one
   pull request shows none.
 - States: default, pressed (`--raised`), selected (bold text and a 3 px `--action` bar on the
   leading edge), new (fading `--action-soft`), focused (focus ring).
 - A live run shows its duration counting up once per minute, not per second. Tapping a run opens
-  its terminal.
+  its task's page, which holds the runs table and the terminal.
+- Tokens add up input, output and cache tokens: "640", "1.5k", "312k", "3.3M".
+
+### Tasks panel
+
+Every task. Saved views: Active (not `done`, `failed` or `dropped`, in start order), Blocked, and
+Ended (newest first), each with a count. Facet chips: State, Lane and Workflow, each offering its
+values A to Z with counts; a task with no lane shows under `none`. Ended lists the last 7 days first
+and loads the older tasks once the person scrolls to its end, with or without a facet set; a set
+facet counts the loaded tasks only. The rows take the whole width, with no
+drawer: each opens the task's page.
+
+### Runs panel
+
+The runs of the last 7 days, newest first. Saved views: Recent and Live. Facet chips: Outcome, Agent and
+Step. A run's outcome is both its state from the [State tile](#state-tile) table (`running` while
+live) and its result's outcome, so `moved` and `passed` both find it. Recent
+loads the older runs once the person scrolls to its end. As on Tasks, the rows take the whole width
+and each opens its task's page.
 - Actions live on the task page, not in the row: Resume, Cancel, Revive, Hold, Release, Move. The
   desk's stopped rows are the one exception, since acting on them is why they are there.
 

@@ -430,6 +430,37 @@ pub fn recent_tasks(db: &Connection, since: Option<&str>) -> rusqlite::Result<Va
     Ok(json!({ "tasks": tasks_since(db, None, None, since)?, "older": older }))
 }
 
+/// The runs live or started since `since`, or every run without it, newest first, each with its
+/// task, its result's outcome and the model and tokens its `factory.step.ended` event recorded,
+/// as `runs`, with the number of runs left out as `older`.
+pub fn recent_runs(db: &Connection, since: Option<&str>) -> rusqlite::Result<Value> {
+    let older: i64 = db.query_row(
+        "SELECT count(*) FROM runs WHERE ended IS NOT NULL AND started < ?1",
+        [since],
+        |row| row.get(0),
+    )?;
+    let mut runs = rows(
+        db,
+        "WITH ended AS MATERIALIZED (SELECT json_extract(event, '$.data.run') AS run, max(seq),
+           json_extract(event, '$.data.model') AS model, json_extract(event, '$.data.tokens') AS tokens
+           FROM trace WHERE type = 'factory.step.ended' AND (?1 IS NULL OR time >= ?1) GROUP BY 1)
+         SELECT runs.id AS run, runs.task, tasks.key, runs.step, runs.agent, runs.started,
+           runs.ended, runs.ended_as AS end, results.outcome, ended.model, ended.tokens
+         FROM runs JOIN tasks ON tasks.id = runs.task
+         LEFT JOIN results ON results.run = runs.id
+         LEFT JOIN ended ON ended.run = CAST(runs.id AS TEXT)
+         WHERE ?1 IS NULL OR runs.ended IS NULL OR runs.started >= ?1
+         ORDER BY runs.id DESC",
+        [since],
+    )?;
+    for run in runs.as_array_mut().expect("rows are an array") {
+        if let Some(tokens) = run["tokens"].as_str() {
+            run["tokens"] = serde_json::from_str(tokens).unwrap_or(Value::Null);
+        }
+    }
+    Ok(json!({ "runs": runs, "older": older }))
+}
+
 fn tasks_since(
     db: &Connection,
     lane: Option<&str>,
@@ -438,7 +469,8 @@ fn tasks_since(
 ) -> rusqlite::Result<Value> {
     let query = format!(
         "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
-           generation, retired, tldr, changed AS since, grade, grade_reason, progress, {CONDITIONS}
+           generation, retired, tldr, changed AS since, grade, grade_reason, progress, {CONDITIONS},
+           {TITLE}, batch
          FROM tasks LEFT JOIN queue USING (id)
          WHERE (?1 IS NULL OR lane = ?1) AND (?2 IS NULL OR grade = ?2)
            AND (?3 IS NULL OR state NOT IN ('done', 'failed', 'dropped') OR changed >= ?3)

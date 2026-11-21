@@ -1088,6 +1088,88 @@ fn the_tasks_endpoint_leaves_out_tasks_ended_over_a_week_ago_unless_asked_for_al
 }
 
 #[test]
+fn the_tasks_endpoint_gives_each_task_its_title_and_batch() {
+    let mut setup = Setup::new("tasks-title", SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute("UPDATE tasks SET batch = 4 WHERE id = 2", [])
+        .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let tasks = api(&address, "/api/tasks");
+    let shown = tasks["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|task| (task["title"].clone(), task["batch"].clone()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        shown,
+        [
+            (json!("Fix the docs"), Value::Null),
+            (json!("Fix the"), json!(4))
+        ]
+    );
+}
+
+#[test]
+fn the_runs_endpoint_lists_the_runs_of_the_last_week_newest_first_with_outcome_model_and_tokens() {
+    let mut setup = Setup::new("runs", SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "DELETE FROM runs WHERE NOT EXISTS (SELECT 1 FROM results WHERE results.run = runs.id);
+         INSERT INTO runs (id, task, step, tmux, session, agent, started, ended, ended_as) VALUES
+           (91, 1, 'implement', 't', 's91', 'implementer', '2026-11-01T09:00:00Z', '2026-11-01T09:30:00Z', 'moved'),
+           (92, 1, 'implement', 't', 's92', 'implementer', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-2 hours'),
+             strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hours'), 'done'),
+           (93, 2, 'implement', 't', 's93', 'implementer', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-10 minutes'), NULL, NULL);
+         INSERT INTO results (run, task, step, outcome, summary) VALUES (92, 1, 'implement', 'passed', 'Fixed');
+         INSERT INTO trace (id, type, time, event) VALUES ('e92', 'factory.step.ended', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 hours'),
+           json_object('data', json_object('run', '92', 'model', 'claude-opus-5-5',
+             'tokens', json_object('input', 1200, 'output', 300))));",
+    )
+    .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let runs = api(&address, "/api/runs");
+    let shown = runs["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|run| {
+            json!([
+                run["run"],
+                run["key"],
+                run["agent"],
+                run["end"],
+                run["outcome"],
+                run["model"],
+                run["tokens"]
+            ])
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        shown,
+        [
+            json!([93, "cli:docs-2", "implementer", null, null, null, null]),
+            json!([92, "cli:docs-1", "implementer", "done", "passed", "claude-opus-5-5", { "input": 1200, "output": 300 }]),
+        ]
+    );
+    assert_eq!(runs["older"], 1);
+    assert!(runs["revision"].is_i64());
+    assert_eq!(
+        api(&address, "/api/runs?all=1")["runs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+}
+
+#[test]
 fn the_tasks_endpoint_finds_each_active_task_holding_a_pull_request_and_how_it_holds_it() {
     let mut setup = Setup::new("tasks-pr", SERVE);
     let db = setup.db();
