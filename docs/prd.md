@@ -601,7 +601,8 @@ code, or one that already did the work.
 
 ## Success measures
 
-- Minutes of a person's attention per merged pull request.
+- Minutes of a person's attention per merged pull request. `priory report attention` estimates it
+  (see [trace.md](daemon/trace.md#attention)).
 - Share of tasks that reach a pull request with no prompt from a person beyond asks.
 - Memory held by waiting agents, which should be zero.
 - Time to add a machine to a factory.

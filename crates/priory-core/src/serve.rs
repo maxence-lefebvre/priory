@@ -342,6 +342,7 @@ fn route(
         },
         "/api/reports/latest" => listing::revised(db, "report", |db| sections::show(db, None)),
         "/api/costs" => return costs(db, &served.prices, query),
+        "/api/attention" => return attention(db, query),
         _ => match (
             path.strip_prefix("/api/tasks/").map(str::parse),
             path.strip_prefix("/api/reports/").map(str::parse),
@@ -742,34 +743,65 @@ fn pick_refusal(db: &Connection, pick: &str, option: &str, sent: i64, refused: &
     }
 }
 
-/// `GET /api/costs?since=WINDOW&by=SPLIT`: what `priory costs --json` prints.
-fn costs(db: &Connection, prices: &BTreeMap<String, Price>, query: &str) -> Reply {
-    let (mut since, mut by) = (None, "workflow".to_owned());
+/// A report's `since=WINDOW&by=SPLIT` query: its window, and its split, one of `splits`, the
+/// first by default.
+fn window_by(
+    db: &Connection,
+    report: &str,
+    query: &str,
+    splits: &[&str],
+) -> Result<(report::Window, String), Reply> {
+    let (mut since, mut by) = (None, splits[0].to_owned());
     for pair in query.split('&').filter(|pair| !pair.is_empty()) {
         let Some((name @ ("since" | "by"), value)) = pair.split_once('=') else {
-            return Reply::error(400, "costs takes since=WINDOW and by=SPLIT");
+            return Err(Reply::error(
+                400,
+                &format!("{report} takes since=WINDOW and by=SPLIT"),
+            ));
         };
         let Some(value) = decode(value) else {
-            return Reply::error(400, &format!("{name} is not percent-encoded UTF-8"));
+            return Err(Reply::error(
+                400,
+                &format!("{name} is not percent-encoded UTF-8"),
+            ));
         };
         match name {
             "since" => since = Some(value),
             _ => by = value,
         }
     }
-    if !report::BY.contains(&by.as_str()) {
-        return Reply::error(400, &format!("by is none of {}", report::BY.join(", ")));
+    if !splits.contains(&by.as_str()) {
+        return Err(Reply::error(
+            400,
+            &format!("by is none of {}", splits.join(", ")),
+        ));
     }
-    let now = match intake::now() {
-        Ok(now) => now.to_string(),
-        Err(error) => return Reply::error(500, &error),
-    };
-    let window = match report::window(db, since.as_deref(), &now) {
-        Ok(window) => window,
-        Err(refusal) => return Reply::error(400, &refusal),
+    let now = intake::now().map_err(|error| Reply::error(500, &error))?;
+    let window = report::window(db, since.as_deref(), &now.to_string())
+        .map_err(|refusal| Reply::error(400, &refusal))?;
+    Ok((window, by))
+}
+
+/// `GET /api/costs?since=WINDOW&by=SPLIT`: what `priory costs --json` prints.
+fn costs(db: &Connection, prices: &BTreeMap<String, Price>, query: &str) -> Reply {
+    let (window, by) = match window_by(db, "costs", query, &report::BY) {
+        Ok(window_by) => window_by,
+        Err(reply) => return reply,
     };
     match report::costs(db, prices, &window, &by) {
         Ok(costs) => Reply::json(200, costs.json().to_string()),
+        Err(error) => Reply::error(500, &error),
+    }
+}
+
+/// `GET /api/attention?since=WINDOW&by=SPLIT`: what `priory report attention --json` prints.
+fn attention(db: &Connection, query: &str) -> Reply {
+    let (window, by) = match window_by(db, "attention", query, &report::attention::BY) {
+        Ok(window_by) => window_by,
+        Err(reply) => return reply,
+    };
+    match report::attention::attention(db, &window, &by) {
+        Ok(attention) => Reply::json(200, attention.json().to_string()),
         Err(error) => Reply::error(500, &error),
     }
 }
