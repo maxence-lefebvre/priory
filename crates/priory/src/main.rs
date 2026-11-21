@@ -1194,7 +1194,13 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
     let status = if lease {
         leased(program, rest)
     } else {
-        held(program, rest, grant)
+        match held(program, rest, grant) {
+            Ok(status) => status,
+            Err(error) => {
+                let _ = gate(&Gate::Release { grant });
+                return failed(error);
+            }
+        }
     };
     if let Err(error) = gate(&Gate::Release { grant }) {
         eprintln!(
@@ -1223,35 +1229,38 @@ fn held(
     program: &OsString,
     rest: &[OsString],
     grant: i64,
-) -> std::io::Result<std::process::ExitStatus> {
+) -> Result<std::io::Result<std::process::ExitStatus>, String> {
     use std::io::Write;
     use std::os::fd::AsRawFd;
-    let (reader, mut writer) = std::io::pipe()?;
+    let (reader, mut writer) = std::io::pipe().map_err(|error| error.to_string())?;
     // The shell opens the pipe's read end through /proc by this pid, not $PPID, which a dead holder turns into init, and which keeps the command's stdin as it was.
     let wait = format!(
         "read -r _ <\"/proc/{}/fd/{}\" && exec \"$@\"",
         std::process::id(),
         reader.as_raw_fd()
     );
-    let mut child = Command::new("sh")
+    let mut child = match Command::new("sh")
         .args(["-c", &wait, "sh"])
         .arg(program)
         .args(rest)
-        .spawn()?;
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => return Ok(Err(error)),
+    };
     let taken = gate(&Gate::Run {
         grant,
         pid: child.id(),
     });
-    if let Err(error) = taken {
+    if let Err(error) =
+        taken.and_then(|_| writer.write_all(b"\n").map_err(|error| error.to_string()))
+    {
         let _ = child.kill();
         let _ = child.wait();
-        return Err(std::io::Error::other(format!(
-            "the daemon did not take the command: {error}"
-        )));
+        return Err(error);
     }
-    writer.write_all(b"\n")?;
     drop(writer);
-    child.wait()
+    Ok(child.wait())
 }
 
 /// Runs a leased command in the process group of a guard that stops the group once its pipe from

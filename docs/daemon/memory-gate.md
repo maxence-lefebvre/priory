@@ -31,7 +31,7 @@ runs keeps its grant until that command ends.
 measure the room or refuses the grant, or when the grant still waits after `--timeout`, 1 hour by
 default. A grant above the runner's share of the machine can never fit, so the daemon refuses it at
 once, as
-`9.0 GB never fits: this runner's agents may take 7.2 GB`. A command that cannot start exits 127.
+`9.0 GB never fits: this runner's agents may take 7.2 GB`. A command that cannot start exits 127, or 126 when it is not executable.
 
 `priory memory lease [--gb N] [--timeout D] -- <command>` runs a server or stack that stays up,
 such as a dev server, with N GB reserved for as long as it runs. It takes the same flags, waits in
