@@ -9058,7 +9058,10 @@ fn a_comment_on_a_done_tasks_issue_reopens_nothing_once_it_unsubscribed_or_the_i
         json!({ "repo": "owner/repo", "issue": 42, "title": "t", "url": "u", "actor": "ana", "github_id": 5 }),
     )
     .subject("owner/repo#42");
-    for (name, close) in [("issue-reopen-unsubscribed", false), ("issue-reopen-closed", true)] {
+    for (name, close) in [
+        ("issue-reopen-unsubscribed", false),
+        ("issue-reopen-closed", true),
+    ] {
         let mut setup = Setup::new(name);
         setup.calls(&[result("passed")]);
         setup.publish(&requested(42));
