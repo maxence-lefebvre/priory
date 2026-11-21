@@ -1304,10 +1304,53 @@ fn judge(tx: &Transaction, wait: i64) -> rusqlite::Result<bool> {
         _ => check.data["pending"].as_u64() == Some(0) && failing == Some(0),
     };
     // A stack is done once every pull request merged, so green checks leave it waiting.
-    if !green || stacked {
+    if stacked {
+        return stack_green(tx, wait, task, green, &stack);
+    }
+    if !green {
         return Ok(false);
     }
     done(tx, wait, task, check.seq)
+}
+
+/// Records whether gate `wait` of `task`'s stack is green. When that makes every open gate green,
+/// posts one report naming the pull request to merge first, since only a person merges a stack.
+fn stack_green(
+    tx: &Transaction,
+    wait: i64,
+    task: i64,
+    green: bool,
+    stack: &[crate::stack::Pull],
+) -> rusqlite::Result<bool> {
+    let all_green = || -> rusqlite::Result<bool> {
+        tx.query_row(
+            "SELECT NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND daemon
+               AND fired IS NULL AND withdrawn IS NULL AND green IS NOT 1)",
+            [task],
+            |row| row.get(0),
+        )
+    };
+    let before = all_green()?;
+    tx.execute(
+        "UPDATE waits SET green = ?2 WHERE id = ?1",
+        params![wait, green],
+    )?;
+    let Some(bottom) = stack.iter().find(|pull| pull.state == "open") else {
+        return Ok(false);
+    };
+    if before || !all_green()? {
+        return Ok(false);
+    }
+    let key: String = tx.query_row("SELECT key FROM tasks WHERE id = ?1", [task], |row| {
+        row.get(0)
+    })?;
+    let line = format!(
+        "the stack of task {task} ({key}) is green: merge #{} first",
+        bottom.number()
+    );
+    crate::post::report(tx, "priory", &line)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))?;
+    Ok(false)
 }
 
 /// A daemon's ask about a stack: its stable name, so a repeated event asks once, and its question.

@@ -13413,6 +13413,56 @@ fn a_comment_on_the_middle_pull_request_wakes_the_task_naming_its_place_in_the_s
 }
 
 #[test]
+fn a_stack_whose_every_pull_request_is_green_posts_one_report_naming_the_one_to_merge_first() {
+    let setup = opened_stack("stack-green");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    let top = git(&worktree)
+        .args(["rev-parse", "priory/1"])
+        .output()
+        .unwrap();
+    let top = String::from_utf8(top.stdout).unwrap().trim().to_owned();
+    let green = |number: u64, github_id: u64| {
+        let mut message = on_stack(
+            number,
+            "github.check_run.completed",
+            json!({ "name": "ci", "conclusion": "success", "github_id": github_id, "pending": 0, "failing": 0 }),
+        );
+        if number == 9 {
+            message.data["head_sha"] = json!(top);
+        }
+        message
+    };
+    let reports = || -> Vec<serde_json::Value> {
+        let desk = setup.priory(&["desk", "--json"]);
+        let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+        desk["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["kind"] == "report")
+            .map(|item| item["what"].clone())
+            .collect()
+    };
+
+    setup.publish(&green(7, 701));
+    setup.publish(&green(8, 801));
+    setup.until("inbox", |rows| rows.len() == 3);
+    stays_asleep_after(&setup, 1);
+    assert_eq!(reports(), Vec::<serde_json::Value>::new());
+    setup.publish(&green(9, 901));
+    setup.publish(&green(9, 902));
+
+    setup.until("inbox", |rows| rows.len() == 6);
+    stays_asleep_after(&setup, 1);
+    assert_eq!(
+        reports(),
+        [json!(
+            "priory: the stack of task 1 (github:owner/repo#42) is green: merge #7 first"
+        )]
+    );
+}
+
+#[test]
 fn the_bottom_pull_request_closed_without_a_merge_asks_a_person_once() {
     let setup = opened_stack("stack-closed");
     let closed = |github_id: u64| {
@@ -14255,3 +14305,4 @@ fn a_daemon_refuses_a_socket_directory_that_others_can_enter() {
     assert!(!status.success(), "{log}");
     assert!(log.contains("not a private folder of this user"), "{log}");
 }
+

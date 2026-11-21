@@ -1015,8 +1015,10 @@ PRAGMA user_version = 57;
 // A routed ask whose lead task ends or blocks without answering returns to the person: it loses
 // its lead and is asked again as its next revision, which pushes it. Every alarm the desk ranks
 // pushes too: an intake failure, an uncertain prompt and an uncertain command, with the desk kind
-// in `push_queue.state`.
+// in `push_queue.state`. A stack's gate records whether its checks are green, so the daemon tells
+// once when the whole stack is.
 const SCHEMA_58: &str = "
+ALTER TABLE waits ADD COLUMN green INTEGER;
 CREATE TRIGGER IF NOT EXISTS ask_returns_from_its_lead AFTER UPDATE OF state ON tasks
   WHEN NEW.trigger = 'priory/lead' AND NEW.state IN ('done', 'failed', 'dropped', 'blocked')
   AND NEW.state IS NOT OLD.state BEGIN
