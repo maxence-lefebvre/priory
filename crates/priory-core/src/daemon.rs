@@ -656,6 +656,7 @@ fn apply(
 #[serde(untagged)]
 enum Input {
     Guard(crate::guard::Line),
+    Connector(crate::todo::ConnectorLine),
     Todo(crate::todo::Line),
     Add(AddLine),
     Signal(Signal),
@@ -808,6 +809,10 @@ fn take(
     match serde_json::from_str::<Input>(line) {
         Ok(Input::Guard(line)) => {
             Ok((replied(crate::guard::decide(db, &line.guard, trace)?), None))
+        }
+        Ok(Input::Connector(line)) => {
+            crate::todo::connector_used(db, &line.connector_used)?;
+            Ok((replied(Ok(String::new())), None))
         }
         Ok(Input::Todo(line)) => Ok((
             replied(crate::todo::change(db, &line, trace.factory)?),
@@ -1536,6 +1541,7 @@ fn start(
         })
         .into_iter()
         .chain(guard_env(factory))
+        .chain(crate::todo::connectors_env(db)?)
         .collect();
     let started = Started {
         tmux: &tmux,

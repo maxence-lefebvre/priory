@@ -93,6 +93,11 @@
         "null"
       ]
     },
+    "connectorSignIn": {
+      "default": false,
+      "description": "Lets the run call an MCP server's `authenticate` tools. Off by default: an unattended run\nthat signs in clears the stored token every later run needs.",
+      "type": "boolean"
+    },
     "description": {
       "description": "One line on what the agent does.",
       "type": "string"

@@ -41,10 +41,9 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 68, which added idle compactions and session definitions, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, and 66, which added the step a gate enters after the merge. Schema 38's visits
+/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, 66, which added the step a gate enters after the merge, and 69, which added idle compactions and session definitions. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition;
-  ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+const UNDO_SINCE_SEARCH: &str = "DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
          ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
          DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
@@ -1117,7 +1116,7 @@ fn the_first_prompt_is_the_step_prompt_and_the_task_events_typed_once_and_confir
     assert!(lines[3].contains(r#""label":"it's \"urgent\"; C-c Enter""#));
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.typed().len(), 2, "the silent turn gets one nudge");
-    assert!(setup.typed()[1].starts_with("Your turn ended"));
+    assert!(setup.typed()[1].starts_with("Your last turn ended"));
 }
 
 #[test]
@@ -1137,7 +1136,7 @@ fn an_event_kept_while_the_run_is_running_is_typed_after_the_next_stop() {
     setup.release("hold-stop");
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     let typed = setup.typed();
-    assert!(typed[1].starts_with("Your turn ended"), "{typed:?}");
+    assert!(typed[1].starts_with("Your last turn ended"), "{typed:?}");
     assert!(
         typed[1].contains("\ngithub.issues.labeled owner/repo#42 {"),
         "{typed:?}"
@@ -1275,7 +1274,7 @@ fn a_queued_answer_and_its_nudge_are_typed_before_the_compact_asked_ahead_of_the
         typed[1].starts_with("Answer to ask 1 (revision 1): sqlite\n"),
         "{typed:?}"
     );
-    assert!(typed[2].starts_with("Your turn ended"), "{typed:?}");
+    assert!(typed[2].starts_with("Your last turn ended"), "{typed:?}");
     assert_eq!(typed[3], "/compact the plan\n", "{typed:?}");
     assert!(
         typed[4].starts_with(
@@ -1497,7 +1496,7 @@ fn a_restarted_daemon_reattaches_to_its_run_and_types_nothing_twice() {
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     assert_eq!(setup.rows("runs"), runs);
     let typed = setup.typed();
-    assert!(typed[1].starts_with("Your turn ended"), "{typed:?}");
+    assert!(typed[1].starts_with("Your last turn ended"), "{typed:?}");
     assert!(typed[2].starts_with("github.issues.labeled"), "{typed:?}");
     assert_eq!(
         typed
@@ -5535,7 +5534,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          DROP TABLE findings;
          DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
          ALTER TABLE waits DROP COLUMN withdrawn_reason; ALTER TABLE ask_withdrawals DROP COLUMN reason;
-         ALTER TABLE waits DROP COLUMN after;
+         DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
          DROP TABLE ask_revisions;
          DROP TABLE ask_refusals;
          PRAGMA legacy_alter_table = ON;
@@ -8253,7 +8252,7 @@ fn a_firing_while_the_task_runs_is_coalesced_and_not_typed() {
     std::thread::sleep(Duration::from_millis(1500));
     let typed = setup.typed();
     assert_eq!(typed.len(), 2, "{typed:?}");
-    assert!(typed[1].starts_with("Your turn ended"), "{typed:?}");
+    assert!(typed[1].starts_with("Your last turn ended"), "{typed:?}");
     assert!(!typed[1].contains("09:00"), "{typed:?}");
 }
 
@@ -9426,8 +9425,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     // The state file as version 64 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition;
-         ALTER TABLE waits DROP COLUMN after;
+        "DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
          ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          PRAGMA user_version = 64;",
     )
@@ -9441,7 +9439,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     assert!(setup.rows("actions").is_empty());
 }
 
-const NUDGE: &str = "Your turn ended without calling wait, ask or result of the priory MCP server. Call one of them: result to end the step, ask to put a question to a person, or wait to sleep until an event.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n";
+const NUDGE: &str = "Your last turn ended in text only, so Priory cannot tell what comes next. Pick the one tool of the priory MCP server that fits, and call it to end this turn:\n- ask, when a person must decide or answer something before the step can finish. Do not call result with a guessed outcome instead.\n- wait, when you wait on something outside you, such as a pull request's checks, a review or a time.\n- result, only when the step is finished, with one of the outcomes listed below.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.\n";
 
 #[test]
 fn a_silent_turn_gets_one_nudge_and_a_second_silent_turn_gets_none() {
@@ -15663,7 +15661,7 @@ fn overlapping_after(name: &str, second: &str, factory: &str, first: impl Fn(&Se
     // Task 1's silent turn gets its nudge, which would take the next queued call.
     setup.until("outbox", |rows| {
         rows.iter()
-            .any(|row| row[2] == "2" && row[4].starts_with("Your turn ended"))
+            .any(|row| row[2] == "2" && row[4].starts_with("Your last turn ended"))
     });
     first(&setup);
     setup.publish(&requested(43));
@@ -16148,4 +16146,124 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
     assert_eq!(task["reason"], "owned by runner b", "{task}");
     assert_eq!(b.rows("tasks")[0][4], "running");
+}
+
+fn mcp(tool: &str) -> serde_json::Value {
+    json!({ "name": tool, "arguments": {} })
+}
+
+fn sign_in_rows(setup: &Setup) -> Vec<Vec<String>> {
+    desk(setup, &[])
+        .into_iter()
+        .filter(|row| row[1] == "todo" && row[5].contains("Sign in to"))
+        .collect()
+}
+
+#[test]
+fn an_unattended_run_that_calls_a_connectors_authenticate_tool_is_told_to_go_on_without_it() {
+    let mut setup = Setup::new("connector-denied");
+    setup.calls(&[json!([
+        mcp("mcp__linear__authenticate"),
+        mcp("mcp__linear__complete_authentication")
+    ])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    for reply in setup.replied(2) {
+        let reason = guard_denied(&reply).unwrap_or_else(|| panic!("{reply}"));
+        assert!(reason.contains("linear"), "{reason}");
+        assert!(
+            reason.contains("Carry on with your other sources"),
+            "{reason}"
+        );
+        assert!(reason.contains("result"), "{reason}");
+    }
+}
+
+#[test]
+fn two_runs_denied_for_one_connector_leave_one_desk_item_that_done_clears() {
+    let mut setup = Setup::new("connector-desk");
+    let auth = json!([mcp("mcp__linear__authenticate")]);
+    setup.calls(&[auth.clone(), auth]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    setup.replied(2);
+
+    let rows = sign_in_rows(&setup);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0][5].contains("linear"), "{rows:?}");
+
+    assert!(
+        setup
+            .priory(&["todo", "done", &rows[0][2]])
+            .status
+            .success()
+    );
+    assert_eq!(sign_in_rows(&setup), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn an_agent_that_opts_in_may_call_authenticate() {
+    let mut setup = Setup::new("connector-opt-in");
+    let agent = AGENT.replace(
+        "effort = \"low\"\n",
+        "effort = \"low\"\nconnectorSignIn = true\n",
+    );
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), agent).unwrap();
+    setup.calls(&[json!([mcp("mcp__linear__authenticate")])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let replies = setup.replied(1);
+    assert_eq!(guard_denied(&replies[0]), None, "{}", replies[0]);
+    assert_eq!(sign_in_rows(&setup), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn a_later_run_that_uses_the_connector_clears_its_desk_item() {
+    let mut setup = Setup::new("connector-used");
+    setup.calls(&[
+        json!([mcp("mcp__linear__authenticate"), result("passed")]),
+        json!([mcp("mcp__linear__list_issues")]),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.replied(1);
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] != "running")
+    });
+    assert_eq!(sign_in_rows(&setup).len(), 1);
+
+    setup.publish(&requested(43));
+
+    setup.replied(2);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !sign_in_rows(&setup).is_empty() {
+        assert!(Instant::now() < deadline, "the item never cleared");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_connector_call_a_guard_denies_leaves_its_desk_item_open() {
+    let mut setup = Setup::new("connector-denied-use");
+    setup.calls(&[
+        json!([mcp("mcp__linear__authenticate"), result("passed")]),
+        json!([mcp("mcp__linear__create_issue")]),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.replied(1);
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] != "running")
+    });
+
+    setup.publish(&requested(43));
+
+    let replies = setup.replied(3);
+    assert!(guard_denied(&replies[2]).is_some(), "{}", replies[2]);
+    assert_eq!(sign_in_rows(&setup).len(), 1);
 }

@@ -379,6 +379,25 @@ fn no_workflow_or_step_grants_priorys_person_verbs() {
 }
 
 #[test]
+fn no_workflow_or_step_grants_a_connector_sign_in() {
+    let step = DOCS.replace("\"gh-pr-comment\"", "\"connector-sign-in\"");
+    let workflow = DOCS.replace("git-push-default", "connector-sign-in");
+
+    let outcomes = [step, workflow]
+        .map(|docs| priory(&["check"], &factory("allow-sign-in", &[("docs", &docs)])));
+
+    assert_eq!(outcomes.each_ref().map(|outcome| outcome.code), [1, 1]);
+    assert_eq!(
+        outcomes[0].stderr,
+        "workflows/docs.toml:12: step `release`: `guard.allow` names `connector-sign-in`, which only an agent's `connectorSignIn` grants\n"
+    );
+    assert_eq!(
+        outcomes[1].stderr,
+        "workflows/docs.toml:2: `guard.allow` names `connector-sign-in`, which only an agent's `connectorSignIn` grants\n"
+    );
+}
+
+#[test]
 fn no_workflow_grants_a_script_the_guard_cannot_read() {
     let workflow = DOCS.replace("git-push-default", "unreadable");
 
