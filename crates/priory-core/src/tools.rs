@@ -2784,6 +2784,7 @@ fn step_in(
         return finish("blocked");
     };
     drop_ending(tx, task)?;
+    drop_nudge(tx, task)?;
     set_ending(tx, task, Some(step))?;
     match step.decides {
         Decider::Model => {
@@ -3242,12 +3243,25 @@ pub(crate) fn dismiss(
     factory: &priory_factory::factory::Factory,
 ) -> rusqlite::Result<Result<String, String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let ask = match open_ask(&tx, dismiss.dismiss, dismiss.revision)? {
+    let dismissed = dismiss_in_tx(&tx, dismiss, factory)?;
+    if dismissed.is_ok() {
+        tx.commit()?;
+    }
+    Ok(dismissed)
+}
+
+/// Dismisses an ask in `tx`, writing nothing when it refuses.
+pub(crate) fn dismiss_in_tx(
+    tx: &Transaction,
+    dismiss: &Dismiss,
+    factory: &priory_factory::factory::Factory,
+) -> rusqlite::Result<Result<String, String>> {
+    let ask = match open_ask(tx, dismiss.dismiss, dismiss.revision)? {
         Ok(ask) => ask,
         Err(error) => return Ok(Err(error)),
     };
     let label = &ask.label;
-    if ask.kind == "step" || crate::hold::of_ask(&tx, dismiss.dismiss)?.is_some() {
+    if ask.kind == "step" || crate::hold::of_ask(tx, dismiss.dismiss)?.is_some() {
         return Ok(Err(format!(
             "ask {label} moves its task on by its options: answer it instead"
         )));
@@ -3256,20 +3270,19 @@ pub(crate) fn dismiss(
         "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'dismissed' WHERE id = ?1",
         [dismiss.dismiss],
     )?;
-    withdraw_waits(&tx, dismiss.dismiss, "dismissed")?;
-    drop_lead(&tx, dismiss.dismiss, &format!("ask {label} was dismissed"))?;
-    crate::deliver::queue(&tx, dismiss.dismiss, None, factory)?;
+    withdraw_waits(tx, dismiss.dismiss, "dismissed")?;
+    drop_lead(tx, dismiss.dismiss, &format!("ask {label} was dismissed"))?;
+    crate::deliver::queue(tx, dismiss.dismiss, None, factory)?;
     if let Some(task) = ask.task {
         wake(
-            &tx,
+            tx,
             task,
             &format!("A person dismissed ask {label} without an answer. Continue your task."),
         )?;
         if ask.state == "asleep" {
-            set(&tx, task, "ready", None, None)?;
+            set(tx, task, "ready", None, None)?;
         }
     }
-    tx.commit()?;
     Ok(Ok(format!("ask {label} dismissed")))
 }
 
@@ -3994,6 +4007,32 @@ fn drop_ending(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
             tx.execute(
                 "UPDATE outbox SET text = ?2 WHERE id = ?1",
                 params![id, kept.join("\n")],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Removes a queued nudge from the task's prompts, as before it enters another step: it asks for
+/// the old step's outcomes, and the new step's prompt says how to end it.
+fn drop_nudge(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    let queued = tx
+        .prepare("SELECT id, text FROM outbox WHERE task = ?1 AND state = 'queued' AND nudge = 1")?
+        .query_map([task], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, text) in queued {
+        let Some(rest) = text.strip_prefix(NUDGE.trim_end()) else {
+            continue;
+        };
+        let rest = rest.trim_start_matches('\n');
+        if rest.is_empty() {
+            tx.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
+        } else {
+            tx.execute(
+                "UPDATE outbox SET text = ?2, nudge = 0 WHERE id = ?1",
+                params![id, rest],
             )?;
         }
     }

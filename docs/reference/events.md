@@ -28,7 +28,8 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
   [`factory.task.requested`](#factorytaskrequested), [`factory.intake.baseline`](#factoryintakebaseline)
 - Runners: [`priory.task.claimed`](#priorytaskclaimed), [`priory.task.held`](#priorytaskheld),
   [`priory.runner.alive`](#prioryrunneralive), [`priory.ask.answered`](#prioryaskanswered),
-  [`priory.ask.posted`](#prioryaskposted)
+  [`priory.ask.dismissed`](#prioryaskdismissed), [`priory.ask.posted`](#prioryaskposted),
+  [`priory.ask.applied`](#prioryaskapplied)
 
 ## The envelope
 
@@ -1165,8 +1166,9 @@ Schema: [`factory.intake.baseline.json`](../schemas/events/factory.intake.baseli
 
 ## Runners
 
-A factory with two or more runner files has its daemons publish these on `factory.intake` too, and
-`priory give` and `priory answer RUNNER:ASK` publish two of them. Every runner reads them all. See
+A factory with two or more runner files has its daemons publish these on `factory.intake` too.
+`priory give`, `priory answer RUNNER:ASK`, `priory dismiss RUNNER:ASK` and the answer and dismiss
+endpoints of `priory serve` publish three of them. Every runner reads them all. See
 [runners.md](../daemon/runners.md).
 
 ### `priory.task.claimed`
@@ -1255,8 +1257,9 @@ Schema: [`priory.runner.alive.json`](../schemas/events/priory.runner.alive.json)
 
 ### `priory.ask.answered`
 
-One message per `priory answer RUNNER:ASK`. Only that runner applies it, with the revision check of
-a local answer. Subject: `<runner>:<ask>`.
+One message per answer to another runner's ask, from `priory answer RUNNER:ASK` or
+`POST /api/asks/RUNNER:ASK/answer`. Only that runner applies it, with the revision check of a local
+answer, and says what became of it in `priory.ask.applied`. Subject: `<runner>:<ask>`.
 Schema: [`priory.ask.answered.json`](../schemas/events/priory.ask.answered.json).
 
 | Field | Type | Meaning |
@@ -1265,8 +1268,9 @@ Schema: [`priory.ask.answered.json`](../schemas/events/priory.ask.answered.json)
 | `ask` | integer | The ask's id on that runner |
 | `revision` | integer | The question revision the person read |
 | `text` | string | The answer |
-| `run` | boolean | `--run`: the person confirmed that the answer runs the ask's command |
-| `by` | string | `cli` |
+| `run` | boolean | `--run` or `run: true`: the person confirmed that the answer runs the ask's command, on that runner |
+| `by` | string | `cli` or `serve` |
+| `submission` | UUID string, optional | The message's own `id`, which `priory.ask.applied` names. A message without it is known by its `id` |
 
 <!-- example: events/priory.ask.answered.json -->
 ```json
@@ -1281,7 +1285,39 @@ Schema: [`priory.ask.answered.json`](../schemas/events/priory.ask.answered.json)
     "revision": 1,
     "text": "approved",
     "run": false,
-    "by": "cli"
+    "by": "serve",
+    "submission": "0196f1c3-1b2c-7d4e-8f9a-0b1c2d3e4f5a"
+  },
+  "links": []
+}
+```
+
+### `priory.ask.dismissed`
+
+One message per dismiss of another runner's ask, from `priory dismiss --revision N RUNNER:ASK` or
+`POST /api/asks/RUNNER:ASK/dismiss`. Only that runner applies it, with the checks of a local
+dismiss. Subject: `<runner>:<ask>`.
+Schema: [`priory.ask.dismissed.json`](../schemas/events/priory.ask.dismissed.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `runner` | string | The runner whose ask it dismisses |
+| `ask` | integer | The ask's id on that runner |
+| `revision` | integer | The question revision the person read |
+| `submission` | UUID string | The message's own `id`, which `priory.ask.applied` names |
+
+<!-- example: events/priory.ask.dismissed.json -->
+```json
+{
+  "id": "0196f1c4-2c3d-7e5f-9a0b-1c2d3e4f5a6b",
+  "type": "priory.ask.dismissed",
+  "subject": "xps13:8",
+  "time": "2026-11-21T10:21:00Z",
+  "data": {
+    "runner": "xps13",
+    "ask": 8,
+    "revision": 2,
+    "submission": "0196f1c4-2c3d-7e5f-9a0b-1c2d3e4f5a6b"
   },
   "links": []
 }
@@ -1331,6 +1367,36 @@ Schema: [`priory.ask.posted.json`](../schemas/events/priory.ask.posted.json).
       "revisions": [],
       "refused": []
     }
+  },
+  "links": []
+}
+```
+
+### `priory.ask.applied`
+
+The owner of an ask applied or refused an answer or dismiss another machine sent. Subject:
+`<runner>:<ask>`. Schema: [`priory.ask.applied.json`](../schemas/events/priory.ask.applied.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `runner` | string | The runner that owns the ask |
+| `ask` | integer | The ask's id on that runner |
+| `submission` | UUID string | The `submission` of the answer or dismiss |
+| `outcome` | `answered`, `dismissed` or `refused` | What became of it |
+| `why` | string, optional | Why it was refused, as the local CLI would say it |
+
+<!-- example: events/priory.ask.applied.json -->
+```json
+{
+  "id": "5e2b9c47-8d1a-5f36-b0c2-4a7e9d1f3b58",
+  "type": "priory.ask.applied",
+  "subject": "xps13:7",
+  "time": "2026-11-21T10:20:01Z",
+  "data": {
+    "runner": "xps13",
+    "ask": 7,
+    "submission": "0196f1c3-1b2c-7d4e-8f9a-0b1c2d3e4f5a",
+    "outcome": "answered"
   },
   "links": []
 }

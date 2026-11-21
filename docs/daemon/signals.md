@@ -97,7 +97,8 @@ confirmed:
 
 So a nudge starts at most one turn. A silent turn after a nudge is not nudged again. The health
 check then handles the run, as for any run that sends no exit. If a prompt is already queued when
-the turn ends, it follows the nudge in the same prompt.
+the turn ends, it follows the nudge in the same prompt. A nudge still queued when the task enters
+another step, as when a merge moves it on, is dropped: the new step's prompt says how to end it.
 
 The nudge is an outbox prompt, not the hook's `decision: block`. The daemon already confirms,
 retries and survives a restart for outbox prompts, while the hook has no reply channel beyond `ok`.
