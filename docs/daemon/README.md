@@ -11,7 +11,8 @@ priory daemon [DIR] [--once]
 `DIR` is the factory folder, `.` by default. The daemon checks the factory first, as `priory check`
 does, and refuses to start while it has problems.
 
-It reads the herdr-bus output `factory.intake` as the consumer `priory`. It records each message in
+It reads the herdr-bus output `factory.intake` as the consumer `priory`, or `priory.<runner>` in a
+factory of several runners (see [runners.md](runners.md)). It records each message in
 the inbox and routes it to a task (see [routing.md](routing.md)). Without `--once`, the daemon looks
 for new messages every second and runs agents, as [runs.md](runs.md) describes.
 
@@ -57,6 +58,8 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [home.md](home.md): what `PRIORY_HOME` holds: clones, worktrees, the socket and the lock.
 - [runs.md](runs.md): how a run starts its harness, and the queue, bands and holds.
 - [room.md](room.md): when the machine has room to admit a run, and queue stalls.
+- [runners.md](runners.md): which runner owns each task in a factory of several, leases,
+  `priory give`, and answering another runner's ask.
 - [agents-slice.md](agents-slice.md): the systemd slice that caps every agent's CPU and memory.
 - [memory-gate.md](memory-gate.md): `priory memory acquire`, which queues heavy commands for memory.
 - [sessions.md](sessions.md): shared agent sessions, attaching to a run's terminal, and trusting a
