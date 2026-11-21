@@ -29,7 +29,7 @@ fires at startup, so its paste and confirmation stay as they are.
 | Permission policy (R7.2) | `--permission-mode`, `allow` and `deny` rules, `PermissionRequest` deny hook | `sandbox_mode`, `approval_policy` and `approvals_reviewer` by `defaultMode`, below, and the same `PermissionRequest` deny hook |
 | Built-in question tool (R6.4) | `PreToolUse` deny on `AskUserQuestion` | `PreToolUse` deny on `request_user_input`, which Codex offers only in plan collaboration mode, which Priory never sets |
 | Tool guard | `PreToolUse` hook on `Bash` and `mcp__.*` | the same hook on every tool. Codex 0.170 blocks a command or tool call that a `PreToolUse` hook denies; no test runs real Codex, so whether its shell tool and MCP calls reach the hook is unchecked |
-| Model, effort, agent body | `--model`, `--effort`, `--append-system-prompt` | `-c model`, `-c model_reasoning_effort`, `-c developer_instructions` |
+| Model, effort, agent body and the factory's writing guide | `--model`, `--effort`, `--append-system-prompt` | `-c model`, `-c model_reasoning_effort`, `-c developer_instructions` |
 
 `defaultMode` maps to Codex's sandbox and approvals. `approvals_reviewer` is always set, so a user
 config that routes approvals to Codex's reviewer does not decide a `manual` run's prompts:
