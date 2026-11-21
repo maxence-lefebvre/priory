@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextLink, sinceGroups, mergeSince, progressView, sectionInView, dueText } from "./desk.js";
+import { nextLink, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote } from "./desk.js";
 
 const why = "an alarm: work stopped and waits on a person";
 
@@ -81,4 +81,19 @@ test("a to-do's due time reads in local time with a relative hint, and other tex
   assert.equal(dueText("Renew the cert", now), "Renew the cert");
   assert.equal(dueText("Fix it, due soon", now), "Fix it, due soon");
   assert.equal(dueText("Fix it, due 2026-13-20T20:00:00Z", now), "Fix it, due 2026-13-20T20:00:00Z");
+});
+
+test("a report row reads and a held task's row releases at the revision the page drew, other rows have no action", () => {
+  assert.deepEqual(rowAction({ kind: "report", id: 12, task: null, what: "backup: done" }, 40), { label: "Read", path: "/api/inbox/12/read", body: {} });
+  assert.deepEqual(rowAction({ kind: "held", id: 3, task: 7, what: "held until 2026-11-21T09:00:00Z" }, 40), { label: "Release", path: "/api/tasks/7/release", body: { revision: 40 } });
+  for (const kind of ["blocked", "failed", "ask", "todo", "sweep"]) assert.equal(rowAction({ kind, id: 1, task: 7 }, 40), null);
+});
+
+test("a refused row action says why, and a stale revision says to read again", () => {
+  assert.equal(actionNote("Release", 409, {}), "The state changed since this page loaded. Read the task again, then tap again.");
+  assert.equal(actionNote("Read", 422, { error: "inbox 5 is not a report" }), "Could not read it: inbox 5 is not a report.");
+  assert.equal(actionNote("Release", 500, {}), "Could not release it: the server answered 500.");
+  assert.match(actionNote("Read", 503, {}), /no priory daemon runs beside this server/);
+  assert.match(actionNote("Read", 504, {}), /may have applied this/);
+  assert.match(actionNote("Read", 0, {}), /may have applied this/);
 });
