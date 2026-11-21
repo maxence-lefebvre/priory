@@ -342,7 +342,7 @@ group by id. An empty `tasks` means no active task holds the pull request.
 The fields of [Tasks](#tasks), plus `repo`, `branch`, `intervention` (`plan`, `hands-off` or null)
 `lead` (the agent that answers a `hands-off` task's asks, or null), `merge_risk` (as in
 [Asks](#asks)), `plan_goal`, `plan_testing`, `plan_brief` and `verification` (what the latest result that gave
-them sent as its `goal`, `testing`, `brief` and `verification`, else null; see [`result`](../daemon/tools.md#resultoutcome-summary-evidence-commit-reason-branches-risk-goal-testing-brief-verification)),
+them sent as its `goal`, `testing`, `brief` and `verification`, else null; see [`result`](../daemon/tools.md#resultoutcome-summary-evidence-commit-reason-branches-risk-goal-testing-brief-verification-feedback)),
 and these arrays, oldest first:
 
 | Field | Each entry |
@@ -353,6 +353,7 @@ and these arrays, oldest first:
 | `waits` | `id`, `run`, `kind`, `resource`, `until`, `target`, `created`, `fired`, `withdrawn` (1 once withdrawn, else null), `withdrawn_reason` (see [withdrawal reasons](../daemon/waits.md#why-an-ask-or-wait-was-withdrawn)), `withdrawn_at` (when, in UTC; null for a wait withdrawn before Priory kept the time) |
 | `results` | `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha`, `reason`, `merge_risk` (a risk step's verdict and lines, else null), `created` |
 | `subscriptions` | `resource`, `created`: what the task subscribes to now. Empty once it fails or is dropped |
+| `triage` | `item` (a feedback item's URL), `class` (`trivial`, `nothing-to-do` or `persons-call`), `run` (the run whose result sorted it), `created`: how the agent sorted each review feedback item, in the order it first did. See [Review feedback](../daemon/tools.md#review-feedback) |
 
 And these objects:
 
