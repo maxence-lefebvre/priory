@@ -1,5 +1,30 @@
-//! The risk estimate's Beta quantiles. Each row of `priory report risk` is a Beta(1, 1) prior updated
-//! by whole counts, so both of the posterior's parameters are whole numbers.
+//! `priory report risk`: for each irreversible step, the share of tasks through it that got an
+//! adverse outcome label within a fixed horizon, as a Beta(1, 1) posterior. Nothing reads it to
+//! approve, skip or order work.
+
+use jiff::{SignedDuration, Timestamp};
+use priory_factory::factory::{Decider, Effect, Factory};
+use rusqlite::Connection;
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// The days after its reach that decide a trial's outcome.
+pub const HORIZON_DAYS: i64 = 30;
+/// The trials a row needs before it shows percentages.
+pub const FLOOR: usize = 20;
+/// The window `--since` replaces.
+pub const SINCE: &str = "180 days";
+
+/// The labels that make a trial `judged wrong`.
+const JUDGED: [&str; 5] = [
+    "changes-requested",
+    "closed-unmerged",
+    "approval-rejected",
+    "red-after-merge",
+    "reverted",
+];
+/// The labels that make a trial `landed wrong`.
+const LANDED: [&str; 2] = ["red-after-merge", "reverted"];
 
 /// The share of the Beta(a, b) distribution at or below `x`, for whole `a` and `b` of at least 1:
 /// the chance that a binomial of `a + b - 1` draws at `x` gets at least `a`.
@@ -39,6 +64,530 @@ pub fn beta_quantile(p: f64, a: u64, b: u64) -> f64 {
         }
     }
     (low + high) / 2.0
+}
+
+/// `k` adverse trials of a row's `n`, and the posterior's 5th, 50th and 95th percentiles.
+struct Estimate {
+    k: usize,
+    quantiles: [f64; 3],
+}
+
+impl Estimate {
+    fn new(k: usize, n: usize) -> Self {
+        let (a, b) = (1 + k as u64, 1 + (n - k) as u64);
+        Estimate {
+            k,
+            quantiles: [0.05, 0.5, 0.95].map(|p| beta_quantile(p, a, b)),
+        }
+    }
+
+    fn json(&self) -> Value {
+        let [p05, median, p95] = self.quantiles;
+        json!({ "k": self.k, "p05": p05, "median": median, "p95": p95 })
+    }
+}
+
+/// A target's own row, with no `step`, or a conditioned row: the tasks whose last record of `step`
+/// before the reach had `outcome`.
+#[derive(Default)]
+struct Row {
+    judged: usize,
+    landed: usize,
+    n: usize,
+}
+
+struct Adverse {
+    task: String,
+    outcome: &'static str,
+    label: String,
+    happened: Timestamp,
+    evidence: String,
+}
+
+/// An irreversible step of a workflow, with its rows and counts.
+#[derive(Default)]
+struct Target {
+    workflow: String,
+    step: String,
+    reached: usize,
+    caught: BTreeSet<String>,
+    pending: usize,
+    unjudged: usize,
+    undated: usize,
+    open: usize,
+    late: usize,
+    revisions: BTreeSet<String>,
+    models: BTreeSet<String>,
+    own: Row,
+    rows: BTreeMap<(String, String), Row>,
+    adverse: Vec<Adverse>,
+}
+
+/// Each target's trials and estimates.
+pub struct Risk {
+    since: String,
+    targets: Vec<Target>,
+}
+
+struct Ended {
+    time: Timestamp,
+    task: String,
+    workflow: String,
+    step: String,
+    effect: String,
+    outcome: String,
+    revision: Option<String>,
+    model: Option<String>,
+}
+
+struct Label {
+    label: String,
+    happened: Option<Timestamp>,
+    evidence: String,
+}
+
+/// A pull request of a task: when Priory first knew of it, and when it closed.
+struct Pull {
+    seen: Timestamp,
+    closed: Option<Timestamp>,
+}
+
+fn instant(text: &str) -> Result<Timestamp, String> {
+    text.parse()
+        .map_err(|error| format!("time {text:?}: {error}"))
+}
+
+/// The trials of each irreversible step of `factory`'s workflows, or only `workflow`'s, whose reach
+/// lies between `start` and `now`.
+pub fn risk(
+    db: &Connection,
+    factory: &Factory,
+    workflow: Option<&str>,
+    since: &str,
+    start: &str,
+    now: Timestamp,
+) -> Result<Risk, String> {
+    let error = |error: rusqlite::Error| error.to_string();
+    let start = instant(start)?;
+    let horizon = SignedDuration::from_hours(24 * HORIZON_DAYS);
+    let ended: Vec<Ended> = db
+        .prepare(
+            "SELECT time, json_extract(event, '$.data.task'), json_extract(event, '$.data.workflow'),
+               json_extract(event, '$.data.step'), json_extract(event, '$.data.effect'),
+               json_extract(event, '$.data.outcome'),
+               json_extract(event, '$.data.factory_revision'), json_extract(event, '$.data.model')
+             FROM trace WHERE type = 'factory.step.ended' ORDER BY seq",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        Ended {
+                            time: Timestamp::UNIX_EPOCH,
+                            task: row.get(1)?,
+                            workflow: row.get(2)?,
+                            step: row.get(3)?,
+                            effect: row.get(4)?,
+                            outcome: row.get(5)?,
+                            revision: row.get(6)?,
+                            model: row.get(7)?,
+                        },
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(error)?
+        .into_iter()
+        .map(|(time, ended)| Ok(Ended { time: instant(&time)?, ..ended }))
+        .collect::<Result<_, String>>()?;
+    let mut labels: BTreeMap<String, Vec<Label>> = BTreeMap::new();
+    let rows: Vec<(String, String, Option<String>, String)> = db
+        .prepare(
+            "SELECT json_extract(event, '$.data.task'), json_extract(event, '$.data.label'),
+               json_extract(event, '$.data.happened'), json_extract(event, '$.data.evidence')
+             FROM trace WHERE type = 'factory.step.labeled' ORDER BY seq",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect()
+        })
+        .map_err(error)?;
+    for (task, label, happened, evidence) in rows {
+        let happened = happened.as_deref().map(instant).transpose()?;
+        labels.entry(task).or_default().push(Label {
+            label,
+            happened,
+            evidence,
+        });
+    }
+    let mut pulls: BTreeMap<String, Vec<Pull>> = BTreeMap::new();
+    let rows: Vec<(i64, String, Option<String>)> = db
+        .prepare(
+            "WITH seen AS (
+               SELECT task, resource, created AS time FROM pull_requests
+               UNION ALL
+               SELECT owns.task, 'github:' || json_extract(inbox.data, '$.repo') || '#'
+                 || json_extract(inbox.data, '$.pull_request'), inbox.time
+               FROM inbox JOIN owns ON owns.resource = 'github:' || json_extract(inbox.data, '$.repo')
+                 || '@' || json_extract(inbox.data, '$.head_branch')
+               WHERE inbox.type LIKE 'github.pull_request%'
+                 AND json_extract(inbox.data, '$.pull_request') IS NOT NULL)
+             SELECT task, min(time), (SELECT min(time) FROM inbox
+               WHERE type = 'github.pull_request.closed' AND 'github:' || json_extract(data, '$.repo')
+                 || '#' || json_extract(data, '$.pull_request') = seen.resource)
+             FROM seen GROUP BY task, resource",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect()
+        })
+        .map_err(error)?;
+    for (task, seen, closed) in rows {
+        pulls.entry(task.to_string()).or_default().push(Pull {
+            seen: instant(&seen)?,
+            closed: closed.as_deref().map(instant).transpose()?,
+        });
+    }
+
+    let mut wanted: BTreeSet<(String, String)> = factory
+        .workflows
+        .iter()
+        .flat_map(|(name, loaded)| {
+            loaded
+                .value
+                .steps
+                .iter()
+                .filter(|step| step.effect == Effect::Irreversible)
+                .map(move |step| (name.clone(), step.id.clone()))
+        })
+        .collect();
+    wanted.extend(
+        ended
+            .iter()
+            .filter(|record| record.effect == "irreversible")
+            .map(|record| (record.workflow.clone(), record.step.clone())),
+    );
+    wanted.retain(|(name, _)| workflow.is_none_or(|workflow| workflow == name));
+
+    let mut targets = Vec::new();
+    for (name, step) in wanted {
+        let mut target = Target {
+            workflow: name.clone(),
+            step: step.clone(),
+            ..Target::default()
+        };
+        let gates: Vec<_> = factory
+            .workflows
+            .get(&name)
+            .map(|loaded| {
+                loaded
+                    .value
+                    .steps
+                    .iter()
+                    .filter(|gate| gate.decides == Decider::Human && gate.approves.contains(&step))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tasks: BTreeSet<&str> = ended
+            .iter()
+            .filter(|record| record.workflow == name)
+            .map(|record| record.task.as_str())
+            .collect();
+        for task in tasks {
+            let records: Vec<&Ended> = ended
+                .iter()
+                .filter(|record| record.task == task && record.workflow == name)
+                .collect();
+            let reach = records.iter().position(|record| record.step == step);
+            let before = &records[..reach.unwrap_or(records.len())];
+            let rejected = before.iter().any(|record| {
+                (start..=now).contains(&record.time)
+                    && gates.iter().any(|gate| {
+                        gate.id == record.step
+                            && (record.outcome.to_lowercase().starts_with("reject")
+                                || gate
+                                    .next
+                                    .get(&record.outcome)
+                                    .is_some_and(|to| to == "stop"))
+                    })
+            });
+            if rejected {
+                target.caught.insert(task.to_owned());
+            }
+            let Some(reach) = reach.map(|at| records[at]) else {
+                continue;
+            };
+            if !(start..=now).contains(&reach.time) {
+                continue;
+            }
+            target.reached += 1;
+            let end = reach.time + horizon;
+            if end > now {
+                target.pending += 1;
+                continue;
+            }
+            let pulls = pulls.get(task).map(Vec::as_slice).unwrap_or_default();
+            if !pulls.iter().any(|pull| pull.seen <= end) {
+                target.unjudged += 1;
+                continue;
+            }
+            let labels = labels.get(task).map(Vec::as_slice).unwrap_or_default();
+            let dated: Option<Vec<(&Label, Timestamp)>> = labels
+                .iter()
+                .map(|label| label.happened.map(|happened| (label, happened)))
+                .collect();
+            let Some(dated) = dated else {
+                target.undated += 1;
+                continue;
+            };
+            let first = |set: &[&str]| {
+                dated
+                    .iter()
+                    .filter(|(label, happened)| {
+                        set.contains(&label.label.as_str()) && *happened > reach.time
+                    })
+                    .min_by_key(|(_, happened)| *happened)
+                    .copied()
+            };
+            let landed = first(&LANDED).filter(|(_, happened)| *happened <= end);
+            let judged = first(&JUDGED).filter(|(_, happened)| *happened <= end);
+            if judged.is_none() && first(&JUDGED).is_some() {
+                target.late += 1;
+            }
+            if pulls
+                .iter()
+                .any(|pull| pull.seen <= end && pull.closed.is_none_or(|closed| closed > end))
+            {
+                target.open += 1;
+            }
+            if let Some((label, happened)) = landed.or(judged) {
+                target.adverse.push(Adverse {
+                    task: task.to_owned(),
+                    outcome: if landed.is_some() {
+                        "landed wrong"
+                    } else {
+                        "judged wrong"
+                    },
+                    label: label.label.clone(),
+                    happened,
+                    evidence: label.evidence.clone(),
+                });
+            }
+            target.revisions.extend(reach.revision.clone());
+            target
+                .models
+                .extend(before.iter().filter_map(|record| record.model.clone()));
+            let mut last: BTreeMap<&str, &str> = BTreeMap::new();
+            for record in before {
+                last.insert(&record.step, &record.outcome);
+            }
+            let (judged, landed) = (judged.is_some(), landed.is_some());
+            target.own.count(judged, landed);
+            for (step, outcome) in last {
+                let key = (step.to_owned(), outcome.to_owned());
+                target.rows.entry(key).or_default().count(judged, landed);
+            }
+        }
+        targets.push(target);
+    }
+    Ok(Risk {
+        since: since.to_owned(),
+        targets,
+    })
+}
+
+impl Row {
+    fn count(&mut self, judged: bool, landed: bool) {
+        self.n += 1;
+        self.judged += usize::from(judged);
+        self.landed += usize::from(landed);
+    }
+
+    fn json(&self, step: &str, outcome: Option<&str>) -> Value {
+        json!({
+            "step": step,
+            "outcome": outcome,
+            "trials": self.n,
+            "shown": self.n >= FLOOR,
+            "judged_wrong": Estimate::new(self.judged, self.n).json(),
+            "landed_wrong": Estimate::new(self.landed, self.n).json(),
+        })
+    }
+
+    /// The row's cells after its name: two groups of `k of n` and three percentiles.
+    fn cells(&self) -> Vec<String> {
+        let mut cells = Vec::new();
+        for k in [self.judged, self.landed] {
+            if self.n < FLOOR {
+                cells.push(format!("{k} of {}, needs {FLOOR}", self.n));
+                cells.extend([String::new(), String::new(), String::new()]);
+                continue;
+            }
+            cells.push(format!("{k} of {}", self.n));
+            cells.extend(
+                Estimate::new(k, self.n)
+                    .quantiles
+                    .map(|q| format!("{:.1}%", q * 100.0)),
+            );
+        }
+        cells
+    }
+}
+
+impl Risk {
+    pub fn json(&self) -> Value {
+        json!({
+            "horizon_days": HORIZON_DAYS,
+            "floor": FLOOR,
+            "since": self.since,
+            "targets": self.targets.iter().map(|target| json!({
+                "workflow": target.workflow,
+                "step": target.step,
+                "reached": target.reached,
+                "caught": target.caught.len(),
+                "pending": target.pending,
+                "unjudged": target.unjudged,
+                "undated": target.undated,
+                "open": target.open,
+                "late": target.late,
+                "factory_revisions": target.revisions.len(),
+                "models": target.models.len(),
+                "rows": std::iter::once(target.own.json(&target.step, None))
+                    .chain(target.rows.iter().map(|((step, outcome), row)| row.json(step, Some(outcome))))
+                    .collect::<Vec<_>>(),
+                "adverse": target.adverse.iter().map(|adverse| json!({
+                    "task": adverse.task,
+                    "outcome": adverse.outcome,
+                    "label": adverse.label,
+                    "happened": adverse.happened.to_string(),
+                    "evidence": adverse.evidence,
+                })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        })
+    }
+
+    pub fn print(&self) {
+        for (at, target) in self.targets.iter().enumerate() {
+            if at > 0 {
+                crate::state::emit("");
+            }
+            crate::state::emit(&format!(
+                "{} / {}: reached {}, caught {} at its gate, pending {}, unjudged {}, undated {}, open {}, late {}",
+                target.workflow,
+                target.step,
+                target.reached,
+                target.caught.len(),
+                target.pending,
+                target.unjudged,
+                target.undated,
+                target.open,
+                target.late
+            ));
+            crate::state::emit(&format!(
+                "horizon {HORIZON_DAYS} days, window {}, {} factory revisions, {} models",
+                self.since,
+                target.revisions.len(),
+                target.models.len()
+            ));
+            crate::state::emit("");
+            let header = [
+                "row",
+                "judged wrong",
+                "5%",
+                "median",
+                "95%",
+                "landed wrong",
+                "5%",
+                "median",
+                "95%",
+            ];
+            let mut table = vec![(header.map(str::to_owned).to_vec(), false)];
+            let mut own = vec![target.step.clone()];
+            own.extend(target.own.cells());
+            table.push((own, target.own.n < FLOOR));
+            for ((step, outcome), row) in &target.rows {
+                let mut cells = vec![format!("{step} {outcome}")];
+                cells.extend(row.cells());
+                table.push((cells, row.n < FLOOR));
+            }
+            for line in columns(&table) {
+                crate::state::emit(&line);
+            }
+            if !target.adverse.is_empty() {
+                crate::state::emit("");
+                crate::state::emit("adverse trials");
+                let mut table = vec![(
+                    ["task", "outcome", "label", "happened", "evidence"]
+                        .map(str::to_owned)
+                        .to_vec(),
+                    false,
+                )];
+                for adverse in &target.adverse {
+                    table.push((
+                        vec![
+                            adverse.task.clone(),
+                            adverse.outcome.to_owned(),
+                            adverse.label.clone(),
+                            adverse.happened.strftime("%Y-%m-%d").to_string(),
+                            adverse.evidence.clone(),
+                        ],
+                        false,
+                    ));
+                }
+                for line in columns(&table) {
+                    crate::state::emit(&line);
+                }
+            }
+        }
+    }
+}
+
+/// Lines of `table` with each column padded to its widest cell. A row marked short spans each
+/// `k of n, needs 20` cell over the three percentile columns after it.
+fn columns(table: &[(Vec<String>, bool)]) -> Vec<String> {
+    let count = table[0].0.len();
+    let mut widths = vec![0; count];
+    for (cells, short) in table {
+        for (column, cell) in cells.iter().enumerate() {
+            if !short || column == 0 {
+                widths[column] = widths[column].max(cell.len());
+            }
+        }
+    }
+    for (cells, _) in table.iter().filter(|(_, short)| *short) {
+        for column in [1, 5] {
+            let span = widths[column..column + 4].iter().sum::<usize>() + 6;
+            widths[column] += cells[column].len().saturating_sub(span);
+        }
+    }
+    table
+        .iter()
+        .map(|(cells, short)| {
+            let mut line = String::new();
+            let mut column = 0;
+            while column < count {
+                let (cell, width) = match (*short, column) {
+                    (true, 1 | 5) => (
+                        &cells[column],
+                        widths[column..column + 4].iter().sum::<usize>() + 6,
+                    ),
+                    _ => (&cells[column], widths[column]),
+                };
+                line.push_str(&format!("{cell:width$}  "));
+                column += if *short && matches!(column, 1 | 5) {
+                    4
+                } else {
+                    1
+                };
+            }
+            line.trim_end().to_owned()
+        })
+        .collect()
 }
 
 #[cfg(test)]
