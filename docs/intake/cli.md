@@ -101,6 +101,44 @@ It refuses what `priory request` refuses, and also:
 
 The second refusal holds after the task ended too: the bus keeps the first request's id.
 
+## `priory batch add`
+
+`priory batch add` publishes one request for a batch's planning task, on the factory's
+[`[batch]`](../reference/factory.md#batch) workflow, and prints its key. The request carries the
+issues as task keys, and the workflow each entry's task will run. See
+[batches.md](../daemon/batches.md) for what the planning task does with them.
+
+```sh
+priory batch add ./factory ENG-40 ENG-41 owner/repo#42 --repo owner/repo
+# batch:2026-11-21-1
+```
+
+```text
+priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>]
+                 [--lane <lane>]
+```
+
+`DIR` counts as the factory folder only when it is a folder; else it is the first issue, and the
+folder is `.`. An `ISSUE` is `ENG-7`, `owner/name#42`, or a GitHub or Linear URL as `priory add`
+reads it. The same issue twice counts once.
+
+| Field | From, first that is set |
+| ----- | ----------------------- |
+| workflow | `[batch] workflow` |
+| entries' workflow | `--entries`, then `[batch] entries`, then `[request] workflow` |
+| band, lane | `--band`, `--lane` |
+| repo | `--repo`, then the repository the issues agree on, then `repo` in `triggers/cli.toml` |
+| key | `batch:<YYYY-MM-DD>-<n>`, numbered as `priory add` numbers `cli:` keys |
+
+It refuses what `priory add` refuses, and also:
+
+| Refused | Message |
+| ------- | ------- |
+| No `[batch]` table | `factory.toml has no [batch] workflow; set one to plan batches` |
+| A factory of several runners | `batches need one runner; this factory has <n>` |
+| An issue in no form above | `` `<issue>` is not an issue: give ENG-7, owner/name#42 or a URL `` |
+| No entries' workflow | `the batch names no entries workflow; pass --entries, or set entries in factory.toml's [batch] table` |
+
 ## Events
 
 The fields and examples are in [events.md](../reference/events.md#priorytaskrequestedcli).

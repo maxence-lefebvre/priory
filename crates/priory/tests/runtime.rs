@@ -46,7 +46,7 @@ const OUTPUT: &str = "factory.intake";
 const UNDO_SINCE_SEARCH: &str = "ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
-         DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
+         ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          ALTER TABLE tasks DROP COLUMN plan_goal; ALTER TABLE tasks DROP COLUMN plan_testing; ALTER TABLE tasks DROP COLUMN plan_brief; ALTER TABLE tasks DROP COLUMN verification;
          ALTER TABLE tasks DROP COLUMN merge_risk; ALTER TABLE results DROP COLUMN merge_risk;
          DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
@@ -5646,7 +5646,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          DROP TABLE findings;
          DROP TRIGGER ask_withdrawn; ALTER TABLE asks DROP COLUMN withdrawn_reason;
          ALTER TABLE waits DROP COLUMN withdrawn_reason; ALTER TABLE ask_withdrawals DROP COLUMN reason;
-         DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
+         ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
          DROP TABLE ask_revisions;
          DROP TABLE ask_refusals;
          PRAGMA legacy_alter_table = ON;
@@ -9564,7 +9564,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
         "ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
-         DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
+         ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
          ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
          PRAGMA user_version = 64;",
     )
@@ -16936,4 +16936,685 @@ fn a_connector_call_a_guard_denies_leaves_its_desk_item_open() {
     let replies = setup.replied(3);
     assert!(guard_denied(&replies[2]).is_some(), "{}", replies[2]);
     assert_eq!(sign_in_rows(&setup).len(), 1);
+}
+
+const PLAN_BATCH: &str = r#"
+start = "plan"
+
+[[steps]]
+id = "plan"
+decides = "model"
+agent = "implementer"
+effect = "read"
+prompt = "Plan these issues into a batch."
+next = { planned = "go" }
+
+[[steps]]
+id = "go"
+decides = "human"
+effect = "none"
+options = ["go", "drop"]
+approves = ["start"]
+next = { go = "start", drop = "stop" }
+
+[[steps]]
+id = "start"
+decides = "code"
+action = "start-batch"
+effect = "irreversible"
+next = { started = "done", failed = "go" }
+"#;
+
+/// A factory whose `[batch]` plans with `plan-batch` and starts entries on `implement`.
+fn batched(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    let factory = setup.dir.join("factory");
+    fs::write(
+        factory.join("factory.toml"),
+        "name = \"demo\"\n\n[batch]\nworkflow = \"plan-batch\"\nentries = \"implement\"\n",
+    )
+    .unwrap();
+    fs::write(factory.join("workflows/plan-batch.toml"), PLAN_BATCH).unwrap();
+    setup
+}
+
+/// Runs `priory batch add` on `issues` in `owner/repo`.
+fn batch_add(setup: &Setup, issues: &[&str]) {
+    let factory = setup.dir.join("factory");
+    let factory = factory.to_str().unwrap();
+    let args = [&["add", factory][..], issues, &["--repo", "owner/repo"]].concat();
+    person(setup, "batch", &args);
+}
+
+/// The planner's result with `batch` as its plan.
+fn planned(batch: serde_json::Value) -> serde_json::Value {
+    json!({ "name": "result", "arguments": { "outcome": "planned", "summary": "Invoice exports", "batch": batch } })
+}
+
+/// An entry of a plan, waiting on `after` to merge.
+fn entry(id: &str, issue: &str, after: &[&str]) -> serde_json::Value {
+    let after: Vec<_> = after
+        .iter()
+        .map(|other| json!({ "entry": other, "moment": "merged" }))
+        .collect();
+    json!({ "id": id, "issue": issue, "title": format!("Do {issue}"), "brief": format!("Fix {issue}."), "after": after })
+}
+
+/// Plans `ENG-40`, `ENG-41` and `ENG-43` with `batch`, and returns the reply to the result.
+fn plan_refused(name: &str, batch: serde_json::Value) -> (String, bool) {
+    let mut setup = batched(name);
+    setup.calls(&[planned(batch)]);
+    batch_add(&setup, &["ENG-40", "ENG-41", "ENG-43"]);
+    setup.start();
+    setup.written("fake/tools.log");
+    reply(&setup.replies()[0])
+}
+
+fn three_entries() -> Vec<serde_json::Value> {
+    vec![
+        entry("e1", "ENG-40", &[]),
+        entry("e2", "ENG-41", &["e1"]),
+        entry("e3", "ENG-43", &["e1"]),
+    ]
+}
+
+#[test]
+fn a_plan_that_leaves_an_issue_out_is_refused() {
+    let entries = &three_entries()[..2];
+    assert_eq!(
+        plan_refused(
+            "batch-left-out",
+            json!({ "title": "t", "entries": entries })
+        ),
+        (
+            "issue linear:ENG-43 of the batch is in no entry and no close".to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_plan_with_one_issue_in_two_entries_is_refused() {
+    let mut entries = three_entries();
+    entries.push(entry("e4", "ENG-43", &[]));
+    assert_eq!(
+        plan_refused("batch-twice", json!({ "title": "t", "entries": entries })),
+        (
+            "issue linear:ENG-43 is in two entries; give them parts".to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_plan_with_a_dangling_edge_is_refused() {
+    let mut entries = three_entries();
+    entries[2] = entry("e3", "ENG-43", &["e9"]);
+    assert_eq!(
+        plan_refused(
+            "batch-dangling",
+            json!({ "title": "t", "entries": entries })
+        ),
+        (
+            "entry e3 waits on e9, which the plan does not have".to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_plan_with_a_loop_is_refused() {
+    let mut entries = three_entries();
+    entries[0] = entry("e1", "ENG-40", &["e2"]);
+    assert_eq!(
+        plan_refused("batch-loop", json!({ "title": "t", "entries": entries })),
+        ("the plan has a loop: e1, e2, e1".to_owned(), true)
+    );
+}
+
+#[test]
+fn a_plan_with_an_unknown_moment_is_refused() {
+    let mut entries = three_entries();
+    entries[1]["after"][0]["moment"] = json!("reviewed");
+    assert_eq!(
+        plan_refused("batch-moment", json!({ "title": "t", "entries": entries })),
+        (
+            "moment `reviewed` is not merged or waiting".to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_plan_with_a_waiting_moment_is_refused_until_stacked_entries_exist() {
+    let mut entries = three_entries();
+    entries[1]["after"][0]["moment"] = json!("waiting");
+    assert_eq!(
+        plan_refused("batch-waiting", json!({ "title": "t", "entries": entries })),
+        (
+            "entry e2 waits on e1 at `waiting`, which Priory does not build yet; use merged"
+                .to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_plan_that_splits_an_issue_is_refused_until_splits_exist() {
+    let mut entries = three_entries();
+    entries[1]["part"] = json!(1);
+    assert_eq!(
+        plan_refused("batch-part", json!({ "title": "t", "entries": entries })),
+        (
+            "entry e2 is part 1 of linear:ENG-41; Priory does not split issues yet".to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_plan_naming_an_issue_an_active_task_holds_is_refused() {
+    let mut setup = batched("batch-taken");
+    let mut other = requested(42);
+    other.data["key"] = json!("linear:ENG-41");
+    other.data["hold"] = json!({ "reason": "later" });
+    setup.publish(&other.subject("linear:ENG-41"));
+    setup.calls(&[planned(json!({ "title": "t", "entries": three_entries() }))]);
+    batch_add(&setup, &["ENG-40", "ENG-41", "ENG-43"]);
+    setup.start();
+    setup.written("fake/tools.log");
+
+    assert_eq!(
+        reply(&setup.replies()[0]),
+        ("linear:ENG-41 already has task 1 (held)".to_owned(), true)
+    );
+}
+
+#[test]
+fn a_plan_naming_an_issue_the_person_did_not_hand_over_is_refused() {
+    let mut entries = three_entries();
+    entries.push(entry("e4", "ENG-99", &[]));
+    assert_eq!(
+        plan_refused("batch-foreign", json!({ "title": "t", "entries": entries })),
+        (
+            "linear:ENG-99 is not one of the batch's issues".to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_plan_that_both_works_and_closes_an_issue_is_refused() {
+    let close = [json!({ "issue": "ENG-43", "why": "done", "evidence": "#1" })];
+    assert_eq!(
+        plan_refused(
+            "batch-both",
+            json!({ "title": "t", "entries": three_entries(), "close": close })
+        ),
+        (
+            "issue linear:ENG-43 is both an entry and a close".to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_plan_with_an_entry_id_used_twice_is_refused() {
+    let mut entries = three_entries();
+    entries[2]["id"] = json!("e2");
+    entries[2]["after"] = json!([]);
+    assert_eq!(
+        plan_refused("batch-ids", json!({ "title": "t", "entries": entries })),
+        ("entry id e2 is used twice".to_owned(), true)
+    );
+}
+
+/// A batch planned over `ENG-40`, `ENG-41` and `ENG-43`, with no room to start an entry, at its go
+/// ask, whose id it returns.
+fn at_the_go(name: &str, batch: serde_json::Value) -> (Setup, String) {
+    let mut setup = batched(name);
+    setup.calls(&[planned(batch)]);
+    batch_add(&setup, &["ENG-40", "ENG-41", "ENG-43"]);
+    setup.start();
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    setup.memory(0);
+    (setup, asks[0][0].clone())
+}
+
+fn batch_json(setup: &Setup, args: &[&str]) -> serde_json::Value {
+    let output = setup.priory(&[&["batch", "show"], args, &["--json"]].concat());
+    assert!(output.status.success(), "{output:?}");
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn a_go_creates_one_task_per_entry_in_plan_order_with_its_holds_and_relations() {
+    let close = [json!({ "issue": "ENG-43", "why": "Fixed by #198", "evidence": "#198" })];
+    let entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &["e1"])];
+    let (setup, ask) = at_the_go(
+        "batch-go",
+        json!({ "title": "Invoice exports", "entries": entries, "close": close }),
+    );
+    let asks = setup.rows("asks");
+    assert_eq!(
+        asks[0][3],
+        "Start batch 1: 2 tasks from 3 issues, and close 1?"
+    );
+
+    person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
+
+    // The next tick gives the root its reason to wait for room.
+    let mut tasks = setup.until("tasks", |rows| {
+        rows.len() == 3 && rows.iter().any(|row| row[7].starts_with("waits for room"))
+    });
+    tasks.sort_by_key(|row| row[0].parse::<i64>().unwrap());
+    let shown: Vec<_> = tasks
+        .iter()
+        .map(|row| [&*row[0], &row[2], &row[4], &row[7], &row[8]])
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ["1", "plan-batch", "done", "-", "-"],
+            [
+                "2",
+                "implement",
+                "queued",
+                "waits for room: 0.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free",
+                "1"
+            ],
+            [
+                "3",
+                "implement",
+                "held",
+                "held: batch 1, until task 2 merges",
+                "-"
+            ],
+        ]
+    );
+    assert_eq!(
+        [&tasks[1][1], &tasks[2][1]],
+        ["linear:ENG-40", "linear:ENG-41"]
+    );
+    let graph = person(&setup, "tasks", &["--graph", "3"]);
+    assert!(graph.contains("builds-on"), "{graph}");
+    let shown = batch_json(&setup, &["1"]);
+    assert_eq!(shown["state"], "going");
+    assert_eq!(shown["entries"][1]["after"][0]["task"], 2);
+}
+
+#[test]
+fn a_drop_creates_no_task_and_ends_the_batch_dropped() {
+    let (setup, ask) = at_the_go(
+        "batch-drop",
+        json!({ "title": "t", "entries": three_entries() }),
+    );
+
+    person(&setup, "answer", &[&ask, "drop", "--revision", "1"]);
+
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "dropped");
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(batch_json(&setup, &["1"])["state"], "dropped");
+}
+
+/// As `batched`, with `workflow` as the entries' workflow.
+fn batched_with(name: &str, workflow: &str) -> Setup {
+    let setup = batched(name);
+    fs::write(setup.dir.join("factory/workflows/implement.toml"), workflow).unwrap();
+    setup
+}
+
+/// Plans `ENG-40` and `ENG-41`, `ENG-41` after `ENG-40` merges, answers the go, then queues
+/// `calls` for the entries' runs. Returns once both entries exist.
+fn went(setup: &mut Setup, calls: &[serde_json::Value]) {
+    let entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &["e1"])];
+    setup.calls(&[planned(json!({ "title": "t", "entries": entries }))]);
+    batch_add(setup, &["ENG-40", "ENG-41"]);
+    setup.start();
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    setup.calls(calls);
+    person(setup, "answer", &[&asks[0][0], "go", "--revision", "1"]);
+    setup.until("tasks", |rows| rows.len() == 3);
+}
+
+/// An event of pull request 7 from task 2's branch.
+fn on_pull_2(kind: &str, extra: serde_json::Value) -> Message {
+    let mut message = on_pull(kind, extra);
+    message.data["head_branch"] = json!("priory/2");
+    message
+}
+
+/// Task 2, entry `e1`, done at green checks with pull request 7 still open.
+fn entry_done_with_an_open_pull_request(name: &str, workflow: &str) -> Setup {
+    let mut setup = batched_with(name, workflow);
+    went(
+        &mut setup,
+        &[
+            wait(on_pull_7("review")),
+            passed_at("abc0000000000000000000000000000000000000"),
+        ],
+    );
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    setup.publish(&on_pull_2(
+        "github.pull_request_review.submitted",
+        json!({ "state": "approved", "actor": "ana", "github_id": 300 }),
+    ));
+    setup.until("waits", |rows| rows.iter().any(|row| row[3] == "checks"));
+    let mut green = check(1, 0);
+    green.data["head_branch"] = json!("priory/2");
+    setup.publish(&green);
+    setup
+}
+
+fn entry_state(setup: &Setup, id: &str) -> String {
+    held_as(setup, id)[0].clone()
+}
+
+#[test]
+fn a_merged_condition_is_not_met_while_its_done_task_has_its_pull_request_open() {
+    let setup = entry_done_with_an_open_pull_request("batch-done-open", WORKFLOW);
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] == "done")
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+
+    assert_eq!(entry_state(&setup, "3"), "held");
+}
+
+#[test]
+fn a_merged_condition_is_met_when_its_tasks_pull_request_merges() {
+    let setup = entry_done_with_an_open_pull_request("batch-merged", WORKFLOW);
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] == "done")
+    });
+
+    setup.publish(&on_pull_2(
+        "github.pull_request.closed",
+        json!({ "merged": true, "github_id": 400 }),
+    ));
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] != "held")
+    });
+    let shown = batch_json(&setup, &["1"]);
+    assert!(
+        shown["entries"][1]["after"][0]["met"].is_string(),
+        "{shown}"
+    );
+    assert_eq!(shown["entries"][0]["stage"], "merged");
+}
+
+#[test]
+fn a_merged_condition_is_met_when_its_task_enters_a_step_after_the_merge() {
+    let setup = entry_done_with_an_open_pull_request("batch-after-merge", AFTER_MERGE);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(entry_state(&setup, "3"), "held");
+
+    setup.publish(&on_pull_2(
+        "github.pull_request.closed",
+        json!({ "merged": true, "github_id": 400 }),
+    ));
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] != "held")
+    });
+}
+
+#[test]
+fn a_merged_condition_is_met_when_its_task_is_done_with_no_pull_request() {
+    let mut setup = batched("batch-no-pull");
+    went(&mut setup, &[result("passed")]);
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] != "held")
+    });
+
+    assert_eq!(entry_state(&setup, "2"), "done");
+}
+
+#[test]
+fn a_lost_predecessor_asks_once_per_condition_and_each_answer_moves_only_its_task() {
+    let mut setup = batched("batch-failed");
+    let entries = [
+        entry("e1", "ENG-40", &[]),
+        entry("e2", "ENG-41", &[]),
+        entry("e3", "ENG-42", &["e1", "e2"]),
+        entry("e4", "ENG-43", &["e1", "e2"]),
+    ];
+    setup.calls(&[planned(json!({ "title": "t", "entries": entries }))]);
+    batch_add(&setup, &["ENG-40", "ENG-41", "ENG-42", "ENG-43"]);
+    setup.start();
+    let go = setup.until("asks", |rows| rows.len() == 1);
+    setup.calls(&[result("failed")]);
+    person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
+
+    let tasks = setup.until("tasks", |rows| rows.iter().any(|row| row[4] == "dropped"));
+    let lost = tasks.iter().find(|row| row[4] == "dropped").unwrap();
+    let (lost, key) = (&lost[0], &lost[1]);
+    let asks = setup.until("asks", |rows| rows.len() == 2);
+    let mut questions: Vec<_> = asks.iter().map(|row| [&row[1], &row[3]]).collect();
+    questions.sort();
+    assert_eq!(
+        questions,
+        [
+            [
+                "4",
+                &format!(
+                    "Task {lost} ({key}) of batch 1 dropped, and task 4 waits on it. Release the task, or drop it?"
+                )
+            ],
+            [
+                "5",
+                &format!(
+                    "Task {lost} ({key}) of batch 1 dropped, and task 5 waits on it. Release the task, or drop it?"
+                )
+            ],
+        ]
+    );
+    let ask_of = |task: &str| asks.iter().find(|row| row[1] == task).unwrap()[0].clone();
+
+    person(
+        &setup,
+        "answer",
+        &[&ask_of("4"), "release", "--revision", "1"],
+    );
+    person(&setup, "answer", &[&ask_of("5"), "drop", "--revision", "1"]);
+
+    assert_eq!(entry_state(&setup, "4"), "held");
+    assert_eq!(entry_state(&setup, "5"), "dropped");
+    let shown = batch_json(&setup, &["1"]);
+    let met: Vec<_> = shown["entries"][2]["after"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|edge| edge["met"].is_string())
+        .collect();
+    let released = if lost == "2" {
+        [true, false]
+    } else {
+        [false, true]
+    };
+    assert_eq!(met, released);
+}
+
+#[test]
+fn an_issue_taken_between_plan_and_go_fails_the_start_and_asks_the_go_again() {
+    let (setup, ask) = at_the_go(
+        "batch-taken-at-go",
+        json!({ "title": "t", "entries": three_entries() }),
+    );
+    let mut other = requested(42);
+    other.data["key"] = json!("linear:ENG-41");
+    other.data["hold"] = json!({ "reason": "later" });
+    setup.publish(&other.subject("linear:ENG-41"));
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
+
+    let asks = setup.until("asks", |rows| rows.len() == 1 && rows[0][0] != ask);
+    assert_eq!(
+        asks[0][3],
+        "linear:ENG-41 has task 2 (held) since the plan; drop the entry or the batch. Start batch 1: 3 tasks from 3 issues?"
+    );
+    assert_eq!(setup.rows("tasks").len(), 2);
+    assert_eq!(batch_json(&setup, &["1"])["state"], "asked");
+}
+
+#[test]
+fn a_daemon_stopped_after_the_start_does_not_create_the_tasks_again() {
+    let (mut setup, ask) = at_the_go(
+        "batch-restart",
+        json!({ "title": "t", "entries": three_entries() }),
+    );
+    person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
+    setup.until("tasks", |rows| rows.len() == 4);
+    setup.crash();
+
+    setup.start();
+    std::thread::sleep(Duration::from_millis(1500));
+
+    assert_eq!(setup.rows("tasks").len(), 4);
+    let actions = setup.rows("actions");
+    let starts = actions
+        .iter()
+        .filter(|row| row.contains(&"start-batch".to_owned()));
+    assert_eq!(starts.count(), 1, "{actions:?}");
+}
+
+#[test]
+fn a_go_on_a_plan_revision_the_ask_did_not_show_is_refused() {
+    let (setup, ask) = at_the_go(
+        "batch-stale",
+        json!({ "title": "t", "entries": three_entries() }),
+    );
+    // shortcut: `priory batch edit` comes with a later slice, so the test revises the plan itself.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute("UPDATE batches SET plan_revision = 2", [])
+        .unwrap();
+
+    let refused = setup.priory(&["answer", &ask, "go", "--revision", "1"]);
+
+    assert!(!refused.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&refused.stderr),
+        "priory answer: the plan of batch 1 is at revision 2, not 1; answer its new ask\n"
+    );
+    assert_eq!(setup.rows("tasks").len(), 1);
+}
+
+#[test]
+fn batch_show_prints_each_batch_and_one_with_its_entries_and_closes() {
+    let close = [json!({ "issue": "ENG-43", "why": "Fixed by #198", "evidence": "#198" })];
+    let entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &["e1"])];
+    let (setup, ask) = at_the_go(
+        "batch-show",
+        json!({ "title": "Invoice exports", "entries": entries, "close": close }),
+    );
+    person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
+    setup.until("tasks", |rows| rows.len() == 3);
+
+    let mut shown = batch_json(&setup, &["1"]);
+    let all = batch_json(&setup, &[]);
+
+    assert!(
+        shown["revision"].is_i64() && shown["went"].is_string(),
+        "{shown}"
+    );
+    let key = shown["key"].as_str().unwrap().to_owned();
+    assert!(key.starts_with("batch:"), "{key}");
+    for field in ["revision", "went", "key"] {
+        shown[field] = json!(null);
+    }
+    assert_eq!(
+        shown,
+        json!({
+            "revision": null, "id": 1, "key": null, "task": 1, "title": "Invoice exports",
+            "state": "going", "repo": "owner/repo", "band": "later", "lane": "none/misc",
+            "plan_revision": 1, "ask": 1, "went": null, "went_by": "cli",
+            "counts": { "planned": 1, "queued": 1, "blocked": 0, "started": 0, "waiting": 0,
+                        "merged": 0, "failed": 0, "dropped": 0 },
+            "entries": [
+                { "entry": "e1", "position": 1, "issue": "ENG-40", "part": null, "title": "Do ENG-40",
+                  "task": 2, "key": "linear:ENG-40", "state": "queued", "stage": "queued", "after": [] },
+                { "entry": "e2", "position": 2, "issue": "ENG-41", "part": null, "title": "Do ENG-41",
+                  "task": 3, "key": "linear:ENG-41", "state": "held", "stage": "planned",
+                  "after": [{ "entry": "e1", "task": 2, "moment": "merged", "met": null }] }
+            ],
+            "closes": [{ "issue": "ENG-43", "why": "Fixed by #198", "evidence": "#198", "closed": null }]
+        })
+    );
+    assert_eq!(all["batches"][0]["id"], 1);
+    assert_eq!(all["batches"][0]["state"], "going");
+    assert!(all["batches"][0].get("entries").is_none(), "{all}");
+    let rows = setup.listed(&["batch", "show"]);
+    assert_eq!(rows[0][..4], ["1", &key, "going", "Invoice exports"]);
+}
+
+#[test]
+fn a_plan_with_an_entry_waiting_on_a_later_one_is_refused() {
+    let entries = [
+        entry("e1", "ENG-40", &["e2"]),
+        entry("e2", "ENG-41", &[]),
+        entry("e3", "ENG-43", &[]),
+    ];
+    assert_eq!(
+        plan_refused("batch-later", json!({ "title": "t", "entries": entries })),
+        (
+            "entry e1 waits on e2, which comes after it; put e2 first".to_owned(),
+            true
+        )
+    );
+}
+
+#[test]
+fn a_go_numbers_free_entries_in_plan_order_whatever_their_ids() {
+    let entries = [
+        entry("z", "ENG-40", &[]),
+        entry("a", "ENG-41", &[]),
+        entry("m", "ENG-43", &[]),
+    ];
+    let (setup, ask) = at_the_go("batch-order", json!({ "title": "t", "entries": entries }));
+
+    person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
+
+    let tasks = setup.until("tasks", |rows| rows.len() == 4);
+    let places: Vec<_> = tasks
+        .iter()
+        .filter(|row| row[2] == "implement")
+        .map(|row| [&*row[1], &row[8]])
+        .collect();
+    assert_eq!(
+        places,
+        [
+            ["linear:ENG-40", "1"],
+            ["linear:ENG-41", "2"],
+            ["linear:ENG-43", "3"]
+        ]
+    );
+}
+
+#[test]
+fn an_issue_to_close_taken_between_plan_and_go_fails_the_start() {
+    let close = [json!({ "issue": "ENG-43", "why": "done", "evidence": "#1" })];
+    let entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &[])];
+    let (setup, ask) = at_the_go(
+        "batch-close-taken",
+        json!({ "title": "t", "entries": entries, "close": close }),
+    );
+    let mut other = requested(42);
+    other.data["key"] = json!("linear:ENG-43");
+    other.data["hold"] = json!({ "reason": "later" });
+    setup.publish(&other.subject("linear:ENG-43"));
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
+
+    let asks = setup.until("asks", |rows| rows.len() == 1 && rows[0][0] != ask);
+    assert!(
+        asks[0][3].starts_with("linear:ENG-43 has task 2 (held) since the plan"),
+        "{}",
+        asks[0][3]
+    );
+    assert_eq!(setup.rows("tasks").len(), 2);
 }

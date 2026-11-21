@@ -88,6 +88,7 @@ The Warp column comes from Warp's public page and is blank where that page says 
 | Queue      | The tasks waiting for a run, in band order, then a person's order, then age |              | queue            |
 | Lane       | A `<team>/<theme>` label that groups tasks in views and reports           |              | lane             |
 | Relation   | How one task relates to another: builds on, fixes, takes up or relates to |              |                  |
+| Batch      | A set of issues one planning task orders into tasks under one ask         |              |                  |
 
 ## Configuration
 
@@ -443,6 +444,10 @@ until its run starts.
   room check alone. M1
 - R4.11 The daemon runs as a systemd user service. On an always-on machine, user lingering keeps it
   and its agents running with nobody logged in. M0
+- R4.12 A person hands several issues to one planning task with `priory batch add`. Its agent plans
+  them into ordered entries, each starting after the entries whose code it needs merged, and closes
+  the issues already done. One ask approves the plan; the go then creates one task per entry, held
+  until its predecessors' pull requests merge. M1
 
 ### R5. Agent runtime
 
