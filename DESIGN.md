@@ -474,10 +474,12 @@ asks of the last 7 days first; scrolling to the end of Answered or All loads the
 An open ask of a `hands-off` task can be routed to a lead agent (`routed_to`). It shows a **routed
 mark**, "with lead", in the lead's name:
 
-- **Rows** (Desk, Asks list, the next thing's card): a `.tag` beside "Command" on line 1, or after
-  the question in the wide table. An answered or withdrawn ask has no mark.
-- **Ask detail**: under the question, a `corner-down-right` line in `--action-text`: "lead is
-  answering. You can still answer first: the first answer stands." The options stay enabled.
+- **Rows** (Desk, Asks list): a `.tag` beside "Command" on line 1, or after the question in the
+  wide table. It shrinks with an ellipsis when the row is narrow. The next thing's card shows the
+  mark as a line in `--action-text` under the question. In Herdr it is a line of text. An answered
+  or withdrawn ask has no mark.
+- **Ask detail**: under the question, a line in `--action-text`, with the `corner-down-right` icon
+  on the web: "lead is answering. You can still answer first: the first answer stands." The options stay enabled.
 - The mark adds no token and no color: it reuses `.tag` and `--action-text`. An unrouted ask looks
   as before.
 

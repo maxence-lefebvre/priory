@@ -61,10 +61,10 @@ async function connect() {
   return { theme: config.theme ?? "indigo", client, links };
 }
 
-/** @param {unknown} error */
 /** @param {Ui} ui @param {string | undefined} text */
 const routed = (ui, text) => div().text_size(S["type-caption"][0]).text_color(ui.t["action-text"]).child(text ?? "");
 
+/** @param {unknown} error */
 const message = (error) => (error instanceof Error ? error.message : String(error));
 
 export default class PrioryDesk extends View {
