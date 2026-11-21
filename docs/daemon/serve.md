@@ -121,11 +121,12 @@ The server holds at most 4 such requests at once, half its 8 workers, so waiting
 workers to the other requests. A fifth request that would wait gets `503` with `Retry-After: 1`; one
 whose answer is ready gets it at once.
 
-The revision changes with what is stored, not with the clock or the disk. Four things change a
-listing without a new revision: a snoozed item comes back at its `snoozed_until`, an ended task
-leaves the queue's `ended` list after a day, a closed ask or task leaves the default `/api/asks` or
-`/api/tasks` after 7 days, and a desk item for a worktree follows the disk. A view
-that shows them re-reads at those times as well.
+The revision changes with what is stored, and the daemon raises it for two changes the clock makes:
+a snoozed item coming back at its `snoozed_until`, and an ended task leaving the queue's `ended`
+list after a day. Each shows at the daemon's next tick while it runs. Two things still change a
+listing without a new revision: a closed ask or task leaves the default `/api/asks` or `/api/tasks`
+after 7 days, and a desk item for a worktree follows the disk. A view that shows them re-reads at
+those times as well.
 
 The wait answers at once when the revision differs from `REV`, lower included, so a client that
 kept a revision from a replaced state file does not hang.

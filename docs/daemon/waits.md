@@ -107,8 +107,10 @@ refused: the agent ends its turn and reads it first.
 
 ### Why an ask or wait was withdrawn
 
-A withdrawn ask or wait keeps `withdrawn` set to 1 and names why in `withdrawn_reason`. `priory
-asks --json`, `/api/asks` and `priory task <id> --json` show it. It is one of:
+A withdrawn ask or wait keeps `withdrawn` set to 1, names why in `withdrawn_reason` and when in
+`withdrawn_at`. `priory asks --json`, `/api/asks` and `priory task <id> --json` show both. An ask or
+wait that is asked or set again clears all three. Schema 71 filled `withdrawn_at` for older asks
+from their withdrawal log, and left it null for older waits, which have none. The reason is one of:
 
 | Reason | On | What withdrew it |
 | ------ | -- | ---------------- |
