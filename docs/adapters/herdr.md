@@ -200,9 +200,10 @@ state database and never writes a file in the factory.
   browser. A panel reads the rules once, when it connects. When `priory links` fails, such as with
   no factory to read, the panel draws its text unlinked. See [Links](#links).
 - **Attaching.** A panel asks the Priory bar to attach with
-  `setShared("priory.attach", { task, at: Date.now() })`. The bar runs
-  `priory attach TASK --print` and opens a terminal tab that runs the printed command, which starts
-  a tmux client on the task's live run (R5.6). tmux stays the owner. When the task has no live run,
+  `setShared("priory.attach", { task, at: Date.now(), readOnly })`. The bar runs
+  `priory attach TASK --print`, with `--read-only` when `readOnly` is true, and opens a terminal tab
+  that runs the printed command, which starts a tmux client on the task's live run (R5.6). A
+  read-only tab, named "Watch task N", cannot type and leaves the agent's window size alone. tmux stays the owner. When the task has no live run,
   the bar shows Priory's error instead. The tab opens in the space shown when the panel asked. When
   that space is on another machine than Priory, the bar refuses and asks for a space on Priory's
   machine.
@@ -591,14 +592,15 @@ Priory bar opens it as a tab in the center stack when another panel sets `priory
   `priory wait` and reads again. When another task opens, it stops that loop and starts one for
   the new task. When a call fails, it keeps the last read and shows "Reconnecting to priory" with
   its age.
-- **What it shows.** The header holds the task's state tile, key and state, and Attach. Then the
+- **What it shows.** The header holds the task's state tile, key and state, then Watch and Attach. Then the
   title with its [links](#links), the workflow, step, lane and band, and the task's reason. Asks
   lists the task's asks, open ones first. Pull request shows the latest pull request's title as a
   link, its branches and state, its checks, and the task's stack (see [Stacks](#stacks)). History
   lists the last 10 runs, newest first, each with its step, outcome and start time. A section the
   task lacks is left out.
-- **Acting.** Attach asks the Priory bar to attach, as [Attaching](#how-it-reads-and-acts)
-  describes. Answering stays in the Asks panel.
+- **Acting.** Watch asks the Priory bar for a read-only terminal, and Attach for one that types,
+  as [Attaching](#how-it-reads-and-acts) describes. Watch comes first, since it cannot change the
+  run. Answering stays in the Asks panel.
 
 ## Data each panel needs
 

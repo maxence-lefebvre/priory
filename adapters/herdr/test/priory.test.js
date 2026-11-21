@@ -191,6 +191,14 @@ test("prints the attach command without running it", async () => {
   assert.deepEqual(run.argv(), [["attach", "7", "--print"]]);
 });
 
+test("prints a read-only attach command for watching", async () => {
+  const run = fake();
+  writeFileSync(join(run.dir, "attach.json"), "tmux -S /tmp/priory/sock attach -r -t 'run 4'\n");
+  const client = priory({ exec, binary: FAKE });
+  await client.attach(7, { readOnly: true });
+  assert.deepEqual(run.argv(), [["attach", "7", "--read-only", "--print"]]);
+});
+
 test("runs priory on the machine the settings name", async () => {
   const calls = [];
   const spy = async (command, args, options) => {
