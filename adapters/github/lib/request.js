@@ -1,5 +1,4 @@
-// How the extension reaches `priory serve`: the token goes only in the Authorization header, only
-// to the origin the person gave, and only on a path under /api.
+// The token goes only in the Authorization header, only to the origin given, only under /api.
 
 // The manifest's host_permissions cover these; any other address must be https.
 const LOOPBACK = new Set(["127.0.0.1", "localhost"]);

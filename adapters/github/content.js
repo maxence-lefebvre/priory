@@ -1,6 +1,4 @@
-// Runs in GitHub's page. It finds the pull request, places the extension's two frames and the
-// Guide tab, and reads the guide block. It never holds the token, calls the daemon or shows agent
-// text: the frames do, in the extension's origin.
+// In GitHub's page: places the frames and the Guide tab and reads the guide block; never the token.
 (async () => {
   const { parsePr, headSha } = await import(chrome.runtime.getURL("lib/pr.js"));
   const FRAME = chrome.runtime.getURL("frame.html");
@@ -71,12 +69,11 @@
     return details?.querySelector("pre")?.textContent ?? null;
   }
 
+  // Fetched each time, never read from this page: after a push or an edit, GitHub updates the page
+  // in place but not the head sha in its embedded data.
   async function readGuide(pr) {
     try {
-      if (pr.tab === "conversation" && document.querySelector(".js-comment-body, .comment-body")) {
-        return { json: blockIn(document), head: headSha(document.documentElement.innerHTML) };
-      }
-      const response = await fetch(pr.url, { credentials: "same-origin" });
+      const response = await fetch(pr.url, { credentials: "same-origin", cache: "no-store" });
       if (!response.ok) return { failed: true };
       const html = await response.text();
       return { json: blockIn(new DOMParser().parseFromString(html, "text/html")), head: headSha(html) };
@@ -86,7 +83,9 @@
   }
 
   async function mount(pr) {
-    guide = await readGuide(pr);
+    const read = await readGuide(pr);
+    if (shown !== pr) return;
+    guide = read;
     const count = guide.json?.match(/"question"\s*:/g)?.length;
     guide.count = guide.json ? count || "" : 0;
     place();
@@ -112,8 +111,9 @@
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(FRAME)) return;
     if (message.type === "guide") {
-      (message.retry && shown ? readGuide(shown).then((read) => Object.assign(guide, read)) : Promise.resolve()).then(() =>
-        respond({ pr: shown, json: guide?.json ?? null, head: guide?.head ?? null, failed: Boolean(guide?.failed) }));
+      const pr = shown;
+      (pr ? readGuide(pr) : Promise.resolve({ failed: true })).then((read) =>
+        respond({ pr, json: read.json ?? null, head: read.head ?? null, failed: Boolean(read.failed) }));
       return true;
     }
     if (message.type === "open") open(message.tab);

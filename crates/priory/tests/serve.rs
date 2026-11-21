@@ -1102,9 +1102,11 @@ fn the_tasks_endpoint_finds_each_active_task_holding_a_pull_request_and_how_it_h
     task(6, "cli:docs-6", "done");
     task(7, "github:owner/repo#70", "asleep");
     task(8, "github:owner/repo:pulls/70:review:ana", "asleep");
+    task(10, "cli:docs-10", "asleep");
     db.execute_batch(
         "INSERT INTO owns (task, resource) VALUES (1, 'github:owner/repo#7'),
-           (9, 'github:owner/repo#7'), (3, 'github:owner/repo#7'), (7, 'github:owner/repo#70');
+           (9, 'github:owner/repo#7'), (3, 'github:owner/repo#7'), (7, 'github:owner/repo#70'),
+           (10, 'github:owner/repo#7');
          INSERT INTO pull_requests (task, resource, branch, base)
            VALUES (9, 'github:owner/repo#7', 'priory/9', 'main');
          INSERT INTO runs (task, step, tmux, session) VALUES (3, 'implement', 'priory-3', 's3');
@@ -1138,6 +1140,7 @@ fn the_tasks_endpoint_finds_each_active_task_holding_a_pull_request_and_how_it_h
             (3, json!("asleep"), json!(["wait"])),
             (4, json!("ready"), json!(["subscription"])),
             (5, json!("asleep"), json!(["review"])),
+            (10, json!("asleep"), json!(["owns"])),
         ]
     );
     assert!(found["revision"].is_i64(), "{found}");

@@ -1,6 +1,4 @@
-// The extension's own IndexedDB: its origin is chrome-extension://<id>, which GitHub's pages and
-// content scripts cannot open. It keeps the address and token, the last read per pull request and
-// the quiz scores.
+// IndexedDB of the extension origin, which GitHub's pages and content scripts cannot open.
 
 const open = () =>
   new Promise((resolve, reject) => {

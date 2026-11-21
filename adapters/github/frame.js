@@ -1,6 +1,4 @@
-// The extension's frames, in its own origin: the strip in GitHub's pull request header, the docked
-// panel (Ask, Task and Guide) and the browser's side panel, where a command ask's second tap runs.
-// Every daemon call and every piece of agent text lives here, never in GitHub's page.
+// The strip, the docked panel and the side panel: every daemon call and all agent text live here.
 import { ARM_MS, UNDO_MS, age, answerBody, answerPath, choose, due, observe, refusal, reply, runsCommand, undo } from "./lib/ask.js";
 import { grade, parseGuide, scoreKey } from "./lib/guide.js";
 import { live } from "./lib/live.js";
@@ -10,7 +8,8 @@ import { get, put, remove } from "./lib/store.js";
 import { fixText, sayRoute } from "./lib/task.js";
 
 const params = new URLSearchParams(location.search);
-const VIEW = params.get("view") ?? "strip";
+// command.html is not web-accessible, so no page can embed its Run button.
+const VIEW = location.pathname === "/command.html" ? "command" : params.get("view") === "panel" ? "panel" : "strip";
 const MODE = { light: "light", dark: "dark" }[params.get("mode")] ?? "system";
 document.documentElement.dataset.mode = MODE;
 
@@ -36,7 +35,6 @@ const S = {
   quiz: { answers: {}, result: null, key: null },
 };
 
-// ---------- Small DOM helpers: data only ever becomes text nodes ----------
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -103,7 +101,6 @@ const tile = (task, waits) => {
   return h("span", { class: `tile ${kind}`, title: task.state }, icon(name));
 };
 
-// ---------- Reading the daemon ----------
 
 const openAsks = () => (S.task?.asks ?? []).filter((ask) => ask.state === "open").sort((a, b) => a.since.localeCompare(b.since));
 const waiting = () => openAsks().filter((ask) => !(ask.snoozed_until && Date.parse(ask.snoozed_until) > Date.now()));
@@ -146,15 +143,19 @@ function wakeAtSnoozeEnd() {
   if (ends.length) snoozeTimer = setTimeout(read, Math.min(...ends) - Date.now() + 500);
 }
 
-async function signedOut() {
+const channel = new BroadcastChannel("priory-events");
+
+/** Forgets the token here, and with `share` in every other frame too. */
+async function signedOut(share = true) {
   await remove("config");
   S.config = null;
+  S.draft = null;
+  if (share) channel.postMessage({ signedOut: true });
   render();
 }
 
 const send = (type, extra = {}) => S.tabId != null && chrome.tabs.sendMessage(S.tabId, { type, ...extra }).catch(() => {});
 
-// ---------- Writes ----------
 
 let undoTimer = 0;
 function pick(ask, answer) {
@@ -179,10 +180,9 @@ async function post() {
   await read();
 }
 
-// The first tap of a command option opens the browser's side panel, which no page can cover; the
-// run happens there. The arm lapses after 4 s or at a new revision.
+// The run happens in the browser's side panel, which no page can cover.
 function openCommand(ask, option) {
-  const path = `frame.html?view=command&mode=${MODE}&ask=${encodeURIComponent(ask.id)}&task=${S.task.id}&revision=${ask.revision}&option=${encodeURIComponent(option)}`;
+  const path = `command.html?mode=${MODE}&ask=${encodeURIComponent(ask.id)}&task=${S.task.id}&revision=${ask.revision}&option=${encodeURIComponent(option)}`;
   chrome.sidePanel.setOptions({ tabId: S.tabId, path, enabled: true });
   chrome.sidePanel.open({ tabId: S.tabId }).catch(() => {});
   setTimeout(() => {
@@ -192,22 +192,26 @@ function openCommand(ask, option) {
   render();
 }
 
+/** Null once the daemon applied the write, else its refusal as [phase, notice]. */
 async function write(path, body) {
   const result = await api(path, body);
   if (result.status === 200) return null;
   if (result.status === 401) await signedOut();
-  return refusal(result, Date.now())[1];
+  return refusal(result, Date.now());
 }
 
+// A lost say keeps Say off until the person sends it again or checks the task: a resend would queue it twice.
 async function say(text, keep) {
   if (S.sayBusy) return;
   S.sayBusy = true;
   S.sayNotice = null;
+  S.sayUnknown = null;
   render();
-  const notice = await write(`/api/tasks/${S.task.id}/say`, { text });
+  const refused = await write(`/api/tasks/${S.task.id}/say`, { text });
   S.sayBusy = false;
-  S.sayNotice = notice;
-  if (!notice && keep) S.say = "";
+  S.sayNotice = refused?.[1] ?? null;
+  if (refused?.[0] === "unknown") S.sayUnknown = text;
+  if (!refused && keep) S.say = "";
   await read();
 }
 
@@ -220,7 +224,6 @@ async function addTask() {
   await read();
 }
 
-// ---------- The strip ----------
 
 function strip() {
   const toggle = (tab) => h("button", { class: "btn icon", title: "Open the Priory panel", onclick: () => send("open", { tab }) }, icon("panel"));
@@ -244,7 +247,6 @@ function strip() {
     stale ?? (S.task.since ? h("span", { class: "t3" }, age(S.task.since, Date.now())) : null), h("span", { class: "sp" }), toggle(asks.length ? "ask" : "task"));
 }
 
-// ---------- The panel ----------
 
 function panel() {
   const asks = openAsks();
@@ -313,18 +315,14 @@ async function connect(origin, granted) {
   S.config = { origin, token: c.token.trim() };
   await put("config", S.config);
   S.connect = { address: "", token: "", error: null, busy: false };
-  new BroadcastChannel("priory-events").postMessage({ signedIn: true });
+  channel.postMessage({ signedIn: true });
   await read();
 }
 
 function askTab(asks) {
   if (!S.task) return h("div", { class: "read" }, "No Priory task owns this pull request, so nothing asks here.");
-  const sent = S.draft?.phase === "sent" ? S.task.asks.find((ask) => ask.id === S.draft.id) : null;
-  if (!asks.length && !sent) return h("div", { class: "read" }, `No open asks. Task ${S.task.id}'s agent asks here when it needs you.`);
-  const ask = sent ?? asks[Math.min(S.index, asks.length - 1)];
-  if (ask.state !== "open") {
-    return h("div", { class: "sect" }, h("div", { class: "q" }, ask.question), h("div", { class: "okline" }, icon("check", "s14"), h("span", {}, `Answered: ${ask.answer}`)));
-  }
+  if (!asks.length) return h("div", { class: "read" }, `No open asks. Task ${S.task.id}'s agent asks here when it needs you.`);
+  const ask = asks[Math.min(S.index, asks.length - 1)];
   const draft = S.draft?.id === ask.id ? S.draft : null;
   const busy = S.draft && ["waiting", "posting"].includes(S.draft.phase);
   const blocked = S.unreachable || busy || draft?.phase === "unknown";
@@ -360,7 +358,9 @@ function askTab(asks) {
       S.writing ? null : h("button", { class: "btn ghost", disabled: blocked, onclick: () => { S.writing = true; render(); } }, icon("pencil", "s14"), "Write an answer"),
       h("button", { class: "btn ghost", disabled: blocked, onclick: () => dismiss(ask) }, "Dismiss"),
       h("button", { class: "btn ghost", disabled: blocked, onclick: () => snooze(ask, snoozed) }, snoozed ? "Unsnooze" : "Snooze 1 h"),
-      draft?.phase === "unknown" ? h("button", { class: "btn ghost", onclick: () => pick(ask, { ...(draft.option === undefined ? { text: draft.text } : { option: draft.option }), again: true }) }, "Send again") : null),
+      draft?.phase === "unknown"
+        ? h("button", { class: "btn ghost", onclick: () => (draft.dismiss ? dismiss(ask) : pick(ask, { ...(draft.option === undefined ? { text: draft.text } : { option: draft.option }), again: true })) }, "Send again")
+        : null),
     draft?.notice ? h("div", { class: "notice", role: "alert" }, draft.notice) : null,
     h("div", { class: "hr" }),
     ask.text ? h("div", { class: "sect" }, h("h3", {}, "What the agent says"), h("div", { class: "read" }, ask.text)) : null,
@@ -381,14 +381,14 @@ function commandBlock(ask, revision = ask.revision) {
 async function dismiss(ask) {
   S.draft = { id: ask.id, revision: ask.revision, phase: "posting", notice: null };
   render();
-  const notice = await write(`/api/asks/${encodeURIComponent(ask.id)}/dismiss`, { revision: ask.revision });
-  S.draft = notice ? { ...S.draft, phase: "unsent", notice } : null;
+  const refused = await write(`/api/asks/${encodeURIComponent(ask.id)}/dismiss`, { revision: ask.revision });
+  S.draft = refused ? { ...S.draft, dismiss: true, phase: refused[0], notice: refused[1] } : null;
   await read();
 }
 
 async function snooze(ask, snoozed) {
-  const notice = await write("/api/snooze", snoozed ? { kind: "ask", id: ask.id, clear: true } : { kind: "ask", id: ask.id, for: "1h" });
-  S.draft = notice ? { id: ask.id, revision: ask.revision, phase: "unsent", notice } : S.draft;
+  const refused = await write("/api/snooze", snoozed ? { kind: "ask", id: ask.id, clear: true } : { kind: "ask", id: ask.id, for: "1h" });
+  S.draft = refused ? { id: ask.id, revision: ask.revision, phase: "unsent", notice: refused[1] } : S.draft;
   await read();
 }
 
@@ -409,7 +409,7 @@ function taskTab() {
   const pull = task.stack?.find((entry) => entry.pull_request === S.pr.resource) ?? task.pull_request;
   const branch = pull?.branch ?? task.branch;
   const base = pull?.base ?? "main";
-  const canSay = route.enabled && !S.sayBusy && !S.unreachable;
+  const canSay = route.enabled && !S.sayBusy && !S.unreachable && !S.sayUnknown;
   const steps = S.flows?.workflows?.find((workflow) => workflow.name === task.workflow)?.steps ?? [];
   const at = steps.findIndex((step) => step.id === task.step);
   return [
@@ -428,6 +428,11 @@ function taskTab() {
       h("textarea", { id: "say", class: "input", rows: 3, value: S.say, oninput: (event) => { S.say = event.target.value; } }),
       h("div", { class: "end" }, h("button", { class: "btn primary", type: "submit", disabled: !canSay }, "Say"))),
     S.sayNotice ? h("div", { class: "notice", role: "alert" }, S.sayNotice) : null,
+    S.sayUnknown
+      ? h("div", { class: "lowrow" },
+        h("button", { class: "btn ghost", onclick: () => say(S.sayUnknown) }, "Send again"),
+        h("button", { class: "btn ghost", onclick: () => { S.sayUnknown = null; S.sayNotice = null; render(); } }, "It reached the task"))
+      : null,
     h("div", { class: "hr" }),
     h("div", { class: "sect" }, h("h3", {}, "Runs", h("span", { class: "t3" }, `${task.runs.length} ${task.runs.length === 1 ? "run" : "runs"}`)),
       task.runs.slice(-4).map((run) => h("div", { class: "row t3" }, h("span", {}, run.step), h("span", { class: "sp" }), h("span", {}, run.end ?? "running")))),
@@ -439,10 +444,9 @@ function taskTab() {
 
 const signOut = () => h("div", { class: "end" }, h("button", { class: "btn ghost", onclick: signedOut }, "Sign out"));
 
-// ---------- The guide ----------
 
-async function loadGuide(retry = false) {
-  const read = await chrome.tabs.sendMessage(S.tabId, { type: "guide", retry }).catch(() => null);
+async function loadGuide() {
+  const read = await chrome.tabs.sendMessage(S.tabId, { type: "guide" }).catch(() => null);
   if (!read || read.failed) S.guide = { state: "failed" };
   else if (!read.json) S.guide = { state: "none" };
   else {
@@ -468,7 +472,7 @@ function guideTab() {
   const { state } = S.guide;
   if (state === "loading") return h("div", { class: "t3" }, "Reading the description…");
   if (state === "none") return h("div", { class: "read" }, "This description has no review guide.");
-  if (state === "failed") return [h("div", { class: "notice" }, "Could not read the description from GitHub."), h("div", {}, h("button", { class: "btn secondary", onclick: () => loadGuide(true) }, "Retry"))];
+  if (state === "failed") return [h("div", { class: "notice" }, "Could not read the description from GitHub."), h("div", {}, h("button", { class: "btn secondary", onclick: () => loadGuide() }, "Retry"))];
   if (state === "error") return h("div", { class: "notice" }, `The guide in this description does not parse: ${S.guide.why}.`);
   const { guide, head } = S.guide;
   const moved = head && !head.startsWith(guide.head);
@@ -497,7 +501,6 @@ function quiz({ pass, questions }, head) {
       : h("div", { class: "end" }, h("button", { class: "btn ghost", onclick: async () => { S.quiz.answers = {}; await put(S.quiz.key, {}); S.quiz.result = await grade(S.guide.guide, S.pr, {}); render(); } }, "Take it again")));
 }
 
-// ---------- The side panel: a command ask's second tap ----------
 
 async function commandView() {
   const id = params.get("ask");
@@ -514,6 +517,8 @@ async function commandView() {
   }
   const run = async (button) => {
     button.disabled = true;
+    S.config = (await get("config")) ?? null;
+    if (!S.config) return document.body.replaceChildren(await commandView());
     const result = await api(answerPath(ask.id), answerBody({ option, revision }, true));
     const notice = result.status === 200 ? null : refusal(result, Date.now())[1];
     document.body.replaceChildren(await commandView());
@@ -529,7 +534,6 @@ function outcome(ran) {
   return h("div", { class: ran.status === "done" ? "okline" : "notice" }, words[ran.status] ?? ran.status);
 }
 
-// ---------- Boot ----------
 
 // A redraw keeps what the person was doing: the focused field, its selection and the scroll.
 function render() {
@@ -560,7 +564,7 @@ async function boot() {
   render();
   live((message) => {
     if (message.signedIn) get("config").then((config) => { S.config = config ?? null; read(); });
-    else if (message.signedOut) signedOut();
+    else if (message.signedOut) signedOut(false);
     else if (message.unreachable) { S.unreachable = true; render(); }
     else read(true);
   });

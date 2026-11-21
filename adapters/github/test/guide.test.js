@@ -43,6 +43,9 @@ test("a guide that does not parse or breaks the shape says why", () => {
     [JSON.stringify(guide({ pass: 1, questions: [{ ...QUIZ.questions[0], answer: "In a lane" }] })), /answer/],
     [JSON.stringify(guide({ pass: 1, questions: [{ ...QUIZ.questions[0], options: ["only"] }] })), /options/],
     [JSON.stringify({ ...guide(QUIZ), map: ["x".repeat(9000)] }), /8 KiB/],
+    [JSON.stringify({ ...guide(QUIZ), quiz: null }), /quiz/],
+    [JSON.stringify({ ...guide(QUIZ), steps: [null] }), /step/],
+    ["null", /version/],
   ];
   for (const [text, why] of cases) {
     const parsed = parseGuide(text);
@@ -72,4 +75,19 @@ test("a score belongs to one head sha and one guide: a push or a new guide gives
   assert.equal(await scoreKey(PR, "4c1d2e0aa", text), key);
   assert.notEqual(await scoreKey(PR, "5d2e3f1bb", text), key);
   assert.notEqual(await scoreKey(PR, "4c1d2e0aa", `${text} `), key);
+});
+
+test("any mutation of a valid block parses or says why, and never throws", () => {
+  const valid = JSON.stringify(guide(QUIZ));
+  const swaps = ["null", "0", "[]", "{}", '""', "true"];
+  let seed = 7;
+  const random = (n) => (seed = (seed * 48271) % 2147483647) % n;
+  for (let i = 0; i < 2000; i++) {
+    const at = random(valid.length);
+    const mutated = random(2)
+      ? valid.slice(0, at) + valid.slice(at + 1 + random(4))
+      : valid.replace(/"[^"]*"|\d+|\[\]/g, (match) => (random(12) ? match : swaps[random(swaps.length)]));
+    const parsed = parseGuide(mutated);
+    assert.ok(parsed.guide || typeof parsed.error === "string", mutated);
+  }
 });

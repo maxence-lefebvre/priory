@@ -15,7 +15,7 @@
   "web_accessible_resources": [
     { "resources": ["frame.html", "lib/pr.js"], "matches": ["https://github.com/*"] }
   ],
-  "side_panel": { "default_path": "frame.html?view=command" },
+  "side_panel": { "default_path": "command.html" },
   "content_security_policy": {
     "extension_pages": "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src https: http://127.0.0.1:* http://localhost:*; base-uri 'none'; form-action 'none'; frame-ancestors https://github.com"
   }

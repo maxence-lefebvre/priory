@@ -1,5 +1,4 @@
-// Whether a task can hear `say`, by the daemon's own rule (tools.rs, `say`): an active task at a
-// step a model decides, with a run. The panel says where the text goes before the tap.
+// Whether say reaches a task, by the daemon's own rule in tools.rs: an active model step with a run.
 
 const ENDED = new Set(["done", "failed", "dropped"]);
 

@@ -1,6 +1,4 @@
-// The answer to one ask, from the tap to the daemon's reply, as the web view's ask detail does it
-// (DESIGN.md, Ask detail): a 4 s Undo, the revision guard, and a command option that arms first.
-// A draft is null or { id, revision, option | text, phase, at, notice }.
+// One ask's answer, as the web view does it: a 4 s Undo, the revision guard, an armed command option.
 
 export const UNDO_MS = 4000;
 export const ARM_MS = 4000;

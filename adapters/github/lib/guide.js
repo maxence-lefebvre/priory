@@ -1,6 +1,4 @@
-// The review guide an agent writes into a pull request's description, between
-// `<!-- priory-guide -->` markers, and its quiz. The description is page content: every check
-// here bounds what the panel draws, and every string is shown as text.
+// The review guide in a PR description and its quiz: page content, so every check bounds what is drawn.
 
 const MAX_BYTES = 8 * 1024;
 const MAX_STEPS = 8;
@@ -31,6 +29,7 @@ function problem(guide) {
     if (step.lines !== undefined && !/^\d+(-\d+)?$/.test(step.lines)) return `the lines of step "${step.title}" are not N or N-M`;
   }
   if (guide.quiz === undefined) return null;
+  if (typeof guide.quiz !== "object" || guide.quiz === null) return "the quiz is not an object";
   const { pass, questions } = guide.quiz;
   if (!Array.isArray(questions) || questions.length === 0 || questions.length > MAX_QUESTIONS) return "the quiz is not 1 to 4 questions";
   if (!Number.isInteger(pass) || pass < 1 || pass > questions.length) return "the quiz's pass is not between 1 and its question count";

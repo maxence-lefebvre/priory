@@ -330,6 +330,7 @@ request, in this order:
 | `wait` | waits, or waited, on it |
 | `subscription` | subscribes to it now |
 | `review` | has its review key, `github:owner/repo:pulls/N:review:REVIEWER` |
+| `owns` | none of the above, but still owns it, so its events reach the task, such as a pull request its stack later dropped |
 
 The tasks that hold it by `key` or `stack`, which own its branch, come first, then the others, each
 group by id. An empty `tasks` means no active task holds the pull request.

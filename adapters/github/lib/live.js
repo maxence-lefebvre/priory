@@ -1,6 +1,4 @@
-// One poller per browser: every frame of the extension's origin asks for the same Web Lock, and
-// the one that holds it waits on /api/events and shares each new revision on a BroadcastChannel.
-// When its tab closes, another frame takes the lock. `serve` holds at most 4 waiting requests.
+// One /api/events poller per browser, by Web Lock, sharing revisions on a BroadcastChannel: serve holds 4 waiters.
 import { call } from "./request.js";
 import { get } from "./store.js";
 
@@ -13,6 +11,7 @@ export function live(handler) {
   navigator.locks.request("priory-events", async () => {
     let revision = -1;
     let backoff = 5000;
+    let failed = false;
     for (;;) {
       const config = await get("config");
       if (!config) {
@@ -25,14 +24,17 @@ export function live(handler) {
         handler(message);
       };
       if (reply.status === 200) {
+        // After a failure, frames show "unreachable" until told otherwise, even at the same revision.
+        if (reply.body.revision !== revision || failed) share({ revision: (revision = reply.body.revision) });
         backoff = 5000;
-        if (reply.body.revision !== revision) share({ revision: (revision = reply.body.revision) });
+        failed = false;
         continue;
       }
       if (reply.status === 503) {
         await sleep(1000);
         continue;
       }
+      failed = true;
       share(reply.status === 401 ? { signedOut: true } : { unreachable: true });
       await sleep(backoff);
       backoff = Math.min(backoff * 2, 60000);
