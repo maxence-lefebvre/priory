@@ -71,7 +71,8 @@ stays in the step's result and in its `factory.step.ended` record, which carries
 #### Merge risk
 
 A grade is a forecast made before the work. A merge risk is a verdict on the finished change, given
-by a model step whose outcome is `low`, `medium` or `high`: a risk step. Give it its own agent, not
+by a risk step: a model step whose result carries `risk` and whose outcome, `low`, `medium` or
+`high`, is the verdict. Give it its own agent, not
 the implementer, so the verdict is a fresh look at the diff.
 
 Its result carries `risk`, one line per dimension, each starting with its level:
@@ -80,6 +81,7 @@ Its result carries `risk`, one line per dimension, each starting with its level:
 {
   "outcome": "medium",
   "summary": "Merge risk medium",
+  "commit": "3f9c2a7e5b1d4c6f8a0e2b4d6f8a1c3e5b7d9f0a",
   "risk": {
     "ask": "low: does what the issue asks, nothing more",
     "blast_radius": "medium: every task listing reads the new column",
@@ -98,22 +100,27 @@ Its result carries `risk`, one line per dimension, each starting with its level:
 | `rollback` | How costly is it to undo once merged? |
 | `detection` | Would a failure be noticed soon? |
 
-The outcome is the verdict and must be the highest level of the five lines. A `low`, `medium` or
-`high` outcome without `risk`, `risk` with another outcome, a missing, extra or multi-line
-dimension, and a line without its level are refused with:
+The outcome must be the highest level of the five lines. Each line is its level, a colon, a space
+and why, with no tab or line break. `risk` with another outcome, a missing or extra dimension, and a
+line of another shape are refused with:
 
 ```text
-risk must be an object with one line per dimension, ask, blast_radius, verification, rollback, detection, each starting with low:, medium: or high:
+risk must be an object with one line per dimension, ask, blast_radius, verification, rollback, detection, each its level, a colon and why, on one line
 outcome low must be the highest level of risk's lines: medium
 risk needs a low, medium or high outcome: its verdict
 ```
+
+A `low`, `medium` or `high` outcome without `risk` is a plain outcome and stores no verdict.
+`commit`, the commit the verdict grades, is optional, but a `hands-off` task needs it (see
+[`hands-off`](#hands-off)).
 
 The result keeps the verdict as `merge_risk`, and the task takes the latest one as its own
 `merge_risk`: `verdict` and the five lines (see [Task in
 detail](../reference/serve.md#task-in-detail)). Every ask of the task carries it: `priory asks
 --json` gives it as `merge_risk` and adds the verdict to the ask's `risk`, so `priory asks --risk
 low` lists the asks of tasks graded low. `priory asks` prints the five lines in its last column,
-`merge_risk`.
+`merge_risk`. A human step's ask also takes the verdict and the five lines as its `text`, which the
+web view and a routed ask's lead read.
 
 ### `ask(question, options, recommendation, tradeoff, title?, text?, whatWaits?, nextAction?, command?)`
 
@@ -445,15 +452,18 @@ session, instead of the person. These asks still go to the person:
 - an ask whose answer can let an irreversible step run before a person decides again, the asks
   that `priory asks --json` marks with the `irreversible` risk, and the ask of a human step with
   `approves`, since its answer grants an approval, unless the step just before graded the
-  [merge risk](#merge-risk) `low`;
+  [merge risk](#merge-risk) `low` at a commit;
 - an ask whose answer runs a command;
 - the asks the daemon makes itself: a hold's, a stack's, and an approval asked again at a new
   commit;
 - every ask once no trigger names the task's lead any more, since its workflow is gone.
 
-Only the verdict of the step that led to the human step counts. Put the risk step right before
-the approving step: a verdict from an earlier round may grade an older commit. A `medium` or `high`
-verdict, or none, keeps these asks with the person.
+Only the verdict of the step that led to the human step counts, and only with its `commit`. Put the
+risk step right before the approving step. When the lead answers, the daemon checks again: the
+task's latest verdict must still be `low`, at the commit the task's branch is at. Otherwise the
+lead's answer is not applied, and the ask returns to the person when the lead's task ends. A
+`medium` or `high` verdict, or none, keeps these asks with the person. An approval asked again at a
+new commit goes to the person.
 
 In the transaction that stores a routed ask, the daemon queues a lead task for it, with the key
 `priory:ask:<ask>:<revision>`, the trigger `priory/lead`, and the asking task's repository, band and

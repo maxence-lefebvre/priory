@@ -16,5 +16,6 @@ have not seen its conversation: the brief and the diff are all you need.
   - `rollback`: how costly is it to undo once merged, such as a migration or a published API?
   - `detection`: would a failure be noticed soon, by a test, an alert or a person?
 - Write the five lines to `.priory/risk.md`. Change no other file, and never commit.
-- End with the highest level of the five as your outcome, and the lines in the result's `risk`,
-  each starting with its level, such as `"rollback": "low: one revert undoes it"`.
+- End with the highest level of the five as your outcome, the lines in the result's `risk`, each
+  starting with its level, such as `"rollback": "low: one revert undoes it"`, and the commit you
+  graded, as `git rev-parse HEAD` prints it, in `commit`.

@@ -11955,10 +11955,10 @@ fn starter_request(workflow: &str, trigger: &str, key: &str) -> Message {
 }
 
 #[test]
-fn the_review_starter_writes_its_pending_review_grades_its_merge_risk_then_asks_the_person_to_submit_it()
+fn the_review_starter_grades_its_merge_risk_writes_its_pending_review_then_asks_the_person_to_submit_it()
  {
     let mut setup = Setup::starter("starter-review", "review");
-    setup.calls(&[result("written"), verdict("high")]);
+    setup.calls(&[verdict("high"), result("written")]);
     let key = "github:owner/repo:pulls/7:review:your-login";
     setup.publish(&starter_request("review", "review-requests", key));
 
@@ -11969,11 +11969,11 @@ fn the_review_starter_writes_its_pending_review_grades_its_merge_risk_then_asks_
     });
     assert_eq!(tasks[0][3], "submit");
     let runs = setup.rows("runs");
-    assert_eq!([&runs[0][2], &runs[1][2]], ["review", "risk"]);
-    assert_eq!(task_json(&setup, "1")["runs"][1]["agent"], "risk");
+    assert_eq!([&runs[0][2], &runs[1][2]], ["risk", "review"]);
+    assert_eq!(task_json(&setup, "1")["runs"][0]["agent"], "risk");
     let asks = setup.rows("asks");
     assert_eq!(asks.len(), 1, "{asks:?}");
-    assert!(asks[0][3].starts_with("submit"), "{asks:?}");
+    assert_eq!(asks[0][3], "submit: written it", "{asks:?}");
     assert_eq!(asks_json(&setup)["asks"][0]["risk"], json!(["high"]));
 }
 
@@ -14630,13 +14630,13 @@ fn a_risk_step_stores_its_verdict_on_the_task_and_its_result() {
 }
 
 #[test]
-fn a_risk_verdict_below_its_highest_line_or_without_its_lines_is_refused() {
+fn a_risk_verdict_below_its_highest_line_or_with_a_tab_in_a_line_is_refused() {
     let mut setup = Setup::with_workflow("risk-refused", &risked());
     let mut lowered = verdict("medium");
     lowered["arguments"]["outcome"] = json!("low");
-    let mut bare = verdict("low");
-    bare["arguments"]["risk"].take();
-    setup.calls(&[passed_with_evidence(), lowered, bare]);
+    let mut tabbed = verdict("low");
+    tabbed["arguments"]["risk"]["rollback"] = json!("low: one\trevert");
+    setup.calls(&[passed_with_evidence(), lowered, tabbed]);
     setup.publish(&requested(42));
 
     setup.start();
@@ -14657,7 +14657,7 @@ fn a_risk_verdict_below_its_highest_line_or_without_its_lines_is_refused() {
     assert_eq!(
         reply(&replies[2]),
         (
-            "risk must be an object with one line per dimension, ask, blast_radius, verification, rollback, detection, each starting with low:, medium: or high:".to_owned(),
+            "risk must be an object with one line per dimension, ask, blast_radius, verification, rollback, detection, each its level, a colon and why, on one line".to_owned(),
             true
         )
     );
@@ -14678,6 +14678,10 @@ fn the_approve_pr_ask_shows_its_tasks_merge_risk_and_asks_filter_by_it() {
     assert_eq!(
         ask["merge_risk"]["verification"], "medium: a test draws the box",
         "{ask}"
+    );
+    assert_eq!(
+        ask["text"],
+        "Merge risk: medium\n\n- ask: medium: does what the issue asks\n- blast_radius: low: one widget\n- verification: medium: a test draws the box\n- rollback: low: one revert\n- detection: low: the widget test fails"
     );
     let listed = |risk: &str| -> usize {
         let output = setup.priory(&["asks", "--all", "--json", "--risk", risk]);
@@ -14701,27 +14705,58 @@ fn the_approve_pr_ask_shows_its_tasks_merge_risk_and_asks_filter_by_it() {
     );
 }
 
+/// `verdict`, about `commit`.
+fn verdict_at(level: &str, commit: &str) -> serde_json::Value {
+    let mut call = verdict(level);
+    call["arguments"]["commit"] = json!(commit);
+    call
+}
+
 #[test]
-fn a_hands_off_tasks_approval_reaches_its_lead_on_a_low_merge_risk() {
+fn a_hands_off_tasks_approval_reaches_its_lead_on_a_low_merge_risk_whose_answer_opens_the_pull_request()
+ {
     let mut setup = hands_off("hands-off-low-risk", &risked());
-    setup.calls(&[passed_with_evidence(), verdict("low"), answered("stop")]);
+    let head = setup.pushed("main");
+    setup.calls(&[
+        passed_with_evidence(),
+        verdict_at("low", &head),
+        answered("open"),
+    ]);
     setup.publish(&requested(42));
 
     setup.start();
 
-    let tasks = setup.until("tasks", |rows| {
-        rows.len() == 2
-            && rows
-                .iter()
-                .all(|row| row[4] == "done" || row[4] == "dropped")
-    });
-    assert_eq!(tasks[1][1], "priory:ask:1:1");
+    let actions = setup.until("actions", |rows| !rows.is_empty());
+    assert_eq!(actions[0][2], "open-pr", "{actions:?}");
+    assert_eq!(setup.rows("tasks")[1][1], "priory:ask:1:1");
     let ask = &asks_json(&setup)["asks"][0];
     assert_eq!(
         [&ask["routed_to"], &ask["answer"], &ask["answered_by"]],
-        [&json!("lead"), &json!("stop"), &json!("agent:lead")],
+        [&json!("lead"), &json!("open"), &json!("agent:lead")],
         "{ask}"
     );
+}
+
+#[test]
+fn a_lead_cannot_approve_once_the_branch_moved_from_the_low_merge_risk_commit() {
+    let mut setup = hands_off("hands-off-low-risk-moved", &risked());
+    setup.calls(&[
+        passed_with_evidence(),
+        verdict_at("low", &"a".repeat(40)),
+        answered("open"),
+    ]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "done");
+    let ask = &asks_json(&setup)["asks"][0];
+    assert_eq!(
+        [&ask["state"], &ask["routed_to"], &ask["revision"]],
+        [&json!("open"), &json!(null), &json!(2)],
+        "{ask}"
+    );
+    assert!(setup.rows("actions").is_empty());
 }
 
 #[test]

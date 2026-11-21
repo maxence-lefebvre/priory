@@ -323,19 +323,20 @@ pub const RISK_DIMENSIONS: [&str; 5] = [
 ];
 
 /// The merge risk a result with `outcome` and `risk` stores, as JSON: the verdict and the line of
-/// each dimension. A verdict outcome needs `risk`, and `risk` needs the verdict its highest line has.
+/// each dimension. `risk` needs the outcome its highest line has; without it, nothing is stored.
 fn merge_risk(outcome: &str, risk: &Value) -> Result<Option<String>, String> {
-    let verdict = RISK_LEVELS.iter().position(|level| *level == outcome);
+    if risk.is_null() {
+        return Ok(None);
+    }
+    let Some(verdict) = RISK_LEVELS.iter().position(|level| *level == outcome) else {
+        return Err("risk needs a low, medium or high outcome: its verdict".to_owned());
+    };
     let shape = format!(
-        "risk must be an object with one line per dimension, {}, each starting with low:, medium: or high:",
+        "risk must be an object with one line per dimension, {}, each its level, a colon and why, on one line",
         RISK_DIMENSIONS.join(", ")
     );
-    let (Some(verdict), Some(lines)) = (verdict, risk.as_object()) else {
-        return match (verdict, risk) {
-            (None, Value::Null) => Ok(None),
-            (None, _) => Err("risk needs a low, medium or high outcome: its verdict".to_owned()),
-            (Some(_), _) => Err(shape),
-        };
+    let Some(lines) = risk.as_object() else {
+        return Err(shape);
     };
     if lines.len() != RISK_DIMENSIONS.len() {
         return Err(shape);
@@ -345,8 +346,9 @@ fn merge_risk(outcome: &str, risk: &Value) -> Result<Option<String>, String> {
         let level = lines
             .get(dimension)
             .and_then(Value::as_str)
-            .filter(|line| !line.contains('\n'))
+            .filter(|line| !line.contains(['\n', '\r', '\t']))
             .and_then(|line| line.split_once(": "))
+            .filter(|(_, why)| !why.trim().is_empty())
             .and_then(|(level, _)| RISK_LEVELS.iter().position(|known| *known == level));
         let Some(level) = level else {
             return Err(shape);
@@ -362,6 +364,30 @@ fn merge_risk(outcome: &str, risk: &Value) -> Result<Option<String>, String> {
     let mut stored = lines.clone();
     stored.insert("verdict".to_owned(), outcome.into());
     Ok(Some(Value::Object(stored).to_string()))
+}
+
+/// The task's latest merge risk as an ask's Markdown body, if it has one.
+fn risk_text(tx: &Transaction, task: i64) -> rusqlite::Result<Option<String>> {
+    let stored: Option<String> = tx.query_row(
+        "SELECT merge_risk FROM tasks WHERE id = ?1",
+        [task],
+        |row| row.get(0),
+    )?;
+    Ok(stored
+        .and_then(|stored| serde_json::from_str::<Value>(&stored).ok())
+        .map(|risk| {
+            let lines = RISK_DIMENSIONS.map(|dimension| {
+                format!(
+                    "- {dimension}: {}",
+                    risk[dimension].as_str().unwrap_or_default()
+                )
+            });
+            format!(
+                "Merge risk: {}\n\n{}",
+                risk["verdict"].as_str().unwrap_or_default(),
+                lines.join("\n")
+            )
+        }))
 }
 
 /// A typed compact needs no check, since an agent mid-compaction calls no tool.
@@ -2087,6 +2113,10 @@ fn lead_answer(
             options.join(", ")
         )));
     }
+    if !low_risk_holds(tx, ask, trace, head)? {
+        // Left unanswered, the ask returns to the person when this lead task ends.
+        return Ok(Ok(()));
+    }
     let answer = Answer {
         ask,
         text: text.to_owned(),
@@ -2095,6 +2125,44 @@ fn lead_answer(
         by: format!("agent:{}", run.agent.as_deref().unwrap_or_default()),
     };
     Ok(answer_in(tx, &answer, trace, head)?.map(drop))
+}
+
+/// Whether a lead may answer `ask`: always, unless its answer grants or leads to an irreversible
+/// step, which the task's latest merge risk must grade low at the commit its branch is at now.
+fn low_risk_holds(
+    tx: &Transaction,
+    ask: i64,
+    trace: &Trace,
+    head: &dyn Fn(&Path, &str) -> Option<String>,
+) -> rusqlite::Result<bool> {
+    let (step, workflow, worktree, branch, reviewed): (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = tx.query_row(
+        "SELECT asks.step, tasks.workflow, tasks.worktree, tasks.branch,
+           (SELECT commit_sha FROM results WHERE results.task = tasks.id AND merge_risk IS NOT NULL
+              AND json_extract(merge_risk, '$.verdict') = 'low'
+              AND run = (SELECT max(run) FROM results WHERE task = tasks.id AND merge_risk IS NOT NULL))
+         FROM asks JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
+        [ask],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    )?;
+    let gated = trace.factory.workflows.get(&workflow).is_none_or(|flow| {
+        flow.value
+            .step(&step)
+            .is_some_and(|step| !step.approves.is_empty())
+            || explain::answer_lets_irreversible_run(&flow.value, &step)
+    });
+    if !gated {
+        return Ok(true);
+    }
+    let now = worktree
+        .zip(branch)
+        .and_then(|(worktree, branch)| head(Path::new(&worktree), &branch));
+    Ok(reviewed.is_some() && reviewed == now)
 }
 
 /// Drops the lead task still queued for `ask`, which a person answered or dismissed first.
@@ -2434,7 +2502,8 @@ fn enter(
             let low_risk = match from {
                 Some(run) => tx
                     .query_row(
-                        "SELECT json_extract(merge_risk, '$.verdict') = 'low' FROM results WHERE run = ?1",
+                        "SELECT json_extract(merge_risk, '$.verdict') = 'low' AND commit_sha IS NOT NULL
+                         FROM results WHERE run = ?1",
                         [run.id],
                         |row| row.get::<_, Option<bool>>(0),
                     )
@@ -2445,15 +2514,16 @@ fn enter(
             };
             let lead = lead_of(tx, task, target, command.is_some(), low_risk, workflows)?;
             tx.execute(
-                "INSERT INTO asks (task, step, kind, question, options, routed, command)
-                 VALUES (?1, ?2, 'step', ?3, ?4, ?5, ?6)",
+                "INSERT INTO asks (task, step, kind, question, options, routed, command, text)
+                 VALUES (?1, ?2, 'step', ?3, ?4, ?5, ?6, ?7)",
                 params![
                     task,
                     target,
                     question,
                     serde_json::to_string(&step.options).expect("options serialize"),
                     lead,
-                    command
+                    command,
+                    risk_text(tx, task)?
                 ],
             )?;
             if let Some(lead) = &lead {
@@ -3448,7 +3518,7 @@ pub(crate) fn approved(
     tx.execute(
         // Asked again, an ask that a revive withdrew belongs to the current generation.
         "UPDATE asks SET revision = revision + 1, answer = NULL, answered = NULL, answered_by = NULL, withdrawn = NULL,
-         withdrawn_reason = NULL, question = question || ?2 WHERE id = ?1",
+         withdrawn_reason = NULL, routed = NULL, question = question || ?2 WHERE id = ?1",
         params![ask, moved],
     )?;
     unqueue(&tx, task, &step_prompt(at))?;
@@ -3773,4 +3843,37 @@ pub(crate) fn performed(
     trace::ended(&tx, trace, task, done.status, None)?;
     enter(&tx, task, workflow, &target, None, context, trace.factory)?;
     tx.commit()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn risk_lines_of_any_shape_are_stored_or_refused_without_panicking(
+            outcome in "(low|medium|high|\\PC{0,8})",
+            lines in proptest::collection::vec(
+                prop_oneof![
+                    "(low|medium|high|): \\PC{0,20}",
+                    "\\PC{0,30}",
+                    "(low|medium|high): [a-z]{1,5}[\\t\\n\\r][a-z]{0,5}",
+                ],
+                0..7,
+            ),
+        ) {
+            let risk: serde_json::Map<String, Value> = RISK_DIMENSIONS
+                .iter()
+                .zip(lines)
+                .map(|(dimension, line)| ((*dimension).to_owned(), line.into()))
+                .collect();
+            if let Ok(Some(stored)) = merge_risk(&outcome, &Value::Object(risk)) {
+                let stored: Value = serde_json::from_str(&stored).unwrap();
+                prop_assert_eq!(stored["verdict"].as_str(), Some(outcome.as_str()));
+            }
+        }
+    }
 }

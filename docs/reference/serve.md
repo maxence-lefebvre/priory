@@ -246,7 +246,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `question` | string | The question |
 | `options` | array of strings | The options |
 | `recommendation`, `tradeoff` | string or null | What the agent recommends, and the trade-off |
-| `title`, `text` | string or null | The ask's title and its Markdown body |
+| `title`, `text` | string or null | The ask's title and its Markdown body. A human step's ask has the task's [merge risk](../daemon/tools.md#merge-risk) as its body, when it has one |
 | `what_waits`, `next_action` | string or null | What waits on the answer, and what the agent does next |
 | `command` | object, string or null | An agent's command: `argv`, `target`, `dir`, the absolute folder it runs in, and `runs`, the options that run it. See [tools.md](../daemon/tools.md#commands-an-answer-runs). An outside ask's command is the string it sent, which never runs |
 | `ran` | object or null | The command its answer ran: `status` (`running`, `done`, `failed` or `uncertain`), `revision`, `error`, `stdout` and `stderr`. Null when no answer ran it |
