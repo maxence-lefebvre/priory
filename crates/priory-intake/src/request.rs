@@ -1,6 +1,6 @@
 use crate::intake::{self, OUTPUT, TASK_REQUESTED};
 use herdr_bus::{Bus, Message, Timestamp};
-use priory_factory::factory::{Factory, Hold};
+use priory_factory::factory::{Factory, Hold, Intervention};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -26,13 +26,16 @@ pub struct Request {
     hold: Option<Hold>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tldr: Option<String>,
+    /// Who answers the task's asks; `triggers/cli.toml`'s when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    intervention: Option<Intervention>,
     /// What the task is about.
     text: String,
 }
 
 pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
     let (mut workflow, mut key, mut band, mut lane, mut repo) = (None, None, None, None, None);
-    let mut tldr = None;
+    let (mut tldr, mut intervention) = (None, None);
     let (mut reason, mut until, mut if_closed) = (None, None, None);
     let (mut after, mut merge) = (vec![], vec![]);
     let mut blockers = false;
@@ -50,6 +53,7 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
             "--lane" => &mut lane,
             "--repo" => &mut repo,
             "--tldr" => &mut tldr,
+            "--intervention" => &mut intervention,
             "--hold" => &mut reason,
             "--until" if until.is_none() => &mut until,
             "--after" => {
@@ -94,9 +98,17 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
         repo,
         hold,
         tldr,
+        intervention: intervention_of(intervention)?,
         text,
     };
     Some((dir, request))
+}
+
+/// The intervention level `--intervention` names, or `None` for an unknown one.
+fn intervention_of(level: Option<String>) -> Option<Option<Intervention>> {
+    level.map_or(Some(None), |level| {
+        serde_json::from_value(json!(level)).ok().map(Some)
+    })
 }
 
 /// `[DIR] TEXT`, with the factory folder `.` by default.
@@ -124,14 +136,18 @@ pub struct Add {
     pub lane: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intervention: Option<Intervention>,
 }
 
 pub fn parse_add(args: Vec<String>) -> Option<(PathBuf, Add)> {
     let (mut workflow, mut band, mut lane, mut repo) = (None, None, None, None);
+    let mut intervention = None;
     let mut positional = vec![];
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let flag = match arg.as_str() {
+            "--intervention" => &mut intervention,
             "--" => {
                 positional.extend(args);
                 break;
@@ -154,6 +170,7 @@ pub fn parse_add(args: Vec<String>) -> Option<(PathBuf, Add)> {
         band,
         lane,
         repo,
+        intervention: intervention_of(intervention)?,
     };
     Some((dir, add))
 }
@@ -267,6 +284,7 @@ fn quick(factory: &Factory, add: &Add, repo: Option<String>) -> Result<Request, 
         repo: add.repo.clone().or(repo),
         hold: None,
         tldr: None,
+        intervention: add.intervention,
         text: add.text.clone(),
     };
     check(factory, &request)?;
@@ -342,10 +360,15 @@ pub fn check(factory: &Factory, request: &Request) -> Result<(), String> {
     if let Some(band) = request.band.as_deref().filter(|band| !bands.contains(band)) {
         return Err(format!("band `{band}` is not one of {}", bands.join(", ")));
     }
-    let trigger_repo = factory
-        .triggers
-        .get(TRIGGER)
-        .and_then(|trigger| trigger.value.repo.as_ref());
+    let trigger = factory.triggers.get(TRIGGER).map(|trigger| &trigger.value);
+    if request.intervention == Some(Intervention::HandsOff)
+        && trigger.and_then(|trigger| trigger.lead.as_ref()).is_none()
+    {
+        return Err(
+            "--intervention hands-off needs a lead; set lead in triggers/cli.toml".to_owned(),
+        );
+    }
+    let trigger_repo = trigger.and_then(|trigger| trigger.repo.as_ref());
     if request.repo.is_none() && trigger_repo.is_none() {
         return Err(
             "the request names no repo; pass --repo owner/name, or set repo in triggers/cli.toml"
@@ -413,6 +436,9 @@ fn task(request: &Request, key: &str, source: &Message) -> Message {
     }
     if let Some(tldr) = &request.tldr {
         data["tldr"] = json!(tldr);
+    }
+    if let Some(intervention) = request.intervention {
+        data["intervention"] = json!(intervention);
     }
     Message::new(TASK_REQUESTED, data)
         .id(intake::id(&format!(

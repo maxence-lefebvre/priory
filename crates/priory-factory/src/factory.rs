@@ -3,7 +3,7 @@ use crate::lines::{self, Lines};
 use schemars::JsonSchema;
 use serde::de::{DeserializeOwned, Deserializer, Error as _, IntoDeserializer};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::io;
@@ -345,6 +345,27 @@ pub struct Script {
 /// The built-in workflow a sweeper task runs, unless the factory defines its own.
 pub const SWEEP: &str = "sweep";
 
+/// The built-in workflow of a task that answers an ask in the person's place, for the lead `lead`.
+/// No workflow file has a `/` in its name, so none collides.
+pub fn lead_workflow(lead: &str) -> String {
+    format!("priory/lead/{lead}")
+}
+
+const LEAD_WORKFLOW: &str = r#"
+start = "answer"
+
+[[steps]]
+id = "answer"
+decides = "model"
+prompt = """A task of this factory asked a question, and you answer it in the person's place. \
+The event below names the task, its ask, the revision, the question, its options, the asker's \
+recommendation and trade-off. Read the task's worktree or its pull request if you need to. Then \
+end with `answered`, with your answer as the whole `summary`: one of the options, word for word, \
+when the ask lists options. End with `skipped` when the ask is no longer open."""
+effect = "none"
+next = { answered = "done", skipped = "done" }
+"#;
+
 /// Opening the issue waits for a person: it posts an agent's text to a repository others read.
 const SWEEP_WORKFLOW: &str = r#"
 start = "clean"
@@ -517,6 +538,27 @@ pub enum Session {
     Shared,
 }
 
+/// Who answers a task's asks. Unset, every ask goes to a person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Intervention {
+    /// A person approves the plan: a grading step's result waits for an answer before the task
+    /// moves on, even for a green grade.
+    Plan,
+    /// The trigger's `lead` answers asks in the person's place, except an ask whose answer lets an
+    /// irreversible step run and an ask whose answer runs a command.
+    HandsOff,
+}
+
+impl Intervention {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Intervention::Plan => "plan",
+            Intervention::HandsOff => "hands-off",
+        }
+    }
+}
+
 /// `triggers/<name>.toml` or `.yaml`: an event source, its filter and the workflow its events
 /// start. The file name is the trigger's name.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -581,6 +623,11 @@ pub struct Trigger {
     pub prompt: Option<String>,
     /// Files each task held, so it waits for a person or a condition before it starts.
     pub hold: Option<Hold>,
+    /// Who answers its tasks' asks: `plan` or `hands-off`; a person when unset.
+    pub intervention: Option<Intervention>,
+    /// The agent that answers asks of a `hands-off` task: a `claude-code` agent with a `shared`
+    /// session.
+    pub lead: Option<String>,
 }
 
 /// Why a task is held, and the conditions that release it once all of them hold. With none, a
@@ -1313,6 +1360,25 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
                 lines,
             },
         );
+    }
+    let leads: BTreeSet<(String, PathBuf)> = factory
+        .triggers
+        .values()
+        .filter_map(|trigger| Some((trigger.value.lead.clone()?, trigger.file.clone())))
+        .filter(|(lead, _)| factory.agents.contains_key(lead))
+        .collect();
+    for (lead, file) in leads {
+        let mut workflow: Workflow =
+            toml::from_str(LEAD_WORKFLOW).expect("the lead workflow parses");
+        workflow.steps[0].agent = Some(lead.clone());
+        factory
+            .workflows
+            .entry(lead_workflow(&lead))
+            .or_insert(Loaded {
+                file,
+                value: workflow,
+                lines: Lines::default(),
+            });
     }
     if let Some(file) = ["prices.toml", "prices.yaml", "prices.yml"]
         .map(|name| dir.join(name))

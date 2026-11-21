@@ -49,7 +49,8 @@ fn desk_items() -> String {
 
 const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                  coalesce(asks.name, asks.id) AS id, asks.task AS task, tasks.lane AS lane,
-                 asks.question || ' ' || asks.options AS what
+                 coalesce('routed to ' || asks.routed || ': ', '') || asks.question || ' '
+                   || asks.options AS what
                FROM asks LEFT JOIN tasks ON tasks.id = asks.task
                WHERE asks.answer IS NULL AND asks.withdrawn IS NULL
                  AND coalesce(tasks.state, '') NOT IN ('done', 'failed', 'dropped')
@@ -120,7 +121,7 @@ fn asks_query() -> String {
        WHEN 0 THEN 'a later run called another tool'
        ELSE 'revived as generation ' || asks.withdrawn END AS withdrawn_why,
      asks.revision, asks.question, asks.options, asks.recommendation, asks.tradeoff, asks.answer,
-     asks.answered AS answered_at, asks.created AS since, asks.title, asks.text,
+     asks.answered AS answered_at, asks.answered_by, asks.routed AS routed_to, asks.created AS since, asks.title, asks.text,
      asks.what_waits, asks.next_action, asks.command, asks.coordinator, asks.run_id, asks.session,
      (SELECT json_object('state', state, 'revision', revision, 'tries', tries, 'error', error,
         'since', coalesce(ended, created))
@@ -641,6 +642,14 @@ pub fn desk(db: &Connection, home: &Path, all: bool, person: &str) -> rusqlite::
         .filter(|item| !item["snoozed_until"].is_null())
         .count();
     list.retain(|item| all || item["snoozed_until"].is_null());
+    let mut routed = db.prepare("SELECT routed FROM asks WHERE id = ?1")?;
+    for item in list.iter_mut().filter(|item| item["kind"] == "ask") {
+        let to = match item["id"].as_i64() {
+            Some(ask) => routed.query_row([ask], |row| row.get::<_, Option<String>>(0))?,
+            None => None,
+        };
+        item["routed_to"] = json!(to);
+    }
     for (path, task, reason) in sweep::stays(db, home)? {
         list.push(json!({
             "since": null, "kind": "worktree", "id": path, "task": task, "key": null,
@@ -673,7 +682,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         &format!(
             "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
                generation, retired, tldr, changed AS since, repo, branch, grade, grade_reason,
-               progress, {CONDITIONS}
+               progress, intervention, lead, {CONDITIONS}
              FROM tasks LEFT JOIN queue USING (id) WHERE id = ?1",
             places()
         ),

@@ -69,6 +69,21 @@
       ],
       "type": "object"
     },
+    "Intervention": {
+      "description": "Who answers a task's asks. Unset, every ask goes to a person.",
+      "oneOf": [
+        {
+          "const": "plan",
+          "description": "A person approves the plan: a grading step's result waits for an answer before the task\nmoves on, even for a green grade.",
+          "type": "string"
+        },
+        {
+          "const": "hands-off",
+          "description": "The trigger's `lead` answers asks in the person's place, except an ask whose answer lets an\nirreversible step run and an ask whose answer runs a command.",
+          "type": "string"
+        }
+      ]
+    },
     "OneOrMany_After": {
       "anyOf": [
         {
@@ -170,6 +185,17 @@
       ],
       "description": "Files each task held, so it waits for a person or a condition before it starts."
     },
+    "intervention": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Intervention"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Who answers its tasks' asks: `plan` or `hands-off`; a person when unset."
+    },
     "key": {
       "description": "Which events are the same work, such as `issue.number`; for a schedule, a fixed key.",
       "type": [
@@ -179,6 +205,13 @@
     },
     "lane": {
       "description": "The lane of its tasks, `<team>/<theme>`; `lanes.toml` derives it when unset.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "lead": {
+      "description": "The agent that answers asks of a `hands-off` task: a `claude-code` agent with a `shared`\nsession.",
       "type": [
         "string",
         "null"

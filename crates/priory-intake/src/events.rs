@@ -585,6 +585,10 @@ pub struct TaskRequested {
     /// The task's TL;DR, from `priory request --tldr`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tldr: Option<String>,
+    /// Who answers the task's asks, from `priory request` or `priory add --intervention`; the
+    /// trigger's when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intervention: Option<priory_factory::factory::Intervention>,
     /// When the firing was due. Schedule sources only.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(extend("format" = "date-time"))]

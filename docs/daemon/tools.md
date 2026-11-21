@@ -342,6 +342,69 @@ A run with an open ask or wait and no result ends `asleep`, and its task sleeps.
 the run's tmux session when the run ends, after the hook has its reply. The worktree stays until a
 sweep removes it.
 
+## Intervention
+
+A task's `intervention`, from its trigger or its request (see
+[triggers.md](../reference/triggers.md#intervention-and-lead)), sets who answers its asks. Unset,
+every ask goes to a person.
+
+### `plan`
+
+When a step's result grades a `plan` task red, yellow or green, and the grade leads to a model or
+code step, the task does not move on. It sleeps at the grading step on an ask:
+
+```text
+plan: approve the plan graded green? <the result's summary>
+```
+
+Its options are `approved` and `rejected`. `approved` moves the task to the step its grade leads
+to. `rejected` drops it. A grade that leads to a human step, `done` or `stop` moves on as usual:
+the human step already waits for a person.
+
+### `hands-off`
+
+An ask of a `hands-off` task goes to the trigger's `lead`, a Claude Code agent with a shared
+session, instead of the person. These asks still go to the person:
+
+- an ask whose answer can let an irreversible step run before a person decides again, the asks
+  that `priory asks --json` marks with the `irreversible` risk;
+- an ask whose answer runs a command;
+- the asks the daemon makes itself: a hold's, a stack's, and an approval asked again at a new
+  commit.
+
+In the transaction that stores a routed ask, the daemon queues a lead task for it, with the key
+`priory:ask:<ask>:<revision>`, the trigger `priory/lead`, and the asking task's repository, band and
+lane. It starts the built-in workflow `priory/lead/<lead>`: one model step, `answer`, whose
+outcomes `answered` and `skipped` both lead to `done`. Its first prompt carries a
+`priory.ask.routed` event: the task, its key, the ask, its revision, question, options,
+recommendation, trade-off, title and text.
+
+The lead answers with `result`:
+
+```json
+{ "outcome": "answered", "summary": "sqlite" }
+```
+
+The summary, trimmed, is the answer. It must be one of the options of a step's ask. In the same
+transaction the daemon applies it to the ask, as a person's answer would, and records it as
+answered by `agent:<lead>`. The asking task then wakes as after any answer. When the answer is
+refused, for example because the ask is no longer open, the result is refused with the reason, and
+the lead ends with `skipped` instead.
+
+The routed ask stays on the desk, marked `routed to <lead>`, so a person can still answer it. The
+first answer stands. A person's answer or dismissal drops the lead task while it is still `queued`,
+with the reason `ask <id> was answered first` or `ask <id> was dismissed`. A lead task already
+running reads the refusal and ends `skipped`. A routed ask sends no push notification.
+
+Known limits:
+
+- Each lead task gets its own worktree of the repository, like any task, although the lead only
+  answers. A routed ask costs one `git worktree add`.
+- A lead task queued for an ask that is withdrawn, as when its task is cancelled or revived, still
+  runs, and ends `skipped`.
+- The level is read when an ask is stored. Changing a trigger does not move a task already
+  created, and a task keeps the `lead` its trigger had when it was created.
+
 ## Code steps
 
 A code step runs its `action` in the daemon, with no agent and no run. Each loop, the daemon takes

@@ -99,7 +99,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/asks/{id}/answer` | `revision`, an integer, and one of `option` or `text`, a string. Both become the answer: a step's ask takes only one of its options. `run`, a boolean, default `false`: `true` confirms an answer that runs the ask's command, as `priory answer --run` does. Without it, that answer gets `422` |
 | `POST /api/asks/{id}/dismiss` | `revision`, an integer |
 | `POST /api/snooze` | `kind` (`ask`, `blocked`, `failed` or `prompt`) and `id`, an integer, then one of: `for`, a duration such as `1h`; `until`, an RFC 3339 time; or `"clear": true` |
-| `POST /api/request` | `text`, a string, then optionally `workflow`, `band`, `lane` and `repo`, strings. What it leaves unset comes from `[request]` and the URLs in `text`, as for [`priory add`](../intake/cli.md#priory-add) |
+| `POST /api/request` | `text`, a string, then optionally `workflow`, `band`, `lane` and `repo`, strings, and `intervention`, `plan` or `hands-off`. What it leaves unset comes from `[request]` and the URLs in `text`, as for [`priory add`](../intake/cli.md#priory-add) |
 | `POST /api/tasks/{id}/resume` | `{}` |
 | `POST /api/tasks/{id}/revive` | optionally `step`, a string: the step to restart at, as `--step` |
 | `POST /api/tasks/{id}/cancel` | optionally `revision`, an integer: the state's revision the client showed, as `--expected`. A newer state gets `409` |
@@ -176,6 +176,7 @@ Each item:
 | `lane` | string or null | The task's lane |
 | `since` | string or null | When the item started waiting |
 | `what` | string | What the item is about |
+| `routed_to` | string or null | An `ask` item's lead, which answers it in the person's place, or null. Other kinds have no `routed_to` |
 | `generation` | integer or null | The task's generation |
 | `snoozed_until`, `snoozed_at`, `back_early` | | The item's [snooze](#snooze) |
 
@@ -218,6 +219,8 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `ran` | object or null | The command its answer ran: `status` (`running`, `done`, `failed` or `uncertain`), `revision`, `error`, `stdout` and `stderr`. Null when no answer ran it |
 | `coordinator`, `run_id`, `session` | string or null | Who asked from outside Priory: its coordinator, its run id and its session |
 | `answer`, `answered_at` | string or null | The answer and when it came |
+| `answered_by` | string or null | Who answered: `cli`, `serve`, or `agent:<lead>` for a lead's answer. Null when unanswered, or answered before Priory recorded it |
+| `routed_to` | string or null | The lead the ask is routed to, which answers it in the person's place, or null for a person. See [tools.md](../daemon/tools.md#hands-off) |
 | `delivery` | object or null | The latest delivery of an outside ask's answer or dismissal to its session: `state` (`queued`, `running`, `delivered` or `failed`), `revision`, `tries`, `error` and `since`. Null when nothing was delivered. See [asks.md](../daemon/asks.md) |
 | `since` | string | When the agent asked |
 | `revisions` | array | Every revision of the question, oldest first: `revision`, `question`, `options`, `recommendation`, `text`, `at`, when it was asked, and `answer` and `answered_at`, the answer that revision took, or null. An ask stored before Priory kept revisions lists only its current one, dated when the ask was first asked |
@@ -266,7 +269,9 @@ of `goal`, `acceptanceCriteria` (each `{ "id", "description", "required" }`), `l
 
 ## Task in detail
 
-The fields of [Tasks](#tasks), plus `repo` and `branch`, and these arrays, oldest first:
+The fields of [Tasks](#tasks), plus `repo`, `branch`, `intervention` (`plan`, `hands-off` or null)
+and `lead` (the agent that answers a `hands-off` task's asks, or null), and these arrays, oldest
+first:
 
 | Field | Each entry |
 | ----- | ---------- |

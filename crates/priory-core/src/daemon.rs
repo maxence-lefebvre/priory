@@ -750,7 +750,12 @@ fn take(
         Ok(Input::Call(call)) if matches!(call.tool.as_str(), "subscribe" | "unsubscribe") => {
             Ok((replied(subscribe::tool(db, &call)?), None))
         }
-        Ok(Input::Call(call)) => Ok((replied(tools::call(db, &call, trace.factory)?), None)),
+        Ok(Input::Call(call)) => Ok((
+            replied(tools::call(db, &call, trace, &|worktree, branch| {
+                runtime::kept_head(&runtime::home(), worktree, branch)
+            })?),
+            None,
+        )),
         Ok(Input::Answer(answer)) => Ok((
             replied(tools::answer(db, &answer, trace, &|worktree, branch| {
                 runtime::kept_head(&runtime::home(), worktree, branch)

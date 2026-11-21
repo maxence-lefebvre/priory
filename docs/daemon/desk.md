@@ -4,7 +4,7 @@
 
 | Kind | Id | What | Since |
 | ---- | -- | ---- | ----- |
-| `ask` | the ask | its question, then its options | it was asked |
+| `ask` | the ask | its question, then its options; `routed to <lead>: ` first for an ask a lead answers (see [tools.md](tools.md#hands-off)) | it was asked |
 | `delivery` | the outside ask | `the answer did not reach <session> after <N> tries: <error>`, until the ask is asked again (see [asks.md](asks.md)) | its last try ended |
 | `blocked` | the task | its reason | the task last changed state |
 | `failed` | the task | its reason, then `revive: priory revive <task>` | the task last changed state |
@@ -19,6 +19,8 @@
 | `worktree` | the worktree's path | why it stays: see Sweep | `-` |
 
 The lane column is the task's lane, or `-` for a `worktree` row.
+
+In `priory desk --json`, an `ask` item carries `routed_to`: the lead it is routed to, or null.
 
 It lists only asks and prompts of active tasks, holds of held tasks and waiting memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
 

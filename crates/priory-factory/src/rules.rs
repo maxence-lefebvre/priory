@@ -1,6 +1,6 @@
 use crate::factory::{
-    Agent, Decider, Effect, Factory, Harness, Loaded, PermissionMode, Problem, Step, Trigger,
-    Until, Workflow,
+    Agent, Decider, Effect, Factory, Harness, Intervention, Loaded, PermissionMode, Problem,
+    Session, Step, Trigger, Until, Workflow,
 };
 use crate::lanes::{self, Lanes};
 use std::collections::{BTreeMap, BTreeSet};
@@ -155,6 +155,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 not_a_lane(lane),
             ));
         }
+        check_lead(factory, trigger, &mut problems);
         match trigger.value.source.as_str() {
             "github" => check_github(trigger, &mut problems),
             "linear" | "linear.view" => check_linear(trigger, &mut problems),
@@ -309,6 +310,37 @@ fn check_codex(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
                 format!("a codex agent cannot take `permissions.{field}`: Codex has no per-tool rules, so its sandbox and approvals follow `defaultMode` alone"),
             ));
         }
+    }
+}
+
+/// A `hands-off` trigger names a lead, and a lead is a Claude Code agent with a shared session.
+fn check_lead(factory: &Factory, trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
+    let Some(lead) = &trigger.value.lead else {
+        if trigger.value.intervention == Some(Intervention::HandsOff) {
+            problems.push(problem(
+                trigger,
+                trigger.lines.field("intervention"),
+                "`intervention = \"hands-off\"` needs a `lead`: the agent that answers asks in the person's place".into(),
+            ));
+        }
+        return;
+    };
+    let at = trigger.lines.field("lead");
+    let Some(agent) = factory.agents.get(lead) else {
+        problems.push(problem(
+            trigger,
+            at,
+            format!("lead `{lead}` does not exist"),
+        ));
+        return;
+    };
+    let shared = matches!(agent.value.session, Session::Shared);
+    if !shared || !matches!(agent.value.harness, Harness::ClaudeCode) {
+        problems.push(problem(
+            trigger,
+            at,
+            format!("lead `{lead}` needs harness = \"claude-code\" and session = \"shared\""),
+        ));
     }
 }
 
