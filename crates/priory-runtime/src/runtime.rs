@@ -475,6 +475,10 @@ pub struct Launch<'a> {
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
     pub body: &'a str,
+    /// The factory's instructions, which go before `body`.
+    pub instructions: &'a str,
+    /// The plugin folder that holds the factory's skills, for a harness that loads plugins.
+    pub plugin: Option<&'a Path>,
     /// The run's first prompt, passed as the harness's last argument after `--` rather than pasted.
     pub prompt: Option<&'a str>,
     /// The agent's Claude Code `permissions` settings, merged into Priory's own.
@@ -495,6 +499,19 @@ pub trait Harness {
     fn args(&self, exe: &Path, launch: &Launch) -> Result<Vec<String>, String>;
     /// What a person does once, in `clone`, before the harness runs Priory's hooks there.
     fn trust(&self, exe: &Path, clone: &str) -> String;
+    /// A file the harness reads at start, and its text, which `launch` writes first.
+    fn file(&self, _launch: &Launch) -> Option<(PathBuf, String)> {
+        None
+    }
+}
+
+/// The factory's instructions, then the agent's own prompt.
+fn system_prompt(launch: &Launch) -> String {
+    [launch.instructions, launch.body]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 pub struct ClaudeCode;
@@ -515,7 +532,15 @@ impl Harness for ClaudeCode {
         if let Some(effort) = launch.effort {
             args.extend(["--effort".to_owned(), effort.to_owned()]);
         }
-        if !launch.body.is_empty() {
+        if let Some(plugin) = launch.plugin {
+            args.extend(["--plugin-dir".to_owned(), plugin.display().to_string()]);
+        }
+        if let Some((file, _)) = self.file(launch) {
+            args.extend([
+                "--append-system-prompt-file".to_owned(),
+                file.display().to_string(),
+            ]);
+        } else if !launch.body.is_empty() {
             args.extend(["--append-system-prompt".to_owned(), launch.body.to_owned()]);
         }
         // Without the flag, the user's own mode, such as auto, would decide the run's prompts (R7.2).
@@ -530,6 +555,17 @@ impl Harness for ClaudeCode {
 
     fn trust(&self, _exe: &Path, clone: &str) -> String {
         format!("trust the clone once: cd {clone} && claude, accept, exit")
+    }
+
+    /// tmux refuses a command over about 16 KiB, so instructions reach Claude through a file.
+    fn file(&self, launch: &Launch) -> Option<(PathBuf, String)> {
+        (!launch.instructions.is_empty()).then(|| {
+            let name = format!("{}.system.md", launch.session);
+            (
+                launch.home.join("prompts").join(name),
+                system_prompt(launch),
+            )
+        })
     }
 }
 
@@ -569,8 +605,9 @@ impl Harness for Codex {
         if let Some(effort) = launch.effort {
             config.push(("model_reasoning_effort", json!(effort)));
         }
-        if !launch.body.is_empty() {
-            config.push(("developer_instructions", json!(launch.body)));
+        let instructions = system_prompt(launch);
+        if !instructions.is_empty() {
+            config.push(("developer_instructions", json!(instructions)));
         }
         let mut args = match launch.resume {
             Some(thread) => vec!["resume".to_owned(), thread.to_owned()],
@@ -692,6 +729,11 @@ fn one_line(stderr: &str) -> String {
 pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> {
     tmux_socket_fits(&tmux_socket())?;
     let exe = exe()?;
+    if let Some((file, text)) = harness.file(launch) {
+        fs::create_dir_all(file.parent().expect("the file has a parent"))
+            .and_then(|()| fs::write(&file, text))
+            .map_err(|error| format!("{}: {error}", file.display()))?;
+    }
     let mut command = tmux();
     command
         .args([
@@ -766,6 +808,39 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
     } else {
         format!("tmux new-session failed: {stderr}")
     }))
+}
+
+/// Writes `files`, by their paths inside the plugin, into `<dir>/plugin` unless that folder exists,
+/// and returns it. The files go to a staging folder renamed into place, so a crash never leaves a
+/// half-written plugin for a later run.
+pub fn plugin(dir: &Path, files: &[(PathBuf, &[u8])]) -> Result<PathBuf, String> {
+    let plugin = dir.join("plugin");
+    if plugin.is_dir() {
+        return Ok(plugin);
+    }
+    let name = dir
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    let staging = dir.with_file_name(format!(
+        ".{}.{}",
+        name.unwrap_or_default(),
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&staging);
+    let written = files
+        .iter()
+        .try_for_each(|(path, bytes)| {
+            let file = staging.join("plugin").join(path);
+            fs::create_dir_all(file.parent().expect("the file has a parent"))?;
+            fs::write(file, bytes)
+        })
+        .and_then(|()| fs::rename(&staging, dir));
+    let _ = fs::remove_dir_all(&staging);
+    match written {
+        Ok(()) => Ok(plugin),
+        Err(_) if plugin.is_dir() => Ok(plugin),
+        Err(error) => Err(format!("{}: {error}", plugin.display())),
+    }
 }
 
 /// The MCP server that serves Priory's tools to the run: `priory mcp --session <id>`.
