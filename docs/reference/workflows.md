@@ -18,6 +18,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `start` | string | yes | | The id of the first step | `"plan"` |
 | `band` | string | no | the last band | The band of its tasks when neither their request nor their trigger sets one | `"today"` |
 | `reopen` | string | no | the step that opened the pull request | The model step a done task goes back to when its open pull request gets feedback (see [routing.md](../daemon/routing.md#feedback-reopens-a-done-task)) | `"implement"` |
+| `max_prs` | integer, at least 1 | no | no cap | The most pull requests a task's stack may hold. `open-pr` fails with more branches (see [tools.md](../daemon/tools.md#code-steps)) | `3` |
 | `steps` | array of tables | yes | | The steps, in any order | see below |
 
 ## Step keys
@@ -186,3 +187,4 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` band `<band>` is not one of <bands> `` | `band` is not a band of the factory |
 | `` reopen `<id>` is not a model step `` | `reopen` names a missing step, or a human or code step |
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A bad `timeout` |
+| ``invalid value: integer `0`, expected a nonzero usize`` | `max_prs` is 0 |

@@ -20,7 +20,7 @@ wait or both. A `result` after an open ask or wait is refused, as is a second `a
 `wait`. An ask and a wait side by side wake the task on the first answer or event (see An ask
 beside a wait in [waits.md](waits.md)).
 
-### `result(outcome, summary, evidence?, commit?, reason?)`
+### `result(outcome, summary, evidence?, commit?, reason?, branches?)`
 
 `result` stores the run's result and ends the step. Nothing can change or delete a stored result.
 
@@ -43,6 +43,19 @@ capitals is stored in lower case.
 
 The `open-pr` action titles its pull request with the first line of `summary` (see Code steps
 below).
+
+`branches`, optional, asks `open-pr` for a stack of pull requests: their branches, bottom first,
+each based on the one before it. The last one must be the task's own branch, and each lower one is
+named after it, such as `priory/7-api` for task 7. A list that breaks these rules, names a branch
+twice or is empty is refused with:
+
+```text
+branches must list the stack's branches bottom first, each once, ending with the task's branch priory/7, each lower one named priory/7-<name>
+```
+
+For example, `"branches": ["priory/7-api", "priory/7-ui", "priory/7"]` opens three pull requests:
+`priory/7-api` on the default branch, `priory/7-ui` on `priory/7-api`, and `priory/7` on
+`priory/7-ui`.
 
 #### Grades
 
@@ -338,19 +351,33 @@ transaction then records the action run and moves the task by `next[status]` (se
 Moving on). A `run` action records itself first and runs in the background (see The `run` action).
 An action that is not built yet blocks the task with `action <name> is not built yet`.
 
-The built-in actions are `open-pr`, `open-issue` and `run`. `open-pr`:
+The built-in actions are `open-pr`, `open-issue` and `run`. `open-pr` opens one pull request per
+branch of the latest result's `branches`, bottom first, or for the task's branch alone without it.
+For each branch:
 
-1. It pushes the commit of the task's branch, the one its approval covers, to that branch on the
-   clone's `origin`.
+1. It pushes the branch to the clone's `origin`. The task's branch, the top one, is pushed at the
+   commit its approval covers. A lower branch is pushed at its own head, which must be that commit
+   or one of its ancestors, so the approval covers the whole stack.
 2. It reuses the open pull request from that branch if `gh pr list` finds one.
-3. Otherwise it runs `gh pr create -R <repo> --base <default branch> --head <branch>`. The title is
-   the first line of the latest result's `summary`. The body is the `summary`, then its `evidence`.
+3. Otherwise it runs `gh pr create -R <repo> --base <base> --head <branch>`. The base is the
+   branch below, or the default branch for the bottom one. The title is the first line of the
+   latest result's `summary`, followed by ` (2 of 3)` in a stack of two or more. The body is the
+   `summary`, then its `evidence`.
 
 Its status is `opened` or `failed`. A failure records the error, which a human step reached by
-`next.failed` shows in its question. On `opened`, the task owns the pull request and subscribes to
-it, so its events route to the task until it closes, and its repository is polled. A pull request that another active task owns fails instead, and that task is
-named. If the task then reaches `done` and its latest result names no `commit`, the checks wait of
-Done and checks pins the commit that `open-pr` pushed.
+`next.failed` shows in its question. On `opened`, the task owns each pull request and subscribes to
+it, so its events route to the task until it closes, and its repository is polled. The pull
+requests form the task's [stack](routing.md#stacks). A pull request that another active task owns
+fails instead, and that task is named. So do these:
+
+| Error | Cause |
+| ----- | ----- |
+| `the stack has <n> branches, past max_prs = <cap> of workflow <name>` | More branches than the workflow's [`max_prs`](../reference/workflows.md#top-level-keys) |
+| `branch <branch> is not below the approved commit <commit>` | A lower branch is missing, or holds a commit the approval does not cover |
+| `pull request #<n> from <branch> is based on <found>, not <base>` | The open pull request it would reuse is not based on the branch below. Retarget or close it |
+
+If the task then reaches `done` and its latest result names no `commit`, the checks wait of Done
+and checks pins the commit that `open-pr` pushed.
 
 If the daemon stops after `gh pr create` and before recording it, the action runs again at its next
 start, once the approval still holds. The push repeats and the open pull request is reused. If

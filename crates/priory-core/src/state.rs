@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 49;
+const VERSION: i64 = 50;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -898,6 +898,29 @@ END;
 PRAGMA user_version = 49;
 ";
 
+// A task's stack: every pull request it opened or claimed, each based on the one below, and the
+// branches a result asks `open-pr` to open, bottom first.
+const SCHEMA_50: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS pull_requests (
+  task     INTEGER NOT NULL REFERENCES tasks (id),
+  resource TEXT NOT NULL,
+  branch   TEXT NOT NULL,
+  base     TEXT NOT NULL,
+  state    TEXT NOT NULL DEFAULT 'open',
+  created  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  PRIMARY KEY (task, resource)
+);
+CREATE INDEX IF NOT EXISTS pull_requests_by_resource ON pull_requests (resource);
+CREATE TABLE IF NOT EXISTS result_branches (
+  run      INTEGER PRIMARY KEY REFERENCES results (run),
+  branches TEXT NOT NULL
+);
+",
+    bumps!("pull_requests"),
+    "PRAGMA user_version = 50;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -906,6 +929,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
+    SCHEMA_50,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1043,6 +1067,24 @@ pub(crate) fn handle(
     }
     let resources = route::resources(message);
     claim_pull_request(&tx, message)?;
+    // The intake publishes no reopen, so a later event of an open pull request tells it.
+    if message.kind != CLOSED && message.data["open"] == true {
+        tx.execute(
+            "UPDATE pull_requests SET state = 'open' WHERE resource = ?1 AND state = 'closed'",
+            [resources.first()],
+        )?;
+    }
+    if message.kind == CLOSED {
+        let state = if message.data["merged"] == true {
+            "merged"
+        } else {
+            "closed"
+        };
+        tx.execute(
+            "UPDATE pull_requests SET state = ?2 WHERE resource = ?1",
+            params![resources.first(), state],
+        )?;
+    }
     // A review event goes to its review task first, even when an older task is keyed by its PR.
     let (keyed, owners) = match (route::requests(message), route::review(message)) {
         (true, _) => (keyed(&tx, resources.first())?, Vec::new()),
@@ -1132,12 +1174,13 @@ pub(crate) fn handle(
             .is_some(),
         None => false,
     };
-    let outbox = if running && outcome == "kept" {
+    let outbox = if let Some(task) = task.filter(|_| running && outcome == "kept") {
         let text = line(
             &message.kind,
             message.subject.as_deref(),
             &message.data.to_string(),
         );
+        let text = placed(&tx, task, &resources, &text)?;
         tx.execute(
             "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
             params![task, text],
@@ -1223,7 +1266,9 @@ pub(crate) fn handle(
 }
 
 /// Subscribes the task whose branch is the head of the open pull request `message` names, on the
-/// first event of that pull request, when no other active task owns it. So a pull request a worker
+/// first event of that pull request, when no other active task owns it, and adds it to its stack.
+/// A head named after the task's branch, `priory/7-api`, counts too when its base is the trunk (a
+/// branch outside `priory/`) or another branch of the task. So a pull request or a stack a worker
 /// opened itself is its own, and a later `unsubscribe` holds.
 fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<()> {
     let data = &message.data;
@@ -1237,23 +1282,50 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
     if !message.kind.starts_with("github.") || message.kind == CLOSED || data["open"] == false {
         return Ok(());
     }
+    let resource = route::pull_request(repo, number);
+    let base = data["base_branch"].as_str().unwrap_or_default();
+    let claimer = tx
+        .query_row(
+            "SELECT owns.task FROM owns JOIN tasks ON tasks.id = owns.task
+             WHERE owns.resource GLOB 'github:*@*' AND tasks.state NOT IN ('failed', 'dropped')
+             AND (owns.resource = ?2 OR (?2 GLOB owns.resource || '-?*'
+               AND (?5 NOT GLOB 'priory/*' OR ('github:' || ?3 || '@' || ?5) = owns.resource
+                 OR ('github:' || ?3 || '@' || ?5) GLOB owns.resource || '-?*')))
+             AND NOT EXISTS (SELECT 1 FROM owned JOIN tasks AS other ON other.id = owned.task
+               WHERE owned.resource = ?1 AND owned.task != owns.task
+               AND other.state NOT IN ('done', 'failed', 'dropped'))
+             AND NOT EXISTS (SELECT 1 FROM inbox WHERE json_extract(data, '$.repo') = ?3
+               AND json_extract(data, '$.pull_request') = ?4)
+             ORDER BY owns.task DESC LIMIT 1",
+            params![
+                resource,
+                route::branch(repo, head),
+                repo,
+                number as i64,
+                base
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    let Some(task) = claimer else {
+        return Ok(());
+    };
     tx.execute(
-        "INSERT OR IGNORE INTO subscriptions (task, resource)
-         SELECT owns.task, ?1 FROM owns JOIN tasks ON tasks.id = owns.task
-         WHERE owns.resource = ?2 AND tasks.state NOT IN ('failed', 'dropped')
-         AND NOT EXISTS (SELECT 1 FROM owned JOIN tasks AS other ON other.id = owned.task
-           WHERE owned.resource = ?1 AND owned.task != owns.task
-           AND other.state NOT IN ('done', 'failed', 'dropped'))
-         AND NOT EXISTS (SELECT 1 FROM inbox WHERE json_extract(data, '$.repo') = ?3
-           AND json_extract(data, '$.pull_request') = ?4)",
-        params![
-            route::pull_request(repo, number),
-            route::branch(repo, head),
-            repo,
-            number as i64
-        ],
+        "INSERT OR IGNORE INTO subscriptions (task, resource) VALUES (?1, ?2)",
+        params![task, resource],
     )?;
-    Ok(())
+    // A pull request `open-pr` already recorded keeps the base it was opened on.
+    let known = tx
+        .query_row(
+            "SELECT 1 FROM pull_requests WHERE task = ?1 AND resource = ?2",
+            params![task, resource],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if known.is_some() {
+        return Ok(());
+    }
+    crate::stack::record(tx, task, &resource, head, base)
 }
 
 /// Whether `task` sleeps where an event can wake it: asleep at a model step, with no daemon's
@@ -1297,13 +1369,13 @@ fn delivered(
         &message.data.to_string(),
     );
     if wakes(tx, task, factory)? {
-        crate::tools::wake_on(tx, task, &line, kept)?;
+        crate::tools::wake_on(tx, task, &placed(tx, task, resources, &line)?, kept)?;
         return Ok(true);
     }
     if kept.is_none() {
         tx.execute(
             "INSERT INTO outbox (task, text) SELECT id, ?2 FROM tasks WHERE id = ?1 AND state = 'running'",
-            params![task, line],
+            params![task, placed(tx, task, resources, &line)?],
         )?;
     }
     Ok(false)
@@ -1322,6 +1394,21 @@ const OWN_KEY: [&str; 9] = [
     "linear.issue.state_changed",
     "slack.thread.replied",
 ];
+
+/// `line`, after the place in the stack of `task` of the pull request `resources` names first, as
+/// `#58, 2 of 3: <line>`.
+fn placed(
+    tx: &Transaction,
+    task: i64,
+    resources: &[String],
+    line: &str,
+) -> rusqlite::Result<String> {
+    let place = match resources.first() {
+        Some(resource) => crate::stack::place(tx, task, resource)?,
+        None => None,
+    };
+    Ok(place.map_or_else(|| line.to_owned(), |place| format!("{place}: {line}")))
+}
 
 /// Whether `task` subscribes to any of `resources` with no open wait on them: a wait on the
 /// resource decides which of its events wake the task. Its own key's subscription takes only
@@ -1962,15 +2049,29 @@ pub(crate) fn orphan_commands(
         .collect()
 }
 
-/// The summary and evidence of the task's latest result.
-pub(crate) fn last_result(
-    db: &Connection,
-    task: i64,
-) -> rusqlite::Result<Option<(String, Option<String>)>> {
+/// What the latest result of a task says for an action to describe its pull request or issue.
+pub(crate) struct Described {
+    pub summary: String,
+    pub evidence: Option<String>,
+    /// The branches of the stack to open, bottom first; none for the task's branch alone.
+    pub branches: Option<Vec<String>>,
+}
+
+/// The summary, evidence and stack branches of the task's latest result.
+pub(crate) fn last_result(db: &Connection, task: i64) -> rusqlite::Result<Option<Described>> {
     db.query_row(
-        "SELECT summary, evidence FROM results WHERE task = ?1 ORDER BY run DESC LIMIT 1",
+        "SELECT summary, evidence, result_branches.branches FROM results
+         LEFT JOIN result_branches USING (run) WHERE task = ?1 ORDER BY run DESC LIMIT 1",
         [task],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| {
+            let branches: Option<String> = row.get(2)?;
+            Ok(Described {
+                summary: row.get(0)?,
+                evidence: row.get(1)?,
+                branches: branches
+                    .map(|branches| serde_json::from_str(&branches).expect("branches are JSON")),
+            })
+        },
     )
     .optional()
 }

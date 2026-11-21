@@ -12378,3 +12378,466 @@ fn rows_that_share_an_id_in_two_sections_share_their_threads() {
     assert_eq!(first[0]["text"], "Why?");
     assert_eq!(&shown["sections"][1]["rows"][0]["comments"], first);
 }
+
+fn stacked(branches: &[&str]) -> serde_json::Value {
+    json!({ "name": "result", "arguments": {
+        "outcome": "passed",
+        "summary": "Add the widget\nIt draws a box.",
+        "evidence": "cargo test passed",
+        "branches": branches,
+    } })
+}
+
+/// Task 1 on `workflow`, asked to open the stack `branches`, bottom first, whose last is its own
+/// branch: one commit per branch, each lower branch below the next.
+fn asked_to_open_stack(name: &str, workflow: &str, branches: &[&str]) -> Setup {
+    let mut setup = Setup::with_workflow(name, workflow);
+    setup.calls(&[stacked(branches)]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    setup.gone("priory-1");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    for (at, branch) in branches.iter().enumerate() {
+        let commit = setup.commit(1, &format!("part-{at}.txt"));
+        if *branch != "priory/1" {
+            assert!(
+                git(&worktree)
+                    .args(["branch", branch, &commit])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+    }
+    setup
+}
+
+#[test]
+fn open_pr_with_three_branches_opens_three_pull_requests_each_based_on_the_one_below() {
+    let setup = asked_to_open_stack(
+        "stack-open",
+        OPEN_PR,
+        &["priory/1-a", "priory/1-b", "priory/1"],
+    );
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("actions", |rows| rows.len() == 1);
+    let created: Vec<[String; 3]> = setup
+        .gh()
+        .into_iter()
+        .filter(|call| call[..2] == ["pr", "create"])
+        .map(|call| [call[5].clone(), call[7].clone(), call[9].clone()])
+        .collect();
+    assert_eq!(
+        created,
+        [
+            ["main", "priory/1-a", "Add the widget (1 of 3)"],
+            ["priory/1-a", "priory/1-b", "Add the widget (2 of 3)"],
+            ["priory/1-b", "priory/1", "Add the widget (3 of 3)"],
+        ]
+        .map(|call| call.map(str::to_owned))
+    );
+    for branch in ["priory/1-a", "priory/1-b", "priory/1"] {
+        assert!(!setup.pushed(branch).is_empty(), "{branch} was not pushed");
+    }
+    let stack = &task_json(&setup, "1")["stack"];
+    assert_eq!(
+        *stack,
+        json!([
+            { "pull_request": "github:owner/repo#7", "number": 7, "branch": "priory/1-a", "base": "main", "state": "open" },
+            { "pull_request": "github:owner/repo#8", "number": 8, "branch": "priory/1-b", "base": "priory/1-a", "state": "open" },
+            { "pull_request": "github:owner/repo#9", "number": 9, "branch": "priory/1", "base": "priory/1-b", "state": "open" },
+        ])
+    );
+}
+
+const FOUR: [&str; 4] = ["priory/1-a", "priory/1-b", "priory/1-c", "priory/1"];
+
+fn pull_requests_created(setup: &Setup) -> usize {
+    setup
+        .gh()
+        .iter()
+        .filter(|call| call[..2] == ["pr", "create"])
+        .count()
+}
+
+#[test]
+fn a_stack_past_the_workflows_max_prs_is_refused_and_opens_nothing() {
+    let setup = asked_to_open_stack("stack-capped", &format!("max_prs = 3\n{OPEN_PR}"), &FOUR);
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][4], "failed");
+    assert_eq!(
+        actions[0][7],
+        "the stack has 4 branches, past max_prs = 3 of workflow implement"
+    );
+    assert_eq!(pull_requests_created(&setup), 0);
+}
+
+#[test]
+fn with_no_max_prs_a_stack_of_four_opens_four_pull_requests() {
+    let setup = asked_to_open_stack("stack-uncapped", OPEN_PR, &FOUR);
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][4], "opened");
+    assert_eq!(pull_requests_created(&setup), 4);
+}
+
+const STACK: [&str; 3] = ["priory/1-a", "priory/1-b", "priory/1"];
+
+/// An event of pull request `number` of the stack `open-pr` opened from `STACK`: 7 on main, 8 on 7,
+/// 9 on 8.
+fn on_stack(number: u64, kind: &str, extra: serde_json::Value) -> Message {
+    let at = (number - 7) as usize;
+    let mut message = on_pull(kind, extra);
+    message.data["pull_request"] = json!(number);
+    message.data["head_branch"] = json!(STACK[at]);
+    message.data["base_branch"] = json!(if at == 0 { "main" } else { STACK[at - 1] });
+    message.data["head_sha"] = json!(format!("{number}{}", "0".repeat(39)));
+    message.subject(format!("owner/repo#{number}"))
+}
+
+fn merged(number: u64) -> Message {
+    on_stack(
+        number,
+        "github.pull_request.closed",
+        json!({ "merged": true, "github_id": 400 + number }),
+    )
+}
+
+/// Task 1, which opened the stack `STACK` and sleeps on its checks.
+fn opened_stack(name: &str) -> Setup {
+    let setup = asked_to_open_stack(name, OPEN_PR, &STACK);
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    setup
+}
+
+#[test]
+fn a_stack_is_done_only_once_every_pull_request_merged() {
+    let setup = opened_stack("stack-done");
+
+    setup.publish(&merged(9));
+    setup.publish(&merged(8));
+    stays_asleep_after(&setup, 1);
+    setup.publish(&merged(7));
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let states: Vec<_> = task_json(&setup, "1")["stack"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pull| pull["state"].clone())
+        .collect();
+    assert_eq!(states, ["merged", "merged", "merged"]);
+}
+
+#[test]
+fn the_bottom_pull_request_merging_wakes_the_task_to_restack_the_rest() {
+    let setup = opened_stack("stack-restack");
+
+    setup.publish(&merged(7));
+
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter().any(|row| row[4].contains("merged; rebase"))
+    });
+    let woke = outbox
+        .iter()
+        .find(|row| row[4].contains("merged; rebase"))
+        .unwrap();
+    assert!(
+        woke[4].starts_with("#7 merged; rebase #8 and #9 onto main\\n"),
+        "{woke:?}"
+    );
+}
+
+#[test]
+fn a_comment_on_the_middle_pull_request_wakes_the_task_naming_its_place_in_the_stack() {
+    let setup = opened_stack("stack-comment");
+    let comment = on_stack(
+        8,
+        "github.pull_request.comment",
+        json!({ "actor": "ana", "body": "One more thing.", "url": "u", "github_id": 801 }),
+    )
+    .time(herdr_bus::Timestamp::now());
+
+    setup.publish(&comment);
+
+    let outbox = setup.until("outbox", |rows| rows.len() == 2);
+    assert!(
+        outbox[1][4]
+            .contains("ana commented on github:owner/repo#8 (#8, 2 of 3): One more thing. u"),
+        "{outbox:?}"
+    );
+}
+
+#[test]
+fn the_bottom_pull_request_closed_without_a_merge_asks_a_person_once() {
+    let setup = opened_stack("stack-closed");
+    let closed = |github_id: u64| {
+        on_stack(
+            7,
+            "github.pull_request.closed",
+            json!({ "merged": false, "github_id": github_id }),
+        )
+    };
+
+    setup.publish(&closed(470));
+    setup.publish(&closed(471));
+
+    setup.until("inbox", |rows| rows.len() == 3);
+    setup.until("asks", |rows| rows.len() == 1);
+    stays_asleep_after(&setup, 1);
+    let shown = setup.priory(&["asks", "--json"]);
+    let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    let shown: Vec<_> = shown["asks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|ask| ask["state"] == "open")
+        .collect();
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert_eq!(shown[0]["id"], "stack-1-closed-7");
+    assert_eq!(
+        shown[0]["question"],
+        "#7 (1 of 3) closed without a merge, and #8 and #9 are based on it. What should the worker do?"
+    );
+    assert_eq!(shown[0]["options"], json!(["restack onto main", "stop"]));
+}
+
+#[test]
+fn a_bottom_pull_request_retargeted_off_the_trunk_asks_a_person() {
+    let setup = opened_stack("stack-retargeted");
+    let mut moved = on_stack(
+        7,
+        "github.pull_request.labeled",
+        json!({ "github_id": 472 }),
+    );
+    moved.data["base_branch"] = json!("release");
+
+    setup.publish(&moved);
+
+    setup.until("asks", |rows| rows.len() == 1);
+    let shown = setup.priory(&["asks", "--json"]);
+    let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    let ask = shown["asks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|ask| ask["state"] == "open")
+        .unwrap()
+        .clone();
+    assert_eq!(ask["id"], "stack-1-retargeted-7");
+    assert_eq!(
+        ask["question"],
+        "#7, the bottom of the stack, is now based on release, not main. What should the worker do?"
+    );
+    assert_eq!(ask["options"], json!(["restack onto main", "stop"]));
+    stays_asleep_after(&setup, 1);
+}
+
+#[test]
+fn a_stack_the_worker_opened_itself_is_claimed_bottom_first() {
+    let mut setup = Setup::new("stack-claimed");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    let opened = |number: u64, head: &str, base: &str| {
+        let mut message = on_stack(
+            number,
+            "github.pull_request.opened",
+            json!({ "github_id": 900 + number }),
+        );
+        message.data["head_branch"] = json!(head);
+        message.data["base_branch"] = json!(base);
+        message
+    };
+
+    setup.publish(&opened(8, "priory/1", "priory/1-api"));
+    setup.publish(&opened(7, "priory/1-api", "main"));
+    setup.publish(&opened(9, "priory/1-other", "priory/2"));
+
+    setup.until("inbox", |rows| rows.len() == 4);
+    assert_eq!(
+        task_json(&setup, "1")["stack"],
+        json!([
+            { "pull_request": "github:owner/repo#7", "number": 7, "branch": "priory/1-api", "base": "main", "state": "open" },
+            { "pull_request": "github:owner/repo#8", "number": 8, "branch": "priory/1", "base": "priory/1-api", "state": "open" },
+        ])
+    );
+}
+
+#[test]
+fn a_comment_on_a_claimed_stack_reaches_the_running_task_naming_the_place() {
+    let mut setup = Setup::new("stack-subscribed");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&on_stack(
+        7,
+        "github.pull_request.opened",
+        json!({ "github_id": 907 }),
+    ));
+    setup.publish(&on_stack(
+        8,
+        "github.pull_request.opened",
+        json!({ "github_id": 908 }),
+    ));
+    setup.until("inbox", |rows| rows.len() == 3);
+    let comment = on_stack(
+        8,
+        "github.pull_request.comment",
+        json!({ "actor": "ana", "body": "Nit.", "url": "u", "github_id": 809 }),
+    );
+
+    setup.publish(&comment);
+
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[4].starts_with("#8, 2 of 2: github.pull_request.comment owner/repo#8 {"))
+    });
+}
+
+#[test]
+fn a_result_whose_branches_do_not_end_with_the_tasks_branch_is_refused() {
+    for (at, branches) in [
+        &["priory/1", "priory/1-a"][..],
+        &["main", "priory/1"],
+        &["priory/1-a", "priory/1-a", "priory/1"],
+        &[],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut setup = Setup::with_workflow(&format!("stack-refused-{at}"), OPEN_PR);
+        setup.calls(&[stacked(branches)]);
+        setup.publish(&requested(42));
+
+        setup.start();
+
+        setup.written("fake/tools.log");
+        let (text, error) = reply(&setup.replies()[0]);
+        assert!(error, "{branches:?}: {text}");
+        assert_eq!(
+            text,
+            "branches must list the stack's branches bottom first, each once, ending with the task's branch priory/1, each lower one named priory/1-<name>"
+        );
+        assert!(setup.rows("asks").is_empty());
+    }
+}
+
+/// Task 1 on `WORKFLOW`, asleep on a time wait, whose next turn calls `then`.
+fn asleep_with_a_branch(name: &str, then: serde_json::Value) -> Setup {
+    let mut setup = Setup::new(name);
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" })), then]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup
+}
+
+fn opened_on(number: u64, head: &str, base: &str) -> Message {
+    let mut message = on_stack(
+        number,
+        "github.pull_request.opened",
+        json!({ "github_id": 900 + number }),
+    );
+    message.data["head_branch"] = json!(head);
+    message.data["base_branch"] = json!(base);
+    message
+}
+
+#[test]
+fn a_pull_request_that_replaces_a_closed_one_on_the_same_branch_is_a_stack_of_one() {
+    let setup = asleep_with_a_branch("stack-replaced", serde_json::Value::Null);
+    let mut closed = opened_on(7, "priory/1", "main");
+    closed.kind = "github.pull_request.closed".to_owned();
+    closed.data["merged"] = json!(false);
+    closed.data["github_id"] = json!(470);
+
+    setup.publish(&opened_on(7, "priory/1", "main"));
+    setup.publish(&closed);
+    setup.publish(&opened_on(8, "priory/1", "main"));
+
+    setup.until("inbox", |rows| rows.len() == 4);
+    let stack = &task_json(&setup, "1")["stack"];
+    assert_eq!(stack.as_array().unwrap().len(), 1, "{stack}");
+    assert_eq!(stack[0]["number"], 8);
+}
+
+#[test]
+fn a_stack_keeps_its_order_when_a_pull_request_was_retargeted_onto_the_trunk() {
+    let setup = asleep_with_a_branch("stack-order", serde_json::Value::Null);
+
+    setup.publish(&opened_on(9, "priory/1", "priory/1-b"));
+    setup.publish(&opened_on(7, "priory/1-a", "main"));
+    setup.publish(&opened_on(8, "priory/1-b", "main"));
+
+    setup.until("inbox", |rows| rows.len() == 4);
+    let numbers: Vec<_> = task_json(&setup, "1")["stack"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pull| pull["number"].clone())
+        .collect();
+    assert_eq!(numbers, [7, 8, 9]);
+}
+
+#[test]
+fn reaching_done_with_a_closed_pull_request_no_one_decided_on_asks_instead() {
+    let setup = asleep_with_a_branch(
+        "stack-closed-done",
+        passed_at("abc0000000000000000000000000000000000000"),
+    );
+    let mut closed = opened_on(7, "priory/1-a", "main");
+    closed.kind = "github.pull_request.closed".to_owned();
+    closed.data["merged"] = json!(false);
+    closed.data["github_id"] = json!(470);
+
+    setup.publish(&opened_on(7, "priory/1-a", "main"));
+    setup.publish(&opened_on(8, "priory/1", "priory/1-a"));
+    setup.publish(&closed);
+
+    setup.until("asks", |rows| rows.len() == 1);
+    let shown = setup.priory(&["asks", "--json"]);
+    let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(shown["asks"][0]["id"], "stack-1-closed-7");
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+    assert!(
+        !setup
+            .rows("waits")
+            .iter()
+            .any(|row| row[3] == "checks" && row[9] == "-"),
+        "{:?}",
+        setup.rows("waits")
+    );
+}
+
+#[test]
+fn reusing_a_pull_request_on_another_base_than_the_branch_below_fails() {
+    let setup = asked_to_open_stack("stack-reused-base", OPEN_PR, &["priory/1-a", "priory/1"]);
+    // Every head already has pull request 5 open, on main.
+    fs::write(setup.dir.join("fake/open-pr"), "5").unwrap();
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][4], "failed");
+    assert_eq!(
+        actions[0][7],
+        "pull request #5 from priory/1 is based on main, not priory/1-a"
+    );
+}

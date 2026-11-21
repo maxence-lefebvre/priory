@@ -184,6 +184,40 @@ a head moved back.
 The `result` tool refuses an outcome that leads to `done` without `commit` when the task owns a pull
 request.
 
+### A stack of pull requests
+
+When the task's [stack](routing.md#stacks) holds two or more pull requests, the daemon stores one
+checks wait per open pull request of the stack instead. The top one is pinned to the commit as
+above. A lower one is judged at its newest head, since a restack moves it, so its head never counts
+as moved. A stack with a pull request closed without a merge that no person decided on asks first,
+as below, and stores no gate. A stack with no open pull request left is done at once. Each wait is
+judged only on events of its own pull request, as in the table above, with these differences:
+
+| Condition | Effect |
+| --------- | ------ |
+| Green checks at the head | the task sleeps on: a stack is done only once every pull request merged |
+| `github.pull_request.closed` with `merged` true, and every pull request of the stack merged | marks the task done and starts no run |
+| `github.pull_request.closed` with `merged` true, and open pull requests above it | wakes the agent: `#57 merged; rebase #58 and #59 onto main`, where `main` is the merged pull request's base |
+| `github.pull_request.closed` with `merged` true, and none open above it | the task sleeps on |
+| `github.pull_request.closed` without `merged` true | asks a person, see below. Once they answered, it wakes the agent as in the table above |
+| The bottom pull request's base is no longer the branch it was opened or claimed on | asks a person, see below |
+
+The two asks are a person's to answer, since only they know where the stack should land. Each is
+an agent ask on the task with the options `restack onto <base>` and `stop`, where `<base>` is the
+base of the closed or retargeted pull request. Each is named so that a repeated event never asks
+twice: `stack-<task>-closed-<number>` and `stack-<task>-retargeted-<number>`. For example: `#57 (1
+of 3) closed without a merge, and #58 and #59 are based on it. What should the worker do?` The ask
+ends the task's gates. The answer wakes the agent as any answer does, and its next `done` stores
+fresh gates. A person's answer stands: a later event about the same pull request asks nothing
+again.
+
+A pull request that replaces a closed one on the same branch takes its place in the stack, and a
+pull request that is open again after a close is open in the stack again.
+
+When one gate wakes the agent, the task's other gates end with it. A lower pull request that merges
+while the task runs or sleeps on its own wait reaches it as the close event's line, with its place in
+the stack, not as the restack line.
+
 Known limits:
 
 - Priory reads no branch protection, so every check run reported for the head counts as required.

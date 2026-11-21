@@ -32,13 +32,29 @@ A task gets its resources at these moments:
 | A wait of its names a pull request | that pull request | `github:owner/name#57` |
 | A wait of its names a Linear issue or a Slack thread | that issue or thread | `linear:ENG-7`, `slack:C0123:1763500000.000100` |
 | It subscribes, with the `subscribe` tool or `priory subscribe` | that resource, until `unsubscribe` | `github:owner/name#57` |
-| Its `open-pr` opens a pull request | that pull request, subscribed | `github:owner/name#57` |
-| The first GitHub event of an open pull request names its branch as the head | that pull request, subscribed, unless another active task owns it | `github:owner/name#58` |
+| Its `open-pr` opens a pull request | that pull request, subscribed, and each pull request of its stack | `github:owner/name#57` |
+| The first GitHub event of an open pull request names its branch, or a branch named after it, as the head | that pull request, subscribed, unless another active task owns it | `github:owner/name#58` |
 
 The last row is the claim. A worker that opens its pull request with `gh pr create` instead of
 `open-pr` still gets its reviews and comments, and its checks gate, once the intake reads an event of
 that pull request. A pull request on another task's branch is that task's, not this one's. Only
 the first event of a pull request claims it, so an `unsubscribe` from it holds.
+
+A head named after the task's branch, such as `priory/3-api` for task 3, is claimed too when the
+pull request's base is the trunk or another branch of the task. The trunk is any branch outside
+`priory/`. So a stack the worker opens itself, with `gh stack` for example, is the task's.
+
+### Stacks
+
+A task's stack is every pull request its `open-pr` opened or the claim gave it. Each one is based on
+the one below: the bottom one on the trunk, the next on the bottom one's branch, and so on. A task
+with one pull request has a stack of one. `priory task ID --json` lists the stack bottom first,
+with each pull request's state (see [serve.md](../reference/serve.md#tasks)).
+
+An event of any pull request of a stack of two or more reaches the task, and its prompt line names
+which one, as `#58, 2 of 3`. Feedback reads `ana commented on github:owner/name#58 (#58, 2 of 3): ...`,
+and another event starts with `#58, 2 of 3: `. Done needs every pull request of the stack merged
+(see Done and checks in [waits.md](waits.md#done-and-checks)).
 
 GitHub numbers issues and pull requests from one sequence per repository, so
 `github:owner/name#42` names either an issue or a pull request.
