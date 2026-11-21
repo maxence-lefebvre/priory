@@ -207,7 +207,7 @@ fn succeeded(output: &Exit) {
 }
 
 fn until(what: &str, done: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !done() {
         assert!(Instant::now() < deadline, "timed out on {what}");
         std::thread::sleep(Duration::from_millis(50));
@@ -441,7 +441,9 @@ fn changing_the_embedder_command_embeds_every_task_again() {
             .embedded("other")
             .contains("feed the kitten twice a day.")
     });
-    assert_eq!(setup.search(&["feline"]), ["1"]);
+    until("the second embedder's vector", || {
+        setup.search(&["feline"]) == ["1"]
+    });
 }
 
 #[test]

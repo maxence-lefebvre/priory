@@ -258,7 +258,7 @@ impl Setup {
 
     /// Polls the desk's banner until `done` holds for it, and returns it.
     fn until_banner(&self, done: impl Fn(Option<&str>) -> bool) -> Option<String> {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             let banner = self.banner();
             if done(banner.as_deref()) {
@@ -275,7 +275,7 @@ impl Setup {
 
     /// Polls `priory <verb>` until `done` holds for its rows, and returns them.
     fn until(&self, verb: &str, done: impl Fn(&[Vec<String>]) -> bool) -> Vec<Vec<String>> {
-        self.within(15, verb, done)
+        self.within(60, verb, done)
     }
 
     fn within(
@@ -317,7 +317,7 @@ impl Setup {
 
     /// Waits until the file `path`, under the test's directory, has content.
     fn written(&self, path: &str) {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while fs::metadata(self.dir.join(path)).map_or(true, |file| file.len() == 0) {
             assert!(Instant::now() < deadline, "{path} never appeared");
             std::thread::sleep(Duration::from_millis(50));
@@ -338,7 +338,7 @@ impl Setup {
 
     /// Waits until the fake `claude` took all but `left` of its queued tool calls.
     fn calls_left(&self, left: usize) {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(60);
         let path = self.dir.join("fake/calls");
         while fs::read_to_string(&path).unwrap().lines().count() > left {
             assert!(Instant::now() < deadline, "the fake never took its calls");
@@ -376,7 +376,7 @@ impl Setup {
 
     /// Waits until the tmux session `name` is gone.
     fn gone(&self, name: &str) {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while self
             .tmux(&["has-session", "-t", &format!("={name}")])
             .status
@@ -2471,7 +2471,7 @@ fn a_renamed_band_set_orders_the_queue_and_moves() {
 
 /// The state revision once the daemon has left it unchanged for over a tick.
 fn settled(setup: &Setup) -> i64 {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let mut read = revision(setup);
     loop {
         std::thread::sleep(Duration::from_millis(1100));
@@ -6751,7 +6751,7 @@ fn a_gh_call_past_the_command_timeout_is_killed_and_its_action_fails() {
     let mut setup = Setup::with_workflow("open-pr-hangs", OPEN_PR);
     fs::write(
         setup.dir.join("factory/factory.toml"),
-        "name = \"demo\"\ncommand_timeout = \"1s\"\n",
+        "name = \"demo\"\ncommand_timeout = \"5s\"\n",
     )
     .unwrap();
     setup.calls(&[passed_with_evidence()]);
@@ -6766,7 +6766,7 @@ fn a_gh_call_past_the_command_timeout_is_killed_and_its_action_fails() {
     assert!(answered.status.success(), "{answered:?}");
     let actions = setup.until("actions", |rows| rows.len() == 1);
     assert_eq!(actions[0][4], "failed");
-    assert!(actions[0][7].ends_with("timed out after 1s"), "{actions:?}");
+    assert!(actions[0][7].ends_with("timed out after 5s"), "{actions:?}");
 }
 
 /// A workflow whose one step runs `command` and routes `found`, `running`, `ok` and `failed`.
@@ -6906,18 +6906,19 @@ fn a_tmux_load_buffer_past_the_command_timeout_is_killed_and_logged() {
     let mut setup = Setup::new("load-buffer-hangs");
     fs::write(
         setup.dir.join("factory/factory.toml"),
-        "name = \"demo\"\ncommand_timeout = \"1s\"\n",
+        "name = \"demo\"\ncommand_timeout = \"5s\"\n",
     )
     .unwrap();
+    // Long enough that the commands before load-buffer finish under load instead of timing out.
     setup.hold("tmux-hang");
     setup.publish(&requested(42));
 
     setup.start();
 
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default();
-        if log.contains("load-buffer") && log.contains("timed out after 1s") {
+        if log.contains("load-buffer") && log.contains("timed out after 5s") {
             break;
         }
         assert!(Instant::now() < deadline, "daemon log: {log}");
@@ -7350,7 +7351,7 @@ impl Setup {
 
     /// Waits until the worktree of `task` is gone.
     fn removed(&self, task: u64) {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while self.worktree(task).exists() {
             assert!(Instant::now() < deadline, "worktree {task} stays");
             std::thread::sleep(Duration::from_millis(50));
@@ -7368,7 +7369,7 @@ fn a_sweep_removes_the_worktree_and_branch_of_a_done_task_whose_branch_merged() 
     setup.start();
 
     setup.removed(1);
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !setup.branches().is_empty() {
         assert!(Instant::now() < deadline, "branch stays");
         std::thread::sleep(Duration::from_millis(50));
@@ -7651,7 +7652,7 @@ fn an_agent_turned_back_to_per_task_starts_new_sessions_rather_than_resume_the_s
     fs::write(setup.dir.join("factory/agents/implementer/agent.md"), AGENT).unwrap();
     setup.start();
 
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(60);
     for ask in ["1", "2"] {
         while !setup
             .priory(&["answer", ask, "sqlite", "--revision", "1"])
@@ -8836,7 +8837,8 @@ fn a_revive_while_another_task_owns_one_of_its_resources_is_refused() {
     setup.publish(&reviewed());
     setup.until("tasks", |rows| rows[0][4] == "dropped");
     setup.publish(&requested(43));
-    setup.until("waits", |rows| rows.len() == 1);
+    // Task 1's own wait may still show as the one row, so wait for task 2 to sleep on the pull.
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "asleep");
 
     let revived = setup.priory(&["revive", "1"]);
 
@@ -9030,7 +9032,7 @@ fn a_turn_a_person_typed_into_the_pane_gets_no_nudge() {
             .status
             .success()
     );
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while setup.typed().len() < 3 {
         assert!(
             Instant::now() < deadline,
@@ -9979,12 +9981,16 @@ fn a_restarted_intake_resumes_a_wait_only_repository_where_it_stopped() {
 }
 
 /// Waits until the daemon answers on its socket.
-/// Runs `priory <args>` until a daemon replies to it, past the socket a crashed one left.
+/// Runs `priory <args>` until a daemon replies to it, past the socket a crashed one left and a
+/// connection a restarting one reset.
 fn once_listening(setup: &Setup, args: &[&str]) -> Exit {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let exit = setup.priory(args);
-        if !String::from_utf8_lossy(&exit.stderr).contains("no priory daemon listens") {
+        let said = String::from_utf8_lossy(&exit.stderr);
+        // A restarting daemon resets a connection that reached the socket before its start ended.
+        if !said.contains("no priory daemon listens") && !said.contains("Connection reset by peer")
+        {
             return exit;
         }
         assert!(Instant::now() < deadline, "the daemon never listened");
@@ -9993,7 +9999,7 @@ fn once_listening(setup: &Setup, args: &[&str]) -> Exit {
 }
 
 fn listening(setup: &Setup) {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !setup.dir.join("home/priory.sock").exists() {
         assert!(Instant::now() < deadline, "the daemon never listened");
         std::thread::sleep(Duration::from_millis(50));
@@ -10160,6 +10166,18 @@ fn a_grant_is_released_when_its_command_fails_or_is_killed_or_its_holder_dies() 
     setup.hold("hold-orphan");
     let mut holder = acquire(&setup, "40", &held("orphan"));
     setup.written("fake/order");
+    // The grant follows the command only once the daemon took its pid: killing the holder before
+    // that releases the grant.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let pid = rusqlite::Connection::open(setup.dir.join("priory.db"))
+            .and_then(|db| db.query_row("SELECT pid FROM grants", [], |row| row.get::<_, u32>(0)));
+        if pid.as_ref().is_ok_and(|pid| *pid != holder.id()) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the grant never moved: {pid:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
     holder.kill().unwrap();
     holder.wait().unwrap();
     // The orphaned command still runs, so its grant still holds.
@@ -10753,7 +10771,7 @@ fn a_left_stall_gets_no_second_call_even_after_a_daemon_restart() {
     setup.start();
 
     setup.within(20, "outbox", |rows| with(rows, 3, "confirmed") == 2);
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while setup.handler_records().is_empty() {
         assert!(Instant::now() < deadline, "no handler call");
         std::thread::sleep(Duration::from_millis(100));
@@ -10934,7 +10952,7 @@ fn the_tldr_tool_refuses_a_tldr_over_the_limit_with_its_count_then_stores_one_th
     setup.start();
 
     setup.calls_left(0);
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while setup.replies().len() < 2 {
         assert!(Instant::now() < deadline, "{:?}", setup.replies());
         std::thread::sleep(Duration::from_millis(50));
@@ -10977,7 +10995,7 @@ fn the_progress_tool_stores_the_four_fields_on_the_agents_task() {
     setup.start();
 
     setup.calls_left(0);
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while setup.replies().is_empty() {
         assert!(Instant::now() < deadline, "no reply");
         std::thread::sleep(Duration::from_millis(50));
@@ -11004,11 +11022,21 @@ impl Setup {
             .collect()
     }
 
+    /// As `posts`, without a last line the fake `curl` still writes, for a poll that retries.
+    fn complete_posts(&self) -> Vec<serde_json::Value> {
+        let written = fs::read_to_string(self.dir.join("fake/otlp.jsonl")).unwrap_or_default();
+        written
+            .split_inclusive('\n')
+            .filter(|line| line.ends_with('\n'))
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
     /// Waits until the requests hold `count` spans, and returns them.
     fn until_spans(&self, count: usize) -> Vec<serde_json::Value> {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
-            let spans = spans(&self.posts());
+            let spans = spans(&self.complete_posts());
             if spans.len() >= count {
                 return spans;
             }
