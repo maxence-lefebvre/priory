@@ -191,6 +191,17 @@ subscription cannot aim it at this machine or its network. A daemon that cannot 
 key logs it, sends no notification, and runs tasks as usual. A daemon stopped mid-send can send
 that notification again on its next start.
 
+### Desktop notifications
+
+With `[notify] desktop = true` in `factory.toml`, the daemon also runs `notify-send` on its own
+machine, for a person at that desk who looks elsewhere. It is off by default. Each second it reads
+the desk's `next` (see [desk.md](desk.md#the-next-thing)). When that item is an ask or an alarm the
+daemon has not told yet, it runs `notify-send -- <title>`, with the same title as a Web Push
+notification and nothing else. It runs the command with arguments, never through a shell. A snoozed
+item never ranks, so it never notifies. Each item notifies once; the daemon keeps that record in
+memory, so a restarted daemon tells the current next item once more. When `notify-send` is not on
+`PATH`, the daemon logs it once and carries on.
+
 On iPhone and iPad, only a view added to the Home Screen can subscribe, and it asks only after a
 tap. The Notifications screen says so in Safari. Android and desktop browsers subscribe from a tab
 or from the installed app.

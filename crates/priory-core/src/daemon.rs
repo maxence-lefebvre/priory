@@ -7,8 +7,8 @@ use crate::state::{self, Admission, NewRun, Signal};
 use crate::tools::{self, Act, Answer, Call, Dismiss, Done, Repair};
 use crate::trace::Trace;
 use crate::{
-    deliver, embed, handler, hold, progress, push, search, sections, stall, subscribe, summary,
-    sweep,
+    deliver, embed, handler, hold, notify, progress, push, search, sections, stall, subscribe,
+    summary, sweep,
 };
 use herdr_bus::{Bus, Start};
 use priory_factory::factory::{self, Factory, Harness, PermissionMode, Session};
@@ -216,6 +216,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut commands = Vec::new();
     let mut deliveries = deliver::adopt(&db)?;
     let mut pushing = push::Sending::default();
+    let mut desktop = factory
+        .desktop_notifications()
+        .then(notify::Desktop::default);
     let mut reads = Reads::default();
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
@@ -235,6 +238,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         }
         deliver::tick(&db, factory, &home, &mut deliveries)?;
         push::tick(&db, &home, &mut pushing)?;
+        if let Some(desktop) = &mut desktop {
+            notify::tick(&db, desktop)?;
+        }
         read_states(&mut db, &mut reads)?;
         if sweep_scripts(&db, factory, &home, &mut scripts)? {
             swept = None;

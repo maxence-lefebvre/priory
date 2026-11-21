@@ -22,6 +22,23 @@ The lane column is the task's lane, or `-` for a `worktree` row.
 
 It lists only asks and prompts of active tasks, holds of held tasks and waiting memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
 
+## The next thing
+
+The desk ranks what waits on a person, so a client can show one next thing. `priory desk --json`
+and `/api/desk` carry the ranked items as `ranked` and the first as `next`, or null when nothing
+waits. `priory desk` without `--json` prints neither. The ranking has four groups, first to last:
+
+| Group | Items | `why` |
+| ----- | ----- | ----- |
+| Alarms | `blocked`, `failed`, an `uncertain` `prompt` or `command`, and an unread `intake` report: a source that fails to poll | `an alarm: work stopped and waits on a person` |
+| Asks that open a door | an ask whose answer lets an irreversible step run (its risk is `irreversible`), and an ask of a task that reviews a pull request, whose key ends in `:review:<login>` | `its answer lets an irreversible step run`, or `it reviews a pull request` |
+| Plans | another ask at a human step, such as `approve-plan` | `it approves a plan` |
+| The rest | every other ask and item: deliveries, holds, sweeps, memory waits, reports and retired tasks | `it waits on a person` |
+
+Each group lists its items oldest first. The queue and the worktrees that stay never rank. A snoozed
+item never ranks, even with `--all`. Each ranked item is the desk item with two more fields: `why`,
+and `title`, the line a notification carries (see [serve.md](serve.md#desktop-notifications)).
+
 ## Reports
 
 `priory post SOURCE LINE` stores one report line on the inbox for a person to read, and prints its
