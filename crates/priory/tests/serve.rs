@@ -805,7 +805,7 @@ fn the_desk_ranks_alarms_then_irreversible_asks_then_plans_then_the_rest_each_ol
     assert_eq!(desk["next"]["kind"], "blocked");
     assert_eq!(
         desk["next"]["why"],
-        "an alarm: a task stopped and waits on a person"
+        "an alarm: work stopped and waits on a person"
     );
     assert_eq!(
         desk["ranked"][1]["why"],
@@ -865,6 +865,35 @@ fn a_snoozed_item_never_ranks_even_when_the_desk_shows_it() {
     );
     assert_eq!(desk["next"]["id"], 1);
     assert_eq!(desk["ranked"].as_array().unwrap().len(), 4);
+}
+
+#[test]
+fn a_failing_intake_ranks_as_an_alarm_whose_title_names_the_source_not_the_error() {
+    let setup = Setup::new("desk-rank-intake", "name = \"demo\"\n");
+    setup.seed_ranks();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "INSERT INTO inbox (seq, id, time, type, subject, data, links, outcome)
+         VALUES (900, 'r900', '2026-11-17T09:00:00Z', 'priory.report', 'intake',
+           '{\"line\":\"github: HTTP 401: token abc\"}', '[]', '')",
+        [],
+    )
+    .unwrap();
+
+    let desk = json_of(&setup, "desk");
+
+    assert_eq!(
+        (
+            &desk["next"]["kind"],
+            &desk["next"]["title"],
+            &desk["next"]["why"]
+        ),
+        (
+            &json!("report"),
+            &json!("the intake fails to poll github"),
+            &json!("an alarm: work stopped and waits on a person")
+        )
+    );
 }
 
 #[test]

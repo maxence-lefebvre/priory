@@ -166,7 +166,8 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
 function nextThing(item, ask, task, now, links) {
   const progress = task?.progress;
   const isAsk = item.kind === "ask";
-  const question = isAsk ? ask?.title || ask?.question || item.what : task?.reason || item.what;
+  // As in `itemRow`: only a blocked or failed task's reason replaces the desk's `what`.
+  const question = isAsk ? ask?.title || ask?.question || item.what : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : item.what;
   return {
     ask: isAsk ? item.id : null,
     snooze: SNOOZABLE.includes(item.kind) ? { kind: item.kind, id: item.id } : null,

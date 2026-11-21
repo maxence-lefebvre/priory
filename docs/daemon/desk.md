@@ -30,7 +30,7 @@ waits. `priory desk` without `--json` prints neither. The ranking has four group
 
 | Group | Items | `why` |
 | ----- | ----- | ----- |
-| Alarms | `blocked`, `failed`, an `uncertain` `prompt` or `command`, and an unread `intake` report: a source that fails to poll | `an alarm: a task stopped and waits on a person` |
+| Alarms | `blocked`, `failed`, an `uncertain` `prompt` or `command`, and an unread `intake` report: a source that fails to poll | `an alarm: work stopped and waits on a person` |
 | Asks that open a door | an ask whose answer lets an irreversible step run (its risk is `irreversible`), and an ask of a task that reviews a pull request, whose key ends in `:review:<login>` | `its answer lets an irreversible step run`, or `it reviews a pull request` |
 | Plans | another ask at a human step, such as `approve-plan` | `it approves a plan` |
 | The rest | every other ask and item: deliveries, holds, sweeps, memory waits, reports and retired tasks | `it waits on a person` |

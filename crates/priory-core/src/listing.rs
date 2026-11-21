@@ -54,7 +54,8 @@ fn urgency() -> String {
 }
 
 /// An item's title as a notification carries it: an ask's title, or its task and step when it
-/// has none, since a question can hold a result's summary; a task's key and kind; else its text.
+/// has none, since a question can hold a result's summary; a task's key and kind; a report's
+/// source, never its line, which can quote an error.
 const DESK_TITLE: &str = "CASE WHEN desk.kind = 'ask' THEN (SELECT coalesce(asks.title,
              'task ' || tasks.key || ' asks at ' || asks.step, 'ask ' || asks.name)
            FROM asks LEFT JOIN tasks ON tasks.id = asks.task
@@ -62,7 +63,11 @@ const DESK_TITLE: &str = "CASE WHEN desk.kind = 'ask' THEN (SELECT coalesce(asks
              AND asks.answer IS NULL AND asks.withdrawn IS NULL)
          WHEN desk.task IS NOT NULL THEN 'task '
            || (SELECT key FROM tasks WHERE tasks.id = desk.task) || ' ' || desk.kind
-         ELSE desk.what END AS title";
+         WHEN desk.kind = 'report' AND desk.what LIKE 'intake: %' THEN 'the intake fails to poll '
+           || substr(desk.what, 9, instr(substr(desk.what, 9), ':') - 1)
+         WHEN desk.kind = 'report' THEN 'a report from '
+           || substr(desk.what, 1, instr(desk.what, ':') - 1)
+         ELSE desk.kind || ' ' || desk.id END AS title";
 
 /// Asks, blocked tasks and uncertain prompts oldest first, then the queue in start order, each with
 /// its snooze, its group in the ranking and its title.
@@ -662,7 +667,7 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
 }
 
 /// Why an alarm ranks first.
-pub(crate) const ALARM: &str = "an alarm: a task stopped and waits on a person";
+pub(crate) const ALARM: &str = "an alarm: work stopped and waits on a person";
 
 /// The ranking's groups, first to last, each with why its items rank where they do. Irreversible
 /// and review asks share a group.

@@ -238,7 +238,7 @@
     "step": "triage",
     "task": 4,
     "what": "Permission prompt denied: write to ~/.ssh/config, outside the worktree.",
-    "why": "an alarm: a task stopped and waits on a person",
+    "why": "an alarm: work stopped and waits on a person",
     "title": "task cli:PRI-55 blocked"
   },
   "ranked": [
@@ -255,7 +255,7 @@
       "step": "triage",
       "task": 4,
       "what": "Permission prompt denied: write to ~/.ssh/config, outside the worktree.",
-      "why": "an alarm: a task stopped and waits on a person",
+      "why": "an alarm: work stopped and waits on a person",
       "title": "task cli:PRI-55 blocked"
     },
     {
