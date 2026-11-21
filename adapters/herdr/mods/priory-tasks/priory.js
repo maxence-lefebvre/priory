@@ -27,6 +27,8 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     desk: ({ all = false } = {}) => read("desk", ...(all ? ["--all"] : [])),
     asks: () => read("asks", "--all"),
     tasks: () => read("tasks"),
+    // Every run with its task, outcome, model and tokens, newest first, as `/api/runs?all=1` serves them.
+    runs: () => read("runs"),
     // The events that reached no task, grouped by the resource's last owner, as `/api/inbox?unrouted=1` serves them.
     unrouted: () => read("inbox", "--unrouted"),
     // Sends the resource's next event to the task, unless the state moved past `revision`.
@@ -81,7 +83,8 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
       ...(top ? ["--top"] : before != null ? ["--before", String(before)] : after != null ? ["--after", String(after)] : []),
       ...expected(revision)]),
     // The shell command line that attaches a tmux client to the task's live run, quoted by priory.
-    attach: async (/** @type {Id} */ task) => (await call(["attach", String(task), "--print"])).trim(),
+    // A read-only client watches: it cannot type, and leaves the agent's window size alone.
+    attach: async (/** @type {Id} */ task, { readOnly = false } = {}) => (await call(["attach", String(task), ...(readOnly ? ["--read-only"] : []), "--print"])).trim(),
   };
 }
 
