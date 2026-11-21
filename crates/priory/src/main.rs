@@ -5,7 +5,7 @@ use priory_core::{
 };
 use priory_factory::{explain, factory, rules};
 use priory_intake::{intake, request};
-use priory_runtime::{mcp, runtime};
+use priory_runtime::{eval, mcp, runtime};
 use serde_json::Value;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -161,8 +161,22 @@ fn main() -> ExitCode {
                 };
                 exit("mcp", mcp::serve(&session, &local))
             }
+            (Some(flag), Some(log), describe) if flag == "--eval" => {
+                let rest: Vec<String> = describe
+                    .into_iter()
+                    .chain(args)
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect();
+                let describe = match rest.as_slice() {
+                    [] => None,
+                    [flag, tool, text] if flag == "--describe" => Some((tool.as_str(), text.as_str())),
+                    _ => return usage(),
+                };
+                exit("mcp", eval::serve(Path::new(&log), describe))
+            }
             _ => usage(),
         },
+        Some("eval") => prompt_eval(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("hook") => match (args.next(), args.next()) {
             (Some(event), None) => hook(&event.to_string_lossy()),
             _ => usage(),
@@ -173,7 +187,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory runs\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory grades [--since <instant-or-duration>] [--json]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK --json\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory runs\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory grades [--since <instant-or-duration>] [--json]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK --json\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -1147,6 +1161,61 @@ fn exit(verb: &str, done: Result<(), String>) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `priory eval FILE --budget USD`: runs a prompt evaluation against a real model, prints its table,
+/// and rewrites the doc's table when every case ran within the budget.
+fn prompt_eval(args: Vec<String>) -> ExitCode {
+    let Some((file, flags)) = args.split_first() else {
+        return usage();
+    };
+    let (mut case, mut runs, mut model, mut budget) = (None, 5, "haiku".to_owned(), None);
+    for pair in flags.chunks(2) {
+        match pair {
+            [flag, value] if flag == "--case" => case = Some(value.clone()),
+            [flag, value] if flag == "--model" => model = value.clone(),
+            [flag, value] if flag == "--runs" => match value.parse() {
+                Ok(value) if value > 0 => runs = value,
+                _ => return usage(),
+            },
+            [flag, value] if flag == "--budget" => match value.parse::<f64>() {
+                Ok(value) if value > 0.0 && value.is_finite() => budget = Some(value),
+                _ => return usage(),
+            },
+            _ => return usage(),
+        }
+    }
+    let Some(budget) = budget else {
+        eprintln!("priory eval: give --budget USD, the most the evaluation may spend");
+        return ExitCode::FAILURE;
+    };
+    let path = Path::new(file);
+    let done = eval::load(path).and_then(|loaded| {
+        let scratch = std::env::temp_dir().join(format!("priory-eval-{}", std::process::id()));
+        let options = eval::Options {
+            runs,
+            budget,
+            case: case.as_deref(),
+        };
+        let report = eval::run(
+            &loaded,
+            &scratch,
+            &options,
+            &mut eval::Claude { model: &model },
+        );
+        let _ = std::fs::remove_dir_all(&scratch);
+        let report = report?;
+        let table = eval::table(&report, &model, runs);
+        print!("{table}");
+        match &loaded.doc {
+            Some(doc) if case.is_none() && report.complete => {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                eval::rewrite(doc, &name, &table)
+            }
+            _ => Ok(()),
+        }
+    });
+    exit("eval", done)
 }
 
 /// `priory memory` lists the memory grants, held and waiting.
