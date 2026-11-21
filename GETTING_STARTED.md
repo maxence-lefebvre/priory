@@ -310,7 +310,9 @@ only after a person approved it, unless it is marked `autonomous` with a reason.
 
 **Intervention.** A trigger's `intervention` sets how much a person steps in. `plan` makes a person
 approve each graded plan, even a green one. `hands-off` lets a lead agent answer the task's asks in
-your place, but an ask that lets an irreversible step run still comes to you. See
+your place, but an ask that lets an irreversible step run still comes to you. A routed ask shows
+"with <lead>" in the web view and the Herdr panels, you can still answer it first, and an answered
+ask says who answered. See
 [docs/reference/triggers.md](docs/reference/triggers.md#intervention-and-lead).
 
 **Task and run.** A task is one unit of work, from its event to `done`, `failed` or `dropped`. A run

@@ -1,6 +1,6 @@
 // The Desk panel's view model: Priory's listings in, the count, sections and rows out. No drawing, no IO.
 
-import { autolink, prStack } from "./priory.js";
+import { autolink, prStack, routedMark } from "./priory.js";
 
 const STOPPED = ["blocked", "failed", "prompt", "delivery"];
 const SNOOZABLE = ["ask", "blocked", "failed", "prompt"];
@@ -72,6 +72,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
       prs: prStack(task?.stack).label,
       revision: ask?.revision ?? null,
       progress: progressLines(task?.progress),
+      ...(routedMark(item) && { routed: routedMark(item) }),
     };
   }
 
@@ -184,6 +185,7 @@ function nextThing(item, ask, task, now, links) {
     recommendation: isAsk ? ask?.recommendation ?? null : RECOMMENDS[item.kind] ?? null,
     tradeoff: ask?.tradeoff ?? null,
     progress: progress ? { latestChange: progress.latestChange ?? null, nextAction: progress.nextAction ?? null } : null,
+    ...(routedMark(item) && { routed: routedMark(item) }),
   };
 }
 

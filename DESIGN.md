@@ -368,7 +368,8 @@ The desk is the "Needs me" view. It lists, top to bottom:
    `memory-stick` icon, and the daemon's sentence: what is short, by how much, since when, and
    the waiting task. The intake banner looks the same with the `unplug` icon: which source fails
    to poll, since when and why, or since when the intake has not polled.
-5. **Asks**: the open asks, oldest first, as ask rows.
+5. **Asks**: the open asks, oldest first, as ask rows. An ask routed to a lead carries the
+   [routed mark](#routed-ask) in its row and in the next thing's card.
 6. **Stopped**: blocked tasks, uncertain prompts (R5.4) and failed tasks, each with its reason in
    the role's text color. A blocked row carries Resume and Cancel buttons, a failed row Revive, in
    `.btn secondary` under its reason; its key opens the task page. On wide screens the Recommends
@@ -467,6 +468,20 @@ loads more rows as the person scrolls; its header keeps the total.
 
 A snoozed ask leaves the Open section and the Open count until its snooze ends. The list reads the
 asks of the last 7 days first; scrolling to the end of Answered or All loads the older ones.
+
+### Routed ask
+
+An open ask of a `hands-off` task can be routed to a lead agent (`routed_to`). It shows a **routed
+mark**, "with lead", in the lead's name:
+
+- **Rows** (Desk, Asks list): a `.tag` beside "Command" on line 1, or after the question in the
+  wide table. It shrinks with an ellipsis when the row is narrow. The next thing's card shows the
+  mark as a line in `--action-text` under the question. In Herdr it is a line of text. An answered
+  or withdrawn ask has no mark.
+- **Ask detail**: under the question, a line in `--action-text`, with the `corner-down-right` icon
+  on the web: "lead is answering. You can still answer first: the first answer stands." The options stay enabled.
+- The mark adds no token and no color: it reuses `.tag` and `--action-text`. An unrouted ask looks
+  as before.
 
 ### Ask detail
 
@@ -607,6 +622,10 @@ The trace is the task's runs and waits on a time axis, ending at now.
 ### Answer history
 
 Every revision and answer of the ask, newest first: a small tile, a sentence and a time in mono.
+The answer of the current revision says who gave it: "Answered Merge by agent:lead", or "by a
+person" for an answer from the CLI or the web view. An answer from before Priory recorded who
+answered says nothing. An answered row in the lists and the answered card say it too: "Answered
+Merge by agent:lead", and "By agent:lead." after the age.
 A refused answer shows on a warn tile with "Refused:" and the answer in `--warn-text`, and why.
 
 ### Appearance screen
@@ -921,7 +940,8 @@ stack.
    Open task and Snooze 1 h. Answer… opens the
    ask in the Asks panel, so a person answers in one place.
 3. **Saved views**: Needs me, Running, Asleep, Snoozed and All.
-4. The room banner, Asks, Stopped and Later, as on the web desk.
+4. The room banner, Asks, Stopped and Later, as on the web desk. A routed ask shows the
+   [routed mark](#routed-ask) under its question, and in the next thing's card.
 5. **Since you looked**, from 1024 px: the events since the person's last visit.
 
 From 1024 px the count, next thing, banner and Since you looked form a 440 px column; the rest is
@@ -932,6 +952,8 @@ the wide table with Recommends and the key hint bar (`J` `K`, `Enter`, `S`, `R`,
 Every ask, with the web's ask detail fitted to the pane. It sits in the side panel stack.
 
 - Saved views: Open, Snoozed, Answered and All. Facet chips: Command, Lane, Band, Risk and Task.
+- A routed ask shows the [routed mark](#routed-ask) as a tag in its row and as a line under the
+  question in its detail. An answered row and the history say who answered.
 - The detail keeps the web's order: context line, question, recommendation with what happens next,
   options with keys `1` to `9`, write an answer, then the section chips Why, Brief, Plan, PR,
   Trace and History.

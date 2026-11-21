@@ -10,3 +10,12 @@ export function askGroups(asks, now) {
     withdrawn: asks.filter((ask) => ask.state === "withdrawn").reverse(),
   };
 }
+
+/** "with <lead>" for an open ask or desk item routed to a lead, else null. @param {any} ask */
+export const routedMark = (ask) => (ask?.routed_to && (ask.state ?? "open") === "open" ? `with ${ask.routed_to}` : null);
+
+/** What an open ask's detail says of its lead, else null. @param {any} ask */
+export const routedNote = (ask) => (routedMark(ask) ? `${ask.routed_to} is answering. You can still answer first: the first answer stands.` : null);
+
+/** Who answered, as the views say it: a person, or `agent:<lead>`. Null when unrecorded. @param {string | null | undefined} by */
+export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : "a person");
