@@ -1,0 +1,26 @@
+# Does the starters' writing guide change what an ask holds? Each case ends in an ask, and `shape`
+# names which of `whatWaits` and `nextAction` the ask filled. The `guided` variant appends the guide
+# to the system prompt, as the daemon does for every run (docs/daemon/writing.md).
+doc = "../docs/daemon/writing.md"
+shape = true
+
+[[variants]]
+name = "bare"
+text = ""
+
+[[variants]]
+name = "guided"
+text = ""
+system_file = "triage/WRITING.md"
+
+[[cases]]
+name = "alias-decision"
+before = ["You are on the implement step of task 14: rename the configuration key `timeout` to `deadline`. Two programs outside this repository read the key, and nothing says whether the old key must keep working as an alias, which only the product owner can decide. Before you change anything, say in three sentences what you would do."]
+prompt = "Call the ask tool of the priory MCP server now: put the decision to the product owner."
+expect = "ask short whatWaits nextAction"
+
+[[cases]]
+name = "release-window"
+before = ["You are on the land step of task 21: pull request 90 fixes a crash and passed review. The release train leaves at 17:00 and the pull request's checks finish at 16:50. Landing it at 16:50 risks a broken release, and waiting means the fix ships a week later. Only the release manager can accept that risk. Say in two sentences where things stand."]
+prompt = "Call the ask tool of the priory MCP server now: put the decision to the release manager."
+expect = "ask short whatWaits nextAction"

@@ -1989,6 +1989,20 @@ fn check(args: Vec<OsString>) -> ExitCode {
     let Some(factory) = load(&dir) else {
         return ExitCode::FAILURE;
     };
+    if let (Some(name), Some(guide)) = (
+        factory
+            .settings
+            .as_ref()
+            .and_then(|s| s.value.writing.as_ref()),
+        &factory.writing,
+    ) && guide.len() > factory::WRITING_LIMIT
+    {
+        eprintln!(
+            "warning: {name} is {} bytes: every agent's prompt carries it, so keep it under {}",
+            guide.len(),
+            factory::WRITING_LIMIT
+        );
+    }
     if explain {
         print_explanation(&factory, json);
         return ExitCode::SUCCESS;
