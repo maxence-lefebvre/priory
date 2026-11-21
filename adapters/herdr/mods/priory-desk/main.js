@@ -334,17 +334,18 @@ export default class PrioryDesk extends View {
         .child(div().text_color(t["text-2"]).child(next.step ?? ""))
         .child(div().flex_1())
         .child(div().text_color(t["text-3"]).child(`waits ${next.age}`)))
+      .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(`First because ${next.why}`))
       .child(div().whitespace_normal().font_family(ui.fonts.display).text_size(S["type-pane-question"][0]).line_height(S["type-pane-question"][1] / S["type-pane-question"][0]).font_weight(650).child(linked("next-question", next.questionSpans)))
       .when(Boolean(next.recommendation || next.tradeoff), (el) => el.child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-2"])
         .child(next.recommendation ? `Recommends ${next.recommendation}. ${next.tradeoff ?? ""}` : String(next.tradeoff))))
       .when(Boolean(next.progress?.nextAction), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"])
         .child(`Next: ${next.progress?.nextAction}`)))
       .child(h_flex().gap(S["space-2"]).flex_wrap().items_center()
-        .child(ui.button("next-answer", "Answer…", () => this.answer(next.ask), { primary: true }))
+        .when(next.ask != null, (el) => el.child(ui.button("next-answer", "Answer…", () => this.answer(/** @type {number | string} */ (next.ask)), { primary: true })))
         .when(next.task != null, (el) => el.child(ui.button("next-attach", "Attach", () => this.attach(/** @type {number} */ (next.task)))))
-        .child(ui.button("next-snooze", "Snooze 1 h", (_e, cx) => this.snooze(cx, { kind: "ask", id: next.ask }, HOUR), { icon: "clock", disabled: this.busy }))
-        .when(wide, (el) => el.child(div().flex_1()).child(ui.hints([["Enter", "answer"], ["S", "snooze"]], true))))
-      .on_click((/** @type {unknown} */ _e, /** @type {import("gpui-kit").Context} */ cx) => { this.selected = `ask:${next.ask}`; this.focus.focus(); cx.notify(); });
+        .when(next.snooze != null, (el) => el.child(ui.button("next-snooze", "Snooze 1 h", (_e, cx) => this.snooze(cx, /** @type {{ kind: string, id: number | string }} */ (next.snooze), HOUR), { icon: "clock", disabled: this.busy })))
+        .when(wide && next.ask != null, (el) => el.child(div().flex_1()).child(ui.hints([["Enter", "answer"], ["S", "snooze"]], true))))
+      .on_click((/** @type {unknown} */ _e, /** @type {import("gpui-kit").Context} */ cx) => { this.selected = next.snooze ? `${next.snooze.kind}:${next.snooze.id}` : null; this.focus.focus(); cx.notify(); });
   }
 
   /** @param {Ui} ui @param {Model} model */

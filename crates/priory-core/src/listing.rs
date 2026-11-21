@@ -30,20 +30,56 @@ fn places() -> String {
     )
 }
 
+/// Whether an open ask's answer lets an irreversible step run, over `asks` joined to its `tasks`.
+const IRREVERSIBLE: &str = "CASE asks.kind
+       WHEN 'step' THEN EXISTS (SELECT 1 FROM irreversible_asks AS gate
+         WHERE gate.workflow = tasks.workflow AND gate.step = asks.step)
+       WHEN 'agent' THEN coalesce(json_array_length(asks.command, '$.runs') > 0, 0)
+       ELSE 0 END";
+
+/// A desk item's group in the ranking (see `RANKS`), null for the queue.
+fn urgency() -> String {
+    format!(
+        "CASE WHEN desk.part = 1 THEN NULL
+           WHEN desk.kind IN ('blocked', 'failed', 'prompt', 'command')
+             OR desk.kind = 'report' AND desk.what LIKE 'intake: %' THEN 'alarm'
+           WHEN desk.kind = 'ask' THEN (SELECT CASE WHEN {IRREVERSIBLE} THEN 'irreversible'
+               WHEN tasks.key GLOB '*:review:*' THEN 'review'
+               WHEN asks.kind = 'step' THEN 'plan' ELSE 'rest' END
+             FROM asks LEFT JOIN tasks ON tasks.id = asks.task
+             WHERE coalesce(asks.name, asks.id) = desk.id
+               AND asks.answer IS NULL AND asks.withdrawn IS NULL)
+           ELSE 'rest' END AS urgency"
+    )
+}
+
+/// An item's title as a notification carries it: an ask's title, or its task and step when it
+/// has none, since a question can hold a result's summary; a task's key and kind; else its text.
+const DESK_TITLE: &str = "CASE WHEN desk.kind = 'ask' THEN (SELECT coalesce(asks.title,
+             'task ' || tasks.key || ' asks at ' || asks.step, 'ask ' || asks.name)
+           FROM asks LEFT JOIN tasks ON tasks.id = asks.task
+           WHERE coalesce(asks.name, asks.id) = desk.id
+             AND asks.answer IS NULL AND asks.withdrawn IS NULL)
+         WHEN desk.task IS NOT NULL THEN 'task '
+           || (SELECT key FROM tasks WHERE tasks.id = desk.task) || ' ' || desk.kind
+         ELSE desk.what END AS title";
+
 /// Asks, blocked tasks and uncertain prompts oldest first, then the queue in start order, each with
-/// its snooze.
+/// its snooze, its group in the ranking and its title.
 fn desk_items() -> String {
     format!(
         "{} SELECT desk.since, desk.kind, desk.id, desk.task,
            (SELECT key FROM tasks WHERE tasks.id = desk.task) AS key,
            (SELECT step FROM tasks WHERE tasks.id = desk.task) AS step, desk.lane, desk.what,
-           (SELECT generation FROM tasks WHERE tasks.id = desk.task) AS generation, {}
+           (SELECT generation FROM tasks WHERE tasks.id = desk.task) AS generation, {},
+           {}, {DESK_TITLE}
          FROM ({DESK}) AS desk
          LEFT JOIN snoozes ON snoozes.item = desk.id AND typeof(desk.id) = 'integer' AND snoozes.kind =
            CASE WHEN desk.kind IN ('blocked', 'failed') THEN 'task' ELSE desk.kind END
          ORDER BY desk.part, CASE WHEN desk.part = 0 THEN desk.since END, desk.kind, desk.id",
         places(),
-        snooze::FIELDS
+        snooze::FIELDS,
+        urgency()
     )
 }
 
@@ -135,11 +171,7 @@ fn asks_query() -> String {
      (SELECT json_group_array(json_object('revision', revision, 'answer', answer, 'by', by,
         'why', why, 'at', created))
       FROM (SELECT * FROM ask_refusals WHERE ask = asks.id ORDER BY id)) AS refused,
-     CASE asks.kind
-       WHEN 'step' THEN EXISTS (SELECT 1 FROM irreversible_asks AS gate
-         WHERE gate.workflow = tasks.workflow AND gate.step = asks.step)
-       WHEN 'agent' THEN coalesce(json_array_length(asks.command, '$.runs') > 0, 0)
-       ELSE 0 END AS irreversible, tasks.grade, {}
+     {IRREVERSIBLE} AS irreversible, tasks.grade, {}
    FROM asks LEFT JOIN tasks ON tasks.id = asks.task
    LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id
    WHERE (?1 IS NULL OR asks.task = ?1) AND (?2 IS NULL OR asks.id = ?2)
@@ -629,6 +661,51 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
     )
 }
 
+/// Why an alarm ranks first.
+pub(crate) const ALARM: &str = "an alarm: a task stopped and waits on a person";
+
+/// The ranking's groups, first to last, each with why its items rank where they do. Irreversible
+/// and review asks share a group.
+const RANKS: [(&str, usize, &str); 5] = [
+    ("alarm", 0, ALARM),
+    (
+        "irreversible",
+        1,
+        "its answer lets an irreversible step run",
+    ),
+    ("review", 1, "it reviews a pull request"),
+    ("plan", 2, "it approves a plan"),
+    ("rest", 3, "it waits on a person"),
+];
+
+/// What waits on a person, best first: by group in `RANKS`, then oldest first. The queue and
+/// snoozed items never rank. Each item gains `why` and keeps its `title`.
+fn rank(items: &[Value]) -> Vec<Value> {
+    let mut ranked: Vec<(usize, Value)> = items
+        .iter()
+        .filter(|item| item["snoozed_until"].is_null())
+        .filter_map(|item| {
+            let (_, group, why) = RANKS
+                .iter()
+                .find(|(urgency, ..)| item["urgency"] == *urgency)?;
+            let mut item = item.clone();
+            let object = item.as_object_mut().expect("rows are objects");
+            object.remove("urgency");
+            object.insert("why".to_owned(), json!(why));
+            Some((*group, item))
+        })
+        .collect();
+    ranked.sort_by(|(a, x), (b, y)| (a, x["since"].as_str()).cmp(&(b, y["since"].as_str())));
+    ranked.into_iter().map(|(_, item)| item).collect()
+}
+
+/// The desk's `next`: what ranks first, if anything waits on a person.
+pub(crate) fn next(db: &Connection) -> rusqlite::Result<Option<Value>> {
+    let items = rows(db, &desk_items(), [])?;
+    let items = items.as_array().expect("rows are an array");
+    Ok(rank(items).into_iter().next())
+}
+
 /// The pause's line, a stalled queue's banner, the intake's banner, the asleep and snoozed counts, what waits on a person, the queue, then
 /// every worktree under `home` that stays and why. The snoozed items show only with `all`. Then
 /// `person`'s last visit and what happened since.
@@ -640,6 +717,12 @@ pub fn desk(db: &Connection, home: &Path, all: bool, person: &str) -> rusqlite::
         .iter()
         .filter(|item| !item["snoozed_until"].is_null())
         .count();
+    let ranked = rank(list);
+    for item in list.iter_mut() {
+        let item = item.as_object_mut().expect("rows are objects");
+        item.remove("urgency");
+        item.remove("title");
+    }
     list.retain(|item| all || item["snoozed_until"].is_null());
     for (path, task, reason) in sweep::stays(db, home)? {
         list.push(json!({
@@ -659,6 +742,8 @@ pub fn desk(db: &Connection, home: &Path, all: bool, person: &str) -> rusqlite::
         "intake": post::intake_banner(db)?,
         "counts": { "asleep": asleep, "snoozed": snoozed },
         "items": items,
+        "next": ranked.first(),
+        "ranked": ranked,
         "last_visit": db
             .query_row("SELECT seen FROM visits WHERE person = ?1", [person], |row| row.get::<_, String>(0))
             .optional()?,

@@ -19,14 +19,35 @@ test("counts the open asks that are not snoozed, the oldest wait, the stopped an
   });
 });
 
-test("the next thing is the oldest open ask, with its recommendation and its task's progress", () => {
+test("the next thing is the desk's next, so an alarm comes before every ask", () => {
   assert.deepEqual(deskModel(data, { now }).next, {
+    ask: null,
+    snooze: { kind: "blocked", id: 4 },
+    revision: null,
+    task: 4,
+    key: "cli:PRI-55",
+    step: "triage",
+    age: "31 min",
+    why: "an alarm: a task stopped and waits on a person",
+    question: "Permission prompt denied: write to ~/.ssh/config, outside the worktree.",
+    questionSpans: [{ text: "Permission prompt denied: write to ~/.ssh/config, outside the worktree." }],
+    recommendation: "Resume",
+    tradeoff: null,
+    progress: null,
+  });
+});
+
+test("an ask as the next thing carries its recommendation and its task's progress", () => {
+  const desk = { ...data.desk, next: data.desk.ranked[1] };
+  assert.deepEqual(deskModel({ ...data, desk }, { now }).next, {
     ask: 1,
+    snooze: { kind: "ask", id: 1 },
     revision: 1,
     task: 1,
     key: "cli:PRI-61",
     step: "approve",
     age: "42 min",
+    why: "its answer lets an irreversible step run",
     question: "Merge #212 into main? Checks are green at a1f3c9e.",
     questionSpans: [{ text: "Merge #212 into main? Checks are green at a1f3c9e." }],
     recommendation: "merge",
@@ -131,7 +152,8 @@ test("an ask's question and a task's title turn the factory's keys into link spa
   const { links } = fixture("links");
   const asks = { asks: data.asks.asks.map((ask) => (ask.id === 1 ? { ...ask, repo: "acme/app" } : ask)) };
   const tasks = { tasks: data.tasks.tasks.map((task) => (task.key === "cli:PRI-66" ? { ...task, tldr: "Retry ENG-7 with backoff" } : task)) };
-  const model = deskModel({ ...data, asks, tasks }, { now, links });
+  const desk = { ...data.desk, next: data.desk.ranked[1] };
+  const model = deskModel({ ...data, desk, asks, tasks }, { now, links });
   const pr = [{ text: "Merge " }, { text: "#212", url: "https://github.com/acme/app/issues/212" }, { text: " into main? Checks are green at a1f3c9e." }];
   assert.deepEqual(model.next.questionSpans, pr);
   assert.deepEqual(model.sections("needs")[0].rows[0].textSpans, pr);

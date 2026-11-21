@@ -51,6 +51,7 @@ pub struct Settings {
     #[serde(default)]
     pub search: Search,
     pub telemetry: Option<Telemetry>,
+    pub notify: Option<Notify>,
     pub serve: Option<Serve>,
     pub webhooks: Option<Webhooks>,
     pub slack: Option<Slack>,
@@ -260,6 +261,16 @@ fn secret_env() -> String {
 pub struct Telemetry {
     /// The OTLP/HTTP base URL, such as `http://127.0.0.1:4318`; spans go to its `/v1/traces`.
     pub otlp: String,
+}
+
+/// Where the daemon tells a person that the desk's next item changed, besides Web Push.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Notify {
+    /// Whether the daemon runs `notify-send` with the title of each new next item that is an ask
+    /// or an alarm.
+    #[serde(default)]
+    pub desktop: bool,
 }
 
 /// How tasks are found: who writes their TL;DR, and whether search compares embeddings too.
@@ -1112,6 +1123,15 @@ impl Factory {
     pub fn otlp(&self) -> Option<&str> {
         let telemetry = self.settings.as_ref()?.value.telemetry.as_ref()?;
         Some(telemetry.otlp.as_str())
+    }
+
+    /// Whether the daemon sends desktop notifications.
+    pub fn desktop_notifications(&self) -> bool {
+        let notify = self
+            .settings
+            .as_ref()
+            .and_then(|settings| settings.value.notify.as_ref());
+        notify.is_some_and(|notify| notify.desktop)
     }
 
     /// The defaults of `priory add`; none makes it need `--workflow`.
