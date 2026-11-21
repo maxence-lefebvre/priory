@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# A stand-in for notify-send: appends its arguments as one JSON array to FAKE_DIR/notify.jsonl.
+jq -nc '$ARGS.positional' --args -- "$@" >> "$FAKE_DIR/notify.jsonl"
