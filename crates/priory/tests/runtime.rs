@@ -9042,8 +9042,15 @@ impl Setup {
         );
     }
 
-    /// One poll of `priory intake`, which may fail.
+    /// One poll of `priory intake`, which may fail. Without a fake `gh` in `bin`, every `gh` call
+    /// prints [], since the branch of an active task makes the intake poll `owner/repo`.
     fn poll(&self, env: &[(&str, &str)]) -> Exit {
+        let gh = self.dir.join("bin/gh");
+        if !gh.exists() {
+            fs::create_dir_all(gh.parent().unwrap()).unwrap();
+            fs::write(&gh, "#!/bin/sh\necho '[]'\n").unwrap();
+            fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let factory = self.dir.join("intake-factory");
         for (path, content) in [
             ("factory.toml", "name = \"demo\""),
@@ -11569,6 +11576,223 @@ fn subscribe_refuses_a_resource_it_cannot_name() {
     );
 }
 
+/// A pull request of `owner/repo` from `head`, as the intake's GraphQL queries return it, with
+/// `comments` from ana.
+fn github_pull(number: u64, head: &str, comments: &[u64]) -> serde_json::Value {
+    let comments: Vec<_> = comments
+        .iter()
+        .map(|id| {
+            json!({
+                "databaseId": id,
+                "body": "One more thing.",
+                "url": format!("https://github.com/owner/repo/pull/{number}#issuecomment-{id}"),
+                "createdAt": "2999-01-01T00:00:00Z",
+                "author": { "login": "ana", "__typename": "User" }
+            })
+        })
+        .collect();
+    json!({
+        "number": number,
+        "headRefName": head,
+        "headRefOid": "abc0000000000000000000000000000000000000",
+        "baseRefName": "main",
+        "merged": false,
+        "state": "OPEN",
+        // Within the grace period, so a head with no check runs publishes no snapshot.
+        "updatedAt": "2999-01-01T00:00:00Z",
+        "reviews": { "nodes": [] },
+        "comments": { "nodes": comments },
+        "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "contexts": {
+            "totalCount": 0, "nodes": [] } } } }] }
+    })
+}
+
+impl Setup {
+    /// Makes the intake's fake `gh` list `pulls` as the open pull requests of `owner/repo`, and as
+    /// opened issues, answer every other `gh api` path with [], and log each call to gh-api.log.
+    fn github(&self, pulls: &[serde_json::Value]) {
+        let issues: Vec<_> = pulls
+            .iter()
+            .map(|pull| {
+                let number = pull["number"].as_u64().unwrap();
+                json!({
+                    "id": 9000 + number,
+                    "number": number,
+                    "title": "Add the widget",
+                    "html_url": format!("https://github.com/owner/repo/pull/{number}"),
+                    "user": { "login": "dev" },
+                    "created_at": "2026-11-17T11:00:00Z",
+                    "pull_request": { "url": "u" }
+                })
+            })
+            .collect();
+        let named: serde_json::Map<_, _> = pulls
+            .iter()
+            .map(|pull| (format!("pr{}", pull["number"]), pull.clone()))
+            .collect();
+        let answers = [
+            (
+                "open",
+                json!([{ "data": { "repository": { "pullRequests": { "nodes": pulls } } } }]),
+            ),
+            ("named", json!({ "data": { "repository": named } })),
+            ("issues", json!(issues)),
+        ];
+        for (name, answer) in answers {
+            fs::write(
+                self.dir.join(format!("fake/gh-{name}.json")),
+                answer.to_string(),
+            )
+            .unwrap();
+        }
+        let fake = self.dir.join("fake");
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{0}/gh-api.log'\ncase \"$*\" in\n  \
+             \"api graphql --paginate\"*) cat '{0}/gh-open.json' ;;\n  \
+             \"api graphql\"*) cat '{0}/gh-named.json' ;;\n  \
+             \"api repos/owner/repo/issues?\"*) cat '{0}/gh-issues.json' ;;\n  *) echo '[]' ;;\nesac\n",
+            fake.display()
+        );
+        let gh = self.dir.join("bin/gh");
+        fs::create_dir_all(gh.parent().unwrap()).unwrap();
+        fs::write(&gh, script).unwrap();
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// How many calls the intake's fake `gh` got.
+    fn api_calls(&self) -> usize {
+        fs::read_to_string(self.dir.join("fake/gh-api.log"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    }
+}
+
+/// A factory with no trigger, and task 1 for Linear issue ENG-7 in `owner/repo`, as a request
+/// with `--repo` makes it.
+fn linear_task(name: &str, workflow: &str) -> Setup {
+    let setup = Setup::with_workflow(name, workflow);
+    fs::remove_file(setup.dir.join("factory/triggers/agent-label.toml")).unwrap();
+    let source = linear_7("linear.issue.created", &[]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    request.data["trigger"] = json!("linear");
+    request.data["repo"] = json!("owner/repo");
+    request.data["source"] = json!(source.id.to_string());
+    setup.publish(&source);
+    setup.publish(&request);
+    setup
+}
+
+#[test]
+fn a_done_linear_task_hears_a_comment_on_the_pull_request_it_opened_and_reopens() {
+    let mut setup = linear_task("owned-reopen", AUTONOMOUS);
+    setup.calls(&[passed_with_evidence()]);
+    setup.start();
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][5], "github:owner/repo#7");
+    assert_eq!(
+        task_json(&setup, "1")["subscriptions"][0]["resource"],
+        "github:owner/repo#7"
+    );
+    let mut green = check(1, 0);
+    green.data["head_sha"] = json!(actions[0][6]);
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    setup.publish(&green);
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    setup.github(&[github_pull(7, "priory/1", &[701])]);
+
+    setup.intake();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with(
+            "Feedback reopened this done task as generation 2: ana commented on github:owner/repo#7: One more thing."
+        ),
+        "{typed:?}"
+    );
+    let runs = setup.rows("runs");
+    assert_eq!(
+        runs[1][4], runs[0][4],
+        "the reopened run resumes the session"
+    );
+}
+
+#[test]
+fn a_pull_request_the_worker_opened_on_its_branch_is_claimed_and_its_comments_wake_the_task() {
+    let mut setup = linear_task("owned-claim", WORKFLOW);
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.github(&[github_pull(8, "priory/1", &[])]);
+
+    setup.intake();
+
+    setup.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "github.pull_request.opened")
+    });
+    assert_eq!(
+        task_json(&setup, "1")["subscriptions"][0]["resource"],
+        "github:owner/repo#8"
+    );
+    setup.github(&[github_pull(8, "priory/1", &[801])]);
+    setup.intake();
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[4].contains("github.pull_request.comment owner/repo#8 {"))
+    });
+}
+
+#[test]
+fn a_closed_subscribed_pull_request_stops_polling_its_repository() {
+    let mut setup = linear_task("owned-closed", WORKFLOW);
+    // No free memory keeps the task queued, with no branch of its own to poll.
+    setup.memory(0);
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 1);
+    let subscribed = setup.priory(&["subscribe", "1", "github:owner/repo#7"]);
+    assert!(subscribed.status.success(), "{subscribed:?}");
+    setup.github(&[github_pull(7, "feature", &[])]);
+    setup.intake();
+    let polled = setup.api_calls();
+    assert!(polled > 0, "the subscribed repository was not polled");
+    setup.publish(&off_branch(closed()));
+    setup.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "github.pull_request.closed")
+    });
+
+    setup.intake();
+
+    assert_eq!(setup.api_calls(), polled, "{:?}", setup.gh());
+}
+
+#[test]
+fn a_pull_request_on_another_tasks_branch_is_not_claimed() {
+    let mut setup = Setup::new("owned-other-branch");
+    let asleep = wait(json!({ "type": "time", "until": "1 hour" }));
+    setup.calls(&[asleep.clone(), asleep]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.len() == 2 && rows.iter().all(|row| row[7] == "asleep")
+    });
+    let mut opened = on_pull("github.pull_request.opened", json!({}));
+    opened.data["head_branch"] = json!("priory/2");
+
+    setup.publish(&opened);
+
+    setup.until("inbox", |rows| rows.len() == 3);
+    assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]));
+    assert_eq!(
+        task_json(&setup, "2")["subscriptions"][0]["resource"],
+        "github:owner/repo#7"
+    );
+}
+
 #[test]
 fn an_open_wait_on_a_subscribed_pull_request_decides_which_events_wake_the_task() {
     let mut setup = Setup::new("subscribe-wait");
@@ -11583,6 +11807,74 @@ fn an_open_wait_on_a_subscribed_pull_request_decides_which_events_wake_the_task(
 
     setup.until("inbox", |rows| rows.len() == 2);
     stays_asleep_after(&setup, 1);
+}
+
+/// Task 1 for ENG-7, asleep on a time wait, then woken by the claim of pull request 8 on its branch.
+fn claimed(name: &str, then: serde_json::Value) -> Setup {
+    let mut setup = linear_task(name, WORKFLOW);
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" })), then]);
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.github(&[github_pull(8, "priory/1", &[])]);
+    setup.intake();
+    setup.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "github.pull_request.opened")
+    });
+    setup
+}
+
+#[test]
+fn a_claimed_pull_request_gates_done_on_its_checks() {
+    let setup = claimed(
+        "claim-gate",
+        passed_at("abc0000000000000000000000000000000000000"),
+    );
+
+    let waits = setup.until("waits", |rows| rows.iter().any(|row| row[3] == "checks"));
+
+    let gate = waits.iter().find(|row| row[3] == "checks").unwrap();
+    assert_eq!(gate[4], "github:owner/repo#8");
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+}
+
+#[test]
+fn an_unsubscribed_claimed_pull_request_is_not_claimed_again() {
+    let setup = claimed("claim-unsubscribe", serde_json::Value::Null);
+    let output = setup.priory(&["unsubscribe", "1", "github:owner/repo#8"]);
+    assert!(output.status.success(), "{output:?}");
+    let mut comment = commented();
+    comment.data["pull_request"] = json!(8);
+    comment.data["github_id"] = json!(802);
+
+    setup.publish(&comment);
+
+    setup.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "github.pull_request.comment")
+    });
+    assert_eq!(task_json(&setup, "1")["subscriptions"], json!([]));
+}
+
+#[test]
+fn a_done_tasks_branch_stops_being_polled_once_its_pull_request_closed() {
+    let mut setup = linear_task("claim-closed", WORKFLOW);
+    setup.calls(&[result("passed")]);
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    setup.publish(&on_pull("github.pull_request.opened", json!({})));
+    setup.publish(&closed());
+    setup.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "github.pull_request.closed")
+    });
+    setup.github(&[]);
+
+    setup.intake();
+
+    assert_eq!(setup.api_calls(), 0);
 }
 
 #[test]

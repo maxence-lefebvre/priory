@@ -12,11 +12,15 @@ On every poll, the intake reads the state file that `PRIORY_DB` names and collec
 | ---- | ----- |
 | open waits | `linear_comment`, `linear_state`, `slack_reply`, `pull_request`, `checks` and `review` (see [waits.md](../daemon/waits.md)) |
 | open holds | unmet `--merge` and `--after <issue>` conditions (see Holds in [runs.md](../daemon/runs.md)) |
+| subscriptions | every resource a task subscribes to (see `subscribe` in [tools.md](../daemon/tools.md#subscribeon-and-unsubscribeon)) |
+| task branches | `github:<owner/name>@priory/<task>` of an active task, or of one done in the last 10 minutes whose branch no event named yet |
 
-It skips the waits and holds of a task that is `done`, `failed` or `dropped`. Without `PRIORY_DB`,
+It skips the waits and holds of a task that is `done`, `failed` or `dropped`, and the subscriptions
+of one that is `failed` or `dropped`. A done task's subscriptions stay, so feedback can reopen it. Without `PRIORY_DB`,
 the intake watches none of them.
 
-Each wait gives a resource and the time of its agent's last prompt. Each hold condition gives its
+Each wait gives a resource and the time of its agent's last prompt. A subscription gives its
+resource and when it was made, and a branch the time its task last changed state. Each hold condition gives its
 pull request or issue and the time the hold was set. The intake reads from that time on.
 
 | Resource | Example | Polled as |
@@ -30,13 +34,13 @@ stop GitHub polling.
 
 ## Pull requests
 
-The intake polls the repository of a pull request that a task waits on or is held for, the same way
-it polls a trigger's repository (see [github-polling.md](github-polling.md)).
+The intake polls the repository of a pull request that a task waits on, is held for or subscribes
+to, the same way it polls a trigger's repository (see [github-polling.md](github-polling.md)).
 
 - A repository that no trigger names starts with a baseline. The reviews and checks of that baseline
-  still reach the wait.
-- After a restart, the intake resumes the repository from where it stopped, as long as a wait or
-  hold still names it.
+  still reach the wait or the subscriber.
+- After a restart, the intake resumes the repository from where it stopped, as long as a wait, a
+  hold, a subscription or a task branch still names it.
 
 ## Slack threads
 
