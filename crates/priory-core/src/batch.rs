@@ -1004,6 +1004,7 @@ fn one(db: &Connection, id: i64, full: bool) -> rusqlite::Result<Value> {
         None => Vec::new(),
     };
     batch["closes"] = json!(closes);
+    batch["splits"] = json!(plan.map(|plan| plan.splits).unwrap_or_default());
     Ok(batch)
 }
 
@@ -1072,6 +1073,7 @@ fn entry_of(db: &Connection, id: i64, at: usize, entry: &Entry) -> rusqlite::Res
         "issue": entry.issue,
         "part": entry.part,
         "title": entry.title,
+        "files": entry.files,
         "task": task.as_ref().map(|task| task.0),
         "key": task.as_ref().map(|task| &task.1),
         "state": task.as_ref().map(|task| &task.2),

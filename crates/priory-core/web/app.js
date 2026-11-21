@@ -8,6 +8,7 @@ import { dossier, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
 import { handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
+import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { actionNote, batchParts, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 import { TASK_FACETS, TASK_VIEWS, filtered, taskViews } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
@@ -34,6 +35,8 @@ const ICONS = {
   "chevron-left": '<path d="m15 18-6-6 6-6"/>',
   clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
   "chevron-up": '<path d="m18 15-6-6-6 6"/>',
+  "arrow-up": '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+  "arrow-down": '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
   "chevron-down": '<path d="m6 9 6 6 6-6"/>',
   desk: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
   asks: '<path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z"/><path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1"/>',
@@ -140,6 +143,10 @@ const state = {
   rowBusy: null,
   rowNotices: new Map(),
   sayDrafts: new Map(),
+  // The batch the page or the go ask shows, and the go ask's plan edits: the entry whose menu is open,
+  // the drop armed by its first tap, whether an edit is in flight, and what the last one said.
+  batch: null,
+  planEdit: { at: null, batch: null, open: null, armed: null, busy: false, note: null },
   drafts: new Map(),
   notices: new Map(),
   writing: new Set(),
@@ -228,6 +235,7 @@ async function refresh() {
     state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, runs, older, report, spend: state.data?.spend ?? null, flows: state.data?.flows ?? null };
     acceptReport();
     state.task = null;
+    if (state.batch) state.batch.stale = true;
     state.snapshot = snapshot;
     keep();
     announce(before);
@@ -345,8 +353,8 @@ function itemRow(item) {
   // An uncertain command, like an uncertain prompt, waits on a person to check what happened.
   const kind = ["prompt", "command"].includes(item.kind) ? "prompt" : ["blocked", "failed", "held", "batch"].includes(item.kind) ? item.kind : "queued";
   const stopped = ["blocked", "failed"].includes(item.kind);
-  // A batch has no page yet, so its row opens its planning task.
-  const key = stopped || item.kind === "batch" ? html`<a class="mono" href="/tasks/${item.task}">${item.key || ""}</a>` : html`<span class="mono">${item.key || ""}</span>`;
+  const key = item.kind === "batch" ? html`<a class="mono" href="/batches/${item.id}">${item.key || ""}</a>`
+    : stopped ? html`<a class="mono" href="/tasks/${item.task}">${item.key || ""}</a>` : html`<span class="mono">${item.key || ""}</span>`;
   const { line, next } = item.kind === "batch" ? batchParts(item.what) : { line: item.what, next: null };
   return html`<div class="row">
     ${tile(kind)}
@@ -663,7 +671,7 @@ function deskTable(model, selected) {
     <td>${stateWord("ask")}</td><td class="mono">${ask.key}</td><td>${ask.step}</td><td class="q"><span>${ask.title || ask.question}</span>${routedTag(ask)}</td>
     <td class="recw">${ask.recommendation || ""}</td><td class="r">${timeTag(ask.since)}</td></tr>`;
   const itemLine = (item) => html`<tr>
-    <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${["blocked", "failed", "batch"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
+    <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${item.kind === "batch" ? html`<a href="/batches/${item.id}">${item.key || ""}</a>` : ["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
     <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : rowActs(item)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const todoLine = (item) => html`<tr>
     <td>${stateWord("todo")}</td><td class="mono"></td><td></td><td class="q full"><span>${todoText(item)}</span></td><td class="recw">${todoDone(item.id)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
@@ -852,7 +860,7 @@ const selectedAsk = () => {
 function optionList(ask, wide) {
   const pending = state.pending?.id === ask.id ? state.pending : null;
   const armed = state.armed?.id === ask.id && state.armed.revision === ask.revision ? state.armed.text : null;
-  const locked = state.failed ? "offline" : null;
+  const locked = lockOf(ask);
   const bound = `Bound to revision ${ask.revision}.`;
   return (ask.options || []).map((option, i) => {
     const recommended = option === ask.recommendation;
@@ -891,11 +899,13 @@ function askDetail(id, wide) {
   const options = ask.options || [];
   const pending = state.pending?.id === ask.id ? state.pending : null;
   const armed = state.armed?.id === ask.id && state.armed.revision === ask.revision ? state.armed.text : null;
-  const locked = state.failed ? "offline" : null;
+  const batch = goBatch(ask);
+  const locked = lockOf(ask);
   const bound = `Bound to revision ${ask.revision}.`;
   const optionButtons = optionList(ask, wide);
   const notice = state.notices.get(ask.id);
-  const lockedNote = locked ? html`<p class="note" id="answer-locked">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : "";
+  const lockedNote = locked === "offline" ? html`<p class="note" id="answer-locked">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>`
+    : locked ? html`<p class="note" id="answer-locked">${icon("layers", "s15")}<span>${state.batch?.error ? `Could not read the plan: ${state.batch.error}. It must load before you answer.` : `Reading the plan of revision ${ask.revision} before you answer.`}</span></p>` : "";
   const writing = state.writing.has(ask.id) && !locked;
   const write = !takesText(ask)
     ? ""
@@ -908,7 +918,9 @@ function askDetail(id, wide) {
     : ask.snoozed_until
       ? html`<button class="ghost" data-action="unsnooze" aria-disabled="${busy}">Unsnooze</button>`
       : html`<button class="ghost" data-action="snooze" data-for="1h" aria-disabled="${busy}">Snooze 1 h</button><button class="ghost" data-action="snooze" data-tomorrow="9" aria-disabled="${busy}">Snooze until tomorrow 09:00</button>`;
-  const more = html`<div class="more">${write}${locked || !takesText(ask) ? "" : html`<button class="ghost" data-action="dismiss" aria-disabled="${busy}">Dismiss</button>`}${snoozeButtons}</div>`;
+  const editable = Boolean(batch) && ask.state === "open" && batch.state === "asked" && !locked;
+  const editPlanLink = editable ? html`<a class="ghost" href="#batchplan">${icon("pencil", "s15")}Edit the plan</a>` : "";
+  const more = html`<div class="more">${editPlanLink}${write}${locked || !takesText(ask) ? "" : html`<button class="ghost" data-action="dismiss" aria-disabled="${busy}">Dismiss</button>`}${snoozeButtons}</div>`;
   const decided = ask.state !== "open"
     ? html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}<div class="rec">${ask.state === "answered" ? html`<span><b>Answered: ${ask.answer}.</b> ${ask.answered_at ? age(ask.answered_at) + " ago" : ""}${byLine(ask) ? ` By ${answeredBy(ask.answered_by)}.` : ""}</span>` : html`<span><b>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}.</b></span>`}</div>${ranLine(ask.ran)}`
     : html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}${routedNote(ask) ? html`<p class="routednote">${icon("corner-down-right", "s15")}${routedNote(ask)}</p>` : ""}${ask.recommendation ? html`<div class="rec"><span><b>Recommended: ${ask.recommendation}.</b></span>
@@ -917,8 +929,14 @@ function askDetail(id, wide) {
   const top = html`<div class="ask">
     <a class="ctx" href="${ask.task ? `/tasks/${ask.task}` : "/asks"}">${wide ? "" : tile("ask", "sm")}<span class="mono">${ask.key}</span><span>${ask.step}</span><span>${ask.lane || ""}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${wide ? "" : html`<span>${timeTag(ask.since)}</span><span>revision ${ask.revision}</span>`}</a>
     <h2 class="question">${autolinked(ask.question || ask.title, ask.repo)}</h2>${decided}</div>`;
-  const read = taskSections(taskOf(ask));
-  const sections = [["why", "Why"], ...read.map(([key, label]) => [key, label]), ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
+  // A go ask reads its batch's plan first; the planning task's own plan result says the same.
+  const planned = batch ? [
+    ["batchplan", "Plan", html`<section class="sect" id="batchplan"><div class="sh">${icon("layers", "s15")}Plan, ${batch.entries.length} tasks in start order<span class="meta">rev ${batch.plan_revision}</span></div>${laneKey()}${laneGraph(batch, editable)}${planEditOf(batch).note ? html`<p class="note" role="status">${planEditOf(batch).note}</p>` : ""}</section>`],
+    ...(batch.closes?.length ? [["closes", "Closes", closesSection(batch)]] : []),
+    ...(splitsOf(batch).length ? [["splits", "Splits", splitsSection(batch)]] : []),
+  ] : [];
+  const read = taskSections(taskOf(ask)).filter(([key]) => !batch || key !== "plan");
+  const sections = [...planned.map(([key, label]) => [key, label]), ["why", "Why"], ...read.map(([key, label]) => [key, label]), ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
   const jump = html`<nav class="jump" aria-label="Sections">${sections.map(([key, label], i) => html`<a href="#${key}" aria-current="${i === 0 ? "true" : "false"}">${label}</a>`)}</nav>`;
   const why = html`<section class="sect" id="why"><div class="sh">${icon("message-text", "s15")}What the agent asks<span class="meta">${ask.run ? html`run <span class="mono">${ask.run}</span>` : ""}</span></div>
     <p class="text">${autolinked(ask.text || ask.question, ask.repo)}</p>
@@ -951,11 +969,12 @@ function askDetail(id, wide) {
       <button class="btn primary ${barArmed ? "armed" : ""}" data-answer="${options.indexOf(recommended)}" aria-disabled="${locked ? "true" : "false"}">${barArmed
         ? html`<span><small>Tap again to run</small>${recommended}<small>Cancels in 4 s</small></span><span class="drain" aria-hidden="true"></span>`
         : html`<span>${recommended}</span><small>${[recommended === ask.recommendation ? "Recommended" : "First option", runsCommand(ask, recommended) && "Runs a command"].filter(Boolean).join(". ")}</small>`}</button>
-      ${locked ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : ""}</div>`
+      ${locked === "offline" ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : ""}</div>`
     : "";
   const reading = read.map(([, , section]) => section);
-  if (wide) return html`<div class="pinned">${header}${top}${sending}</div><div class="scroll" data-sections>${jump}${why}${reading}${history}${command}</div>`;
-  return html`${header}<div class="scroll" data-sections>${top}${jump}${why}${reading}${history}${command}</div>${bar}${sending}`;
+  const plan = planned.map(([, , section]) => section);
+  if (wide) return html`<div class="pinned">${header}${top}${sending}</div><div class="scroll" data-sections>${jump}${plan}${why}${reading}${history}${command}</div>`;
+  return html`${header}<div class="scroll" data-sections>${top}${jump}${plan}${why}${reading}${history}${command}</div>${bar}${sending}`;
 }
 
 // The ask's task as /api/tasks/{id} serves it, read once per ask and again after each refresh.
@@ -973,6 +992,166 @@ function taskOf(ask) {
     render();
   });
   return null;
+}
+
+// A batch as /api/batches/{id} serves it: by id on its page, by its planning task's key in a go ask.
+// `version` is the go ask's revision: a plan read for another revision is never drawn beside it, so a
+// Go never answers a plan the page did not show. A refresh marks it stale; a newer read supersedes.
+let batchCalls = 0;
+function batchOf(which, version = null) {
+  const kept = state.batch?.which === which ? state.batch : null;
+  if (kept && !kept.stale && kept.version === version) return kept.body;
+  const call = ++batchCalls;
+  state.batch = { which, version, call, body: kept?.version === version ? kept.body : null, error: null, stale: false };
+  // A batch id or a `batch:YYYY-MM-DD-n` key: path-safe, and the server does not decode the path.
+  api(`/api/batches/${which}`).then((body) => {
+    if (state.batch?.call !== call) return;
+    state.batch.body = body;
+    render();
+  }, (error) => {
+    if (state.batch?.call !== call) return;
+    state.batch.error = error.message;
+    render();
+  });
+  return state.batch.body;
+}
+
+// Why the options of an ask are disabled: offline, or a batch's ask whose plan is not read yet for
+// this revision, so a Go never answers a plan the page did not show.
+function lockOf(ask) {
+  if (state.failed) return "offline";
+  const read = state.batch?.which === ask.key && state.batch.version === ask.revision && state.batch.body;
+  return ask.state === "open" && ask.key?.startsWith("batch:") && !read ? "plan" : null;
+}
+
+// The go ask's batch, once the batch names this ask as its go, read for this revision of the ask.
+function goBatch(ask) {
+  if (!ask.key?.startsWith("batch:")) return null;
+  const batch = batchOf(ask.key, ask.revision);
+  return batch?.ask === ask.id ? batch : null;
+}
+
+// An open menu or an armed Drop holds for one batch at one plan revision; the last edit's note, for the batch.
+const planEditAt = (batch) => `${batch.id}:${batch.plan_revision}`;
+function planEditOf(batch) {
+  const edit = state.planEdit;
+  if (edit.at === planEditAt(batch)) return edit;
+  return { open: null, armed: null, busy: false, note: edit.batch === batch.id ? edit.note : null };
+}
+
+// The plan's splits as the planner sent them, each kept only when it names an issue.
+const splitsOf = (batch) => (batch.splits || []).filter((split) => typeof split?.issue === "string");
+
+const laneKey = () => html`<p class="key-line"><span class="moment"><i class="mk stack" aria-hidden="true"></i>stacks: starts once the one above waits on review</span><span class="moment"><i class="mk" aria-hidden="true"></i>starts once the one above merges</span></p>`;
+
+// The lane graph (DESIGN.md, Lane graph): one row per entry in start order. Tiles and numbers sit in
+// each row; drawLanes adds the lines once the rows are laid out.
+function laneGraph(batch, editable) {
+  const entries = batch.entries;
+  const { rows, lanes, edges } = laneLayout(entries, layout() === "compact" ? 3 : Infinity);
+  const edit = planEditOf(batch);
+  const items = rows.map(({ entry, lane }, i) => {
+    const task = entry.task ? state.data.tasks.find((each) => each.id === entry.task) : null;
+    const node = entry.state ? tile(entry.state, "sm") : html`<span class="node num">${i + 1}</span>`;
+    const pr = task?.stack?.at(-1);
+    const status = task ? [pr && `#${pr.number} ${pr.state}`, task.reason || [task.step, age(task.since)].filter(Boolean).join(", ")].filter(Boolean).join(", ") : "";
+    const open = editable && edit.open === entry.entry;
+    const id = (action) => focusId("batch-edit", batch.id, entry.entry, action);
+    const item = (action, glyph, label) => html`<button class="btn secondary" id="${id(action)}" data-action="batch-edit" data-edit="${action}" data-entry="${entry.entry}" aria-disabled="${edit.busy || (action !== "drop" && !editBody(0, entries, entry.entry, action)) ? "true" : "false"}">${icon(glyph, "s15")}${label}</button>`;
+    const armed = open && edit.armed === entry.entry;
+    const after = armed ? successors(entries, entry.entry).map((other) => issueName(entries.find((each) => each.entry === other))) : [];
+    return html`<li class="erow ${entry.stage === "dropped" ? "dropped" : ""}" data-lane="${lane}">
+      <span class="slot">${node}</span>
+      <span class="l1"><span class="mono">${issueName(entry)}</span>${entry.part != null ? html`<span class="tag">split</span>` : ""}${entry.task ? html`<a href="/tasks/${entry.task}">task ${entry.task}</a>` : html`<span>${(entry.files || []).join(", ")}</span>`}${entry.state ? html`<span class="sti t-${role(entry.state)}">${entry.state}</span>` : ""}</span>
+      <span class="l2">${entry.title}</span>
+      <span class="l3"><span>${momentWords(entry, entries)}</span>${status ? html`<span>${autolinked(status, batch.repo)}</span>` : ""}</span>
+      ${editable ? html`<button class="iconbtn menu" id="${id("menu")}" data-action="entry-menu" data-entry="${entry.entry}" aria-expanded="${open ? "true" : "false"}" aria-label="Edit ${issueName(entry)}">${icon("more", "s20")}</button>` : ""}
+      ${open ? html`<span class="emenu">${item("up", "arrow-up", "Move up")}${item("down", "arrow-down", "Move down")}${armed
+        ? html`<button class="btn secondary armed" id="${id("drop")}" data-action="batch-edit" data-edit="drop" data-entry="${entry.entry}">${icon("minus", "s15")}Tap again to drop it and ${after.join(", ")}</button>`
+        : item("drop", "minus", "Drop")}</span>` : ""}</li>`;
+  });
+  return html`<ol class="bgraph" data-lanes="${lanes}" data-edges="${JSON.stringify(edges)}" aria-label="Entries in start order">${items}</ol>`;
+}
+
+// Lines between the rows' nodes: down the predecessor's lane, then into the entry's lane just above it.
+const LANE = 18, LANE_PAD = 14, NODE_Y = 19;
+function drawLanes(app) {
+  for (const graph of app.querySelectorAll(".bgraph")) {
+    // Rows reflow without a render, as when the width changes or a font loads.
+    if (!graph.dataset.watched) {
+      graph.dataset.watched = "1";
+      track(new ResizeObserver(() => drawLanes(graph.parentElement))).observe(graph);
+    }
+    const rows = [...graph.querySelectorAll(":scope > li")];
+    const lanes = Number(graph.dataset.lanes);
+    const x = (row) => LANE_PAD + Number(row.dataset.lane) * LANE;
+    const y = (row) => row.offsetTop + NODE_Y;
+    graph.style.setProperty("--gw", `${LANE_PAD * 2 + (lanes - 1) * LANE}px`);
+    rows.forEach((row) => row.style.setProperty("--lane", row.dataset.lane));
+    const paths = JSON.parse(graph.dataset.edges).map(({ from, to, moment }) => {
+      const [x1, y1, x2, y2] = [x(rows[from]), y(rows[from]), x(rows[to]), y(rows[to])];
+      const d = x1 === x2 ? `M${x1} ${y1}V${y2}` : `M${x1} ${y1}V${y2 - 40}C${x1} ${y2 - 16} ${x2} ${y2 - 24} ${x2} ${y2}`;
+      return `<path class="halo" d="${d}"/>${moment === "waiting" ? `<path class="stack" d="${d}"/><path class="stack-in" d="${d}"/>` : `<path class="base" d="${d}"/>`}`;
+    });
+    graph.querySelector("svg.lanes")?.remove();
+    graph.insertAdjacentHTML("afterbegin", `<svg class="lanes" aria-hidden="true" width="${LANE_PAD * 2 + (lanes - 1) * LANE}" height="${graph.offsetHeight}">${paths.join("")}</svg>`);
+  }
+}
+
+// The batch's entries by stage, as one bar and as words with counts, and the issues closed at the go.
+function stageBar(batch) {
+  const parts = stages(batch.counts);
+  const closed = (batch.closes || []).filter((close) => close.closed).length;
+  return html`<div class="stagebar" aria-hidden="true">${parts.map(([stage, count]) => html`<i class="s-${stage}" data-grow="${count}"></i>`)}</div>
+    <p class="stagewords">${parts.map(([stage, count]) => html`<span><b>${count}</b> ${stage}</span>`)}${closed ? html`<span><b>${closed}</b> closed at the go</span>` : ""}</p>`;
+}
+
+function closesSection(batch) {
+  const closes = batch.closes || [];
+  if (!closes.length) return "";
+  return html`<section class="sect" id="closes"><div class="sh">${icon("check", "s15")}Closes ${closes.length} ${closes.length > 1 ? "issues" : "issue"}</div><ol class="ilist">${closes.map((close) => html`<li>${icon(close.closed ? "check" : "circle-dashed", "s15")}<span><span class="mono">${close.issue}</span> ${autolinked(close.why, batch.repo)}${close.evidence ? html` ${autolinked(close.evidence, batch.repo)}` : ""}${close.closed ? html`. Closed ${timeTag(close.closed)} ago.` : ""}</span></li>`)}</ol></section>`;
+}
+
+function splitsSection(batch) {
+  const splits = splitsOf(batch);
+  if (!splits.length) return "";
+  const parts = (issue) => batch.entries.filter((entry) => entry.issue === issue).map(issueName).join(", ");
+  return html`<section class="sect" id="splits"><div class="sh">${icon("layers", "s15")}Splits ${splits.length} ${splits.length > 1 ? "issues" : "issue"}</div><ol class="ilist">${splits.map((split) => html`<li>${icon("layers", "s15")}<span><span class="mono">${split.issue}</span> into ${parts(split.issue)}. ${autolinked(split.why || "", batch.repo)}</span></li>`)}</ol></section>`;
+}
+
+// The batch page (DESIGN.md, Batch page): /batches/<id>.
+function batchPage(id) {
+  const back = html`<div class="top"><a class="back" href="/">${icon("chevron-left", "s22")}Desk</a></div>`;
+  const batch = batchOf(id);
+  if (!batch) {
+    const failed = state.batch?.error;
+    return html`${back}<p class="empty">${failed ? html`Could not load batch ${id}: ${failed}. <code>priory batch show ${id}</code> shows it.` : `Loading batch ${id}…`}</p>`;
+  }
+  return html`${back}<div class="scroll"><div class="ask bhead">
+    <p class="ctx">${tile("batch", "sm")}<a class="mono" href="/tasks/${batch.task}">${batch.key}</a><span>${batch.state}</span><span>${batch.lane || ""}</span>${batch.went ? html`<span>went ${timeTag(batch.went)} ago by ${batch.went_by}</span>` : ""}<span>plan rev ${batch.plan_revision}</span></p>
+    <h2 class="question">${batch.title || batch.key}</h2>${stageBar(batch)}</div>
+    <section class="sect" id="entries"><div class="sh">${icon("layers", "s15")}${batch.entries.length} entries in start order</div>${laneKey()}${laneGraph(batch, false)}</section>
+    ${closesSection(batch)}${splitsSection(batch)}</div>`;
+}
+
+// One tap of an entry's menu. A drop that takes successors with it arms first and names them.
+async function editPlan(target) {
+  const batch = state.batch?.body;
+  if (!batch || state.planEdit.at !== planEditAt(batch)) return;
+  const edit = state.planEdit;
+  if (edit.busy || target.getAttribute("aria-disabled") === "true") return;
+  const { entry, edit: action } = target.dataset;
+  if (action === "drop" && successors(batch.entries, entry).length && edit.armed !== entry) return (edit.armed = entry), render();
+  const body = editBody(batch.plan_revision, batch.entries, entry, action);
+  if (!body) return;
+  edit.busy = true;
+  render();
+  const { status, body: reply } = await post(`/api/batches/${batch.id}/edit`, body).catch((error) => ({ status: 0, body: { error: error.message } }));
+  const note = status === 200 ? reply.ok : status === 409 ? "The plan changed before this edit. Read the new revision and edit again." : writeRefusal(status, reply);
+  state.planEdit = { at: null, batch: batch.id, open: null, armed: null, busy: false, note };
+  if (state.batch) state.batch.stale = true;
+  render();
+  refresh();
 }
 
 // Desk actions on a task, each the twin of its CLI verb. Cancel and revive arm on the first tap and
@@ -2111,6 +2290,8 @@ function render() {
     clearTimeout(state.reportPending.timer);
     state.reportPending = null;
   }
+  // Leaving the page closes an entry's menu and disarms its Drop.
+  if (state.renderedKey && state.renderedKey !== routeKey()) Object.assign(state.planEdit, { open: null, armed: null });
   if (state.renderedKey) state.scrolls.set(state.renderedKey, [...app.querySelectorAll(".scroll")].map((element) => element.scrollTop));
   const focused = focusKey(document.activeElement);
   const typed = app.querySelector("#token")?.value;
@@ -2135,6 +2316,8 @@ function render() {
   if (caret !== undefined) app.querySelector(`#${caret[0]}`)?.setSelectionRange(caret[1], caret[2], caret[3]);
   // A link inside a row, such as its key or batch, goes on its own.
   for (const row of app.querySelectorAll("[data-href]")) row.addEventListener("click", (event) => { if (!event.target.closest("a")) go(row.dataset.href); });
+  app.querySelectorAll("[data-grow]").forEach((part) => { part.style.flexGrow = part.dataset.grow; });
+  drawLanes(app);
   watchSections(app);
   if (app.querySelector("[data-since]")) seen();
   // A render may call this; the read renders again once it ends.
@@ -2153,6 +2336,7 @@ function page() {
   const here = current();
   if (["desk", "asks"].includes(here) && !selectedAsk()) Object.assign(state, { list: here, listUrl: routeKey() });
   const taskId = here === "tasks" && /^\d+$/.test(route()[1] || "") ? Number(route()[1]) : null;
+  const batchId = here === "batches" && /^\d+$/.test(route()[1] || "") ? route()[1] : null;
   if (size === "compact") {
     let body;
     if (selectedAsk()) body = askDetail(selectedAsk(), false);
@@ -2166,20 +2350,21 @@ function page() {
       <div class="panel" role="region" aria-label="Inbox"><div class="scroll">${inboxViews()}${unroutedRows()}</div></div>`;
     else if (here === "more") body = morePage();
     else if (taskId) body = taskPage(taskId);
+    else if (batchId) body = batchPage(batchId);
     else if (here === "reports") body = reportsPage(true);
     else if (here === "costs") body = costsPage(true);
     else if (here === "workflow") body = flowsPage(true);
     else if (here === "settings") body = html`<div class="top"><a class="back" href="/more">${icon("chevron-left", "s22")}More</a></div>${settingsScreen()}`;
     else if (PANELS[here]) body = html`<div class="top"><h1>${PANELS[here][0]}</h1></div>${laterPanel(here)}`;
     else body = notFound();
-    const tab = selectedAsk() ? null : here === "settings" ? "more" : here;
+    const tab = selectedAsk() ? null : here === "settings" ? "more" : batchId ? "desk" : here;
     return html`${staleStrip()}${body}${tab ? tabs(tab, "bar") : ""}`;
   }
   const list = selectedAsk() ? state.list : here;
   const top = html`<header class="wtop"><span class="fac">${state.data.views.factory}</span>${connection()}<span class="sp"></span>${addButton("addtop")}</header>`;
   const wide = size === "wide";
-  const utility = taskId ? taskPage(taskId) : here === "reports" ? reportsPage(false) : here === "costs" ? costsPage(false) : here === "workflow" ? flowsPage(false) : here === "settings" ? settingsScreen() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
-  const nav = (kind) => tabs(here === "settings" && wide ? "settings" : here === "settings" ? "more" : list, kind);
+  const utility = taskId ? taskPage(taskId) : batchId ? batchPage(batchId) : here === "reports" ? reportsPage(false) : here === "costs" ? costsPage(false) : here === "workflow" ? flowsPage(false) : here === "settings" ? settingsScreen() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
+  const nav = (kind) => tabs(here === "settings" && wide ? "settings" : here === "settings" ? "more" : batchId ? "desk" : list, kind);
   if (utility) {
     return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}<div class="list">${utility}</div></div>${wide ? "" : nav("bar")}`;
   }
@@ -2271,6 +2456,13 @@ document.addEventListener("click", (event) => {
     return render();
   }
   if (action === "task-act") return taskAct(target);
+  if (action === "entry-menu" && state.batch?.body) {
+    const edit = planEditOf(state.batch.body);
+    const open = edit.open === target.dataset.entry ? null : target.dataset.entry;
+    state.planEdit = { ...edit, at: planEditAt(state.batch.body), batch: state.batch.body.id, open, armed: null };
+    return render();
+  }
+  if (action === "batch-edit") return editPlan(target);
   if (action === "todo-done") return markDone(target);
   if (action === "row-act") return rowAct(target);
   if (action === "request-task") return requestTask(target.dataset.text, target.dataset.workflow);

@@ -54,7 +54,9 @@ On a phone, an ask opens as a page with its recommendation and options. Scrollin
 
 ![The same ask scrolled to its pull request, checks and inbox events in dark mode, with the answer bar fixed at the bottom: "2 options" and "open, Recommended".](docs/images/web-view-answer-bar-390-dark.png)
 
-The desk shows a batch in progress as one row, with its counts and which entries start next.
+The desk shows a batch in progress as one row, with its counts and which entries start next. The
+row opens the batch page, with each entry's state and when it starts. A batch's go ask shows its
+plan as a lane graph, and you can move or drop an entry before you answer.
 
 ![The desk on a phone in light mode, scrolled to a stopped task and the batch row "Invoice exports: 1 merged, 2 started, 1 planned. Next: task 9 starts when task 8 merges."](docs/images/web-view-batch-390-light.png)
 

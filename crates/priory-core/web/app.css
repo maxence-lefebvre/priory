@@ -557,3 +557,46 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .tbl.runs th:nth-child(2) { width: 52px; } .tbl.runs th:nth-child(3) { width: 96px; } .tbl.runs th:nth-child(4) { width: auto; }
 .tbl.runs th:nth-child(5) { width: 250px; } .tbl.runs th:nth-child(6) { width: 96px; } .tbl.runs th:nth-child(7), .tbl.runs th:nth-child(8) { width: 84px; }
 .tbl.runs th:nth-child(9) { width: 110px; }
+
+/* Batches (DESIGN.md, Batch page and Lane graph): the stage bar, the lane graph and an entry's edit menu. */
+.stagebar { display: flex; height: 8px; gap: 2px; border-radius: var(--radius-full); overflow: hidden; }
+.stagebar i { display: block; min-width: 6px; }
+.stagebar .s-merged { background: var(--tile-ok); }
+.stagebar .s-started { background: var(--tile-live); }
+.stagebar .s-blocked { background: var(--tile-warn); }
+.stagebar .s-failed { background: var(--tile-danger); }
+.stagebar .s-waiting, .stagebar .s-queued, .stagebar .s-dropped { background: var(--tile-muted); }
+.stagebar .s-planned { box-shadow: inset 0 0 0 1.5px var(--tile-hold); border-radius: var(--radius-full); }
+.stagewords { display: flex; flex-wrap: wrap; gap: 4px 14px; font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); }
+.stagewords b { color: var(--text); font-weight: 650; font-variant-numeric: tabular-nums; }
+.bhead { display: grid; gap: 8px; }
+.key-line { display: flex; flex-wrap: wrap; gap: 6px 16px; font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); }
+.moment { display: inline-flex; align-items: center; gap: 6px; }
+.moment .mk { width: 14px; height: 2px; background: var(--text-3); }
+.moment .mk.stack { height: 6px; background: none; border-block: 2px solid var(--text-2); box-sizing: border-box; }
+.bgraph { position: relative; display: grid; --gw: 32px; }
+.bgraph svg.lanes { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.bgraph .base { stroke: var(--text-3); fill: none; stroke-width: 2; }
+.bgraph .stack { stroke: var(--text-2); fill: none; stroke-width: 6; }
+.bgraph .stack-in, .bgraph .halo { stroke: var(--bg); fill: none; stroke-width: 2; }
+.bgraph .halo { stroke-width: 7; }
+.drawer .bgraph .stack-in, .drawer .bgraph .halo { stroke: var(--surface); }
+.erow { position: relative; display: grid; grid-template-columns: var(--gw) minmax(0, 1fr) auto; gap: 2px 10px; padding: 8px 0; min-height: 64px; border-top: 1px solid var(--line); align-items: start; }
+.erow:first-child { border-top: 0; }
+.erow .slot { grid-row: 1 / 4; position: relative; z-index: 1; height: 22px; margin-top: 0; }
+.erow .slot > * { position: absolute; top: 0; left: calc(var(--lane, 0) * 18px + 3px); }
+.erow .node { width: 22px; height: 22px; display: grid; place-items: center; border-radius: var(--radius-full); background: var(--surface); box-shadow: inset 0 0 0 1.5px var(--control-line); font: 500 11px/1 var(--font-mono); color: var(--text); }
+.erow .l1, .erow .l2, .erow .l3 { grid-column: 2; }
+.erow .l1 { display: flex; flex-wrap: wrap; gap: 0 8px; align-items: baseline; font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); min-width: 0; }
+.erow .l1 .mono { color: var(--text); }
+.erow .l1 a { color: var(--text-3); }
+.erow .l2 { font: 500 var(--type-body) var(--font-ui); overflow-wrap: anywhere; }
+.erow .l3 { display: flex; flex-wrap: wrap; gap: 2px 10px; font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); }
+.erow .menu { grid-column: 3; grid-row: 1 / 4; align-self: center; color: var(--text-2); }
+.erow.dropped .l2 { color: var(--text-3); text-decoration: line-through; }
+.emenu { grid-column: 2 / 4; display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.emenu .btn.armed { background: var(--emph); color: var(--on-emph); box-shadow: 0 0 0 3px var(--action); white-space: normal; height: auto; min-height: var(--control); }
+.ilist li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 2px 10px; padding: 9px 0; border-top: 1px solid var(--line); font: 400 var(--type-small) var(--font-ui); color: var(--text-2); }
+.ilist li:first-child { border-top: 0; }
+.ilist li .ico { color: var(--text-3); margin-top: 2px; }
+.ilist .mono { color: var(--text); }
