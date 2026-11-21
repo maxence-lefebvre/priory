@@ -2542,15 +2542,16 @@ fn set(
     .map(drop)
 }
 
+/// The first line of `text` with no tab, for a task's reason or a question: a tab would split it
+/// across `priory tasks` columns.
+fn one_line(text: &str) -> String {
+    text.lines().next().unwrap_or_default().replace('\t', " ")
+}
+
 /// Keeps the first line of the summary of the result that stopped the run's task as the task's
 /// reason, and posts it as a report, so the desk shows why the work ended.
 fn stopped(tx: &Transaction, run: &Run, outcome: &str, summary: &str) -> rusqlite::Result<()> {
-    // A tab would split the reason across `priory tasks` columns.
-    let line = summary
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .replace('\t', " ");
+    let line = one_line(summary);
     tx.execute(
         "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND state = 'dropped'",
         params![run.task, line],
@@ -2980,7 +2981,8 @@ fn answer_in(
         if let (Some(note), Some(Decider::Model)) = (&note, next) {
             queue_first(tx, task, note)?;
         }
-        let context = note.as_deref().filter(|_| next == Some(&Decider::Human));
+        let line = note.as_deref().map(one_line);
+        let context = line.as_deref().filter(|_| next == Some(&Decider::Human));
         enter(
             tx,
             task,
@@ -2990,10 +2992,10 @@ fn answer_in(
             context.unwrap_or_default(),
             trace.factory,
         )?;
-        if let (Some(note), "stop") = (&note, target.as_str()) {
+        if let (Some(line), "stop") = (&line, target.as_str()) {
             tx.execute(
                 "UPDATE tasks SET reason = ?2 WHERE id = ?1",
-                params![task, note],
+                params![task, line],
             )?;
         }
     } else {

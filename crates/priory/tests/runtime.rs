@@ -5052,6 +5052,33 @@ fn a_note_after_a_step_ask_s_option_that_stops_the_task_is_its_reason() {
 }
 
 #[test]
+fn a_stopping_note_keeps_its_first_line_with_no_tab_as_the_reason() {
+    let workflow = STEPS
+        .replace("start = \"plan\"", "start = \"approve\"")
+        .replace("approved = \"implement\"", "approved = \"plan\"");
+    let mut setup = Setup::with_workflow("step-note-tab", &workflow);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let answered = setup.priory(&[
+        "answer",
+        "1",
+        "rejected: too\tbig\nsplit it first",
+        "--revision",
+        "1",
+    ]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let task = setup.priory(&["task", "1", "--json"]);
+    let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
+    assert_eq!(
+        task["reason"],
+        "A person answered rejected on step approve, with a note: too big"
+    );
+}
+
+#[test]
 fn a_note_on_a_step_ask_whose_option_leads_to_done_is_refused() {
     let workflow = STEPS
         .replace("start = \"plan\"", "start = \"approve\"")
