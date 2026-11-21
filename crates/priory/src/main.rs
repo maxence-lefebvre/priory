@@ -1808,7 +1808,12 @@ fn print_unrouted(unrouted: &serde_json::Value) {
                 event["line"].as_str().unwrap_or("")
             );
         }
-        println!("  {}", group["follow_up"].as_str().unwrap_or_default());
+        println!(
+            "  {}",
+            group["follow_up"]
+                .as_str()
+                .unwrap_or("no command can key a new task by it: start one from its thread")
+        );
     }
     let other: Vec<String> = unrouted["other"]
         .as_array()
@@ -1855,7 +1860,7 @@ fn subscription(verb: &str, task: &str, resource: &str) -> ExitCode {
     };
     let done = state::open().and_then(|mut db| {
         let done = match verb {
-            "subscribe" => subscribe::subscribe(&mut db, task, &resource),
+            "subscribe" => subscribe::subscribe(&mut db, task, &resource, None),
             _ => subscribe::unsubscribe(&mut db, task, &resource),
         };
         done.map_err(|error| error.to_string())?

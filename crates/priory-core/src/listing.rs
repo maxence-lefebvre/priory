@@ -252,8 +252,12 @@ pub fn unrouted(db: &Connection, since: i64) -> rusqlite::Result<Value> {
     let owned: Vec<Value> = owned
         .into_iter()
         .map(|(resource, task, events)| {
-            let follow_up = follow_up(&task, &resource);
-            json!({ "resource": resource, "task": task, "events": events, "follow_up": follow_up })
+            let request_text = request_text(&resource, &events);
+            let follow_up = follow_up(&task, &resource, request_text.as_deref());
+            json!({
+                "resource": resource, "task": task, "events": events,
+                "follow_up": follow_up, "request_text": request_text,
+            })
         })
         .collect();
     let other: Vec<Value> = other
@@ -280,17 +284,55 @@ fn owner(db: &Connection, resource: &str) -> rusqlite::Result<Option<Value>> {
 }
 
 /// The command that routes `resource`'s next event, given its owner: revive a failed or dropped
-/// one, request a new task of the same workflow after a done one, else subscribe the active one.
-fn follow_up(task: &Value, resource: &str) -> String {
+/// one, add a task of the same workflow whose text keys it by `resource` after a done one, else
+/// subscribe the active one. None after a done task when no URL can key a new task by it.
+fn follow_up(task: &Value, resource: &str, request_text: Option<&str>) -> Option<String> {
     let id = &task["id"];
     match task["state"].as_str().unwrap_or_default() {
-        "failed" | "dropped" => format!("priory revive {id}"),
-        "done" => format!(
-            "priory request --workflow {} --key {resource} 'Follow up on {resource}'",
-            task["workflow"].as_str().unwrap_or_default()
-        ),
-        _ => format!("priory subscribe {id} {resource}"),
+        "failed" | "dropped" => Some(format!("priory revive {id}")),
+        "done" => request_text.map(|text| {
+            let workflow = task["workflow"].as_str().unwrap_or_default();
+            format!(
+                "priory add --workflow {} {}",
+                quoted(workflow),
+                quoted(text)
+            )
+        }),
+        _ => Some(format!("priory subscribe {id} {}", quoted(resource))),
     }
+}
+
+/// The text of a new task whose key is `resource`: a GitHub or Linear URL, which `priory add`
+/// turns into that key, and the newest event's number, so each follow-up is a new request.
+fn request_text(resource: &str, events: &[Value]) -> Option<String> {
+    let url = match resource.split_once(':')? {
+        ("github", pull) => {
+            let (repo, number) = pull.rsplit_once('#')?;
+            format!("https://github.com/{repo}/issues/{number}")
+        }
+        ("linear", _) => events
+            .iter()
+            .find_map(|event| {
+                event["url"]
+                    .as_str()
+                    .filter(|url| url.starts_with("https://linear.app/"))
+            })?
+            .to_owned(),
+        _ => return None,
+    };
+    Some(format!(
+        "Follow up on {url} after event {}",
+        events.first()?["seq"]
+    ))
+}
+
+/// `text` as one shell word: as it is when it holds only safe characters, else single-quoted.
+fn quoted(text: &str) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "-_./:#@,+=%".contains(c);
+    if !text.is_empty() && !text.starts_with('#') && text.chars().all(safe) {
+        return text.to_owned();
+    }
+    format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 /// Each unrouted event after `since`, and within `window` (from, to) when given, newest first,
@@ -328,7 +370,7 @@ fn unrouted_events(
             .and_then(|text| text.lines().find(|line| !line.trim().is_empty()));
         let event = json!({
             "seq": row.get::<_, i64>(0)?, "type": kind, "subject": subject,
-            "time": row.get::<_, String>(3)?, "line": said,
+            "time": row.get::<_, String>(3)?, "line": said, "url": message.data["url"].as_str(),
         });
         events.push((resource, event));
     }

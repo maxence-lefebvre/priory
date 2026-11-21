@@ -7,7 +7,7 @@ import { linked } from "./links.js";
 import { dossier, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, nodeShape, timeline, ungatedPairs } from "./flows.js";
-import { handled, neverOwned, requestText, routeAction, unroutedNote } from "./inbox.js";
+import { handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
 import { actionNote, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 
 const ICONS = {
@@ -534,7 +534,7 @@ async function loadUnrouted() {
   view.loading = true;
   try {
     const body = await api("/api/inbox?unrouted=1");
-    Object.assign(view, { groups: body.unrouted, error: null });
+    Object.assign(view, { groups: body.unrouted, revision: body.revision, error: null });
   } catch (error) {
     view.error = error.message;
   }
@@ -559,7 +559,9 @@ function unroutedRows() {
     const notice = view.notices.get(group.resource);
     const action = routeAction(task);
     const route = action === "revive" ? taskActs(task.id, task.state)
-      : action === "request" ? html`<button type="button" class="btn secondary" data-action="request-task" data-resource="${group.resource}" data-workflow="${task.workflow}">Request a task</button>`
+      : action === "request" ? (group.request_text
+        ? html`<button type="button" class="btn secondary" data-action="request-task" data-text="${group.request_text}" data-workflow="${task.workflow}">Request a task</button>`
+        : html`<p class="meta">No new task can take this resource from here: start one from its thread.</p>`)
         : html`<button type="button" class="btn secondary" data-action="subscribe-task" data-resource="${group.resource}" data-task="${task.id}" ${busy}>Subscribe task ${task.id}</button>`;
     return html`<section class="ugroup" aria-label="${group.resource}"><p class="l1"><span class="mono">${group.resource}</span><span class="num">${group.events.length}</span></p>
       <p class="meta">${tile(task.state, "sm")}<a href="/tasks/${task.id}">task ${task.id}</a> ${task.state}, <span class="mono">${task.key}</span></p>
@@ -584,7 +586,8 @@ async function subscribeTask(resource, task) {
   render();
   let reply;
   try {
-    reply = await post("/api/subscribe", { task, resource, revision: state.revision });
+    // The revision the Inbox groups were read at, so a group shown from an older read is refused.
+    reply = await post("/api/subscribe", { task, resource, revision: view.revision });
   } catch {
     reply = { status: 0, body: { error: "the connection dropped" } };
   }
@@ -600,9 +603,9 @@ async function subscribeTask(resource, task) {
   refresh();
 }
 
-// The Add sheet, its text naming the resource, so the new task's key is it where Priory can tell.
-function requestTask(resource, workflow) {
-  state.add.draft.text = requestText(resource);
+// The Add sheet with the server's text, whose URL keys the new task by the group's resource.
+function requestTask(text, workflow) {
+  state.add.draft.text = text;
   if (workflow) state.add.draft.workflow = workflow;
   keepDraft();
   openAdd();
@@ -2151,7 +2154,7 @@ document.addEventListener("click", (event) => {
   if (action === "task-act") return taskAct(target);
   if (action === "todo-done") return markDone(target);
   if (action === "row-act") return rowAct(target);
-  if (action === "request-task") return requestTask(target.dataset.resource, target.dataset.workflow);
+  if (action === "request-task") return requestTask(target.dataset.text, target.dataset.workflow);
   if (action === "subscribe-task") {
     if (state.unrouted.busy === null) subscribeTask(target.dataset.resource, Number(target.dataset.task));
     return;

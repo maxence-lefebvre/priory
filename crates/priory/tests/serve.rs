@@ -5209,6 +5209,14 @@ impl Setup {
 #[test]
 fn unrouted_events_split_into_ended_owners_with_their_follow_up_and_a_count_per_source() {
     let mut setup = Setup::new("unrouted", SERVE);
+    // An issue id no shell should run, whose owner is still active, so its follow-up names it.
+    let hostile = herdr_bus::Message::new(
+        "linear.comment.created",
+        json!({ "issue": "ENG-7$(id)", "body": "Hm." }),
+    )
+    .subject("ENG-7")
+    .time("2026-11-17T10:00:00Z".parse().unwrap());
+    setup.bus().publish("factory.intake", &hostile).unwrap();
     unrouted_comment(&setup, 7, "2026-11-17T11:00:00Z");
     unrouted_comment(&setup, 8, "2026-11-17T11:30:00Z");
     unrouted_comment(&setup, 9, "2026-11-17T11:40:00Z");
@@ -5222,9 +5230,14 @@ fn unrouted_events_split_into_ended_owners_with_their_follow_up_and_a_count_per_
     succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
     let done = setup.owner("done", &["github:owner/repo#7"]);
     let dropped = setup.owner("dropped", &["github:owner/repo#8"]);
+    let active = setup.owner("asleep", &["linear:ENG-7$(id)"]);
     let address = setup.start(&["serve", &setup.factory()]);
 
     let served = api(&address, "/api/inbox?unrouted=1");
+    assert_eq!(
+        served["unrouted"]["owned"][2]["follow_up"],
+        format!("priory subscribe {active} 'linear:ENG-7$(id)'")
+    );
 
     let output = setup.priory(&["inbox", "--unrouted", "--json"]);
     succeeded(&output);
@@ -5236,6 +5249,7 @@ fn unrouted_events_split_into_ended_owners_with_their_follow_up_and_a_count_per_
         .as_array()
         .unwrap()
         .iter()
+        .take(2)
         .map(|group| {
             (
                 group["resource"].clone(),
@@ -5261,11 +5275,37 @@ fn unrouted_events_split_into_ended_owners_with_their_follow_up_and_a_count_per_
                 json!(done),
                 json!("done"),
                 json!("Still broken on mobile."),
-                json!(
-                    "priory request --workflow implement --key github:owner/repo#7 'Follow up on github:owner/repo#7'"
-                )
+                json!(format!(
+                    "priory add --workflow implement 'Follow up on https://github.com/owner/repo/issues/7 after event {}'",
+                    served["unrouted"]["owned"][1]["events"][0]["seq"]
+                ))
             ),
         ]
+    );
+    let text = served["unrouted"]["owned"][1]["request_text"]
+        .as_str()
+        .unwrap();
+
+    // The follow-up's task owns the resource, so the next comment on #7 reaches it.
+    succeeded(&setup.priory(&["add", &setup.factory(), "--workflow", "implement", text]));
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    unrouted_comment(&setup, 7, "2026-11-17T11:58:00Z");
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    let inbox = json_of(&setup, "inbox");
+    let last = inbox["inbox"].as_array().unwrap().last().unwrap().clone();
+    let task: Value = serde_json::from_slice(
+        &setup
+            .priory(&["task", &last["task"].to_string(), "--json"])
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(
+        [&last["type"], &task["key"]],
+        [
+            &json!("github.pull_request.comment"),
+            &json!("github:owner/repo#7")
+        ],
+        "{last}"
     );
     assert_eq!(
         served["unrouted"]["other"],

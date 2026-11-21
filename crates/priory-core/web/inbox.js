@@ -45,9 +45,3 @@ export function neverOwned(other) {
   const counts = other.map(({ source, events }) => `${events} ${source} ${events === 1 ? "event" : "events"}`);
   return `No task ever owned: ${counts.join(", ")}.`;
 }
-
-/** The Add sheet's text for a task that owns `resource`: a GitHub URL keys the task by it. */
-export function requestText(resource) {
-  const github = /^github:([^/]+\/[^#]+)#(\d+)$/.exec(resource);
-  return github ? `https://github.com/${github[1]}/issues/${github[2]}` : resource;
-}

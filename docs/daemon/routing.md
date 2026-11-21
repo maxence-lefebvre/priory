@@ -191,9 +191,10 @@ a done task's merged pull request. So `priory inbox --unrouted [--since SEQ]` an
 
 - Events whose first resource a task owned or subscribed to, in any state, are grouped by that
   resource, with the newest such task and the command that routes the next event: `priory revive
-  ID` when the task failed or was dropped, `priory request` with the task's workflow and the
-  resource as its key when it is done, since a done task cannot be revived, and `priory subscribe
-  ID RESOURCE` when it is still active.
+  ID` when the task failed or was dropped, `priory add` with the task's workflow and the
+  resource's GitHub or Linear URL when it is done, since a done task cannot be revived and `add`
+  keys the new task by that URL, and `priory subscribe ID RESOURCE` when it is still active. A
+  done task's Slack thread gets no command: no CLI verb keys a task by a thread.
 - The rest, which no task ever owned, are one count per source.
 
 The web Inbox panel's Unrouted view offers the same actions from a phone: Revive, the Add sheet, or

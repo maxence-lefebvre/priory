@@ -421,9 +421,11 @@ linking to the task page, state and key. Then its 5 newest events as history row
 type in bold, subject, the event's first line in `--text-2` under them, time), and "and 3 older"
 past that. Under them, the one action that routes the next event, by the task's state: the task
 page's **Revive** (armed, as there) for a failed or dropped task; **Request a task** for a done
-one, which opens the [Add](#add) sheet with the task's workflow and a GitHub resource's URL as its
-text, so the new task's key is that resource; **Subscribe task 12** for an active one (`POST
-/api/subscribe` with the revision the page drew). The daemon's sentence shows under the row, as a
+one, which opens the [Add](#add) sheet with the task's workflow and the group's `request_text`,
+whose GitHub or Linear URL makes the new task's key that resource (a Slack thread gets a
+`--text-2` line instead: "No new task can take this resource from here: start one from its
+thread."); **Subscribe task 12** for an active one (`POST /api/subscribe` with the revision the
+Inbox read was at). The daemon's sentence shows under the row, as a
 desk action's note does. A last `--text-2` line counts the events no task ever owned: "No task
 ever owned: 41 github events, 6 slack events." With no owned group: "No event of a task's resource
 went unrouted. An event about an ended task's pull request or issue shows here."
