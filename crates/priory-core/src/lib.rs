@@ -13,6 +13,7 @@ pub mod memory;
 mod model;
 mod notify;
 mod otlp;
+mod overlap;
 pub mod post;
 pub mod progress;
 mod push;

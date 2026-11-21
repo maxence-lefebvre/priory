@@ -38,6 +38,8 @@ pub struct Settings {
     pub bands: Option<Vec<String>>,
     #[serde(default)]
     pub sweep: Sweep,
+    #[serde(default)]
+    pub queue: Queue,
     /// The agent whose model reads a stalled run's screen; no handler runs without one.
     pub handler: Option<String>,
     /// How long a run goes without a hook event or a change on its pane before it counts as stalled.
@@ -352,6 +354,25 @@ pub struct Sweep {
     pub agent: Option<String>,
     /// The repository the sweeper works in and files its issue on, a GitHub `owner/name`.
     pub repo: Option<String>,
+}
+
+/// How the queue orders tasks.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Queue {
+    /// Whether a task waits for an earlier active task that changes the same files; true when unset.
+    #[serde(default = "on")]
+    pub overlap: bool,
+}
+
+fn on() -> bool {
+    true
+}
+
+impl Default for Queue {
+    fn default() -> Self {
+        Queue { overlap: true }
+    }
 }
 
 impl Sweep {
@@ -1344,6 +1365,13 @@ impl Factory {
             .as_ref()?
             .shortcut
             .as_ref()
+    }
+
+    /// Whether a task waits for an earlier active task that changes the same files.
+    pub fn overlap(&self) -> bool {
+        self.settings
+            .as_ref()
+            .is_none_or(|settings| settings.value.queue.overlap)
     }
 
     pub fn bands(&self) -> Vec<&str> {
