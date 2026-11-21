@@ -74,6 +74,8 @@ export default class PrioryQueue extends View {
     this.drawn = null;
     /** @type {import("./view.js").Room} */
     this.room = {};
+    /** @type {any[]} `priory tasks`, for each task's stack of pull requests */
+    this.tasks = [];
     /** @type {string | null} */
     this.error = null;
     this.updated = 0;
@@ -138,10 +140,11 @@ export default class PrioryQueue extends View {
     if (!this.priory) throw new Error("priory is not reachable");
     const read = ++this.reads;
     // The desk carries whether starts are paused and what the queue is short of.
-    const [queue, desk] = await Promise.all([this.priory.client.queue(), this.priory.client.desk()]);
+    const [queue, desk, tasks] = await Promise.all([this.priory.client.queue(), this.priory.client.desk(), this.priory.client.tasks()]);
     if (read !== this.reads) return false;
     if (read >= this.settles) this.acting = false;
     this.data = queue;
+    this.tasks = tasks.tasks;
     this.room = { paused: desk.paused, banner: desk.banner };
     this.updated = Date.now();
     const added = this.addedKey && this.rows().find((row) => row.key === this.addedKey);
@@ -155,7 +158,7 @@ export default class PrioryQueue extends View {
   }
 
   list(now = Date.now()) {
-    return queueList(this.data ?? { waiting: [], running: [], ended: [], up_next: [] }, { view: this.view, now, room: this.room, links: this.links, facets: this.facets });
+    return queueList(this.data ?? { waiting: [], running: [], ended: [], up_next: [] }, { view: this.view, now, room: this.room, links: this.links, facets: this.facets, tasks: this.tasks });
   }
 
   /** @returns {Row[]} */
@@ -471,6 +474,7 @@ export default class PrioryQueue extends View {
             .child(div().font_family(this.font.mono).text_color(t.text).child(row.key))
             .child(div().child(row.step))
             .child(div().text_color(row.tile === "running" ? t["action-text"] : t["text-3"]).child(row.tile))
+            .when(Boolean(row.prs), (el) => el.child(div().whitespace_nowrap().text_color(t["text-2"]).child(String(row.prs))))
             .child(div().flex_1())
             .when(Boolean(row.age), (el) => el.child(div().whitespace_nowrap().child(row.age))))
           .when(Boolean(row.title), (el) => el.child(div().truncate().font_weight(600).text_size(TYPE.body[0]).line_height(TYPE.body[1]).child(row.title ?? "")))

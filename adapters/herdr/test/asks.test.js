@@ -252,3 +252,30 @@ test("an ask's question in its detail, and its text under Why, turn the factory'
   assert.deepEqual(detail.questionSpans, pr);
   assert.deepEqual(detail.why.textSpans, [{ text: "Fixes " }, { text: "ENG-7", url: "https://linear.app/acme/issue/ENG-7" }, { text: "." }]);
 });
+
+test("a task's stack of pull requests lists bottom first in PR, each with its state, the checks it has and the next to merge", () => {
+  const [ask] = fixture("asks-history.json").asks;
+  const task = fixture("task.json");
+  const pull = (number, branch, base, state) => ({ pull_request: `github:acme/board#${number}`, number, branch, base, state });
+  const stack = [pull(210, "pri-61-a", "main", "merged"), pull(211, "pri-61-b", "pri-61-a", "open"), pull(212, "pri-61", "pri-61-b", "open")];
+  const detail = askDetail(ask, { now, armed: null, task: { ...task, stack } });
+  assert.equal(detail.pr.title, "#212 Export the board as CSV");
+  assert.equal(detail.pr.prs, "3 PRs");
+  assert.deepEqual(detail.pr.stack, [
+    { number: 210, url: "https://github.com/acme/board/pull/210", branch: "pri-61-a", base: "main", state: "merged", next: false, checks: null },
+    { number: 211, url: "https://github.com/acme/board/pull/211", branch: "pri-61-b", base: "pri-61-a", state: "open", next: true, checks: null },
+    { number: 212, url: "https://github.com/acme/board/pull/212", branch: "pri-61", base: "pri-61-b", state: "open", next: false, checks: "1 of 2 checks failing" },
+  ]);
+
+  const single = askDetail(ask, { now, armed: null, task: { ...task, stack: [pull(212, "pri-61", "main", "open")] } });
+  assert.deepEqual(Object.keys(single.pr), ["title", "line", "checks", "review"]);
+});
+
+test("a stack shows in PR even before the latest pull request has events to summarize", () => {
+  const [ask] = fixture("asks-history.json").asks;
+  const pull = (number, base) => ({ pull_request: `github:acme/board#${number}`, number, branch: `b${number}`, base, state: "open" });
+  const detail = askDetail(ask, { now, armed: null, task: { ...fixture("task.json"), pull_request: null, stack: [pull(211, "main"), pull(212, "b211")] } });
+  assert.ok(detail.chips.some(([id]) => id === "pr"));
+  assert.equal(detail.pr.title, "2 PRs");
+  assert.deepEqual(detail.pr.stack.map((each) => [each.number, each.next]), [[211, true], [212, false]]);
+});

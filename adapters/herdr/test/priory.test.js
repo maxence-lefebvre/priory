@@ -231,3 +231,10 @@ test("spansHtml escapes the text and the URL, keeps line breaks and links only t
     '&lt;b&gt;it&#39;s&lt;/b&gt; <a href="https://x.test/?a=1&amp;b=&quot;2&quot;">ENG-8</a><br>next',
   );
 });
+
+test("prStack is the web view's prStack, word for word", () => {
+  const body = (/** @type {string} */ source) => source.slice(source.indexOf("export function prStack"));
+  const web = readFileSync(new URL("../../../crates/priory-core/web/stack.js", import.meta.url), "utf8");
+  const herdr = readFileSync(new URL("../lib/priory.js", import.meta.url), "utf8");
+  assert.equal(body(herdr), body(web), "copy prStack from adapters/herdr/lib/priory.js to crates/priory-core/web/stack.js");
+});
