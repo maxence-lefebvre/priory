@@ -1521,6 +1521,14 @@ fn start(
         .chain(guard_env(factory))
         .collect();
     let permissions = serde_json::to_value(&agent.permissions).expect("permissions serialize");
+    let body = [
+        agent.body.trim_end(),
+        factory.writing.as_deref().unwrap_or(""),
+    ]
+    .into_iter()
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>()
+    .join("\n\n");
     Ok(runtime::launch(
         harness,
         &Launch {
@@ -1531,7 +1539,7 @@ fn start(
             resume: resume.as_deref(),
             model: agent.model.as_deref(),
             effort: agent.effort.as_deref(),
-            body: &agent.body,
+            body: &body,
             prompt: first.as_deref(),
             permissions,
             permission_mode: agent

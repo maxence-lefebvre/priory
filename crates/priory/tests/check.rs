@@ -1683,3 +1683,49 @@ fn a_log_url_env_names_a_variable_never_the_url() {
         )
     );
 }
+
+fn with_writing(name: &str, guide: Option<&str>) -> PathBuf {
+    let mut files = valid();
+    files[0] = ("factory.toml", "name = \"demo\"\nwriting = \"WRITING.md\"");
+    if let Some(guide) = guide {
+        files.push(("WRITING.md", guide));
+    }
+    factory(name, &files)
+}
+
+#[test]
+fn a_writing_guide_that_does_not_exist_fails_the_check() {
+    let outcome = check(&with_writing("writing-missing", None));
+
+    assert_eq!(outcome.code, 1, "{}", outcome.stderr);
+    assert!(
+        outcome
+            .stderr
+            .starts_with("factory.toml:2: `writing` names WRITING.md, which does not exist"),
+        "{}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn a_writing_guide_past_the_size_limit_warns_and_still_passes() {
+    let guide = "Lead with the question.\n".repeat(200);
+
+    let outcome = check(&with_writing("writing-large", Some(&guide)));
+
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    assert_eq!(
+        outcome.stderr,
+        "warning: WRITING.md is 4799 bytes: every agent's prompt carries it, so keep it under 4096\n"
+    );
+}
+
+#[test]
+fn a_writing_guide_within_the_limit_passes_quietly() {
+    let outcome = check(&with_writing(
+        "writing-small",
+        Some("Lead with the question.\n"),
+    ));
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+}
