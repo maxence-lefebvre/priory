@@ -10738,6 +10738,18 @@ fn slack_message(ts: &str, user: &str) -> serde_json::Value {
 }
 
 /// Slack's `ts` for `time`: seconds since the epoch, with six decimals.
+/// The instant the first wait counts events from: its task's last confirmed prompt.
+fn wait_since(setup: &Setup) -> herdr_bus::Timestamp {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT since FROM waits ORDER BY id LIMIT 1", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
 fn ts(time: herdr_bus::Timestamp) -> String {
     format!("{}.{:06}", time.as_second(), time.subsec_microsecond())
 }
@@ -10748,8 +10760,8 @@ fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_do
         "slack-intake",
         json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
     );
-    // The second the wait was stored in: after the agent's last prompt, before the intake polls.
-    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    // The instant the wait counts replies from: the agent's last prompt, before the intake polls.
+    let stored = wait_since(&setup);
     let before_prompt = stored.checked_sub(Duration::from_secs(3600)).unwrap();
     let old = slack_message(&ts(before_prompt), "U0PERSON");
     let mine = slack_message(&ts(herdr_bus::Timestamp::now()), "U0BOT");
@@ -10797,7 +10809,7 @@ fn a_slack_reply_names_its_author_by_display_name_asking_slack_once_per_user() {
         "slack-actor",
         json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
     );
-    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    let stored = wait_since(&setup);
     let later = stored.checked_add(Duration::from_secs(1)).unwrap();
     let mut messages =
         vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
@@ -10844,7 +10856,7 @@ fn a_slack_reply_names_its_author_by_id_without_the_users_read_scope() {
         "slack-actor-scope",
         json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
     );
-    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    let stored = wait_since(&setup);
     let mut messages =
         vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
     messages.push(slack_message(&ts(stored), "U0PERSON"));
@@ -11057,7 +11069,7 @@ fn a_failing_slack_channel_still_lets_a_watched_thread_publish_its_reply() {
         "source = \"slack\"\nchannel = \"C0999\"\non = \"message.posted\"\nworkflow = \"implement\"\n",
     )
     .unwrap();
-    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    let stored = wait_since(&setup);
     // The fake answers no `conversations.history`, so the trigger's channel fails.
     setup.answer_slack(&[slack_message(&ts(stored), "U0PERSON")]);
 

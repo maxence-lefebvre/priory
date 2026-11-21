@@ -613,7 +613,10 @@ pub(crate) fn compacted(tx: &Transaction, run: i64) -> rusqlite::Result<()> {
         return Ok(());
     };
     tx.execute(
-        &format!("UPDATE outbox SET state = 'confirmed', confirmed = {NOW} WHERE id = ?1"),
+        &format!(
+            "UPDATE outbox SET state = 'confirmed', confirmed = {} WHERE id = ?1",
+            crate::state::CONFIRMED
+        ),
         [id],
     )?;
     tx.execute(
