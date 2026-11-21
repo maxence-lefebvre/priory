@@ -14,6 +14,13 @@
             "null"
           ]
         },
+        "association": {
+          "description": "GitHub's `author_association` of the author, such as `OWNER`, `COLLABORATOR` or `NONE`.\nFeedback from anyone but the owner, a member or a collaborator reaches no task.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "baseline": {
           "description": "True when the event came from the first poll of its stream.",
           "type": "boolean"
@@ -33,6 +40,13 @@
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "own": {
+          "description": "Whether the login `gh api user` names wrote it, the login a worker posts as; absent while\n`gh` cannot say. A comment another login wrote wakes its task even when it was written\nduring the agent's turn.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "repo": {
           "description": "`owner/name`.",

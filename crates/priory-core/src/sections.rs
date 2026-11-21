@@ -373,7 +373,7 @@ pub(crate) fn pick(
                     serde_json::to_string(request).expect("a request serializes")
                 ],
             )?;
-            pick.applied = Some(format!("requested task cli:{}", request.key()));
+            pick.applied = Some(format!("requested {}", request.summary()));
         }
         None => {
             let text = format!(

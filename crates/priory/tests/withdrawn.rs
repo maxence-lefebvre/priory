@@ -99,7 +99,8 @@ fn an_upgrade_names_the_reason_each_sentinel_meant() {
         reasons("asks"),
         ["dismissed", "sibling-fired", "moved-on", "revived"]
     );
-    assert_eq!(reasons("waits"), ["sibling-fired", "moved-on", "revived"]);
+    // No wait of its run fired and its run's ask was dismissed, so 64 names the dismiss.
+    assert_eq!(reasons("waits"), ["dismissed", "moved-on", "revived"]);
     let db = rusqlite::Connection::open(dir.join("priory.db")).unwrap();
     let logged: Vec<String> = db
         .prepare("SELECT reason FROM ask_withdrawals ORDER BY ask")
@@ -111,5 +112,53 @@ fn an_upgrade_names_the_reason_each_sentinel_meant() {
     assert_eq!(
         logged,
         ["dismissed", "sibling-fired", "moved-on", "revived"]
+    );
+}
+
+#[test]
+fn an_upgrade_names_the_answer_dismiss_or_stack_ask_that_withdrew_an_old_wait() {
+    let dir = scratch("corrected");
+    priory(&dir, &["tasks"]);
+    let db = rusqlite::Connection::open(dir.join("priory.db")).unwrap();
+    as_version_57(&db);
+    db.execute_batch(
+        "INSERT INTO tasks (id, key, workflow, step, state, lane, trigger, source)
+           VALUES (1, 'issue-1', 'implement', 'work', 'asleep', 'lane', 'cli', 'cli-1');
+         INSERT INTO runs (id, task, step, tmux, session, ended) VALUES
+           (1, 1, 'work', 't', 's1', '2026-11-16T09:30:00Z'),
+           (2, 1, 'work', 't', 's2', '2026-11-16T09:30:00Z'),
+           (3, 1, 'work', 't', 's3', '2026-11-16T09:30:00Z'),
+           (4, 1, 'work', 't', 's4', NULL);
+         INSERT INTO asks (id, task, run, step, kind, question, options, created, answer, withdrawn) VALUES
+           (1, 1, 1, 'work', 'agent', 'A?', '[]', '2026-11-16T09:00:00Z', 'yes', NULL),
+           (2, 1, 2, 'work', 'agent', 'B?', '[]', '2026-11-16T09:00:00Z', NULL, -1);
+         INSERT INTO waits (task, run, kind, created, fired, daemon, withdrawn) VALUES
+           (1, 1, 'checks', '2026-11-16T09:00:00Z', NULL, 0, -2),
+           (1, 2, 'checks', '2026-11-16T09:00:00Z', NULL, 0, -2),
+           (1, 3, 'checks', '2026-11-16T09:00:00Z', NULL, 0, -2),
+           (1, 3, 'time', '2026-11-16T09:00:00Z', '2026-11-16T10:00:00Z', 0, NULL),
+           (1, 4, 'checks', '2026-11-16T09:00:00Z', NULL, 1, -2);",
+    )
+    .unwrap();
+    drop(db);
+
+    let task: Value =
+        serde_json::from_slice(&priory(&dir, &["task", "1", "--json"]).stdout).unwrap();
+
+    let reasons: Vec<Value> = task["waits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["withdrawn_reason"].clone())
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            Value::from("answered-elsewhere"),
+            Value::from("dismissed"),
+            Value::from("sibling-fired"),
+            Value::Null,
+            Value::from("asked"),
+        ]
     );
 }

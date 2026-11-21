@@ -343,9 +343,32 @@ fn pull_request(merge: &str, repo: Option<&str>) -> Option<String> {
     Some(crate::route::pull_request(repo, number.parse().ok()?))
 }
 
-/// Judges every unmet condition on a resource that the message just stored in the inbox names.
+/// Judges every condition of an open hold on a resource that the message just stored in the inbox
+/// names: an issue or blockers condition met earlier is met no more once its issue reopens or gets
+/// a blocker back, and every unmet one is judged.
 pub(crate) fn event(tx: &Transaction, resources: &[String]) -> rusqlite::Result<()> {
     let resources = serde_json::to_string(resources).expect("resources serialize");
+    let met: Vec<(i64, String, String)> = tx
+        .prepare(
+            "SELECT id, kind, resource FROM holds WHERE released IS NULL AND met IS NOT NULL
+             AND kind IN ('issue', 'blockers') AND resource IN (SELECT value FROM json_each(?1))",
+        )?
+        .query_map([&resources], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, kind, resource) in met {
+        let reopened = match kind.as_str() {
+            "issue" => issue_state(tx, &resource)?.is_some_and(|state| !closes(&state)),
+            _ => unblocked(tx, &resource)? == Some(false),
+        };
+        if reopened {
+            tx.execute(
+                "UPDATE holds SET met = NULL, met_as = NULL WHERE id = ?1",
+                [id],
+            )?;
+        }
+    }
     let open: Vec<i64> = tx
         .prepare(
             "SELECT id FROM holds WHERE released IS NULL AND met IS NULL
@@ -386,35 +409,13 @@ fn judge(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
         return Ok(());
     };
     if kind == "blockers" {
-        let unblocked = tx
-            .query_row(
-                // A null snapshot is unknown, and hides the older ones behind it.
-                "SELECT json_type(data, '$.blockers') = 'array'
-                   AND json_array_length(data, '$.blockers') = 0 FROM inbox
-                 WHERE 'linear:' || json_extract(data, '$.issue') = ?1
-                 AND json_type(data, '$.blockers') IS NOT NULL ORDER BY seq DESC LIMIT 1",
-                [&resource],
-                |row| row.get::<_, bool>(0),
-            )
-            .optional()?;
-        if unblocked == Some(true) {
+        if unblocked(tx, &resource)? == Some(true) {
             meet(tx, id, &format!("{resource} has no open blocker"))?;
         }
         return Ok(());
     }
     if kind == "issue" {
-        let state = tx
-            .query_row(
-                // A state change's `to`, else the state another issue event saw at its poll. A
-                // leaving view event can carry an earlier poll's fields.
-                "SELECT coalesce(json_extract(data, '$.to'), json_extract(data, '$.state')) AS state
-                 FROM inbox WHERE type LIKE 'linear.issue.%' AND type != 'linear.issue.left'
-                 AND 'linear:' || json_extract(data, '$.issue') = ?1 AND state IS NOT NULL
-                 ORDER BY seq DESC LIMIT 1",
-                [&resource],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
+        let state = issue_state(tx, &resource)?;
         return closed(tx, id, &resource, state.as_deref());
     }
     let merged = tx
@@ -456,42 +457,83 @@ fn judge(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
     }
 }
 
-/// Meets the issue condition `id` when `state`, its Linear issue's newest, closes the issue.
+/// Whether the newest blockers the inbox holds for the Linear issue `resource` are none; `None`
+/// when no event said.
+fn unblocked(tx: &Transaction, resource: &str) -> rusqlite::Result<Option<bool>> {
+    tx.query_row(
+        // A null snapshot is unknown, and hides the older ones behind it.
+        "SELECT json_type(data, '$.blockers') = 'array'
+           AND json_array_length(data, '$.blockers') = 0 FROM inbox
+         WHERE 'linear:' || json_extract(data, '$.issue') = ?1
+         AND json_type(data, '$.blockers') IS NOT NULL ORDER BY seq DESC LIMIT 1",
+        [resource],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// The newest state the inbox holds for the Linear issue `resource`: a state change's `to`, else
+/// the state another issue event saw at its poll. A leaving view event can carry an earlier
+/// poll's fields.
+fn issue_state(tx: &Transaction, resource: &str) -> rusqlite::Result<Option<String>> {
+    tx.query_row(
+        "SELECT coalesce(json_extract(data, '$.to'), json_extract(data, '$.state')) AS state
+         FROM inbox WHERE type LIKE 'linear.issue.%' AND type != 'linear.issue.left'
+         AND 'linear:' || json_extract(data, '$.issue') = ?1 AND state IS NOT NULL
+         ORDER BY seq DESC LIMIT 1",
+        [resource],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
 // shortcut: matches Linear's default state names; a team that renames them needs the state's type.
+fn closes(state: &str) -> bool {
+    matches!(state, "Done" | "Canceled")
+}
+
+/// Meets the issue condition `id` when `state`, its Linear issue's newest, closes the issue.
 fn closed(tx: &Transaction, id: i64, resource: &str, state: Option<&str>) -> rusqlite::Result<()> {
-    let Some(state) = state.filter(|state| matches!(*state, "Done" | "Canceled")) else {
+    let Some(state) = state.filter(|state| closes(state)) else {
         return Ok(());
     };
     let issue = resource.trim_start_matches("linear:");
     meet(tx, id, &format!("{issue} is {state}"))
 }
 
-/// The unmet issue conditions of held tasks, with the `linear:<issue>` each waits on, whose
-/// current state the daemon reads.
+/// The issue conditions of held tasks, met or not, with the `linear:<issue>` each waits on, whose
+/// current state the daemon reads: a met one is met no more if its issue reopens.
 pub(crate) fn readable(db: &Connection) -> rusqlite::Result<Vec<(i64, String)>> {
     db.prepare(
         "SELECT holds.id, holds.resource FROM holds JOIN tasks ON tasks.id = holds.task
-         WHERE holds.kind = 'issue' AND holds.released IS NULL AND holds.met IS NULL
+         WHERE holds.kind = 'issue' AND holds.released IS NULL
          AND tasks.state = 'held' ORDER BY holds.id",
     )?
     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
     .collect()
 }
 
-/// Meets the issue condition `id` if `current`, the state the daemon read for its issue, closes it.
+/// Meets the issue condition `id` if `current`, the state the daemon read for its issue, closes
+/// it, and makes a met one unmet if `current` no longer does.
 pub(crate) fn read(db: &mut Connection, id: i64, current: &str) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let resource = tx
+    let found = tx
         .query_row(
-            "SELECT holds.resource FROM holds JOIN tasks ON tasks.id = holds.task
-             WHERE holds.id = ?1 AND holds.released IS NULL AND holds.met IS NULL
-             AND tasks.state = 'held'",
+            "SELECT holds.resource, holds.met IS NOT NULL
+             FROM holds JOIN tasks ON tasks.id = holds.task WHERE holds.id = ?1 AND holds.released IS NULL AND tasks.state = 'held'",
             [id],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
         )
         .optional()?;
-    if let Some(resource) = resource {
-        closed(&tx, id, &resource, Some(current))?;
+    match found {
+        Some((_, true)) if !closes(current) => {
+            tx.execute(
+                "UPDATE holds SET met = NULL, met_as = NULL WHERE id = ?1",
+                [id],
+            )?;
+        }
+        Some((resource, false)) => closed(&tx, id, &resource, Some(current))?,
+        _ => {}
     }
     tx.commit()
 }
