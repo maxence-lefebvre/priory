@@ -13215,6 +13215,35 @@ fn the_task_inbox_shows_a_kept_event_still_queued_then_delivered_as_prompt() {
 }
 
 #[test]
+fn priory_task_prints_the_task_and_its_inbox_section() {
+    let setup = subscribed("task-text");
+    setup.publish(&commented());
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+
+    let output = setup.priory(&["task", "1"]);
+
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(output.status.success(), "{text}");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "task 1  github:owner/repo#42", "{text}");
+    assert!(lines[1].starts_with("workflow implement, step "), "{text}");
+    assert_eq!(lines[2..4], ["", "Inbox"], "{text}");
+    assert!(
+        lines[4].starts_with("  2  ")
+            && lines[4].ends_with(
+                "  github.pull_request.comment  owner/repo#7  woke, delivered as prompt"
+            ),
+        "{text}"
+    );
+    assert!(
+        lines[5].starts_with("  1  ")
+            && lines[5].ends_with("  factory.task.requested  github:owner/repo#42  created"),
+        "{text}"
+    );
+    assert_eq!(lines.len(), 6, "{text}");
+}
+
+#[test]
 fn the_task_inbox_shows_the_event_that_woke_the_task() {
     let setup = subscribed("inbox-woke");
 
@@ -13575,6 +13604,73 @@ fn a_subscriber_hears_events_that_the_task_keyed_by_the_pull_request_takes() {
             .count()
             >= 2
     });
+}
+
+#[test]
+fn an_event_a_subscription_delivered_to_a_second_task_is_in_that_tasks_inbox() {
+    let setup = subscribed("inbox-secondary");
+    setup.publish(&requested(7));
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    setup.publish(&off_branch(commented()));
+
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .filter(|row| row[1] == "1" && row[3] == "confirmed")
+            .count()
+            >= 2
+    });
+    let inbox = &task_json(&setup, "1")["inbox"][0];
+    assert_eq!(
+        [
+            &inbox["type"],
+            &inbox["task"],
+            &inbox["outcome"],
+            &inbox["prompt"]
+        ],
+        [
+            &json!("github.pull_request.comment"),
+            &json!(2),
+            &json!("woke"),
+            &json!("confirmed")
+        ],
+        "{inbox}"
+    );
+}
+
+#[test]
+fn an_event_a_subscription_delivered_to_a_running_second_task_shows_its_queued_prompt() {
+    let mut setup = Setup::new("inbox-secondary-running");
+    setup.calls(&[subscribe("subscribe")]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/tools.log");
+    setup.publish(&requested(7));
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    setup.publish(&off_branch(commented()));
+
+    setup.until("outbox", |rows| {
+        rows.iter().filter(|row| row[1] == "1").count() == 2
+    });
+    let inbox = &task_json(&setup, "1")["inbox"][0];
+    assert_eq!(
+        [
+            &inbox["type"],
+            &inbox["task"],
+            &inbox["outcome"],
+            &inbox["prompt"]
+        ],
+        [
+            &json!("github.pull_request.comment"),
+            &json!(2),
+            &json!("kept"),
+            &json!("queued")
+        ],
+        "{inbox}"
+    );
+    setup.release("hold-stop");
 }
 
 #[test]

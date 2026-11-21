@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 73;
+const VERSION: i64 = 74;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1298,6 +1298,22 @@ CREATE INDEX open_holds ON holds (task) WHERE released IS NULL;
 "
 );
 
+// An event a subscription delivered to a task other than the one routing gave it, with how it
+// reached that task. The prompt can be merged or deleted later, so it is not a foreign key.
+const SCHEMA_74: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS subscription_deliveries (
+  seq     INTEGER NOT NULL REFERENCES inbox (seq),
+  task    INTEGER NOT NULL REFERENCES tasks (id),
+  outcome TEXT NOT NULL,
+  outbox  INTEGER,
+  PRIMARY KEY (seq, task)
+);
+",
+    bumps!("subscription_deliveries"),
+    "PRAGMA user_version = 74;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1309,6 +1325,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
+    SCHEMA_74,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1637,15 +1654,25 @@ pub(crate) fn route_in(
     for other in owners.iter().filter(|other| Some(other.id) != task) {
         let (fired, ended) = crate::tools::event(tx, other.id, seq, factory)?;
         kill = kill.or(ended);
-        if !fired {
-            delivered(tx, other.id, message, &resources, None, factory)?;
+        if !fired
+            && let Some((outcome, prompt)) =
+                delivered(tx, other.id, message, &resources, None, factory)?
+        {
+            tx.execute(
+                "INSERT OR IGNORE INTO subscription_deliveries (seq, task, outcome, outbox)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![seq, other.id, outcome, prompt],
+            )?;
         }
     }
     match (task, outcome) {
         (Some(task), "kept") => {
             let (fired, ended) = crate::tools::event(tx, task, seq, factory)?;
             kill = kill.or(ended);
-            if !fired && delivered(tx, task, message, &resources, Some(seq), factory)? {
+            if !fired
+                && delivered(tx, task, message, &resources, Some(seq), factory)?
+                    .is_some_and(|(outcome, _)| outcome == "woke")
+            {
                 tx.execute("UPDATE inbox SET outcome = 'woke' WHERE seq = ?1", [seq])?;
             }
         }
@@ -1823,7 +1850,7 @@ fn wakes(tx: &Transaction, task: i64, factory: &Factory) -> rusqlite::Result<boo
 /// Delivers `message` to `task` when it subscribes to a resource of `resources` and no wait took
 /// it: a wake while it sleeps where an event can wake it, else a queued prompt while it runs. `kept`
 /// is the inbox entry when `task` kept the message, whose own prompt is already queued. Returns
-/// whether it woke the task.
+/// `woke` or `kept`, with the prompt that carries the message, when it reached the task.
 fn delivered(
     tx: &Transaction,
     task: i64,
@@ -1831,10 +1858,17 @@ fn delivered(
     resources: &[String],
     kept: Option<i64>,
     factory: &Factory,
-) -> rusqlite::Result<bool> {
+) -> rusqlite::Result<Option<(&'static str, Option<i64>)>> {
     if !subscribes(tx, task, resources, &message.kind)? {
-        return Ok(false);
+        return Ok(None);
     }
+    let queued = |tx: &Transaction| -> rusqlite::Result<Option<i64>> {
+        tx.query_row(
+            "SELECT max(id) FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0",
+            [task],
+            |row| row.get(0),
+        )
+    };
     let line = line(
         &message.kind,
         message.subject.as_deref(),
@@ -1854,18 +1888,20 @@ fn delivered(
         )?;
     if fresh && wakes(tx, task, factory)? {
         crate::tools::wake_on(tx, task, &placed(tx, task, resources, &line)?, kept)?;
-        return Ok(true);
+        return Ok(Some(("woke", queued(tx)?)));
     }
     if fresh && crate::tools::gate_feedback(tx, task, message, kept)? {
-        return Ok(true);
+        return Ok(Some(("woke", queued(tx)?)));
     }
-    if kept.is_none() {
-        tx.execute(
+    if kept.is_none()
+        && tx.execute(
             "INSERT INTO outbox (task, text) SELECT id, ?2 FROM tasks WHERE id = ?1 AND state = 'running'",
             params![task, placed(tx, task, resources, &line)?],
-        )?;
+        )? == 1
+    {
+        return Ok(Some(("kept", Some(tx.last_insert_rowid()))));
     }
-    Ok(false)
+    Ok(None)
 }
 
 /// The events a task's subscription to its own key carries: what people say and closes. Checks,
