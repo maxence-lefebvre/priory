@@ -13,6 +13,17 @@ use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
 fn main() -> ExitCode {
+    let words: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    if std::env::var_os("PRIORY_SESSION").is_some() && priory_factory::guard::person_verb(&words) {
+        eprintln!(
+            "priory {}: only a person runs it, and this shell is a run's (PRIORY_SESSION is set)",
+            words[0]
+        );
+        return ExitCode::from(2);
+    }
     let mut args = std::env::args_os().skip(1);
     match args.next().as_deref().and_then(|verb| verb.to_str()) {
         Some("check") => check(args.collect()),
