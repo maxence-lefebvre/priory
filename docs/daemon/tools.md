@@ -268,6 +268,17 @@ priory unsubscribe 7 linear:ENG-7
 
 `priory task ID --json` and `/api/tasks/ID` list the live subscriptions as `subscriptions`.
 
+### `relate(kind, task)`
+
+`relate` records how the caller's task relates to task `task`: `builds-on`, `fixes`, `takes-up` or
+`relates`. It does not end the turn, and `priory mcp` answers it from the state file. Its task is
+always the caller's own. `priory relate TASK KIND OTHER` does the same for any task. See
+[relations.md](relations.md).
+
+```json
+{ "kind": "builds-on", "task": 7 }
+```
+
 ### `compact(focus?)`
 
 `compact` queues `/compact <focus>` in the outbox and tells the agent to end its turn. An agent

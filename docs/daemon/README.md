@@ -76,6 +76,8 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [reports.md](reports.md): reports of sections that a workflow writes, and the picks a person
   makes on them.
 - [trace.md](trace.md): trace records, token counts, `priory report`, `priory costs`, the attention report, outcome labels, `priory grades` and the OpenTelemetry export.
+- [relations.md](relations.md): how tasks relate, `priory relate`, the relations Priory records
+  itself, and `priory tasks --graph`.
 - [search.md](search.md): TL;DRs, the summarizer, `priory search`, and the optional embeddings.
 - [serve.md](serve.md): the HTTP server over the state, its token and its limits.
 - [services.md](services.md): running Priory as systemd user services, and the listing commands.

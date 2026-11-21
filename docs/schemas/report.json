@@ -163,6 +163,26 @@
       ],
       "type": "object"
     },
+    "Relation": {
+      "additionalProperties": false,
+      "description": "A relation a request asks its new task to have: `--relates KIND:TASK`.",
+      "properties": {
+        "kind": {
+          "description": "`builds-on`, `fixes`, `takes-up` or `relates`.",
+          "type": "string"
+        },
+        "task": {
+          "description": "The other task's id.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "task"
+      ],
+      "type": "object"
+    },
     "Request": {
       "additionalProperties": false,
       "description": "A task request: `priory request`'s flags, or a report pick option's request.",
@@ -203,6 +223,13 @@
             "string",
             "null"
           ]
+        },
+        "relates": {
+          "description": "How the new task relates to existing ones.",
+          "items": {
+            "$ref": "#/definitions/Relation"
+          },
+          "type": "array"
         },
         "repo": {
           "description": "`owner/name`; `triggers/cli.toml`'s `repo` when unset.",
