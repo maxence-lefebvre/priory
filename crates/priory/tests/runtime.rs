@@ -12754,9 +12754,7 @@ fn an_autonomous_step_that_names_no_guard_may_make_no_guarded_call() {
 fn an_autonomous_step_may_make_the_calls_it_names_but_never_a_merge() {
     let mut setup = Setup::with_workflow(
         "guard-autonomous-named",
-        &autonomous_build(
-            r#"guard = { allow = ["gh-pr-comment", "gh-api-write", "mcp-write"] }"#,
-        ),
+        &autonomous_build(r#"guard = { allow = ["gh-pr-comment", "gh-api-write", "mcp-write"] }"#),
     );
     let merges = [
         bash("gh pr merge 12"),
