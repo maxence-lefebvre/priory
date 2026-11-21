@@ -276,6 +276,9 @@ A new ask now shows its title on the phone, or its task and step, and tapping it
 or failed shows `task <key> <state>`. A snoozed item sends nothing. Turn notifications off on the
 same screen.
 
+On the machine that runs the daemon, `[notify] desktop = true` in `factory.toml` shows the same
+title as a desktop notification, through `notify-send`, for the one next thing on the desk.
+
 ## Concepts
 
 **Factory.** The folder of files that defines everything else: `factory.toml`, `agents/`,
