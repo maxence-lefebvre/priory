@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 72;
+const VERSION: i64 = 73;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1235,10 +1235,20 @@ END;
 PRAGMA user_version = 71;
 ";
 
+// The desk items a desktop notification already told a person, so a restarted daemon tells none twice.
+const SCHEMA_72: &str = "
+CREATE TABLE IF NOT EXISTS notified (
+  kind TEXT NOT NULL,
+  item TEXT NOT NULL,
+  PRIMARY KEY (kind, item)
+);
+PRAGMA user_version = 72;
+";
+
 // A batch: its planning task, the issues a person handed over and the plan its result sent. Each
 // entry's task names its batch and entry, and a `merged` hold condition waits on another task's
 // stack to merge.
-const SCHEMA_72: &str = concat!(
+const SCHEMA_73: &str = concat!(
     "CREATE TABLE IF NOT EXISTS batches (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   key              TEXT NOT NULL,
@@ -1259,7 +1269,7 @@ const SCHEMA_72: &str = concat!(
 );
 ALTER TABLE tasks ADD COLUMN batch INTEGER;
 ALTER TABLE tasks ADD COLUMN batch_entry TEXT;
-CREATE TABLE holds_72 (
+CREATE TABLE holds_73 (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   task        INTEGER NOT NULL REFERENCES tasks (id),
   reason      TEXT NOT NULL,
@@ -1277,14 +1287,14 @@ CREATE TABLE holds_72 (
   released    TEXT,
   released_as TEXT
 );
-INSERT INTO holds_72 SELECT id, task, reason, kind, until, target, resource, if_closed, resume, ask,
+INSERT INTO holds_73 SELECT id, task, reason, kind, until, target, resource, if_closed, resume, ask,
   created, met, met_as, released, released_as FROM holds;
 DROP TABLE holds;
-ALTER TABLE holds_72 RENAME TO holds;
+ALTER TABLE holds_73 RENAME TO holds;
 CREATE INDEX open_holds ON holds (task) WHERE released IS NULL;
 ",
     bumps!("holds", "batches"),
-    "PRAGMA user_version = 72;
+    "PRAGMA user_version = 73;
 "
 );
 
@@ -1298,7 +1308,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
-    SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72,
+    SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

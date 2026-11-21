@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Button, TextView } from "gpui-base";
 import { appHome, checking, exec, home as herdrHome, nextCommand, readTextFile, run, setShared, settings } from "herdr";
-import { priory, spansHtml } from "./priory.js";
+import { follow, priory, spansHtml } from "./priory.js";
 import { addChoices } from "./add.js";
 import { AddForm } from "./add-form.js";
 import { deskModel, mergeSince, tomorrowAt } from "./view.js";
@@ -90,8 +90,6 @@ export default class PrioryDesk extends View {
     /** @type {Promise<{ theme: string, client: ReturnType<typeof priory> }> | null} */
     this.client = null;
     this.theme = "indigo";
-    /** @type {{ cancel(): void } | null} */
-    this.retry = null;
     this.chain = 0;
     this.reading = false;
     /** @type {string | null} */
@@ -114,28 +112,27 @@ export default class PrioryDesk extends View {
       }
     });
     cx.timer.after(SKELETON_MS, (cx) => { this.slow = true; cx.notify(); });
-    this.load(cx, null);
+    this.load(cx);
   }
 
   // A snooze ends by the clock, which no revision records, so every `priory wait` ends in a read.
-  // One chain runs at a time: Retry starts a new one, and an older chain stops at its next step.
-  /** Reads every listing, then waits and reads again. @param {import("gpui-kit").Context} cx @param {number | null} since @param {number} [chain] */
-  load(cx, since, chain = ++this.chain) {
-    cx.spawn(async (cx) => {
-      try {
+  // One loop runs at a time: Retry starts a new one, and an older loop stops at its next step.
+  /** Reads every listing, then waits and reads again. @param {import("gpui-kit").Context} cx */
+  load(cx) {
+    const chain = ++this.chain;
+    /** @type {ReturnType<typeof priory>} the client of the last read, which its wait uses */
+    let client;
+    cx.spawn((cx) => follow({
+      read: async () => {
         // Connects on first use, and again after a failure, so a machine that comes back works.
         this.client ??= connect().catch((error) => { this.client = null; throw error; });
-        const { theme, client, links } = await this.client;
-        this.theme = theme;
-        this.links = links;
-        if (since != null) await client.wait(since);
-        if (chain !== this.chain) return;
+        ({ theme: this.theme, links: this.links, client } = await this.client);
         this.reading = true;
         // Taken before the first read, so an event between that read and `priory seen` still shows next time.
         const read = new Date().toISOString().replace(/\.\d+Z$/, "Z");
         const [desk, asks, tasks, queue] = await Promise.all([client.desk({ all: true }), client.asks(), client.tasks(), client.queue()])
           .finally(() => { this.reading = false; });
-        if (chain !== this.chain) return;
+        if (chain !== this.chain) return null;
         if (!this.data) {
           this.sinceFrom = desk.last_visit;
           this.opened = read;
@@ -144,15 +141,17 @@ export default class PrioryDesk extends View {
         this.data = { desk, asks, tasks, queue };
         this.error = null;
         cx.notify();
-        this.load(cx, desk.revision, chain);
-      } catch (error) {
-        this.reading = false;
-        if (chain !== this.chain) return;
+        return desk.revision;
+      },
+      wait: (since) => client.wait(since),
+      sleep: (ms) => cx.sleep(ms),
+      failed: (error) => {
         this.error = message(error);
         cx.notify();
-        this.retry = cx.timer.after(RETRY_MS, (cx) => this.load(cx, null));
-      }
-    });
+      },
+      retry: RETRY_MS,
+      stopped: () => chain !== this.chain,
+    }));
   }
 
   // Records the visit once Since you looked is drawn, which happens only from WIDE.
@@ -228,6 +227,12 @@ export default class PrioryDesk extends View {
     setShared("priory.attach", { task, at: Date.now() });
   }
 
+  // The Priory bar opens the Task tab, and the Task panel shows the task.
+  /** @param {number} task */
+  openTask(task) {
+    setShared("priory.task.open", { task, at: Date.now() });
+  }
+
   /** @param {Model} model */
   rows(model) {
     return model.sections(this.view).flatMap((section) => section.rows);
@@ -286,8 +291,7 @@ export default class PrioryDesk extends View {
           .child(`Could not read the desk: ${this.error}. Check that priory runs where settings.json's "priory" object says, then retry.`))
         .child(ui.button("retry", "Retry", (_e, cx) => {
           if (this.reading) return;
-          this.retry?.cancel();
-          this.load(cx, null);
+          this.load(cx);
         }, { disabled: this.reading }))
       : null;
     if (!this.data) {
@@ -360,7 +364,8 @@ export default class PrioryDesk extends View {
       .child(h_flex().gap(S["space-2"]).flex_wrap().items_center()
         .when(next.ask != null, (el) => el.child(ui.button("next-answer", "Answer…", () => this.answer(/** @type {number | string} */ (next.ask)), { primary: true })))
         .when(next.todo != null, (el) => el.child(ui.button("next-done", "Done", (_e, cx) => this.done(cx, /** @type {number} */ (next.todo)), { disabled: this.busy })))
-        .when(next.task != null, (el) => el.child(ui.button("next-attach", "Attach", () => this.attach(/** @type {number} */ (next.task)))))
+        .when(next.task != null, (el) => el.child(ui.button("next-open", "Open task", () => this.openTask(/** @type {number} */ (next.task))))
+          .child(ui.button("next-attach", "Attach", () => this.attach(/** @type {number} */ (next.task)))))
         .when(next.snooze != null, (el) => el.child(ui.button("next-snooze", "Snooze 1 h", (_e, cx) => this.snooze(cx, /** @type {{ kind: string, id: number | string }} */ (next.snooze), HOUR), { icon: "clock", disabled: this.busy })))
         .when(wide && next.ask != null, (el) => el.child(div().flex_1()).child(ui.hints([["Enter", "answer"], ["S", "snooze"]], true))))
       .on_click((/** @type {unknown} */ _e, /** @type {import("gpui-kit").Context} */ cx) => { this.selected = next.snooze ? `${next.snooze.kind}:${next.snooze.id}` : null; this.focus.focus(); cx.notify(); });
@@ -457,7 +462,8 @@ export default class PrioryDesk extends View {
       .when(row.todo != null, (el) => el.child(ui.button(`done-${row.id}`, "Done", (_e, cx) => this.done(cx, /** @type {number} */ (row.todo)), { disabled: this.busy })))
       .when(row.report != null, (el) => el.child(ui.button(`read-${row.id}`, "Read", (_e, cx) => this.read(cx, /** @type {number} */ (row.report)), { disabled: this.busy })))
       .when(Boolean(restart) && row.task != null, (el) => el.child(ui.button(`restart-${row.id}`, restart, (_e, cx) => this.restart(cx, row), { disabled: this.busy })))
-      .when(row.task != null, (el) => el.child(ui.button(`attach-${row.id}`, "Attach", () => this.attach(/** @type {number} */ (row.task)))))
+      .when(row.task != null, (el) => el.child(ui.button(`open-${row.id}`, "Open task", () => this.openTask(/** @type {number} */ (row.task))))
+        .child(ui.button(`attach-${row.id}`, "Attach", () => this.attach(/** @type {number} */ (row.task)))))
       .when(Boolean(item), (el) => el
         .child(ui.button(`snooze-${row.id}`, row.snoozed ? "Unsnooze" : "Snooze 1 h",
           (_e, cx) => this.snooze(cx, /** @type {NonNullable<Row["snooze"]>} */ (item), row.snoozed ? null : HOUR), { icon: "clock", disabled: this.busy }))
@@ -474,8 +480,10 @@ export default class PrioryDesk extends View {
     return v_flex().gap(S["space-1"]).flex_none()
       .child(div().text_size(S["type-caption"][0]).font_weight(600).child("Up next"))
       .when(!model.upNext.length, (el) => el.child(ui.note(model.upNextEmpty)))
+      // A line opens its task; a schedule that starts a new task names none, so its line opens nothing.
       .children(model.upNext.map((/** @type {Model["upNext"][number]} */ entry, /** @type {number} */ i) => h_flex().id(`up-next-${i}`).gap(S["space-2"]).py(S["space-1"]).items_start().text_size(S["type-caption"][0])
         .border_t(1).border_color(t.line)
+        .when(entry.task != null, (el) => el.rounded(S["radius-sm"]).hover((s) => s.bg(t.surface)).on_click(() => this.openTask(entry.task)))
         .child(div().w(96).flex_none().text_color(t["text-2"]).child(entry.when))
         .child(div().flex_none().child(ui.mono(entry.key ?? "")))
         .child(div().flex_1().min_w_0().whitespace_normal().text_color(t["text-3"]).child(entry.why))));

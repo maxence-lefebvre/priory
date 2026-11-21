@@ -2112,6 +2112,7 @@ fn a_view_whose_filter_changed_publishes_one_changed_event_and_no_entered_or_lef
         .unwrap();
     succeeded(&desk);
     let desk = String::from_utf8(desk.stdout).unwrap();
+    let (desk, _) = desk.split_once("\nsince you looked").unwrap_or((&desk, ""));
     let reports = desk
         .matches(
             "linear: view 6b3c2f9a1d4e changed its filter: 2 issues entered and 1 left, with no task requested",

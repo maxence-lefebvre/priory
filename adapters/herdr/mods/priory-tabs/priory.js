@@ -80,6 +80,30 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
   };
 }
 
+/**
+ * A panel's read loop: reads, waits with `priory wait` until the state moves past the revision it
+ * read, and reads again, until `stopped()`. `read` returns the state revision it read, or null to
+ * wait from the revision the last wait returned. A failed read or wait calls `failed`, then backs
+ * off `retry` ms before it reads again.
+ * @param {{ read: () => Promise<number | null>, wait: (since: number) => Promise<number>, sleep: (ms: number) => Promise<unknown>,
+ *   failed: (error: unknown) => void, retry: number, stopped?: () => boolean }} loop
+ */
+export async function follow({ read, wait, sleep, failed, retry, stopped = () => false }) {
+  // -1 makes a first wait with no revision return at once with the current one.
+  let since = -1;
+  while (!stopped()) {
+    try {
+      const revision = await read();
+      if (stopped()) return;
+      since = await wait(revision ?? since);
+    } catch (error) {
+      if (stopped()) return;
+      failed(error);
+      await sleep(retry);
+    }
+  }
+}
+
 // The web view's autolinks, in crates/priory-core/web/links.js; a test keeps the two the same.
 /**
  * Splits `text` into spans, each `{ text }` or `{ text, url }`. At each point the earliest match

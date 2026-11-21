@@ -260,6 +260,8 @@ impl Setup {
             // The desk's stall banner, before its header, has no tab.
             .skip_while(|line| !line.contains('\t'))
             .skip(1)
+            // The desk's Since you looked list follows its rows after a blank line.
+            .take_while(|line| args[0] != "desk" || !line.is_empty())
             .map(|line| line.split('\t').map(str::to_owned).collect())
             .collect()
     }
@@ -17155,7 +17157,10 @@ fn a_go_creates_one_task_per_entry_in_plan_order_with_its_holds_and_relations() 
 
     person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
 
-    let mut tasks = setup.until("tasks", |rows| rows.len() == 3);
+    // The next tick gives the root its reason to wait for room.
+    let mut tasks = setup.until("tasks", |rows| {
+        rows.len() == 3 && rows.iter().any(|row| row[7].starts_with("waits for room"))
+    });
     tasks.sort_by_key(|row| row[0].parse::<i64>().unwrap());
     let shown: Vec<_> = tasks
         .iter()
