@@ -7,7 +7,7 @@ import { filtered } from "./tasks.js";
 import { duration, RUN_FACETS, RUN_VIEWS, runState, runViews, tokenText } from "./view.js";
 
 const RETRY_MS = 3000;
-// Recent keeps the live runs and those started in the last 7 days, as `/api/runs` does.
+// Recent shows the live runs and those started in the last 7 days first, as `/api/runs` does.
 const WEEK_MS = 7 * 24 * 3600_000;
 const ICON = (/** @type {string} */ name) => `mods/priory-runs/icons/${name}.svg`;
 const LABELS = /** @type {Record<string, string>} */ ({ recent: "Recent", live: "Live" });
@@ -71,6 +71,8 @@ export default class PrioryRuns extends View {
     this.picks = new Map();
     /** @type {string | null} the facet whose menu is open */
     this.popover = null;
+    /** Whether Recent shows the runs older than 7 days too. */
+    this.older = false;
     this.font = FONTS.indigo;
     /** @type {ReturnType<typeof priory>} the client of the last read, which its wait uses */
     let client;
@@ -100,15 +102,15 @@ export default class PrioryRuns extends View {
     const t = /** @type {Palette} */ (palette(theme, cx.theme().appearance));
     this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.indigo;
     const now = Date.now();
-    const recent = (this.runs ?? []).filter((run) => !run.ended || now - Date.parse(run.started) < WEEK_MS);
-    const views = /** @type {Record<string, any[]>} */ (runViews(filtered(recent, this.picks, /** @type {any} */ (RUN_FACETS))));
+    const runs = this.runs ?? [];
+    const views = /** @type {Record<string, any[]>} */ (runViews(filtered(runs, this.picks, /** @type {any} */ (RUN_FACETS))));
     const shown = views[this.view];
     return v_flex().id("priory-runs").size_full().min_h_0().bg(t.bg).text_color(t.text).font_family(this.font.ui).text_size(S["type-body"][0])
       .child(h_flex().flex_none().h(S["pane-head"]).px(S["space-4"]).items_center().border_b(1).border_color(t.line).child(div().font_weight(650).child("Runs")))
       .when(Boolean(this.error), (el) => el.child(div().flex_none().px(S["space-4"]).py(6).whitespace_normal().text_size(S["type-small"][0])
         .text_color(t["warn-text"]).border_b(1).border_color(t.line)
         .child(`Could not read the runs: ${this.error}. Check that priory runs, then it reads again on its own.`)))
-      .child(this.filters(views, recent, t))
+      .child(this.filters(views, runs, t))
       .child(v_flex().id("runs-body").flex_1().min_h_0().overflow_y_scrollbar().px(S["space-2"]).py(S["space-2"]).children(this.body(shown, t, now)));
   }
 
@@ -116,8 +118,15 @@ export default class PrioryRuns extends View {
   body(shown, t, now) {
     const note = (/** @type {string} */ line) => [div().p(S["space-2"]).whitespace_normal().text_color(t["text-2"]).child(line)];
     if (!this.runs) return this.error ? [] : note("Reading the runs…");
-    if (!shown.length) return note(this.picks.size ? "No run matches these filters." : EMPTY[this.view]);
-    return shown.map((run) => this.row(run, t, now));
+    const week = shown.filter((run) => !run.ended || now - Date.parse(run.started) < WEEK_MS);
+    const older = shown.length - week.length;
+    const rows = (this.older ? shown : week).map((run) => this.row(run, t, now));
+    if (!rows.length && !older) return note(this.picks.size ? "No run matches these filters." : EMPTY[this.view]);
+    if (this.older || !older) return rows;
+    return [...(rows.length ? rows : note(EMPTY.recent)), Button.new("runs-older").h(S["control-fine"]).px(S["space-2"]).flex().items_center()
+      .rounded(S["radius-sm"]).text_size(S["type-small"][0]).text_color(t["action-text"]).hover((s) => s.bg(t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
+      .on_click((_event, cx) => { this.older = true; cx.notify(); })
+      .child(`Show ${older} older ${older === 1 ? "run" : "runs"}`)];
   }
 
   /**

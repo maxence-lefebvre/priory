@@ -572,9 +572,11 @@ DESIGN.md's "Runs" section holds its visual rules; this section says how it work
 - **Files.** `view.js`, a copy of the web view's `runs.js`, gives each run its state, saved views,
   facets, duration and tokens. `tasks.js`, a copy of the web's, filters by facet. `main.js` reads
   and draws.
-- **Reading.** The panel reads `priory runs --json` and follows its revision with `priory wait`.
-  It keeps the live runs and those started in the last 7 days, as `/api/runs` does.
-- **Views.** Recent lists those runs newest first, and Live the runs still going.
+- **Reading.** The panel reads `priory runs --json`, every run, and follows its revision with
+  `priory wait`.
+- **Views.** Recent lists the live runs and those started in the last 7 days, newest first, as
+  `/api/runs` does, then a "Show 3 older runs" button that lists the rest. Its count includes
+  them. Live lists the runs still going.
 - **Facets.** Outcome, Agent and Step, as the Tasks panel's. Outcome holds both how a run ended
   and its result's outcome, so `moved` and `passed` both find a moved run that passed.
 - **Rows.** Each row shows the run's state tile, task key, step, state and how long ago it

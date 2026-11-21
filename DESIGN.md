@@ -1290,6 +1290,8 @@ The web's [Runs panel](#runs-panel), as a tab in the center stack.
   state word in its role's text color and how long ago it started in `--text-3`; the agent and
   model in `--type-small`; then "run 92 · passed · 42 min · 312k tokens" in `--text-3`. A row
   opens its task in the [Task](#task) panel.
+- Recent ends with a "Show 3 older runs" button in `--action-text` while runs older than 7 days
+  match: the pane already holds them, so it shows them on a press instead of on scroll.
 - While it reads: "Reading the runs…"
 
 ### Open questions
