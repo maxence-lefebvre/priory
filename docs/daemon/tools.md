@@ -147,6 +147,15 @@ stopped while it ran, so whether it finished is uncertain. Check the target befo
 The desk shows a `command` item while the task is active. A command whose process the stopped
 daemon never recorded never started, so the next tick starts it.
 
+A human step can carry the same command as its `command` key (see
+[Runbooks](../reference/workflows.md#runbooks)). Its ask stores the command, with its target
+resolved to a folder, when the task enters the step. A step whose target is `worktree` blocks a
+task with no worktree, with the reason `step <id>: command target worktree: this task has no
+worktree`. The answer runs it as above. When it ends, the task moves by the answer on exit 0 and
+asks the step again otherwise, with `answer "<option>" ran <argv> in <dir>: <exit>.` in the
+question, or the uncertain outcome. Its ask counts as one whose answer runs a command: a lead
+never answers it, and its risk is `irreversible`, as an agent's command ask's is.
+
 `priory actions` lists each answer's action. `priory asks --json` and `/api/asks` show it on the
 ask as `ran`: its `status`, `revision`, `error`, `stdout` and `stderr`.
 

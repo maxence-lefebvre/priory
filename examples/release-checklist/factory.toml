@@ -1,0 +1,8 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/factory.json
+name = "release-checklist"
+
+[asks.targets]
+repo = "../my-crate"           # your project's checkout, relative to this folder
+
+[request]
+workflow = "release"           # what priory add starts without --workflow

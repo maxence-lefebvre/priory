@@ -1,7 +1,7 @@
 //! The HTTP server over the state: `/api` as JSON, with `web` the web view's files, and with a
 //! GitHub webhook its signed deliveries.
 
-use crate::{grades, listing, push, report, sections, snooze, state, tools};
+use crate::{grades, listing, push, report, sections, snooze, state, todo, tools};
 use herdr_bus::Bus;
 use priory_factory::factory::{Factory, Price, Trigger};
 use priory_intake::intake::{self, Github};
@@ -376,6 +376,8 @@ enum Write<'a> {
     Act(&'a str, &'a str),
     Subscribe,
     Unsubscribe,
+    TodoAdd,
+    TodoDone(i64),
     Seen,
 }
 
@@ -391,8 +393,15 @@ impl<'a> Write<'a> {
             "/api/reports/reopen" => return Some(Write::Comment(sections::Remark::Reopen)),
             "/api/push/subscribe" => return Some(Write::Subscribe),
             "/api/push/unsubscribe" => return Some(Write::Unsubscribe),
+            "/api/todos" => return Some(Write::TodoAdd),
             "/api/seen" => return Some(Write::Seen),
             _ => {}
+        }
+        if let Some(id) = path
+            .strip_prefix("/api/todos/")
+            .and_then(|rest| rest.strip_suffix("/done"))
+        {
+            return id.parse().ok().map(Write::TodoDone);
         }
         if let Some((task, act)) = path
             .strip_prefix("/api/tasks/")
@@ -465,6 +474,11 @@ struct CommentBody {
     text: Option<String>,
     revision: Option<i64>,
 }
+
+/// The body of `POST /api/todos/{id}/done`: nothing.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Empty {}
 
 /// `POST /api/seen`'s body: when the page read the desk it drew, as `priory seen --at`.
 #[derive(serde::Deserialize)]
@@ -675,6 +689,16 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
                 endpoint: gone.endpoint,
             };
             Ok((line(&push::Line { push: change }), Sent::Nothing))
+        }
+        Write::TodoAdd => {
+            let add: todo::Add = serde_json::from_slice(body).map_err(bad)?;
+            let change = todo::Change::Add(add);
+            Ok((line(&todo::Line { todo: change }), Sent::Nothing))
+        }
+        Write::TodoDone(id) => {
+            let Empty {} = serde_json::from_slice(body).map_err(bad)?;
+            let change = todo::Change::Done(*id);
+            Ok((line(&todo::Line { todo: change }), Sent::Nothing))
         }
         Write::Seen => {
             let body: SeenBody = serde_json::from_slice(body).map_err(bad)?;

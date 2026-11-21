@@ -32,6 +32,8 @@ every poll:
   `priory check` can refuse a workflow before it runs, for example one that pushes code with no
   person's approval. `priory check --explain` lists what a person approves before each
   irreversible step.
+- A workflow can be a runbook of human steps only, where an answer runs a step's command once.
+  The desk also holds your own to-dos, ranked after the asks.
 - Every step's outcome, tokens and time are recorded, so you can measure a workflow and its cost.
 
 ## The web view, as designed

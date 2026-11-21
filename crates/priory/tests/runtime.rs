@@ -3707,6 +3707,132 @@ fn a_daemon_killed_while_an_answers_command_runs_leaves_it_uncertain_wakes_the_t
     );
 }
 
+/// A runbook: a check, then a step whose `run` answer runs `argv` in the `ops` target.
+fn runbook(argv: &str) -> String {
+    format!(
+        r#"
+start = "check"
+
+[[steps]]
+id = "check"
+decides = "human"
+effect = "none"
+options = ["ok", "abort"]
+next = {{ ok = "test", abort = "stop" }}
+
+[[steps]]
+id = "test"
+decides = "human"
+effect = "reversible"
+options = ["run", "skip"]
+command = {{ argv = {argv}, target = "ops", runs = ["run"] }}
+next = {{ run = "done", skip = "done" }}
+"#
+    )
+}
+
+/// A runbook task asleep at its first step, with no agent ever started.
+fn on_a_runbook(name: &str, argv: &str) -> Setup {
+    let mut setup = Setup::with_workflow(name, &runbook(argv));
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[asks.targets]\nops = \"ops\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(setup.dir.join("factory/ops")).unwrap();
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    setup
+}
+
+#[test]
+fn a_runbook_of_human_steps_advances_on_answers_and_runs_its_step_command_once_on_the_run_option() {
+    let setup = on_a_runbook("runbook", r#"["sh", "-c", "echo ran >> runs.log"]"#);
+    let ops = setup.dir.join("factory/ops");
+
+    let checked = setup.priory(&["answer", "1", "ok", "--revision", "1"]);
+    let asks = setup.until("asks", |rows| rows.first().is_some_and(|row| row[0] == "2"));
+    let desk: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["desk", "--json"]).stdout).unwrap();
+    let without = setup.priory(&["answer", "2", "run", "--revision", "1"]);
+    let ran = setup.priory(&["answer", "--run", "2", "run", "--revision", "1"]);
+    let tasks = setup.until("tasks", |rows| with(rows, 4, "done") == 1);
+    let again = setup.priory(&["answer", "--run", "2", "run", "--revision", "1"]);
+
+    assert!(checked.status.success(), "{checked:?}");
+    assert_eq!(asks[0][3], "test");
+    assert_eq!(
+        desk["next"]["why"], "its answer lets an irreversible step run",
+        "{desk}"
+    );
+    assert!(!without.status.success(), "{without:?}");
+    assert!(ran.status.success(), "{ran:?}");
+    assert_eq!(tasks.len(), 1);
+    assert!(!again.status.success(), "{again:?}");
+    assert_eq!(fs::read_to_string(ops.join("runs.log")).unwrap(), "ran\n");
+    assert!(setup.rows("runs").is_empty(), "a runbook starts no agent");
+}
+
+#[test]
+fn a_crash_while_a_runbook_steps_command_runs_leaves_it_uncertain_and_asks_the_step_again() {
+    let argv = r#"["sh", "-c", "echo $$ > pid; sleep 60"]"#;
+    let mut setup = on_a_runbook("runbook-uncertain", argv);
+    let ops = setup.dir.join("factory/ops");
+    setup.priory(&["answer", "1", "ok", "--revision", "1"]);
+    setup.until("asks", |rows| rows.first().is_some_and(|row| row[0] == "2"));
+    setup.priory(&["answer", "--run", "2", "run", "--revision", "1"]);
+    setup.written("factory/ops/pid");
+    let pid = fs::read_to_string(ops.join("pid")).unwrap();
+
+    setup.crash();
+    setup.start();
+
+    let asks = setup.until("asks", |rows| rows.first().is_some_and(|row| row[0] == "3"));
+    assert_eq!(
+        asks[0][3],
+        format!(
+            "test: answer \"run\" ran [\"sh\",\"-c\",\"echo $$ > pid; sleep 60\"] in {}, and Priory stopped while it ran, so whether it finished is uncertain. Check the target before you act on it.",
+            ops.display()
+        )
+    );
+    assert!(!alive(pid.trim()), "the interrupted command still runs");
+    assert_eq!(setup.rows("actions")[0][3..5], ["answer", "uncertain"]);
+    assert!(desk(&setup, &[]).iter().any(|item| item[1] == "command"));
+    assert_eq!(with(&setup.rows("tasks"), 4, "asleep"), 1);
+}
+
+#[test]
+fn a_runbook_step_whose_command_runs_in_a_worktree_the_task_lacks_blocks_the_task() {
+    let workflow = runbook(r#"["true"]"#).replace(r#"target = "ops", "#, "");
+    let mut setup = Setup::with_workflow("runbook-no-worktree", &workflow);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    setup.priory(&["answer", "1", "ok", "--revision", "1"]);
+
+    let tasks = setup.until("tasks", |rows| with(rows, 4, "blocked") == 1);
+    assert!(
+        tasks[0]
+            .contains(&"step test: command target worktree: this task has no worktree".to_owned()),
+        "{tasks:?}"
+    );
+}
+
+#[test]
+fn a_runbook_steps_command_that_fails_asks_the_step_again_with_its_exit() {
+    let setup = on_a_runbook("runbook-fails", r#"["sh", "-c", "exit 3"]"#);
+    setup.priory(&["answer", "1", "ok", "--revision", "1"]);
+    setup.until("asks", |rows| rows.first().is_some_and(|row| row[0] == "2"));
+
+    setup.priory(&["answer", "--run", "2", "run", "--revision", "1"]);
+
+    let asks = setup.until("asks", |rows| rows.first().is_some_and(|row| row[0] == "3"));
+    assert!(asks[0][3].ends_with(": exit 3."), "{:?}", asks[0][3]);
+    assert_eq!(setup.rows("actions")[0][3..5], ["answer", "failed"]);
+}
+
 /// A task whose run asked a command ask and holds its Stop, as an agent still ending its turn.
 fn ending_its_turn_on_a_command_ask(name: &str, command: serde_json::Value) -> Setup {
     let mut setup = Setup::with_workflow(name, STEPS);
@@ -13801,4 +13927,82 @@ fn a_request_whose_source_text_is_not_a_string_still_creates_its_task() {
 
     assert!(once.status.success(), "{once:?}");
     assert_eq!(setup.rows("tasks").len(), 1);
+}
+
+#[test]
+fn a_todo_ranks_after_the_asks_and_before_the_rest_until_it_is_done() {
+    let mut setup = Setup::new("todos");
+    setup.start();
+    listening(&setup);
+    let posted = setup.priory(&["post", "ci", "the nightly build is red"]);
+    let asked = setup.priory(&[
+        "ask",
+        "cache.ship",
+        r#"{"title": "Ship the cache?", "options": ["ship", "wait"]}"#,
+    ]);
+
+    let added = setup.priory(&[
+        "todo",
+        "add",
+        "Renew the TLS cert",
+        "--band",
+        "today",
+        "--due",
+        "2026-12-01T09:00:00Z",
+    ]);
+    let desk_json = |setup: &Setup| -> serde_json::Value {
+        serde_json::from_slice(&setup.priory(&["desk", "--json"]).stdout).unwrap()
+    };
+    let desk = desk_json(&setup);
+    let listed = setup.priory(&["todo", "list", "--json"]);
+    let done = setup.priory(&["todo", "done", "1"]);
+    let after = desk_json(&setup);
+    let again = setup.priory(&["todo", "done", "1"]);
+
+    assert!(posted.status.success() && asked.status.success());
+    assert!(added.status.success(), "{added:?}");
+    assert_eq!(String::from_utf8_lossy(&added.stdout), "1\n");
+    let kinds: Vec<&str> = desk["ranked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["ask", "todo", "report"], "{desk}");
+    assert_eq!(
+        desk["ranked"][1]["what"], "Renew the TLS cert, due 2026-12-01T09:00:00Z",
+        "{desk}"
+    );
+    assert_eq!(desk["ranked"][1]["why"], "a to-do of yours", "{desk}");
+    let listed: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(
+        [
+            &listed[0]["id"],
+            &listed[0]["text"],
+            &listed[0]["band"],
+            &listed[0]["due"],
+            &listed[0]["done"]
+        ],
+        [
+            &json!(1),
+            &json!("Renew the TLS cert"),
+            &json!("today"),
+            &json!("2026-12-01T09:00:00Z"),
+            &json!(null)
+        ]
+    );
+    assert!(done.status.success(), "{done:?}");
+    assert!(
+        after["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["kind"] != "todo"),
+        "{after}"
+    );
+    assert!(!again.status.success(), "{again:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&again.stderr),
+        "priory todo: to-do 1 is already done\n"
+    );
 }
