@@ -3,7 +3,7 @@ import { h_flex, v_flex, Button } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
 import { follow, priory } from "./priory.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
-import { neverOwned, routeAction } from "./view.js";
+import { eventWords, neverOwned, routeAction } from "./view.js";
 
 const RETRY_MS = 3000;
 // The events a group shows, newest first, as the web view's Inbox does.
@@ -152,7 +152,7 @@ export default class PrioryInbox extends View {
         .child(div().min_w_0().truncate().font_family(this.font.mono).child(task.key)))
       .children(group.events.slice(0, SHOWN).map((event) => v_flex().gap(2).text_size(S["type-small"][0])
         .child(h_flex().gap(6).items_baseline()
-          .child(div().font_weight(600).child(event.type))
+          .child(div().font_weight(600).child(eventWords(event.type)))
           .child(div().flex_1().min_w_0().truncate().child(event.subject ?? ""))
           .child(div().flex_none().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(when(event.time))))
         .when(Boolean(event.line), (el) => el.child(div().whitespace_normal().text_color(t["text-2"]).child(event.line)))))

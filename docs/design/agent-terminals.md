@@ -106,10 +106,11 @@ Keys need a person's explicit act, per run:
   `paste-buffer`, without the Enter, so the text never sits in a process's arguments and tmux never
   reads it as a command. It sends a key with `send-keys` and a name from the list. The target is
   always the pane the daemon resolved, never one from the request.
-- The daemon appends a `factory.terminal.keys` record with the grant, the request id, the key or
-  `text`, and the text's length, before it sends, then the outcome after. A repeated request id
-  gets the first outcome and sends nothing. A record with no outcome, after a crash, is
-  `uncertain`, and the daemon never sends it again, as R5.4 does for prompts.
+- The daemon stores the request, with the grant, the request id, the key or `text`, and the text's
+  length, before it sends. After the send it stores the outcome and appends one
+  `factory.terminal.keys` record that holds it. A repeated request id gets the first outcome and
+  sends nothing. A stored request with no outcome, after a crash, becomes `uncertain`, with its
+  record, and the daemon never sends it again, as R5.4 does for prompts.
 - Like every write, these endpoints need the token, pass the Origin rule, and reach the daemon on
   its socket. Without a daemon they get `503`.
 
@@ -295,7 +296,8 @@ Each tmux test takes a `TmuxDir`, as CONTRIBUTING asks.
 
 ## Later slices
 
-Slices 1, 4 and 5 are built; 2 and 3 are not.
+Slices 1, 3, 4 and 5 are built. Slice 2 is built in the server; the web view's confirm sheet and
+key row follow.
 
 1. **Say from the pane.** "Type" sends a line to the existing `POST /api/tasks/{id}/say`. It
    needs no new endpoint, so it can ship right after the first slice, apart from keys.

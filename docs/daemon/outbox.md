@@ -62,6 +62,10 @@ sit in the agent's input. That rule holds while the run the prompt went to is li
 - Once the run holding the prompt ended any other way, its process is gone, and the task's next run
   gets its prompts.
 
+A run whose keyboard a person holds gets no prompt while the grant is open: `say` queues, and the
+daemon types at the run's next idle point after the grant ends. See
+[A run's keyboard](serve.md#a-runs-keyboard).
+
 A `UserPromptSubmit` with the same words confirms an `uncertain` prompt of its run, even one the
 daemon reads after a restart. Otherwise the prompt stays `uncertain` on the desk.
 

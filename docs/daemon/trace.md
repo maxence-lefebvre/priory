@@ -225,8 +225,10 @@ A review whose author ends in `[bot]` does not count as a human review.
 | `closed-unmerged` | One of its pull requests closed without merging |
 | `red-after-merge` | A check run on the merge commit of one of its merged pull requests completed with a conclusion other than `success`, `neutral` or `skipped` |
 | `reverted` | A later pull request of the same repository merged, and its title or body says `This reverts commit <sha>` of the merge commit of one of the task's, as `git revert` writes, or says `Reverts owner/name#N`, as GitHub's revert button writes |
+| `marked-wrong` | A person ran `priory label TASK wrong --evidence URL`. Its `happened` is the mark's `--happened`, else when the person ran it. `--clear` withdraws it with a `factory.step.unlabeled` record. See [label.md](../reference/label.md) |
 
 The first four are final: a task with one of them has an outcome its grade can be compared with.
+`priory grades` leaves out `marked-wrong`, which only `priory report risk` reads.
 `red-after-merge` and `reverted` can come later, on top of `approved-clean`. Events count by when
 they happened, not when they arrived. A review's commit comes from its event's `commit`, or its
 `head_sha` for a review stored before `commit` existed. A task with both `approved-clean` and
@@ -287,6 +289,10 @@ plan yellow  4 of 12, needs 20                    1 of 12, needs 20
 adverse trials
 task  outcome       label     happened    evidence
 31    landed wrong  reverted  2026-10-02  https://github.com/example/app/pull/88
+
+candidates: `fixes` relations a person has not marked
+task  fixed by  recorded by
+27    44        priory
 ```
 
 Each irreversible step of each workflow is a target. A task reached it at its first
@@ -300,8 +306,12 @@ lies in the 30 days after the reach:
 
 | Outcome | Labels |
 | ------- | ------ |
-| `landed wrong` | `red-after-merge` or `reverted` |
-| `judged wrong` | Those, or `changes-requested`, `closed-unmerged` or `approval-rejected` |
+| `landed wrong` | `red-after-merge` or `reverted`, or `marked-wrong` when a pull request of the task had merged by the mark's `happened` |
+| `judged wrong` | Those, or `changes-requested`, `closed-unmerged`, `approval-rejected` or any `marked-wrong` |
+
+A mark that `--clear` withdrew counts nowhere, whenever the clear was written: it says the mark was
+a mistake, not that something happened. A mark never makes a task a trial: a task with no pull
+request by day 30 stays `unjudged`, marked or not.
 
 The header counts the tasks that reached the target in the window, then:
 
@@ -323,6 +333,13 @@ and no percentage. `--json` carries the interval at any `n`, with `"shown": fals
 `--since` takes what `report --since` takes, and defaults to `180 days`. `--workflow` keeps one
 workflow's targets.
 
+The candidates table lists, under each target, the `fixes` relations whose fixed task reached the
+target in the window and has no mark left. Priory records such a relation whenever a request links
+a merged pull request ([relations.md](relations.md)), and an agent can record one too, so a relation
+is not a label. A person reads each candidate and runs `priory label TASK wrong --evidence URL`, or
+leaves it. A mark removes it from the table, and a clear puts it back. `--json` holds them in each
+target's `candidates`, each with `task`, `fixed_by` and `by`.
+
 The estimate rests on these assumptions:
 
 1. Labels measure recorded judgements, not wrong work. A bug nobody reverted has no label, and a
@@ -338,7 +355,7 @@ The estimate rests on these assumptions:
 
 Known limits:
 
-- The `fixes` candidates, `marked-wrong`, `--by lane` and `GET /api/risk` come in later slices.
+- `--by lane` and `GET /api/risk` come in later slices.
 
 ## Attention
 

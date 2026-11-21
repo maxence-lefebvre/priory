@@ -2,6 +2,7 @@
 //! adverse outcome label within a fixed horizon, as a Beta(1, 1) posterior. Nothing reads it to
 //! approve, skip or order work.
 
+use crate::label::MARKED_WRONG;
 use jiff::{SignedDuration, Timestamp};
 use priory_factory::factory::{Decider, Effect, Factory};
 use rusqlite::Connection;
@@ -16,14 +17,16 @@ pub const FLOOR: usize = 20;
 pub const SINCE: &str = "180 days";
 
 /// The labels that make a trial `judged wrong`.
-const JUDGED: [&str; 5] = [
+const JUDGED: [&str; 6] = [
     "changes-requested",
     "closed-unmerged",
     "approval-rejected",
     "red-after-merge",
     "reverted",
+    MARKED_WRONG,
 ];
-/// The labels that make a trial `landed wrong`.
+/// The labels that make a trial `landed wrong`. A person's `marked-wrong` does too when a pull
+/// request of the task had merged by the mark's date.
 const LANDED: [&str; 2] = ["red-after-merge", "reverted"];
 
 /// The share of the Beta(a, b) distribution at or below `x`, for whole `a` and `b` of at least 1:
@@ -104,6 +107,13 @@ struct Adverse {
     evidence: String,
 }
 
+/// A `fixes` relation on a task that reached the target, which a person has not marked wrong.
+struct Candidate {
+    task: String,
+    fixed_by: i64,
+    by: String,
+}
+
 /// An irreversible step of a workflow, with its rows and counts.
 #[derive(Default)]
 struct Target {
@@ -121,6 +131,9 @@ struct Target {
     own: Row,
     rows: BTreeMap<(String, String), Row>,
     adverse: Vec<Adverse>,
+    /// The tasks whose reach lies in the window.
+    tasks: BTreeSet<String>,
+    candidates: Vec<Candidate>,
 }
 
 /// Each target's trials and estimates.
@@ -146,10 +159,11 @@ struct Label {
     evidence: String,
 }
 
-/// A pull request of a task: when Priory first knew of it, and when it closed.
+/// A pull request of a task: when Priory first knew of it, when it closed, and when it merged.
 struct Pull {
     seen: Timestamp,
     closed: Option<Timestamp>,
+    merged: Option<Timestamp>,
 }
 
 fn instant(text: &str) -> Result<Timestamp, String> {
@@ -202,11 +216,18 @@ pub fn risk(
         .map(|(time, ended)| Ok(Ended { time: instant(&time)?, ..ended }))
         .collect::<Result<_, String>>()?;
     let mut labels: BTreeMap<String, Vec<Label>> = BTreeMap::new();
+    // A clear withdraws the marks before it, whenever it was written: it says the mark was a
+    // mistake, not that something happened.
     let rows: Vec<(String, String, Option<String>, String)> = db
         .prepare(
             "SELECT json_extract(event, '$.data.task'), json_extract(event, '$.data.label'),
                json_extract(event, '$.data.happened'), json_extract(event, '$.data.evidence')
-             FROM trace WHERE type = 'factory.step.labeled' ORDER BY seq",
+             FROM trace AS labeled WHERE type = 'factory.step.labeled'
+             AND NOT EXISTS (SELECT 1 FROM trace AS cleared WHERE cleared.type = 'factory.step.unlabeled'
+               AND cleared.seq > labeled.seq
+               AND json_extract(cleared.event, '$.data.task') = json_extract(labeled.event, '$.data.task')
+               AND json_extract(cleared.event, '$.data.label') = json_extract(labeled.event, '$.data.label'))
+             ORDER BY seq",
         )
         .and_then(|mut statement| {
             statement
@@ -225,7 +246,7 @@ pub fn risk(
         });
     }
     let mut pulls: BTreeMap<String, Vec<Pull>> = BTreeMap::new();
-    let rows: Vec<(i64, String, Option<String>)> = db
+    let rows: Vec<(i64, String, Option<String>, Option<String>)> = db
         .prepare(
             "WITH seen AS (
                SELECT task, resource, created AS time FROM pull_requests
@@ -238,21 +259,36 @@ pub fn risk(
                  AND json_extract(inbox.data, '$.pull_request') IS NOT NULL)
              SELECT task, min(time), (SELECT min(time) FROM inbox
                WHERE type = 'github.pull_request.closed' AND 'github:' || json_extract(data, '$.repo')
+                 || '#' || json_extract(data, '$.pull_request') = seen.resource),
+               (SELECT min(time) FROM inbox
+               WHERE type = 'github.pull_request.closed' AND json_extract(data, '$.merged') = 1
+                 AND 'github:' || json_extract(data, '$.repo')
                  || '#' || json_extract(data, '$.pull_request') = seen.resource)
              FROM seen GROUP BY task, resource",
         )
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect()
+        })
+        .map_err(error)?;
+    for (task, seen, closed, merged) in rows {
+        pulls.entry(task.to_string()).or_default().push(Pull {
+            seen: instant(&seen)?,
+            closed: closed.as_deref().map(instant).transpose()?,
+            merged: merged.as_deref().map(instant).transpose()?,
+        });
+    }
+    let fixes: Vec<(i64, i64, String)> = db
+        .prepare("SELECT other, task, by FROM relations WHERE kind = 'fixes' ORDER BY other, task")
         .and_then(|mut statement| {
             statement
                 .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
                 .collect()
         })
         .map_err(error)?;
-    for (task, seen, closed) in rows {
-        pulls.entry(task.to_string()).or_default().push(Pull {
-            seen: instant(&seen)?,
-            closed: closed.as_deref().map(instant).transpose()?,
-        });
-    }
 
     let mut wanted: BTreeSet<(String, String)> = factory
         .workflows
@@ -326,6 +362,7 @@ pub fn risk(
                 continue;
             }
             target.reached += 1;
+            target.tasks.insert(task.to_owned());
             let end = reach.time + horizon;
             if end > now {
                 target.pending += 1;
@@ -345,18 +382,31 @@ pub fn risk(
                 target.undated += 1;
                 continue;
             };
-            let first = |set: &[&str]| {
+            let merged_by = |at: Timestamp| {
+                pulls
+                    .iter()
+                    .any(|pull| pull.merged.is_some_and(|merged| merged <= at))
+            };
+            let first = |landed: bool| {
                 dated
                     .iter()
                     .filter(|(label, happened)| {
-                        set.contains(&label.label.as_str()) && *happened > reach.time
+                        let label = label.label.as_str();
+                        let counts = match landed {
+                            true => {
+                                LANDED.contains(&label)
+                                    || (label == MARKED_WRONG && merged_by(*happened))
+                            }
+                            false => JUDGED.contains(&label),
+                        };
+                        counts && *happened > reach.time
                     })
                     .min_by_key(|(_, happened)| *happened)
                     .copied()
             };
-            let landed = first(&LANDED).filter(|(_, happened)| *happened <= end);
-            let judged = first(&JUDGED).filter(|(_, happened)| *happened <= end);
-            if judged.is_none() && first(&JUDGED).is_some() {
+            let landed = first(true).filter(|(_, happened)| *happened <= end);
+            let judged = first(false).filter(|(_, happened)| *happened <= end);
+            if judged.is_none() && first(false).is_some() {
                 target.late += 1;
             }
             if pulls
@@ -393,6 +443,21 @@ pub fn risk(
                 target.rows.entry(key).or_default().count(judged, landed);
             }
         }
+        target.candidates = fixes
+            .iter()
+            .filter(|(fixed, ..)| {
+                let fixed = fixed.to_string();
+                target.tasks.contains(&fixed)
+                    && !labels.get(&fixed).is_some_and(|labels| {
+                        labels.iter().any(|label| label.label == MARKED_WRONG)
+                    })
+            })
+            .map(|(fixed, fixed_by, by)| Candidate {
+                task: fixed.to_string(),
+                fixed_by: *fixed_by,
+                by: by.clone(),
+            })
+            .collect();
         targets.push(target);
     }
     Ok(Risk {
@@ -467,6 +532,11 @@ impl Risk {
                     "happened": adverse.happened.to_string(),
                     "evidence": adverse.evidence,
                 })).collect::<Vec<_>>(),
+                "candidates": target.candidates.iter().map(|candidate| json!({
+                    "task": candidate.task,
+                    "fixed_by": candidate.fixed_by.to_string(),
+                    "by": candidate.by,
+                })).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
         })
     }
@@ -535,6 +605,29 @@ impl Risk {
                             adverse.label.clone(),
                             adverse.happened.strftime("%Y-%m-%d").to_string(),
                             adverse.evidence.clone(),
+                        ],
+                        false,
+                    ));
+                }
+                for line in columns(&table) {
+                    crate::state::emit(&line);
+                }
+            }
+            if !target.candidates.is_empty() {
+                crate::state::emit("");
+                crate::state::emit("candidates: `fixes` relations a person has not marked");
+                let mut table = vec![(
+                    ["task", "fixed by", "recorded by"]
+                        .map(str::to_owned)
+                        .to_vec(),
+                    false,
+                )];
+                for candidate in &target.candidates {
+                    table.push((
+                        vec![
+                            candidate.task.clone(),
+                            candidate.fixed_by.to_string(),
+                            candidate.by.clone(),
                         ],
                         false,
                     ));

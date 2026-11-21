@@ -59,6 +59,9 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /api/reports/reply` | `priory report reply COMMENT TEXT` | as above |
 | `POST /api/reports/resolve` | `priory report resolve COMMENT` | as above |
 | `POST /api/reports/reopen` | `priory report reopen COMMENT` | as above |
+| `POST /api/runs/{id}/keyboard` | | `{"grant", "ends", "secret"}`, with `[serve] terminal = "type"`. See [Keyboard](#keyboard) |
+| `POST /api/runs/{id}/keyboard/return` | | `{"ok": "<what happened>"}`. See [Keyboard](#keyboard) |
+| `POST /api/runs/{id}/keys` | | `{"outcome"}`. See [Keyboard](#keyboard) |
 | `POST /hooks/github` | | `202` for a signed GitHub delivery, with `[webhooks.github]`. See [below](#post-hooksgithub) |
 | `POST /hooks/linear` | | `200` for a signed Linear delivery, with `[webhooks.linear]`. See [below](#post-hookslinear) |
 | any other path | | the web view, with `web = true`: see [Web view files](#web-view-files) |
@@ -72,13 +75,13 @@ or a reason, is untrusted: render it as text.
 | ---- | ---- |
 | `200` | The endpoint answered |
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
-| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`, or a `pr` that is not a pull request such as `github:owner/repo#7`; `/api/runs` has a parameter other than `all=1`; a run screen's `history` is not a whole number; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
+| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`, or a `pr` that is not a pull request such as `github:owner/repo#7`; `/api/runs` has a parameter other than `all=1`; a run screen's `history` is not a whole number; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); a keys body whose text or key the [Keyboard](#keyboard) section refuses; for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
-| `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site, and that is not one of [`[serve] extension_origins`](factory.md#serve) |
-| `404` | No such path, task, report, ask, batch or web view file; a run screen whose run ended, whose pane this server cannot find or read within 2 seconds, or that holds a secret redaction cannot hide; any run screen with `[serve] terminal = "off"` |
+| `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site, and that is not one of [`[serve] extension_origins`](factory.md#serve). Or a keys or keyboard return request whose secret matches no open grant of the run |
+| `404` | No such path, task, report, ask, batch or web view file; a run screen whose run ended, whose pane this server cannot find or read within 2 seconds, or that holds a secret redaction cannot hide; any run screen with `[serve] terminal = "off"`; any [keyboard](#keyboard) path, for any method, unless `[serve] terminal = "type"` |
 | `405` | `POST` on a path that reads, or `GET` on a write. The `Allow` header names the method |
 | `408` | The request sent no byte within 1 second, or took over 5 seconds in all |
-| `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report moved past its `revision`, or the pick already holds that choice or an applied one. Or a batch edit's `revision` is no longer the plan's revision |
+| `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report moved past its `revision`, or the pick already holds that choice or an applied one. Or a batch edit's `revision` is no longer the plan's revision. Or a keyboard take's `revision` is no longer the state's |
 | `411` | A `POST` has no `Content-Length`, or uses `Transfer-Encoding` |
 | `413` | A `GET` has a body; a write's body is over 16 KiB; a webhook's is over 1 MiB |
 | `415` | A write's `Content-Type` is not `application/json` |
@@ -132,6 +135,34 @@ text or, with `--json`, as this object. Its rows keep their colours on a termina
 when the output goes to a file or a pipe. It hides the values of the default secret variables,
 such as `PRIORY_TOKEN`, from its own environment, and the secret shapes. Like the endpoint, it
 gives tmux 2 seconds.
+
+## Keyboard
+
+With [`[serve] terminal = "type"`](factory.md#serve), a token holder can take a live run's keyboard
+and send its pane text and keys. [serve.md](../daemon/serve.md#a-runs-keyboard) explains the grant
+and what typing bypasses. Under `"watch"` and `"off"`, each path below gets `404`. Each is a write:
+it needs the token, passes the Origin rule and reaches the daemon on its socket.
+
+| Endpoint | Body | Reply |
+| -------- | ---- | ----- |
+| `POST /api/runs/{id}/keyboard` | `revision`, the state's revision the page showed | `{"grant": N, "ends": TIME, "secret": "<32 hex digits>"}`. The grant lasts 15 minutes, and ends the run's grant before it. The secret is in this reply only |
+| `POST /api/runs/{id}/keyboard/return` | `secret` | `{"ok": "run N's keyboard returned"}` |
+| `POST /api/runs/{id}/keys` | `secret`, `request`, an id of 1 to 64 bytes the page picks, and exactly one of `text` or `key` | `{"outcome": "sent" \| "failed" \| "uncertain"}`, with `error` when it failed and `"repeated": true` for a request id already sent under this grant |
+
+- `text` is 1 to 1,024 bytes with no control character: a newline, Escape, Tab or any other gets
+  `400`. The daemon pastes it into the pane without pressing Enter.
+- `key` is one of `Enter`, `Escape`, `Tab`, `BTab`, `Up`, `Down`, `Left`, `Right`, `PageUp`,
+  `PageDown`, `C-c`, `C-d`, `y`, `n` and `1` to `9`. Anything else gets `400`.
+- A repeated `request` gets the first outcome and sends nothing, even once the grant ended.
+  `uncertain` means the daemon stopped between storing the request and its outcome, or tmux did
+  not answer within the command timeout: it may have reached the pane, and it is never sent again.
+- A secret of an expired, returned or replaced grant gets `403`, naming why it ended. A run that
+  ended gets `404`, and a stale `revision` `409`.
+
+```sh
+curl -X POST http://127.0.0.1:7340/api/runs/12/keys -H "Authorization: Bearer $PRIORY_TOKEN" \
+  -H 'Content-Type: application/json' -d '{"secret": "'"$SECRET"'", "request": "r1", "key": "Escape"}'
+```
 
 ## Writes
 
@@ -518,7 +549,7 @@ of the factory in `DIR`, and `priory queue --json` lists no schedule firings.
 
 | `kind` | `at` | `why` |
 | ------ | ---- | ----- |
-| `queued` | Now: it starts once there is room | `first in the queue`, `a band above it`, or `queue position <n>` |
+| `queued` | Now: it starts once there is room | The task's own wait reason when it has one, such as `waits for its claim to reach the log`; else `first in the queue`, `a band above it`, or `queue position <n>` |
 | `held` | The end of its time hold, once time is all it still waits for | `held until <time>` |
 | `scheduled` | The trigger's [next firing](../intake/schedule.md#next-firing) | `schedule <trigger> fires` |
 
