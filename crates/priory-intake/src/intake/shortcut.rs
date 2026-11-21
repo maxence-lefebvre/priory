@@ -12,7 +12,8 @@ const CALLBACK: &str = "priory_queue";
 /// How many payloads wait for the worker; more get a "busy" reply.
 const QUEUE: usize = 16;
 const BUSY: &str = "Priory is busy with other requests; try again in a minute.";
-const REFUSED: &str = "You are not on this Priory's `[slack.shortcut] users`, so nothing was queued.";
+const REFUSED: &str =
+    "You are not on this Priory's `[slack.shortcut] users`, so nothing was queued.";
 const LONGEST_WAIT: Duration = Duration::from_secs(60);
 /// How long the socket may stay silent before Priory pings it.
 const QUIET: Duration = Duration::from_secs(30);
@@ -27,7 +28,10 @@ pub(super) fn start(dir: &Path, shortcut: &SlackShortcut) -> Result<(), String> 
             .filter(|token| !token.is_empty())
             .ok_or_else(|| format!("{name} is not set: the Slack shortcut needs {what}"))
     };
-    let app = (shortcut.token_env.clone(), env(&shortcut.token_env, "an app-level token")?);
+    let app = (
+        shortcut.token_env.clone(),
+        env(&shortcut.token_env, "an app-level token")?,
+    );
     let bot = env(TOKEN, "a bot token to open its form")?;
     // The threads outlive this call's borrow of the factory, so they own a fresh load of it.
     let (factory, _) = priory_factory::factory::load(dir);
@@ -128,7 +132,9 @@ fn connection(
             continue;
         };
         socket
-            .send(Message::text(json!({ "envelope_id": envelope }).to_string()))
+            .send(Message::text(
+                json!({ "envelope_id": envelope }).to_string(),
+            ))
             .map_err(|error| format!("Socket Mode ack: {error}"))?;
         if let Err(TrySendError::Full(payload)) = work.try_send(frame["payload"].clone()) {
             // A full overflow queue too drops the payload unanswered.
@@ -140,13 +146,16 @@ fn connection(
 /// Opens the form for a shortcut, or queues the task a submitted form asks for. Refuses anyone
 /// off the allowlist.
 fn handle(factory: &Factory, users: &[String], bot: &str, payload: &Value) -> Result<(), String> {
-    let allowed = users.iter().any(|user| user == text(&payload["user"]["id"]));
+    let allowed = users
+        .iter()
+        .any(|user| user == text(&payload["user"]["id"]));
     match text(&payload["type"]) {
         "message_action" if payload["callback_id"] == CALLBACK => {
             if !allowed {
                 return reply(payload, REFUSED);
             }
-            let opened = json!({ "trigger_id": payload["trigger_id"], "view": form(factory, payload) });
+            let opened =
+                json!({ "trigger_id": payload["trigger_id"], "view": form(factory, payload) });
             post(Some((TOKEN, bot)), &format!("{API}views.open"), &opened).map(drop)
         }
         "view_submission" if payload["view"]["callback_id"] == CALLBACK => {
@@ -179,11 +188,15 @@ fn form(factory: &Factory, payload: &Value) -> Value {
         "response_url": payload["response_url"],
         "link": link,
     });
-    let option = |workflow: &str| {
-        json!({ "text": { "type": "plain_text", "text": workflow }, "value": workflow })
-    };
-    let options: Vec<Value> = factory.workflows.keys().take(100).map(|name| option(name)).collect();
-    let mut select = json!({ "type": "static_select", "action_id": "workflow", "options": options });
+    let option = |workflow: &str| json!({ "text": { "type": "plain_text", "text": workflow }, "value": workflow });
+    let options: Vec<Value> = factory
+        .workflows
+        .keys()
+        .take(100)
+        .map(|name| option(name))
+        .collect();
+    let mut select =
+        json!({ "type": "static_select", "action_id": "workflow", "options": options });
     if let Some(defaults) = factory.request() {
         select["initial_option"] = option(&defaults.workflow);
     }

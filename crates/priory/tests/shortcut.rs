@@ -108,7 +108,9 @@ impl Slack {
         let stream = loop {
             match self.listener.accept() {
                 Ok((stream, _)) => break stream,
-                Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+                Err(_) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20))
+                }
                 Err(error) => panic!("the intake never connected: {error}"),
             }
         };
@@ -145,7 +147,11 @@ impl Slack {
             if let Some(call) = self.calls().into_iter().find(|call| call.contains(what)) {
                 return call;
             }
-            assert!(Instant::now() < deadline, "no call to {what}: {:?}", self.calls());
+            assert!(
+                Instant::now() < deadline,
+                "no call to {what}: {:?}",
+                self.calls()
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -298,7 +304,10 @@ fn an_allowed_submission_queues_the_thread_once_and_says_so() {
     let opened = body(&slack.call("views.open"));
 
     socket
-        .send(envelope("e2", submission(&opened, ALLOWED, "Fix the Safari login")))
+        .send(envelope(
+            "e2",
+            submission(&opened, ALLOWED, "Fix the Safari login"),
+        ))
         .unwrap();
     read(&mut socket);
     wait_for("the first reply", || replies(&slack).len() == 1);
@@ -353,20 +362,30 @@ fn the_intake_reconnects_after_a_disconnect_and_a_dropped_socket() {
     slack.start();
     let mut socket = slack.accept();
     socket
-        .send(Message::text(json!({"type": "disconnect", "reason": "refresh_requested"}).to_string()))
+        .send(Message::text(
+            json!({"type": "disconnect", "reason": "refresh_requested"}).to_string(),
+        ))
         .unwrap();
     let mut socket_two = slack.accept();
-    socket_two.send(envelope("e2", json!({"type": "block_actions"}))).unwrap();
+    socket_two
+        .send(envelope("e2", json!({"type": "block_actions"})))
+        .unwrap();
     let ack_two = read(&mut socket_two);
     drop(socket_two);
     drop(socket);
     let mut socket_three = slack.accept();
-    socket_three.send(envelope("e3", json!({"type": "block_actions"}))).unwrap();
+    socket_three
+        .send(envelope("e3", json!({"type": "block_actions"})))
+        .unwrap();
     let ack_three = read(&mut socket_three);
 
     assert_eq!(ack_two, json!({"envelope_id": "e2"}));
     assert_eq!(ack_three, json!({"envelope_id": "e3"}));
-    let opens = slack.calls().iter().filter(|call| call.contains("apps.connections.open")).count();
+    let opens = slack
+        .calls()
+        .iter()
+        .filter(|call| call.contains("apps.connections.open"))
+        .count();
     assert_eq!(opens, 3);
 }
 
@@ -379,7 +398,12 @@ fn the_tokens_never_reach_the_logs_or_the_command_line() {
     socket.send(envelope("e1", shortcut(ALLOWED))).unwrap();
     read(&mut socket);
     slack.call("views.open");
-    drop(slack.intake.take().map(|mut child| (child.kill(), child.wait())));
+    drop(
+        slack
+            .intake
+            .take()
+            .map(|mut child| (child.kill(), child.wait())),
+    );
 
     let stderr = fs::read_to_string(slack.dir.join("stderr")).unwrap();
     let logs = [
@@ -388,7 +412,10 @@ fn the_tokens_never_reach_the_logs_or_the_command_line() {
         fs::read_to_string(slack.dir.join("args")).unwrap(),
     ];
     for log in logs {
-        assert!(!log.contains(APP_TOKEN) && !log.contains(BOT_TOKEN), "{log}");
+        assert!(
+            !log.contains(APP_TOKEN) && !log.contains(BOT_TOKEN),
+            "{log}"
+        );
         assert!(!log.contains("hooks.slack.com"), "{log}");
     }
     assert!(stderr.contains("Bearer <SLACK_APP_TOKEN>"), "{stderr}");
@@ -401,12 +428,18 @@ fn a_full_queue_answers_busy() {
     slack.start();
     let mut socket = slack.accept();
     for n in 0..18 {
-        socket.send(envelope(&format!("e{n}"), shortcut(ALLOWED))).unwrap();
+        socket
+            .send(envelope(&format!("e{n}"), shortcut(ALLOWED)))
+            .unwrap();
         read(&mut socket);
     }
     wait_for("a busy reply", || !replies(&slack).is_empty());
     fs::remove_file(slack.dir.join("hold")).unwrap();
 
     let busy = "Priory is busy with other requests; try again in a minute.";
-    assert!(replies(&slack).iter().all(|reply| reply == busy), "{:?}", replies(&slack));
+    assert!(
+        replies(&slack).iter().all(|reply| reply == busy),
+        "{:?}",
+        replies(&slack)
+    );
 }

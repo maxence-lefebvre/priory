@@ -361,10 +361,17 @@ pub(super) fn post(token: Option<(&str, &str)>, url: &str, body: &Value) -> Resu
     let quote = |value: &str| format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""));
     let mut config = String::new();
     if let Some((_, token)) = token {
-        config += &format!("header = {}\n", quote(&format!("Authorization: Bearer {token}")));
+        config += &format!(
+            "header = {}\n",
+            quote(&format!("Authorization: Bearer {token}"))
+        );
     }
     config += "header = \"Content-Type: application/json; charset=utf-8\"\n";
-    config += &format!("data = {}\nurl = {}\n", quote(&body.to_string()), quote(url));
+    config += &format!(
+        "data = {}\nurl = {}\n",
+        quote(&body.to_string()),
+        quote(url)
+    );
     let method = url.strip_prefix(API).unwrap_or("response_url");
     let failed = |error: &str| {
         let error = match token {
@@ -406,7 +413,8 @@ pub(super) fn post(token: Option<(&str, &str)>, url: &str, body: &Value) -> Resu
         return Err(failed(&format!("{} {}", stderr.trim(), stdout.trim())));
     }
     // A response_url answers `ok` as text, the Web API answers JSON.
-    let answer: Value = serde_json::from_str(&stdout).unwrap_or(json!({"ok": stdout.trim() == "ok"}));
+    let answer: Value =
+        serde_json::from_str(&stdout).unwrap_or(json!({"ok": stdout.trim() == "ok"}));
     if answer["ok"] != true {
         return Err(failed(text(&answer["error"])));
     }

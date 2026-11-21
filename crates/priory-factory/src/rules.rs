@@ -82,7 +82,11 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         {
             problems.push(problem(settings, settings.lines.field("links"), refused));
         }
-        let shortcut = settings.value.slack.as_ref().and_then(|slack| slack.shortcut.as_ref());
+        let shortcut = settings
+            .value
+            .slack
+            .as_ref()
+            .and_then(|slack| slack.shortcut.as_ref());
         if let Some(shortcut) = shortcut {
             let line = settings.lines.field("slack");
             if shortcut.users.is_empty() {
@@ -92,7 +96,9 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             let slack_id = |user: &String| {
                 user.len() > 1
                     && user.starts_with(['U', 'W'])
-                    && user.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+                    && user
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
             };
             for user in shortcut.users.iter().filter(|user| !slack_id(user)) {
                 let message = format!(

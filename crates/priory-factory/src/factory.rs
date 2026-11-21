@@ -1188,7 +1188,13 @@ impl Factory {
 
     /// The Slack message shortcut's settings; none takes no shortcut.
     pub fn slack_shortcut(&self) -> Option<&SlackShortcut> {
-        self.settings.as_ref()?.value.slack.as_ref()?.shortcut.as_ref()
+        self.settings
+            .as_ref()?
+            .value
+            .slack
+            .as_ref()?
+            .shortcut
+            .as_ref()
     }
 
     pub fn bands(&self) -> Vec<&str> {
