@@ -474,7 +474,8 @@ fn score(args: Vec<String>) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let scored = state::open().and_then(|mut db| {
-        let scores = priory_core::score::score(&mut db, &factory, task, only.as_deref())?;
+        let scores =
+            priory_core::score::score(&mut db, &factory, &runtime::home(), task, only.as_deref())?;
         let rows = serde_json::Value::Array(scores.iter().map(|score| score.json()).collect());
         if json {
             println!("{}", serde_json::json!({ "scores": rows }));

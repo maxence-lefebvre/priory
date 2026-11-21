@@ -2,7 +2,7 @@
 
 `priory score` grades a task's finished runs with the factory's scorers, on demand. A scorer is a
 file in `scorers/` ([the scorer reference](../reference/scorers.md)). No scorer runs by itself
-after a run.
+after a run: a `command` scorer can take as long as the gate.
 
 ```sh
 priory score [DIR] TASK [--scorer NAME] [--json]
@@ -14,19 +14,27 @@ runs one scorer instead of all of them. It prints one row per run and scorer:
 
 ```text
 run	step	scorer	verdict	reason
+1	plan	gate	pass	the tests pass
 1	plan	passed	fail	outcome ready, not passed
-1	plan	short-ask	not applicable	the run asked nothing
+2	implement	gate	error	the result names no commit
 2	implement	passed	pass	outcome passed
-2	implement	short-ask	not applicable	the run asked nothing
 ```
 
 A verdict is `pass`, `fail`, `not applicable` or `error`, and `reason` is its line of why. `--json`
 prints `{"scores": [...]}`, each entry with the same five fields. The command fails when the task
 does not exist, has no finished run, or the factory has no scorer of that name.
 
-## A `command` scorer
+## A `command` scorer's checkout
 
-A `command` scorer does not run yet: it answers `error: command scorers do not run yet`.
+A `command` scorer never reads the task's worktree, since a later run may be editing it. The
+command adds a detached worktree of the result's `commit` from Priory's clone, under
+`$PRIORY_HOME/scores/`, runs the scorer there and removes it. So a scorer of an earlier run sees
+that run's commit, whatever the branch holds now. The commit must still be in the clone.
+
+The scorer runs in its own process group, with a cleared environment that keeps `PATH` and `HOME`
+and adds `PRIORY_SCORE_BASE`, `PRIORY_SCORE_HEAD` and `PRIORY_SCORE_RESULT`. Past its `timeout`,
+Priory kills the group and the scorer answers `error: timed out after <n>s`. Exit 0 passes and
+exit 1 fails, with the last line of the scorer's output as the reason. Any other exit is an error.
 
 ## Records
 
