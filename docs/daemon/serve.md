@@ -54,6 +54,10 @@ for writing. An add goes to the daemon on its socket too, but the daemon publish
 transaction: a failure between the two messages leaves only the source event. [serve.md](../reference/serve.md#writes) lists the
 bodies and status codes.
 
+`POST /api/seen` records a visit to the desk, as `priory seen --at` does. The verb writes the state
+file itself, but the endpoint sends the daemon a line too, so the server thread keeps the state
+read-only. Without a daemon, the visit gets `503` and the desk shows the same events next time.
+
 A write carries the revision of the ask the client showed, as `priory answer --revision` does. The
 first answer to that revision stands. When the daemon refuses, the server reads the ask again: a
 revision that moved, or an ask that closed, gets `409` with the ask, so a view can redraw it and
