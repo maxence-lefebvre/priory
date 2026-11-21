@@ -1396,7 +1396,7 @@ fn a_view_with_an_unknown_panel_names_its_file_and_line() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "views/default.toml:4:13: unknown variant `kanban`, expected one of `desk`, `asks`, `inbox`, `queue`, `tasks`, `runs`, `terminal`, `workflow`, `reports`\n"
+        "views/default.toml:4:13: unknown variant `kanban`, expected one of `desk`, `asks`, `inbox`, `queue`, `tasks`, `runs`, `terminal`, `workflow`, `reports`, `costs`\n"
     );
 }
 

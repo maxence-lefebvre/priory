@@ -207,7 +207,7 @@ and the rubric red `--count`.
 - A view file (R8.2) describes the wide layout. On compact screens, each leaf panel becomes a tab
   in the tree's order. The bottom bar shows the first four and a "More" tab for the rest.
 - The default view puts the desk first, then asks, tasks and runs. The queue is a saved view of
-  tasks. Inbox, workflows, reports and terminals sit under "More".
+  tasks. Inbox, workflows, reports, costs and terminals sit under "More".
 - "Asks" names the list of every ask. The PRD's inbox stays the log of events (R3).
 - Panels lay out by their own width with container queries, not by the viewport.
 - Every task, run and ask has its own URL, such as `/asks/42`. A link from a notification opens
@@ -230,7 +230,7 @@ and the rubric red `--count`.
 
 - **Top bar**: the factory name and connection state, a command bar in the middle ("Search or run
   a command", `Ctrl K`), the runner name, and the [Add](#add) button on the right.
-- **Rail**, `--rail` (72 px) on `--bar`: Desk, Asks, Tasks, Runs, Inbox and Reports, each an
+- **Rail**, `--rail` (72 px) on `--bar`: Desk, Asks, Tasks, Runs, Inbox, Reports and Costs, each an
   icon over a label, then Settings at the bottom. The active item takes `--action-soft` and
   `--action-text`. The Desk item carries the open-ask badge.
 - **List**: the selected view as an explorer list (below), at least 600 px wide at 1440 px. It
@@ -760,6 +760,47 @@ sits under More.
 | picking | The chosen option solid, the Undo bar for 4 s, then the bar without Undo while it sends |
 | refused pick | The report redraws, and the row says why in `--warn-text`, naming the option: "Take: Already picked Later." or "Take: The report changed to revision 5. Read it and pick again." |
 | refused comment | The row says why in `--warn-text`, and the field keeps its text |
+
+### Costs panel
+
+The web view's `/costs`: what the factory spent this week against last week (`/api/costs`), and
+what it cost the person (`/api/attention`). On a phone it sits under More, with two saved views,
+Costs and Attention (`/costs?view=attention`). From 1024 px both show side by side, Costs on the
+left, with a hairline between them.
+
+- **Stat tiles**: a row of equal cells in one `--radius-md` box with hairlines between them, each a
+  `--text-3` caption label, a value in the display role at `--type-option`, and a caption line.
+  A comparison's line is a `trending-up` or `trending-down` icon and "-31% vs last week", in
+  `--text-2`: more cost is not good or bad by itself, so no state color. With no previous value it
+  reads "No change to show".
+- **This week**: tiles for cost, merges and cost per merge. A cost with no priced token reads `-`,
+  never `$0`. Unpriced tokens and records without tokens follow in a note: "Not in the cost." with
+  each model and its tokens, and where to price them.
+- **Each day**: an inline SVG bar chart, one bar per day of both weeks, in `--text-2` this week
+  and `--tile-muted` last week. A dotted `--text-3` line labelled "this week" separates the weeks,
+  so the split never rests on color. The busiest day's cost labels the top. Under each bar sit its
+  date, with the weekday from 520 px, and its merges. Each bar has a `title` with its sentence, and
+  the chart's accessible name lists every sentence.
+- **Split**: "This week by workflow" with a Split by `select` (workflow, agent, model, machine,
+  repo), then a table of the value in mono, cost, tokens and notes. The first column sticks when
+  the table scrolls sideways.
+- **Attention headline**: the person's minutes per merged pull request in `--type-count` and
+  `--text`, never `--count`, which belongs to asks; beside it "minutes of your attention per
+  merge" in the display role and a caption with the minutes, merges and acts.
+- **Ask waits**: tiles for the median and p90 wait, each with its time "while you were present",
+  and the asks acted on with those still open.
+- **Where each task's time went**: one row per task, its key in mono linking to the task, its
+  workflow and its wall time, then a 12 px SVG bar split by a 2 px `--bg` line into working
+  (`--tile-live`), waiting on you (stripes of `--wait`), waiting on the world (a dashed `--text-3`
+  outline) and queued (`--raised`), the trace waterfall's encodings. A legend names the four
+  parts, each part has a `title`, and the bar's accessible name is the whole split as a sentence.
+
+| State | What shows |
+| ----- | ---------- |
+| empty | Costs: "No cost in the last two weeks. Costs appear once a model step records its tokens. Price each model in `prices.toml` in the factory folder." Attention: "No attention counted this week. Your answers, dismissals and snoozes on asks count here, and each task's time once it runs." |
+| loading | Nothing for 300 ms, then three skeleton blocks on `--raised` |
+| offline | The stale strip over the last costs read, which the device keeps. The Split by `select` is disabled |
+| error | A `--warn-text` line above the last costs read: "Could not load costs: why. Check that the daemon runs on its runner, then retry." with Retry |
 
 ### Buttons and inputs
 
