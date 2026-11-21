@@ -109,6 +109,10 @@ who decides it.
 `priory check --explain example` lists the irreversible step `open-pr` and the human step
 `approve-pr` that approves it. See [workflows.md](docs/reference/workflows.md#irreversible-steps-and-their-gates).
 
+The same rule holds inside a model step. Priory's tool guard denies an agent's irreversible call,
+such as `gh pr merge` or `git push origin main`, unless its step is approved or `autonomous`, and
+tells the agent to `ask`. See [guard.md](docs/daemon/guard.md).
+
 ## 4. Pick a starter
 
 The repository's `examples/` folder holds ready-made factories. Each one passes `priory check`, and

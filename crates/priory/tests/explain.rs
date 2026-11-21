@@ -136,7 +136,9 @@ fn the_example_workflow_gates_open_pr_on_approve_pr() {
         "workflow\tstep\tgate\n\
          implement\topen-pr\tapprove-pr\n\
          \n\
-         workflow\tpath with no human decision\n"
+         workflow\tpath with no human decision\n\
+         \n\
+         agent\tguard\tworkflow\twhy\n"
     );
 }
 
@@ -152,7 +154,9 @@ fn an_autonomous_step_lists_its_reason_and_the_path_with_no_human_decision() {
          draft\topen-pr\tautonomous: draft PRs only\n\
          \n\
          workflow\tpath with no human decision\n\
-         draft\tplan -> open-pr\n"
+         draft\tplan -> open-pr\n\
+         \n\
+         agent\tguard\tworkflow\twhy\n"
     );
 }
 
@@ -190,6 +194,8 @@ fn json_holds_the_same_rows_as_the_table() {
             steps.join(" -> ")
         );
     }
+    rebuilt += "\nagent\tguard\tworkflow\twhy\n";
+    assert_eq!(json["tools"], serde_json::json!([]));
     assert_eq!(rebuilt, table);
     assert_eq!(json["irreversible"].as_array().unwrap().len(), 2);
 }
@@ -208,7 +214,9 @@ fn an_explicit_by_overrides_the_steps_decider() {
         "workflow\tstep\tgate\n\
          draft\topen-pr\tautonomous: draft PRs only\n\
          \n\
-         workflow\tpath with no human decision\n"
+         workflow\tpath with no human decision\n\
+         \n\
+         agent\tguard\tworkflow\twhy\n"
     );
 }
 
@@ -274,5 +282,106 @@ fn a_multiline_reason_stays_on_one_row() {
         outcome
             .stdout
             .contains("draft\topen-pr\tautonomous: draft\\tPRs\\nonly\n")
+    );
+}
+
+const DOCS: &str = r#"start = "write"
+guard = { allow = ["git-push-default"] }
+
+[[steps]]
+id = "write"
+decides = "model"
+agent = "implementer"
+prompt = "Write the docs and push them to main."
+effect = "reversible"
+next = { pushed = "release" }
+
+[[steps]]
+id = "release"
+decides = "model"
+agent = "implementer"
+prompt = "Publish the release."
+effect = "irreversible"
+autonomous = "the docs site rebuilds from main"
+next = { released = "done" }
+"#;
+
+#[test]
+fn an_agent_lists_the_guarded_calls_it_can_make_with_no_human_decision() {
+    let outcome = explain(&factory(
+        "tools",
+        &[("implement", IMPLEMENT), ("docs", DOCS)],
+    ));
+
+    assert_eq!(outcome.stderr, "");
+    assert_eq!(outcome.code, 0);
+    let table = outcome
+        .stdout
+        .split("agent\tguard\tworkflow\twhy\n")
+        .nth(1)
+        .unwrap();
+    let rows: Vec<&str> = table.lines().collect();
+    assert!(
+        rows.contains(&"implementer\tgit-push-default\tdocs\tallowed by the workflow"),
+        "{table}"
+    );
+    assert!(
+        rows.contains(&"implementer\tgh-pr-merge\tdocs\tautonomous step release"),
+        "{table}"
+    );
+    assert!(
+        rows.iter().all(|row| !row.contains("\timplement\t")),
+        "{table}"
+    );
+}
+
+#[test]
+fn a_workflow_cannot_allow_a_guard_nobody_defined() {
+    let wrong = DOCS.replace("git-push-default", "git-push-defualt");
+    let outcome = priory(&["check"], &factory("allow-unknown", &[("docs", &wrong)]));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "workflows/docs.toml:2: `guard.allow` names `git-push-defualt`, which is no built-in guard nor one of `[guard]` in factory.toml\n"
+    );
+}
+
+#[test]
+fn a_factory_guard_cannot_take_a_built_in_guards_name() {
+    let dir = factory("guard-clash", &[("implement", IMPLEMENT)]);
+    fs::write(
+        dir.join("factory.toml"),
+        "name = \"demo\"\n\n[guard]\ncommands = [{ name = \"gh-pr-merge\", run = [\"hub\", \"merge\"] }]\n",
+    )
+    .unwrap();
+
+    let outcome = priory(&["check"], &dir);
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "factory.toml:3: `[guard]` command `gh-pr-merge` has the name of another guard\n"
+    );
+}
+
+#[test]
+fn a_codex_agent_with_mcp_servers_lists_mcp_calls_the_guard_may_not_see() {
+    let dir = factory("guard-codex", &[("implement", IMPLEMENT)]);
+    fs::write(
+        dir.join("agents/implementer/agent.md"),
+        "+++\ndescription = \"Implements one task.\"\nharness = \"codex\"\nmcpServers = [\"github\"]\n+++\n",
+    )
+    .unwrap();
+
+    let outcome = explain(&dir);
+
+    assert_eq!(outcome.stderr, "");
+    assert!(
+        outcome.stdout.ends_with(
+            "agent\tguard\tworkflow\twhy\nimplementer\tmcp-write\t-\tcodex: an MCP call may skip the guard's hook\n"
+        ),
+        "{}",
+        outcome.stdout
     );
 }

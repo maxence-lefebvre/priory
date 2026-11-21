@@ -12598,6 +12598,278 @@ fn rows_that_share_an_id_in_two_sections_share_their_threads() {
     assert_eq!(&shown["sections"][1]["rows"][0]["comments"], first);
 }
 
+fn bash(command: &str) -> serde_json::Value {
+    json!({ "name": "Bash", "arguments": { "command": command } })
+}
+
+impl Setup {
+    /// Waits until the fake `claude` logged `count` replies and returns them.
+    fn replied(&self, count: usize) -> Vec<serde_json::Value> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let replies = self.replies();
+            if replies.len() >= count {
+                return replies;
+            }
+            assert!(Instant::now() < deadline, "replies: {replies:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// The reason Priory's tool guard gave for denying a call, if it did.
+fn guard_denied(reply: &serde_json::Value) -> Option<&str> {
+    let output = &reply["hookSpecificOutput"];
+    (output["hookEventName"] == "PreToolUse" && output["permissionDecision"] == "deny")
+        .then(|| output["permissionDecisionReason"].as_str().unwrap())
+}
+
+#[test]
+fn a_merge_in_a_step_no_person_approved_is_denied_however_it_is_wrapped() {
+    let mut setup = Setup::new("guard-merge");
+    let merges = [
+        "gh pr merge 12",
+        "gh -R o/r pr merge 12",
+        "bash -c 'gh pr merge 12'",
+        "env X=1 gh pr merge 12",
+    ];
+    setup.calls(&[json!(merges.map(bash))]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let replies = setup.replied(merges.len());
+    for (command, reply) in merges.iter().zip(&replies) {
+        let reason = guard_denied(reply).unwrap_or_else(|| panic!("{command}: {reply}"));
+        assert!(reason.contains("gh-pr-merge"), "{reason}");
+        assert!(reason.contains("ask tool"), "{reason}");
+    }
+}
+
+const MERGE: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "approve-merge", failed = "stop" }
+
+[[steps]]
+id = "approve-merge"
+decides = "human"
+effect = "none"
+approves = ["merge"]
+options = ["merge", "stop"]
+next = { merge = "merge", stop = "stop" }
+
+[[steps]]
+id = "merge"
+decides = "model"
+agent = "implementer"
+prompt = "Merge the pull request."
+effect = "irreversible"
+next = { merged = "done", failed = "stop" }
+"#;
+
+#[test]
+fn a_merge_in_the_step_a_person_approved_passes_however_it_is_wrapped() {
+    let mut setup = Setup::with_workflow("guard-approved", MERGE);
+    let merges = [
+        "gh pr merge 12",
+        "gh -R o/r pr merge 12",
+        "bash -c 'gh pr merge 12'",
+        "env X=1 gh pr merge 12",
+    ];
+    let mut calls: Vec<_> = merges.iter().map(|command| bash(command)).collect();
+    calls.push(bash("git commit -am fix && gh pr merge 12"));
+    setup.calls(&[result("passed"), json!(calls)]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    setup.commit(1, "widget.txt");
+
+    let answered = setup.priory(&["answer", "1", "merge", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let replies = setup.replied(1 + calls.len());
+    for (command, reply) in merges.iter().zip(&replies[1..]) {
+        assert_eq!(guard_denied(reply), None, "{command}: {reply}");
+        assert_eq!(
+            reply["hookSpecificOutput"]["hookEventName"], "PermissionRequest",
+            "{command}"
+        );
+    }
+    let last = &replies[calls.len()];
+    let reason = guard_denied(last).unwrap_or_else(|| panic!("{last}"));
+    assert!(reason.contains("a call of its own"), "{reason}");
+}
+
+#[test]
+fn a_push_to_the_default_branch_or_a_force_push_is_denied_and_recorded_on_the_task() {
+    let mut setup = Setup::new("guard-push");
+    let calls = [
+        ("git push origin main", Some("git-push-default")),
+        ("git push --force", Some("git-push-force")),
+        ("git push origin priory/1", None),
+        ("gh pr view 12", None),
+        (
+            "gh pr create --title T --body \"$(cat <<'EOF'\nThen run:\ngit push origin main\nEOF\n)\"",
+            None,
+        ),
+        // A known hole: a program named by a variable is not read.
+        ("x=gh; $x pr merge 12", None),
+    ];
+    setup.calls(&[json!(calls.map(|(command, _)| bash(command)))]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let replies = setup.replied(calls.len());
+    for ((command, guard), reply) in calls.iter().zip(&replies) {
+        let denied = guard_denied(reply);
+        assert_eq!(denied.is_some(), guard.is_some(), "{command}: {reply}");
+        if let (Some(reason), Some(guard)) = (denied, guard) {
+            assert!(reason.contains(guard), "{reason}");
+        }
+    }
+    let denials: Vec<_> = setup
+        .trace()
+        .into_iter()
+        .filter(|event| event["type"] == "factory.tool.denied")
+        .map(|event| event["data"].clone())
+        .collect();
+    assert_eq!(denials.len(), 2, "{denials:?}");
+    assert_eq!(
+        [
+            &denials[0]["task"],
+            &denials[0]["step"],
+            &denials[0]["guard"],
+            &denials[0]["call"]
+        ],
+        [
+            &json!("1"),
+            &json!("implement"),
+            &json!("git-push-default"),
+            &json!("git push origin main")
+        ]
+    );
+}
+
+/// Runs `priory hook PreToolUse` on a Bash call of `command` with Priory home `home`, and returns
+/// what it printed and how long it took.
+fn guard_hook(home: &Path, command: &str) -> (String, Duration) {
+    use std::io::Write;
+    let started = Instant::now();
+    let mut hook = Command::new(env!("CARGO_BIN_EXE_priory"))
+        .args(["hook", "PreToolUse"])
+        .env("PRIORY_HOME", home)
+        .env("PRIORY_SESSION", "6f1c0b9e-0d2a-4f43-9a51-3c2e8e1b7d10")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let input = json!({ "session_id": "6f1c0b9e-0d2a-4f43-9a51-3c2e8e1b7d10", "tool_name": "Bash",
+        "tool_input": { "command": command }, "cwd": home });
+    hook.stdin
+        .take()
+        .unwrap()
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    let output = hook.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    (String::from_utf8(output.stdout).unwrap(), started.elapsed())
+}
+
+#[test]
+fn a_read_passes_the_tool_guard_with_no_daemon_to_ask() {
+    let home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guard-no-daemon");
+    let _ = fs::remove_dir_all(&home);
+    fs::create_dir_all(&home).unwrap();
+
+    let (printed, _) = guard_hook(&home, "gh pr view 12");
+
+    assert_eq!(printed, "");
+}
+
+#[test]
+fn a_daemon_that_does_not_answer_gets_a_guarded_call_denied() {
+    let home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guard-silent");
+    let _ = fs::remove_dir_all(&home);
+    fs::create_dir_all(&home).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(home.join("priory.sock")).unwrap();
+    let silent = std::thread::spawn(move || listener.accept().map(|(stream, _)| stream));
+
+    let (printed, took) = guard_hook(&home, "gh pr merge 12");
+
+    let reply: serde_json::Value = serde_json::from_str(&printed).unwrap();
+    let reason = guard_denied(&reply).unwrap_or_else(|| panic!("{reply}"));
+    assert!(reason.contains("did not confirm"), "{reason}");
+    assert!(took < Duration::from_secs(15), "{took:?}");
+    drop(silent.join());
+}
+
+#[test]
+fn a_workflow_that_allows_a_guard_lets_its_steps_make_that_call_only() {
+    let workflow = format!("guard = {{ allow = [\"gh-pr-merge\"] }}\n{WORKFLOW}");
+    let mut setup = Setup::with_workflow("guard-allow", &workflow);
+    setup.calls(&[json!([
+        bash("gh pr merge 12"),
+        bash("git push origin main"),
+        bash("gh pr merge 12 && git push --force origin feature"),
+    ])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let replies = setup.replied(3);
+    assert_eq!(guard_denied(&replies[0]), None, "{}", replies[0]);
+    assert!(guard_denied(&replies[1]).is_some(), "{}", replies[1]);
+    let reason = guard_denied(&replies[2]).unwrap_or_else(|| panic!("{}", replies[2]));
+    assert!(reason.contains("git-push-force"), "{reason}");
+}
+
+#[test]
+fn a_command_and_an_mcp_tool_the_factory_guards_are_denied_like_built_in_ones() {
+    let mut setup = Setup::new("guard-factory");
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[guard]\ncommands = [{ name = \"fly-deploy\", run = [\"fly\", \"deploy\"] }]\ntools = [\"mcp__stripe__*\"]\n",
+    )
+    .unwrap();
+    setup.calls(&[json!([
+        bash("cd app && fly deploy"),
+        { "name": "mcp__stripe__create_refund", "arguments": { "charge": "ch_1" } },
+        { "name": "mcp__stripe__list_charges" },
+    ])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let replies = setup.replied(3);
+    assert!(
+        guard_denied(&replies[0]).unwrap().contains("fly-deploy"),
+        "{}",
+        replies[0]
+    );
+    assert!(
+        guard_denied(&replies[1])
+            .unwrap()
+            .contains("mcp__stripe__create_refund"),
+        "{}",
+        replies[1]
+    );
+    assert!(
+        guard_denied(&replies[2])
+            .unwrap()
+            .contains("mcp__stripe__list_charges"),
+        "{}",
+        replies[2]
+    );
+}
+
 fn stacked(branches: &[&str]) -> serde_json::Value {
     json!({ "name": "result", "arguments": {
         "outcome": "passed",

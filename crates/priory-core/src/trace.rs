@@ -438,6 +438,51 @@ pub(crate) fn reopened(
     append(tx, trace, "factory.task.reopened", &time, data)
 }
 
+/// Appends a `factory.tool.denied` record: the tool guard denied `call` to `run` of `task`.
+pub(crate) fn tool_denied(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    run: i64,
+    call: &crate::guard::Call,
+    reason: &str,
+) -> rusqlite::Result<()> {
+    let (workflow, step, key, generation, time): (String, String, String, i64, String) = tx
+        .query_row(
+            "SELECT workflow, step, key, generation, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             FROM tasks WHERE id = ?1",
+            [task],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "workflow": workflow,
+        "task": task.to_string(),
+        "run": run.to_string(),
+        "key": key,
+        "generation": generation,
+        "step": step,
+        "machine": trace.machine,
+        "tool": call.tool,
+        "guard": call.guard,
+        "call": call.call,
+        "reason": reason,
+    });
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    append(tx, trace, "factory.tool.denied", &time, data)
+}
+
 /// The `source` of every record this factory writes on this machine.
 pub(crate) fn source(trace: &Trace) -> String {
     match &trace.machine {

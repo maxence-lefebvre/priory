@@ -128,6 +128,24 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 "`[sweep] repo` needs to be `owner/name`".into(),
             ));
         }
+        let mut named: Vec<&str> = crate::guard::BUILT_IN.to_vec();
+        for command in &settings.value.guard.commands {
+            let message = if named.contains(&command.name.as_str()) {
+                format!(
+                    "`[guard]` command `{}` has the name of another guard",
+                    command.name
+                )
+            } else if command.run.is_empty() {
+                format!(
+                    "`[guard]` command `{}` needs a program in `run`",
+                    command.name
+                )
+            } else {
+                named.push(&command.name);
+                continue;
+            };
+            problems.push(problem(settings, settings.lines.field("guard"), message));
+        }
     }
     for trigger in factory.triggers.values() {
         check_band(
@@ -595,6 +613,20 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
             ));
             return;
         }
+    }
+    let guards = factory.guards().names();
+    for allowed in workflow
+        .value
+        .guard
+        .allow
+        .iter()
+        .filter(|allowed| !guards.contains(allowed))
+    {
+        problems.push(problem(
+            workflow,
+            workflow.lines.field("guard"),
+            format!("`guard.allow` names `{allowed}`, which is no built-in guard nor one of `[guard]` in factory.toml"),
+        ));
     }
     let start = workflow.value.start.as_str();
     if !steps.contains_key(start) {
