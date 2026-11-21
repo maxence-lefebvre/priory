@@ -162,7 +162,7 @@ lets its steps make a guarded call with `guard.allow` (see
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `commands` | array of tables | no | `[]` | Shell commands, each a guard of its own name | see below |
-| `tools` | array of strings | no | `[]` | MCP tools, each a guard of its own name: a full name, or a prefix ending in `*` | `["mcp__stripe__create_refund", "mcp__pagerduty__*"]` |
+| `tools` | array of strings | no | `[]` | MCP tools, each a guard named as written: a full name, or a prefix ending in `*`. `guard.allow` names the pattern, such as `mcp__stripe__*` | `["mcp__stripe__create_refund", "mcp__pagerduty__*"]` |
 
 Each entry of `commands`:
 

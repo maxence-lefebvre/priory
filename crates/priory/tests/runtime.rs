@@ -12676,7 +12676,9 @@ fn a_merge_in_the_step_a_person_approved_passes_however_it_is_wrapped() {
         "bash -c 'gh pr merge 12'",
         "env X=1 gh pr merge 12",
     ];
-    setup.calls(&[result("passed"), json!(merges.map(bash))]);
+    let mut calls: Vec<_> = merges.iter().map(|command| bash(command)).collect();
+    calls.push(bash("git commit -am fix && gh pr merge 12"));
+    setup.calls(&[result("passed"), json!(calls)]);
     setup.publish(&requested(42));
     setup.start();
     setup.until("asks", |rows| rows.len() == 1);
@@ -12685,7 +12687,7 @@ fn a_merge_in_the_step_a_person_approved_passes_however_it_is_wrapped() {
     let answered = setup.priory(&["answer", "1", "merge", "--revision", "1"]);
 
     assert!(answered.status.success(), "{answered:?}");
-    let replies = setup.replied(1 + merges.len());
+    let replies = setup.replied(1 + calls.len());
     for (command, reply) in merges.iter().zip(&replies[1..]) {
         assert_eq!(guard_denied(reply), None, "{command}: {reply}");
         assert_eq!(
@@ -12693,6 +12695,9 @@ fn a_merge_in_the_step_a_person_approved_passes_however_it_is_wrapped() {
             "{command}"
         );
     }
+    let last = &replies[calls.len()];
+    let reason = guard_denied(last).unwrap_or_else(|| panic!("{last}"));
+    assert!(reason.contains("a call of its own"), "{reason}");
 }
 
 #[test]
@@ -12805,15 +12810,18 @@ fn a_workflow_that_allows_a_guard_lets_its_steps_make_that_call_only() {
     let mut setup = Setup::with_workflow("guard-allow", &workflow);
     setup.calls(&[json!([
         bash("gh pr merge 12"),
-        bash("git push origin main")
+        bash("git push origin main"),
+        bash("gh pr merge 12 && git push --force origin feature"),
     ])]);
     setup.publish(&requested(42));
 
     setup.start();
 
-    let replies = setup.replied(2);
+    let replies = setup.replied(3);
     assert_eq!(guard_denied(&replies[0]), None, "{}", replies[0]);
     assert!(guard_denied(&replies[1]).is_some(), "{}", replies[1]);
+    let reason = guard_denied(&replies[2]).unwrap_or_else(|| panic!("{}", replies[2]));
+    assert!(reason.contains("git-push-force"), "{reason}");
 }
 
 #[test]

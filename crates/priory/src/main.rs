@@ -1659,17 +1659,14 @@ fn count(n: usize, noun: &str) -> String {
 /// How long the tool guard waits for the daemon before it denies the call.
 const GUARD_WAIT: Duration = Duration::from_secs(5);
 
-/// The `PreToolUse` hook: lets a call no guard matches through, and asks the daemon about one that
-/// matches. Anything but the daemon's yes denies, since a hook that fails lets the call through.
-fn guard() {
-    let deny = |reason: &str| {
-        let output = serde_json::json!({ "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        } });
-        println!("{output}");
-    };
+/// How long the whole tool guard hook may take, well under Claude's 30-second hook timeout.
+const GUARD_DEADLINE: Duration = Duration::from_secs(8);
+
+/// The `PreToolUse` hook's reason to deny the call, if any: none for a call no guard matches, and
+/// the daemon's answer for one that matches. Anything but the daemon's yes denies, since a hook
+/// that fails lets the call through.
+fn guard() -> Option<String> {
+    let deny = |reason: &str| Some(reason.to_owned());
     let input: Value = match serde_json::from_reader(std::io::stdin()) {
         Ok(input) => input,
         Err(error) => {
@@ -1722,38 +1719,64 @@ fn guard() {
             .filter(|output| output.status.success())?;
         Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
     };
-    let Some(hit) = guards.hit(tool, command.as_deref(), &git) else {
-        return;
-    };
+    let hits = guards.hits(tool, command.as_deref(), &git);
+    let moves_head = command
+        .as_deref()
+        .is_some_and(priory_factory::guard::moves_head);
     let session = std::env::var("PRIORY_SESSION")
         .ok()
         .filter(|id| !id.is_empty())
         .or_else(|| input["session_id"].as_str().map(str::to_owned))
         .unwrap_or_default();
-    let line = serde_json::json!({ "guard": {
-        "session": session, "guard": hit.guard, "call": hit.call, "tool": tool,
-    } });
-    let reply = runtime::call(&runtime::home(), &line.to_string(), GUARD_WAIT).and_then(|reply| {
-        serde_json::from_str::<Result<String, String>>(&reply)
-            .map_err(|error| format!("unreadable reply {reply:?}: {error}"))
-    });
-    match reply {
-        Ok(Ok(_)) => {}
-        Ok(Err(reason)) => deny(&reason),
-        Err(error) => deny(&format!(
-            "Priory denied `{}`: it is irreversible (guard `{}`) and the daemon did not confirm an approval within {}s ({error}). Call the ask tool of the priory MCP server if a person must do or approve it.",
-            hit.call,
-            hit.guard,
-            GUARD_WAIT.as_secs()
-        )),
+    // Each guard the call hits needs its own yes: one allowed command must not carry another.
+    for hit in hits {
+        let line = serde_json::json!({ "guard": {
+            "session": session, "guard": hit.guard, "call": hit.call, "tool": tool,
+            "moves_head": moves_head,
+        } });
+        let reply =
+            runtime::call(&runtime::home(), &line.to_string(), GUARD_WAIT).and_then(|reply| {
+                serde_json::from_str::<Result<String, String>>(&reply)
+                    .map_err(|error| format!("unreadable reply {reply:?}: {error}"))
+            });
+        match reply {
+            Ok(Ok(_)) => {}
+            Ok(Err(reason)) => return deny(&reason),
+            Err(error) => {
+                return deny(&format!(
+                    "Priory denied `{}`: it is irreversible (guard `{}`) and the daemon did not confirm an approval within {}s ({error}). Call the ask tool of the priory MCP server if a person must do or approve it.",
+                    hit.call,
+                    hit.guard,
+                    GUARD_WAIT.as_secs()
+                ));
+            }
+        }
     }
+    None
 }
 
 /// Reports a harness hook to the daemon: `event`, with the session and prompt from the hook's JSON
 /// on stdin. A run's pane sets `PRIORY_SESSION`; a stdin session apart from it is the harness's own.
 fn hook(event: &str) -> ExitCode {
     if event == "PreToolUse" {
-        guard();
+        // A hook that fails or that Claude kills lets the call through, so a guard that panics or
+        // hangs anywhere, in git, the connect or the reply, denies before Claude's timeout.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || sender.send(guard()));
+        let denied = receiver.recv_timeout(GUARD_DEADLINE).unwrap_or_else(|_| {
+            Some(format!(
+                "Priory's tool guard failed or did not finish within {}s on this call, so it denied it.",
+                GUARD_DEADLINE.as_secs()
+            ))
+        });
+        if let Some(reason) = denied {
+            let output = serde_json::json!({ "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            } });
+            println!("{output}");
+        }
         return ExitCode::SUCCESS;
     }
     let input: serde_json::Value = match serde_json::from_reader(std::io::stdin()) {

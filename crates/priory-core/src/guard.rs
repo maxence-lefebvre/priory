@@ -21,6 +21,9 @@ pub(crate) struct Call {
     pub guard: String,
     pub call: String,
     pub tool: String,
+    /// The same tool call also moves the branch's commit, as `git commit && gh pr merge` does.
+    #[serde(default)]
+    pub moves_head: bool,
 }
 
 struct Run {
@@ -98,9 +101,13 @@ pub(crate) fn decide(
                 )
                 .optional()?;
             match approved {
-                Some(commit) if head.is_some() && commit == head => {
+                Some(commit) if head.is_some() && commit == head && !call.moves_head => {
                     return Ok(Ok(format!("step {} is approved", run.step)));
                 }
+                Some(_) if call.moves_head => format!(
+                    "the same call also moves the branch's commit, which step `{}`'s approval is bound to: run it in a call of its own",
+                    run.step
+                ),
                 Some(commit) => format!(
                     "step `{}` was approved at commit {}, but the task's branch is now at {}",
                     run.step,
