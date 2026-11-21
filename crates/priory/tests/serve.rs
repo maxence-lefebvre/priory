@@ -957,6 +957,39 @@ fn the_desk_endpoint_lists_since_you_looked_for_a_person_as_the_cli_does() {
 }
 
 #[test]
+fn seen_through_its_endpoint_records_the_visit_as_the_cli_verb_does() {
+    let mut setup = Setup::new("web-seen", SERVE);
+    setup.seed();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let body = r#"{"at": "2998-01-01T00:00:00.250+01:00"}"#;
+
+    let foreign = post(
+        &address,
+        "/api/seen",
+        "Origin: http://evil.example\r\n",
+        body,
+    );
+    let bad = post(&address, "/api/seen", "", r#"{"at": "yesterday"}"#);
+    let extra = post(
+        &address,
+        "/api/seen",
+        "",
+        r#"{"at": "2998-01-01T00:00:00Z", "person": "Ana"}"#,
+    );
+
+    assert_eq!(foreign.0, 403, "{}", foreign.1);
+    assert_eq!(bad.0, 400, "{}", bad.1);
+    assert_eq!(extra.0, 400, "{}", extra.1);
+    assert!(json_of(&setup, "desk")["last_visit"].is_null());
+    let seen = post(&address, "/api/seen", "", body);
+    assert_eq!(seen.0, 200, "{}", seen.1);
+    assert_eq!(
+        json_of(&setup, "desk")["last_visit"],
+        "2997-12-31T23:00:00Z"
+    );
+}
+
+#[test]
 fn the_asks_endpoint_leaves_out_asks_closed_over_a_week_ago_unless_asked_for_all() {
     let mut setup = Setup::new("asks-week", SERVE);
     setup.seed();
