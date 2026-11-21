@@ -7,7 +7,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 pub(super) const TOKEN: &str = "SLACK_BOT_TOKEN";
-const API: &str = "https://slack.com/api/";
+pub(super) const API: &str = "https://slack.com/api/";
 pub(super) const POSTED: &str = "slack.message.posted";
 pub(super) const REPLIED: &str = "slack.thread.replied";
 /// How many messages a channel's first poll reads.
@@ -241,7 +241,7 @@ impl<'a> Slack<'a> {
     }
 }
 
-fn text(value: &Value) -> &str {
+pub(super) fn text(value: &Value) -> &str {
     value.as_str().unwrap_or_default()
 }
 
@@ -349,6 +349,85 @@ fn call(token: &str, method: &str, query: &[(&str, String)]) -> Result<Value, St
     }
     let answer: Value =
         serde_json::from_str(&stdout).map_err(|error| format!("Slack {method}: {error}"))?;
+    if answer["ok"] != true {
+        return Err(failed(text(&answer["error"])));
+    }
+    Ok(answer)
+}
+
+/// One JSON POST to `url`, under `token` when given as its variable's name and value. Everything
+/// goes to `curl` on its standard input, so neither the token nor the URL shows in a process list.
+pub(super) fn post(token: Option<(&str, &str)>, url: &str, body: &Value) -> Result<Value, String> {
+    // A raw newline would end the config line, so control characters are refused, not quoted.
+    if [url, token.map_or("", |(_, token)| token)]
+        .iter()
+        .any(|value| value.chars().any(char::is_control))
+    {
+        return Err("Slack call refused: a control character in its URL or token".to_owned());
+    }
+    let quote = |value: &str| format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""));
+    let mut config = String::new();
+    if let Some((_, token)) = token {
+        config += &format!(
+            "header = {}\n",
+            quote(&format!("Authorization: Bearer {token}"))
+        );
+    }
+    config += "header = \"Content-Type: application/json; charset=utf-8\"\n";
+    config += &format!(
+        "data = {}\nurl = {}\n",
+        quote(&body.to_string()),
+        quote(url)
+    );
+    let method = url.strip_prefix(API).unwrap_or("response_url");
+    let failed = |error: &str| {
+        let error = match token {
+            Some((name, token)) => error.replace(token, &format!("<{name}>")),
+            None => error.to_owned(),
+        };
+        // A response_url is a credential too.
+        let error = error.replace(url, &format!("<{method}>"));
+        format!("Slack {method} failed: {error}")
+    };
+    let mut child = Command::new("curl")
+        .args([
+            "--disable",
+            "--silent",
+            "--show-error",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            "30",
+            "--max-filesize",
+            "1000000",
+            "--proto",
+            "=https",
+            "--fail-with-body",
+            "--config",
+            "-",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("Slack {method}: curl: {error}"))?;
+    child
+        .stdin
+        .take()
+        .expect("a piped stdin")
+        .write_all(config.as_bytes())
+        .map_err(|error| format!("Slack {method}: curl: {error}"))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("Slack {method}: curl: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(failed(&format!("{} {}", stderr.trim(), stdout.trim())));
+    }
+    // A response_url answers `ok` as text, the Web API answers JSON.
+    let answer: Value =
+        serde_json::from_str(&stdout).unwrap_or(json!({"ok": stdout.trim() == "ok"}));
     if answer["ok"] != true {
         return Err(failed(text(&answer["error"])));
     }

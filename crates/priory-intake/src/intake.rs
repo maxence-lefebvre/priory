@@ -6,6 +6,7 @@ mod linear;
 mod pulls;
 mod reviews;
 pub mod schedule;
+mod shortcut;
 mod slack;
 mod webhook;
 
@@ -148,6 +149,9 @@ pub fn run(
         .then(|| slack::Slack::start(&bus, slack_triggers.clone()))
         .transpose()
         .map_err(|error| started("slack", error))?;
+    if let Some(settings) = factory.slack_shortcut().filter(|_| !once) {
+        shortcut::start(&factory.dir, settings).map_err(|error| started("slack", error))?;
+    }
     // The loop reports a failing read of the waits; here it only costs those repos their cursors.
     let waiting = watched().unwrap_or_default();
     let resumed: BTreeSet<&str> = repos

@@ -90,3 +90,72 @@ process list or an error.
   successive `--once` runs rotate too.
 - A failing channel publishes nothing. It fails the poll only after the other channels and the
   watched threads are published.
+
+## Message shortcut
+
+"Queue in Priory" is a message shortcut: in a message's menu, it opens a form with the workflow,
+the repository and a note, then queues a task for the message's thread. Its key is
+`slack:<channel>:<thread ts>`, so the replies a `slack_reply` wait watches in that thread reach the
+task once the intake watches the thread, which needs the history scopes in [Calls and
+cost](#calls-and-cost). Its settings are in [`[slack.shortcut]`](../reference/factory.md#slackshortcut).
+
+### How it reaches Priory
+
+`priory intake` opens one [Socket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode)
+connection: it calls `apps.connections.open` with the app-level token and connects to the WebSocket
+URL Slack returns. Nothing listens on the machine. `priory intake --once` opens no connection.
+
+| Step | What Priory does |
+| ---- | ---------------- |
+| Any envelope | Acknowledges it with its `envelope_id` before anything else, since Slack shows the person an error after 3 seconds. Then hands the payload to a worker. Up to 16 payloads wait; up to 16 more get a "busy" reply, and the rest are dropped |
+| Shortcut (`callback_id` `priory_queue`) | Opens the form with `views.open`. The workflow starts at `[request] workflow`; an empty repository means `triggers/cli.toml`'s; the note starts as the message's text |
+| Form submitted | Queues the task through the same request code as `priory add`, so `check_repo`, workflow and band rules apply. The task's text is the note and a link to the message |
+| Reply | Posts an ephemeral message to the shortcut's `response_url`: the task key, "already queued", or why nothing was queued |
+| `disconnect` | Opens a new connection at once. Slack sends one every few hours |
+| A dropped or silent socket, or a connection, handshake or write that takes over 30 seconds | Reconnects after 1 second, doubling to a minute while it keeps failing. A socket silent for 30 seconds gets a ping; one silent for 60 seconds is dropped |
+
+Only the first submission for a thread queues a task. A later one, even with another note, replies
+that the thread is already queued.
+
+### Who can use it
+
+The app-level token authenticates the connection, so only Slack sends on it, and Slack does not sign
+the payloads. Slack's `user.id` says who used the shortcut, and the allowlist says who may: a
+shortcut or form from a user id not in `[slack.shortcut] users` gets an ephemeral refusal, and
+nothing is queued.
+
+Each person makes their own Slack app, so the shortcut in their Slack reaches their own Priory.
+Slack lets an app hold up to 10 connections and sends each payload to any one of them, so two
+Priory intakes on one app would each get some of the shortcuts.
+
+### Set it up
+
+1. In [Slack's app settings](https://api.slack.com/apps), create an app from the manifest
+   [slack-app-manifest.yaml](slack-app-manifest.yaml), and install it in your workspace.
+2. Under Basic Information, generate an app-level token with the scope `connections:write`. Put it
+   in `SLACK_APP_TOKEN` for `priory intake`.
+3. Put the app's bot token, `xoxb-`, in `SLACK_BOT_TOKEN`. It opens the form.
+4. Add your user id to `factory.toml`, then run `priory check`:
+
+   ```toml
+   [slack.shortcut]
+   users = ["U0123ABCD"]
+   ```
+
+5. Restart `priory intake`. In Slack, open a message's menu and pick "Queue in Priory".
+
+| What | Value |
+| ---- | ----- |
+| Tokens | the app-level token from `token_env`, for `apps.connections.open` only; `SLACK_BOT_TOKEN`, for `views.open` |
+| Bot scope | `commands` |
+| Calls per shortcut | one `views.open`, one `response_url` post. One `apps.connections.open` per connection |
+
+Both tokens go to `curl` on its standard input, and its errors show `<SLACK_APP_TOKEN>` or
+`<SLACK_BOT_TOKEN>` in their place.
+
+### Limits
+
+- A thread that was queued once cannot be queued again through the shortcut, even after its task
+  is done.
+- A `response_url` lasts 30 minutes, so a form submitted later queues the task with no reply.
+- A `ratelimited` answer from `apps.connections.open` waits the backoff, not its `Retry-After`.

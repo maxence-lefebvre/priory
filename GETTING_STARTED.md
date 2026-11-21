@@ -174,6 +174,9 @@ flag, for a key of your own: see [docs/intake/cli.md](docs/intake/cli.md). In th
 `+` button, opens the same Add: one field, with workflow, band and lane chips set to the defaults. Use a repository of yours in place of `owner/name` for a real run. When a queued task
 starts is in [docs/daemon/room.md](docs/daemon/room.md).
 
+To queue a Slack thread from Slack itself, set up the "Queue in Priory" message shortcut: see
+[docs/intake/slack.md](docs/intake/slack.md#message-shortcut).
+
 To keep both processes running, install them as systemd user services. See
 [docs/daemon/services.md](docs/daemon/services.md).
 

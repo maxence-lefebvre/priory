@@ -1420,3 +1420,29 @@ fn a_request_table_passes_and_an_unknown_workflow_or_band_is_refused() {
          factory.toml:3: `[request] band` `someday` is not one of blocker, now, today, later\n"
     );
 }
+
+#[test]
+fn a_slack_shortcut_needs_users_with_slack_ids() {
+    let good = "name = \"demo\"\n\n[slack.shortcut]\nusers = [\"U0123ABCD\", \"W0456\"]\n";
+    let ok = check(&factory("shortcut-ok", &with("factory.toml", good)));
+    let none = good.replace("\"U0123ABCD\", \"W0456\"", "");
+    let empty = check(&factory("shortcut-empty", &with("factory.toml", &none)));
+    let malformed = good.replace("W0456", "max");
+    let bad = check(&factory("shortcut-bad", &with("factory.toml", &malformed)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (empty.code, empty.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[slack.shortcut] users` is empty, so nobody could use the shortcut\n"
+        )
+    );
+    assert_eq!(
+        (bad.code, bad.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[slack.shortcut] users` `max` is not a Slack user id such as U0123ABCD\n"
+        )
+    );
+}
