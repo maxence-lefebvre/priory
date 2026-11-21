@@ -157,3 +157,20 @@ test("a row shows its comment threads, oldest first, with their replies and stat
   // A row without an id takes no comments.
   assert.deepEqual([dossier(read, { now }).sections[1].rows[0].target, dossier(read, { now }).sections[1].rows[0].threads], [null, []]);
 });
+
+test("a press on a row's link opens the link and leaves the row unselected", async () => {
+  const { context, draw, herdr, press, settle } = await import("./kit.js");
+  const { default: Bonjour } = await import("../mods/priory-bonjour/main.js");
+  herdr.reset();
+  herdr.replies = { report: read, links: { links: [{ pattern: "OpenTelemetry", url: "https://opentelemetry.io/" }] } };
+  const panel = new Bonjour();
+  const cx = context();
+  panel.init({}, cx);
+  await settle();
+  const row = dossier(read, { now }).sections[0].rows[0];
+
+  press(draw(panel, cx), `text-${row.id}`);
+  assert.equal(panel.selected, null);
+  press(draw(panel, cx), `row-${row.id}`);
+  assert.equal(panel.selected, row.id);
+});
