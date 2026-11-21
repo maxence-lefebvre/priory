@@ -254,7 +254,7 @@ judged only on events of its own pull request, as in the table above, with these
 | `github.pull_request.closed` with `merged` true, and open pull requests above it | wakes the agent: `#57 merged; rebase #58 and #59 onto main`, where `main` is the merged pull request's base |
 | `github.pull_request.closed` with `merged` true, and none open above it | the task sleeps on |
 | `github.pull_request.closed` without `merged` true | asks a person, see below. Once they answered, it wakes the agent as in the table above |
-| The bottom pull request's base is no longer the branch it was opened or claimed on | asks a person, see below |
+| The bottom pull request's base is no longer the branch it was opened or claimed on | asks a person, see below. A stacked batch entry's bottom retargeted onto its parent's base is expected, and asks no one (see [batches.md](batches.md#the-waiting-condition-and-stacked-entries)) |
 
 The two asks are a person's to answer, since only they know where the stack should land. Each is
 an agent ask on the task with the options `restack onto <base>` and `stop`, where `<base>` is the

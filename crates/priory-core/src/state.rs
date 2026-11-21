@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 81;
+const VERSION: i64 = 82;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1454,9 +1454,18 @@ ALTER TABLE tasks ADD COLUMN base_sha TEXT;
 PRAGMA user_version = 80;
 ";
 
+// A stacked entry's parent as the `waiting` moment met it: its top pull request, branch and head,
+// which the entry's start revalidates and the parent's later pushes move.
+const SCHEMA_81: &str = "
+ALTER TABLE tasks ADD COLUMN parent_pull_request TEXT;
+ALTER TABLE tasks ADD COLUMN parent_branch TEXT;
+ALTER TABLE tasks ADD COLUMN parent_head TEXT;
+PRAGMA user_version = 81;
+";
+
 // A person's hold on a run's keyboard, by the hash of its secret, and each input sent under one: a
 // row with no outcome is one whose send a crash may have cut, so it is never sent again.
-const SCHEMA_81: &str = concat!(
+const SCHEMA_82: &str = concat!(
     "CREATE TABLE IF NOT EXISTS keyboard_grants (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,
   run     INTEGER NOT NULL REFERENCES runs (id),
@@ -1479,7 +1488,7 @@ CREATE TABLE IF NOT EXISTS keyboard_keys (
 );
 ",
     bumps!("keyboard_grants"),
-    "PRAGMA user_version = 81;
+    "PRAGMA user_version = 82;
 "
 );
 
@@ -1495,6 +1504,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
+    SCHEMA_82,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -2212,12 +2222,17 @@ pub(crate) fn irreversible_asks(
     tx.commit()
 }
 
-/// Fires every time wait whose instant passed and task wait whose task ended.
-pub(crate) fn due(db: &mut Connection, factory: &Factory) -> rusqlite::Result<()> {
+/// Fires every time wait whose instant passed and task wait whose task ended. `head` reads the
+/// commit a branch points to in a worktree.
+pub(crate) fn due(
+    db: &mut Connection,
+    factory: &Factory,
+    head: &dyn Fn(&str, &str) -> Option<String>,
+) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     crate::tools::due(&tx)?;
     crate::hold::due(&tx)?;
-    crate::hold::merged(&tx, factory)?;
+    crate::hold::merged(&tx, factory, head)?;
     tx.commit()
 }
 

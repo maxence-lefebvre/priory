@@ -992,8 +992,11 @@ fn tend(
             runtime::kill(&run.tmux);
         }
     }
-    state::due(db, factory)?;
+    state::due(db, factory, &|worktree, branch| {
+        runtime::kept_head(home, Path::new(worktree), branch)
+    })?;
     overlap::tick(db, factory, home)?;
+    crate::stacked::pushed(db, trace, home)?;
     tools::enter_queued(db, factory)?;
     state::disk_due(db, || room::measure(home).ok().map(|room| room.disk_free))?;
     memory::reclaim(db)?;
@@ -1247,6 +1250,35 @@ fn base_branch(db: &Connection, task: i64) -> rusqlite::Result<Option<String>> {
         |row| row.get(0),
     )
     .optional()
+}
+
+/// Whether the branch of the task that `task` stacks on moved since the `waiting` moment recorded
+/// it, before `task`'s first run: then `task` is held until a person answers its ask.
+fn parent_moved(db: &mut Connection, home: &Path, task: i64) -> rusqlite::Result<bool> {
+    let recorded: Option<(i64, String, String, Option<String>)> = db
+        .query_row(
+            "SELECT tasks.base_task, tasks.parent_branch, tasks.parent_head, parent.worktree
+             FROM tasks JOIN tasks AS parent ON parent.id = tasks.base_task
+             WHERE tasks.id = ?1 AND tasks.parent_head IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id)",
+            [task],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let Some((parent, branch, was, worktree)) = recorded else {
+        return Ok(false);
+    };
+    // A branch that is gone refuses the start when the worktree is added.
+    let Some(now) = worktree
+        .and_then(|worktree| runtime::kept_head(home, Path::new(&worktree), &branch))
+        .filter(|now| *now != was)
+    else {
+        return Ok(false);
+    };
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    crate::hold::parent_moved(&tx, task, parent, &branch, &was, &now)?;
+    tx.commit()?;
+    Ok(true)
 }
 
 /// Starts `due`'s batch and records the action in one transaction, so a crash between them never
@@ -1632,9 +1664,18 @@ fn start(
     };
     let folder = worktree_name(db, runner, admission.task)?;
     let base = base_branch(db, admission.task)?;
+    if base.is_some() && parent_moved(db, home, admission.task)? {
+        return Ok(Ok(()));
+    }
     let (worktree, branch) = match runtime::worktree(home, repo, &folder, base.as_deref()) {
-        Ok((worktree, branch, base)) => {
-            state::set_base(db, admission.task, base.as_deref())?;
+        Ok((worktree, branch, start)) => {
+            state::set_base(db, admission.task, start.as_deref())?;
+            if base.is_some() && start.is_some() {
+                db.execute(
+                    "UPDATE tasks SET parent_head = ?2 WHERE id = ?1",
+                    rusqlite::params![admission.task, start],
+                )?;
+            }
             (worktree, branch)
         }
         Err(reason) => return Ok(Err(reason)),

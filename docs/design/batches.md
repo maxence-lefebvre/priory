@@ -12,21 +12,15 @@ its pull request is based on it.
 
 ## Stacked entries: what is left
 
-- **Revalidate the parent at the start.** When the `waiting` moment is met, the daemon would record
-  the parent's top pull request, branch and head on the entry, and revalidate them as the run
-  starts. A parent branch that moved in between would refuse the start, and wake no one until a
-  person answers an ask on the hold. Today the entry starts from wherever the parent's branch is,
-  and only a branch that is gone refuses the start.
-- **Tell the entry when the parent pushes again.** After feedback, the parent pushes new commits.
-  The daemon would queue a line for the entry: `task 31 pushed priory/31 to <sha>; rebase onto it`.
-  Today the entry hears only the parent's merge.
-- **Skip the overlap hold for a stacking pair.** The overlap hold ([runs.md](../daemon/runs.md),
-  Overlapping files) would skip an entry and its stacking parent, and only them. Otherwise it can
-  hold the entry until its parent merges, since both change the same files. The overlap hold sees
-  files only after a run, so it never replaces the plan's edges.
-- **Handle the retarget before the merge.** GitHub may send the retarget of the entry's pull request
-  before the close of the parent's. The daemon records the expected base when the close arrives;
-  a retarget seen first, on an entry with several pull requests, could still ask a person.
+- **Revalidate the parent at the start.** Built: see
+  [daemon/batches.md](../daemon/batches.md#the-waiting-condition-and-stacked-entries).
+- **Tell the entry when the parent pushes again.** Built: see
+  [daemon/batches.md](../daemon/batches.md#the-waiting-condition-and-stacked-entries).
+- **Skip the overlap hold for a stacking pair.** Built: see [runs.md](../daemon/runs.md#overlapping-files).
+  The hold skips the tasks an entry stacks on, its parent and that parent's own parents, since the
+  entry's branch holds their commits.
+- **Handle the retarget before the merge.** Built: see
+  [daemon/batches.md](../daemon/batches.md#the-waiting-condition-and-stacked-entries).
 
 ## Open questions
 
