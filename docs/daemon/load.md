@@ -24,15 +24,15 @@ includes the process start. Numbers vary by about 2x between runs.
 
 | Measure | Budget | 1x | 10x |
 | ------- | ------ | -- | --- |
-| `priory daemon --once`, nothing pending | 1,000 | 22 | 90 |
-| `priory daemon --once`, routing 100 new issues (200 messages) | 3,000 | 400 | 600 |
-| `priory desk --json` | 500 | 27 | 120 |
-| `priory report attention` | 500 | 9 | 30 |
-| `priory costs` | 500 | 17 | 60 |
-| `GET /api/asks` | 500 | 21 | 190 |
-| `GET /api/tasks` | 500 | 26 | 190 |
-| `GET /api/events` wake after a commit | 250 | 95 | 100 |
-| one write, including its revision triggers | 50 | 7 | 6 |
+| `priory daemon --once`, nothing pending | 1,000 | 25 | 75 |
+| `priory daemon --once`, routing 100 new issues (200 messages) | 3,000 | 380 | 500 |
+| `priory desk --json` | 500 | 20 | 95 |
+| `priory report attention` | 500 | 12 | 62 |
+| `priory costs` | 500 | 17 | 100 |
+| `GET /api/asks` | 500 | 21 | 180 |
+| `GET /api/tasks` | 500 | 30 | 250 |
+| `GET /api/events` wake after a commit | 250 | 98 | 90 |
+| one write, including its revision triggers | 50 | 3 | 10 |
 
 Three limits follow:
 
@@ -44,7 +44,10 @@ Three limits follow:
 
 ## What the load test found
 
-Before schema 57, `priory desk --json` took 600 to 980 ms at 10x. It matched each open ask by
-`coalesce(name, id)` and listed the newest trace and inbox entries by `julianday(time)`, and no
-index served either, so the desk scanned every ask, trace record and inbox entry. Schema 57 adds
-`asks_by_ref`, `trace_by_day` and `inbox_by_day`. The desk now takes about 120 ms at 10x.
+Before schema 57, two reads grew faster than the data. At 10x, `priory desk --json` took 580 to 720
+ms and `priory report attention` took 6 to 12 seconds, against 33 and 61 ms at 1x. The desk matched
+each open ask by `coalesce(name, id)` and listed the newest trace and inbox entries by
+`julianday(time)`. The report scanned the trace by type for each ask revision and the asks for each
+task. No index served these lookups. Schema 57 adds `asks_by_ref`, `trace_by_day`, `inbox_by_day`,
+`trace_by_type`, `ask_withdrawals_by_ask` and `asks_by_task`. At 10x the desk takes about 95 ms and
+the report about 62 ms.
