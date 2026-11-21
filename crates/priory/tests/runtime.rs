@@ -3448,7 +3448,8 @@ fn an_agent_ask_sleeps_the_task_and_the_answer_wakes_it_as_its_prompt() {
             "github:owner/repo#42",
             "-",
             "-",
-            "-"
+            "-",
+            "-",
         ]]
     );
 
@@ -3730,6 +3731,7 @@ fn an_agent_ask_stores_and_lists_its_title_text_what_waits_next_action_and_comma
             "stored",
             "-",
             "github:owner/repo#42",
+            "-",
             "-",
             "-",
             "-",
@@ -4281,6 +4283,7 @@ fn an_outside_ask_takes_fleets_json_shows_on_the_desk_and_a_changed_one_is_a_new
             "cache",
             "run-7",
             "cache-worker",
+            "-",
             "-",
         ]
     };
@@ -16570,12 +16573,12 @@ fn the_approve_pr_ask_shows_its_tasks_merge_risk_and_asks_filter_by_it() {
     let text = String::from_utf8(setup.priory(&["asks"]).stdout).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(
-        lines[0].split('\t').next_back(),
-        Some("merge_risk"),
+        lines[0].split('\t').rev().take(2).collect::<Vec<_>>(),
+        ["risk_estimate", "merge_risk"],
         "{text}"
     );
     assert!(
-        lines[1].ends_with("\tmedium: does what the issue asks; low: one widget; medium: a test draws the box; low: one revert; low: the widget test fails"),
+        lines[1].contains("\tmedium: does what the issue asks; low: one widget; medium: a test draws the box; low: one revert; low: the widget test fails\tHistory: 0 of 0 tasks"),
         "{text}"
     );
 }

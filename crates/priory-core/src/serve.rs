@@ -181,7 +181,8 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
     let served = Arc::new(Served {
         views: listing::views(factory).to_string(),
         links: listing::links(factory).to_string(),
-        flows: listing::flows(factory).to_string(),
+        flows: listing::flows(factory),
+        gates: crate::risk::Gates::of(factory),
         schedules: listing::schedule_triggers(factory),
         workflows: factory.workflows.keys().cloned().collect(),
         request: serde_json::json!({
@@ -274,7 +275,9 @@ struct Remote {
 struct Served {
     views: String,
     links: String,
-    flows: String,
+    flows: serde_json::Value,
+    /// The gates of each irreversible step, for the flows' `risk_estimate`.
+    gates: crate::risk::Gates,
     schedules: Vec<(String, Trigger)>,
     workflows: Vec<String>,
     /// `GET /api/request`: what the Add control prefills and offers.
@@ -321,7 +324,15 @@ fn route(
     match path {
         "/api/views" => return Reply::json(200, served.views.clone()),
         "/api/links" => return Reply::json(200, served.links.clone()),
-        "/api/flows" => return Reply::json(200, served.flows.clone()),
+        "/api/flows" => {
+            let risk = db.as_ref().ok().and_then(|db| {
+                let now = intake::now().ok()?;
+                crate::risk::recent(db, &served.gates, now).ok()
+            });
+            let mut flows = served.flows.clone();
+            listing::with_risk_estimates(&mut flows, risk.as_ref());
+            return Reply::json(200, flows.to_string());
+        }
         _ => {}
     }
     let db = match db {

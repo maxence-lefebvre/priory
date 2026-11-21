@@ -39,6 +39,33 @@ const IRREVERSIBLE: &str = "CASE asks.kind
        WHEN 'agent' THEN coalesce(json_array_length(asks.command, '$.runs') > 0, 0)
        ELSE 0 END";
 
+/// The workflow and irreversible step a step ask's answer lets run, as a JSON array, or null.
+const LETS: &str = "(SELECT json_array(gate.workflow, gate.lets) FROM irreversible_asks AS gate
+       WHERE gate.workflow = tasks.workflow AND gate.step = asks.step AND asks.kind = 'step'
+         AND gate.lets != '')";
+
+/// Gives each ask with `lets` its `risk_estimate`, the own row of the step its answer lets run,
+/// and drops `lets`. It reads the trace only when one ask has it.
+fn risk_estimates(db: &Connection, asks: &mut [Value]) -> rusqlite::Result<()> {
+    let lets = |ask: &mut Value| {
+        let lets = ask.as_object_mut()?.remove("lets")?;
+        serde_json::from_str::<(String, String)>(lets.as_str()?).ok()
+    };
+    let wanted: Vec<_> = asks.iter_mut().map(lets).collect();
+    if wanted.iter().all(Option::is_none) {
+        return Ok(());
+    }
+    let risk = priory_intake::intake::now()
+        .and_then(|now| crate::risk::recent(db, &crate::risk::Gates::default(), now))
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))?;
+    for (ask, lets) in asks.iter_mut().zip(wanted) {
+        if let Some((workflow, step)) = lets {
+            ask["risk_estimate"] = risk.estimate(&workflow, &step);
+        }
+    }
+    Ok(())
+}
+
 /// A desk item's group in the ranking (see `RANKS`), null for the queue.
 fn urgency() -> String {
     format!(
@@ -198,7 +225,7 @@ fn asks_query() -> String {
      (SELECT json_group_array(json_object('revision', revision, 'answer', answer, 'by', by,
         'why', why, 'at', created))
       FROM (SELECT * FROM ask_refusals WHERE ask = asks.id ORDER BY id)) AS refused,
-     {IRREVERSIBLE} AS irreversible, tasks.merge_risk, tasks.grade,
+     {IRREVERSIBLE} AS irreversible, {LETS} AS lets, tasks.merge_risk, tasks.grade,
      asks.kind != 'step' AND NOT EXISTS (SELECT 1 FROM holds
        WHERE holds.ask = asks.id AND holds.released IS NULL) AS free_text, {}
    FROM asks LEFT JOIN tasks ON tasks.id = asks.task
@@ -681,6 +708,9 @@ fn asks_of(
         let free_text = object["free_text"].as_i64() == Some(1);
         object.insert("free_text".to_owned(), free_text.into());
     }
+    if let Some(asks) = asks.as_array_mut() {
+        risk_estimates(db, asks)?;
+    }
     Ok(asks)
 }
 
@@ -776,9 +806,20 @@ pub fn links(factory: &Factory) -> Value {
     json!({ "links": factory.links() })
 }
 
-/// What `priory check --explain --json` prints and `GET /api/flows` serves: the irreversible steps
-/// with their gates, the paths to one with no human decision, the tools reached, and, for the
-/// drawing, each workflow's steps and edges.
+/// Gives each irreversible step of `flows` its `risk_estimate` from `risk`, or null when no state
+/// was read.
+pub fn with_risk_estimates(flows: &mut Value, risk: Option<&crate::risk::Risk>) {
+    for step in flows["irreversible"].as_array_mut().into_iter().flatten() {
+        step["risk_estimate"] = match (risk, step["workflow"].as_str(), step["step"].as_str()) {
+            (Some(risk), Some(workflow), Some(id)) => risk.step_history(workflow, id),
+            _ => Value::Null,
+        };
+    }
+}
+
+/// What `priory check --explain --json` prints and `GET /api/flows` serves, before
+/// `with_risk_estimates`: the irreversible steps with their gates, the paths to one with no human
+/// decision, the tools reached, and, for the drawing, each workflow's steps and edges.
 pub fn flows(factory: &Factory) -> Value {
     let mut irreversible = Vec::new();
     let mut paths = Vec::new();
@@ -1132,16 +1173,19 @@ pub(crate) fn alarm(
 /// irreversible step run, or null. The command's `runs` is non-empty for an ask that runs one (see
 /// `IRREVERSIBLE`).
 fn acts(db: &Connection, items: &mut [Value]) -> rusqlite::Result<()> {
-    let mut asked = db.prepare(
-        "SELECT asks.command, (SELECT nullif(gate.lets, '') FROM irreversible_asks AS gate
-           WHERE gate.workflow = tasks.workflow AND gate.step = asks.step AND asks.kind = 'step')
-         FROM asks LEFT JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
-    )?;
+    let mut asked = db.prepare(&format!(
+        "SELECT asks.command, {LETS}
+             FROM asks LEFT JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1"
+    ))?;
     for item in items.iter_mut().filter(|item| item["kind"] == "ask") {
         let (command, lets) = match item["id"].as_i64() {
             Some(ask) => asked.query_row([ask], |row| Ok((row.get(0)?, row.get(1)?)))?,
             None => (None::<String>, None::<String>),
         };
+        item["lets"] = json!(lets);
+        let lets = lets
+            .and_then(|lets| serde_json::from_str::<(String, String)>(&lets).ok())
+            .map(|(_, step)| step);
         item["acts"] = command
             .and_then(|command| serde_json::from_str::<Value>(&command).ok())
             .filter(|command| {
@@ -1197,6 +1241,7 @@ pub fn desk(
         .count();
     routed_to(db, list)?;
     acts(db, list)?;
+    risk_estimates(db, list)?;
     if let Some(me) = crate::runners::me(db)? {
         for item in list.iter_mut().filter(|item| item["kind"] == "ask") {
             item["runner"] = json!(me);
