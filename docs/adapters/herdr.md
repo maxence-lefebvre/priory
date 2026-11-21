@@ -227,10 +227,27 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
 
 The detail shows the sections Why, Brief, Plan, PR, Trace, History and Command. Brief shows the
 request and the `groom` step's result, Plan the `plan` step's result or else the task's
-`progress`, PR the pull request's title, branches, state and checks, and Trace each run with its
+`progress`, PR the pull request's title, branches, state and checks, then the task's stack when it
+has two or more pull requests (see [Stacks](#stacks)), and Trace each run with its
 span, outcome and tokens. A section the task lacks is left out with its chip, as DESIGN.md says.
 History lists every revision and refused answer of the ask, and its answer, newest first. A refused
 answer shows on a warn tile. Briefs, plans and results draw as plain text, like the agent's text.
+
+## Stacks
+
+A task can own a stack of pull requests, each based on the one below (see
+[Stacks in routing.md](../daemon/routing.md#stacks)). `prStack` in `lib/priory.js` turns a task's
+`stack` from `priory tasks --json` into what the panels show:
+
+- A Desk or Queue row whose task owns two or more pull requests says how many, as `3 PRs`, after
+  its state.
+- The Asks detail's PR section lists the stack under the latest pull request, bottom first: each
+  one's number as a link, its branch and base, its state, and the checks of the latest one. The
+  lowest open one reads "open, next to merge".
+- A task with one pull request keeps the single PR look.
+
+The web view keeps the same `prStack` in `crates/priory-core/web/stack.js`. A test in
+`test/priory.test.js` keeps the two the same.
 
 ## The Queue panel
 
@@ -243,7 +260,8 @@ works.
   runs the verbs. The node tests in `test/queue.test.js` check `view.js` against JSON captured from a
   real `priory queue DIR --json`.
 - **Reading.** The panel reads `priory queue DIR --json`, with the factory that settings name, and
-  `priory desk --json` for whether starts are paused and what the queue is short of. Then it waits
+  `priory desk --json` for whether starts are paused and what the queue is short of, and
+  `priory tasks --json` for each task's stack of pull requests, which the queue does not carry. Then it waits
   with `priory wait` and reads again. When a call fails, it keeps the last read and shows
   "Reconnecting to priory" with the age of its last update, and the actions stay disabled.
 - **List.** The saved views are Next, Held and Last day, each with its count, and All. Next shows Up

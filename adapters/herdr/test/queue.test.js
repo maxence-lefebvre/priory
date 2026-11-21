@@ -55,8 +55,8 @@ test("the task a stall names waits for room, and for a person while starts are p
 test("a running row shows its run's step and age", () => {
   const [running] = queueList(queue, { view: "next", now }).sections;
   assert.deepEqual(running.rows, [
-    { id: 1, tile: "running", key: "cli:PRI-66", title: "Retry the flaky upload test", titleSpans: [{ text: "Retry the flaky upload test" }], step: "implement", run: 1, age: "18 min" },
-    { id: 2, tile: "running", key: "cli:PRI-67", title: "Speed up the asks listing", titleSpans: [{ text: "Speed up the asks listing" }], step: "implement", run: 2, age: "6 min" },
+    { id: 1, tile: "running", key: "cli:PRI-66", title: "Retry the flaky upload test", titleSpans: [{ text: "Retry the flaky upload test" }], step: "implement", run: 1, age: "18 min", prs: null },
+    { id: 2, tile: "running", key: "cli:PRI-67", title: "Speed up the asks listing", titleSpans: [{ text: "Speed up the asks listing" }], step: "implement", run: 2, age: "6 min", prs: null },
   ]);
 });
 
@@ -87,8 +87,8 @@ test("Held lists each hold's reason and each of its conditions, met or not", () 
 test("Last day lists the ended tasks latest first, and All shows every section", () => {
   const [ended] = queueList(queue, { view: "ended", now }).sections;
   assert.deepEqual(ended.rows, [
-    { id: 10, tile: "failed", key: "cli:PRI-61", title: "Pin the Actions versions", titleSpans: [{ text: "Pin the Actions versions" }], step: "implement", age: "0 min", why: { text: "checks failed twice", tone: "muted" } },
-    { id: 9, tile: "done", key: "cli:PRI-60", title: "Bump the Rust toolchain", titleSpans: [{ text: "Bump the Rust toolchain" }], step: "implement", age: "0 min", why: { text: "merged #210", tone: "muted" } },
+    { id: 10, tile: "failed", key: "cli:PRI-61", title: "Pin the Actions versions", titleSpans: [{ text: "Pin the Actions versions" }], step: "implement", age: "0 min", why: { text: "checks failed twice", tone: "muted" }, prs: null },
+    { id: 9, tile: "done", key: "cli:PRI-60", title: "Bump the Rust toolchain", titleSpans: [{ text: "Bump the Rust toolchain" }], step: "implement", age: "0 min", why: { text: "merged #210", tone: "muted" }, prs: null },
   ]);
   assert.deepEqual(queueList(queue, { view: "all", now }).sections.map((section) => section.title),
     ["Running", "Blocker", "Now", "Today", "Held", "Last day"]);
@@ -163,4 +163,16 @@ test("a task's title in each section turns the factory's keys into link spans", 
   for (const section of queueList(titled, { view: "all", now, links }).sections) {
     for (const row of section.rows) assert.deepEqual(row.titleSpans, spans(row.id), section.id);
   }
+});
+
+test("a row whose task owns a stack of two or more says how many PRs, from `priory tasks`; one PR says nothing", () => {
+  const pull = (number, base, state) => ({ pull_request: `github:acme/app#${number}`, number, branch: `b${number}`, base, state });
+  const tasks = [
+    { id: 1, stack: [pull(57, "main", "open"), pull(58, "b57", "open")] },
+    { id: 4, stack: [pull(60, "main", "open"), pull(61, "b60", "open"), pull(62, "b61", "open")] },
+    { id: 5, stack: [pull(63, "main", "open")] },
+  ];
+  const rows = queueList(queue, { view: "all", now, tasks }).sections.flatMap((section) => section.rows);
+  assert.deepEqual(rows.filter((row) => row.prs).map((row) => [row.key, row.prs]), [["cli:PRI-66", "2 PRs"], ["cli:PRI-73", "3 PRs"]]);
+  assert.equal(rows.find((row) => row.key === "cli:PRI-74").prs, null);
 });
