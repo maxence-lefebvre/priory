@@ -287,6 +287,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory report attention [--by workflow\|lane\|kind] [--json]` | Prints this week's person-minutes per merged pull request, how long asks waited on you, and where each task's time went |
 | `priory costs DIR [--by workflow\|agent\|model\|machine\|repo] [--json]` | Prints this week's cost against last week's, per day with merges, and split by one dimension |
 | `priory grades [--since WINDOW] [--json]` | Prints how each grade's tasks turned out, headed by green's one-shot rate against 90 % |
+| `priory report risk [DIR] [--workflow NAME] [--json]` | Prints, for each irreversible step, the share of tasks through it judged wrong and landed wrong within 30 days |
 
 Run `priory` with no arguments to print its usage.
 
@@ -309,6 +310,8 @@ events after its list.
 The web view's Asks panel has the saved views Open, Snoozed, Answered and All. A snoozed ask leaves
 Open and waits in Snoozed. On a phone, once the options scroll out of view, the answer bar's
 "N options" opens a sheet with every option. On a desktop, `S` snoozes the selected ask for 1 h.
+A batch's go ask shows the plan as a lane graph, and each entry's menu moves or drops it before you
+answer. The desk's batch row opens the batch page, with each entry's state and when it starts.
 
 A workflow can write a report for you, such as a morning dossier: `priory report show` prints the
 last one. The web view's Reports panel shows it, and takes its picks and row comments as

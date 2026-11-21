@@ -19,7 +19,7 @@ use priory_intake::log::{self, Log};
 use priory_runtime::runtime::{self, Launch, Line};
 use priory_runtime::script::{self, Script};
 use priory_runtime::{room, slice, transcript};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::cell::OnceCell;
 use std::collections::HashMap;
@@ -1195,6 +1195,20 @@ fn worktree_name(db: &Connection, runner: Option<&str>, task: i64) -> rusqlite::
     )
 }
 
+/// The branch of the task that `task` stacks on, while that task's stack has a pull request open
+/// from it; once it merged, `task` starts from and lands on the default branch.
+fn base_branch(db: &Connection, task: i64) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        "SELECT base.branch FROM tasks JOIN tasks AS base ON base.id = tasks.base_task
+         WHERE tasks.id = ?1 AND EXISTS (SELECT 1 FROM pull_requests
+           WHERE pull_requests.task = base.id AND pull_requests.branch = base.branch
+           AND pull_requests.state = 'open')",
+        [task],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
 /// Starts `due`'s batch and records the action in one transaction, so a crash between them never
 /// creates its tasks twice.
 fn start_batch(
@@ -1250,7 +1264,7 @@ fn restore_worktree(
         )?;
         return Ok(Restored::Waits);
     }
-    if let Err(reason) = runtime::worktree(home, repo, &worktree_name(db, runner, task)?) {
+    if let Err(reason) = runtime::worktree(home, repo, &worktree_name(db, runner, task)?, None) {
         return Ok(Restored::Failed(reason));
     }
     db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [task])?;
@@ -1436,7 +1450,12 @@ fn open_pr(
                 Some(evidence) => format!("{summary}\n\n{evidence}"),
                 None => summary.clone(),
             };
-            open_stack(Path::new(worktree), repo, &branches, commit, title, &body)
+            let base = base_branch(db, due.task)?;
+            let stack = Stack {
+                branches: &branches,
+                base: base.as_deref(),
+            };
+            open_stack(Path::new(worktree), repo, &stack, commit, title, &body)
         }
     };
     Ok(match opened {
@@ -1461,16 +1480,24 @@ fn failed(error: String) -> Done {
     }
 }
 
-/// Opens the pull request of each of `branches`, bottom first, each on the one below.
+/// The branches of a task's stack, bottom first, and the branch its bottom one is based on, when
+/// not the default one.
+struct Stack<'a> {
+    branches: &'a [String],
+    base: Option<&'a str>,
+}
+
+/// Opens the pull request of each of the stack's branches, bottom first, each on the one below.
 fn open_stack(
     worktree: &Path,
     repo: &str,
-    branches: &[String],
+    stack: &Stack,
     commit: &str,
     title: &str,
     body: &str,
 ) -> Result<Vec<tools::Stacked>, String> {
-    let mut stack: Vec<tools::Stacked> = Vec::new();
+    let branches = stack.branches;
+    let mut opened: Vec<tools::Stacked> = Vec::new();
     for (at, branch) in branches.iter().enumerate() {
         let head = match at + 1 == branches.len() {
             true => commit.to_owned(),
@@ -1484,16 +1511,19 @@ fn open_stack(
             1 => title.to_owned(),
             count => format!("{title} ({} of {count})", at + 1),
         };
-        let below = stack.last().map(|pull| pull.branch.as_str());
+        let below = opened
+            .last()
+            .map(|pull| pull.branch.as_str())
+            .or(stack.base);
         let (number, base) =
             runtime::open_pull_request(worktree, repo, branch, &head, below, &title, body)?;
-        stack.push(tools::Stacked {
+        opened.push(tools::Stacked {
             resource: route::pull_request(repo, number),
             branch: branch.clone(),
             base,
         });
     }
-    Ok(stack)
+    Ok(opened)
 }
 
 /// Opens an issue on the task's repository, titled and described by its latest result.
@@ -1560,7 +1590,8 @@ fn start(
         return Ok(Err(format!("task {} names no repo", admission.task)));
     };
     let folder = worktree_name(db, runner, admission.task)?;
-    let (worktree, branch) = match runtime::worktree(home, repo, &folder) {
+    let base = base_branch(db, admission.task)?;
+    let (worktree, branch) = match runtime::worktree(home, repo, &folder, base.as_deref()) {
         Ok(found) => found,
         Err(reason) => return Ok(Err(reason)),
     };

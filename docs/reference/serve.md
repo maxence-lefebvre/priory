@@ -26,7 +26,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/tasks/{id}` | `priory task ID --json` | one [task in detail](#task-in-detail) |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
 | `/api/batches` | `priory batch show --json` | `batches`: every batch, newest first, without its entries and closes. See [batches.md](../daemon/batches.md#priory-batch-show) |
-| `/api/batches/{id}` | `priory batch show ID --json` | one batch with its entries and closes. `ID` is the batch's id or its key |
+| `/api/batches/{id}` | `priory batch show ID --json` | one batch with its entries, closes and splits. `ID` is the batch's id or its key |
 | `/api/views` | `priory views --json` | an object: [Views](#views) |
 | `/api/request` | | what the web view's Add prefills: `workflow` and `band`, the [`[request]`](factory.md#request) defaults, each `null` when unset; `workflows`, the factory's workflow names; and `bands`, its bands in order |
 | `/api/links` | `priory links --json` | an object: [Links](#links) |
@@ -280,9 +280,9 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `merge_risk` | object or null | The task's latest [merge risk](../daemon/tools.md#merge-risk): `verdict`, then the lines `ask`, `blast_radius`, `verification`, `rollback` and `detection`. Null before a risk step ends |
 | `run` | integer or null | The run that asked |
 | `state` | string | `open`, `answered` or `withdrawn` |
-| `withdrawn_reason` | string or null | Why a withdrawn ask closed, one of the [withdrawal reasons](../daemon/waits.md#why-an-ask-or-wait-was-withdrawn): `dismissed`, `sibling-fired`, `moved-on` or `revived` |
+| `withdrawn_reason` | string or null | Why a withdrawn ask closed, one of the [withdrawal reasons](../daemon/waits.md#why-an-ask-or-wait-was-withdrawn): `dismissed`, `sibling-fired`, `moved-on`, `revived` or `predecessor-revived` |
 | `withdrawn_at` | string or null | When the ask was withdrawn, in UTC. Null for an ask withdrawn before Priory kept the time, with no withdrawal on record |
-| `withdrawn_why` | string or null | `withdrawn_reason` in words: `dismissed`, `a wait of its run fired first`, `a later run called another tool` or `its task was revived` |
+| `withdrawn_why` | string or null | `withdrawn_reason` in words: `dismissed`, `a wait of its run fired first`, `a later run called another tool`, `its task was revived` or `the task it waits on was revived` |
 | `revision` | integer | The question's revision. `priory answer` and `priory dismiss` take it |
 | `question` | string | The question |
 | `options` | array of strings | The options |
@@ -454,9 +454,9 @@ A held task lists each condition of its hold, in the order it was given, under `
 
 | Field | Meaning |
 | ----- | ------- |
-| `kind` | `person`, `time`, `task`, `issue`, `merge` or `blockers` |
+| `kind` | `person`, `time`, `task`, `issue`, `merge`, `blockers`, or a batch entry's `merged` or `waiting` (see [batches.md](../daemon/batches.md)) |
 | `until` | A time condition's instant |
-| `task` | A task condition's other task |
+| `task` | The other task of a task, `merged` or `waiting` condition |
 | `resource` | `linear:<issue>` for an issue or blockers condition, `github:<owner/name>#<number>` for a merge |
 | `met` | When the condition was met, or null |
 | `met_as` | How it was met, such as `task 9 is done` or `ENG-7 is Done`, or null |
@@ -601,13 +601,13 @@ With `web = true`, the server sends these without the token:
 
 | Path | Type |
 | ---- | ---- |
-| `/boot.js`, `/app.js`, `/asks.js`, `/add.js`, `/links.js`, `/reports.js`, `/stack.js`, `/desk.js`, `/costs.js`, `/inbox.js`, `/flows.js` | `text/javascript; charset=utf-8` |
+| `/boot.js`, `/app.js`, `/asks.js`, `/add.js`, `/links.js`, `/reports.js`, `/stack.js`, `/desk.js`, `/costs.js`, `/inbox.js`, `/flows.js`, `/batches.js` | `text/javascript; charset=utf-8` |
 | `/app.css`, `/tokens/structure.css`, `/tokens/themes.css` | `text/css; charset=utf-8` |
 | `/fonts/<file>.woff2` | `font/woff2` |
 | `/sw.js`, the service worker | `text/javascript; charset=utf-8` |
 | `/manifest.webmanifest` | `application/manifest+json` |
 | `/favicon.ico`, `/favicon.svg`, `/apple-touch-icon.png`, `/icon-192.png`, `/icon-512.png`, `/icon-maskable-192.png`, `/icon-maskable-512.png` | the image's type |
-| any other path outside `/hooks`, such as `/` or `/asks/42` | the page, `text/html; charset=utf-8` |
+| any other path outside `/hooks`, such as `/`, `/asks/42` or `/batches/4` | the page, `text/html; charset=utf-8` |
 
 An unknown file under `/fonts/` or `/tokens/`, or at the top level with a `.` in its name, such as
 `/nothing.js`, gets `404`.

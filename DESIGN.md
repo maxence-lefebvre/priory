@@ -382,7 +382,7 @@ The desk is the "Needs me" view. It lists, top to bottom:
    memory waits, retired tasks and worktrees that stay), each with the daemon's sentence. A
    batch row stands for its entries' held rows. On the phone list, its title and counts are the
    main line and the `Next: ...` sentence a caption below; the wide table and the Herdr Desk keep the
-   line whole, as board 3 shows. Its key opens the planning task until the batch page exists. A held task's row carries a
+   line whole, as board 3 shows. Its key opens the [batch page](#batch-page-and-lane-graph). A held task's row carries a
    Release button in `.btn secondary`, and a report row under **Reports** a Read button. Release
    sends the revision the page drew (`POST /api/tasks/{id}/release`), Read sends `POST /api/inbox/{seq}/read`.
    A refused action keeps the row and shows why under it, in the row's note.
@@ -557,6 +557,22 @@ Trace, History, and Command in the drawer) jumps to each part and marks the one 
 7. **Command**: for a command ask, the command and its target (below).
 
 A section the task lacks, such as a plan, is left out with its chip.
+
+A **go ask**, the human step of a batch's planning task, reads the batch first. Its chips start with
+Plan, Closes and Splits, then Why and the task's other sections. Plan is the [lane graph](#batch-page-and-lane-graph) with
+numbered circles and each entry's files, under "Plan, 8 tasks in start order" and the plan revision.
+Closes lists each issue the go closes, with why and its evidence; Splits each split issue, its parts
+and why. The task's own plan result is left out, since the batch plan says the same. While the batch
+is `asked`, "Edit the plan", a ghost button with `pencil` before the snooze buttons, jumps to the
+Plan, and each entry row ends in a `more` icon button that opens its menu under the row: Move up,
+Move down and Drop, `.btn secondary` at `--control` height. A move with no neighbour that way is
+disabled. Drop on an entry that others start after arms first, as Cancel does on a task: the button
+turns `--emph` with an `--action` ring and reads "Tap again to drop it and ENG-41.2, ENG-42". Each
+edit sends the plan revision the page drew; the plan's `.note` then says the daemon's sentence, such
+as "batch 4 is at plan revision 3", or why it was refused. Edit the plan never answers. The plan
+shows only once it is read for the ask's revision on screen, so a Go never answers a plan the page
+did not show. Until then the options are disabled under a `layers` note, "Reading the plan of revision
+2 before you answer.", or "Could not read the plan: ..." when the read fails.
 
 **Answer while reading.** On a phone, once the options scroll out of view:
 
@@ -761,6 +777,44 @@ open Priory window when there is one.
 - Then the runs table and the terminal of the selected run.
 - The full workflow diagram (steps as nodes, outcome edges) keeps the same encodings, top to
   bottom on compact and left to right on wide, with pinch, drag and a "Fit" button.
+
+### Batch page and lane graph
+
+The batch page, `/batches/<id>`, opens from the desk's batch row. On a phone it sits under the Desk
+tab with a back link to the Desk; on wide screens it fills the list, as the task page does.
+
+- Context line: the batch tile, the planning task's key in mono, which opens the task, the batch's
+  state, lane, "went 5 h ago by max" and "plan rev 2".
+- Title in `--type-question`, then the **stage bar**: one 8 px bar with `--radius-full`, a part
+  per stage with entries, as wide as its count: merged `--tile-ok`, started `--tile-live`, blocked
+  `--tile-warn`, failed `--tile-danger`, waiting, queued and dropped `--tile-muted`, and planned a
+  1.5 px `--tile-hold` outline. Under it, the words: each stage's count in bold and its word, in the
+  order merged, started, waiting, queued, blocked, planned, failed, dropped, then "2 closed at the
+  go". The bar is hidden from screen readers; the words say it.
+- Then "8 entries in start order", the key line, the lane graph, then Closes and Splits as in the go
+  ask.
+
+The **lane graph** draws a plan, in the batch page and in a go ask.
+
+- One row per entry in start order, with a hairline between rows. Line 1: the issue in mono, a
+  `split` tag for a part, then the task as a link and its state word in its role's text color, or,
+  before the go, the entry's files in `--text-3`. Line 2: the title. Line 3, in `--text-2`: when it
+  starts in words ("starts at the go", "stacks on #1 ENG-40", "starts once #4 ENG-41.1 merges"),
+  then the task's reason, or its step and age.
+- The node sits in the row's lane: the state tile at 22 px after the go, a numbered 22 px circle on
+  `--surface` with a `--control-line` ring before it. Lanes are 18 px apart.
+- After the start words, line 3 names the task's latest pull request, such as "#231 merged", when it has one.
+- An edge runs down its predecessor's lane and turns into the entry's lane just above the entry. A
+  single 2 px `--text-3` line is `merged`; a double line, two `--text-2` rails 2 px apart, is
+  `waiting`. Each line has a halo in the panel's background. A key line above the graph names both.
+- An entry takes the lane of the first predecessor it is the last to wait on, else the lowest lane
+  whose entry has no successor left below. A phone shows at most three lanes; entries past them share
+  the third, and their words still say when each starts.
+
+| State | What shows |
+| ----- | ---------- |
+| loading | "Loading batch 4…" |
+| error | "Could not load batch 4: ..." and `priory batch show 4` |
 
 ### Panel chrome
 
