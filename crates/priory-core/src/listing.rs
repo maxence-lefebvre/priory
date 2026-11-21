@@ -2,6 +2,7 @@
 
 use crate::{post, snooze, stall, state, sweep};
 use jiff::Timestamp;
+use priory_factory::explain;
 use priory_factory::factory::{Factory, Trigger};
 use priory_intake::intake::schedule;
 use rusqlite::types::ValueRef;
@@ -496,6 +497,87 @@ pub fn links(factory: &Factory) -> Value {
     json!({ "links": factory.links() })
 }
 
+/// What `priory check --explain --json` prints and `GET /api/flows` serves: the irreversible steps
+/// with their gates, the paths to one with no human decision, the tools reached, and, for the
+/// drawing, each workflow's steps and edges.
+pub fn flows(factory: &Factory) -> Value {
+    let mut irreversible = Vec::new();
+    let mut paths = Vec::new();
+    let mut workflows = Vec::new();
+    for (name, workflow) in &factory.workflows {
+        let workflow = &workflow.value;
+        let gates = explain::gates(workflow);
+        for gate in &gates {
+            irreversible.push(json!({
+                "workflow": name,
+                "step": gate.step,
+                "approved_by": gate.approved_by,
+                "autonomous": gate.autonomous,
+            }));
+        }
+        for path in explain::unattended_paths(workflow) {
+            paths.push(json!({ "workflow": name, "path": path }));
+        }
+        let steps: Vec<_> = workflow
+            .steps
+            .iter()
+            .map(|step| {
+                let edges: Vec<_> = step
+                    .next
+                    .iter()
+                    .map(|(outcome, to)| {
+                        json!({ "outcome": outcome, "to": to, "by": step.by(outcome) })
+                    })
+                    .collect();
+                let mut value = json!({
+                    "id": step.id,
+                    "decides": step.decides.name(),
+                    "effect": step.effect.name(),
+                    "kind": explain::kind(step),
+                    "edges": edges,
+                });
+                let optional = [
+                    ("agent", step.agent.as_ref().map(|agent| json!(agent))),
+                    (
+                        "options",
+                        (!step.options.is_empty()).then(|| json!(step.options)),
+                    ),
+                    (
+                        "approves",
+                        (!step.approves.is_empty()).then(|| json!(step.approves)),
+                    ),
+                    (
+                        "autonomous",
+                        step.autonomous.as_ref().map(|reason| json!(reason)),
+                    ),
+                ];
+                for (key, field) in optional {
+                    if let Some(field) = field {
+                        value[key] = field;
+                    }
+                }
+                if let Some(gate) = gates.iter().find(|gate| gate.step == step.id) {
+                    value["approved_by"] = json!(gate.approved_by);
+                }
+                value
+            })
+            .collect();
+        workflows.push(json!({ "name": name, "start": workflow.start, "steps": steps }));
+    }
+    let tools: Vec<_> = explain::tools(factory)
+        .iter()
+        .map(|reach| {
+            json!({
+                "agent": reach.agent,
+                "guard": reach.guard,
+                "workflow": reach.workflow,
+                "why": reach.why,
+            })
+        })
+        .collect();
+    json!({ "irreversible": irreversible, "paths": paths, "tools": tools, "workflows": workflows })
+}
+
 /// The factory's schedule triggers by name.
 pub fn schedule_triggers(factory: &Factory) -> Vec<(String, Trigger)> {
     factory
@@ -705,7 +787,8 @@ fn rank(items: &[Value]) -> Vec<Value> {
             let mut item = item.clone();
             let object = item.as_object_mut().expect("rows are objects");
             object.remove("urgency");
-            object.insert("why".to_owned(), json!(why));
+            let acts = object.remove("acts").filter(|acts| !acts.is_null());
+            object.insert("why".to_owned(), acts.unwrap_or(json!(why)));
             Some((*group, item))
         })
         .collect();
@@ -718,7 +801,40 @@ pub(crate) fn next(db: &Connection) -> rusqlite::Result<Option<Value>> {
     let mut items = rows(db, &desk_items(), [])?;
     let items = items.as_array_mut().expect("rows are an array");
     routed_to(db, items)?;
+    acts(db, items)?;
     Ok(rank(items).into_iter().next())
+}
+
+/// Gives each `ask` item `acts`: what its answer does, when it runs a command or lets an
+/// irreversible step run, or null. The command's `runs` is non-empty for an ask that runs one (see
+/// `IRREVERSIBLE`).
+fn acts(db: &Connection, items: &mut [Value]) -> rusqlite::Result<()> {
+    let mut asked = db.prepare(
+        "SELECT asks.command, (SELECT nullif(gate.lets, '') FROM irreversible_asks AS gate
+           WHERE gate.workflow = tasks.workflow AND gate.step = asks.step AND asks.kind = 'step')
+         FROM asks LEFT JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
+    )?;
+    for item in items.iter_mut().filter(|item| item["kind"] == "ask") {
+        let (command, lets) = match item["id"].as_i64() {
+            Some(ask) => asked.query_row([ask], |row| Ok((row.get(0)?, row.get(1)?)))?,
+            None => (None::<String>, None::<String>),
+        };
+        item["acts"] = command
+            .and_then(|command| serde_json::from_str::<Value>(&command).ok())
+            .filter(|command| {
+                command["runs"]
+                    .as_array()
+                    .is_some_and(|runs| !runs.is_empty())
+            })
+            .and_then(|command| {
+                let program = command["argv"][0].as_str()?;
+                let target = command["target"].as_str().unwrap_or("worktree");
+                Some(json!(format!("it runs `{program}` in {target}")))
+            })
+            .or_else(|| lets.map(|step| json!(format!("it lets step `{step}` run"))))
+            .unwrap_or(Value::Null);
+    }
+    Ok(())
 }
 
 /// Gives each `ask` item the lead it is routed to, or null.
@@ -746,10 +862,12 @@ pub fn desk(db: &Connection, home: &Path, all: bool, person: &str) -> rusqlite::
         .filter(|item| !item["snoozed_until"].is_null())
         .count();
     routed_to(db, list)?;
+    acts(db, list)?;
     let ranked = rank(list);
     for item in list.iter_mut() {
         let item = item.as_object_mut().expect("rows are objects");
         item.remove("urgency");
+        item.remove("acts");
         item.remove("title");
     }
     list.retain(|item| all || item["snoozed_until"].is_null());

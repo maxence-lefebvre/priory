@@ -26,6 +26,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/views` | | an object: [Views](#views) |
 | `/api/request` | | what the web view's Add prefills: `workflow` and `band`, the [`[request]`](factory.md#request) defaults, each `null` when unset; `workflows`, the factory's workflow names; and `bands`, its bands in order |
 | `/api/links` | `priory links --json` | an object: [Links](#links) |
+| `/api/flows` | `priory check --explain --json`, plus the graph | an object: [Flows](#flows) |
 | `/api/reports/latest` | `priory report show --json` | the [report](#report) written last |
 | `/api/reports/{task}` | `priory report show TASK --json` | the task's [report](#report) |
 | `/api/costs?since=WINDOW&by=SPLIT` | `priory costs --json --since WINDOW --by SPLIT` | an object: [Costs](#costs) |
@@ -444,13 +445,58 @@ The server reads the views when it starts.
 The server reads the links when it starts. `priory links [DIR]` without `--json` prints them as
 `pattern` and `url` columns.
 
+## Flows
+
+The same object as `priory check --explain --json` (see
+[workflows.md](workflows.md#irreversible-steps-and-their-gates)), with `workflows` added for the
+web view's Flows panel. The server reads it when it starts.
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `irreversible` | array of objects | Each irreversible step: `workflow`, `step`, `approved_by` (the human steps that approve it) and `autonomous` (its reason, or `null`) |
+| `paths` | array of objects | Each path from `start` to an irreversible step that follows no `human` edge: `workflow` and `path`, an array of step ids |
+| `tools` | array of objects | Each guarded call an agent can make with no human decision: `agent`, `guard`, `workflow` and `why` |
+| `workflows` | array of objects | Each workflow by name: `name`, `start` and `steps` |
+
+A step has `id`, `decides`, `effect`, `kind`, `edges` and, when the step sets them, `agent`,
+`options`, `approves` and `autonomous`, and, on an irreversible step, `approved_by`: the human steps
+that approve it, as in `irreversible`. `kind` is how a drawing shows the step:
+
+| `kind` | The step |
+| ------ | -------- |
+| `read` | has effect `read` |
+| `reversible` | has effect `reversible` |
+| `irreversible` | has effect `irreversible` |
+| `ask` | is a human step with no `approves` |
+| `answer` | is a human step that `approves` a step |
+| `verdict` | has effect `none` and is not a human step |
+
+Each of a step's `edges`, in outcome order, has `outcome`, `to` (a step id, `done` or `stop`) and
+`by`: `code`, `model`, `human` or `asleep`.
+
+```json
+{
+  "irreversible": [{ "workflow": "implement", "step": "open-pr", "approved_by": ["approve-pr"], "autonomous": null }],
+  "paths": [],
+  "tools": [],
+  "workflows": [{
+    "name": "implement",
+    "start": "open-pr",
+    "steps": [{
+      "id": "open-pr", "decides": "code", "effect": "irreversible", "kind": "irreversible", "approved_by": ["approve-pr"],
+      "edges": [{ "outcome": "opened", "to": "done", "by": "code" }, { "outcome": "failed", "to": "stop", "by": "code" }]
+    }]
+  }]
+}
+```
+
 ## Web view files
 
 With `web = true`, the server sends these without the token:
 
 | Path | Type |
 | ---- | ---- |
-| `/boot.js`, `/app.js`, `/asks.js`, `/add.js`, `/links.js`, `/reports.js`, `/stack.js`, `/desk.js`, `/costs.js` | `text/javascript; charset=utf-8` |
+| `/boot.js`, `/app.js`, `/asks.js`, `/add.js`, `/links.js`, `/reports.js`, `/stack.js`, `/desk.js`, `/costs.js`, `/flows.js` | `text/javascript; charset=utf-8` |
 | `/app.css`, `/tokens/structure.css`, `/tokens/themes.css` | `text/css; charset=utf-8` |
 | `/fonts/<file>.woff2` | `font/woff2` |
 | `/sw.js`, the service worker | `text/javascript; charset=utf-8` |

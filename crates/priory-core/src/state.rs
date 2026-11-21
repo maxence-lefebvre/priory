@@ -5,14 +5,14 @@ use herdr_bus::Message;
 use priory_factory::explain;
 use priory_factory::factory::{Factory, Loaded, Session, Workflow};
 use priory_factory::lanes::{Lanes, Subject};
-use priory_intake::intake::{ISSUE_CLOSED, PR_CLOSED as CLOSED};
+use priory_intake::intake::{CHECKED, ISSUE_CLOSED, PR_CLOSED as CLOSED};
 use priory_runtime::room::Room;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 55;
+const VERSION: i64 = 56;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -990,6 +990,15 @@ const SCHEMA_55: &str = concat!(
 "
 );
 
+// The irreversible step each of those answers lets run, for the desk's why.
+const SCHEMA_56: &str = concat!(
+    "ALTER TABLE irreversible_asks ADD COLUMN lets TEXT NOT NULL DEFAULT '';
+",
+    bumps!("irreversible_asks"),
+    "PRAGMA user_version = 56;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -998,7 +1007,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_26, SCHEMA_27, SCHEMA_28, SCHEMA_29, SCHEMA_30, SCHEMA_31, SCHEMA_32, SCHEMA_33,
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
-    SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55,
+    SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1550,10 +1559,10 @@ pub(crate) fn irreversible_asks(
     tx.execute("DELETE FROM irreversible_asks", [])?;
     for (name, workflow) in workflows {
         for step in &workflow.value.steps {
-            if explain::answer_lets_irreversible_run(&workflow.value, &step.id) {
+            if let Some(lets) = explain::irreversible_step_after(&workflow.value, &step.id) {
                 tx.execute(
-                    "INSERT INTO irreversible_asks (workflow, step) VALUES (?1, ?2)",
-                    params![name, step.id],
+                    "INSERT INTO irreversible_asks (workflow, step, lets) VALUES (?1, ?2, ?3)",
+                    params![name, step.id, lets],
                 )?;
             }
         }
@@ -1603,6 +1612,45 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
          ) ORDER BY source, id",
     )?
     .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+    .collect()
+}
+
+/// The merged pull requests of a task, the pull request's repository, number, head and base branch,
+/// merge commit and merge time, merged since `since` and with no check run event at the merge
+/// commit that saw every check complete: the commits the intake still reads check runs at.
+pub fn merges(db: &Connection, since: &str) -> rusqlite::Result<Vec<priory_intake::intake::Merge>> {
+    db.prepare(
+        "SELECT DISTINCT json_extract(data, '$.repo'), json_extract(data, '$.pull_request'),
+           json_extract(data, '$.head_branch'), json_extract(data, '$.base_branch'),
+           json_extract(data, '$.merge_commit'), time
+         FROM inbox closed
+         WHERE type = ?1 AND json_extract(data, '$.merged') = 1 AND time >= ?2
+         AND json_extract(data, '$.merge_commit') IS NOT NULL
+         AND (EXISTS (SELECT 1 FROM pull_requests WHERE resource = 'github:'
+               || json_extract(closed.data, '$.repo') || '#' || json_extract(closed.data, '$.pull_request'))
+           OR EXISTS (SELECT 1 FROM owns WHERE resource = 'github:'
+               || json_extract(closed.data, '$.repo') || '@' || json_extract(closed.data, '$.head_branch')))
+         AND NOT EXISTS (SELECT 1 FROM inbox WHERE type = ?3
+           AND json_extract(data, '$.repo') = json_extract(closed.data, '$.repo')
+           AND json_extract(data, '$.head_sha') = json_extract(closed.data, '$.merge_commit')
+           AND json_extract(data, '$.pending') = 0
+           -- A crash may have stored the passing events of the batch and not the failing ones.
+           AND json_extract(data, '$.failing') <= (SELECT count(*) FROM inbox AS red
+             WHERE red.type = ?3 AND json_extract(red.data, '$.repo') = json_extract(closed.data, '$.repo')
+             AND json_extract(red.data, '$.head_sha') = json_extract(closed.data, '$.merge_commit')
+             AND json_extract(red.data, '$.conclusion') NOT IN ('success', 'neutral', 'skipped')))
+         ORDER BY time",
+    )?
+    .query_map(params![CLOSED, since, CHECKED], |row| {
+        Ok(priory_intake::intake::Merge {
+            repo: row.get(0)?,
+            pull_request: row.get::<_, i64>(1)? as u64,
+            head_branch: row.get(2)?,
+            base_branch: row.get(3)?,
+            commit: row.get(4)?,
+            time: row.get(5)?,
+        })
+    })?
     .collect()
 }
 

@@ -91,17 +91,32 @@ pub struct Watch {
     pub since: Timestamp,
 }
 
+/// A task's pull request merged recently: the intake reads the check runs at its merge commit on the
+/// base branch, since a failing one there is how a merge turns out red.
+pub struct Merge {
+    pub repo: String,
+    pub pull_request: u64,
+    pub head_branch: String,
+    pub base_branch: String,
+    pub commit: String,
+    /// When it merged, as the event carried it.
+    pub time: String,
+}
+
 /// What one poll found of each source it polled, `github`, `linear` or `slack`: none when the poll
 /// succeeded, else its errors joined by `; `.
 pub type Outcomes<'a> = [(&'a str, Option<String>)];
 
 /// Polls the sources until stopped, or once. `watched` reads the open waits on each poll, so that
 /// the intake polls the Slack threads, Linear issues and pull request repositories they name.
+/// `merged` reads the task pull requests merged since the time it is given, to read their merge
+/// commits' check runs.
 /// `health` records each poll's outcomes at the poll's time.
 pub fn run(
     factory: &Factory,
     once: bool,
     watched: fn() -> Result<Vec<Watch>, String>,
+    merged: fn(&str) -> Result<Vec<Merge>, String>,
     health: fn(&Outcomes, Timestamp) -> Result<(), String>,
 ) -> Result<(), String> {
     priory_runtime::runtime::bound_commands(factory.command_timeout());
@@ -172,6 +187,8 @@ pub fn run(
     // shortcut: grows by one id per source event for the life of the process; prune ids of closed
     // pull requests if a long-running intake ever needs it.
     let mut published = HashSet::new();
+    // Merge commits that have no check runs past the grace period, so they are not read again.
+    let mut unchecked = HashSet::new();
     loop {
         let watching = match watched() {
             Ok(watching) => watching,
@@ -204,7 +221,15 @@ pub fn run(
         schedule::fire(&bus, &schedules, now()?)?;
         let waited = watching.iter().filter_map(pull_request_repo);
         let polled: BTreeSet<&str> = repos.iter().copied().chain(waited).collect();
-        let (found, errors) = fetch(&polled, &cursors);
+        let merges = match merged(&since(now()?)) {
+            Ok(merges) => merges,
+            Err(error) if once => return Err(error),
+            Err(error) => {
+                eprintln!("{error}");
+                Vec::new()
+            }
+        };
+        let (found, errors) = fetch(&polled, &cursors, &merges, &mut unchecked);
         // A publish error ends the intake: its restart recovers the source it left behind.
         publish_all(&bus, &triggers, found, &mut cursors, &mut published)?;
         failed.entry("github").or_default().extend(errors);
@@ -250,6 +275,15 @@ pub fn run(
         }
         std::thread::sleep(EVERY);
     }
+}
+
+/// The earliest merge time the intake still reads: `LOOKBACK_SECONDS` before `now`.
+fn since(now: Timestamp) -> String {
+    let earliest = now.as_second() - LOOKBACK_SECONDS;
+    Timestamp::from_second(earliest).map_or_else(
+        |_| String::new(),
+        |earliest| earliest.strftime("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    )
 }
 
 /// The repository of a pull request wait, `owner/name` from `github:owner/name#42`.
@@ -353,11 +387,16 @@ struct Polled {
 
 /// Fetches every repo, and the error of each that fails: a failing `gh` publishes nothing for its
 /// repo, and the others still publish.
-fn fetch(repos: &BTreeSet<&str>, cursors: &Cursors) -> (Vec<Polled>, Vec<String>) {
+fn fetch(
+    repos: &BTreeSet<&str>,
+    cursors: &Cursors,
+    merges: &[Merge],
+    unchecked: &mut HashSet<String>,
+) -> (Vec<Polled>, Vec<String>) {
     let mut polled = Vec::new();
     let mut failed = Vec::new();
     for repo in repos {
-        match issues::fetch_repo(repo, cursors) {
+        match issues::fetch_repo(repo, cursors, merges, unchecked) {
             Ok(found) => polled.extend(found),
             Err(error) => failed.push(error),
         }

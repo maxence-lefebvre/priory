@@ -6,7 +6,8 @@ import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
 import { dossier, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
-import { mergeSince, nextLink, progressView, sectionInView, sinceGroups } from "./desk.js";
+import { KINDS, edgeStyle, nodeShape, timeline, ungatedPairs } from "./flows.js";
+import { dueParts, mergeSince, nextLink, progressView, sectionInView, sinceGroups } from "./desk.js";
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -92,9 +93,9 @@ const stateWord = (state) => {
 const PANELS = {
   desk: ["Desk", "desk"], asks: ["Asks", "asks"], tasks: ["Tasks", "tasks"], runs: ["Runs", "runs"],
   inbox: ["Inbox", "inbox"], reports: ["Reports", "reports"], queue: ["Queue", "queue"],
-  terminal: ["Terminal", "terminal"], workflow: ["Workflows", "workflow"], costs: ["Costs", "costs"],
+  terminal: ["Terminal", "terminal"], workflow: ["Flows", "workflow"], costs: ["Costs", "costs"],
 };
-const CLI = { tasks: "priory tasks", runs: "priory tasks", inbox: "priory inbox", queue: "priory queue", terminal: "priory attach", workflow: "priory check" };
+const CLI = { tasks: "priory tasks", runs: "priory tasks", inbox: "priory inbox", queue: "priory queue", terminal: "priory attach", workflow: "priory check --explain" };
 
 // The last listings read and when, kept on this device, so an offline start shows them with their age.
 const kept = JSON.parse(localStorage.getItem("priory.snapshot") || "null");
@@ -207,7 +208,7 @@ async function refresh() {
     if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return keep(), true;
     const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
     // The Costs panel reads its own reports; a refresh keeps the last ones.
-    state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, older, report, spend: state.data?.spend ?? null };
+    state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, older, report, spend: state.data?.spend ?? null, flows: state.data?.flows ?? null };
     acceptReport();
     state.task = null;
     state.snapshot = snapshot;
@@ -242,7 +243,7 @@ function signOut(reason) {
   for (const key of ["priory.token", "priory.snapshot"]) localStorage.removeItem(key);
   // A refresh still in flight must not store what this device just dropped.
   state.refreshes++;
-  Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, all: { asks: false, tasks: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
+  Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, flowsError: null, all: { asks: false, tasks: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
   render();
 }
 
@@ -323,12 +324,18 @@ function itemRow(item) {
     <span class="l2 r t-${role(kind)}">${autolinked(item.what, null)}</span>${stopped ? taskActs(item.task, item.kind) : ""}</div>`;
 }
 
+// A to-do's text with its due time in local time; the `<time>` keeps the UTC time (DESIGN.md, Copy).
+function todoText(item) {
+  const due = dueParts(item.what, Date.now());
+  return due ? html`${autolinked(due.text, null)}, due ${timeTag(due.iso, due.label)}` : autolinked(item.what, null);
+}
+
 // A person's to-do: its text and due time, and Done, the twin of `priory todo done`.
 function todoRow(item) {
   return html`<div class="row">
     ${tile("todo")}
     <span class="l1"><span>to-do</span><span class="age">${timeTag(item.since)}</span></span>
-    <span class="l2 r">${autolinked(item.what, null)}</span>${todoDone(item.id)}</div>`;
+    <span class="l2 r">${todoText(item)}</span>${todoDone(item.id)}</div>`;
 }
 
 // `place` keeps the next thing card's button apart from the row's, so focus returns to the one tapped.
@@ -442,7 +449,7 @@ function nextCard(model) {
   const verb = ask ? "Answer…" : href?.startsWith("#") ? "See the banner" : "Open task";
   const button = item.kind === "todo" ? todoDone(item.id, "next") : href ? html`<a class="btn ${ask ? "primary" : "secondary"}" href="${href}">${verb}</a>` : "";
   return html`<section class="next" aria-label="The next thing"><p class="l1">${tile(kind, "sm")}<span class="mono">${item.key || ""}</span><span>${item.step || ""}</span><span class="age">${timeTag(item.since)}</span></p>
-    <p class="q">${autolinked(text, ask?.repo || task?.repo)}</p>${ask && routedMark(ask) ? html`<p class="why t-live">${routedMark(ask)}</p>` : ""}<p class="why t-${role(kind)}">${item.why}</p>
+    <p class="q">${item.kind === "todo" ? todoText(item) : autolinked(text, ask?.repo || task?.repo)}</p>${ask && routedMark(ask) ? html`<p class="why t-live">${routedMark(ask)}</p>` : ""}<p class="why t-${role(kind)}">${item.why}</p>
     ${ask?.recommendation ? html`<p class="rec">${icon("corner-down-right", "s15")}<span>${ask.recommendation}</span></p>` : ""}
     ${button}</section>`;
 }
@@ -511,7 +518,7 @@ function deskTable(model, selected) {
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
     <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : ""}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const todoLine = (item) => html`<tr>
-    <td>${stateWord("todo")}</td><td class="mono"></td><td></td><td class="q full"><span>${item.what}</span></td><td class="recw">${todoDone(item.id)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
+    <td>${stateWord("todo")}</td><td class="mono"></td><td></td><td class="q full"><span>${todoText(item)}</span></td><td class="recw">${todoDone(item.id)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const group = (title, count) => html`<tr class="grp"><td colspan="6">${title}<span>${count}</span></td></tr>`;
   return html`<table class="tbl">
     <thead><tr><th>State</th><th>Task</th><th>Step</th><th>Waits on you</th><th>Recommends</th><th class="r">Age</th></tr></thead>
@@ -1520,6 +1527,78 @@ function laterPanel(panel) {
   return html`<p class="empty">The ${label} panel comes in a later version of the web view. Meanwhile run <code>${CLI[panel]}</code>.</p>`;
 }
 
+// Flows: each workflow drawn top to bottom. The factory is read once, so the flows load once.
+const KIND_WORD = { read: "read", reversible: "reversible write", irreversible: "irreversible write", ask: "ask", answer: "answer", verdict: "verdict" };
+const BY_WORD = { code: "code decides", model: "a model decides", human: "a person decides", asleep: "asleep, waiting" };
+const clip = (text, size) => (text.length > size ? `${text.slice(0, size - 1)}...` : text);
+
+async function loadFlows() {
+  const token = state.token;
+  if (state.flowsLoading || !token || !state.data || state.failed) return;
+  state.flowsLoading = true;
+  try {
+    const flows = await api("/api/flows");
+    if (token !== state.token || !state.data) return;
+    state.data.flows = flows;
+    state.flowsError = null;
+    keep();
+  } catch (error) {
+    if (token !== state.token) return;
+    if (error.status === 401) return signOut("The daemon refused this token. Paste the current one.");
+    state.flowsError = error instanceof TypeError ? "the connection dropped" : error.message;
+  } finally {
+    state.flowsLoading = false;
+  }
+  render();
+}
+
+const flowNode = (node) => {
+  if (node.terminal) {
+    return html`<g transform="translate(${node.x} ${node.y})" class="fnode end"><title>${node.label}</title><rect width="${node.width}" height="${node.height}" rx="${node.height / 2}"/><text x="${node.width / 2}" y="${node.height / 2 + 4}" text-anchor="middle">${node.label}</text></g>`;
+  }
+  const shape = nodeShape(node.kind, node.width, node.height);
+  const second = node.gate ? clip(node.gate, 24) : KIND_WORD[node.kind] ?? node.kind;
+  const lock = node.kind === "irreversible" ? html`<g class="flock" transform="translate(${node.width - 40} 6)" aria-hidden="true">${icon("lock", "s15")}</g>` : "";
+  return html`<g transform="translate(${node.x} ${node.y})" class="fnode k-${node.kind}"><title>${node.label}: ${KIND_WORD[node.kind] ?? node.kind}${node.gate ? `, ${node.gate}` : ""}</title>
+    <path d="${shape.d}"/><text x="${node.width / 2}" y="${node.height / 2 - 3}" text-anchor="middle" class="fl1">${clip(node.label, 20)}</text>
+    <text x="${node.width / 2}" y="${node.height / 2 + 13}" text-anchor="middle" class="fl2">${second}</text>${lock}</g>`;
+};
+
+const flowEdge = (edge) => {
+  const style = edgeStyle(edge.by);
+  const line = (extra) => html`<path d="${edge.d}" fill="none" stroke-width="${style.width}" ${style.dash ? raw(`stroke-dasharray="${style.dash}"`) : ""} class="${extra}"/>`;
+  return html`<g class="fedge by-${edge.by}${edge.ungated ? " ungated" : ""}"><title>${edge.outcome}: ${edge.from} to ${edge.to}, ${BY_WORD[edge.by] ?? edge.by}${edge.ungated ? ", reaches an irreversible step with no person's decision" : ""}</title>
+    ${edge.ungated ? html`<path d="${edge.d}" fill="none" stroke-width="${style.width + 6}" class="halo"/>` : ""}${line("fline")}
+    <text x="${edge.mid.x + (edge.vertical ? 0 : 5)}" y="${edge.mid.y}" class="felabel"${edge.vertical ? raw(` transform="rotate(-90 ${edge.mid.x} ${edge.mid.y})" text-anchor="middle"`) : ""}>${clip(edge.outcome, 14)}</text></g>`;
+};
+
+const flowLegend = () => html`<section class="sect flegend" aria-labelledby="legend-title"><h2 class="sh" id="legend-title">Key</h2>
+  <ul class="fkey">${KINDS.map((kind) => html`<li><svg viewBox="0 0 150 52" width="45" height="16" aria-hidden="true" class="fnode k-${kind}"><path d="${nodeShape(kind, 150, 52).d}"/></svg>${KIND_WORD[kind]}</li>`)}
+  ${["code", "model", "human", "asleep"].map((by) => html`<li><svg viewBox="0 0 48 8" width="48" height="8" aria-hidden="true" class="fedge by-${by}"><path d="M0 4H48" stroke-width="${edgeStyle(by).width}" ${edgeStyle(by).dash ? raw(`stroke-dasharray="${edgeStyle(by).dash}"`) : ""} class="fline"/></svg>${BY_WORD[by]}</li>`)}
+  <li><svg viewBox="0 0 48 12" width="48" height="12" aria-hidden="true" class="fedge ungated"><path d="M0 6H48" stroke-width="8" class="halo"/></svg>no person's decision before an irreversible step</li></ul></section>`;
+
+function flowSection(workflow, paths) {
+  const ungated = ungatedPairs(workflow.name, paths);
+  const drawing = timeline(workflow, ungated);
+  const open = paths.filter((entry) => entry.workflow === workflow.name);
+  const id = `flow-${workflow.name.replace(/[^\w-]/g, "_")}`;
+  return html`<section class="sect flow" aria-labelledby="${id}"><h2 class="sh" id="${id}">${workflow.name}<span class="meta num">${workflow.steps.length} steps</span></h2>
+    <svg class="diagram" viewBox="0 0 ${drawing.width} ${drawing.height}" role="img" aria-label="${drawing.text}">
+      <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0 1L10 5L0 9z" fill="context-stroke"/></marker></defs>
+      ${drawing.edges.map(flowEdge)}${drawing.nodes.map(flowNode)}</svg>
+    ${open.length ? html`<div class="unattended" role="note"><p class="t-danger">${icon("lock", "s15")}Reaches an irreversible step with no person's decision:</p><ul>${open.map((entry) => html`<li class="mono">${entry.path.join(" > ")}</li>`)}</ul></div>` : ""}
+    <details class="astext"><summary>Steps as text</summary><ol>${workflow.steps.map((step) => html`<li><b class="mono">${step.id}</b>, ${KIND_WORD[step.kind] ?? step.kind}, decided by ${step.decides}. ${step.edges.map((edge) => html`${edge.outcome} leads to ${edge.to} (${BY_WORD[edge.by] ?? edge.by}). `)}</li>`)}</ol></details></section>`;
+}
+
+function flowsPage(compact) {
+  const head = compact ? html`<div class="top"><h1>Flows</h1><span class="sp"></span>${connection()}</div>` : html`<div class="lhead"><h1>Flows</h1></div>`;
+  const flows = state.data.flows;
+  if (!flows && state.flowsError) return html`${head}<p class="empty" role="alert">The flows did not load: ${state.flowsError}. Run <code>priory check --explain</code> meanwhile.</p><p class="empty"><button class="btn secondary" data-action="flows-retry">Retry</button></p>`;
+  if (!flows) { setTimeout(loadFlows); return html`${head}<p class="empty" role="status">Loading the flows.</p>`; }
+  const body = flows.workflows.length ? html`${flowLegend()}${flows.workflows.map((workflow) => flowSection(workflow, flows.paths))}` : html`<p class="empty">This factory has no workflows. Add one under <code>workflows/</code>.</p>`;
+  return html`${head}<div class="panel" role="region" aria-label="Flows"><div class="scroll">${body}</div></div>`;
+}
+
 function morePage() {
   const rest = panelsOf().slice(4);
   return html`<div class="top"><h1>More</h1></div><div class="scroll"><ul class="links">
@@ -1801,6 +1880,7 @@ function page() {
     else if (taskId) body = taskPage(taskId);
     else if (here === "reports") body = reportsPage(true);
     else if (here === "costs") body = costsPage(true);
+    else if (here === "workflow") body = flowsPage(true);
     else if (here === "settings") body = html`<div class="top"><a class="back" href="/more">${icon("chevron-left", "s22")}More</a></div>${settingsScreen()}`;
     else if (PANELS[here]) body = html`<div class="top"><h1>${PANELS[here][0]}</h1></div>${laterPanel(here)}`;
     else body = notFound();
@@ -1810,7 +1890,7 @@ function page() {
   const list = selectedAsk() ? state.list : here;
   const top = html`<header class="wtop"><span class="fac">${state.data.views.factory}</span>${connection()}<span class="sp"></span>${addButton("addtop")}</header>`;
   const wide = size === "wide";
-  const utility = taskId ? taskPage(taskId) : here === "reports" ? reportsPage(false) : here === "costs" ? costsPage(false) : here === "settings" ? settingsScreen() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
+  const utility = taskId ? taskPage(taskId) : here === "reports" ? reportsPage(false) : here === "costs" ? costsPage(false) : here === "workflow" ? flowsPage(false) : here === "settings" ? settingsScreen() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
   const nav = (kind) => tabs(here === "settings" && wide ? "settings" : here === "settings" ? "more" : list, kind);
   if (utility) {
     return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}<div class="list">${utility}</div></div>${wide ? "" : nav("bar")}`;
@@ -1892,6 +1972,7 @@ document.addEventListener("click", (event) => {
     renderAdd();
     return document.getElementById("add-text")?.focus();
   }
+  if (action === "flows-retry") { state.flowsError = null; return render(); }
   if (action === "sign-out") { event.preventDefault(); return signOut(null); }
   if (action === "push-on" || action === "push-off") return turnPush(action === "push-on");
   if (action === "install" && state.install) {

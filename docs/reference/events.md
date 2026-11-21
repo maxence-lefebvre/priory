@@ -470,7 +470,7 @@ The pull request fields, and:
 
 ### `github.check_run.completed`
 
-One message per check run completed on a pull request's head commit, per pull request. Subject:
+One message per check run completed on a pull request's head commit, or on its merge commit when a task's pull request merged, per pull request. On a merge commit, `head_sha` is that commit and `base_branch` the branch it merged into. Subject:
 `owner/name#43`.
 Schema: [`github.check_run.completed.json`](../schemas/events/github.check_run.completed.json).
 

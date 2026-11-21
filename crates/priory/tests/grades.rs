@@ -99,7 +99,7 @@ impl Setup {
         .subject(key)]);
         self.db()
             .execute(
-                "UPDATE tasks SET grade = ?2 WHERE id = ?1;",
+                "UPDATE tasks SET grade = ?2, changed = coalesce(changed, '2026-11-20T09:00:00Z') WHERE id = ?1;",
                 rusqlite::params![task as i64, grade],
             )
             .unwrap();
@@ -359,6 +359,195 @@ fn a_revert_pr_labels_the_original_and_a_failing_check_at_its_merge_commit_too()
         ],
         "#25 is not #2, and building on a commit does not revert it"
     );
+}
+
+const NOW: &str = "2026-11-21T12:00:00Z";
+
+impl Setup {
+    /// Makes `owner/repo` polled and installs a `gh` that logs its calls to `gh.log`, answers the
+    /// check runs of commit `sha` from `checks-<sha>.json`, and reads `[]` elsewhere.
+    fn polled_repo(&self) {
+        let trigger = "source = \"github\"\nrepo = \"owner/repo\"\non = \"issues.labeled\"\n\
+                       filter = { label = \"agent\" }\nworkflow = \"plan\"\nkey = \"issue.number\"\nband = \"today\"\n";
+        let file = self.dir.join("factory/triggers/agent.toml");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, trigger).unwrap();
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{dir}/gh.log'\ncase \"$2\" in\n  repos/owner/repo/commits/*)\n    \
+             sha=$(echo \"$2\" | cut -d/ -f5)\n    cat \"{dir}/checks-$sha.json\" 2>/dev/null || \
+             echo '{{\"total_count\":0,\"check_runs\":[]}}' ;;\n  *) echo '[]' ;;\nesac\n",
+            dir = self.dir.display()
+        );
+        let gh = self.dir.join("bin/gh");
+        fs::create_dir_all(gh.parent().unwrap()).unwrap();
+        fs::write(&gh, script).unwrap();
+        fs::set_permissions(&gh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    }
+
+    /// Makes the default branch's check runs at `sha` those of `runs`.
+    fn checks_at(&self, sha: &str, runs: &[(u64, &str, &str)]) {
+        let runs: Vec<Value> = runs
+            .iter()
+            .map(|(id, status, conclusion)| {
+                json!({ "id": id, "name": "ci", "status": status, "conclusion": conclusion,
+                        "completed_at": "2026-11-20T10:05:00Z",
+                        "html_url": format!("https://github.com/owner/repo/runs/{id}"),
+                        "app": { "slug": "github-actions" } })
+            })
+            .collect();
+        let answer = json!({ "total_count": runs.len(), "check_runs": runs });
+        fs::write(
+            self.dir.join(format!("checks-{sha}.json")),
+            answer.to_string(),
+        )
+        .unwrap();
+    }
+
+    /// One intake poll at `NOW`, then the daemon reading what it published.
+    fn poll(&self) {
+        let path = format!(
+            "{}:{}",
+            self.dir.join("bin").display(),
+            std::env::var("PATH").unwrap()
+        );
+        let output = self
+            .command()
+            .args(["intake", "--once", &self.factory()])
+            .env("PATH", path)
+            .env("PRIORY_NOW", NOW)
+            .output()
+            .unwrap();
+        succeeded(&output);
+        succeeded(&self.priory(&["daemon", &self.factory(), "--once"]));
+    }
+
+    /// How many times the intake read the check runs at `sha`.
+    fn reads_of(&self, sha: &str) -> usize {
+        let log = fs::read_to_string(self.dir.join("gh.log")).unwrap_or_default();
+        let path = format!("repos/owner/repo/commits/{sha}/check-runs");
+        log.lines().filter(|line| line.contains(&path)).count()
+    }
+
+    fn red_after_merge(&self) -> i64 {
+        let grades = self.grades_json();
+        labels(&grades, "green")
+            .into_iter()
+            .find(|(label, _)| label == "red-after-merge")
+            .map_or(0, |(_, count)| count)
+    }
+}
+
+/// `merged`, at `time`.
+fn merged_on(number: u64, task: u64, head: &str, merge_commit: &str, time: &str) -> Message {
+    merged(number, task, head, merge_commit).time(time.parse().unwrap())
+}
+
+#[test]
+fn a_failing_check_on_the_merge_commit_labels_the_task_red_after_merge() {
+    let setup = Setup::new("red-after-merge");
+    setup.polled_repo();
+    setup.task(1, "green");
+    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z")]);
+    setup.checks_at(
+        "m10",
+        &[(1, "completed", "success"), (2, "completed", "failure")],
+    );
+
+    setup.poll();
+
+    assert_eq!(setup.red_after_merge(), 1);
+}
+
+#[test]
+fn a_green_check_on_the_merge_commit_does_not_label_the_task() {
+    let setup = Setup::new("green-after-merge");
+    setup.polled_repo();
+    setup.task(1, "green");
+    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z")]);
+    setup.checks_at("m10", &[(1, "completed", "success")]);
+
+    setup.poll();
+
+    assert_eq!(setup.reads_of("m10"), 1);
+    assert_eq!(setup.red_after_merge(), 0);
+}
+
+#[test]
+fn a_merge_commit_is_read_until_every_check_completed_then_not_again() {
+    let setup = Setup::new("stops-when-complete");
+    setup.polled_repo();
+    setup.task(1, "green");
+    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z")]);
+    setup.checks_at(
+        "m10",
+        &[(1, "completed", "success"), (2, "in_progress", "")],
+    );
+    setup.poll();
+    setup.poll();
+    assert_eq!(
+        setup.reads_of("m10"),
+        2,
+        "a running check keeps the commit polled"
+    );
+
+    setup.checks_at(
+        "m10",
+        &[(1, "completed", "success"), (2, "completed", "failure")],
+    );
+    setup.poll();
+    setup.poll();
+
+    assert_eq!(
+        setup.reads_of("m10"),
+        3,
+        "the poll that saw them all complete was the last"
+    );
+    assert_eq!(setup.red_after_merge(), 1);
+}
+
+#[test]
+fn a_merge_older_than_seven_days_is_not_read() {
+    let setup = Setup::new("merge-too-old");
+    setup.polled_repo();
+    setup.task(1, "green");
+    setup.task(2, "green");
+    setup.handle(&[
+        merged_on(10, 1, "aaa", "m10", "2026-11-10T10:00:00Z"),
+        merged_on(11, 2, "bbb", "m11", "2026-11-20T10:00:00Z"),
+    ]);
+    setup.checks_at("m10", &[(1, "completed", "failure")]);
+    setup.checks_at("m11", &[(2, "completed", "success")]);
+
+    setup.poll();
+
+    assert_eq!(setup.reads_of("m11"), 1);
+    assert_eq!(setup.reads_of("m10"), 0);
+    assert_eq!(setup.red_after_merge(), 0);
+}
+
+#[test]
+fn a_merge_commit_whose_failing_event_was_not_stored_is_read_again() {
+    let setup = Setup::new("partial-batch");
+    setup.polled_repo();
+    setup.task(1, "green");
+    setup.handle(&[
+        merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z"),
+        on_pull(
+            "github.check_run.completed",
+            10,
+            1,
+            "m10",
+            json!({ "conclusion": "success", "name": "ci", "github_id": 1, "pending": 0, "failing": 1 }),
+        ),
+    ]);
+    setup.checks_at(
+        "m10",
+        &[(1, "completed", "success"), (2, "completed", "failure")],
+    );
+
+    setup.poll();
+
+    assert_eq!(setup.red_after_merge(), 1);
 }
 
 const TOKEN: &str = "s3cret-token";

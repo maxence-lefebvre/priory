@@ -221,9 +221,9 @@ they happened, not when they arrived. A review's commit comes from its event's `
 
 Known limits:
 
-- The intake reads check runs only on pull requests' head commits, so it does not see a check on a
-  merge commit on the default branch yet, and `red-after-merge` comes only from a merge commit that
-  is also a pull request's head.
+- The intake reads a merge commit's check runs for 7 days after the merge, until all of them
+  completed (see [pull-requests.md](../intake/pull-requests.md#check-runs-at-a-merge)). A check that
+  fails later than that, or starts after the others completed, does not label the task.
 - A review stored before its event carried `commit` names the head at poll time, so a push between
   the review and the poll is missed.
 - A task whose pull request closed unmerged and whose next one merged clean has both

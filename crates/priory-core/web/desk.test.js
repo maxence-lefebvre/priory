@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextLink, sinceGroups, mergeSince, progressView, sectionInView } from "./desk.js";
+import { nextLink, sinceGroups, mergeSince, progressView, sectionInView, dueText } from "./desk.js";
 
 const why = "an alarm: work stopped and waits on a person";
 
@@ -67,4 +67,18 @@ test("the chip in view is the last section whose top passed under the chip bar, 
   assert.equal(at(3156), 3);
   assert.equal(sectionInView({ tops: [0, 300, 500], scrollTop: 200, height: 600, scrollHeight: 800, bar: 48 }), 2);
   assert.equal(sectionInView({ tops: [], scrollTop: 0, height: 600, scrollHeight: 600, bar: 48 }), -1);
+});
+
+test("a to-do's due time reads in local time with a relative hint, and other text stays as it is", () => {
+  process.env.TZ = "America/New_York";
+  const now = Date.parse("2026-11-20T12:00:00Z");
+  const due = (iso) => dueText(`Renew the TLS cert, due ${iso}`, now);
+  assert.equal(due("2026-11-20T20:00:00Z"), "Renew the TLS cert, due today 15:00");
+  assert.equal(due("2026-11-21T14:00:00Z"), "Renew the TLS cert, due tomorrow 09:00");
+  assert.equal(due("2026-11-19T14:00:00Z"), "Renew the TLS cert, due yesterday 09:00");
+  assert.equal(due("2026-12-01T14:00:00Z"), "Renew the TLS cert, due Dec 1, 09:00 (in 11 days)");
+  assert.equal(due("2026-11-17T14:00:00Z"), "Renew the TLS cert, due Nov 17, 09:00 (3 days ago)");
+  assert.equal(dueText("Renew the cert", now), "Renew the cert");
+  assert.equal(dueText("Fix it, due soon", now), "Fix it, due soon");
+  assert.equal(dueText("Fix it, due 2026-13-20T20:00:00Z", now), "Fix it, due 2026-13-20T20:00:00Z");
 });
