@@ -538,6 +538,7 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
         json!({
             "PRIORY_HOME": setup.dir.join("home"),
             "PRIORY_DB": setup.dir.join("priory.db"),
+            "XDG_RUNTIME_DIR": setup.tmux.path(),
         })
     );
     assert_eq!(setup.rows("tasks")[0][4], "running");
@@ -793,6 +794,7 @@ fn a_codex_agent_runs_codex_with_priorys_hooks_mcp_server_and_a_sandbox_that_ask
             "env": {
                 "PRIORY_HOME": setup.dir.join("home"),
                 "PRIORY_DB": setup.dir.join("priory.db"),
+                "XDG_RUNTIME_DIR": setup.tmux.path(),
             },
             "default_tools_approval_mode": "approve",
         })
