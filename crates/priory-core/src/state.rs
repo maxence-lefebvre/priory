@@ -878,7 +878,8 @@ CREATE TABLE task_ends (
   generation INTEGER NOT NULL,
   state      TEXT NOT NULL,
   created    TEXT NOT NULL,
-  ended      TEXT NOT NULL
+  ended      TEXT NOT NULL,
+  run        INTEGER NOT NULL
 );
 ALTER TABLE exports ADD COLUMN ended INTEGER NOT NULL DEFAULT 0;
 CREATE TRIGGER task_created AFTER INSERT ON tasks BEGIN
@@ -886,9 +887,9 @@ CREATE TRIGGER task_created AFTER INSERT ON tasks BEGIN
 END;
 CREATE TRIGGER task_ended AFTER UPDATE OF state ON tasks
   WHEN NEW.state IN ('done', 'failed', 'dropped') AND OLD.state NOT IN ('done', 'failed', 'dropped') BEGIN
-  INSERT INTO task_ends (task, generation, state, created, ended)
+  INSERT INTO task_ends (task, generation, state, created, ended, run)
     VALUES (NEW.id, NEW.generation, NEW.state, coalesce(NEW.created, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-      strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+      strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), (SELECT coalesce(max(id), 0) FROM runs WHERE task = NEW.id));
 END;
 CREATE TRIGGER task_restarted AFTER UPDATE OF state ON tasks
   WHEN OLD.state IN ('done', 'failed', 'dropped') AND NEW.state NOT IN ('done', 'failed', 'dropped') BEGIN

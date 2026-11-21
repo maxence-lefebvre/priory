@@ -100,8 +100,11 @@ Known limits:
 - `factory.task.repaired` and `factory.handler.called` records are not exported.
 - A task that is still active has no root span yet, so its spans have a parent that arrives later,
   and a run that ended with no step has no span until its task ends.
-- A task that ended before the daemon upgraded to this schema has no root span, so its runs stay
-  the trace's top spans.
+- A task that ended before the daemon upgraded to this schema has no root span, so its run and step
+  spans, when sent after the upgrade, name a parent that was never sent. A task revived before the
+  upgrade attaches its earlier generations' runs without a step to its next root span.
+- A root span's id uses the daemon's current factory name and host name, so renaming either
+  between the steps and the end of a task leaves the root with another id than its children name.
 - A task's root span names its lane, band and grade as they stand when it is sent.
 - A partial success, a 2xx whose body names rejected spans, counts as accepted.
 

@@ -74,7 +74,9 @@ pub(crate) fn pending(
          CAST(round(unixepoch(task_ends.created, 'subsec') * 1000) AS INTEGER),
          CAST(round(unixepoch(task_ends.ended, 'subsec') * 1000) AS INTEGER),
          tasks.key, tasks.workflow, tasks.lane, tasks.band, tasks.grade,
-         task_ends.created, task_ends.ended
+         task_ends.run,
+         coalesce((SELECT max(earlier.run) FROM task_ends earlier
+           WHERE earlier.task = task_ends.task AND earlier.seq < task_ends.seq), 0)
          FROM task_ends JOIN tasks ON tasks.id = task_ends.task
          WHERE task_ends.seq > ?1 ORDER BY task_ends.seq LIMIT ?2",
     )?;
@@ -91,8 +93,8 @@ pub(crate) fn pending(
             lane: row.get(8)?,
             band: row.get(9)?,
             grade: row.get(10)?,
-            created_at: row.get(11)?,
-            ended_at: row.get(12)?,
+            last_run: row.get(11)?,
+            first_run: row.get(12)?,
         })
     })?;
     for end in ends {
@@ -145,8 +147,8 @@ struct End {
     lane: Option<String>,
     band: Option<String>,
     grade: Option<String>,
-    created_at: String,
-    ended_at: String,
+    first_run: i64,
+    last_run: i64,
 }
 
 /// The task's root span, and a span for each of its runs that ended with no step, under it.
@@ -181,12 +183,12 @@ fn end_spans(db: &Connection, source: &str, end: &End) -> rusqlite::Result<Vec<V
          CAST(round(unixepoch(runs.ended, 'subsec') * 1000) AS INTEGER)
          FROM runs
          WHERE runs.task = ?1 AND runs.ended IS NOT NULL
-           AND unixepoch(runs.started) BETWEEN unixepoch(?2) AND unixepoch(?3)
+           AND runs.id > ?2 AND runs.id <= ?3
            AND NOT EXISTS (SELECT 1 FROM trace WHERE trace.type = 'factory.step.ended'
              AND json_extract(trace.event, '$.data.run') = CAST(runs.id AS TEXT))
          ORDER BY runs.id",
     )?;
-    let runs = runs.query_map(params![end.task, end.created_at, end.ended_at], |row| {
+    let runs = runs.query_map(params![end.task, end.first_run, end.last_run], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
@@ -304,7 +306,13 @@ fn step_spans(row: &Row) -> Vec<Value> {
         end,
         &step_attributes,
     );
+    let root = root_id(
+        source,
+        &data["task"],
+        data["generation"].as_i64().unwrap_or(1),
+    );
     if data["run"].is_null() {
+        step["parentSpanId"] = json!(span_id(&root));
         return vec![step];
     }
     let run_id = derive(source, "run", &data["run"]);
