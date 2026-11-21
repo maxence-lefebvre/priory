@@ -55,15 +55,22 @@ unless `factory.toml` names the endpoint, and then nothing is sent:
 otlp = "http://127.0.0.1:4318"   # spans go to <otlp>/v1/traces as OTLP JSON
 ```
 
-A task is one trace. A model step's run is a span named `invoke_agent <agent>`, from the run's start
-to the step's end, and the step is a span under it. A human or code step has no run, so its span has
-no parent. The step span starts when the task entered the step, so it includes the time the task
+A task is one trace, with a root span named `task <key>`, from the task's creation to its end. A
+model step's run is a span named `invoke_agent <agent>` under the root, from the run's start to the
+step's end, and the step is a span under it. A human or code step has no run, so its span is a child
+of the root. A run that ended with no step, such as a cancelled, blocked or lost one, is a span of
+the same name under the root, from its start to its end, with `priory.run.ended_as` naming how it
+ended. An OTLP span is immutable once sent, so the root span, and the spans of runs that ended no
+step, are sent when the task reaches `done`, `failed` or `dropped`, and not before. A task that a
+revive or a reopen sends on starts a new root span, as its next generation, and the same trace. The step span starts when the task entered the step, so it includes the time the task
 waited for a run and may start before its run. The ids derive from the record's `source` and the
-task id, run id or record id, so sending a record again gives the same ids.
+task id and generation, run id or record id, so sending a record again gives the same ids.
 
 | Attribute | Span | Value |
 | --------- | ---- | ----- |
-| `priory.task.id`, `priory.run.id`, `priory.step`, `priory.lane` | both | the record's `task`, `run`, `step` and `lane` |
+| `priory.task.id`, `priory.run.id`, `priory.step`, `priory.lane` | run, step | the record's `task`, `run`, `step` and `lane` |
+| `priory.task.id`, `priory.key`, `priory.workflow`, `priory.lane`, `priory.band`, `priory.grade`, `priory.state`, `priory.generation` | root | the task's id, key, workflow, lane, band, grade, final state and generation when it ended |
+| `priory.run.ended_as` | run of no step | how the run ended: `cancelled`, `lost` or `blocked` |
 | `priory.outcome`, `priory.grade`, `priory.workflow`, `priory.key`, `priory.generation`, `priory.decider`, `priory.effect`, `priory.harness` | step | the record's fields of the same name |
 | `gen_ai.request.model` | both | the record's `model` |
 | `gen_ai.usage.input_tokens` | step | the record's `input`, `cache_read` and `cache_write` tokens together |
@@ -72,9 +79,10 @@ task id, run id or record id, so sending a record again gives the same ids.
 
 The resource carries `service.name = priory`, `priory.factory` and `host.name`, the machine.
 
-Each tick, the daemon sends up to 200 records past the endpoint's cursor in one request, through
-`curl`, and moves on without waiting for it. `curl` gives up after `command_timeout`. The cursor, in
-the state file's `exports` table, moves once the endpoint answers with a 2xx status, so a daemon
+Each tick, the daemon sends up to 200 records and 200 task ends past the endpoint's cursors in one request, through
+`curl`, and moves on without waiting for it. `curl` gives up after `command_timeout`. The cursors, in
+the state file's `exports` table (`seq` for records, `ended` for the `task_ends` table, which
+the daemon fills when a task ends), move once the endpoint answers with a 2xx status, so a daemon
 restart resends nothing it saw accepted. Any other answer, or no answer, is logged and the batch is
 tried again 5 seconds later, except a 4xx other than 408 and 429: OTLP says such a request will never
 be accepted, so the daemon logs it and skips the batch. A new endpoint starts from the first record.
@@ -89,9 +97,15 @@ Known limits:
 
 - A daemon that stops after `curl` succeeded but before its next tick sends that batch again, with
   the same ids.
-- `factory.task.repaired` and `factory.handler.called` records are not exported, and a run that ends
-  no step, such as a blocked or lost one, has no span.
-- A task has no span of its own, so its runs are the trace's top spans.
+- `factory.task.repaired` and `factory.handler.called` records are not exported.
+- A task that is still active has no root span yet, so its spans have a parent that arrives later,
+  and a run that ended with no step has no span until its task ends.
+- A task that ended before the daemon upgraded to this schema has no root span, so its run and step
+  spans, when sent after the upgrade, name a parent that was never sent. A task revived before the
+  upgrade attaches its earlier generations' runs without a step to its next root span.
+- A root span's id uses the daemon's current factory name and host name, so renaming either
+  between the steps and the end of a task leaves the root with another id than its children name.
+- A task's root span names its lane, band and grade as they stand when it is sent.
 - A partial success, a 2xx whose body names rejected spans, counts as accepted.
 
 ## Reports

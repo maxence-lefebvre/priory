@@ -434,6 +434,14 @@ pub(crate) fn reopened(
     append(tx, trace, "factory.task.reopened", &time, data)
 }
 
+/// The `source` of every record this factory writes on this machine.
+pub(crate) fn source(trace: &Trace) -> String {
+    match &trace.machine {
+        Some(machine) => format!("factory://{}/{machine}", trace.factory.name),
+        None => format!("factory://{}", trace.factory.name),
+    }
+}
+
 /// Appends one CloudEvents record of `kind` to the trace.
 fn append(
     tx: &Transaction,
@@ -443,10 +451,7 @@ fn append(
     data: Value,
 ) -> rusqlite::Result<()> {
     let id = uuid::Uuid::new_v4().to_string();
-    let source = match &trace.machine {
-        Some(machine) => format!("factory://{}/{machine}", trace.factory.name),
-        None => format!("factory://{}", trace.factory.name),
-    };
+    let source = source(trace);
     let event = json!({
         "specversion": "1.0",
         "id": id,
