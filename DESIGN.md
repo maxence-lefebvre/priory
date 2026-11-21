@@ -621,15 +621,16 @@ screens. It turns Web Push on or off for this device. It holds:
    | Status      | Note |
    | ----------- | ---- |
    | on          | `check`: "On for this device." |
+   | unconfirmed | "On in this browser, but the daemon did not confirm it. Check that the daemon runs, then reload the page." |
    | blocked     | "Notifications are blocked for this site. Allow them in the browser's site settings, then come back." |
    | install     | iOS Safari outside the Home Screen: "On iPhone and iPad, only Priory on the Home Screen can get notifications. Tap Share, then Add to Home Screen, and open Priory from there." |
    | insecure    | "Notifications need HTTPS. Open Priory at its https address, such as the one tailscale serve gives, or at localhost on this machine." |
    | unsupported | "This browser cannot get notifications from a web page." |
 
 4. One button: "Turn on notifications", primary, while they are off; "Turn off notifications",
-   secondary, while they are on. The permission prompt opens only from this tap, as iOS requires.
-   A failure shows a `--warn-text` alert: "Could not turn on notifications: why. Check that the
-   daemon runs, then try again."
+   secondary, while they are on or unconfirmed. The permission prompt opens only from this tap,
+   as iOS requires. A failure shows a `--warn-text` alert: "Could not turn on notifications: why.
+   Check that the daemon runs, then try again."
 5. "Install Priory", secondary, only when the browser offers to install the view, with the note
    "Installing opens Priory in its own window, so notifications reach it with no tab open."
 

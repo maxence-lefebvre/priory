@@ -122,7 +122,8 @@ const state = {
   writing: new Set(),
   // The Add sheet: its draft and chips, the server's defaults, and where the last send got to.
   // Notifications on this device: its status, a request in flight, and why the last one failed.
-  push: { status: null, busy: false, error: null },
+  // check counts status reads, so a read that a tap or a newer read overtook is dropped.
+  push: { status: null, busy: false, error: null, check: 0, checking: false },
   // The browser's install prompt, kept until the person taps Install.
   install: null,
   add: { phase: "empty", error: null, defaults: null, task: null, draft: { text: "" }, ...JSON.parse(localStorage.getItem("priory.add") || "{}") },
@@ -1121,13 +1122,15 @@ async function pushStatus() {
   // The browser keeps a subscription the daemon may have dropped or never stored: send it again.
   // Only the daemon's refusal ends it; a dropped connection or a stopped daemon proves nothing.
   const { status } = await post("/api/push/subscribe", subscription.toJSON()).catch(() => ({ status: 0 }));
-  if (status !== 422) return "on";
+  if (status === 200) return "on";
+  if (status !== 422) return "unconfirmed";
   await subscription.unsubscribe().catch(() => {});
   return "off";
 }
 
 const PUSH_NOTES = {
   on: "On for this device.",
+  unconfirmed: "On in this browser, but the daemon did not confirm it. Check that the daemon runs, then reload the page.",
   blocked: "Notifications are blocked for this site. Allow them in the browser's site settings, then come back.",
   install: "On iPhone and iPad, only Priory on the Home Screen can get notifications. Tap Share, then Add to Home Screen, and open Priory from there.",
   insecure: "Notifications need HTTPS. Open Priory at its https address, such as the one tailscale serve gives, or at localhost on this machine.",
@@ -1136,10 +1139,17 @@ const PUSH_NOTES = {
 
 function notifications() {
   const { status, busy, error } = state.push;
-  if (status === null) {
-    pushStatus().then((found) => { state.push.status = found; render(); }, () => { state.push.status = "unsupported"; render(); });
+  if (status === null && !state.push.checking) {
+    const check = ++state.push.check;
+    state.push.checking = true;
+    const settle = (found) => {
+      if (check !== state.push.check) return;
+      Object.assign(state.push, { status: found, checking: false });
+      render();
+    };
+    pushStatus().then(settle, () => settle("unsupported"));
   }
-  const button = status === "on"
+  const button = status === "on" || status === "unconfirmed"
     ? html`<button class="btn secondary" data-action="push-off" aria-disabled="${busy}">Turn off notifications</button>`
     : status === "off" ? html`<button class="btn primary" data-action="push-on" aria-disabled="${busy}">Turn on notifications</button>` : "";
   const install = state.install
@@ -1160,7 +1170,8 @@ const keyBytes = (base64url) => Uint8Array.from(atob(base64url.replace(/-/g, "+"
 
 async function turnPush(on) {
   if (state.push.busy) return;
-  Object.assign(state.push, { busy: true, error: null });
+  Object.assign(state.push, { busy: true, error: null, checking: false });
+  state.push.check++;
   render();
   try {
     if (on) {
