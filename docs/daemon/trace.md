@@ -209,7 +209,9 @@ Known limits:
 
 The daemon appends a `factory.step.labeled` record when an event judges a task, in the transaction
 that stores the event or the answer. It names the record of the step that graded the task, when one
-did, and the task's grade. A task gets each label once.
+did, the task's grade, and `happened`, when the event happened. A task gets one record per label
+and source event, so two reviews that request changes write two. `priory grades` counts a task once
+per label.
 
 A task's pull requests are those of its stack (see [tools.md](tools.md)) and those whose head is a
 branch it owns. A pull request that only names the task's key, as a review task's does, is not its.

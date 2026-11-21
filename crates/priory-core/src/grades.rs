@@ -36,6 +36,8 @@ pub(crate) fn label(tx: &Transaction, trace: &Trace, message: &Message) -> rusql
         return Ok(());
     };
     let url = data["url"].as_str().unwrap_or_default();
+    let happened = message.time.to_string();
+    let happened = Some(happened.as_str());
     match message.kind.as_str() {
         REVIEWED if human(data) => {
             // A review that arrives after the merge can name an older commit than the merged one.
@@ -47,18 +49,18 @@ pub(crate) fn label(tx: &Transaction, trace: &Trace, message: &Message) -> rusql
                 return Ok(());
             };
             for task in authors(tx, repo, number, data["head_branch"].as_str())? {
-                trace::labeled(tx, trace, task, "changes-requested", &evidence)?;
+                trace::labeled(tx, trace, task, "changes-requested", &evidence, happened)?;
             }
         }
         PR_CLOSED if data["merged"] == true => {
             for task in authors(tx, repo, number, data["head_branch"].as_str())? {
-                merged(tx, trace, task, repo, number, url)?;
+                merged(tx, trace, task, repo, number, url, happened)?;
             }
-            reverts(tx, trace, repo, number, data)?;
+            reverts(tx, trace, repo, number, data, happened)?;
         }
         PR_CLOSED if data["merged"] == false => {
             for task in authors(tx, repo, number, data["head_branch"].as_str())? {
-                trace::labeled(tx, trace, task, "closed-unmerged", url)?;
+                trace::labeled(tx, trace, task, "closed-unmerged", url, happened)?;
             }
         }
         CHECKED => {
@@ -71,7 +73,7 @@ pub(crate) fn label(tx: &Transaction, trace: &Trace, message: &Message) -> rusql
             };
             for (number, branch) in merged_at(tx, repo, head)? {
                 for task in authors(tx, repo, number as u64, branch.as_deref())? {
-                    trace::labeled(tx, trace, task, "red-after-merge", url)?;
+                    trace::labeled(tx, trace, task, "red-after-merge", url, happened)?;
                 }
             }
         }
@@ -99,6 +101,7 @@ pub(crate) fn answered(
         task,
         "approval-rejected",
         &format!("{step}: {answer}"),
+        None,
     )
 }
 
@@ -138,6 +141,7 @@ fn merged(
     repo: &str,
     number: u64,
     url: &str,
+    happened: Option<&str>,
 ) -> rusqlite::Result<()> {
     let stack: Vec<(String, String)> = tx
         .prepare("SELECT resource, state FROM pull_requests WHERE task = ?1")?
@@ -162,10 +166,10 @@ fn merged(
     }
     for pull in &pulls {
         if let Some(pushed) = pushed_after_review(tx, pull)? {
-            return trace::labeled(tx, trace, task, "changes-requested", &pushed);
+            return trace::labeled(tx, trace, task, "changes-requested", &pushed, happened);
         }
     }
-    trace::labeled(tx, trace, task, "approved-clean", url)
+    trace::labeled(tx, trace, task, "approved-clean", url, happened)
 }
 
 /// The merged head of `pull` when it is not the commit of its first human review, as evidence of a
@@ -215,6 +219,7 @@ fn reverts(
     repo: &str,
     number: u64,
     data: &Value,
+    happened: Option<&str>,
 ) -> rusqlite::Result<()> {
     let text = format!(
         "{}\n{}",
@@ -246,7 +251,7 @@ fn reverts(
             continue;
         }
         for task in authors(tx, repo, reverted as u64, branch.as_deref())? {
-            trace::labeled(tx, trace, task, "reverted", url)?;
+            trace::labeled(tx, trace, task, "reverted", url, happened)?;
         }
     }
     Ok(())
