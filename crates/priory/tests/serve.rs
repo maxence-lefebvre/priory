@@ -3337,6 +3337,37 @@ fn todos_added_and_done_through_their_endpoints_do_what_their_cli_verbs_do() {
 }
 
 #[test]
+fn a_report_and_a_held_task_leave_the_desk_through_the_read_and_release_endpoints() {
+    let mut setup = Setup::new("web-clear", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["pause"]));
+    let posted = setup.priory(&["post", "ci", "the nightly build broke"]);
+    succeeded(&posted);
+    let seq = String::from_utf8(posted.stdout).unwrap().trim().to_owned();
+    let address = setup.start(&["daemon", &setup.factory()]);
+    succeeded(&setup.priory(&["hold", "1", "--reason", "after the freeze"]));
+    let kinds = || -> Vec<Value> {
+        json_of(&setup, "desk")["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["kind"].clone())
+            .collect()
+    };
+    assert!(kinds().contains(&json!("report")), "{:?}", kinds());
+    assert!(kinds().contains(&json!("held")), "{:?}", kinds());
+
+    let read = post(&address, &format!("/api/inbox/{seq}/read"), "", "{}");
+    let released = post(&address, "/api/tasks/1/release", "", "{}");
+
+    assert_eq!(read.0, 200, "{}", read.1);
+    assert_eq!(released.0, 200, "{}", released.1);
+    assert!(!kinds().contains(&json!("report")), "{:?}", kinds());
+    assert!(!kinds().contains(&json!("held")), "{:?}", kinds());
+    assert_eq!(post(&address, "/api/inbox/1/read", "", "{}").0, 422);
+}
+
+#[test]
 fn resume_say_cancel_and_revive_through_their_endpoints_do_what_their_cli_verbs_do() {
     let mut setup = Setup::new("web-act", SERVE);
     setup.seed();

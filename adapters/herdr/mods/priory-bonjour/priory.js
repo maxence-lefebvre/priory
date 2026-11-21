@@ -53,6 +53,8 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     resume: (/** @type {Id} */ task) => call(["resume", String(task)]),
     revive: (/** @type {Id} */ task) => call(["revive", String(task)]),
     todoDone: (/** @type {Id} */ todo) => call(["todo", "done", String(todo)]),
+    // Marks a report read, so its row leaves the desk.
+    read: (/** @type {Id} */ seq) => call(["inbox", "read", String(seq)]),
     // A field left out comes from the factory's [request] table; the reply is the new task's key.
     add: async (/** @type {string} */ text, /** @type {{ workflow?: string, band?: string, lane?: string }} */ { workflow, band, lane } = {}) => (await call(["add", ...inFactory,
       ...(workflow ? ["--workflow", workflow] : []), ...(band ? ["--band", band] : []), ...(lane ? ["--lane", lane] : []), "--", text])).trim(),

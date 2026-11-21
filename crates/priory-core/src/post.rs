@@ -112,6 +112,13 @@ pub fn intake_banner(db: &Connection) -> rusqlite::Result<Option<String>> {
     )
 }
 
+/// `POST /api/inbox/{seq}/read` on the daemon's socket: `{"read": SEQ}`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReadLine {
+    pub read: i64,
+}
+
 /// Marks report `seq` read, so it leaves the desk. Marking it again keeps the first time.
 pub fn read(db: &Connection, seq: i64) -> Result<(), String> {
     let changed = db
