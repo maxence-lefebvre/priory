@@ -215,6 +215,20 @@ fn tools() -> Value {
             },
         },
         {
+            "name": "finding",
+            "description": "Hand one problem you found to a fix task. The same key in a later run opens no second task: use one stable key per problem, such as disk-full. A key you skipped for a run and report again opens a new task. A finding reported several runs in a row moves its fix task up a band. Your next prompt lists your earlier findings. Call it once per problem. It does not end your turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": text("A stable key for this problem, the same every run."),
+                    "title": text("The problem in one line; the fix task's title."),
+                    "details": text("Evidence and links the fix task needs."),
+                },
+                "required": ["key", "title"],
+                "additionalProperties": false,
+            },
+        },
+        {
             "name": "compact",
             "description": "Compact this conversation when its context runs long, then end your turn. Priory types /compact once you are idle, then a prompt that names your task and step so you carry on.",
             "inputSchema": {
