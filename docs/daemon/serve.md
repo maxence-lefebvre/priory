@@ -44,9 +44,9 @@ echo "PRIORY_TOKEN=$(openssl rand -hex 32)" >> ~/.config/priory/env
 ## Writes
 
 Ten endpoints change the state: answer an ask, dismiss one, snooze a desk item, add a task,
-resume, revive, cancel or say to a task, and add a to-do or mark one done. Each is the twin of a CLI
+resume, revive, cancel, release or say to a task, and add a to-do or mark one done. Each is the twin of a CLI
 verb: `priory answer`, `priory dismiss`, `priory snooze`, `priory add`, `priory resume`, `priory
-revive`, `priory cancel`, `priory say`, `priory todo add` and `priory todo done`. All but the add build the same line
+revive`, `priory cancel`, `priory release`, `priory say`, `priory todo add` and `priory todo done`. All but the add build the same line
 the verb builds and sends it to the daemon on its socket, so the daemon applies it in the same
 transaction, with the same checks and the same refusals. The server thread never opens the state
 for writing. An add goes to the daemon on its socket too, but the daemon publishes it on the bus as

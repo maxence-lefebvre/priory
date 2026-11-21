@@ -79,3 +79,22 @@ export function dueText(what, now) {
   const parts = dueParts(what, now);
   return parts ? `${parts.text}, due ${parts.label}` : what;
 }
+
+/**
+ * The write a desk row offers: Read for a report, Release for a held task, with the revision the
+ * page drew as `priory release --expected` takes it. Null for a row with no action here.
+ * @param {any} item @param {number} revision
+ */
+export function rowAction(item, revision) {
+  if (item.kind === "report") return { label: "Read", path: `/api/inbox/${item.id}/read`, body: {} };
+  if (item.kind === "held") return { label: "Release", path: `/api/tasks/${item.task}/release`, body: { revision } };
+  return null;
+}
+
+/** Why a row action did not apply, for the note under the row. @param {string} label @param {number} status @param {any} body */
+export function actionNote(label, status, body) {
+  if (status === 409) return "The state changed since this page loaded. Read the task again, then tap again.";
+  if (status === 503) return "Could not send: no priory daemon runs beside this server. Start priory daemon, then send again.";
+  if (status === 504 || status === 0) return "The daemon may have applied this but did not confirm it. Check the desk before you send again.";
+  return `Could not ${label.toLowerCase()} it: ${body?.error || `the server answered ${status}`}.`;
+}

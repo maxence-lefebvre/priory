@@ -79,7 +79,11 @@ printed can resume from it. `--json` prints the same entries as JSON.
 
 An unread report shows on the desk as a `report` row. `priory inbox read SEQ` marks it read, and it
 leaves the desk. It is refused for a sequence number that is not a report. `POST /api/inbox/{seq}/read`
-is its twin, and the Herdr library's `read` runs it.
+is its twin. The Herdr library's `read` and the web desk's Read button run it.
+
+A held task's row shows its reason. The web desk's Release button on it runs `POST /api/tasks/{id}/release`
+with the state revision the page drew, as `priory release --expected` does. A newer state gets `409`,
+and the desk redraws.
 
 A systemd unit reports its own failure through `OnFailure=` and a template unit, such as
 `priory-notice@.service`:
