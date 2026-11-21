@@ -37,9 +37,17 @@ pub(crate) fn label(tx: &Transaction, trace: &Trace, message: &Message) -> rusql
     };
     let url = data["url"].as_str().unwrap_or_default();
     match message.kind.as_str() {
-        REVIEWED if data["state"] == "changes_requested" && human(data) => {
+        REVIEWED if human(data) => {
+            // A review that arrives after the merge can name an older commit than the merged one.
+            let evidence = match data["state"] == "changes_requested" {
+                true => Some(url.to_owned()),
+                false => pushed_after_review(tx, &crate::route::pull_request(repo, number))?,
+            };
+            let Some(evidence) = evidence else {
+                return Ok(());
+            };
             for task in authors(tx, repo, number, data["head_branch"].as_str())? {
-                trace::labeled(tx, trace, task, "changes-requested", url)?;
+                trace::labeled(tx, trace, task, "changes-requested", &evidence)?;
             }
         }
         PR_CLOSED if data["merged"] == true => {
@@ -199,8 +207,8 @@ fn merged_at(
 }
 
 /// Labels `reverted` the authors of each earlier merged pull request of `repo` that the merged
-/// pull request `number` reverts: its title or body names that one's merge commit, or says
-/// `Reverts owner/name#N` as GitHub's revert button writes.
+/// pull request `number` reverts: its title or body says `reverts commit <sha>` of that one's merge
+/// commit, as `git revert` writes, or `Reverts owner/name#N`, as GitHub's revert button writes.
 fn reverts(
     tx: &Transaction,
     trace: &Trace,
@@ -227,8 +235,8 @@ fn reverts(
         .collect::<rusqlite::Result<_>>()?;
     let url = data["url"].as_str().unwrap_or_default();
     for (reverted, merge_commit, branch) in earlier {
-        let named = text.contains("revert")
-            && merge_commit.is_some_and(|sha| text.contains(&sha.to_lowercase()));
+        let named = merge_commit
+            .is_some_and(|sha| text.contains(&format!("reverts commit {}", sha.to_lowercase())));
         if !named
             && !mentions(
                 &text,

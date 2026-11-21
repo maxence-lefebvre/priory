@@ -212,6 +212,7 @@ fn a_requested_change_or_a_push_after_review_is_not_one_shot() {
     setup.task(3, "green");
     setup.task(4, "green");
     setup.task(5, "green");
+    setup.task(6, "green");
 
     setup.handle(&[
         review(10, 1, "aaa", "changes_requested", 1),
@@ -233,18 +234,21 @@ fn a_requested_change_or_a_push_after_review_is_not_one_shot() {
         // A review that arrives after the merge still requests a change.
         merged(50, 5, "hhh", "m50"),
         review(50, 5, "hhh", "changes_requested", 5),
+        // A comment on an older commit that arrives after the merge still came before a push.
+        merged(60, 6, "jjj", "m60"),
+        review(60, 6, "iii", "commented", 6),
     ]);
 
     let grades = setup.grades_json();
     assert_eq!(
         grades["one_shot"],
-        json!({ "rate": 1.0 / 5.0, "clean": 1, "outcomes": 5, "target": 0.9 })
+        json!({ "rate": 1.0 / 6.0, "clean": 1, "outcomes": 6, "target": 0.9 })
     );
     assert_eq!(
         labels(&grades, "green"),
         [
             ("approved-clean".to_owned(), 1),
-            ("changes-requested".to_owned(), 4)
+            ("changes-requested".to_owned(), 5)
         ]
     );
 }
@@ -333,7 +337,7 @@ fn a_revert_pr_labels_the_original_and_a_failing_check_at_its_merge_commit_too()
         revert(
             42,
             "Export layers",
-            "Builds on commit 2222222222222222222222222222222222222222.",
+            "This reverts commit 1111111111111111111111111111111111111111. Builds on commit 2222222222222222222222222222222222222222.",
         ),
         on_pull(
             "github.check_run.completed",

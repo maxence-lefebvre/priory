@@ -206,11 +206,11 @@ A review whose author ends in `[bot]` does not count as a human review.
 | Label | When |
 | ----- | ---- |
 | `approved-clean` | The last open pull request of the task merged, no human review requested changes on any of them, and each merged at the commit its first human review was written on, or had no human review |
-| `changes-requested` | A human review requested changes on one of its pull requests, before or after the merge; or, as its last one merged, one of them merged at another commit than its first human review was written on, so a commit came after the review |
+| `changes-requested` | A human review requested changes on one of its pull requests, before or after the merge; or one of them merged at another commit than its first human review was written on, so a commit came after the review. That is checked when its last one merges, and again when a human review of a merged one arrives |
 | `approval-rejected` | A person answered one of its human steps with an option that starts with `reject`, such as `rejected`, or that sends the task to `stop` |
 | `closed-unmerged` | One of its pull requests closed without merging |
 | `red-after-merge` | A check run on the merge commit of one of its merged pull requests completed with a conclusion other than `success`, `neutral` or `skipped` |
-| `reverted` | A later pull request of the same repository merged, and its title or body says `revert` and names the merge commit of one of the task's, as `git revert` writes, or says `Reverts owner/name#N`, as GitHub's revert button writes |
+| `reverted` | A later pull request of the same repository merged, and its title or body says `This reverts commit <sha>` of the merge commit of one of the task's, as `git revert` writes, or says `Reverts owner/name#N`, as GitHub's revert button writes |
 
 The first four are final: a task with one of them has an outcome its grade can be compared with.
 `red-after-merge` and `reverted` can come later, on top of `approved-clean`. Events count by when
