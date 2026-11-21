@@ -1130,6 +1130,7 @@ pub enum Panel {
     Terminal,
     Workflow,
     Reports,
+    Costs,
 }
 
 /// The views Priory ships, by name.

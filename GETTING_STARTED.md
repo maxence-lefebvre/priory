@@ -249,6 +249,12 @@ A workflow can write a report for you, such as a morning dossier: `priory report
 last one. The web view's Reports panel shows it, and takes its picks and row comments as
 `priory report pick` and `priory report comment` do. See [docs/daemon/reports.md](docs/daemon/reports.md).
 
+The web view's Costs panel shows what the factory spent this week against last week, each day, and
+split by workflow, agent, model, machine or repository, as `priory costs` prints it. Beside it,
+Attention shows the minutes of your attention per merged pull request, how long asks waited for
+you, and where each task's time went, as `priory report attention` prints it. On a phone, both sit
+under More. See [docs/daemon/trace.md](docs/daemon/trace.md#costs).
+
 ## Use it from a phone
 
 The web view installs as an app and can notify you of a new ask or a stopped task. A phone reaches
