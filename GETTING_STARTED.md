@@ -17,7 +17,12 @@ priory --version
 
 The script downloads the binary of the latest
 [release](https://github.com/maxence-lefebvre/priory/releases) for Linux x86_64, Linux aarch64 or
-macOS on Apple silicon, checks it against its `.sha256` and installs it to `~/.local/bin`. Run
+macOS on Apple silicon, checks it against its `.sha256` and installs it to `~/.local/bin`. The
+`.sha256` sits beside the binary in the same release, so it only catches a broken download. When
+[gh](https://cli.github.com/) is on your `PATH` and signed in, the script also runs
+`gh attestation verify`, which proves this repository's release workflow built the binary, and
+refuses a binary it cannot verify. Without gh, it prints a note and skips that check. Releases
+made before the workflow attested its builds, such as `v0.1.0`, fail that check. Run
 `sh install.sh --prefix /usr/local` from a clone to install to `/usr/local/bin` instead. Set
 `PRIORY_RELEASE_URL=https://github.com/maxence-lefebvre/priory/releases/download/v0.1.0` to pick a
 release other than the latest. With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall),
