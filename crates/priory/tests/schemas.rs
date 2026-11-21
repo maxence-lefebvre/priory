@@ -65,6 +65,7 @@ fn generated() -> Vec<(String, Value)> {
         event::<LinearIssueCreated>("linear.issue.created"),
         event::<LinearStateChanged>("linear.issue.state_changed"),
         event::<LinearBlockers>("linear.issue.blockers"),
+        event::<LinearIssueUpdated>("linear.issue.updated"),
         event::<LinearCommentCreated>("linear.comment.created"),
         event::<SlackPosted>("slack.message.posted"),
         event::<SlackReplied>("slack.thread.replied"),

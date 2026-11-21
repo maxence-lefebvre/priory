@@ -52,6 +52,11 @@ the active task owning `slack:<channel>:<thread ts>`: a task a Slack trigger sta
 wait or subscription names the thread. A reply in the thread of a done task reopens it (see
 [routing.md](../daemon/routing.md#feedback-reopens-a-done-task)).
 
+A reply's `actor` is its author's display name, so a prompt reads `Ana replied in ...` rather than
+`U0123 replied in ...`. The intake asks `users.info` once per user id and keeps each name it gets for
+the life of the process. Without the `users:read` scope, or when Slack fails to answer, `actor` is
+the user id, and the intake prints the error once.
+
 ## Keys and ids
 
 | What | Value |
@@ -76,8 +81,8 @@ A channel's position is the `ts` of the newest message seen.
 | Token | `SLACK_BOT_TOKEN`. The intake refuses to start without it when the factory has a Slack trigger |
 | Endpoint | `https://slack.com/api/<method>`, through `curl --get` |
 | On start | one `auth.test` call, to learn its own bot |
-| Calls per poll | one `conversations.history` per trigger channel, one `conversations.replies` per watched thread, and one per extra page |
-| Scopes | `channels:history`, and `groups:history` for a private channel. The bot must be a channel member |
+| Calls per poll | one `conversations.history` per trigger channel, one `conversations.replies` per watched thread, and one per extra page; one `users.info` per reply author the process has not named yet |
+| Scopes | `channels:history`, and `groups:history` for a private channel. The bot must be a channel member. `users:read` lets a reply name its author; without it, replies carry the user id |
 
 `curl` reads the `Authorization` header from stdin, as for Linear, so the token never shows in a
 process list or an error.

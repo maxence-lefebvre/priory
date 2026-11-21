@@ -84,10 +84,11 @@ An issue can be split across several entries, each with its own `part`, a number
 ```
 
 The plan may say why in `splits`: `[{ "issue": "ENG-41", "why": "..." }]`. At the go, each part's
-task is keyed `<issue>.<part>`, such as `linear:ENG-41.1`, and owns that key's events. Each part also
-owns the issue itself. So an event on `linear:ENG-41`, such as a comment, reaches the oldest part
-still active, and once that part ends, the next. A task request on the issue joins that part instead
-of starting a second task, as it joins a task keyed by the issue.
+task is keyed `<issue>.<part>`, such as `linear:ENG-41.1`, and owns that key's events. An event on
+the issue itself, such as a comment on `linear:ENG-41`, reaches the oldest part still active, and
+only that part; once it ends, the next. A task request on the issue joins that part instead of
+starting a second task, as it joins a task keyed by the issue. A task that holds the issue or a part
+key since the plan fails the start, as for an unsplit issue.
 
 ## Editing a plan
 

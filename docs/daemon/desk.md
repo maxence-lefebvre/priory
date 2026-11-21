@@ -305,7 +305,9 @@ the time to the second, as the inbox does.
 `since_you_looked`, newest first, at most 50. An event in the same second as the visit shows
 again rather than never. `--person NAME` reads that person's visit. Without a
 visit, `since_you_looked` lists the latest 50 events. An event is a trace record or an inbox entry:
-each step that ended, repair, snooze or label, and each message and report the inbox took. Each has
+each step that ended, repair, snooze or label, and each message and report the inbox took. A
+message routed to no task, `ignored`, is left out, so a busy repository does not fill the list
+(the Desk counts those as unrouted events, see [Unrouted events](#unrouted-events)). Each has
 its `time`, its `task` and the task's `key`, and `what`: the record's type, step and outcome, the
 message's type, subject and outcome, or a report's `<source>: <line>`. `priory desk` without
 `--json` lists the events after its items, under a `since you looked` header with the columns

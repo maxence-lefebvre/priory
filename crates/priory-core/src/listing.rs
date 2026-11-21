@@ -133,7 +133,8 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                  AND hold.released IS NULL)
                  AND (tasks.batch_entry IS NULL OR EXISTS (SELECT 1 FROM holds AS hold
                    WHERE hold.task = holds.task AND hold.released IS NULL
-                   AND (hold.kind != 'merged' OR hold.ask IS NOT NULL)))
+                   AND (hold.kind != 'merged' OR EXISTS (SELECT 1 FROM asks WHERE asks.id = hold.ask
+                     AND asks.answer IS NULL AND asks.withdrawn IS NULL))))
                UNION ALL
                SELECT 0, batches.went, 'batch', batches.id, batches.task, tasks.lane, batches.title
                FROM batches JOIN tasks ON tasks.id = batches.task WHERE batches.went IS NOT NULL
@@ -952,7 +953,8 @@ fn parse_back_early(item: &mut Value) {
 /// The person a desk is for when no one is named.
 pub const ME: &str = "me";
 
-/// The trace records and inbox entries after `person`'s last visit, newest first, at most 50.
+/// The trace records and inbox entries after `person`'s last visit, newest first, at most 50,
+/// without the events no task took.
 fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
     rows(
         db,
@@ -970,6 +972,8 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
                  ELSE type || coalesce(' ' || subject, '') || coalesce(': ' || outcome, '') END,
                1, seq
              FROM inbox WHERE julianday(time) >= (SELECT at FROM visited)
+             -- An event no task took would crowd out the rest in a busy repository.
+             AND outcome IS NOT 'ignored'
              ORDER BY julianday(time) DESC, seq DESC LIMIT 50))
          SELECT time, task, (SELECT key FROM tasks WHERE tasks.id = events.task) AS key, what
          FROM events
