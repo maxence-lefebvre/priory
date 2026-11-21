@@ -654,3 +654,21 @@ fn check_explain_shows_each_steps_history_when_it_finds_the_state_file_and_dashe
     succeeded(&lint);
     assert!(!missing.exists());
 }
+
+#[test]
+fn a_step_record_missing_a_field_a_trial_needs_is_skipped() {
+    let setup = Setup::new("partial", 1);
+    setup.reached(1, 40);
+    setup.handle(&[opened(1, 1, 40)]);
+    let event = json!({ "id": "partial", "type": "factory.step.ended", "time": ago(5),
+                        "data": { "step": "implement", "model": "m" } });
+    setup.sql(
+        "INSERT INTO trace (id, type, time, event) VALUES ('partial', 'factory.step.ended', ?1, ?2)",
+        &[&ago(5), &event.to_string()],
+    );
+
+    assert_eq!(
+        counts(&row(&setup.target("open-pr"), "open-pr", None)),
+        (1, 0, 0)
+    );
+}

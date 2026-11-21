@@ -1262,8 +1262,10 @@ fn flows(mut args: Vec<String>) -> ExitCode {
 /// Each irreversible step's trials, when `PRIORY_DB` names a state file this priory reads.
 fn history(factory: &factory::Factory) -> Option<risk::Risk> {
     let db = state::read_only().ok()?;
-    let now = intake::now().ok()?;
-    risk::recent(&db, &risk::Gates::of(factory), now).ok()
+    intake::now()
+        .and_then(|now| risk::recent(&db, &risk::Gates::of(factory), now))
+        .inspect_err(|error| eprintln!("warning: no history from the state: {error}"))
+        .ok()
 }
 
 /// Prints the resolved views as `GET /api/views` serves them: `priory views [DIR] --json`.

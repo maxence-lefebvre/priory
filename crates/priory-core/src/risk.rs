@@ -218,7 +218,13 @@ pub fn risk(
                json_extract(event, '$.data.step'), json_extract(event, '$.data.effect'),
                json_extract(event, '$.data.outcome'),
                json_extract(event, '$.data.factory_revision'), json_extract(event, '$.data.model')
-             FROM trace WHERE type = 'factory.step.ended' ORDER BY seq",
+             FROM trace WHERE type = 'factory.step.ended'
+               AND json_extract(event, '$.data.task') IS NOT NULL
+               AND json_extract(event, '$.data.workflow') IS NOT NULL
+               AND json_extract(event, '$.data.step') IS NOT NULL
+               AND json_extract(event, '$.data.effect') IS NOT NULL
+               AND json_extract(event, '$.data.outcome') IS NOT NULL
+             ORDER BY seq",
         )
         .and_then(|mut statement| {
             statement
