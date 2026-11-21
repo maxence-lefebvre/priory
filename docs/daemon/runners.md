@@ -20,7 +20,8 @@ A factory with one runner file or none works as before: its one daemon owns ever
 
 A daemon claims the key of each active task of its own whose key it does not hold, such as a task
 from before the factory got its second runner, or one that feedback reopened. It starts no run of
-that task until it reads its claim back. When that claim loses, because the log gives the key to
+that task until it reads its claim back, and the task waits with the reason
+`waits for its claim to reach the log`. When that claim loses, because the log gives the key to
 another runner, the daemon drops its copy with the reason `owned by runner <name>`.
 
 The daemon also claims, once, the key of each task of its own that ended before the factory had
@@ -99,8 +100,11 @@ A daemon that cannot reach its log keeps running. It goes on with its own tasks:
   before. A person answers a local ask with `priory answer` on that machine.
 - No run of a `waiting` task starts, and no code step's action runs while the log says `waiting`.
   The daemon queues `kept` for the task and starts it only once it reads that back from the log.
+  Until then the task's reason is `waits for its claim to reach the log`, in `priory tasks`, its
+  JSON and the Desk.
 - Each claim, hold and alive message waits in the state file's queue, oldest first. Nothing reaches
-  the other runners until the link is back.
+  the other runners until the link is back. Only the newest alive message is kept to publish,
+  since a lease runs from the last one.
 - The daemon tries the log again 2 seconds after it fails, then waits twice as long after each
   failure, up to 1 minute.
 
@@ -128,7 +132,8 @@ is back.
 A daemon reads the log before it starts any run and before it publishes what it queued. A task that
 moved while it was away is dropped with the reason `moved to runner <name>: its lease ended`.
 Answers given meanwhile on other runners apply in log order, as below. Then it publishes its queue
-in order. Each queued message keeps its id, so one published twice adds nothing.
+in order: its claims and holds, and one alive message, the newest. Each queued message keeps its
+id, so one published twice adds nothing.
 
 ## Why no task runs twice
 
@@ -141,8 +146,8 @@ wins only when both hold:
 A runner cut off from the log never starts a `waiting` task, since it cannot read its `kept` back.
 So a task that runs there was `kept` on the log before the cut, and no takeover wins it, however
 long the cut lasts. A task that was `waiting` stays unstarted on the cut-off runner, so the runner
-that takes it over runs it first and alone. `priory give` is the one exception: a person moves a
-started task on purpose, as below.
+that takes it over runs it first and alone. `priory give --force` is the one exception: a person
+moves a task whose owner may still run it, on purpose, as below.
 
 ## Answering another runner's ask
 
@@ -161,17 +166,29 @@ runner file with `runner <runner> has no runner file in runners/`.
 ## Giving a task to another runner
 
 ```sh
-priory give [DIR] <key> <runner>
+priory give [DIR] <key> <runner> [--force]
 ```
 
 publishes a claim of the key for `<runner>` on the log of the factory in `DIR`, `.` by default, from
-the runner that owns it, whatever the hold and the lease. Use it to move a started task off a runner that will not come back. It prints
+the runner that owns it, whatever the hold. Use it to move a started task off a runner that will
+not come back. It prints
 `<key> given to runner <runner>: <runner> takes it and <owner> drops it as each reads the log`.
+
+While the owner's lease is live, its last alive message less than 30 minutes before this
+machine's clock, `priory give` refuses:
+
+```text
+runner <owner>'s lease lasts until <time>, and <owner> may still run <key>: give it then, or pass --force
+```
+
+A runner cut off from the log goes on running its started tasks, so a task given then runs on two
+runners until the old one reads the claim. Wait until the lease ends, or pass `--force` when the
+owner is down for good or you accept the overlap.
 
 Each runner acts when it reads the claim. The new owner starts the task over from its request. The
 old owner ends its live run and drops its copy with the reason `given to runner <runner>`. If the
-old runner was only cut off, its run went on until then, so giving a started task trades that
-overlap for progress. A task can be given back to a runner that had it before.
+old runner was only cut off, its run went on until then, so `--force` trades that overlap for
+progress. A task can be given back to a runner that had it before.
 
 `priory give` reads this machine's state file to find the owner. It refuses with
 `no runner holds <key>` for a key no runner holds or whose task ended, with
