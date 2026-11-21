@@ -43,6 +43,7 @@ const WEB: &[(&str, &str, &[u8])] = &[
     file!("/asks.js", JS, "crates/priory-core/web/asks.js"),
     file!("/add.js", JS, "crates/priory-core/web/add.js"),
     file!("/links.js", JS, "crates/priory-core/web/links.js"),
+    file!("/reports.js", JS, "crates/priory-core/web/reports.js"),
     file!("/sw.js", JS, "crates/priory-core/web/sw.js"),
     file!(
         "/manifest.webmanifest",
@@ -363,6 +364,7 @@ enum Write<'a> {
     Snooze,
     Add,
     Comment(sections::Remark),
+    Pick,
     Act(&'a str, &'a str),
     Subscribe,
     Unsubscribe,
@@ -373,6 +375,7 @@ impl<'a> Write<'a> {
         match path {
             "/api/snooze" => return Some(Write::Snooze),
             "/api/request" => return Some(Write::Add),
+            "/api/reports/pick" => return Some(Write::Pick),
             "/api/reports/comment" => return Some(Write::Comment(sections::Remark::Comment)),
             "/api/reports/reply" => return Some(Write::Comment(sections::Remark::Reply)),
             "/api/reports/resolve" => return Some(Write::Comment(sections::Remark::Resolve)),
@@ -432,6 +435,15 @@ struct SnoozeBody {
     until: Option<String>,
     #[serde(default)]
     clear: bool,
+}
+
+/// The pick endpoint's body: `revision` is the report's revision the client showed.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PickBody {
+    pick: String,
+    option: String,
+    revision: i64,
 }
 
 /// A comment endpoint's body: `row` for a new thread, else `comment`; `revision` as `--expected`.
@@ -510,6 +522,8 @@ enum Sent {
     Ask(i64, i64),
     /// The task of a desk action, and the state's revision it was made on, if any.
     Task(i64, Option<i64>),
+    /// The pick, the option and the report's revision the body sent.
+    Pick(String, String, i64),
     Nothing,
 }
 
@@ -588,6 +602,16 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
                 session: None,
             };
             Ok((line(&comment), Sent::Nothing))
+        }
+        Write::Pick => {
+            let body: PickBody = serde_json::from_slice(body).map_err(bad)?;
+            let choice = sections::Choice {
+                pick: body.pick,
+                option: body.option,
+                expected: body.revision,
+            };
+            let sent = Sent::Pick(choice.pick.clone(), choice.option.clone(), choice.expected);
+            Ok((line(&choice), sent))
         }
         Write::Add => {
             let add: priory_intake::request::Add = serde_json::from_slice(body).map_err(bad)?;
@@ -673,6 +697,7 @@ fn refusal(db: &Connection, sent: Sent, refused: &str) -> Reply {
                 Err(error) => Reply::error(500, &error.to_string()),
             };
         }
+        Sent::Pick(pick, option, sent) => return pick_refusal(db, &pick, &option, sent, refused),
         Sent::Nothing => return Reply::error(422, refused),
     };
     match listing::ask(db, id) {
@@ -681,6 +706,32 @@ fn refusal(db: &Connection, sent: Sent, refused: &str) -> Reply {
             409,
             serde_json::json!({ "error": refused, "ask": ask }).to_string(),
         ),
+        Ok(Some(_)) => Reply::error(422, refused),
+        Err(error) => Reply::error(500, &error.to_string()),
+    }
+}
+
+/// The reply to a pick the daemon refused: `404` once no report holds it, `409` once its report
+/// moved past the revision sent or another choice took it. A pick this write recorded, whose request
+/// then failed to publish, gets `422`, as does any other refusal.
+fn pick_refusal(db: &Connection, pick: &str, option: &str, sent: i64, refused: &str) -> Reply {
+    // `sections::pick` words a recorded pick so, whatever followed it.
+    if refused.starts_with(&format!("pick {pick} is {option} at revision ")) {
+        return Reply::error(422, refused);
+    }
+    let found = db
+        .query_row(
+            "SELECT reports.revision, json_extract(row.value, '$.pick.chosen')
+             FROM reports, json_each(reports.report, '$.sections') AS section,
+               json_each(section.value, '$.rows') AS row
+             WHERE json_extract(row.value, '$.pick.id') = ?1 LIMIT 1",
+            [pick],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional();
+    match found {
+        Ok(None) => Reply::error(404, refused),
+        Ok(Some((at, chosen))) if at != sent || chosen.is_some() => Reply::error(409, refused),
         Ok(Some(_)) => Reply::error(422, refused),
         Err(error) => Reply::error(500, &error.to_string()),
     }

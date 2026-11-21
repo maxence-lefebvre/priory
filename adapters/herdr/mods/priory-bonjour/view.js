@@ -1,5 +1,7 @@
-// The Bonjour panel's view model: `priory report show --json` in, sections, rows, picks and threads out.
-// No drawing, no IO. It knows no section by name.
+// The report view model of the Bonjour panel and of the web view's Reports panel: `priory report
+// show --json` in, sections, rows, picks and threads out. No drawing, no IO. It knows no section by
+// name. crates/priory-core/web/reports.js is a copy that imports the web view's links.js; a test
+// keeps the two the same.
 
 import { autolink } from "./priory.js";
 

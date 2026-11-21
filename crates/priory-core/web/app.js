@@ -3,6 +3,7 @@
 import { askGroups, snoozed } from "./asks.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
+import { dossier, refusal } from "./reports.js";
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -86,7 +87,7 @@ const PANELS = {
   inbox: ["Inbox", "inbox"], reports: ["Reports", "reports"], queue: ["Queue", "queue"],
   terminal: ["Terminal", "terminal"], workflow: ["Workflows", "workflow"],
 };
-const CLI = { tasks: "priory tasks", runs: "priory tasks", inbox: "priory inbox", reports: "priory inbox", queue: "priory queue", terminal: "priory attach", workflow: "priory check" };
+const CLI = { tasks: "priory tasks", runs: "priory tasks", inbox: "priory inbox", queue: "priory queue", terminal: "priory attach", workflow: "priory check" };
 
 // The last listings read and when, kept on this device, so an offline start shows them with their age.
 const kept = JSON.parse(localStorage.getItem("priory.snapshot") || "null");
@@ -120,6 +121,14 @@ const state = {
   drafts: new Map(),
   notices: new Map(),
   writing: new Set(),
+  // The Reports panel: the pick waiting out its Undo, then in flight; each row's last refusal; the
+  // comment field open on a row, with its text, and whether a comment verb is in flight.
+  reportPending: null,
+  reportNotices: new Map(),
+  // A pick's or a comment's outcome once its row has left the report.
+  reportFlash: null,
+  compose: null,
+  remarking: false,
   // The Add sheet: its draft and chips, the server's defaults, and where the last send got to.
   // Notifications on this device: its status, a request in flight, and why the last one failed.
   // check counts status reads, so a read that a tap or a newer read overtook is dropped.
@@ -146,7 +155,7 @@ const today = (iso) => new Date(iso).toDateString() === new Date().toDateString(
 async function api(path) {
   const response = await fetch(path, { headers: { Authorization: `Bearer ${state.token}` }, cache: "no-store" });
   if (response.status === 401) throw Object.assign(new Error("the token was refused"), { status: 401 });
-  if (!response.ok) throw new Error(`${path} answered ${response.status}`);
+  if (!response.ok) throw Object.assign(new Error(`${path} answered ${response.status}`), { status: response.status });
   return response.json();
 }
 
@@ -162,21 +171,24 @@ async function refresh() {
     const views = (!state.cached && state.data?.views) || (await api("/api/views"));
     const links = (!state.cached && state.data?.links) || (await api("/api/links")).links;
     const full = (listing) => (state.all[listing] ? `/api/${listing}?all=1` : `/api/${listing}`);
-    const [desk, asksList, queue, tasksList] = await Promise.all(["/api/desk", full("asks"), "/api/queue", full("tasks")].map(api));
+    // No task has written a report until the first `priory report put`.
+    const latest = api("/api/reports/latest").catch((error) => (error.status === 404 ? null : Promise.reject(error)));
+    const [desk, asksList, queue, tasksList, report] = await Promise.all([...["/api/desk", full("asks"), "/api/queue", full("tasks")].map(api), latest]);
     // A later call, such as the one that loads older rows, supersedes this one.
     if (call !== state.refreshes) return true;
     const [asks, tasks] = [asksList.asks, tasksList.tasks];
     const older = { asks: asksList.older, tasks: tasksList.older };
     // The listings are read one after another; the oldest revision makes the next wait catch what they missed.
-    state.revision = Math.min(desk.revision, asksList.revision, queue.revision, tasksList.revision);
-    const snapshot = JSON.stringify([desk, asks, queue, tasks, older]);
+    state.revision = Math.min(desk.revision, asksList.revision, queue.revision, tasksList.revision, report?.revision ?? Infinity);
+    const snapshot = JSON.stringify([desk, asks, queue, tasks, older, report]);
     state.updated = Date.now();
     state.failed = null;
     state.cached = false;
     // Ages read in minutes, so an unchanged state needs a new paint once a minute at most.
     if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return keep(), true;
     const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
-    state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, older };
+    state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, older, report };
+    acceptReport();
     state.task = null;
     state.snapshot = snapshot;
     keep();
@@ -912,6 +924,201 @@ function act(target) {
   if (action === "snooze" || action === "unsnooze") return snooze(ask, target);
 }
 
+// Reports (DESIGN.md, Reports panel): the report written last, its sections in its own order, picks
+// with an Undo, and threads on rows through the report endpoints.
+const reportRows = (model) => model.sections.flatMap((section) => section.rows);
+
+function reportsPage(compact) {
+  const read = state.data.report;
+  const head = compact ? html`<div class="top"><h1>Reports</h1><span class="sp"></span>${connection()}</div>` : html`<div class="lhead"><h1>Reports</h1></div>`;
+  if (!read) return html`${head}<div class="panel" role="region" aria-label="Reports"><p class="empty">No report yet. A workflow writes one with the <code>report</code> tool or <code>priory report put</code>.</p></div>`;
+  const model = dossier(read, { now: Date.now() });
+  const { agreed, total, label } = model.progress;
+  const jump = html`<nav class="jump" aria-label="Sections">${model.sections.map((section, i) => html`<a href="#report-${i}" aria-current="${i === 0 ? "true" : "false"}">${section.title}<span class="num">${section.count}</span></a>`)}</nav>`;
+  const sections = model.sections.map((section, i) => html`<section class="sect" id="report-${i}" aria-labelledby="report-${i}-title">
+    <h2 class="sh" id="report-${i}-title">${section.title}<span class="meta num">${section.count}</span></h2>
+    <ol class="rrows">${section.rows.map(reportRow)}</ol></section>`);
+  const pending = state.reportPending;
+  const sending = pending ? html`<div class="sending" role="status"><span>Picking <b>"${pending.option}"</b></span>${pending.sending ? "" : html`<button class="btn secondary" data-action="pick-undo">Undo</button>`}</div>` : "";
+  return html`${head}<div class="panel report" role="region" aria-label="Reports"><div class="scroll" data-sections>
+    <header class="rhead"><p class="greet">${model.greeting}</p><p class="meta">${model.date}, <a href="/tasks/${model.task}">task ${model.task}</a>. ${model.since}</p>
+      ${state.reportFlash ? html`<p class="warnline" role="status">${state.reportFlash}</p>` : ""}
+      ${total ? html`<p class="prog"><progress max="${total}" value="${agreed}" aria-label="Picks agreed"></progress><span class="num">${label}</span></p>` : ""}</header>
+    <div class="rbody">${jump}<div>${sections}</div></div></div>${sending}</div>`;
+}
+
+function reportRow(row) {
+  const facts = [row.meta, row.owner].filter(Boolean);
+  const notice = state.reportNotices.get(row.id);
+  return html`<li class="rrow">
+    <p class="rl1">${row.tile ? tile(row.tile, "sm") : ""}${row.key ? html`<span class="mono">${autolinked(row.key)}</span>` : ""}<span class="rtext">${autolinked(row.text)}</span></p>
+    ${facts.length || row.time ? html`<p class="rl2">${facts.map((fact) => html`<span>${fact}</span>`)}${row.time ? html`<span>${row.time}</span>` : ""}</p>` : ""}
+    ${row.pick ? reportPick(row) : ""}
+    ${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}
+    ${row.threads.map((thread) => reportThread(row, thread))}${reportCompose(row)}</li>`;
+}
+
+// Each button's id names its pick, thread or row, so focus finds it again after a redraw.
+function reportPick(row) {
+  const { pick } = row;
+  if (pick.state !== "open") {
+    return html`<p class="note rpicked">${icon("check", "s15")}<span><b>Picked ${pick.chosen}.</b> ${pick.note}</span></p>`;
+  }
+  const pending = state.reportPending;
+  const mine = pending?.pick === pick.id ? pending : null;
+  const off = Boolean(state.failed || (pending && !mine));
+  return html`<div class="rpick" role="group" aria-label="Pick for ${row.key || row.text}">${pick.options.map((option) => {
+    const chosen = mine?.option === option.label;
+    return html`<button id="${focusId("pick", pick.id, option.label)}" class="${chosen ? "chosen" : ""}" data-action="pick" data-row="${row.id}" data-option="${option.label}" aria-pressed="${chosen ? "true" : "false"}" aria-disabled="${off || mine ? "true" : "false"}">${chosen || (!mine && option.recommended) ? icon("check", "s15") : ""}${option.label}</button>`;
+  })}</div>${state.failed ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to pick.</span></p>` : pick.note ? html`<p class="note">${pick.note}</p>` : ""}`;
+}
+
+function reportThread(row, thread) {
+  const off = state.failed || state.remarking ? "true" : "false";
+  if (thread.resolved) {
+    return html`<p class="note rresolved">${icon("check", "s15")}<span>Resolved: ${thread.text}</span><button id="reopen-${thread.id}" class="ghost" data-action="reopen" data-row="${row.id}" data-comment="${thread.id}" aria-disabled="${off}">Reopen</button></p>`;
+  }
+  const entry = (comment) => html`<li><p class="rwho"><b>${comment.author}</b>${comment.when ? html` <span>${comment.when}</span>` : ""}</p><p class="rsay">${comment.text}</p></li>`;
+  return html`<div class="rthread" aria-label="Thread ${thread.id}"><ol>${entry(thread)}${thread.replies.map(entry)}</ol>
+    <p class="racts"><button id="reply-${thread.id}" class="ghost" data-action="reply" data-row="${row.id}" data-comment="${thread.id}" aria-disabled="${off}">Reply</button><button id="resolve-${thread.id}" class="ghost" data-action="resolve" data-row="${row.id}" data-comment="${thread.id}" aria-disabled="${off}">Resolve</button></p></div>`;
+}
+
+// A row without its own id takes no comments.
+function reportCompose(row) {
+  if (!row.target) return "";
+  const compose = state.compose?.row === row.id && state.compose.task === state.data.report.report.task ? state.compose : null;
+  const off = state.failed ? "true" : "false";
+  if (!compose) return html`<p class="racts"><button id="${focusId("compose", row.id)}" class="ghost" data-action="compose" data-row="${row.id}" aria-disabled="${off}">${icon("message-text", "s15")}Comment</button></p>`;
+  const verb = compose.replyTo == null ? "Comment" : "Reply";
+  return html`<form class="writeform rcompose" data-action="remark">${compose.replyTo == null ? "" : html`<p class="note">Replying in thread ${compose.replyTo}</p>`}
+    <label class="sr" for="report-draft">${verb} on this row</label><textarea id="report-draft" name="text" rows="2" placeholder="${compose.replyTo == null ? "Comment on this row" : "Reply in this thread"}">${compose.text}</textarea>
+    <p class="racts"><button type="button" class="btn secondary" data-action="compose-cancel">Cancel</button><button class="btn primary" aria-disabled="${state.failed || state.remarking ? "true" : "false"}">${verb}</button></p></form>`;
+}
+
+// An id no other control's parts can spell: whitespace and quotes are escaped away.
+const focusId = (...parts) => encodeURIComponent(JSON.stringify(parts));
+
+// A note under its row, or above the sections once the row has left the report or another task's
+// report replaced it.
+function noteRow(id, text, task = state.data.report?.report.task) {
+  if (task === state.data.report?.report.task && reportRowOf(id)) state.reportNotices.set(id, text);
+  else state.reportFlash = text;
+}
+
+const reportRowOf = (id) => (state.data.report ? reportRows(dossier(state.data.report, { now: Date.now() })).find((row) => row.id === id) : null);
+
+// Nothing leaves the page until the Undo time passes, as an answer waits: a pick wakes the report's agent.
+function pick(target) {
+  const row = reportRowOf(target.dataset.row);
+  if (!row || row.pick?.state !== "open" || state.reportPending || state.failed) return;
+  state.reportNotices.delete(row.id);
+  state.reportFlash = null;
+  const pending = { row: row.id, task: state.data.report.report.task, pick: row.pick.id, option: target.dataset.option, revision: state.data.report.report.revision, sending: false };
+  pending.timer = setTimeout(() => sendPick(pending), UNDO_MS);
+  state.reportPending = pending;
+  render();
+}
+
+function undoPick() {
+  if (!state.reportPending || state.reportPending.sending) return;
+  clearTimeout(state.reportPending.timer);
+  state.reportPending = null;
+  render();
+}
+
+// A new read cancels a pick still waiting out its Undo once its report no longer offers it. Another
+// task's report drops the notes, which belong to rows of the old one; the comment field waits for
+// its own task's report.
+function acceptReport() {
+  const task = state.data.report?.report.task;
+  if (task !== state.reportTask) {
+    state.reportNotices.clear();
+    state.reportFlash = null;
+    state.reportTask = task;
+  }
+  const pending = state.reportPending;
+  if (!pending || pending.sending) return;
+  const row = state.data.report?.report.task === pending.task ? reportRowOf(pending.row) : null;
+  if (row?.pick?.id === pending.pick && row.pick.state === "open") return;
+  clearTimeout(pending.timer);
+  state.reportPending = null;
+  noteRow(pending.row, `${pending.option} was not sent: the report changed before it went.`, pending.task);
+}
+
+async function sendPick(pending) {
+  pending.sending = true;
+  render();
+  const { status, body } = await post("/api/reports/pick", { pick: pending.pick, option: pending.option, revision: pending.revision })
+    .catch(() => ({ status: 0, body: { error: "the connection dropped" } }));
+  state.reportPending = null;
+  if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
+  await refresh();
+  if (status === 200) return render();
+  const fresh = status === 409 ? state.data.report : null;
+  noteRow(pending.row, `${pending.option}: ${writeRefusal(status, body, () => refusal(pending, fresh, body.error))}`, pending.task);
+  render();
+}
+
+// Why a write did not go; `refused` words a refusal the daemon gave.
+function writeRefusal(status, body, refused = () => `Not sent: ${body.error || `the server answered ${status}`}.`) {
+  if (status === 503) return "Could not send: no priory daemon runs beside this server. Start priory daemon, then send again.";
+  if (status === 504 || status === 0) return "The daemon may have applied this but did not confirm it. Check the report before you send again.";
+  return refused();
+}
+
+function compose(target) {
+  const replyTo = target.dataset.comment ? Number(target.dataset.comment) : null;
+  const same = state.compose?.row === target.dataset.row && state.compose.task === state.data.report.report.task;
+  state.compose = { task: state.data.report.report.task, row: target.dataset.row, replyTo, text: same ? state.compose.text : "" };
+  render();
+  document.getElementById("report-draft")?.focus();
+}
+
+// Sends one comment verb; a refusal says why under the row and keeps the draft. `sent` runs before
+// the read that follows, so a second press cannot send the same text again.
+async function remark(rowId, path, body, sent = () => {}) {
+  if (state.remarking || state.failed) return;
+  const task = state.data.report.report.task;
+  state.remarking = true;
+  state.reportNotices.delete(rowId);
+  render();
+  const { status, body: answered } = await post(path, body).catch(() => ({ status: 0, body: { error: "the connection dropped" } }));
+  if (status === 401) {
+    state.remarking = false;
+    return signOut("The daemon refused this token. Paste the current one.");
+  }
+  if (status === 200) sent();
+  await refresh();
+  if (status !== 200) noteRow(rowId, writeRefusal(status, answered), task);
+  state.remarking = false;
+  render();
+}
+
+async function submitRemark() {
+  const sent = state.compose;
+  const row = sent?.task === state.data.report?.report.task && reportRowOf(sent.row);
+  const text = sent?.text.trim();
+  if (!row?.target || !text || state.remarking) return;
+  // Text typed while it was in flight stays as the next draft.
+  const done = () => { if (state.compose === sent && sent.text.trim() === text) state.compose = null; };
+  await remark(row.id, ...(sent.replyTo == null
+    ? ["/api/reports/comment", { row: row.target, text, revision: state.data.report.report.revision }]
+    : ["/api/reports/reply", { comment: sent.replyTo, text }]), done);
+}
+
+function reportAct(target) {
+  if (target.getAttribute("aria-disabled") === "true") return;
+  const action = target.dataset.action;
+  if (action === "pick") return pick(target);
+  if (action === "pick-undo") return undoPick();
+  if (action === "compose" || action === "reply") return compose(target);
+  if (action === "compose-cancel") {
+    state.compose = null;
+    return render();
+  }
+  remark(target.dataset.row, `/api/reports/${action}`, { comment: Number(target.dataset.comment) });
+}
+
 // Add (DESIGN.md, Add): one field and three chips; Enter queues the task through POST /api/request.
 // The draft lives in localStorage until the daemon takes it, so a reload or a dropped connection keeps it.
 const DRAFT_KEY = "priory.add";
@@ -1062,7 +1269,7 @@ function tabs(current, kind) {
   if (kind === "rail") {
     return html`<nav class="rail" aria-label="Panels">${shown.map(link)}<a class="settings" href="/settings/appearance" aria-current="${current === "settings" ? "page" : "false"}">${icon("settings", "s20")}Settings</a></nav>`;
   }
-  return html`<nav class="tabbar" aria-label="Panels">${shown.map(link)}<a href="/more" aria-current="${current === "more" || current === "settings" ? "page" : "false"}">${icon("more", "s20")}More</a></nav>`;
+  return html`<nav class="tabbar" aria-label="Panels">${shown.map(link)}<a href="/more" aria-current="${current === "more" || current === "settings" || (PANELS[current] && !shown.includes(current)) ? "page" : "false"}">${icon("more", "s20")}More</a></nav>`;
 }
 
 function laterPanel(panel) {
@@ -1299,10 +1506,15 @@ function render() {
     clearTimeout(state.pending.timer);
     state.pending = null;
   }
+  if (state.reportPending && !state.reportPending.sending && (!state.token || current() !== "reports")) {
+    clearTimeout(state.reportPending.timer);
+    state.reportPending = null;
+  }
   if (state.renderedKey) state.scrolls.set(state.renderedKey, [...app.querySelectorAll(".scroll")].map((element) => element.scrollTop));
   const focused = focusKey(document.activeElement);
   const typed = app.querySelector("#token")?.value;
-  const caret = document.activeElement?.id === "draft" ? document.activeElement.selectionStart : undefined;
+  const field = ["draft", "report-draft"].includes(document.activeElement?.id) ? document.activeElement : null;
+  const caret = field ? [field.id, field.selectionStart, field.selectionEnd, field.selectionDirection] : undefined;
   state.observers.forEach((observer) => observer.disconnect());
   state.observers = [];
   if (state.armed && (!state.token || selectedAsk() !== String(state.armed.id))) disarm();
@@ -1318,7 +1530,7 @@ function render() {
   app.querySelectorAll(".scroll").forEach((element, i) => { element.scrollTop = scrolls[i] || 0; });
   if (typed && app.querySelector("#token")) app.querySelector("#token").value = typed;
   if (focused) [...app.querySelectorAll(focused)].find((element) => !element.closest("[inert]"))?.focus({ preventScroll: true });
-  if (caret !== undefined) app.querySelector("#draft")?.setSelectionRange(caret, caret);
+  if (caret !== undefined) app.querySelector(`#${caret[0]}`)?.setSelectionRange(caret[1], caret[2], caret[3]);
   for (const row of app.querySelectorAll("tr[data-href]")) row.addEventListener("click", () => go(row.dataset.href));
   watchSections(app);
   // The sheet lives outside #app; it redraws when the connection drops or comes back under it.
@@ -1339,6 +1551,7 @@ function page() {
     else if (here === "asks") body = asksPhone();
     else if (here === "more") body = morePage();
     else if (taskId) body = taskPage(taskId);
+    else if (here === "reports") body = reportsPage(true);
     else if (here === "settings") body = html`<div class="top"><a class="back" href="/more">${icon("chevron-left", "s22")}More</a></div>${settingsScreen()}`;
     else if (PANELS[here]) body = html`<div class="top"><h1>${PANELS[here][0]}</h1></div>${laterPanel(here)}`;
     else body = notFound();
@@ -1348,7 +1561,7 @@ function page() {
   const list = selectedAsk() ? state.list : here;
   const top = html`<header class="wtop"><span class="fac">${state.data.views.factory}</span>${connection()}<span class="sp"></span>${addButton("addtop")}</header>`;
   const wide = size === "wide";
-  const utility = taskId ? taskPage(taskId) : here === "settings" ? settingsScreen() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
+  const utility = taskId ? taskPage(taskId) : here === "reports" ? reportsPage(false) : here === "settings" ? settingsScreen() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
   const nav = (kind) => tabs(here === "settings" && wide ? "settings" : here === "settings" ? "more" : list, kind);
   if (utility) {
     return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}<div class="list">${utility}</div></div>${wide ? "" : nav("bar")}`;
@@ -1415,6 +1628,7 @@ document.addEventListener("click", (event) => {
     return render();
   }
   if (action === "task-act") return taskAct(target);
+  if (["pick", "pick-undo", "compose", "compose-cancel", "reply", "resolve", "reopen"].includes(action)) return reportAct(target);
   if (target.dataset.answer !== undefined || ["undo", "options", "write", "dismiss", "snooze", "unsnooze"].includes(action)) return act(target);
   if (action === "mode" || action === "theme") {
     const root = document.documentElement;
@@ -1446,6 +1660,7 @@ document.addEventListener("input", (event) => {
   }
   const ask = event.target.id === "draft" && askOnScreen();
   if (ask) state.drafts.set(ask.id, event.target.value);
+  if (event.target.id === "report-draft" && state.compose) state.compose.text = event.target.value;
   const form = event.target.id === "say" && event.target.closest("form");
   if (form) state.sayDrafts.set(Number(form.dataset.task), event.target.value);
 });
@@ -1461,6 +1676,10 @@ document.addEventListener("submit", (event) => {
     const text = (state.drafts.get(ask?.id) || "").trim();
     if (ask && text) answer(ask, text, true);
     return;
+  }
+  if (event.target.dataset.action === "remark") {
+    event.preventDefault();
+    return submitRemark();
   }
   if (event.target.dataset.action === "say") {
     event.preventDefault();
