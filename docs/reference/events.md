@@ -21,7 +21,8 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
 - Linear: [`linear.issue.entered`](#linearissueentered), [`linear.issue.left`](#linearissueleft),
   [`linear.view.changed`](#linearviewchanged),
   [`linear.issue.created`](#linearissuecreated), [`linear.issue.state_changed`](#linearissuestate_changed),
-  [`linear.issue.blockers`](#linearissueblockers), [`linear.comment.created`](#linearcommentcreated)
+  [`linear.issue.updated`](#linearissueupdated), [`linear.issue.blockers`](#linearissueblockers),
+  [`linear.comment.created`](#linearcommentcreated)
 - Slack: [`slack.message.posted`](#slackmessageposted), [`slack.thread.replied`](#slackthreadreplied)
 - Others: [`schedule.fired`](#schedulefired), [`priory.task.requested.cli`](#priorytaskrequestedcli),
   [`factory.task.requested`](#factorytaskrequested), [`factory.intake.baseline`](#factoryintakebaseline)
@@ -838,6 +839,47 @@ Schema: [`linear.issue.state_changed.json`](../schemas/events/linear.issue.state
 }
 ```
 
+### `linear.issue.updated`
+
+One message per history entry that edits an issue's title, description, labels, assignee or
+priority, for an issue a task owns or subscribes to. `linear_id` is the history entry. `title` is the
+title the entry set when it changed the title. It never names a trigger.
+Schema: [`linear.issue.updated.json`](../schemas/events/linear.issue.updated.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `changed` | array of strings | The fields the entry changed, of `title`, `description`, `labels`, `assignee` and `priority` |
+| `description` | string or null | The first 200 characters of the issue's description when `changed` holds `description`; null otherwise. Linear's history records that the description changed, not its text, so this is the description when the intake read it |
+| `actor` | string or null | Who edited it |
+
+<!-- example: events/linear.issue.updated.json -->
+```json
+{
+  "id": "0b8f4c2e-5d1a-5e7b-9c3f-2a6d8e1f4b70",
+  "type": "linear.issue.updated",
+  "subject": "ENG-7",
+  "time": "2026-11-17T12:40:05.210Z",
+  "data": {
+    "issue": "ENG-7",
+    "linear_id": "e4a7b2c9-3f1d-4a6e-8b5c-9d0e1f2a3b4c",
+    "title": "Export fails on an empty project",
+    "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project",
+    "team": "ENG",
+    "project": "Desktop",
+    "project_id": "c1d5e0a2-3b4f-4e8a-9a61-7f20d4b8e913",
+    "state": "In Progress",
+    "labels": ["agent", "bug"],
+    "changed": ["title", "description"],
+    "description": "Exporting a project with no files crashes the app. Steps: create a project, open Export, press Save.",
+    "actor": "Ada Lovelace",
+    "time": "2026-11-17T12:40:05.210Z",
+    "baseline": false,
+    "triggers": []
+  },
+  "links": [{ "label": "issue", "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project" }]
+}
+```
+
 ### `linear.issue.blockers`
 
 One message per issue that another issue blocks, each time the blocker changes. Linear does not
@@ -958,8 +1000,12 @@ also sent to the channel included. It never names a trigger.
 Subject: `<channel>:<thread ts>`.
 Schema: [`slack.thread.replied.json`](../schemas/events/slack.thread.replied.json).
 
-The fields of `slack.message.posted`, and `thread_ts` (string), the `ts` of the thread's first
-message. `baseline` is always false.
+The fields of `slack.message.posted`, and these. `baseline` is always false.
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `thread_ts` | string | The `ts` of the thread's first message |
+| `actor` | string or null | The author's display name, from `users.info`; the user id without the `users:read` scope; null with no user id. See [slack.md](../intake/slack.md#events) |
 
 <!-- example: events/slack.thread.replied.json -->
 ```json
@@ -973,6 +1019,7 @@ message. `baseline` is always false.
     "thread_ts": "1795036000.000100",
     "ts": "1795036001.000200",
     "user": "U0PERSON",
+    "actor": "Ana",
     "text": "Looks good, ship it.",
     "files": [],
     "time": "2026-11-18T21:06:41.000200Z",
