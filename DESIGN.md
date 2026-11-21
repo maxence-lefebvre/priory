@@ -377,7 +377,7 @@ The desk is the "Needs me" view. It lists, top to bottom:
 
 On a phone, the **Answer capsule** floats above the tab bar: a full-width `--action` button,
 `--capsule` (54 px) tall, `--capsule-gap` above the tab bar, with `--radius-full` and
-`--shadow-float`, labelled "Answer 3 asks". It opens the oldest ask's detail. A fade from
+`--shadow-float`, labelled "Answer 3 asks". It opens the detail of the ask that ranks first (see `docs/daemon/desk.md`, The next thing). A fade from
 transparent to `--bar` sits behind it. Wide screens have no capsule: `Enter` opens the
 selected row.
 
@@ -883,8 +883,9 @@ stack.
 
 1. **Count** in `--type-pane-count`, as the web desk's: "2 asks need you. Oldest waits 42 min. 1
    stopped. 2 snoozed."
-2. **The next thing**: a card on `--surface` with the oldest open ask that is not snoozed, its
-   recommendation, and the buttons Answer… (primary), Open task and Snooze 1 h. Answer… opens the
+2. **The next thing**: a card on `--surface` with the desk's `next`: an alarm or the ask that ranks
+   first, why it ranks first, its recommendation, and the buttons Answer… (primary, for an ask),
+   Open task and Snooze 1 h. Answer… opens the
    ask in the Asks panel, so a person answers in one place.
 3. **Saved views**: Needs me, Running, Asleep, Snoozed and All.
 4. The room banner, Asks, Stopped and Later, as on the web desk.

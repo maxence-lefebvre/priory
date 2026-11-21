@@ -158,6 +158,8 @@ gets `400`.
 | `counts.asleep` | integer | Tasks asleep on a wait |
 | `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
 | `items` | array | What waits on a person, then the queue, then worktrees that stay. `priory desk --all --json` keeps the snoozed items |
+| `next` | object or null | The item that ranks first, as in `ranked`; null when nothing waits on a person |
+| `ranked` | array | What waits on a person, best first, without the snoozed items: each a desk item with `why`, why it ranks there, and `title`, the line a notification carries. See [desk.md](../daemon/desk.md#the-next-thing) |
 | `last_visit` | string or null | The person's last visit, which `priory seen` records |
 | `since_you_looked` | array | The events from the second of `last_visit` on, newest first, at most 50: each with `time`, `task`, `key` and `what`. See [desk.md](../daemon/desk.md#since-you-looked) |
 
