@@ -1,0 +1,80 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { context, draw, find, herdr, press, settle, text } from "./kit.js";
+import { taskView } from "../mods/priory-task/view.js";
+
+process.env.TZ = "UTC";
+
+const { default: TaskPanel } = await import("../mods/priory-task/main.js");
+const { default: Tabs } = await import("../mods/priory-tabs/main.js");
+
+// Captured from `priory task 1 --json`, as the Asks panel's tests use it.
+const task = JSON.parse(readFileSync(new URL("./fixtures/task.json", import.meta.url), "utf8"));
+const now = Date.parse("2026-11-20T12:00:00Z");
+
+test("a task shows its state, step, asks, pull request and its runs newest first", () => {
+  const view = taskView(task, { now });
+  assert.deepEqual([view.key, view.state, view.context, view.title], ["cli:PRI-61", "asleep", ["implement", "merge", "none/misc"], "Export the board as CSV."]);
+  assert.deepEqual(view.asks, [{ id: 1, tile: "answered", text: "Merge #212 into main? Checks are green.", note: "Answered Merge" }]);
+  assert.deepEqual(view.pr, {
+    title: "#212 Export the board as CSV",
+    url: "https://github.com/acme/board/pull/212",
+    line: "pri-61 into main, open",
+    checks: "1 of 2 checks failing",
+  });
+  assert.deepEqual(view.history.map((run) => [run.id, run.tile, run.text, run.when]), [
+    [3, "asleep", "implement, run 3", "08:40"],
+    [2, "moved", "plan, run 2, planned", "08:20"],
+    [1, "moved", "groom, run 1, yellow", "08:00"],
+  ]);
+});
+
+test("open asks come first, and an open one says since when", () => {
+  const asks = [
+    { id: 1, state: "answered", question: "Merge?", answer: "Merge" },
+    { id: 2, state: "open", question: "Ship?", title: "Ship it", since: "2026-11-20T11:30:00Z" },
+    { id: 3, state: "withdrawn", question: "Wait?" },
+  ];
+  assert.deepEqual(taskView({ ...task, asks }, { now }).asks.map((ask) => [ask.id, ask.tile, ask.text, ask.note]), [
+    [2, "ask", "Ship it", "Open since 11:30"],
+    [1, "answered", "Merge?", "Answered Merge"],
+    [3, "withdrawn", "Wait?", "Withdrawn"],
+  ]);
+});
+
+test("the Task panel shows the task another panel opened, and Attach asks the Priory bar to attach", async () => {
+  herdr.reset();
+  herdr.replies = { task, links: { links: [] } };
+  const panel = new TaskPanel();
+  const cx = context();
+  panel.init({}, cx);
+  assert.match(text(draw(panel, cx)), /Open a task from the Desk/);
+
+  herdr.shared.set("priory.task.open", { task: 1, at: Date.now() });
+  draw(panel, cx);
+  await settle();
+  const tree = draw(panel, cx);
+  assert.deepEqual(herdr.argv.filter((args) => args[0] === "task"), [["task", "1", "--json"]]);
+  assert.match(text(find(tree, "task-scroll")), /Export the board as CSV\..*Merge #212 into main\?.*#212 Export the board as CSV.*groom, run 1, yellow/s);
+
+  press(tree, "attach");
+  assert.equal(herdr.shared.get("priory.attach").task, 1);
+});
+
+test("the Priory bar opens the Task tab for a new request, and not for one left from before it started", async () => {
+  herdr.reset();
+  herdr.shared.set("priory.task.open", { task: 1, at: Date.now() - 60_000 });
+  const bar = new Tabs();
+  bar.init();
+  const cx = context();
+  draw(bar, cx);
+  await settle();
+  assert.deepEqual(herdr.runs, []);
+
+  herdr.shared.set("priory.task.open", { task: 2, at: Date.now() });
+  draw(bar, cx);
+  draw(bar, cx);
+  await settle();
+  assert.deepEqual(herdr.runs, [["tab.new", { space: "space-1", name: "Task", mod: "priory-task" }]]);
+});
