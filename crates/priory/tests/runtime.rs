@@ -41,9 +41,10 @@ const OUTPUT: &str = "factory.intake";
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
-/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, and 56, which added the step an irreversible approval lets run. Schema 38's visits
+/// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, and 58, which added green stack gates and returned routed asks. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER push_a_new_ask; ALTER TABLE asks DROP COLUMN routed;
+const UNDO_SINCE_SEARCH: &str = "DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
+  DROP TRIGGER push_a_new_ask; ALTER TABLE asks DROP COLUMN routed;
   ALTER TABLE asks DROP COLUMN answered_by; ALTER TABLE tasks DROP COLUMN intervention;
   ALTER TABLE tasks DROP COLUMN lead; ALTER TABLE runs DROP COLUMN crossed; DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
   DROP TABLE task_ends; ALTER TABLE exports DROP COLUMN ended; ALTER TABLE tasks DROP COLUMN created;
@@ -5475,7 +5476,8 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE tasks DROP COLUMN intervention; ALTER TABLE tasks DROP COLUMN lead;
+        "DROP TRIGGER ask_returns_from_its_lead; ALTER TABLE waits DROP COLUMN green;
+         ALTER TABLE tasks DROP COLUMN intervention; ALTER TABLE tasks DROP COLUMN lead;
          ALTER TABLE runs DROP COLUMN crossed; DROP TRIGGER task_created; DROP TRIGGER task_ended; DROP TRIGGER task_restarted;
          DROP TABLE task_ends; ALTER TABLE exports DROP COLUMN ended; ALTER TABLE tasks DROP COLUMN created;
          ALTER TABLE actions DROP COLUMN ask; ALTER TABLE actions DROP COLUMN revision;
