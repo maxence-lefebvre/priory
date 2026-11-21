@@ -19314,6 +19314,43 @@ fn stacked_entry_opened(name: &str) -> Setup {
 }
 
 #[test]
+fn a_waiting_entry_never_waits_on_its_predecessor_for_the_files_it_stacks_on() {
+    let mut setup = batched_with("batch-waiting-overlap", OPEN_PR);
+    let mut entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &["e1"])];
+    entries[1]["after"][0]["moment"] = json!("waiting");
+    setup.calls(&[planned(json!({ "title": "t", "entries": entries }))]);
+    batch_add(&setup, &["ENG-40", "ENG-41"]);
+    setup.start();
+    let go = setup.until("asks", |rows| rows.len() == 1);
+    setup.calls(&[passed_with_evidence(), passed_with_evidence()]);
+    // Task 2 commits a.txt before its result, so the end of its run records a.txt as its file.
+    setup.hold("hold-call");
+    person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while fs::read_to_string(setup.dir.join("fake/submitted")).unwrap_or_default() != "2" {
+        assert!(Instant::now() < deadline, "task 2 never took its turn");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    setup.commit(2, "a.txt");
+    setup.release("hold-call");
+    let asks = setup.until("asks", |rows| rows.iter().any(|row| row[1] == "2"));
+    setup.gone("priory-2");
+    person(&setup, "answer", &[&asks[0][0], "open", "--revision", "1"]);
+    let asks = setup.until("asks", |rows| rows.iter().any(|row| row[1] == "3"));
+    setup.gone("priory-3");
+    setup.commit(3, "b.txt");
+    person(&setup, "answer", &[&asks[0][0], "open", "--revision", "1"]);
+
+    // Task 3's branch holds task 2's a.txt, and task 2's pull request #7 is still open.
+    let tasks = setup.until("tasks", |rows| {
+        rows.iter()
+            .any(|row| row[0] == "3" && (row[4] == "asleep" || row[4] == "held"))
+    });
+    let task = tasks.iter().find(|row| row[0] == "3").unwrap();
+    assert_eq!(task[4], "asleep", "{task:?}");
+}
+
+#[test]
 fn a_waiting_entry_bases_its_pull_request_on_its_predecessors_branch() {
     let setup = stacked_entry_opened("batch-waiting-base");
 
