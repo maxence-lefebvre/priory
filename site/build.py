@@ -33,7 +33,7 @@ LINK = re.compile(r"(!?\[[^\]]*\]\()([^)\s]+)((?:\s+\"[^\"]*\")?\))")
 REF_DEF = re.compile(r"^(\s{0,3}\[[^\]]+\]:\s+)(\S+)(.*)$")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 INDENTED = re.compile(r"^(    |\t)(?![-*+] |\d+\. )")
-CODE_SPAN = re.compile(r"(`+[^`]*`+)")
+CODE_SPAN = re.compile(r"`+[^`]*`+")
 INCLUDE = re.compile(r"<!-- include (\S+) \"([^\"]+)\" -->")
 
 
@@ -117,9 +117,10 @@ def rewrite_links(text, source, pages):
         elif fence and opener and opener[1][0] == fence[0] and len(opener[1]) >= len(fence) and not line.strip(" `~"):
             fence = None
         elif fence is None and not INDENTED.match(line):
-            parts = CODE_SPAN.split(line)
-            parts[::2] = [REF_DEF.sub(swap, LINK.sub(swap, part)) for part in parts[::2]]
-            line = "".join(parts)
+            spans = [m.span() for m in CODE_SPAN.finditer(line)]
+            inside = lambda m: any(a <= m.start() < b for a, b in spans)
+            line = LINK.sub(lambda m: m[0] if inside(m) else swap(m), line)
+            line = REF_DEF.sub(swap, line)
         out.append(line)
     return "\n".join(out)
 

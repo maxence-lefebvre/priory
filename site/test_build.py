@@ -36,7 +36,7 @@ class RewriteTarget(unittest.TestCase):
 
     def test_skips_code(self):
         text = "\n".join([
-            "[a](DESIGN.md) and `[b](DESIGN.md)`",
+            "[a](DESIGN.md) and `[b](DESIGN.md)` and [`e`](DESIGN.md)",
             "````md",
             "```",
             "[c](DESIGN.md)",
@@ -45,7 +45,8 @@ class RewriteTarget(unittest.TestCase):
             "    [d](DESIGN.md)",
         ])
         out = build.rewrite_links(text, "README.md", PAGES).split("\n")
-        self.assertEqual(out[0], f"[a]({build.REPO}/blob/main/DESIGN.md) and `[b](DESIGN.md)`")
+        design = f"{build.REPO}/blob/main/DESIGN.md"
+        self.assertEqual(out[0], f"[a]({design}) and `[b](DESIGN.md)` and [`e`]({design})")
         self.assertEqual(out[3], "[c](DESIGN.md)")
         self.assertEqual(out[6], "    [d](DESIGN.md)")
 
