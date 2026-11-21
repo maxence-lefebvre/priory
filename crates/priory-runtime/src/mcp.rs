@@ -151,6 +151,11 @@ pub(crate) fn tools() -> Value {
                         },
                         "required": ["ask", "blast_radius", "verification", "rollback", "detection"],
                     },
+                    "feedback": {
+                        "type": "object",
+                        "description": "When the prompt carried review feedback: each item's URL mapped to its class. trivial: one obvious answer inside this change's scope, fix it and reply. nothing-to-do: an approval or thanks. persons-call: a behaviour, design or scope change, a disagreement or anything unclear, ask the person.",
+                        "additionalProperties": { "enum": ["trivial", "nothing-to-do", "persons-call"] },
+                    },
                     "branches": {
                         "type": "array",
                         "items": { "type": "string" },

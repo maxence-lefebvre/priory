@@ -5426,6 +5426,10 @@ fn the_mcp_server_lists_its_tools() {
         )),
         "{instructions}"
     );
+    assert_eq!(
+        replies[1]["result"]["tools"][0]["inputSchema"]["properties"]["feedback"]["type"],
+        "object"
+    );
     let names: Vec<_> = replies[1]["result"]["tools"]
         .as_array()
         .unwrap()

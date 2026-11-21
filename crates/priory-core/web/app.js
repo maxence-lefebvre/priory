@@ -879,6 +879,8 @@ function taskSections(task) {
   } else if (prs(task)) {
     // The summary needs the pull request's events; the stack does not.
     sections.push(["pr", "PR", sect("pr", "workflow", prs(task), "", html`${prStackList(task.stack, null)}${triageList(task.triage)}`)]);
+  } else if (task.triage?.length) {
+    sections.push(["pr", "Feedback", sect("pr", "workflow", "Feedback", "", triageList(task.triage))]);
   }
   if (task.runs?.length) {
     sections.push(["trace", "Trace", sect("trace", "runs", "Trace", "", html`<ol class="hist">${task.runs.map((run) => {
