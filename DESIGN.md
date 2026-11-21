@@ -821,7 +821,8 @@ left, with a hairline between them.
 | offline | The stale strip over the last costs read, which the device keeps, under "Costs as read Nov 21, 09:14." The Split by `select` is disabled |
 | error | A `--warn-text` line above the last costs read: "Could not load costs: why. Check that the daemon runs on its runner, then retry." with Retry, then "Costs as read Nov 21, 09:14." |
 
-Opening the panel reads both reports again when the last read is over a minute old. A comparison
+Opening the panel reads both reports again when the last read is over a minute old. While a
+read over a minute old shows, "Costs as read" says when it was read. A comparison
 with no change shows its line without an icon.
 
 ### Buttons and inputs

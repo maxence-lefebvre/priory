@@ -1002,7 +1002,8 @@ function act(target) {
 // cost the person, from /api/costs and /api/attention.
 async function loadCosts() {
   const view = state.costs;
-  if (view.loading) return;
+  // A read scheduled before a sign-out, or before the connection dropped, does not go.
+  if (view.loading || !state.token || !state.data || state.failed) return;
   const by = view.by;
   view.loading = true;
   const slow = setTimeout(() => { view.slow = true; render(); }, 300);
@@ -1036,7 +1037,7 @@ function costsPage(compact) {
   const failed = state.costs.error
     ? html`<p class="note warn" role="alert">${icon("circle-x", "s15")}<span>Could not load costs: ${state.costs.error}. Check that the daemon runs on its runner, then retry.</span><button class="ghost" data-action="costs-retry">Retry</button></p>`
     : "";
-  const asOf = spend && (state.failed || state.costs.error) ? html`<p class="note asof"><span>Costs as read ${timeTag(new Date(spend.updated).toISOString(), date(new Date(spend.updated).toISOString()))}.</span></p>` : "";
+  const asOf = spend && (state.failed || state.costs.error || Date.now() - spend.updated > 60000) ? html`<p class="note asof"><span>Costs as read ${timeTag(new Date(spend.updated).toISOString(), date(new Date(spend.updated).toISOString()))}.</span></p>` : "";
   let body;
   if (spend) body = wide ? html`<div class="spend"><div>${costsPart(spend.costs)}</div><div>${attentionPart(spend.attention)}</div></div>` : shown === "costs" ? costsPart(spend.costs) : attentionPart(spend.attention);
   else body = state.costs.slow ? html`<div class="sk" aria-hidden="true"><span></span><span></span><span></span></div>` : "";
@@ -1835,7 +1836,8 @@ document.addEventListener("click", (event) => {
   if (!target) return;
   const action = target.dataset.action;
   if (action === "retry") return refresh();
-  if (action === "costs-retry") return (state.costs.error = null), loadCosts();
+  // A refresh that reaches the daemon reads the costs again.
+  if (action === "costs-retry") return (state.costs.error = null), refresh();
   if (action === "add-open") return openAdd();
   if (action === "add-close" || action === "add-done") return closeAdd();
   if (action === "add-discard") return discardAdd();
