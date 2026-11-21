@@ -416,6 +416,22 @@ impl Request {
     pub fn key(&self) -> &str {
         &self.key
     }
+
+    /// What the request starts, as a person reads it before they trust it: its key, workflow,
+    /// repository, who answers its asks, and its text.
+    pub fn summary(&self) -> String {
+        let repo = self
+            .repo
+            .as_deref()
+            .map_or(String::new(), |repo| format!(" on {repo}"));
+        let intervention = self.intervention.map_or(String::new(), |intervention| {
+            format!(", {}", intervention.as_str())
+        });
+        format!(
+            "task cli:{} in workflow {}{repo}{intervention}: {}",
+            self.key, self.workflow, self.text
+        )
+    }
 }
 
 /// Why `factory` refuses `request`, if it does.

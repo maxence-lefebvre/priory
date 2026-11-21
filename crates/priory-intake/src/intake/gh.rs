@@ -5,6 +5,20 @@ use std::process::Command;
 
 const PAGE: usize = 100;
 
+/// The login `gh` runs as, which a worker's `gh` posts as too, once a GraphQL poll named it.
+static VIEWER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Keeps the `viewer { login }` of a GraphQL `answer`, if it names one.
+pub(super) fn saw_viewer(answer: &serde_json::Value) {
+    if let Some(login) = answer["data"]["viewer"]["login"].as_str() {
+        let _ = VIEWER.set(login.to_owned());
+    }
+}
+
+pub(super) fn viewer() -> Option<&'static str> {
+    VIEWER.get().map(String::as_str)
+}
+
 #[derive(Deserialize)]
 pub(super) struct Login {
     pub(super) login: String,

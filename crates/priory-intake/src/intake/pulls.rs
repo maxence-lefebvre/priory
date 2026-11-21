@@ -15,6 +15,8 @@ pub(super) struct Pull {
     pub(super) head_ref_name: String,
     pub(super) head_ref_oid: String,
     pub(super) base_ref_name: String,
+    #[serde(default)]
+    head_repository: Option<Repository>,
     pub(super) merged: bool,
     #[serde(default)]
     pub(super) merge_commit: Option<Oid>,
@@ -26,6 +28,12 @@ pub(super) struct Pull {
     #[serde(default)]
     comments: Nodes<Comment>,
     commits: Nodes<Commit>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Repository {
+    name_with_owner: String,
 }
 
 #[derive(Deserialize)]
@@ -52,6 +60,8 @@ struct Comment {
     url: String,
     created_at: String,
     author: Option<Author>,
+    #[serde(default)]
+    author_association: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -73,6 +83,8 @@ struct Review {
     #[serde(default)]
     commit: Option<Oid>,
     author: Option<Login>,
+    #[serde(default)]
+    author_association: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -132,7 +144,7 @@ pub(super) fn reviews_and_checks<'a>(
     let mut checks = Vec::new();
     for pull in pulls {
         let on_pull = |kind, name: String, github_id: u64, time: &str, url: &str| {
-            let data = json!({
+            let mut data = json!({
                 "repo": repo,
                 "pull_request": pull.number,
                 "url": url,
@@ -142,6 +154,7 @@ pub(super) fn reviews_and_checks<'a>(
                 "time": time,
                 "github_id": github_id,
             });
+            pull.head_repo(&mut data);
             Observed {
                 kind,
                 name,
@@ -162,6 +175,7 @@ pub(super) fn reviews_and_checks<'a>(
             observed.data["body"] = json!(review.body);
             observed.data["commit"] = json!(review.commit.as_ref().map(|commit| &commit.oid));
             observed.data["actor"] = json!(review.author.as_ref().map(|author| &author.login));
+            associate(&mut observed.data, &json!(review.author_association));
             observed.data["open"] = json!(pull.state == "OPEN");
             reviews.push(observed);
         }
@@ -172,13 +186,14 @@ pub(super) fn reviews_and_checks<'a>(
                 .is_none_or(|author| author.kind != "Bot")
         });
         for comment in people {
-            let data = json!({
+            let mut data = json!({
                 "url": comment.url,
                 "actor": comment.author.as_ref().map(|author| &author.login),
                 "body": comment.body,
                 "time": comment.created_at,
                 "github_id": comment.database_id,
             });
+            associate(&mut data, &json!(comment.author_association));
             let mut observed = self::comment(COMMENTED, repo, pull.number, &pull.branches(), data);
             observed.baseline = cursor(REVIEWED).is_none();
             reviews.push(observed);
@@ -365,9 +380,9 @@ pub(super) fn merge_checks(
     Ok(checks)
 }
 
-const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName headRefOid baseRefName merged mergeCommit { oid } body state \
-    reviews(last: 50) { nodes { databaseId state body submittedAt url commit { oid } author { login } } } \
-    comments(last: 50) { nodes { databaseId body url createdAt author { login __typename } } } \
+const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName headRefOid baseRefName headRepository { nameWithOwner } merged mergeCommit { oid } body state \
+    reviews(last: 50) { nodes { databaseId state body submittedAt url commit { oid } author { login } authorAssociation } } \
+    comments(last: 50) { nodes { databaseId body url createdAt author { login __typename } authorAssociation } } \
     updatedAt commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { totalCount nodes { \
     __typename ... on CheckRun { databaseId name status conclusion completedAt url checkSuite { app { slug } } } \
     } } } } } } }";
@@ -376,7 +391,7 @@ const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName hea
 pub(super) fn open_pulls(repo: &str) -> Result<Vec<Pull>, String> {
     let (owner, name) = repo.split_once('/').unwrap_or_default();
     let query = format!(
-        "query($owner: String!, $name: String!, $endCursor: String) {{ repository(owner: $owner, name: $name) {{ \
+        "query($owner: String!, $name: String!, $endCursor: String) {{ viewer {{ login }} repository(owner: $owner, name: $name) {{ \
          pullRequests(states: OPEN, first: 100, after: $endCursor) {{ pageInfo {{ hasNextPage endCursor }} \
          nodes {{ ...pull }} }} }} }} {PULL_FIELDS}"
     );
@@ -393,6 +408,7 @@ pub(super) fn open_pulls(repo: &str) -> Result<Vec<Pull>, String> {
             &format!("query={query}"),
         ],
     )?;
+    pages.iter().for_each(super::gh::saw_viewer);
     let nodes = pages
         .iter()
         .flat_map(|page| page["data"]["repository"]["pullRequests"]["nodes"].as_array())
@@ -418,7 +434,7 @@ pub(super) fn pull_requests(
         .map(|number| format!("pr{number}: pullRequest(number: {number}) {{ ...pull }} "))
         .collect();
     let query = format!(
-        "query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {fields}}} }} {PULL_FIELDS}"
+        "query($owner: String!, $name: String!) {{ viewer {{ login }} repository(owner: $owner, name: $name) {{ {fields}}} }} {PULL_FIELDS}"
     );
     let answer: serde_json::Value = gh(
         "graphql",
@@ -431,6 +447,7 @@ pub(super) fn pull_requests(
             &format!("query={query}"),
         ],
     )?;
+    super::gh::saw_viewer(&answer);
     let found = answer["data"]["repository"]
         .as_object()
         .into_iter()
@@ -448,12 +465,21 @@ pub(super) fn pull_requests(
 impl Pull {
     /// The head and base fields an event on this pull request carries.
     pub(super) fn branches(&self) -> Value {
-        json!({
+        let mut branches = json!({
             "head_branch": self.head_ref_name,
             "head_sha": self.head_ref_oid,
             "base_branch": self.base_ref_name,
             "open": self.state == "OPEN",
-        })
+        });
+        self.head_repo(&mut branches);
+        branches
+    }
+
+    /// Sets `head_repo` on `data` when GitHub still names the head's repository.
+    pub(super) fn head_repo(&self, data: &mut Value) {
+        if let Some(head) = &self.head_repository {
+            data["head_repo"] = json!(head.name_with_owner);
+        }
     }
 }
 
@@ -473,6 +499,9 @@ pub(super) fn comment(
     for field in ["head_branch", "head_sha", "base_branch", "open"] {
         data[field] = branches[field].clone();
     }
+    if let Some(head) = branches.get("head_repo") {
+        data["head_repo"] = head.clone();
+    }
     Observed {
         kind,
         name,
@@ -481,6 +510,13 @@ pub(super) fn comment(
         label: None,
         baseline: false,
         data,
+    }
+}
+
+/// Sets `association` on `data` to GitHub's `author_association`, when it gives one.
+pub(super) fn associate(data: &mut Value, association: &Value) {
+    if association.is_string() {
+        data["association"] = association.clone();
     }
 }
 
@@ -500,6 +536,10 @@ pub(super) fn thread_comment(comment: &Value) -> Option<Value> {
         "time": comment["created_at"],
         "github_id": comment["id"],
     }))
+    .map(|mut data| {
+        associate(&mut data, &comment["author_association"]);
+        data
+    })
 }
 
 /// The newest 100 review thread comments of `repo`, on any pull request: one REST call, where the

@@ -419,7 +419,8 @@ fn publish_all(
     } in polled
     {
         for event in events {
-            let source = event.message(triggers)?;
+            let mut source = event.message(triggers)?;
+            mark_own(&mut source);
             // Reviews and checks are read again on every poll; herdr-bus would drop them too.
             if !published.insert(source.id) {
                 continue;
@@ -557,6 +558,15 @@ fn dispatch(bus: &dyn Log, triggers: &[(&str, &Trigger)], source: &Message) -> R
         }
     }
     Ok(())
+}
+
+/// Marks a GitHub comment or review `own` when the `gh` login the intake polls as wrote it, the
+/// login a worker's `gh` posts as. Unmarked until a poll named that login.
+fn mark_own(message: &mut Message) {
+    let feedback = [COMMENTED, THREAD_COMMENTED, REVIEWED, ISSUE_COMMENTED];
+    if let Some(viewer) = gh::viewer().filter(|_| feedback.contains(&message.kind.as_str())) {
+        message.data["own"] = json!(message.data["actor"] == viewer);
+    }
 }
 
 fn publish(bus: &dyn Log, message: &Message) -> Result<(), String> {

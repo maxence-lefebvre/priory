@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 61;
+const VERSION: i64 = 62;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1091,6 +1091,25 @@ CREATE TABLE IF NOT EXISTS findings (
 PRAGMA user_version = 61;
 ";
 
+// Migration 58 named every old wait withdrawn as -2 `sibling-fired`, which also meant an answer, a
+// dismiss or a stack ask. A wait whose run had no fired wait was withdrawn by its run's dismissed or
+// answered ask; a gate of a task none of whose gates fired, by a stack ask. Since 58 every
+// `sibling-fired` wait has a fired sibling, so these rows are old ones only.
+const SCHEMA_62: &str = "
+UPDATE waits SET withdrawn_reason = CASE
+    WHEN EXISTS (SELECT 1 FROM asks WHERE asks.run = waits.run AND asks.withdrawn_reason = 'dismissed')
+      THEN 'dismissed'
+    WHEN EXISTS (SELECT 1 FROM asks WHERE asks.run = waits.run AND asks.answer IS NOT NULL)
+      THEN 'answered-elsewhere'
+    ELSE withdrawn_reason END
+  WHERE withdrawn_reason = 'sibling-fired' AND NOT daemon AND NOT EXISTS (SELECT 1 FROM waits AS
+    sibling WHERE sibling.run = waits.run AND NOT sibling.daemon AND sibling.fired IS NOT NULL);
+UPDATE waits SET withdrawn_reason = 'asked'
+  WHERE withdrawn_reason = 'sibling-fired' AND daemon AND NOT EXISTS (SELECT 1 FROM waits AS
+    sibling WHERE sibling.task = waits.task AND sibling.daemon AND sibling.fired IS NOT NULL);
+PRAGMA user_version = 62;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1100,7 +1119,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
-    SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61,
+    SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1236,6 +1255,11 @@ pub(crate) fn handle(
     if seen.is_some() {
         return Ok(None);
     }
+    if route::outsider(message) {
+        record(&tx, message, None, "outsider", None)?;
+        tx.commit()?;
+        return Ok(None);
+    }
     let resources = route::resources(message);
     claim_pull_request(&tx, message)?;
     // The intake publishes no reopen, so a later event of an open pull request tells it.
@@ -1363,22 +1387,7 @@ pub(crate) fn handle(
     } else {
         None
     };
-    tx.execute(
-        "INSERT INTO inbox (id, type, subject, time, data, links, task, outcome, outbox)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![
-            message.id.to_string(),
-            message.kind,
-            message.subject,
-            message.time.to_string(),
-            message.data.to_string(),
-            serde_json::to_string(&message.links).expect("links serialize"),
-            task,
-            outcome,
-            outbox
-        ],
-    )?;
-    let seq = tx.last_insert_rowid();
+    let seq = record(&tx, message, task, outcome, outbox)?;
     crate::grades::label(&tx, trace, message)?;
     if message.kind == "linear.view.changed" {
         crate::post::report(&tx, "linear", &refiltered(&message.data))?;
@@ -1444,6 +1453,32 @@ pub(crate) fn handle(
     Ok(None)
 }
 
+/// Stores `message` in the inbox with the task it went to and its outcome, and returns its seq.
+fn record(
+    tx: &Transaction,
+    message: &Message,
+    task: Option<i64>,
+    outcome: &str,
+    outbox: Option<i64>,
+) -> rusqlite::Result<i64> {
+    tx.execute(
+        "INSERT INTO inbox (id, type, subject, time, data, links, task, outcome, outbox)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            message.id.to_string(),
+            message.kind,
+            message.subject,
+            message.time.to_string(),
+            message.data.to_string(),
+            serde_json::to_string(&message.links).expect("links serialize"),
+            task,
+            outcome,
+            outbox
+        ],
+    )?;
+    Ok(tx.last_insert_rowid())
+}
+
 /// Subscribes the task whose branch is the head of the open pull request `message` names, on the
 /// first event of that pull request, when no other active task owns it, and adds it to its stack.
 /// A head named after the task's branch, `priory/7-api`, counts too when its base is the trunk (a
@@ -1461,11 +1496,14 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
     if !message.kind.starts_with("github.") || message.kind == CLOSED || data["open"] == false {
         return Ok(());
     }
+    if data.get("head_repo").is_some_and(|head| head != repo) {
+        return Ok(());
+    }
     let resource = route::pull_request(repo, number);
     let base = data["base_branch"].as_str().unwrap_or_default();
     let claimer = tx
         .query_row(
-            "SELECT owns.task FROM owns JOIN tasks ON tasks.id = owns.task
+            "SELECT owns.task, tasks.worktree FROM owns JOIN tasks ON tasks.id = owns.task
              WHERE owns.resource GLOB 'github:*@*' AND tasks.state NOT IN ('failed', 'dropped')
              AND (owns.resource = ?2 OR (?2 GLOB owns.resource || '-?*'
                AND (?5 NOT GLOB 'priory/*' OR ('github:' || ?3 || '@' || ?5) = owns.resource
@@ -1483,10 +1521,16 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
                 number as i64,
                 base
             ],
-            |row| row.get::<_, i64>(0),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
         )
         .optional()?;
-    let Some(task) = claimer else {
+    // Only a branch the task made in its worktree is its own: a same-named one is someone else's.
+    let made = |worktree: &str| {
+        priory_runtime::runtime::head(std::path::Path::new(worktree), head).is_some()
+    };
+    let Some((task, Some(_))) =
+        claimer.filter(|(_, worktree)| worktree.as_deref().is_some_and(made))
+    else {
         return Ok(());
     };
     tx.execute(
@@ -1551,7 +1595,9 @@ fn delivered(
     );
     // An event the task keeps that was written while it ran, such as the agent's own comment,
     // wakes nothing: its next wake carries it. To the second, as waits: the last second is after.
+    // A comment the intake knows another login wrote is a person's, whenever it was written.
     let fresh: bool = kept.is_none()
+        || message.data["own"] == false
         || tx.query_row(
             "SELECT NOT EXISTS (SELECT 1 FROM runs WHERE id = (SELECT max(id) FROM runs WHERE task = ?1)
                AND julianday(?2) >= (SELECT julianday(min(started)) FROM runs WHERE task = ?1)
@@ -2506,8 +2552,8 @@ fn share(tx: &Transaction, run: &NewRun) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Blocks `task` with `reason`, ending its live run first as `ended_as`, if it has one, after reading
-/// its transcript.
+/// Blocks `task` with `reason`, or drops it when it is a lead task, ending its live run first as
+/// `ended_as`, if it has one, after reading its transcript.
 pub(crate) fn block(
     db: &mut Connection,
     trace: &Trace,
@@ -2537,9 +2583,10 @@ pub(crate) fn block(
         &format!("UPDATE runs SET ended = {NOW}, ended_as = ?2 WHERE task = ?1 AND ended IS NULL"),
         params![task, ended_as],
     )?;
+    // A lead task's ask goes back to the person as it blocks, so no resume could answer it.
     tx.execute(
-        "UPDATE tasks SET state = 'blocked', reason = ?2 WHERE id = ?1",
-        params![task, reason],
+        "UPDATE tasks SET state = iif(trigger = ?3, 'dropped', 'blocked'), reason = ?2 WHERE id = ?1",
+        params![task, reason, crate::tools::LEAD_TRIGGER],
     )?;
     tx.commit()
 }

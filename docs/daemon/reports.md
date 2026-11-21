@@ -165,7 +165,8 @@ A pick's `requests` maps an option to a task request, with the fields of `priory
 ```
 
 `workflow`, `key` and `text` are required; `band`, `lane`, `repo`, `tldr` and `hold` are optional.
-Picking that option records the choice, sets `applied` to `requested task cli:<key>` and keeps the
+Picking that option records the choice, sets `applied` to what it requested, such as `requested
+task cli:fnd-2409 in workflow implement on owner/repo: Fix the DWARF pause`, and keeps the
 request as a pending dispatch, all in one transaction. The daemon then publishes the request, as
 `priory request` does, and wakes no task. Its ids hold the pick's id, so a later pick of the same
 key and text requests another task, and publishing one pick twice adds nothing.

@@ -145,7 +145,8 @@ meets the condition within a tick or two, and a failed read is tried again.
 The daemon judges each condition when the hold is stored. Then it judges time and task conditions
 on each tick, and merge, blockers and issue conditions on each message that names their pull request
 or issue, whatever the message's route. A condition that already holds, such as a pull request
-merged before the hold, is met at once. A task request with `hold` (see `docs/intake/task-requests.md`) creates its task held
+merged before the hold, is met at once. An issue or blockers condition met earlier is met no more
+when a later message shows its issue open again or a blocker back, so the hold waits for it again. A task request with `hold` (see `docs/intake/task-requests.md`) creates its task held
 the same way.
 
 A held task has the reason `held: <reason>, <condition> and <condition>`, which `priory tasks` and
