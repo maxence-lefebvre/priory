@@ -4033,7 +4033,7 @@ pub(crate) fn performed_in(
             "INSERT OR IGNORE INTO subscriptions (task, resource) VALUES (?1, ?2)",
             params![task, pull.resource],
         )?;
-        crate::stack::record(&tx, task, &pull.resource, &pull.branch, &pull.base)?;
+        crate::stack::record(tx, task, &pull.resource, &pull.branch, &pull.base)?;
     }
     let target = at
         .next

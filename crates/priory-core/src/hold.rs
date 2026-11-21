@@ -270,40 +270,32 @@ pub(crate) fn due(tx: &Transaction) -> rusqlite::Result<()> {
 /// for its merge, or once it is done owning no pull request. When it can no longer be met, as the
 /// other task failed, was dropped or saw a pull request close unmerged, it asks a person.
 pub(crate) fn merged(tx: &Transaction, factory: &Factory) -> rusqlite::Result<()> {
-    let open: Vec<(
-        i64,
-        i64,
-        i64,
-        String,
-        String,
-        String,
-        String,
-        i64,
-        Option<i64>,
-    )> = tx
+    let open: Vec<(i64, i64, i64, Option<i64>)> = tx
         .prepare(
-            "SELECT holds.id, holds.task, target.id, target.key, target.state, target.workflow,
-               target.step, coalesce(target.batch, 0), holds.ask
+            "SELECT holds.id, holds.task, holds.target, holds.ask
              FROM holds JOIN tasks ON tasks.id = holds.task
-             JOIN tasks AS target ON target.id = holds.target
              WHERE holds.kind = 'merged' AND holds.released IS NULL AND holds.met IS NULL
              AND tasks.state = 'held' ORDER BY holds.id",
         )?
         .query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-                row.get(7)?,
-                row.get(8)?,
-            ))
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    for (id, task, other, key, state, workflow, step, batch, ask) in open {
+    for (id, task, other, ask) in open {
+        let (key, state, workflow, step, batch): (String, String, String, String, i64) = tx
+            .query_row(
+                "SELECT key, state, workflow, step, coalesce(batch, 0) FROM tasks WHERE id = ?1",
+                [other],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?;
         if let Some(how) = merged_as(tx, factory, other, &state, &workflow, &step)? {
             meet(tx, id, &how)?;
             continue;
