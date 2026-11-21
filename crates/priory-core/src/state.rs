@@ -5,7 +5,7 @@ use herdr_bus::Message;
 use priory_factory::explain;
 use priory_factory::factory::{Factory, Loaded, Session, Workflow};
 use priory_factory::lanes::{Lanes, Subject};
-use priory_intake::intake::PR_CLOSED as CLOSED;
+use priory_intake::intake::{ISSUE_CLOSED, PR_CLOSED as CLOSED};
 use priory_runtime::room::Room;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::BTreeMap;
@@ -1136,6 +1136,20 @@ pub(crate) fn handle(
                 "INSERT INTO owns (task, resource) VALUES (?1, ?2)",
                 params![id, new.key],
             )?;
+            // Its own issue, pull request or thread wakes it and reopens it once done. It reads from
+            // the request's time, so a reply posted before the task existed still reaches it.
+            if let Some(resource) = crate::subscribe::resource(&new.key) {
+                tx.execute(
+                    "INSERT INTO subscriptions (task, resource, created) VALUES (?1, ?2,
+                       min(strftime('%Y-%m-%dT%H:%M:%SZ', ?3, 'unixepoch'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))",
+                    params![id, resource, message.time.as_second()],
+                )?;
+                tx.execute(
+                    "DELETE FROM subscriptions WHERE resource = ?2 AND task != ?1
+                     AND task IN (SELECT id FROM tasks WHERE state = 'done')",
+                    params![id, resource],
+                )?;
+            }
             if let Some(hold) = &new.hold {
                 crate::hold::filed(&tx, id, hold, factory)?;
             }
@@ -1247,7 +1261,7 @@ pub(crate) fn handle(
         _ => {}
     }
     // After the delivery above, so the close reaches its subscribers.
-    if message.kind == CLOSED {
+    if [CLOSED, ISSUE_CLOSED].contains(&message.kind.as_str()) {
         tx.execute(
             "DELETE FROM subscriptions WHERE resource = ?1",
             [resources.first()],
@@ -1352,7 +1366,7 @@ fn delivered(
     kept: Option<i64>,
     factory: &Factory,
 ) -> rusqlite::Result<bool> {
-    if !subscribes(tx, task, resources)? {
+    if !subscribes(tx, task, resources, &message.kind)? {
         return Ok(false);
     }
     let line = line(
@@ -1373,6 +1387,20 @@ fn delivered(
     Ok(false)
 }
 
+/// The events a task's subscription to its own key carries: what people say and closes. Checks,
+/// labels and pushes stay with the checks gate and waits, since each would start a run.
+const OWN_KEY: [&str; 9] = [
+    "github.pull_request_review.submitted",
+    "github.pull_request.comment",
+    "github.pull_request_review_comment",
+    CLOSED,
+    "github.issues.comment",
+    ISSUE_CLOSED,
+    "linear.comment.created",
+    "linear.issue.state_changed",
+    "slack.thread.replied",
+];
+
 /// `line`, after the place in the stack of `task` of the pull request `resources` names first, as
 /// `#58, 2 of 3: <line>`.
 fn placed(
@@ -1389,15 +1417,22 @@ fn placed(
 }
 
 /// Whether `task` subscribes to any of `resources` with no open wait on them: a wait on the
-/// resource decides which of its events wake the task.
-fn subscribes(tx: &Transaction, task: i64, resources: &[String]) -> rusqlite::Result<bool> {
+/// resource decides which of its events wake the task. Its own key's subscription takes only
+/// events of `OWN_KEY` kinds.
+fn subscribes(
+    tx: &Transaction,
+    task: i64,
+    resources: &[String],
+    kind: &str,
+) -> rusqlite::Result<bool> {
     let resources = serde_json::to_string(resources).expect("resources serialize");
     tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM subscriptions WHERE task = ?1
-           AND resource IN (SELECT value FROM json_each(?2)))
+           AND resource IN (SELECT value FROM json_each(?2))
+           AND (?3 OR resource IS NOT (SELECT key FROM tasks WHERE id = ?1)))
          AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL
            AND resource IN (SELECT value FROM json_each(?2)))",
-        params![task, resources],
+        params![task, resources, OWN_KEY.contains(&kind)],
         |row| row.get(0),
     )
 }
@@ -1486,6 +1521,9 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
            SELECT 2, subscriptions.rowid, subscriptions.resource, subscriptions.created
            FROM subscriptions
            JOIN tasks ON tasks.id = subscriptions.task AND tasks.state NOT IN ('failed', 'dropped')
+           -- Slack reads one thread per call, so a done task's own thread is read for a week only.
+           WHERE NOT (tasks.state = 'done' AND subscriptions.resource = tasks.key
+             AND tasks.key GLOB 'slack:*' AND julianday('now') - julianday(tasks.changed) >= 7)
            UNION ALL
            SELECT 3, owns.rowid, owns.resource, tasks.changed FROM owns
            JOIN tasks ON tasks.id = owns.task

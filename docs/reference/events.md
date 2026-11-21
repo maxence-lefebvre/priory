@@ -10,6 +10,7 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
 
 - [The envelope](#the-envelope)
 - GitHub: [`github.issues.labeled`](#githubissueslabeled), [`github.issues.opened`](#githubissuesopened),
+  [`github.issues.closed`](#githubissuesclosed), [`github.issues.comment`](#githubissuescomment),
   [`github.pull_request.opened`](#githubpull_requestopened), [`github.pull_request.labeled`](#githubpull_requestlabeled),
   [`github.pull_request.closed`](#githubpull_requestclosed), [`github.pull_request_review.submitted`](#githubpull_request_reviewsubmitted),
   [`github.pull_request.comment`](#githubpull_requestcomment),
@@ -134,6 +135,80 @@ Schema: [`github.issues.opened.json`](../schemas/events/github.issues.opened.jso
     "triggers": []
   },
   "links": [{ "label": "issue", "url": "https://github.com/acme/widgets/issues/42" }]
+}
+```
+
+### `github.issues.closed`
+
+One message per issue closed, read from the issue events. A closed pull request is
+[`github.pull_request.closed`](#githubpull_requestclosed) instead. Subject: `owner/name#42`.
+Schema: [`github.issues.closed.json`](../schemas/events/github.issues.closed.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `repo` | string | `owner/name` |
+| `issue` | integer | The issue number |
+| `title` | string | The title when the intake polled |
+| `url` | string | The issue's page |
+| `actor` | string or null | Who closed it |
+| `github_id` | integer | GitHub's issue event id |
+
+<!-- example: events/github.issues.closed.json -->
+```json
+{
+  "id": "4a0f3c1e-2a36-5c1b-9d43-0d4b8f9e6a21",
+  "type": "github.issues.closed",
+  "subject": "acme/widgets#42",
+  "time": "2026-11-18T09:12:40Z",
+  "data": {
+    "repo": "acme/widgets",
+    "issue": 42,
+    "title": "Export fails on an empty project",
+    "url": "https://github.com/acme/widgets/issues/42",
+    "actor": "octocat",
+    "time": "2026-11-18T09:12:40Z",
+    "github_id": 36433318021,
+    "baseline": false,
+    "triggers": []
+  },
+  "links": [{ "label": "issue", "url": "https://github.com/acme/widgets/issues/42" }]
+}
+```
+
+### `github.issues.comment`
+
+One message per comment on an issue, from a person; bots' comments are skipped. A comment on a
+pull request is [`github.pull_request.comment`](#githubpull_requestcomment) instead. Subject:
+`owner/name#42`. Schema: [`github.issues.comment.json`](../schemas/events/github.issues.comment.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `repo` | string | `owner/name` |
+| `issue` | integer | The issue number |
+| `url` | string | The comment's page |
+| `actor` | string or null | Who commented; null for a deleted user |
+| `body` | string | The comment's Markdown, as written |
+| `github_id` | integer | GitHub's comment id |
+
+<!-- example: events/github.issues.comment.json -->
+```json
+{
+  "id": "7d2e8b45-90c4-5f3a-a1e6-3c5b2f7d9e10",
+  "type": "github.issues.comment",
+  "subject": "acme/widgets#42",
+  "time": "2026-11-17T17:05:31Z",
+  "data": {
+    "repo": "acme/widgets",
+    "issue": 42,
+    "url": "https://github.com/acme/widgets/issues/42#issuecomment-2483019477",
+    "actor": "octocat",
+    "body": "It also fails when the project has one empty layer.",
+    "time": "2026-11-17T17:05:31Z",
+    "github_id": 2483019477,
+    "baseline": false,
+    "triggers": []
+  },
+  "links": [{ "label": "issue", "url": "https://github.com/acme/widgets/issues/42#issuecomment-2483019477" }]
 }
 ```
 
@@ -265,6 +340,7 @@ The pull request fields, and:
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `state` | string | `approved`, `changes_requested`, `commented` or `dismissed`, at poll time |
+| `body` | string | The review's summary Markdown, as written; empty when the reviewer wrote none |
 | `actor` | string or null | Who reviewed |
 | `open` | boolean | Whether the pull request was open when the intake read it. A done task reopens only for feedback on an open one |
 | `github_id` | integer | GitHub's review id |
@@ -284,6 +360,7 @@ The pull request fields, and:
     "head_sha": "4b2ee8eb670ba9f77d54d59ab97ced618f024fb9",
     "base_branch": "main",
     "state": "approved",
+    "body": "Looks good. One nit inline.",
     "actor": "octocat",
     "open": true,
     "time": "2026-11-17T16:40:03Z",

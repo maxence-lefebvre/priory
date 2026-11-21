@@ -51,7 +51,7 @@ factory such as herdr-bowtie. Each message type also has a JSON Schema in
 | File | Covers |
 | ---- | ------ |
 | [envelope.md](envelope.md) | The fields every message carries, and how each message id is made |
-| [github-issues.md](github-issues.md) | `github.issues.labeled` and `github.issues.opened` |
+| [github-issues.md](github-issues.md) | `github.issues.labeled`, `github.issues.opened`, `github.issues.closed` and `github.issues.comment` |
 | [pull-requests.md](pull-requests.md) | Pull request, review and check run events, and check run snapshots |
 | [github-polling.md](github-polling.md) | GitHub streams, baselines, API cost and recovery after a restart |
 | [review-requests.md](review-requests.md) | `github.pull_request.review_requested` and `review_request_removed`, and the review tasks they start and withdraw |

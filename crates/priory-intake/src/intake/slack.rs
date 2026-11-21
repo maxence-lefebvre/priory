@@ -64,13 +64,22 @@ impl<'a> Slack<'a> {
                 Err(error) => failed.push(error),
             }
         }
-        let threads: Vec<(&str, &str, Timestamp)> = watched
-            .iter()
-            .filter_map(|watch| {
-                let thread = watch.resource.strip_prefix("slack:")?;
-                let (channel, thread) = thread.split_once(':')?;
-                Some((channel, thread, watch.since))
-            })
+        // A wait and a subscription can name one thread: it is read once, from the earlier time.
+        let mut earliest: BTreeMap<(&str, &str), Timestamp> = BTreeMap::new();
+        for watch in watched {
+            let Some((channel, thread)) = watch
+                .resource
+                .strip_prefix("slack:")
+                .and_then(|thread| thread.split_once(':'))
+            else {
+                continue;
+            };
+            let since = earliest.entry((channel, thread)).or_insert(watch.since);
+            *since = (*since).min(watch.since);
+        }
+        let threads: Vec<(&str, &str, Timestamp)> = earliest
+            .into_iter()
+            .map(|((channel, thread), since)| (channel, thread, since))
             .collect();
         // Slack lets a new app read one thread a minute: each poll starts at the next thread.
         let start = self.turn.rem_euclid(threads.len().max(1) as i64) as usize;

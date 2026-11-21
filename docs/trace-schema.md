@@ -100,7 +100,8 @@ names the run that failed.
 
 ## `factory.task.reopened`
 
-Feedback on the open pull request of a done task moved it back to a step, as its next generation.
+Feedback on a done task's open pull request, issue, Linear issue or Slack thread moved it back to a
+step, as its next generation.
 It shares `factory`, `factory_revision`, `workflow`, `task`, `key`, `generation`, `step` and
 `machine` with `factory.step.ended`. `generation` is the new one and `step` the step it went back to.
 
@@ -121,6 +122,7 @@ It shares `factory`, `factory_revision`, `workflow`, `task`, `key`, `generation`
     "generation": 2,
     "step": "implement",
     "machine": "xps13",
+    "resource": "github:example/app#57",
     "pull_request": "github:example/app#57"
   }
 }
@@ -128,7 +130,8 @@ It shares `factory`, `factory_revision`, `workflow`, `task`, `key`, `generation`
 
 | Field          | Required | Meaning                                               |
 | -------------- | -------- | ----------------------------------------------------- |
-| `pull_request` | yes      | The pull request whose feedback reopened the task     |
+| `resource`     | yes      | The pull request, issue, Linear issue or Slack thread whose feedback reopened the task |
+| `pull_request` | no       | The pull request whose feedback reopened the task; absent for other feedback |
 
 ## `factory.tool.denied`
 
