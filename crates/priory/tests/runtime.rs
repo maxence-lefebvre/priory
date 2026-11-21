@@ -20158,3 +20158,92 @@ fn a_screen_is_never_cached_needs_the_token_and_terminal_off_serves_none() {
     server.kill().unwrap();
     server.wait().unwrap();
 }
+
+/// Waits until `/api/tasks` on `address` lists a task of `key` from runner `runner` and `done`
+/// holds for it.
+fn until_task(
+    address: &str,
+    key: &str,
+    runner: &str,
+    done: impl Fn(Option<&serde_json::Value>) -> bool,
+) -> Option<serde_json::Value> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let (status, tasks) = runner_http(address, "GET", "/api/tasks", "");
+        assert_eq!(status, 200, "{tasks}");
+        let found = tasks["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|task| task["key"] == key && task["runner"] == runner)
+            .cloned();
+        if done(found.as_ref()) {
+            return found;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no task {key} as wanted in {tasks}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn another_runners_task_is_listed_with_its_runner_hold_and_last_alive_time() {
+    let (a, b, _ask, address) = asked_on_a("remote-tasks");
+    let key = "github:owner/repo#1";
+
+    let task = until_task(&address, key, "a", |task| {
+        task.is_some_and(|task| task["hold"] == "kept")
+    })
+    .unwrap();
+
+    assert_eq!(task["id"], json!(null), "{task}");
+    assert_eq!(task["state"], json!(null), "{task}");
+    assert_eq!(task["workflow"], "approve", "{task}");
+    assert!(task["last_seen"].is_string(), "{task}");
+    assert!(task["since"].is_string(), "{task}");
+    let cli = b.priory(&["tasks", "--json"]);
+    let cli: serde_json::Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert!(
+        cli["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|task| task["key"] == key && task["runner"] == "a"),
+        "{cli}"
+    );
+    let rows = b.rows("tasks");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0][0], "-");
+    assert_eq!(rows[0][1], key);
+    assert!(
+        rows[0].ends_with(&[
+            "a".into(),
+            "kept".into(),
+            task["last_seen"].as_str().unwrap().into()
+        ]),
+        "{rows:?}"
+    );
+    // a names itself and its hold on its own tasks.
+    let own = a.priory(&["tasks", "--json"]);
+    let own: serde_json::Value = serde_json::from_slice(&own.stdout).unwrap();
+    assert_eq!(own["tasks"][0]["runner"], "a", "{own}");
+    assert_eq!(own["tasks"][0]["hold"], "kept", "{own}");
+}
+
+#[test]
+fn another_runners_task_leaves_the_listing_once_it_ends() {
+    let (a, _b, ask, address) = asked_on_a("remote-task-ends");
+    let key = "github:owner/repo#1";
+    until_task(&address, key, "a", |task| task.is_some());
+
+    let answered = a.priory(&["answer", &ask, "approved", "--revision", "1"]);
+    assert!(
+        answered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&answered.stderr)
+    );
+
+    until_task(&address, key, "a", |task| task.is_none());
+}

@@ -78,7 +78,8 @@ export default class PrioryTasks extends View {
         this.priory ??= await connect();
         client = this.priory.client;
         const read = await client.tasks();
-        [this.tasks, this.error] = [read.tasks, null];
+        // Another runner's task has no page here to open, so the panel keeps this runner's.
+        [this.tasks, this.error] = [read.tasks.filter((/** @type {any} */ task) => task.id != null), null];
         cx.notify();
         return read.revision;
       },
