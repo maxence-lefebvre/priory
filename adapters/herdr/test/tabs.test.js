@@ -68,3 +68,14 @@ test("opening a task shows main first when a stack hides it", async () => {
     ["tab.new", { space: "space-1", name: "Task", mod: "priory-task" }],
   ]);
 });
+
+test("a layout from before the asides gives a bar that says to run install again", () => {
+  herdr.reset();
+  herdr.layout = JSON.parse(JSON.stringify(FRAME));
+  herdr.layout.children[1].children[1].children.push({ id: "view", type: "stack", active: "view-0", children: [{ id: "view-0", type: "block", content: { mod: "priory-desk", props: { panel: "desk" } } }] });
+  const panel = new Tabs();
+  const cx = context();
+  panel.init();
+
+  assert.match(text(draw(panel, cx)), /older than this bar.*run install again/);
+});

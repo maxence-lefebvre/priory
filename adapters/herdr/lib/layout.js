@@ -34,7 +34,7 @@ function pathTo(node, id) {
 function panels(name, node) {
   const [key, value] = node && typeof node === "object" && !Array.isArray(node) && Object.keys(node).length === 1 ? Object.entries(node)[0] : [];
   if (key === "panel") {
-    if (!Object.hasOwn(PANELS, value)) throw new Error(`view ${name} has a panel Priory does not ship: ${value}`);
+    if (typeof value !== "string" || !Object.hasOwn(PANELS, value)) throw new Error(`view ${name} has a panel Priory does not ship: ${value}`);
     return [value];
   }
   if (!["row", "column", "tabs"].includes(key) || !Array.isArray(value) || !value.length) {

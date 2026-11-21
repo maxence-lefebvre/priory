@@ -111,8 +111,11 @@ export default class PrioryTabs extends View {
       if (shown(id)) return run("layout.select", { stack: "center", child: "main" });
       for (const [command, args] of reveal(root, id)) run(command, args);
     };
+    const items = buttons(root);
+    // An installed layout from before the asides has none of their blocks, until `install` runs again.
+    if (!items.length) return h_flex().id("priory-bar").size_full().px(10).pl(lightsPadding).items_center().bg(t.chrome).border_b(1).border_color(t.border).text_size(12).text_color(t.muted).child("The installed layout is older than this bar: run install again");
     // The panels can hold more buttons than the bar's width.
     return h_flex().id("priory-bar").overflow_x_scroll().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
-      .children(buttons(root).map((item) => button(item.id, LABELS[/** @type {keyof typeof LABELS} */ (item.panel)], shown(item.id), () => press(item))));
+      .children(items.map((item) => button(item.id, LABELS[/** @type {keyof typeof LABELS} */ (item.panel)], shown(item.id), () => press(item))));
   }
 }

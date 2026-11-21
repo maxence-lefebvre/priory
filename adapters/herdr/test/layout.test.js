@@ -138,6 +138,8 @@ test("a node or panel Priory does not ship is refused with the view's name", () 
     [{ grid: [{ panel: "desk" }] }, "view night has a node that is not a row, column, tabs or panel"],
     [{ row: [] }, "view night has a node that is not a row, column, tabs or panel"],
     [{ panel: "__proto__" }, "view night has a panel Priory does not ship: __proto__"],
+    [{ panel: ["desk"] }, "view night has a panel Priory does not ship: desk"],
+    [{ tabs: [{ panel: ["costs"] }] }, "view night has a panel Priory does not ship: costs"],
     [{ tabs: [{ panel: "kanban" }] }, "view night has a panel Priory does not ship: kanban"],
   ];
   for (const [tree, message] of refused) assert.throws(() => layout("night", { layout: tree }, FRAME), { message }, JSON.stringify(tree));
