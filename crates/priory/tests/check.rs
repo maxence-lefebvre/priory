@@ -1955,3 +1955,112 @@ fn a_herdr_layout_from_before_the_hash_warns() {
         outcome.stderr
     );
 }
+
+fn with_scorers(name: &str, scorers: &[(&str, &str)]) -> Outcome {
+    let mut files = valid();
+    files.extend_from_slice(scorers);
+    let dir = factory(name, &files);
+    let gate = dir.join("scripts/score-gate.sh");
+    if gate.exists() {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&gate, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    check(&dir)
+}
+
+const PASSED: &str =
+    "description = \"Passed.\"\non = \"result\"\nkind = \"outcome\"\nexpect = [\"passed\"]\n";
+const GATE: &str = "description = \"The gate passes.\"\non = \"diff\"\nkind = \"command\"\nrun = \"scripts/score-gate.sh\"\ntimeout = \"20m\"\n";
+
+#[test]
+fn a_factory_with_a_scorer_of_each_kind_passes_and_counts_them() {
+    let outcome = with_scorers(
+        "scorers",
+        &[
+            ("scorers/passed.toml", PASSED),
+            ("scorers/gate.toml", GATE),
+            (
+                "scorers/short-ask.yaml",
+                "description: Short.\non: ask\nkind: ask-shape\nexpect: [nextAction]\n",
+            ),
+            ("scripts/score-gate.sh", "#!/bin/sh\nexit 0\n"),
+        ],
+    );
+
+    assert_eq!(outcome.stderr, "");
+    assert_eq!(
+        outcome.stdout,
+        "ok: 1 agent, 1 trigger, 1 workflow, 1 runner, 3 scorers\n"
+    );
+}
+
+#[test]
+fn a_judge_scorer_is_not_supported_yet_with_its_file_and_line() {
+    let judge = "description = \"Does what was asked.\"\non = \"diff\"\nkind = \"judge\"\nmodel = \"sonnet\"\n";
+
+    let outcome = with_scorers("scorer-judge", &[("scorers/judge.toml", judge)]);
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "scorers/judge.toml:3: kind `judge` is not supported yet: use outcome, command or ask-shape\n"
+    );
+}
+
+#[test]
+fn an_unknown_scorer_kind_names_its_file_and_line() {
+    let guess = "description = \"Guess.\"\non = \"result\"\nkind = \"vibes\"\n";
+
+    let outcome = with_scorers("scorer-kind", &[("scorers/guess.toml", guess)]);
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "scorers/guess.toml:3:8: unknown variant `vibes`, expected one of `outcome`, `command`, `ask-shape`\n"
+    );
+}
+
+#[test]
+fn an_expect_that_does_not_fit_the_kind_and_a_missing_run_name_their_lines() {
+    let scorers = [
+        (
+            "scorers/a.toml",
+            "description = \"A.\"\non = \"result\"\nkind = \"outcome\"\n",
+        ),
+        (
+            "scorers/b.toml",
+            "description = \"B.\"\non = \"ask\"\nkind = \"ask-shape\"\nexpect = [\"short\", \"polite\"]\n",
+        ),
+        (
+            "scorers/c.toml",
+            "description = \"C.\"\non = \"diff\"\nkind = \"command\"\nexpect = [\"passed\"]\n",
+        ),
+        (
+            "scorers/d.toml",
+            "description = \"D.\"\non = \"diff\"\nkind = \"command\"\nrun = \"scripts/gone.sh\"\n",
+        ),
+        (
+            "scorers/e.toml",
+            "description = \"E.\"\non = \"diff\"\nkind = \"outcome\"\nexpect = [\"passed\"]\nrun = \"x.sh\"\n",
+        ),
+        ("scorers/f.toml", GATE),
+        ("scripts/score-gate.sh", "exit 0\n"),
+    ];
+    let mut files = valid();
+    files.extend_from_slice(&scorers);
+
+    let outcome = check(&factory("scorer-rules", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "scorers/a.toml: an `outcome` scorer needs `expect`: the outcomes that pass\n\
+         scorers/b.toml:4: `polite` is not part of an ask's shape: use short, whatWaits, nextAction\n\
+         scorers/c.toml:4: a `command` scorer takes no `expect`: its exit code is its answer\n\
+         scorers/c.toml:3: a `command` scorer needs `run`: an executable in the factory folder\n\
+         scorers/d.toml:4: `run` names scripts/gone.sh, which is missing from the factory folder\n\
+         scorers/e.toml:2: kind `outcome` reads on = \"result\", not \"diff\"\n\
+         scorers/e.toml:5: `run` is for kind `command`, not `outcome`\n\
+         scorers/f.toml:4: `run` names scripts/score-gate.sh, which is not executable: chmod +x it\n"
+    );
+}

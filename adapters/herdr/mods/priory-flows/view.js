@@ -137,3 +137,12 @@ export function timeline(workflow, ungated) {
   ].join(" ");
   return { nodes, edges, width, height, text };
 }
+
+/**
+ * Where a node's padlock sits and how big it is, in the drawing's units. An SVG icon nested in the
+ * drawing needs `width` and `height` attributes: CSS sizes do not reach it, so it would fill the drawing.
+ * @param {number} nodeWidth
+ */
+export function lockBadge(nodeWidth) {
+  return { x: nodeWidth - 40, y: 6, size: 15 };
+}

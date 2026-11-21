@@ -1,6 +1,7 @@
 use crate::factory::{
-    Agent, Backend, Decider, Effect, Factory, Harness, Intervention, Loaded, OnChange,
-    PermissionMode, Problem, Proof, Session, Step, Trigger, Until, Workflow,
+    ASK_SHAPE, Agent, Backend, Decider, Effect, Factory, Harness, Intervention, Loaded, OnChange,
+    PermissionMode, Problem, Proof, ScoreKind, ScoreOn, Scorer, Session, Step, Trigger, Until,
+    Workflow,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
 use crate::lanes::{self, Lanes};
@@ -354,7 +355,109 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
     if let Some(lanes) = &factory.lanes {
         check_lanes(lanes, &mut problems);
     }
+    for scorer in factory.scorers.values() {
+        check_scorer(factory, scorer, &mut problems);
+    }
     problems
+}
+
+fn check_scorer(factory: &Factory, scorer: &Loaded<Scorer>, problems: &mut Vec<Problem>) {
+    let value = &scorer.value;
+    let kind = value.kind.name();
+    let reads = match value.kind {
+        ScoreKind::Outcome => ScoreOn::Result,
+        ScoreKind::Command => ScoreOn::Diff,
+        ScoreKind::AskShape => ScoreOn::Ask,
+    };
+    if value.on != reads {
+        problems.push(problem(
+            scorer,
+            scorer.lines.field("on"),
+            format!(
+                "kind `{kind}` reads on = \"{}\", not \"{}\"",
+                reads.name(),
+                value.on.name()
+            ),
+        ));
+    }
+    let expect = scorer.lines.field("expect");
+    match value.kind {
+        ScoreKind::Outcome if value.expect.is_empty() => problems.push(problem(
+            scorer,
+            expect,
+            "an `outcome` scorer needs `expect`: the outcomes that pass".to_owned(),
+        )),
+        ScoreKind::AskShape if value.expect.is_empty() => problems.push(problem(
+            scorer,
+            expect,
+            format!(
+                "an `ask-shape` scorer needs `expect`: some of {}",
+                ASK_SHAPE.join(", ")
+            ),
+        )),
+        ScoreKind::AskShape => {
+            for part in value
+                .expect
+                .iter()
+                .filter(|part| !ASK_SHAPE.contains(&part.as_str()))
+            {
+                problems.push(problem(
+                    scorer,
+                    expect,
+                    format!(
+                        "`{part}` is not part of an ask's shape: use {}",
+                        ASK_SHAPE.join(", ")
+                    ),
+                ));
+            }
+        }
+        ScoreKind::Command if !value.expect.is_empty() => problems.push(problem(
+            scorer,
+            expect,
+            "a `command` scorer takes no `expect`: its exit code is its answer".to_owned(),
+        )),
+        _ => {}
+    }
+    if value.kind != ScoreKind::Command {
+        for (field, set) in [
+            ("run", value.run.is_some()),
+            ("timeout", value.timeout.is_some()),
+        ] {
+            if set {
+                problems.push(problem(
+                    scorer,
+                    scorer.lines.field(field),
+                    format!("`{field}` is for kind `command`, not `{kind}`"),
+                ));
+            }
+        }
+        return;
+    }
+    let Some(run) = &value.run else {
+        problems.push(problem(
+            scorer,
+            scorer.lines.field("kind"),
+            "a `command` scorer needs `run`: an executable in the factory folder".to_owned(),
+        ));
+        return;
+    };
+    use std::os::unix::fs::PermissionsExt;
+    let named = run.display();
+    let refused = match std::fs::metadata(factory.dir.join(run)) {
+        _ if run.is_absolute() || run.components().any(|part| part.as_os_str() == "..") => Some(
+            format!("`run` names {named}, which is not in the factory folder"),
+        ),
+        Ok(file) if file.is_file() && file.permissions().mode() & 0o111 == 0 => Some(format!(
+            "`run` names {named}, which is not executable: chmod +x it"
+        )),
+        Ok(file) if file.is_file() => None,
+        _ => Some(format!(
+            "`run` names {named}, which is missing from the factory folder"
+        )),
+    };
+    if let Some(refused) = refused {
+        problems.push(problem(scorer, scorer.lines.field("run"), refused));
+    }
 }
 
 fn not_a_lane(lane: &str) -> String {

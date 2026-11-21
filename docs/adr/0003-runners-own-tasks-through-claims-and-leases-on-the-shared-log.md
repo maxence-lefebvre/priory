@@ -142,6 +142,8 @@ off for an hour keeps its tasks going and runs none twice, so the daemon now rid
   gives it.
 - `priory give` and `priory answer <runner>:<ask>` refuse on a runner that cannot reach the log,
   since its owners and asks are as old as its last read.
+- `priory give` also refuses while the owner's lease is live, unless `--force`: a cut-off owner
+  goes on running the task, so a gift then runs it twice until the owner reads the claim.
 
 We rejected moving the log calls to a thread of their own, which would keep the daemon's loop free
 of the timeout but adds a second writer of the state file, and a direct `tokio` dependency, which
