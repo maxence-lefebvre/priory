@@ -1270,11 +1270,12 @@ The web's [Inbox](#inbox) panel, as a tab in the center stack.
 
 The web's [Tasks panel](#tasks-panel), as a tab in the center stack.
 
-- Under the 44 px header, the saved views Active, Blocked and Ended as chips with their counts,
-  then a State, Lane and Workflow chip each, whose menu lists the view's values with counts.
+- Under the 44 px header, the saved views Active, Blocked and Ended as chips with their counts
+  after the facets, then a State, Lane and Workflow chip each, whose menu lists every task's
+  values A to Z with counts, as on the web.
 - Every row is the desk's task row at every width: tile, key in mono, workflow, step, the state
-  word in its role's text color and the age in `--text-3`; the title in `--type-small`; then lane,
-  band and `batch N` in `--text-3`, or the reason in its role's text color. A row opens the
+  word in its role's text color and the age in `--text-3`; the title in `--type-small`; then lane
+  and band in `--text-3`, or the reason in its role's text color, then `batch N`. A row opens the
   [Task](#task) panel.
 - The batch tag is text: Herdr has no batch panel yet.
 - While it reads: "Reading the tasks…"

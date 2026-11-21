@@ -614,6 +614,7 @@ fn asks_in(
     since: Option<&str>,
 ) -> rusqlite::Result<Value> {
     let mut asks = asks_of(db, None, None, since)?;
+    crate::runners::with_remote_asks(db, &mut asks, since)?;
     if let (Some(asks), false) = (asks.as_array_mut(), bands.is_empty()) {
         asks.retain(|ask| {
             ask["band"]
@@ -1196,6 +1197,20 @@ pub fn desk(
         .count();
     routed_to(db, list)?;
     acts(db, list)?;
+    if let Some(me) = crate::runners::me(db)? {
+        for item in list.iter_mut().filter(|item| item["kind"] == "ask") {
+            item["runner"] = json!(me);
+        }
+        // Another runner's asks join what waits on a person, before the queue, oldest first.
+        let remote = crate::runners::remote_desk_items(db)?;
+        let waiting = list
+            .iter()
+            .take_while(|item| !item["urgency"].is_null())
+            .count();
+        let added = remote.len();
+        list.splice(waiting..waiting, remote);
+        list[..waiting + added].sort_by(|a, b| a["since"].as_str().cmp(&b["since"].as_str()));
+    }
     let ranked = rank(list);
     for item in list.iter_mut() {
         let item = item.as_object_mut().expect("rows are objects");

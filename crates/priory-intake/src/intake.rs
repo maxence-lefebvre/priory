@@ -29,6 +29,8 @@ pub const TASK_HELD: &str = "priory.task.held";
 pub const RUNNER_ALIVE: &str = "priory.runner.alive";
 /// A person on one runner answers an ask of another.
 pub const ASK_ANSWERED: &str = "priory.ask.answered";
+/// A runner posts one of its asks, so every runner lists it.
+pub const ASK_POSTED: &str = "priory.ask.posted";
 const LABELED: &str = "github.issues.labeled";
 const OPENED: &str = "github.issues.opened";
 pub const ISSUE_CLOSED: &str = "github.issues.closed";
@@ -96,6 +98,7 @@ pub fn output() -> Output {
             TASK_HELD,
             RUNNER_ALIVE,
             ASK_ANSWERED,
+            ASK_POSTED,
         ])
 }
 

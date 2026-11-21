@@ -78,6 +78,7 @@ fn generated() -> Vec<(String, Value)> {
         event::<TaskHeld>("priory.task.held"),
         event::<RunnerAlive>("priory.runner.alive"),
         event::<AskAnswered>("priory.ask.answered"),
+        event::<AskPosted>("priory.ask.posted"),
     ]
 }
 
