@@ -83,7 +83,8 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
       ...(top ? ["--top"] : before != null ? ["--before", String(before)] : after != null ? ["--after", String(after)] : []),
       ...expected(revision)]),
     // The shell command line that attaches a tmux client to the task's live run, quoted by priory.
-    attach: async (/** @type {Id} */ task) => (await call(["attach", String(task), "--print"])).trim(),
+    // A read-only client watches: it cannot type, and leaves the agent's window size alone.
+    attach: async (/** @type {Id} */ task, { readOnly = false } = {}) => (await call(["attach", String(task), ...(readOnly ? ["--read-only"] : []), "--print"])).trim(),
   };
 }
 
