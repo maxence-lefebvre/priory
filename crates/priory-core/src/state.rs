@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 57;
+const VERSION: i64 = 58;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1012,6 +1012,21 @@ CREATE INDEX IF NOT EXISTS asks_by_task ON asks (task);
 PRAGMA user_version = 57;
 ";
 
+// A routed ask whose lead task ends or blocks without answering returns to the person: it loses
+// its lead and is asked again as its next revision, which pushes it.
+const SCHEMA_58: &str = "
+CREATE TRIGGER IF NOT EXISTS ask_returns_from_its_lead AFTER UPDATE OF state ON tasks
+  WHEN NEW.trigger = 'priory/lead' AND NEW.state IN ('done', 'failed', 'dropped', 'blocked')
+  AND NEW.state IS NOT OLD.state BEGIN
+  UPDATE asks SET routed = NULL, revision = revision + 1,
+    question = question || ' (' || routed || ' did not answer: its task is ' || NEW.state || ')'
+  WHERE routed IS NOT NULL AND answer IS NULL AND withdrawn IS NULL
+  AND (id, revision) = (SELECT json_extract(data, '$.ask'), json_extract(data, '$.revision')
+    FROM inbox WHERE inbox.id = NEW.source);
+END;
+PRAGMA user_version = 58;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1021,6 +1036,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_34, SCHEMA_35, SCHEMA_36, SCHEMA_37, SCHEMA_38, SCHEMA_39, SCHEMA_40, SCHEMA_41,
     SCHEMA_42, SCHEMA_43, SCHEMA_44, SCHEMA_45, SCHEMA_46, SCHEMA_47, SCHEMA_48, SCHEMA_49,
     SCHEMA_50, SCHEMA_51, SCHEMA_52, SCHEMA_53, SCHEMA_54, SCHEMA_55, SCHEMA_56, SCHEMA_57,
+    SCHEMA_58,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

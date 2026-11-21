@@ -14027,6 +14027,31 @@ next = { go = "open-pr", stop = "stop" }
 }
 
 #[test]
+fn a_routed_ask_whose_lead_skips_returns_to_the_person_as_a_new_revision() {
+    let mut setup = hands_off("hands-off-skipped", WORKFLOW);
+    setup.calls(&[
+        ask(),
+        json!({ "name": "result", "arguments": { "outcome": "skipped", "summary": "Not mine." } }),
+    ]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "done");
+    let ask = &asks_json(&setup)["asks"][0];
+    assert_eq!(
+        [&ask["state"], &ask["routed_to"], &ask["revision"]],
+        [&json!("open"), &json!(null), &json!(2)],
+        "{ask}"
+    );
+    assert_eq!(
+        ask["question"],
+        "Which database? (lead did not answer: its task is done)"
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+}
+
+#[test]
 fn a_leads_answer_outside_the_asks_options_is_refused() {
     let mut setup = hands_off("hands-off-off-option", WORKFLOW);
     setup.calls(&[
