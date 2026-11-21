@@ -14817,6 +14817,47 @@ fn an_outcome_with_no_proof_is_accepted_with_no_gate_run() {
     );
 }
 
+#[test]
+fn a_gate_in_a_worktree_away_from_the_branch_head_runs_nothing_and_records_nothing() {
+    let setup = Setup::proving("proof-detached", "touch ran", "passed");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    let head = setup.head();
+    for args in [
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "more",
+        ][..],
+        &["checkout", "-q", "--detach", &head],
+    ] {
+        assert!(git(&worktree).args(args).status().unwrap().success());
+    }
+
+    let gate = setup.gate();
+
+    assert_eq!(gate.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&gate.stderr),
+        format!(
+            "priory gate: the worktree is at {head}, not at the head of its branch, {}: check out the branch, then run it again\n",
+            git(&worktree)
+                .args(["rev-parse", "priory/1"])
+                .output()
+                .map(|out| String::from_utf8(out.stdout).unwrap().trim().to_owned())
+                .unwrap()
+        )
+    );
+    assert!(!worktree.join("ran").exists());
+    let (text, error) = setup.proved();
+    assert!(error && text.contains("no gate ran for task 1"), "{text}");
+}
+
 const TWO_MODEL_STEPS: &str = r#"
 start = "implement"
 

@@ -264,6 +264,7 @@ band = "today"                                 # its band without --band
 | Message | Cause |
 | ------- | ----- |
 | `missing: a factory needs factory.toml or factory.yaml` | The folder has neither file |
+| `` `gate` is empty `` | `gate` is blank, and `sh -c ""` exits 0, so it would pass every proof |
 | `` `[guard]` command `<name>` has the name of another guard `` | A `[guard]` command takes a built-in guard's name or another command's |
 | `` `[guard]` command `<name>` needs a program in `run` `` | A `[guard]` command with an empty `run` |
 | `` unknown field `<key>`, expected one of ... `` | A key the tables above do not list |

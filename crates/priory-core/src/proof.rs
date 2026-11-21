@@ -131,14 +131,14 @@ pub(crate) fn refused(
         )
         .optional()
     };
-    Ok(match (last(true)?, last(false)?) {
-        (Some((_, 0)), _) => None,
-        (Some((_, exit)), _) => Some(format!(
-            "{needs}, and the last gate run at it exited {exit}: {again}"
-        )),
-        (None, Some((commit, _))) => Some(format!(
+    if let Some((_, exit)) = last(true)? {
+        return Ok((exit != 0)
+            .then(|| format!("{needs}, and the last gate run at it exited {exit}: {again}")));
+    }
+    Ok(Some(match last(false)? {
+        Some((commit, _)) => format!(
             "{needs}, and the last gate run for task {task} was at another commit, {commit}: {again}"
-        )),
-        (None, None) => Some(format!("{needs}, and no gate ran for task {task}: {again}")),
-    })
+        ),
+        None => format!("{needs}, and no gate ran for task {task}: {again}"),
+    }))
 }

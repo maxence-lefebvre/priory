@@ -12,8 +12,8 @@ the command that runs your project's tests.
 
 ## Gates
 
-- `fix` takes `passed` only once `priory gate` passed at the branch's head, so the agent cannot
-  report a fix whose tests it did not run.
+- `fix` takes `passed` only once the trace records a `priory gate` that passed at the branch's
+  head.
 - `approve-pr` asks you before `open-pr` pushes the branch and opens the pull request.
 - A bug the agent cannot reproduce ends the task at `investigate`, with nothing pushed.
 

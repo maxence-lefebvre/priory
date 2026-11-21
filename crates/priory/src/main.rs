@@ -1311,7 +1311,7 @@ fn gate(gate: &Gate) -> Result<String, String> {
 }
 
 /// `priory gate`, from a run's pane: runs the factory's gate in the run's task worktree at its head,
-/// records the run with the daemon, and exits as the gate did.
+/// records the run with the daemon, and exits with the gate's code, or 1 when a signal killed it.
 fn project_gate() -> ExitCode {
     let Some(session) = std::env::var("PRIORY_SESSION")
         .ok()
@@ -1330,8 +1330,9 @@ fn project_gate() -> ExitCode {
     let started = call(&proof::Line::Start {
         session: session.clone(),
     })
-    .map(|reply| {
-        serde_json::from_str::<proof::Started>(&reply).expect("the daemon replies with a start")
+    .and_then(|reply| {
+        serde_json::from_str::<proof::Started>(&reply)
+            .map_err(|error| format!("unreadable start {reply:?}: {error}"))
     });
     let started = match started {
         Ok(started) => started,
@@ -1340,6 +1341,27 @@ fn project_gate() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // The gate tests what is checked out, so a record for the branch head needs the two to match.
+    let checked_out = || {
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&started.worktree)
+            .output()
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+            .unwrap_or_default()
+    };
+    let away = |at: String| {
+        eprintln!(
+            "priory gate: the worktree is at {at}, not at the head of its branch, {}: check out the branch, then run it again",
+            started.commit
+        );
+        ExitCode::FAILURE
+    };
+    let at = checked_out();
+    if at != started.commit {
+        return away(at);
+    }
     let clock = Instant::now();
     let status = Command::new("sh")
         .args(["-c", &started.command])
@@ -1353,6 +1375,10 @@ fn project_gate() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let at = checked_out();
+    if at != started.commit {
+        return away(at);
+    }
     let recorded = call(&proof::Line::Ran {
         session,
         commit: started.commit,

@@ -362,9 +362,13 @@ priory gate
 `priory gate` asks the daemon for the factory's `gate`, the run's worktree and the head of the
 task's branch. It runs the gate with `sh -c` in the worktree, with its output on the terminal. Then
 it sends the commit and the exit code to the daemon, which appends a `factory.gate.ran` record to the
-trace (see [trace-schema.md](../trace-schema.md#factorygateran)). `priory gate` exits as the gate
-did. It refuses to run outside a run's pane, where `PRIORY_SESSION` is unset, and in a factory with
-no `gate`.
+trace (see [trace-schema.md](../trace-schema.md#factorygateran)). `priory gate` exits with the
+gate's exit code, or 1 when a signal killed the gate or the daemon did not record the run.
+
+`priory gate` runs nothing and exits 1 outside a run's pane, where `PRIORY_SESSION` is unset, in a
+factory with no `gate`, and in a worktree whose checked-out commit is not the head of its branch,
+since the gate would test another commit than the one it records. It records nothing either when
+the worktree moves to another commit while the gate runs.
 
 A step with a proof ends its prompt with a line that names the outcomes to prove. When the agent
 sends a proved outcome, the daemon reads the task's gate runs in the trace and refuses the result,

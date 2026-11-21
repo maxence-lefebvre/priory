@@ -52,6 +52,19 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 problems.push(problem(settings, settings.lines.field(field), message));
             }
         }
+        // `sh -c ""` exits 0, so a blank gate would pass every proof.
+        if settings
+            .value
+            .gate
+            .as_deref()
+            .is_some_and(|gate| gate.trim().is_empty())
+        {
+            problems.push(problem(
+                settings,
+                settings.lines.field("gate"),
+                "`gate` is empty".to_owned(),
+            ));
+        }
         let search = &settings.value.search;
         if search.model.is_some() && search.command.is_some() {
             problems.push(problem(

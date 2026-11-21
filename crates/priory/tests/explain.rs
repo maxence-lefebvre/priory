@@ -510,3 +510,14 @@ fn a_proof_needs_a_model_step_an_outcome_in_next_and_a_gate() {
          workflows/implement.toml:11: step `approve-plan`: `proof` names `gate-passed`, and factory.toml sets no `gate`\n"
     );
 }
+
+#[test]
+fn a_blank_gate_is_refused_since_it_would_pass_every_proof() {
+    let dir = proved("gate-blank", "proof = { passed = \"gate-passed\" }");
+    fs::write(dir.join("factory.toml"), "name = \"demo\"\ngate = \" \"\n").unwrap();
+
+    let outcome = priory(&["check"], &dir);
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(outcome.stderr, "factory.toml:2: `gate` is empty\n");
+}
