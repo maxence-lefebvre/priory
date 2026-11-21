@@ -3,6 +3,8 @@ use rusqlite::Connection;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
+pub mod attention;
+
 /// The window a report covers when it names none.
 pub const SINCE: &str = "7 days";
 
@@ -351,6 +353,16 @@ pub fn window(db: &Connection, since: Option<&str>, now: &str) -> Result<Window,
     }
 }
 
+/// The merges of pull requests a task owns or owned the head branch of, each at its first merged
+/// close, as the `merged` table of a `WITH` clause.
+const MERGED: &str = "WITH merged AS (
+  SELECT min(strftime('%Y-%m-%dT%H:%M:%fZ', time)) AS time FROM inbox
+  WHERE type = 'github.pull_request.closed' AND json_extract(data, '$.merged') = 1
+  AND EXISTS (SELECT 1 FROM owns WHERE owns.resource IN ('github:' || inbox.subject,
+    'github:' || json_extract(inbox.data, '$.repo') || '@'
+      || json_extract(inbox.data, '$.head_branch')))
+  GROUP BY subject)";
+
 /// The costs of model steps, handler calls and summarizer calls in `window` and the one before
 /// it, priced from `prices`, with the merges of owned pull requests. Days are local.
 pub fn costs(
@@ -439,17 +451,10 @@ pub fn costs(
         }
     }
     let mut statement = db
-        .prepare(
-            "WITH merged AS (
-               SELECT min(strftime('%Y-%m-%dT%H:%M:%fZ', time)) AS time FROM inbox
-               WHERE type = 'github.pull_request.closed' AND json_extract(data, '$.merged') = 1
-               AND EXISTS (SELECT 1 FROM owns WHERE owns.resource IN ('github:' || inbox.subject,
-                 'github:' || json_extract(inbox.data, '$.repo') || '@'
-                   || json_extract(inbox.data, '$.head_branch')))
-               GROUP BY subject)
-             SELECT date(time, 'localtime'), time >= ?2, count(*) FROM merged
-             WHERE time >= ?1 AND time < ?3 GROUP BY 1, 2",
-        )
+        .prepare(&format!(
+            "{MERGED} SELECT date(time, 'localtime'), time >= ?2, count(*) FROM merged
+             WHERE time >= ?1 AND time < ?3 GROUP BY 1, 2"
+        ))
         .map_err(error)?;
     let merges = statement
         .query_map([previous, start, until], |row| {

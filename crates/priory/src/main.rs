@@ -156,7 +156,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK --json\n       priory subscribe TASK RESOURCE\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
+        "usage: priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory runs\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK --json\n       priory subscribe TASK RESOURCE\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] ASK OPTION-OR-TEXT\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory mcp --session ID\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -334,6 +334,37 @@ fn costs(args: Vec<String>) -> ExitCode {
     exit("costs", printed)
 }
 
+/// Prints `priory report attention [--since <window>] [--by <split>] [--json]`.
+fn report_attention(args: Vec<String>) -> ExitCode {
+    let (mut since, mut by, mut json) = (None, "workflow".to_owned(), false);
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--since" => match args.next() {
+                Some(window) => since = Some(window),
+                None => return usage(),
+            },
+            "--by" => match args.next() {
+                Some(split) if report::attention::BY.contains(&split.as_str()) => by = split,
+                _ => return usage(),
+            },
+            _ => return usage(),
+        }
+    }
+    let printed = intake::now().and_then(|now| {
+        let db = state::open()?;
+        let window = report::window(&db, since.as_deref(), &now.to_string())?;
+        let attention = report::attention::attention(&db, &window, &by)?;
+        match json {
+            true => state::emit(&attention.json().to_string()),
+            false => attention.print(),
+        }
+        Ok(())
+    });
+    exit("report", printed)
+}
+
 /// Prints `priory report [DIR] --workflow <name> [--since <window>] [--cost]`. Only `--cost` reads
 /// the factory, for its prices.
 fn report(args: Vec<String>) -> ExitCode {
@@ -341,6 +372,7 @@ fn report(args: Vec<String>) -> ExitCode {
         Some("put") => return report_put(&args[1..]),
         Some("show") => return report_show(&args[1..]),
         Some("pick") => return report_pick(&args[1..]),
+        Some("attention") => return report_attention(args[1..].to_vec()),
         Some(verb @ ("comment" | "reply" | "resolve" | "reopen")) => {
             return report_comment(verb, &args[1..]);
         }
