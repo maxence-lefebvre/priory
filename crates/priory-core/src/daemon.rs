@@ -846,12 +846,12 @@ fn take(
         Ok(Input::Call(call)) if matches!(call.tool.as_str(), "subscribe" | "unsubscribe") => {
             Ok((replied(subscribe::tool(db, &call)?), None))
         }
-        Ok(Input::Call(call)) => Ok((
-            replied(tools::call(db, &call, trace, &|worktree, branch| {
+        Ok(Input::Call(call)) => {
+            let (reply, kill) = tools::call(db, &call, trace, &|worktree, branch| {
                 runtime::kept_head(&runtime::home(), worktree, branch)
-            })?),
-            None,
-        )),
+            })?;
+            Ok((replied(reply), kill))
+        }
         Ok(Input::Proof(line)) => Ok((
             replied(crate::proof::gate(
                 db,
@@ -1852,7 +1852,7 @@ fn drain(
             let message = runners::clocked(delivery.message.clone(), delivery.logged);
             let ended = state::handle(db, &message, trace, counter)?;
             bus.ack(consumer, &delivery)?;
-            ended.inspect(|tmux| runtime::kill(tmux));
+            ended.iter().for_each(|tmux| runtime::kill(tmux));
         }
     }
 }

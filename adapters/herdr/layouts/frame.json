@@ -1,5 +1,5 @@
 {
-  "id": "root",
+  "id": "priory-generated",
   "type": "row",
   "titlebar": "none",
   "traffic_lights": [
@@ -149,53 +149,6 @@
                   }
                 }
               }
-            },
-            {
-              "id": "panel",
-              "type": "column",
-              "hidden": true,
-              "size": {
-                "px": 420
-              },
-              "min": 280,
-              "max": 900,
-              "children": [
-                {
-                  "id": "panel-body",
-                  "type": "stack",
-                  "active": "asks",
-                  "children": [
-                    {
-                      "id": "files",
-                      "type": "block",
-                      "content": {
-                        "mod": "files"
-                      }
-                    },
-                    {
-                      "id": "changes",
-                      "type": "block",
-                      "content": {
-                        "mod": "changes"
-                      }
-                    },
-                    {
-                      "id": "asks",
-                      "type": "block",
-                      "content": {
-                        "mod": "priory-asks"
-                      }
-                    },
-                    {
-                      "id": "queue",
-                      "type": "block",
-                      "content": {
-                        "mod": "priory-queue"
-                      }
-                    }
-                  ]
-                }
-              ]
             }
           ]
         },

@@ -1,6 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Button, TextView } from "gpui-base";
-import { appHome, checking, exec, home as herdrHome, nextCommand, readTextFile, run, setShared, settings } from "herdr";
+import { appHome, checking, exec, focused, home as herdrHome, layout as shown, nextCommand, panes, readTextFile, run, setShared, settings } from "herdr";
+import { panelBlock, reveal } from "./layout.js";
 import { follow, priory, spansHtml } from "./priory.js";
 import { addChoices } from "./add.js";
 import { AddForm } from "./add-form.js";
@@ -34,8 +35,14 @@ const TILES = /** @type {Record<string, [string, string | null, string]>} */ ({
 });
 const RESTART = /** @type {Record<string, string>} */ ({ blocked: "Resume", prompt: "Resume", failed: "Revive" });
 const HOUR = { for: "1h" };
-/** Text with its autolinks; plain text stays a plain child. @param {string} id @param {{ text: string, url?: string }[]} spans */
-const linked = (id, spans) => (spans.some((span) => span.url) ? TextView.html(id, spansHtml(spans)) : spans.map((span) => span.text).join(""));
+/**
+ * Text with its autolinks; plain text stays a plain child. Linked text keeps its press, so a link
+ * opens without selecting the row around it.
+ * @param {string} id @param {{ text: string, url?: string }[]} spans
+ */
+const linked = (id, spans) => (spans.some((span) => span.url)
+  ? div().on_mouse_down("left", (/** @type {unknown} */ _event, /** @type {import("gpui-kit").Context} */ cx) => cx.stop_propagation()).child(TextView.html(id, spansHtml(spans)))
+  : spans.map((span) => span.text).join(""));
 const MUTED_TILE = /** @type {[string, string, string]} */ (["tile-muted", "circle-dashed", "text-2"]);
 
 /** @typedef {ReturnType<typeof deskModel>} Model */
@@ -219,8 +226,13 @@ export default class PrioryDesk extends View {
   /** @param {number | string} ask */
   answer(ask) {
     setShared("priory.asks.open", { ask, at: Date.now() });
-    run("layout.select", { stack: "panel-body", child: "asks" });
-    run("layout.show", { id: "panel" });
+    const root = shown(), block = panelBlock(root, "asks");
+    if (block) return reveal(root, block.id).forEach(([command, args]) => run(command, args));
+    // A view without Asks still answers: in an Asks tab, as the Priory bar opens the Task tab.
+    reveal(root, "main").forEach(([command, args]) => run(command, args));
+    const tab = (panes() ?? []).find((pane) => pane.mod === "priory-asks");
+    if (tab) return run("tab.select", { id: tab.tab });
+    run("tab.new", { space: focused()?.space, name: "Asks", mod: "priory-asks" });
   }
 
   /** @param {number} task */
