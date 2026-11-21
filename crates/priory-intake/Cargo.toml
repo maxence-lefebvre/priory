@@ -17,6 +17,12 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tungstenite.workspace = true
+postgres = { version = "0.19.14", features = ["with-jiff-0_2"], optional = true }
+tokio-postgres-rustls = { version = "0.14.0", default-features = false, features = ["ring", "native-certs"], optional = true }
+
+[features]
+# The Postgres event log adapter: its client runs a private tokio runtime.
+postgres = ["dep:postgres", "dep:tokio-postgres-rustls", "priory-factory/postgres"]
 
 [dev-dependencies]
 proptest.workspace = true

@@ -1,6 +1,6 @@
 use crate::factory::{
-    Agent, Decider, Effect, Factory, Harness, Intervention, Loaded, PermissionMode, Problem, Proof,
-    Session, Step, Trigger, Until, Workflow,
+    Agent, Backend, Decider, Effect, Factory, Harness, Intervention, Loaded, PermissionMode,
+    Problem, Proof, Session, Step, Trigger, Until, Workflow,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, UNREADABLE};
 use crate::lanes::{self, Lanes};
@@ -63,6 +63,14 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 settings,
                 settings.lines.field("gate"),
                 "`gate` is empty".to_owned(),
+            ));
+        }
+        if !cfg!(feature = "postgres") && settings.value.log.backend == Backend::Postgres {
+            problems.push(problem(
+                settings,
+                settings.lines.field("log"),
+                "[log] backend = \"postgres\" needs a priory built with `--features postgres`"
+                    .to_owned(),
             ));
         }
         let search = &settings.value.search;

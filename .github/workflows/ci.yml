@@ -14,6 +14,17 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: priory
+          POSTGRES_PASSWORD: priory
+          POSTGRES_DB: priory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install the pinned toolchain
@@ -30,6 +41,14 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Lint the in-process embedding model
         run: cargo clippy -p priory --features model -- -D warnings
+      - name: Lint the Postgres event log adapter
+        run: cargo clippy -p priory-intake -p priory --all-targets --features priory-intake/postgres,priory/postgres -- -D warnings
       - name: Install tmux for the runtime tests
         run: command -v tmux || (sudo apt-get update && sudo apt-get install -y tmux)
       - run: cargo test --workspace
+      - name: Run the event log contract suite and check on Postgres
+        env:
+          PRIORY_TEST_POSTGRES_URL: postgresql://priory:priory@127.0.0.1:5432/priory?sslmode=disable
+        run: |
+          cargo test -p priory-intake --features postgres --test log
+          cargo test -p priory --features postgres --test check
