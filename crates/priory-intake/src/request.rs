@@ -66,6 +66,9 @@ pub struct Request {
     intervention: Option<Intervention>,
     /// What the task is about.
     text: String,
+    /// A planning task's batch: its issues and its entries' workflow.
+    #[serde(skip)]
+    batch: Option<crate::events::BatchRequest>,
 }
 
 pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
@@ -140,6 +143,7 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
         relates,
         intervention: intervention_of(intervention)?,
         text,
+        batch: None,
     };
     Some((dir, request))
 }
@@ -278,14 +282,149 @@ pub fn add(factory: &Factory, add: &Add) -> Result<String, Refused> {
         }
         return Ok(key.clone());
     }
+    claim_daily(&*bus, &request, "cli")
+}
+
+/// Publishes `request` under the next free key of the day, `<prefix>:<YYYY-MM-DD>-<n>`.
+fn claim_daily(bus: &dyn Log, request: &Request, prefix: &str) -> Result<String, Refused> {
     let today = intake::now()?.to_zoned(jiff::tz::TimeZone::system()).date();
     for n in 1.. {
-        let key = format!("cli:{today}-{n}");
-        if claim(&*bus, &request, &key)? {
+        let key = format!("{prefix}:{today}-{n}");
+        if claim(bus, request, &key)? {
             return Ok(key);
         }
     }
     unreachable!("a day has a free key")
+}
+
+/// `priory batch add`'s flags, or `POST /api/batches`'s body: the issues a batch plans.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Batch {
+    pub issues: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entries: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub band: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lane: Option<String>,
+}
+
+pub fn parse_batch(args: Vec<String>) -> Option<(PathBuf, Batch)> {
+    let (mut repo, mut entries, mut band, mut lane) = (None, None, None, None);
+    let mut issues = vec![];
+    let mut args = args.into_iter().peekable();
+    let dir = match args.peek() {
+        Some(dir) if std::path::Path::new(dir).is_dir() => PathBuf::from(args.next()?),
+        _ => PathBuf::from("."),
+    };
+    while let Some(arg) = args.next() {
+        let flag = match arg.as_str() {
+            "--repo" => &mut repo,
+            "--entries" => &mut entries,
+            "--band" => &mut band,
+            "--lane" => &mut lane,
+            _ if arg.starts_with("--") => return None,
+            _ => {
+                issues.push(arg);
+                continue;
+            }
+        };
+        *flag = Some(args.next().filter(|value| !value.starts_with("--"))?);
+    }
+    if issues.is_empty() {
+        return None;
+    }
+    let batch = Batch {
+        issues,
+        repo,
+        entries,
+        band,
+        lane,
+    };
+    Some((dir, batch))
+}
+
+/// Publishes the request of `batch`'s planning task on the factory's `[batch] workflow`, under the
+/// next free key of the day, `batch:<YYYY-MM-DD>-<n>`, and returns that key.
+pub fn add_batch(factory: &Factory, batch: &Batch) -> Result<String, Refused> {
+    let Some(defaults) = factory.batch() else {
+        return Err("factory.toml has no [batch] workflow; set one to plan batches"
+            .to_owned()
+            .into());
+    };
+    if factory.runners.len() > 1 {
+        return Err(format!(
+            "batches need one runner; this factory has {}",
+            factory.runners.len()
+        )
+        .into());
+    }
+    let mut keys = Vec::new();
+    let mut repos = Vec::new();
+    for issue in &batch.issues {
+        let (key, repo) = issue_key(factory, issue)?;
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+        repos.extend(repo);
+    }
+    let repo = match &repos[..] {
+        [first, rest @ ..] if rest.iter().all(|repo| repo == first) => Some(first.clone()),
+        _ => None,
+    };
+    let entries = batch
+        .entries
+        .clone()
+        .or_else(|| defaults.entries.clone())
+        .or_else(|| factory.request().map(|request| request.workflow.clone()))
+        .ok_or_else(|| "the batch names no entries workflow; pass --entries, or set entries in factory.toml's [batch] table".to_owned())?;
+    if !factory.workflows.contains_key(&entries) {
+        return Err(format!("unknown workflow `{entries}`").into());
+    }
+    let add = Add {
+        text: format!("Plan these issues into a batch: {}", keys.join(", ")),
+        workflow: Some(defaults.workflow.clone()),
+        band: batch.band.clone(),
+        lane: batch.lane.clone(),
+        repo: batch.repo.clone(),
+        relates: Vec::new(),
+        intervention: None,
+    };
+    let mut request = quick(factory, &add, repo)?;
+    request.batch = Some(crate::events::BatchRequest {
+        issues: keys,
+        entries,
+    });
+    claim_daily(&*open(factory)?, &request, "batch")
+}
+
+/// The task key of `issue`, `ENG-7`, `owner/name#42` or a GitHub or Linear URL, and the
+/// repositories it is in.
+fn issue_key(factory: &Factory, issue: &str) -> Result<(String, Vec<String>), String> {
+    let (keys, repos) = linked(factory, issue);
+    if let [key] = &keys[..] {
+        return Ok((key.clone(), repos));
+    }
+    let linear = issue.split_once('-').is_some_and(|(team, number)| {
+        !team.is_empty()
+            && team.chars().all(|c| c.is_ascii_alphanumeric())
+            && number.parse::<u64>().is_ok()
+    });
+    if linear {
+        return Ok((format!("linear:{issue}"), Vec::new()));
+    }
+    if let Some((repo, number)) = issue.split_once('#')
+        && priory_runtime::runtime::check_repo(repo).is_ok()
+        && number.parse::<u64>().is_ok()
+    {
+        return Ok((format!("github:{issue}"), vec![repo.to_owned()]));
+    }
+    Err(format!(
+        "`{issue}` is not an issue: give ENG-7, owner/name#42 or a URL"
+    ))
 }
 
 /// Publishes `add` as a request under `key`, such as a Slack thread's `slack:<channel>:<ts>`, with
@@ -334,6 +473,7 @@ fn quick(factory: &Factory, add: &Add, repo: Option<String>) -> Result<Request, 
         relates: add.relates.clone(),
         intervention: add.intervention,
         text: add.text.clone(),
+        batch: None,
     };
     check(factory, &request)?;
     Ok(request)
@@ -531,6 +671,9 @@ fn task(request: &Request, key: &str, source: &Message) -> Message {
     }
     if let Some(intervention) = request.intervention {
         data["intervention"] = json!(intervention);
+    }
+    if let Some(batch) = &request.batch {
+        data["batch"] = json!(batch);
     }
     Message::new(TASK_REQUESTED, data)
         .id(intake::id(&format!(

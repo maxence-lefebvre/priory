@@ -1560,6 +1560,34 @@ fn a_request_table_passes_and_an_unknown_workflow_or_band_is_refused() {
 }
 
 #[test]
+fn a_batch_workflow_needs_a_human_step_after_a_model_step() {
+    let good = "name = \"demo\"\n\n[batch]\nworkflow = \"implement\"\nentries = \"implement\"\n";
+    let ok = check(&factory("batch-ok", &with("factory.toml", good)));
+    let plan_only = "start = \"plan\"\n\n[[steps]]\nid = \"plan\"\ndecides = \"model\"\nagent = \"implementer\"\nprompt = \"Plan.\"\neffect = \"read\"\nnext = { planned = \"done\" }\n";
+    let mut files = with("factory.toml", good);
+    files.push(("workflows/plan.toml", plan_only));
+    let no_go_toml = good.replace("workflow = \"implement\"", "workflow = \"plan\"");
+    files.retain(|(path, _)| *path != "factory.toml");
+    files.push(("factory.toml", &no_go_toml));
+    let no_go = check(&factory("batch-no-go", &files));
+    let unknown = good.replace("entries = \"implement\"", "entries = \"groom\"");
+    let bad = check(&factory("batch-unknown", &with("factory.toml", &unknown)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (no_go.code, no_go.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[batch] workflow` `plan` needs a human step after a model step: the go that starts the batch\n"
+        )
+    );
+    assert_eq!(
+        (bad.code, bad.stderr.as_str()),
+        (1, "factory.toml:3: `[batch] entries` `groom` does not exist\n")
+    );
+}
+
+#[test]
 fn a_slack_shortcut_needs_users_with_slack_ids() {
     let good = "name = \"demo\"\n\n[slack.shortcut]\nusers = [\"U0123ABCD\", \"W0456\"]\n";
     let ok = check(&factory("shortcut-ok", &with("factory.toml", good)));

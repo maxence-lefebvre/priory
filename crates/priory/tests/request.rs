@@ -670,3 +670,140 @@ fn an_unknown_intervention_is_a_usage_error() {
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     assert!(setup.published().is_empty());
 }
+
+const PLAN_BATCH: &str = r#"
+start = "plan"
+
+[[steps]]
+id = "plan"
+decides = "model"
+agent = "implementer"
+effect = "read"
+prompt = "Plan these issues into a batch."
+next = { planned = "go" }
+
+[[steps]]
+id = "go"
+decides = "human"
+effect = "none"
+options = ["go", "drop"]
+approves = ["start"]
+next = { go = "start", drop = "stop" }
+
+[[steps]]
+id = "start"
+decides = "code"
+action = "start-batch"
+effect = "irreversible"
+next = { started = "done", failed = "go" }
+"#;
+
+const BATCHES: &str = "name = \"demo\"\n\n[request]\nworkflow = \"implement\"\n\n[batch]\nworkflow = \"plan-batch\"\n";
+
+impl Setup {
+    /// A factory with `[batch]` and its planning workflow.
+    fn batches(name: &str) -> Self {
+        let setup = Setup::with(name, BATCHES);
+        fs::write(
+            setup.dir.join("factory/workflows/plan-batch.toml"),
+            PLAN_BATCH,
+        )
+        .unwrap();
+        setup
+    }
+
+    /// Runs `priory batch add` on the factory on 2026-11-20 in UTC.
+    fn batch_add(&self, args: &[&str]) -> Output {
+        let factory = self.dir.join("factory");
+        let mut all = vec!["batch", "add", factory.to_str().unwrap()];
+        all.extend(args);
+        Command::new(env!("CARGO_BIN_EXE_priory"))
+            .args(all)
+            .env("HERDR_BUS_DB", self.dir.join("bus.db"))
+            .env("PRIORY_DB", self.dir.join("priory.db"))
+            .env("PRIORY_NOW", "2026-11-20T10:00:00Z")
+            .env("TZ", "UTC")
+            .env("USER", "max")
+            .output()
+            .unwrap()
+    }
+}
+
+#[test]
+fn batch_add_publishes_one_planning_request_with_its_issues() {
+    let setup = Setup::batches("batch-add");
+
+    let output = setup.batch_add(&[
+        "ENG-7",
+        "owner/repo#42",
+        "https://linear.app/acme/issue/ENG-8/fix-it",
+        "--repo",
+        "owner/repo",
+        "--lane",
+        "billing",
+    ]);
+
+    succeeded(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "batch:2026-11-20-1\n"
+    );
+    let published = setup.published();
+    assert_eq!(
+        published[0].message.data["text"],
+        "Plan these issues into a batch: linear:ENG-7, github:owner/repo#42, linear:ENG-8"
+    );
+    let task = &published[1].message.data;
+    assert_eq!(
+        [&task["workflow"], &task["key"], &task["lane"], &task["repo"]],
+        ["plan-batch", "batch:2026-11-20-1", "billing", "owner/repo"]
+    );
+    assert_eq!(
+        task["batch"],
+        json!({
+            "issues": ["linear:ENG-7", "github:owner/repo#42", "linear:ENG-8"],
+            "entries": "implement"
+        })
+    );
+}
+
+#[test]
+fn batch_add_refuses_a_factory_without_a_batch_workflow_or_an_unknown_one() {
+    let setup = Setup::with("batch-add-none", DEFAULTS);
+    let missing = Setup::new("batch-add-missing");
+    fs::remove_dir_all(missing.dir.join("factory")).unwrap();
+
+    let none = setup.batch_add(&["ENG-7", "--repo", "owner/repo"]);
+    let unknown = missing.batch_add(&["ENG-7", "--repo", "owner/repo"]);
+
+    assert!(!none.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&none.stderr),
+        "priory batch add: factory.toml has no [batch] workflow; set one to plan batches\n"
+    );
+    assert!(!unknown.status.success());
+    assert!(setup.published().is_empty());
+    assert!(missing.published().is_empty());
+}
+
+#[test]
+fn a_factory_of_several_runners_refuses_batch_add() {
+    let setup = Setup::batches("batch-add-runners");
+    fs::create_dir_all(setup.dir.join("factory/runners")).unwrap();
+    for name in ["one", "two"] {
+        fs::write(
+            setup.dir.join(format!("factory/runners/{name}.toml")),
+            "platform = { os = \"linux\" }",
+        )
+        .unwrap();
+    }
+
+    let output = setup.batch_add(&["ENG-7", "--repo", "owner/repo"]);
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory batch add: batches need one runner; this factory has 2\n"
+    );
+    assert!(setup.published().is_empty());
+}
