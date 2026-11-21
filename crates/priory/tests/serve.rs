@@ -1114,6 +1114,19 @@ fn the_tasks_endpoint_gives_each_task_its_title_and_batch() {
 }
 
 #[test]
+fn a_task_endpoint_names_the_batch_of_a_batch_entry() {
+    let mut setup = Setup::new("task-batch", SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute("UPDATE tasks SET batch = 4 WHERE id = 2", [])
+        .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    assert_eq!(api(&address, "/api/tasks/2")["batch"], 4);
+    assert_eq!(api(&address, "/api/tasks/1")["batch"], Value::Null);
+}
+
+#[test]
 fn the_runs_endpoint_lists_the_runs_of_the_last_week_newest_first_with_outcome_model_and_tokens() {
     let mut setup = Setup::new("runs", SERVE);
     setup.seed();
@@ -1365,7 +1378,14 @@ fn a_task_endpoint_shows_its_brief_plan_pull_request_and_each_runs_tokens() {
         (2, "github.check_run.completed", pr("test", "failure")),
         (3, "github.check_run.completed", pr("test", "success")),
         (4, "github.check_run.completed", pr("lint", "success")),
-        (5, "github.pull_request_review.submitted", pr("", "")),
+        // A review the intake read without the pull request's branches and head.
+        (5, "github.pull_request_review.submitted", {
+            let mut review = pr("", "");
+            review["head_branch"] = Value::Null;
+            review["base_branch"] = Value::Null;
+            review["head_sha"] = Value::Null;
+            review
+        }),
         // A check run on the commit before the head, completing late.
         (6, "github.check_run.completed", {
             let mut late = pr("test", "failure");
@@ -1400,6 +1420,8 @@ fn a_task_endpoint_shows_its_brief_plan_pull_request_and_each_runs_tokens() {
     assert_eq!(pull["title"], "Fix the docs");
     assert_eq!(pull["state"], "open");
     assert_eq!(pull["head_sha"], "abc");
+    assert_eq!(pull["branch"], "docs-1");
+    assert_eq!(pull["base"], "main");
     assert_eq!(pull["review"], "approved");
     assert_eq!(
         pull["checks"],

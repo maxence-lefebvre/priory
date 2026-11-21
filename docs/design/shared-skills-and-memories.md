@@ -203,6 +203,10 @@ Tests:
 1. Reviewed memories from git: the factory's `memories/`, read-only, as an index in the
    instructions and the files in the run's snapshot. No tool writes them yet, so a memory changes
    only through a pull request. This shares memories with no new message and no new risk.
+   This slice is built: [skills.md](../daemon/skills.md#memories) describes it. The snapshot is
+   `$PRIORY_HOME/kit/<hash>/memories/`, named by a hash of the memories, and a Claude Code run gets
+   `--add-dir` on it. `priory check` refuses a memory over 4096 bytes, and counts the index toward a
+   Codex agent's 8192-byte limit.
 2. `[kit]`: fetch at start and on the tick, the per-commit checkout, the desk banner on a failed
    fetch, and the run's recorded commit. Tests run against a local bare repository.
 3. Memories on the log: `remember`, `forget` and `memory`, candidates and acceptance, and the

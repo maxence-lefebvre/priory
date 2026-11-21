@@ -1,7 +1,7 @@
 use crate::factory::{
     ASK_SHAPE, Agent, Backend, CODEX_PROMPT_LIMIT, Decider, Effect, Factory, Harness, INSTRUCTIONS,
-    Intervention, Loaded, OnChange, PermissionMode, Problem, Proof, ScoreKind, ScoreOn, Scorer,
-    Session, Step, Trigger, Until, Workflow,
+    Intervention, Loaded, MEMORY_FOLDER, OnChange, PermissionMode, Problem, Proof, ScoreKind,
+    ScoreOn, Scorer, Session, Step, Trigger, Until, Workflow,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
 use crate::lanes::{self, Lanes};
@@ -532,13 +532,18 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
     if !matches!(value.harness, Harness::Codex) {
         return;
     }
-    let instructions = factory.instructions();
+    let instructions = factory.run_instructions(MEMORY_FOLDER);
     let size = instructions.len() + "\n\n".len() + factory.prompt(value).len();
     if !instructions.is_empty() && size > CODEX_PROMPT_LIMIT {
+        let parts = if factory.memories.is_empty() {
+            format!("{INSTRUCTIONS} and its own prompt")
+        } else {
+            format!("{INSTRUCTIONS}, the memory index and its own prompt")
+        };
         problems.push(problem(
             agent,
             agent.lines.field("harness"),
-            format!("a codex agent takes {INSTRUCTIONS} and its own prompt on its command line, as `developer_instructions`: together they are {size} bytes, over the limit of {CODEX_PROMPT_LIMIT}"),
+            format!("a codex agent takes {parts} on its command line, as `developer_instructions`: together they are {size} bytes, over the limit of {CODEX_PROMPT_LIMIT}"),
         ));
     }
     for (field, set) in [

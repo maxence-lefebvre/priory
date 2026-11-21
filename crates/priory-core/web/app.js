@@ -7,11 +7,11 @@ import { linked } from "./links.js";
 import { around, dossier, nextPick, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
-import { handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
+import { emptyDetail, eventWords, handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, sayLine, screenRows, screenWatch } from "./terminal.js";
 import { actionNote, batchParts, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
-import { TASK_FACETS, TASK_VIEWS, filtered, olderPart, taskViews } from "./tasks.js";
+import { TASK_FACETS, TASK_VIEWS, filtered, olderPart, taskViews, triageWords } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
 
@@ -619,7 +619,7 @@ function unroutedRows() {
         : html`<button type="button" class="btn secondary" data-action="subscribe-task" data-resource="${group.resource}" data-task="${task.id}" ${busy}>Subscribe task ${task.id}</button>`;
     return html`<section class="ugroup" aria-label="${group.resource}"><p class="l1"><span class="mono">${group.resource}</span><span class="num">${group.events.length}</span></p>
       <p class="meta">${tile(task.state, "sm")}<a href="/tasks/${task.id}">task ${task.id}</a> ${task.state}, <span class="mono">${task.key}</span></p>
-      <ol class="hist">${group.events.slice(0, 5).map((event) => html`<li>${tile("queued", "sm")}<span><b>${event.type}</b> ${event.subject || ""}${event.line ? html`<span class="meta">${event.line}</span>` : ""}</span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>
+      <ol class="hist">${group.events.slice(0, 5).map((event) => html`<li>${tile("queued", "sm")}<span><b title="${event.type}">${eventWords(event.type)}</b> ${event.subject || ""}${event.line ? html`<span class="meta">${event.line}</span>` : ""}</span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>
       ${group.events.length > 5 ? html`<p class="meta">and ${group.events.length - 5} older</p>` : ""}
       <div class="routeform">${route}</div>
       ${notice ? html`<p class="note" role="status">${notice}</p>` : ""}</section>`;
@@ -1141,7 +1141,7 @@ function splitsSection(batch) {
 
 // The batch page (DESIGN.md, Batch page): /batches/<id>.
 function batchPage(id) {
-  const back = html`<div class="top"><a class="back" href="/">${icon("chevron-left", "s22")}Desk</a></div>`;
+  const back = html`<div class="top"><a class="back" href="/tasks">${icon("chevron-left", "s22")}Tasks</a></div>`;
   const batch = batchOf(id);
   if (!batch) {
     const failed = state.batch?.error;
@@ -1252,7 +1252,7 @@ function taskPage(id) {
     <textarea id="say" name="text" rows="2" placeholder="Say to the agent">${state.sayDrafts.get(task.id) || ""}</textarea><button class="btn primary" ${said}>Say</button></form>`;
   const sections = taskSections(task).map(([, , section]) => section);
   return html`${back}<div class="scroll"><div class="ask task">
-    <p class="ctx">${tile(task.state, "sm")}<span class="mono">${task.key}</span><span>${task.state}</span><span>${task.workflow} ${task.step}</span><span>${task.lane || ""}</span><span>${task.band || ""}</span></p>
+    <p class="ctx">${tile(task.state, "sm")}<span class="mono">${task.key}</span><span>${task.state}</span><span>${task.workflow} ${task.step}</span><span>${task.lane || ""}</span><span>${task.band || ""}</span>${task.batch == null ? "" : html`<a href="/batches/${task.batch}">batch ${task.batch}</a>`}</p>
     <h2 class="question">${autolinked(task.tldr || task.brief?.title || task.brief?.request?.split("\n")[0] || task.key, task.repo)}</h2>
     ${task.reason ? html`<p class="text t-${role(task.state)}">${autolinked(task.reason, task.repo)}</p>` : ""}
     ${taskActs(task.id, task.state)}${say}</div>${sections}${terminalSection(task)}</div>`;
@@ -1290,7 +1290,7 @@ function taskSections(task) {
     const shown = task.inbox.slice(0, INBOX_SHOWN);
     const more = task.inbox.length > INBOX_SHOWN ? html`<p class="meta">Latest ${INBOX_SHOWN} of ${task.inbox.length}. <code>priory task ${task.id}</code> lists every event.</p>` : "";
     sections.push(["inbox", "Inbox", sect("inbox", "message-text", "Inbox", "newest first", html`<ol class="hist" aria-label="Events routed to this task, newest first">${shown.map((event) =>
-      html`<li>${tile(INBOX_TILES[event.prompt] || (event.outcome === "kept" && event.task === task.id ? "asleep" : "ready"), "sm")}<span><b>${event.type}</b> ${event.subject || ""}<span class="meta">${handled(event, task.id)}</span></span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>${more}`)]);
+      html`<li>${tile(INBOX_TILES[event.prompt] || (event.outcome === "kept" && event.task === task.id ? "asleep" : "ready"), "sm")}<span><b title="${event.type}">${eventWords(event.type)}</b> ${event.subject || ""}<span class="meta">${handled(event, task.id)}</span></span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>${more}`)]);
   }
   if (task.runs?.length) {
     sections.push(["trace", "Trace", sect("trace", "runs", "Trace", "", html`<ol class="hist">${task.runs.map((run) => {
@@ -1451,7 +1451,7 @@ function triageList(triage) {
   if (!triage?.length) return "";
   const label = (item) => item.replace(/^https:\/\/github\.com\//, "");
   const named = (item) => (item.startsWith("https://") ? html`<a class="autolink" href="${item}" rel="noopener noreferrer" target="_blank">${label(item)}</a>` : item);
-  return html`<p class="meta">Feedback, as the agent sorted it</p><ol class="hist" aria-label="Review feedback items">${triage.map((entry) => html`<li>${tile(TRIAGE_TILES[entry.class] || "queued", "sm")}<span>${named(entry.item)}</span><span>${entry.class}</span></li>`)}</ol>`;
+  return html`<p class="meta">Feedback, as the agent sorted it</p><ol class="hist" aria-label="Review feedback items">${triage.map((entry) => html`<li>${tile(TRIAGE_TILES[entry.class] || "queued", "sm")}<span>${named(entry.item)}</span><span>${triageWords(entry.class)}</span></li>`)}</ol>`;
 }
 
 const PULL_TILES = { merged: "done", closed: "dropped" };
@@ -2495,9 +2495,9 @@ const OWN_PAGE_LISTS = { tasks: tasksBody, runs: runsBody, queue: queueBody };
 
 const keyHints = () => html`<div class="keys"><span><kbd>J</kbd><kbd>K</kbd>move</span><span><kbd>Enter</kbd>open</span><span><kbd>Esc</kbd>close</span><span><kbd>N</kbd>add</span></div>`;
 
-function drawer(wide) {
+function drawer(wide, panels) {
   const id = selectedAsk();
-  const body = id ? askDetail(id, wide) : html`<p class="empty">Select an ask to read it here.</p>`;
+  const body = id ? askDetail(id, wide) : html`<p class="empty">${emptyDetail(panels)}</p>`;
   return html`<aside class="drawer" aria-label="Ask">${body}</aside>`;
 }
 
@@ -2508,12 +2508,21 @@ function current() {
   return first;
 }
 
+const shownTab = (children, list) => children.find((child) => leaves(child).includes(list)) || children[0];
+
+// The panels `tree` draws: each tabs node shows one child.
+function shownPanels(node, list) {
+  if (node.panel) return [node.panel];
+  const [kind, children] = Object.entries(node)[0];
+  return kind === "tabs" ? shownPanels(shownTab(children, list), list) : children.flatMap((child) => shownPanels(child, list));
+}
+
 // The view file's tree, for a layout that is not a plain set of tabs.
 function tree(node, list) {
   if (node.panel) return listPanel(node.panel, true);
   const [kind, children] = Object.entries(node)[0];
   if (kind !== "tabs") return html`<div class="tree tree-${kind}">${children.map((child) => tree(child, list))}</div>`;
-  const shown = children.find((child) => leaves(child).includes(list)) || children[0];
+  const shown = shownTab(children, list);
   const strip = children.map((child) => {
     const panel = leaves(child)[0];
     return html`<a href="${panel === "desk" ? "/" : `/${panel}`}" aria-current="${child === shown ? "page" : "false"}">${icon(PANELS[panel][1], "s20")}${PANELS[panel][0]}</a>`;
@@ -2625,23 +2634,23 @@ function page() {
     else if (here === "settings") body = html`<div class="top"><a class="back" href="/more">${icon("chevron-left", "s22")}More</a></div>${settingsScreen()}`;
     else if (PANELS[here]) body = html`<div class="top"><h1>${PANELS[here][0]}</h1></div>${laterPanel(here)}`;
     else body = notFound();
-    const tab = selectedAsk() ? null : here === "settings" ? "more" : batchId ? "desk" : here;
+    const tab = selectedAsk() ? null : here === "settings" ? "more" : batchId ? "tasks" : here;
     return html`${staleStrip()}${body}${tab ? tabs(tab, "bar") : ""}`;
   }
   const list = selectedAsk() ? state.list : here;
   const top = html`<header class="wtop"><span class="fac">${state.data.views.factory}</span>${connection()}<span class="sp"></span>${addButton("addtop")}</header>`;
   const wide = size === "wide";
   const utility = taskId ? taskPage(taskId) : batchId ? batchPage(batchId) : here === "reports" ? reportsPage(false) : here === "costs" ? costsPage(false) : here === "workflow" ? flowsPage(false) : here === "settings" ? settingsScreen() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
-  const nav = (kind) => tabs(here === "settings" && wide ? "settings" : here === "settings" ? "more" : batchId ? "desk" : list, kind);
+  const nav = (kind) => tabs(here === "settings" && wide ? "settings" : here === "settings" ? "more" : batchId ? "tasks" : list, kind);
   if (utility) {
     return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}<div class="list">${utility}</div></div>${wide ? "" : nav("bar")}`;
   }
   if (OWN_PAGE_LISTS[list]) return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}${listPanel(list, wide)}</div>${wide ? "" : nav("bar")}`;
-  if (!wide) return html`${staleStrip()}${top}<div class="medium">${listPanel(list, false)}${drawer(false)}</div>${nav("bar")}`;
+  if (!wide) return html`${staleStrip()}${top}<div class="medium">${listPanel(list, false)}${drawer(false, [list])}</div>${nav("bar")}`;
   const layoutNode = view().layout;
   const plain = layoutNode.tabs?.every((child) => child.panel);
   const main = plain ? listPanel(list, true) : tree(layoutNode, list);
-  return html`${staleStrip()}${top}<div class="wide">${nav("rail")}${main}${drawer(true)}</div>`;
+  return html`${staleStrip()}${top}<div class="wide">${nav("rail")}${main}${drawer(true, plain ? [list] : shownPanels(layoutNode, list))}</div>`;
 }
 
 const notFound = () => html`<p class="empty">No such page. Go back to the <a class="ghost" href="/">Desk</a>.</p>`;
