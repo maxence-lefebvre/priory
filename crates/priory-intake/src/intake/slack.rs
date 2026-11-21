@@ -3,6 +3,7 @@ use crate::log::{self, Log};
 use herdr_bus::{Message, Timestamp};
 use priory_factory::factory::Trigger;
 use serde_json::{Value, json};
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -27,6 +28,10 @@ pub(super) struct Slack<'a> {
     /// Which watched thread the next poll reads first, modulo their count. It starts at the
     /// minute, so that successive `--once` runs rotate too.
     turn: i64,
+    /// The display name of each user id `users.info` answered, for the life of the process.
+    names: RefCell<BTreeMap<String, String>>,
+    /// Whether a failing `users.info` was reported, so that it is reported once.
+    unnamed: Cell<bool>,
 }
 
 impl<'a> Slack<'a> {
@@ -55,6 +60,8 @@ impl<'a> Slack<'a> {
             triggers,
             channels,
             turn: super::now()?.as_second().div_euclid(60),
+            names: RefCell::default(),
+            unnamed: Cell::new(false),
         })
     }
 
@@ -181,6 +188,7 @@ impl<'a> Slack<'a> {
                 "thread_ts": thread,
                 "ts": ts,
                 "user": message["user"],
+                "actor": message["user"].as_str().map(|user| self.name(user)),
                 "text": message["text"],
                 "files": files(&message),
                 "time": time.to_string(),
@@ -195,6 +203,38 @@ impl<'a> Slack<'a> {
             );
         }
         Ok(replies)
+    }
+
+    /// The display name of `user`, asked of `users.info` once per process; the id itself when Slack
+    /// does not answer, as without the `users:read` scope.
+    fn name(&self, user: &str) -> String {
+        if let Some(name) = self.names.borrow().get(user) {
+            return name.clone();
+        }
+        let answer = match call(&self.token, "users.info", &[("user", user.to_owned())]) {
+            Ok(answer) => answer,
+            Err(error) => {
+                if !self.unnamed.replace(true) {
+                    eprintln!("{error}: Slack replies name their authors by id");
+                }
+                return user.to_owned();
+            }
+        };
+        let profile = &answer["user"]["profile"];
+        let name = [
+            &profile["display_name"],
+            &profile["real_name"],
+            &answer["user"]["name"],
+        ]
+        .into_iter()
+        .map(text)
+        .find(|name| !name.is_empty())
+        .unwrap_or(user)
+        .to_owned();
+        self.names
+            .borrow_mut()
+            .insert(user.to_owned(), name.clone());
+        name
     }
 
     /// Whether a person wrote `message`: not the bot itself, and not a join or another subtype
