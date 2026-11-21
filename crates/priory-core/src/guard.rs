@@ -2,6 +2,7 @@
 
 use crate::trace::{self, Trace};
 use priory_factory::factory::Effect;
+use priory_factory::guard::NEED_APPROVAL;
 use priory_runtime::runtime;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
@@ -35,8 +36,9 @@ struct Run {
     branch: Option<String>,
 }
 
-/// Allows the call when its workflow allows the guard, or when the task's step is irreversible
-/// and autonomous or approved at the task's current commit. A denial is the reason the agent
+/// Allows the call when its workflow allows the guard, or when the task's step is irreversible,
+/// names the guard in its own `guard.allow`, and is approved at the task's current commit or
+/// autonomous; `NEED_APPROVAL` guards need the approval. A denial is the reason the agent
 /// reads, and it is recorded on the task as `factory.tool.denied`.
 pub(crate) fn decide(
     db: &mut Connection,
@@ -81,12 +83,28 @@ pub(crate) fn decide(
             run.workflow, call.guard
         )));
     }
-    let step = workflow.and_then(|flow| flow.step(&run.step));
+    let step = workflow
+        .and_then(|flow| flow.step(&run.step))
+        .filter(|step| step.effect == Effect::Irreversible);
     let why = match step {
-        Some(step) if step.effect == Effect::Irreversible && step.autonomous.is_some() => {
-            return Ok(Ok(format!("step {} is autonomous", run.step)));
+        None => format!(
+            "step `{}` is not irreversible, so no person approved a call like this",
+            run.step
+        ),
+        Some(step) if !step.guard.allow.contains(&call.guard) => format!(
+            "step `{}` does not name `{}` in its `guard.allow`",
+            run.step, call.guard
+        ),
+        Some(step) if step.autonomous.is_some() => {
+            if !NEED_APPROVAL.contains(&call.guard.as_str()) {
+                return Ok(Ok(format!("step {} is autonomous", run.step)));
+            }
+            format!(
+                "only a person's approval grants it, and step `{}` is autonomous",
+                run.step
+            )
         }
-        Some(step) if step.effect == Effect::Irreversible => {
+        Some(_) => {
             let head = run
                 .worktree
                 .as_deref()
@@ -117,10 +135,6 @@ pub(crate) fn decide(
                 None => format!("no person approved step `{}`", run.step),
             }
         }
-        _ => format!(
-            "step `{}` is not irreversible, so no person approved a call like this",
-            run.step
-        ),
     };
     let reason = denied(&why);
     let tx = db.transaction()?;

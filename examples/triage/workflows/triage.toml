@@ -25,4 +25,5 @@ decides = "model"
 agent = "triager"
 prompt = "Post the comment you drafted, as approved, with gh issue comment."
 effect = "irreversible"
+guard = { allow = ["gh-issue-comment"] }
 next = { posted = "done", failed = "stop" }
