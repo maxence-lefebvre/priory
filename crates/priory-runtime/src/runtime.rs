@@ -270,37 +270,64 @@ pub fn revision(dir: &Path) -> Option<String> {
         .filter(|commit| !commit.is_empty())
 }
 
-/// Pushes `commit` from `worktree` to `branch` on its `origin`, then reuses the pull request open
-/// from that branch on `repo`, or opens one against the remote's default branch. Returns its number.
+/// Pushes `commit` to `branch` on the origin of `worktree`, then returns the open pull request from
+/// `branch` and its base: the one `gh pr list` finds, else one it creates on `base`, or on the
+/// default branch with no `base`.
 pub fn open_pull_request(
     worktree: &Path,
     repo: &str,
     branch: &str,
     commit: &str,
+    base: Option<&str>,
     title: &str,
     body: &str,
-) -> Result<u64, String> {
+) -> Result<(u64, String), String> {
     let target = format!("{commit}:refs/heads/{branch}");
     run(git(worktree).args(["push", "--quiet", "origin", &target]))?;
     let open = run(Command::new("gh").args([
-        "pr", "list", "-R", repo, "--head", branch, "--state", "open", "--json", "number",
+        "pr",
+        "list",
+        "-R",
+        repo,
+        "--head",
+        branch,
+        "--state",
+        "open",
+        "--json",
+        "number,baseRefName",
     ]))?;
     let open: Vec<serde_json::Value> = serde_json::from_str(&open)
         .map_err(|error| format!("gh pr list printed {open:?}: {error}"))?;
-    if let Some(number) = open.first().and_then(|pull| pull["number"].as_u64()) {
-        return Ok(number);
+    if let Some(pull) = open.first()
+        && let (Some(number), Some(base)) = (pull["number"].as_u64(), pull["baseRefName"].as_str())
+    {
+        return Ok((number, base.to_owned()));
     }
-    let base = run(git(worktree).args(["rev-parse", "--abbrev-ref", "origin/HEAD"]))?;
-    let base = base.trim().trim_start_matches("origin/");
+    let base = match base {
+        Some(base) => base.to_owned(),
+        None => run(git(worktree).args(["rev-parse", "--abbrev-ref", "origin/HEAD"]))?
+            .trim()
+            .trim_start_matches("origin/")
+            .to_owned(),
+    };
     let url = run(Command::new("gh").args([
-        "pr", "create", "-R", repo, "--base", base, "--head", branch, "--title", title, "--body",
+        "pr", "create", "-R", repo, "--base", &base, "--head", branch, "--title", title, "--body",
         body,
     ]))?;
     url.trim()
         .rsplit('/')
         .next()
         .and_then(|number| number.parse().ok())
+        .map(|number| (number, base))
         .ok_or_else(|| format!("gh pr create printed {url:?}, not a pull request URL"))
+}
+
+/// Whether commit `below` is `commit` or one of its ancestors, in the repository of `worktree`.
+pub fn is_ancestor(worktree: &Path, below: &str, commit: &str) -> bool {
+    git(worktree)
+        .args(["merge-base", "--is-ancestor", below, commit])
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// The state of pull request `number` on `repo`: OPEN, CLOSED or MERGED.

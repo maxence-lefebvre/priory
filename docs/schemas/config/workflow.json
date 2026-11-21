@@ -137,6 +137,15 @@
         "null"
       ]
     },
+    "max_prs": {
+      "description": "The most pull requests a task's stack may hold: `open-pr` refuses a longer one. No cap\nwhen unset.",
+      "format": "uint",
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "reopen": {
       "description": "The model step a done task goes back to when its open pull request gets feedback; by\ndefault, the step that opened the pull request.",
       "type": [

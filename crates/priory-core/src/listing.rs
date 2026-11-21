@@ -213,11 +213,11 @@ fn tasks_since(
         state::START_ORDER
     );
     let mut tasks = rows(db, &query, [lane, grade, since])?;
-    tasks
-        .as_array_mut()
-        .expect("rows are an array")
-        .iter_mut()
-        .for_each(parse_json);
+    for task in tasks.as_array_mut().expect("rows are an array") {
+        parse_json(task);
+        let id = task["id"].as_i64().expect("a task has an id");
+        task["stack"] = crate::stack::json(db, id)?;
+    }
     Ok(tasks)
 }
 
@@ -720,6 +720,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         task[name] = rows(db, query, [id])?;
     }
     task["asks"] = asks_of(db, Some(id), None, None)?;
+    task["stack"] = crate::stack::json(db, id)?;
     for run in task["runs"].as_array_mut().expect("rows are an array") {
         if let Some(tokens) = run["tokens"].as_str() {
             run["tokens"] = serde_json::from_str(tokens).unwrap_or(Value::Null);

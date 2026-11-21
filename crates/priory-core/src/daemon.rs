@@ -1185,8 +1185,9 @@ fn run_commands(
     Ok(still)
 }
 
-/// Pushes `commit` to the task's branch and opens its pull request, titled and described by its
-/// latest result.
+/// Pushes each branch of the task's stack, bottom first, and opens or reuses its pull request on
+/// the one below, titled and described by its latest result. The top branch is the task's own, at
+/// `commit`, which its approval covers; each lower one must be below it.
 fn open_pr(
     db: &Connection,
     factory: &Factory,
@@ -1199,34 +1200,91 @@ fn open_pr(
         (None, ..) => Err(format!("task {} names no repo", due.task)),
         (_, None, _) => Err("the task's branch has no commit yet".to_owned()),
         (.., None) => Err("no result describes the pull request".to_owned()),
-        (Some(repo), Some((worktree, commit)), Some((summary, evidence))) => {
-            let branch = due
+        (
+            Some(repo),
+            Some((worktree, commit)),
+            Some(state::Described {
+                summary,
+                evidence,
+                branches,
+            }),
+        ) => {
+            let own = due
                 .branch
                 .as_deref()
                 .expect("a commit comes from the branch");
+            let branches = branches.unwrap_or_else(|| vec![own.to_owned()]);
+            let cap = factory.workflows[&due.workflow].value.max_prs;
+            if let Some(cap) = cap.filter(|cap| branches.len() > cap.get()) {
+                return Ok(failed(format!(
+                    "the stack has {} branches, past max_prs = {cap} of workflow {}",
+                    branches.len(),
+                    due.workflow
+                )));
+            }
             let title = summary.lines().next().unwrap_or_default();
             let body = match evidence {
                 Some(evidence) => format!("{summary}\n\n{evidence}"),
                 None => summary.clone(),
             };
-            runtime::open_pull_request(Path::new(worktree), repo, branch, commit, title, &body)
-                .map(|number| route::pull_request(repo, number))
+            open_stack(Path::new(worktree), repo, &branches, commit, title, &body)
         }
     };
     Ok(match opened {
-        Ok(pull_request) => Done {
+        Ok(stack) => Done {
             status: "opened",
-            pull_request: Some(pull_request),
+            pull_request: stack.last().map(|pull| pull.resource.clone()),
             commit: commit.map(str::to_owned),
             error: None,
+            stack,
         },
-        Err(error) => Done {
-            status: "failed",
-            pull_request: None,
-            commit: None,
-            error: Some(error),
-        },
+        Err(error) => failed(error),
     })
+}
+
+fn failed(error: String) -> Done {
+    Done {
+        status: "failed",
+        pull_request: None,
+        commit: None,
+        error: Some(error),
+        stack: Vec::new(),
+    }
+}
+
+/// Opens the pull request of each of `branches`, bottom first, each on the one below.
+fn open_stack(
+    worktree: &Path,
+    repo: &str,
+    branches: &[String],
+    commit: &str,
+    title: &str,
+    body: &str,
+) -> Result<Vec<tools::Stacked>, String> {
+    let mut stack: Vec<tools::Stacked> = Vec::new();
+    for (at, branch) in branches.iter().enumerate() {
+        let head = match at + 1 == branches.len() {
+            true => commit.to_owned(),
+            false => runtime::head(worktree, branch)
+                .filter(|head| runtime::is_ancestor(worktree, head, commit))
+                .ok_or_else(|| {
+                    format!("branch {branch} is not below the approved commit {commit}")
+                })?,
+        };
+        let title = match branches.len() {
+            1 => title.to_owned(),
+            count => format!("{title} ({} of {count})", at + 1),
+        };
+        let below = stack.last().map(|pull| pull.branch.as_str());
+        let (number, base) =
+            runtime::open_pull_request(worktree, repo, branch, &head, below, &title, body)?;
+        stack.push(tools::Stacked {
+            resource: route::pull_request(repo, number),
+            branch: branch.clone(),
+            base,
+        });
+    }
+    Ok(stack)
 }
 
 /// Opens an issue on the task's repository, titled and described by its latest result.
@@ -1237,7 +1295,12 @@ fn open_issue(db: &Connection, factory: &Factory, due: &state::Due) -> Result<Do
     ) {
         (None, _) => Err(format!("task {} names no repo", due.task)),
         (_, None) => Err("no result describes the issue".to_owned()),
-        (Some(repo), Some((summary, evidence))) => {
+        (
+            Some(repo),
+            Some(state::Described {
+                summary, evidence, ..
+            }),
+        ) => {
             let title = summary.lines().next().unwrap_or_default();
             let body = match evidence {
                 Some(evidence) => format!("{summary}\n\n{evidence}"),
@@ -1258,13 +1321,9 @@ fn open_issue(db: &Connection, factory: &Factory, due: &state::Due) -> Result<Do
             pull_request: None,
             commit: None,
             error: None,
+            stack: Vec::new(),
         },
-        Err(error) => Done {
-            status: "failed",
-            pull_request: None,
-            commit: None,
-            error: Some(error),
-        },
+        Err(error) => failed(error),
     })
 }
 
