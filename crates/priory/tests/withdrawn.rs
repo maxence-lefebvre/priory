@@ -49,7 +49,12 @@ fn as_version_57(db: &rusqlite::Connection) {
         )
         .unwrap();
     }
-    db.execute_batch("PRAGMA user_version = 57;").unwrap();
+    db.execute_batch(
+        "DROP TRIGGER ask_returns_from_its_lead; DROP TRIGGER push_an_intake_failure;
+         DROP TRIGGER push_an_uncertain_prompt; DROP TRIGGER push_an_uncertain_command;
+         ALTER TABLE waits DROP COLUMN green; PRAGMA user_version = 57;",
+    )
+    .unwrap();
 }
 
 #[test]
