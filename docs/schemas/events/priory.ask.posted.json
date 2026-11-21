@@ -1,0 +1,102 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/priory.ask.posted.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "AskPosted": {
+      "additionalProperties": false,
+      "description": "A runner posts one of its asks each time any part of it that a view shows changes: asked,\nrevised, answered, refused, dismissed or withdrawn. Every other runner keeps the post with the\nhighest `version` and lists the ask as `<runner>:<ask>`.",
+      "properties": {
+        "ask": {
+          "description": "The ask's id on that runner.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "kind": {
+          "description": "`step`, `agent` or `outside`: who asked.",
+          "type": "string"
+        },
+        "listed": {
+          "description": "The ask as the runner's own `priory asks --json` lists it, with its `state`, `revision`,\n`revisions` and `refused`."
+        },
+        "runner": {
+          "description": "The runner that owns the ask.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Raised by every change the post shows. A refused answer raises it, never the question's\n`revision`.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "runner",
+        "ask",
+        "version",
+        "kind",
+        "listed"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A runner posts one of its asks each time any part of it that a view shows changes: asked,\nrevised, answered, refused, dismissed or withdrawn. Every other runner keeps the post with the\nhighest `version` and lists the ask as `<runner>:<ask>`.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/AskPosted"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "priory.ask.posted",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "priory.ask.posted",
+  "type": "object"
+}

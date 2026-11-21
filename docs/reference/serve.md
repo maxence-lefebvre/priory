@@ -221,6 +221,7 @@ Each item:
 | `routed_to` | string or null | An `ask` item's lead, which answers it in the person's place, or null. Other kinds have no `routed_to` |
 | `generation` | integer or null | The task's generation |
 | `snoozed_until`, `snoozed_at`, `back_early` | | The item's [snooze](#snooze) |
+| `runner`, `last_seen` | | An `ask` item's runner, in a factory of several, and for another runner's ask when that runner was last alive. Another runner's ask has `<runner>:<ask>` as `id`, a null `task` and no snooze, and ranks with the local asks |
 
 ## Inbox
 
@@ -302,6 +303,12 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `revisions` | array | Every revision of the question, oldest first: `revision`, `question`, `options`, `recommendation`, `text`, `at`, when it was asked, and `answer` and `answered_at`, the answer that revision took, or null. An ask stored before Priory kept revisions lists only its current one, dated when the ask was first asked |
 | `refused` | array | Every answer the daemon refused, oldest first: `revision`, the one the answer was sent for, `answer`, `by` (`cli` or `serve`), `why`, the CLI's error, and `at` |
 | `snoozed_until`, `snoozed_at`, `back_early` | | The ask's [snooze](#snooze) |
+| `runner` | string, absent with one runner | In a factory of several runners, the runner that owns the ask |
+| `last_seen` | string or null | Another runner's ask only: when its runner was last alive, from its last `priory.runner.alive` |
+
+In a factory of several runners, `asks` also lists every other runner's asks from their last
+[`priory.ask.posted`](events.md#prioryaskposted), with `<runner>:<ask>` as `id`. Their `task` is the
+task's number on that runner, and they carry no snooze.
 
 `priory asks` without `--json` prints only the open asks that are not snoozed, and `--all` adds the
 snoozed ones.

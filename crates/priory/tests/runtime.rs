@@ -17334,7 +17334,8 @@ fn a_person_gives_a_started_task_to_another_runner_which_starts_it_over_and_its_
         "{}",
         String::from_utf8_lossy(&given.stderr)
     );
-    b.until("asks", |rows| rows.len() == 1);
+    // b lists a's ask too, as `a:<ask>`, so it waits for an ask of its own.
+    b.until("asks", |rows| rows.iter().any(|row| !row[0].contains(':')));
 
     a.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
     let tasks = a.until("tasks", |rows| rows[0][4] == "dropped");
@@ -19590,4 +19591,206 @@ fn a_task_that_only_follows_a_batch_issue_does_not_take_it_from_the_start() {
 
     setup.until("tasks", |rows| rows.len() == 5);
     assert_eq!(batch_json(&setup, &["1"])["state"], "going");
+}
+
+/// Gives `setup`'s daemon a `[serve]` on loopback, so it serves the web API once it starts.
+fn with_serve(setup: &Setup) {
+    let file = setup.dir.join("factory/factory.toml");
+    let mut toml = fs::read_to_string(&file).unwrap();
+    toml.push_str("\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"PRIORY_TEST_TOKEN\"\n");
+    fs::write(file, toml).unwrap();
+}
+
+/// Starts `setup`'s daemon at `now` with its token and returns the address its server listens on.
+fn start_serving(setup: &mut Setup, now: &str) -> String {
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    setup.start_with(
+        exe,
+        &[("PRIORY_NOW", now), ("PRIORY_TEST_TOKEN", SERVE_TOKEN)],
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default();
+        if let Some(address) = log
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("priory: serving on http://"))
+        {
+            return address.to_owned();
+        }
+        assert!(Instant::now() < deadline, "the daemon never served: {log}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Sends one request with the token and returns its status and JSON body.
+fn runner_http(address: &str, method: &str, path: &str, body: &str) -> (u16, serde_json::Value) {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(60)))
+        .unwrap();
+    let head = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {SERVE_TOKEN}\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    let status = response[9..12].parse().unwrap();
+    let body = response.split_once("\r\n\r\n").map_or("", |(_, body)| body);
+    (status, serde_json::from_str(body).unwrap_or(json!(body)))
+}
+
+/// Waits until `/api/asks?all=1` on `address` lists ask `id` and `done` holds for it.
+fn until_ask(
+    address: &str,
+    id: &str,
+    done: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let (status, asks) = runner_http(address, "GET", "/api/asks?all=1", "");
+        assert_eq!(status, 200, "{asks}");
+        let found = asks["asks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|ask| ask["id"] == id)
+            .cloned();
+        if let Some(ask) = found.filter(&done) {
+            return ask;
+        }
+        assert!(Instant::now() < deadline, "no ask {id} as wanted in {asks}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The messages of `kind` on the log, oldest first.
+fn on_log(setup: &Setup, kind: &str) -> Vec<Message> {
+    let mut messages: Vec<Message> = setup
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 1000,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| stored.message.kind == kind)
+        .map(|stored| stored.message)
+        .collect();
+    messages.reverse();
+    messages
+}
+
+/// Runners `a` and `b` on one log, `a` asleep on an approve ask and `b` serving: returns both, the
+/// ask's id on `a` and `b`'s address.
+fn asked_on_a(test: &str) -> (Setup, Setup, String, String) {
+    let mut a = runner(test, "a", None);
+    let mut b = runner(test, "b", Some(&a));
+    with_serve(&b);
+    let mut asked = requested(1);
+    asked.data["workflow"] = json!("approve");
+    a.publish(&asked);
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    let asks = a.until("asks", |rows| rows.len() == 1);
+    let address = start_serving(&mut b, T0);
+    (a, b, asks[0][0].clone(), address)
+}
+
+#[test]
+fn another_runners_open_ask_is_listed_with_its_runner_on_the_asks_and_desk_endpoints() {
+    let (_a, b, ask, address) = asked_on_a("remote-listed");
+    let id = format!("a:{ask}");
+
+    let listed = until_ask(&address, &id, |ask| ask["state"] == "open");
+
+    assert_eq!(listed["runner"], "a", "{listed}");
+    assert_eq!(listed["revision"], 1, "{listed}");
+    assert!(listed["last_seen"].is_string(), "{listed}");
+    let (_, desk) = runner_http(&address, "GET", "/api/desk", "");
+    let item = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == id)
+        .unwrap_or_else(|| panic!("{desk}"));
+    assert_eq!(item["runner"], "a");
+    assert!(
+        desk["ranked"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == id),
+        "{desk}"
+    );
+    let cli = b.priory(&["asks", "--json"]);
+    let cli: serde_json::Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert!(
+        cli["asks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|ask| ask["id"] == id),
+        "{cli}"
+    );
+}
+
+#[test]
+fn a_mirror_keeps_the_highest_version_of_a_post_whatever_order_it_reads_them_in() {
+    let mut b = runner("remote-versions", "b", None);
+    let post = |version: i64, question: &str| {
+        Message::new(
+            "priory.ask.posted",
+            json!({
+                "runner": "a", "ask": 7, "version": version, "kind": "step",
+                "listed": { "id": 7, "state": "open", "revision": version, "question": question },
+            }),
+        )
+    };
+    b.publish(&post(2, "newer"));
+    b.publish(&post(1, "older"));
+    b.publish(&requested(1));
+
+    b.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    b.until("inbox", |rows| {
+        rows.iter().any(|row| row[1] == "factory.task.requested")
+    });
+
+    let asks = b.priory(&["asks", "--json"]);
+    let asks: serde_json::Value = serde_json::from_slice(&asks.stdout).unwrap();
+    let mirrored: Vec<&serde_json::Value> = asks["asks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|ask| ask["id"] == "a:7")
+        .collect();
+    assert_eq!(mirrored.len(), 1, "{asks}");
+    assert_eq!(mirrored[0]["question"], "newer");
+}
+
+#[test]
+fn a_factory_with_one_runner_posts_no_ask() {
+    let mut setup = Setup::new("remote-one-runner");
+    fs::write(setup.dir.join("factory/workflows/approve.toml"), APPROVE).unwrap();
+    let mut asked = requested(1);
+    asked.data["workflow"] = json!("approve");
+    setup.publish(&asked);
+
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    setup.until("asks", |rows| rows.len() == 1);
+    // Two more ticks, so a post queued with the ask would be on the log by now.
+    std::thread::sleep(Duration::from_secs(2));
+
+    assert!(on_log(&setup, "priory.ask.posted").is_empty());
 }
