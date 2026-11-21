@@ -1,0 +1,110 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/priory.task.applied.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    },
+    "TaskApplied": {
+      "additionalProperties": false,
+      "description": "A runner applied or refused an action that another machine sent to one of its tasks.",
+      "properties": {
+        "generation": {
+          "description": "The generation the action named.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "key": {
+          "description": "The task's key.",
+          "type": "string"
+        },
+        "outcome": {
+          "description": "`applied` or `refused`.",
+          "type": "string"
+        },
+        "runner": {
+          "description": "The runner the action was sent to.",
+          "type": "string"
+        },
+        "submission": {
+          "description": "The `id` of the `priory.task.acted` message.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "why": {
+          "description": "Why it was refused.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "runner",
+        "key",
+        "generation",
+        "submission",
+        "outcome"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A runner applied or refused an action that another machine sent to one of its tasks.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/TaskApplied"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "priory.task.applied",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "priory.task.applied",
+  "type": "object"
+}

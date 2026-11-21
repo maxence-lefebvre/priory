@@ -732,6 +732,10 @@ pub struct TaskHeld {
     pub runner: String,
     /// `waiting`, `kept` or `ended`.
     pub hold: String,
+    /// The task's generation: 1, then one more at each revive or reopen. A write from another
+    /// machine names it, so the owner refuses one meant for an earlier generation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generation: Option<i64>,
 }
 
 /// A runner renews its lease, once a minute while its daemon runs. Its lease ends 30 minutes after
@@ -814,6 +818,53 @@ pub struct AskApplied {
     #[schemars(extend("format" = "uuid"))]
     pub submission: String,
     /// `answered`, `dismissed` or `refused`.
+    pub outcome: String,
+    /// Why it was refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+/// A person on one runner resumes, revives, cancels, releases or says to a task of another, with
+/// `priory resume RUNNER:KEY` and its siblings or their endpoints. Only that runner applies it, with
+/// the checks of a local action, and only while it holds the key at that generation.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaskActed {
+    /// The runner the person sent it to.
+    pub runner: String,
+    /// The task's key.
+    pub key: String,
+    /// The task's generation the person saw.
+    pub generation: i64,
+    /// `resume`, `revive`, `cancel`, `release` or `say`.
+    pub act: String,
+    /// What `say` tells the task's agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The step `revive` restarts at, instead of the one the task ended on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    /// Where the action came from: `cli` or `serve`.
+    pub by: String,
+    /// The action's own message id, which the runner's `priory.task.applied` names.
+    #[schemars(extend("format" = "uuid"))]
+    pub submission: String,
+}
+
+/// A runner applied or refused an action that another machine sent to one of its tasks.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaskApplied {
+    /// The runner the action was sent to.
+    pub runner: String,
+    /// The task's key.
+    pub key: String,
+    /// The generation the action named.
+    pub generation: i64,
+    /// The `id` of the `priory.task.acted` message.
+    #[schemars(extend("format" = "uuid"))]
+    pub submission: String,
+    /// `applied` or `refused`.
     pub outcome: String,
     /// Why it was refused.
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -35,6 +35,10 @@ pub const ASK_DISMISSED: &str = "priory.ask.dismissed";
 pub const ASK_POSTED: &str = "priory.ask.posted";
 /// A runner applied or refused an answer or dismiss another machine sent.
 pub const ASK_APPLIED: &str = "priory.ask.applied";
+/// A person on one runner resumes, revives, cancels, releases or says to a task of another.
+pub const TASK_ACTED: &str = "priory.task.acted";
+/// A runner applied or refused an action on one of its tasks that another machine sent.
+pub const TASK_APPLIED: &str = "priory.task.applied";
 const LABELED: &str = "github.issues.labeled";
 const OPENED: &str = "github.issues.opened";
 pub const ISSUE_CLOSED: &str = "github.issues.closed";
@@ -105,6 +109,8 @@ pub fn output() -> Output {
             ASK_DISMISSED,
             ASK_POSTED,
             ASK_APPLIED,
+            TASK_ACTED,
+            TASK_APPLIED,
         ])
 }
 

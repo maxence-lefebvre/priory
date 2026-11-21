@@ -6,7 +6,8 @@
   "data": {
     "key": "github:acme/widgets#42",
     "runner": "xps13",
-    "hold": "kept"
+    "hold": "kept",
+    "generation": 1
   },
   "links": []
 }

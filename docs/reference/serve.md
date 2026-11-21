@@ -52,6 +52,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /api/tasks/{id}/release` | `priory release ID [--expected N]` | as above |
 | `POST /api/inbox/{seq}/read` | `priory inbox read SEQ` | as above |
 | `POST /api/tasks/{id}/say` | `priory say ID TEXT` | as above |
+| `POST /api/tasks/{runner}:{key}/{act}` | `priory ACT [DIR] RUNNER:KEY [--generation N]` | `202` `{"sent", "submission"}`: resume, revive, cancel, release or say on another runner's task. See [Writes](#writes) |
 | `POST /api/tasks/{id}/move` | `priory move ID --expected N [--band BAND] [--top \| --before TASK \| --after TASK]` | as above |
 | `POST /api/tasks/{id}/label` | `priory label TASK wrong (--evidence URL [--happened DATE] \| --clear)` | as above |
 | `POST /api/unsubscribe` | `priory unsubscribe TASK RESOURCE` | as above |
@@ -188,6 +189,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/tasks/{id}/cancel` | optionally `revision`, an integer: the state's revision the client showed, as `--expected`. A newer state gets `409` |
 | `POST /api/tasks/{id}/release` | optionally `revision`, an integer, as `--expected`. A newer state gets `409` |
 | `POST /api/tasks/{id}/say` | `text`, a string: what the task's agent hears |
+| `POST /api/tasks/{runner}:{key}/{act}` | `generation`, an integer: the task's `generation` the client showed. Then, as for the same action on a task here, `text` for `say` and optionally `step` for `revive`. It takes no `revision` |
 | `POST /api/tasks/{id}/move` | `revision`, an integer: the state's revision the client showed, as `--expected`. Then `band`, one of the factory's bands, a place, or both. The place is one of `"top": true`, `before` or `after`, a task's id, as `--top`, `--before` and `--after`. A body with two places, or with neither a band nor a place, gets `400`, a newer state `409`, and a band the factory lacks or a task that is not active `422` |
 | `POST /api/subscribe` | `task`, an integer, and `resource`, a string such as `github:owner/name#7`, `linear:ENG-7` or `slack:C0123:1763500000.000100`, as `priory subscribe TASK RESOURCE`. Optionally `revision`, an integer, as `--expected`: a newer state gets `409`. A resource it cannot name gets `400`, a missing task `404`, and a resource another active task owns `422`, naming that task |
 | `POST /api/unsubscribe` | `task`, an integer, and `resource`, a string, as for `POST /api/subscribe`, as `priory unsubscribe TASK RESOURCE`. It takes no `revision`, as the CLI takes no `--expected`. A resource it cannot name gets `400`, a missing task `404`, and a task that does not subscribe to the resource `422` |
@@ -216,6 +218,15 @@ reads the log, even after time away, and the ask's `submissions` then show the o
 [runners.md](../daemon/runners.md#every-runners-asks). In `/api/tasks/{id}`, `{id}` is
 the task's number.
 
+In `/api/tasks/{runner}:{key}/{act}`, `{act}` is `resume`, `revive`, `cancel`, `release` or `say`,
+and `{key}` is the task's key, percent-encoded: `a:github%3Aowner%2Frepo%2342` for `github:owner/repo#42`
+on runner `a`. The action is not applied here either. The server checks this runner's copy of the
+key's claim: no claim gets `404`, and a claim of another runner, or at another generation than
+`generation`, gets `409`. Otherwise it publishes the action on the log for that runner and replies
+`202`. The runner applies it only while it holds the key at that generation, and the task's
+`submissions` then show the outcome. See
+[runners.md](../daemon/runners.md#acting-on-another-runners-task).
+
 ```sh
 curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer $PRIORY_TOKEN" \
   -H 'Content-Type: application/json' -d '{"option": "merge", "revision": 3}'
@@ -224,13 +235,13 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | Reply | When |
 | ----- | ---- |
 | `200` `{"ok": "ask 42 answered"}` | The daemon applied it |
-| `202` `{"sent": "xps13", "submission": "<id>"}` | For another runner's ask: the write is on the log for that runner, which applies it when it reads it. `submission` names it in the ask's `submissions` |
+| `202` `{"sent": "xps13", "submission": "<id>"}` | For another runner's ask or task: the write is on the log for that runner, which applies it when it reads it. `submission` names it in the ask's or task's `submissions` |
 | `200` `{"key": "cli:2026-11-20-1", "id": 7}` | For `/api/request`: the daemon published the request and task `id` holds `key`. `id` is `null` when no task took the key |
 | `409` `{"error", "ask"}` | The ask's revision is no longer the one sent, or it was answered, dismissed or withdrawn. `ask` is its current state |
-| `409` `{"error"}` | A cancel's or a move's `revision` is no longer the state's. Or a pick's report is at another revision than the one sent, or the pick already holds that choice or an applied one: read the report again |
+| `409` `{"error"}` | Another runner's task is held by a third runner, or is at another generation than the one sent. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report is at another revision than the one sent, or the pick already holds that choice or an applied one: read the report again |
 | `409` `{"error", "key", "id"}` | For `/api/request`: the same text already went to `key`, so nothing was added. `id` is the active task that holds `key`, or `null` |
 | `404`, `422` `{"error"}` | The ask, task or pick is gone, or the daemon refused for another reason, such as a resume of a task that is not blocked, a say to a task with no run yet, or a comment on a stale report revision. `error` is the CLI's sentence |
-| `503` `{"error"}` | No daemon listens on the socket, or the log cannot be reached for another runner's ask, so nothing was sent. Reads keep working |
+| `503` `{"error"}` | No daemon listens on the socket, or the log cannot be reached for another runner's ask or task, so nothing was sent. Reads keep working |
 | `504` `{"error"}` | The daemon took the line but did not reply within 10 seconds. It may have applied it: read the state before you retry |
 
 ## `POST /hooks/github`
@@ -435,8 +446,9 @@ the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
 the first line of its request, cut to 120 characters), `batch` (the id of the batch it is an entry
 or the planning task of, or null), `stack` and `relations`. See Grades in [tools.md](../daemon/tools.md#grades).
 
-In a factory of several runners, each task also has `runner`, this runner's name, and `hold`, the
-hold this runner last published for it (`waiting`, `kept`, `ended`, or null before its first claim).
+In a factory of several runners, each task also has `runner`, this runner's name, `hold`, the
+hold this runner last published for it (`waiting`, `kept`, `ended`, or null before its first claim),
+and `submissions`, the actions other machines sent to its current generation, as below.
 The list then adds, after this runner's tasks, each task another runner holds whose hold is not
 `ended`, from that runner's claim (see [runners.md](../daemon/runners.md#every-runners-tasks)):
 
@@ -450,6 +462,8 @@ The list then adds, after this runner's tasks, each task another runner holds wh
 | `since` | string | When the claim that gave it the key was published |
 | `workflow`, `band`, `lane` | string or null | From the task's request |
 | `title` | string or null | The request's TL;DR, else its subject |
+| `generation` | integer or null | The task's generation, as that runner last published it. Null until it does |
+| `submissions` | array | Every resume, revive, cancel, release and say sent to it from any machine, oldest first: `submission`, `act`, `generation`, `text`, `step`, `sent`, then `outcome` (`applied` or `refused`), `why` and `applied`, null until its runner applied it |
 
 `priory tasks` without `--json` prints them too, with three more columns, `runner`, `hold` and
 `last_seen`. `--lane` and `--grade` keep this runner's tasks only.

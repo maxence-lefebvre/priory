@@ -6,8 +6,8 @@ use jiff::{SignedDuration, Timestamp};
 use priory_factory::factory::{EventLog, Factory};
 use priory_intake::intake::{
     self, ASK_ANSWERED as ANSWERED, ASK_APPLIED as APPLIED, ASK_DISMISSED as DISMISSED,
-    ASK_POSTED as POSTED, OUTPUT, RUNNER_ALIVE as ALIVE, TASK_CLAIMED as CLAIMED,
-    TASK_HELD as HELD,
+    ASK_POSTED as POSTED, OUTPUT, RUNNER_ALIVE as ALIVE, TASK_ACTED as ACTED,
+    TASK_APPLIED as ACT_APPLIED, TASK_CLAIMED as CLAIMED, TASK_HELD as HELD,
 };
 use priory_intake::log::Log;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -39,6 +39,18 @@ pub(crate) fn consumer(runner: Option<&str>) -> String {
     runner.map_or_else(|| "priory".to_owned(), |runner| format!("priory.{runner}"))
 }
 
+/// The messages that name the runner they come from or go to, refused for a runner without a file.
+const NAMED: [&str; 8] = [
+    ALIVE,
+    HELD,
+    POSTED,
+    APPLIED,
+    ANSWERED,
+    DISMISSED,
+    ACTED,
+    ACT_APPLIED,
+];
+
 /// Handles `message` when ownership decides it, and returns the tmux sessions to kill. `None` leaves
 /// it to routing.
 pub(crate) fn handle(
@@ -51,12 +63,11 @@ pub(crate) fn handle(
     let text = |field: &str| message.data[field].as_str().unwrap_or_default();
     let kind = message.kind.as_str();
     // A runner the factory lacks owns nothing, so no machine lists or applies its messages.
-    if [ALIVE, HELD, POSTED, APPLIED, ANSWERED, DISMISSED].contains(&kind)
-        && !trace.factory.runners.contains_key(text("runner"))
-    {
+    if NAMED.contains(&kind) && !trace.factory.runners.contains_key(text("runner")) {
         crate::state::record(tx, message, None, "refused", None)?;
         return Ok(Some(Vec::new()));
     }
+    let mut kill = Vec::new();
     let outcome = match kind {
         ALIVE => {
             renew(tx, text("runner"), message.time)?;
@@ -67,8 +78,13 @@ pub(crate) fn handle(
         }
         HELD => {
             tx.execute(
-                "UPDATE claims SET hold = ?3 WHERE key = ?1 AND runner = ?2",
-                params![text("key"), text("runner"), text("hold")],
+                "UPDATE claims SET hold = ?3, generation = ?4 WHERE key = ?1 AND runner = ?2",
+                params![
+                    text("key"),
+                    text("runner"),
+                    text("hold"),
+                    message.data["generation"].as_i64()
+                ],
             )?;
             renew(tx, text("runner"), message.time)?;
             "noted"
@@ -92,6 +108,20 @@ pub(crate) fn handle(
                 apply(tx, message, me, trace)?
             }
         }
+        ACT_APPLIED => {
+            acted_outcome(tx, message)?;
+            "noted"
+        }
+        ACTED => {
+            acted(tx, message)?;
+            if text("runner") != me {
+                "elsewhere"
+            } else {
+                let (outcome, tmux) = apply_act(tx, message, me, trace)?;
+                kill.extend(tmux);
+                outcome
+            }
+        }
         _ if crate::route::requests(message) => match requested(tx, message, me)? {
             Some(outcome) => outcome,
             None => return Ok(None),
@@ -99,7 +129,147 @@ pub(crate) fn handle(
         _ => return Ok(None),
     };
     crate::state::record(tx, message, None, outcome, None)?;
-    Ok(Some(Vec::new()))
+    Ok(Some(kill))
+}
+
+/// The actions another machine may send to a task of this runner.
+const ACTS: [&str; 5] = ["resume", "revive", "cancel", "release", "say"];
+
+/// Applies an action another machine sent to a task of this runner, through the checks of a local
+/// one, once it checked that this runner still holds the key at the generation the sender saw.
+/// Queues its outcome for the log. Returns the inbox outcome and a tmux session to kill.
+fn apply_act(
+    tx: &Transaction,
+    message: &Message,
+    me: &str,
+    trace: &Trace,
+) -> Result<(&'static str, Option<String>), Error> {
+    let data = &message.data;
+    let (Some(key), Some(generation)) = (data["key"].as_str(), data["generation"].as_i64()) else {
+        // Nothing names the task to tell the sender about.
+        return Ok(("refused", None));
+    };
+    let mut tmux = None;
+    let applied = (|| -> Result<Result<(), String>, Error> {
+        let Some(act) = data["act"].as_str().filter(|act| ACTS.contains(act)) else {
+            return Ok(Err(format!(
+                "a malformed action: {} is none of resume, revive, cancel, release and say",
+                data["act"]
+            )));
+        };
+        match owner(tx, key)? {
+            None => return Ok(Err(format!("no runner holds {key}"))),
+            Some(owner) if owner.runner != me => {
+                return Ok(Err(format!(
+                    "runner {} holds {key}, not {me}",
+                    owner.runner
+                )));
+            }
+            Some(_) => {}
+        }
+        let Some((task, now)) = tx
+            .query_row(
+                "SELECT id, generation FROM tasks WHERE key = ?1 ORDER BY id DESC LIMIT 1",
+                [key],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?
+        else {
+            return Ok(Err(format!("runner {me} has no task {key}")));
+        };
+        if now != generation {
+            return Ok(Err(format!(
+                "task {key} is at generation {now}, not {generation}"
+            )));
+        }
+        let act = crate::tools::Act {
+            act: act.to_owned(),
+            task,
+            step: data["step"].as_str().map(str::to_owned),
+            hold: None,
+            text: data["text"].as_str().map(str::to_owned),
+            expected: None,
+        };
+        // A refused action leaves nothing behind, while the message itself is still recorded.
+        tx.execute_batch("SAVEPOINT acted")?;
+        let (reply, session) = crate::tools::act_in_tx(tx, &act, trace.factory)?;
+        match reply {
+            Ok(_) => {
+                tx.execute_batch("RELEASE acted")?;
+                tmux = session;
+                Ok(Ok(()))
+            }
+            Err(why) => {
+                tx.execute_batch("ROLLBACK TO acted; RELEASE acted")?;
+                Ok(Err(why))
+            }
+        }
+    })()?;
+    let submission = submission(message);
+    let (outcome, why) = match &applied {
+        Ok(()) => ("applied", None),
+        Err(why) => ("refused", Some(why.as_str())),
+    };
+    let data = json!({
+        "runner": me, "key": key, "generation": generation, "submission": submission,
+        "outcome": outcome, "why": why,
+    });
+    let id = format!("task-applied/{submission}");
+    send(
+        tx,
+        &stamped(ACT_APPLIED, data, &id).subject(format!("{me}:{key}")),
+    )?;
+    Ok((outcome, tmux))
+}
+
+/// Records an action sent to a task of any runner, pending until that runner applies it.
+fn acted(tx: &Transaction, message: &Message) -> rusqlite::Result<()> {
+    let data = &message.data;
+    let (Some(runner), Some(key), Some(generation), Some(act)) = (
+        data["runner"].as_str(),
+        data["key"].as_str(),
+        data["generation"].as_i64(),
+        data["act"].as_str().filter(|act| ACTS.contains(act)),
+    ) else {
+        return Ok(());
+    };
+    tx.execute(
+        "INSERT OR IGNORE INTO remote_task_submissions
+           (submission, runner, key, generation, act, text, step, sent)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            submission(message),
+            runner,
+            key,
+            generation,
+            act,
+            data["text"].as_str(),
+            data["step"].as_str(),
+            message.time.to_string()
+        ],
+    )?;
+    Ok(())
+}
+
+/// Records what a task's runner made of an action sent to it.
+fn acted_outcome(tx: &Transaction, message: &Message) -> rusqlite::Result<()> {
+    let data = &message.data;
+    let outcome = data["outcome"].as_str();
+    if !matches!(outcome, Some("applied" | "refused")) {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE remote_task_submissions SET outcome = ?2, why = ?3, applied = ?4
+         WHERE submission = ?1 AND runner = ?5 AND outcome IS NULL",
+        params![
+            data["submission"].as_str(),
+            outcome,
+            data["why"].as_str(),
+            message.time.to_string(),
+            data["runner"].as_str()
+        ],
+    )?;
+    Ok(())
 }
 
 /// Applies an answer or dismiss another machine sent to an ask of this runner, and queues its
@@ -360,7 +530,8 @@ fn claimed(
     tx.execute(
         "INSERT INTO claims (key, runner, request, won, hold) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT (key) DO UPDATE SET runner = excluded.runner, request = excluded.request,
-           hold = excluded.hold, published = NULL, won = excluded.won",
+           hold = excluded.hold, published = NULL, won = excluded.won, generation = NULL,
+           published_generation = NULL",
         params![
             key,
             runner,
@@ -570,7 +741,8 @@ pub(crate) fn tick(
     let changed = tx
         .prepare(
             "SELECT claims.key, tasks.state,
-               EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id), claims.published
+               EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id), claims.published,
+               tasks.generation, claims.published_generation
              FROM claims JOIN tasks ON tasks.id =
                (SELECT max(id) FROM tasks WHERE tasks.key = claims.key)
              WHERE claims.runner = ?1",
@@ -580,24 +752,27 @@ pub(crate) fn tick(
                 row.get::<_, String>(0)?,
                 hold(&row.get::<_, String>(1)?, row.get(2)?),
                 row.get::<_, Option<String>>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, Option<i64>>(5)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     post(&tx, me, now)?;
-    for (key, hold, published) in changed {
+    for (key, hold, published, generation, said_generation) in changed {
         // A task reserved to start stays kept until it starts.
         let hold = match (published.as_deref(), hold) {
             (Some("kept"), Hold::Waiting) => Hold::Kept,
             _ => hold,
         };
-        if published.as_deref() == Some(hold.as_str()) {
+        if published.as_deref() == Some(hold.as_str()) && said_generation == Some(generation) {
             continue;
         }
-        let held = json!({ "key": key, "runner": me, "hold": hold.as_str() });
+        let held =
+            json!({ "key": key, "runner": me, "hold": hold.as_str(), "generation": generation });
         send(&tx, &Message::new(HELD, held).subject(&key).time(now))?;
         tx.execute(
-            "UPDATE claims SET published = ?2 WHERE key = ?1",
-            params![key, hold.as_str()],
+            "UPDATE claims SET published = ?2, published_generation = ?3 WHERE key = ?1",
+            params![key, hold.as_str(), generation],
         )?;
     }
     tx.commit()?;
@@ -619,7 +794,7 @@ pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Res
     }
     let claim = tx
         .query_row(
-            "SELECT claims.key, claims.hold, claims.published FROM claims
+            "SELECT claims.key, claims.hold, claims.published, tasks.generation FROM claims
              JOIN tasks ON tasks.key = claims.key WHERE tasks.id = ?1 AND claims.runner = ?2",
             params![task, me],
             |row| {
@@ -627,11 +802,12 @@ pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Res
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?,
+                    row.get::<_, i64>(3)?,
                 ))
             },
         )
         .optional()?;
-    let Some((key, hold, published)) = claim else {
+    let Some((key, hold, published, generation)) = claim else {
         tx.execute(
             "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
             params![task, CLAIMING],
@@ -654,12 +830,12 @@ pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Res
         params![task, CLAIMING],
     )?;
     if published.as_deref() != Some("kept") {
-        let held = json!({ "key": key, "runner": me, "hold": "kept" });
+        let held = json!({ "key": key, "runner": me, "hold": "kept", "generation": generation });
         let now = intake::now().unwrap_or_else(|_| Timestamp::now());
         send(&tx, &Message::new(HELD, held).subject(&key).time(now))?;
         tx.execute(
-            "UPDATE claims SET published = 'kept' WHERE key = ?1",
-            [&key],
+            "UPDATE claims SET published = 'kept', published_generation = ?2 WHERE key = ?1",
+            params![key, generation],
         )?;
     }
     tx.commit()?;
@@ -800,7 +976,8 @@ pub fn dismiss(factory: &Factory, runner: &str, ask: i64, revision: i64) -> Resu
     submit(factory.log(), DISMISSED, runner, ask, data)
 }
 
-fn known(factory: &Factory, runner: &str) -> Result<(), String> {
+/// Refuses a runner the factory has no runner file for.
+pub fn known(factory: &Factory, runner: &str) -> Result<(), String> {
     if factory.runners.contains_key(runner) {
         return Ok(());
     }
@@ -813,13 +990,25 @@ pub fn submit(
     kind: &str,
     runner: &str,
     ask: i64,
+    data: Value,
+) -> Result<String, String> {
+    send_to(log, kind, runner, &format!("{runner}:{ask}"), data)
+}
+
+/// Publishes a write for runner `runner` about `subject`, with its own message id as its
+/// submission.
+fn send_to(
+    log: &EventLog,
+    kind: &str,
+    runner: &str,
+    subject: &str,
     mut data: Value,
 ) -> Result<String, String> {
     // A machine with no state file of its own runs no daemon to say whether it reaches the log.
     if let Ok(db) = crate::state::read_only() {
         crate::link::refuse_while_unreachable(&db)?;
     }
-    let mut message = Message::new(kind, json!({})).subject(format!("{runner}:{ask}"));
+    let mut message = Message::new(kind, json!({})).subject(subject);
     data["runner"] = json!(runner);
     data["submission"] = json!(message.id.to_string());
     message.data = data;
@@ -929,14 +1118,21 @@ fn last_seen(db: &Connection, runner: &str) -> rusqlite::Result<Option<String>> 
 }
 
 /// In a factory of several runners, names this runner and each task's hold on `tasks`, and adds
-/// each task another runner holds, from its claim: its key, runner, hold and the request's
-/// workflow, band, lane and TL;DR. Their owner keeps their state, steps and runs, so `id` and
-/// `state` are null. A key whose task ended is left out, since its owner holds it no more.
+/// each task another runner holds, from its claim: its key, runner, hold, generation and the
+/// request's workflow, band, lane and TL;DR. Their owner keeps their state, steps and runs, so `id`
+/// and `state` are null. A key whose task ended is left out, since its owner holds it no more.
+/// Every row lists the actions sent to it from any machine, with what became of each.
 pub(crate) fn with_remote_tasks(db: &Connection, tasks: &mut Value) -> rusqlite::Result<()> {
     let (Some(me), Some(list)) = (me(db)?, tasks.as_array_mut()) else {
         return Ok(());
     };
     for task in list.iter_mut() {
+        task["submissions"] = task_submissions(
+            db,
+            &me,
+            task["key"].as_str().unwrap_or_default(),
+            task["generation"].as_i64(),
+        )?;
         let hold = db
             .query_row(
                 // What the owner last published, before it reads it back from the log.
@@ -953,7 +1149,8 @@ pub(crate) fn with_remote_tasks(db: &Connection, tasks: &mut Value) -> rusqlite:
             "SELECT claims.key, claims.runner, claims.hold, claim.time,
                json_extract(request.data, '$.workflow'), json_extract(request.data, '$.band'),
                json_extract(request.data, '$.lane'),
-               coalesce(nullif(json_extract(request.data, '$.tldr'), ''), request.subject)
+               coalesce(nullif(json_extract(request.data, '$.tldr'), ''), request.subject),
+               claims.generation
              FROM claims LEFT JOIN inbox AS claim ON claim.seq = claims.won
                LEFT JOIN inbox AS request ON request.id = claims.request
              WHERE claims.runner != ?1 AND claims.hold != 'ended'
@@ -969,6 +1166,7 @@ pub(crate) fn with_remote_tasks(db: &Connection, tasks: &mut Value) -> rusqlite:
                     "band": row.get::<_, Option<String>>(5)?,
                     "lane": row.get::<_, Option<String>>(6)?,
                     "title": row.get::<_, Option<String>>(7)?,
+                    "generation": row.get::<_, Option<i64>>(8)?,
                     "state": null, "step": null,
                 }),
             ))
@@ -976,9 +1174,105 @@ pub(crate) fn with_remote_tasks(db: &Connection, tasks: &mut Value) -> rusqlite:
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (runner, task) in &mut remote {
         task["last_seen"] = json!(last_seen(db, runner)?);
+        let key = task["key"].as_str().unwrap_or_default().to_owned();
+        task["submissions"] = task_submissions(db, runner, &key, None)?;
     }
     list.extend(remote.into_iter().map(|(_, task)| task));
     Ok(())
+}
+
+/// The actions sent to runner `runner`'s task of `key`, of `generation` when given, oldest first.
+fn task_submissions(
+    db: &Connection,
+    runner: &str,
+    key: &str,
+    generation: Option<i64>,
+) -> rusqlite::Result<Value> {
+    crate::listing::rows(
+        db,
+        "SELECT submission, act, generation, text, step, sent, outcome, why, applied
+         FROM remote_task_submissions WHERE runner = ?1 AND key = ?2
+           AND (?3 IS NULL OR generation = ?3)
+         ORDER BY sent, submission",
+        params![runner, key, generation],
+    )
+}
+
+/// Why this runner's copy of the claims refuses an action on runner `runner`'s task of `key` at
+/// `generation`, or the generation to send when the person named none. Only the owner's check
+/// decides; this one catches most stale actions while the person still sees the task.
+pub fn task_generation(
+    db: &Connection,
+    runner: &str,
+    key: &str,
+    generation: Option<i64>,
+) -> rusqlite::Result<Result<i64, Refused>> {
+    let claim = db
+        .query_row(
+            "SELECT runner, generation FROM claims WHERE key = ?1",
+            [key],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
+        )
+        .optional()?;
+    let Some((owner, known)) = claim else {
+        return Ok(Err(Refused::Unknown(format!("no runner holds {key}"))));
+    };
+    if owner != runner {
+        return Ok(Err(Refused::Stale(format!(
+            "runner {owner} holds {key}, not {runner}"
+        ))));
+    }
+    Ok(match (generation, known) {
+        (Some(sent), Some(known)) if sent != known => Err(Refused::Stale(format!(
+            "task {runner}:{key} is at generation {known}, not {sent}"
+        ))),
+        (Some(sent), _) => Ok(sent),
+        (None, Some(known)) => Ok(known),
+        (None, None) => Err(Refused::Unknown(format!(
+            "runner {runner} has not said which generation task {key} is at: pass --generation N"
+        ))),
+    })
+}
+
+/// Why a write to another runner's task is refused before it is sent.
+pub enum Refused {
+    /// This runner knows no such task, or not enough of it.
+    Unknown(String),
+    /// This runner's copy shows the task held elsewhere or at another generation.
+    Stale(String),
+}
+
+/// What a person sends to another runner's task.
+pub struct TaskAct<'a> {
+    pub act: &'a str,
+    pub runner: &'a str,
+    pub key: &'a str,
+    pub generation: i64,
+    pub text: Option<&'a str>,
+    pub step: Option<&'a str>,
+    /// `cli` or `serve`.
+    pub by: &'a str,
+}
+
+/// Publishes a person's action on runner `act.runner`'s task of `act.key`, which that runner
+/// applies when it reads it. Returns the submission id its `priory.task.applied` names.
+pub fn act(log: &EventLog, act: &TaskAct) -> Result<String, String> {
+    let mut data = json!({
+        "key": act.key, "generation": act.generation, "act": act.act, "by": act.by,
+    });
+    if let Some(text) = act.text {
+        data["text"] = json!(text);
+    }
+    if let Some(step) = act.step {
+        data["step"] = json!(step);
+    }
+    send_to(
+        log,
+        ACTED,
+        act.runner,
+        &format!("{}:{}", act.runner, act.key),
+        data,
+    )
 }
 
 /// The desk items of other runners' open asks, ranked as a local ask of the same kind would be.

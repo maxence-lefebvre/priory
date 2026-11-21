@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 84;
+const VERSION: i64 = 85;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1516,6 +1516,32 @@ CREATE TABLE IF NOT EXISTS closed_subscriptions (
 PRAGMA user_version = 84;
 ";
 
+// Writes to another runner's task: each key's generation as its owner last published it, and the
+// one this runner last published for a key of its own; and the resumes, revives, cancels, releases
+// and says sent to a task of any runner, with what became of each.
+const SCHEMA_85: &str = concat!(
+    "ALTER TABLE claims ADD COLUMN generation INTEGER;
+ALTER TABLE claims ADD COLUMN published_generation INTEGER;
+CREATE TABLE IF NOT EXISTS remote_task_submissions (
+  submission TEXT PRIMARY KEY,
+  runner     TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  act        TEXT NOT NULL CHECK (act IN ('resume', 'revive', 'cancel', 'release', 'say')),
+  text       TEXT,
+  step       TEXT,
+  sent       TEXT NOT NULL,
+  outcome    TEXT CHECK (outcome IN ('applied', 'refused')),
+  why        TEXT,
+  applied    TEXT
+);
+CREATE INDEX IF NOT EXISTS remote_task_submissions_by_key ON remote_task_submissions (runner, key);
+",
+    bumps!("remote_task_submissions"),
+    "PRAGMA user_version = 85;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1528,7 +1554,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
-    SCHEMA_82, SCHEMA_83, SCHEMA_84,
+    SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
