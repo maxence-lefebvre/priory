@@ -154,18 +154,26 @@ event's id in `source`, and the task's first prompt carries the event.
 ## The task's inbox
 
 `priory task ID --json` and `/api/tasks/{id}` list, as `inbox`, every event routed to the task,
-newest first (see [serve.md](../reference/serve.md#task-in-detail)). Each event has its outcome and
-`prompt`, the state of the outbox prompt that carries it. Together they say what the event did:
+newest first: its source event, the events routing gave it, and the events that fired one of its
+waits while another task took them (see [serve.md](../reference/serve.md#task-in-detail)). Each
+event has its outcome, `prompt`, the state of the outbox prompt that carries it, and `wait`, the
+task's wait it fired. Together they say what the event did:
 
 | `outcome` | `prompt` | What happened |
 | --------- | -------- | ------------- |
 | `woke` | `confirmed` | It woke the asleep task, and its prompt was delivered |
 | `reopened` | `confirmed` | It reopened the done task, and its prompt was delivered |
 | `coalesced` | null | A schedule firing or review request that the task already covered |
-| `kept` | `queued` | The task is running: its prompt is still queued for after the current turn |
+| `said` | `queued` or `confirmed` | A repeated `priory request` for the task's key: its text is queued, then delivered |
+| `ignored` | `confirmed` | The task's source event, which its first prompt carried |
+| `kept` | `queued` | Its prompt is still queued: for after the current turn, or for the next run |
 | `kept` | `confirmed` | Delivered as a prompt |
 | `kept` | null | Kept while the task was asleep, or not yet running: its next run reads it |
 | any | `withdrawn` | A reopen or `priory revive` withdrew its prompt |
+
+An event with `wait` set fired that wait: an asleep task wakes on it, and another task keeps its
+state until its next run. An event that only a subscription delivered to a second task, beside the
+task routing gave it, is not in the second task's inbox: nothing records that delivery.
 
 A prompt is `attempted` while the agent is being typed to, and `uncertain` when a daemon restart cut
 that short (see [outbox.md](outbox.md)).

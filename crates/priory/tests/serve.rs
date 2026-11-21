@@ -5071,6 +5071,7 @@ fn the_desk_counts_unrouted_events_of_the_last_24_hours_in_a_calm_line() {
     unrouted_comment(&setup, 7, "2026-11-16T11:59:59Z");
     unrouted_comment(&setup, 8, "2026-11-16T12:00:00Z");
     unrouted_comment(&setup, 9, "2026-11-17T11:00:00Z");
+    unrouted_comment(&setup, 10, "2026-11-17T12:00:01Z");
     succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
     let address = setup.start(&["serve", &setup.factory()]);
 

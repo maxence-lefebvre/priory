@@ -13068,6 +13068,73 @@ fn the_task_inbox_shows_an_event_kept_while_asleep_with_no_prompt() {
 }
 
 #[test]
+fn the_task_inbox_names_the_wait_an_event_fired() {
+    let setup = asleep_on("inbox-wait", on_pull_7("checks"));
+
+    setup.publish(&check(1, 0));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let inbox = &task_json(&setup, "1")["inbox"][0];
+    assert_eq!(
+        [
+            &inbox["type"],
+            &inbox["outcome"],
+            &inbox["prompt"],
+            &inbox["wait"]
+        ],
+        [
+            &json!("github.check_run.completed"),
+            &json!("kept"),
+            &json!("confirmed"),
+            &json!(1)
+        ],
+        "{inbox}"
+    );
+}
+
+/// A CLI request for `key` with `text`, and the task request whose source it is.
+fn cli_request(key: &str, text: &str) -> (Message, Message) {
+    let source = Message::new(
+        "priory.task.requested.cli",
+        json!({ "text": text, "person": null, "time": "2026-11-21T09:00:00Z", "repo": "owner/repo" }),
+    )
+    .subject(key);
+    let task = Message::new(
+        "factory.task.requested",
+        json!({
+            "workflow": "implement", "key": key, "band": null, "lane": null, "trigger": "cli",
+            "source": source.id.to_string(), "repo": "owner/repo"
+        }),
+    )
+    .subject(key);
+    (source, task)
+}
+
+#[test]
+fn the_task_inbox_lists_its_source_event_and_a_repeated_request_it_heard() {
+    let mut setup = Setup::new("inbox-said");
+    setup.hold("hold-stop");
+    let (source, task) = cli_request("cli:docs-1", "Fix the docs");
+    setup.publish(&source);
+    setup.publish(&task);
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    setup.publish(&cli_request("cli:docs-1", "Also the readme").0);
+
+    setup.until("inbox", |rows| rows.len() == 3);
+    assert_eq!(
+        inbox_of(&setup, "1"),
+        [
+            ["priory.task.requested.cli", "said", "queued"],
+            ["factory.task.requested", "created", "-"],
+            ["priory.task.requested.cli", "ignored", "confirmed"],
+        ]
+    );
+    setup.release("hold-stop");
+}
+
+#[test]
 fn the_task_inbox_shows_the_feedback_that_reopened_the_done_task() {
     let mut setup = Setup::new("inbox-reopened");
     setup.calls(&[json!([subscribe("subscribe"), result("passed")])]);
@@ -13101,7 +13168,11 @@ fn unrouted_events_are_grouped_by_resource_with_their_follow_up_commands() {
     for pull_request in [7, 8, 7] {
         setup.publish(&comment_on(pull_request));
     }
-    setup.until("inbox", |rows| rows.len() == 3);
+    // A task's source event and its request reached a task: neither is unrouted.
+    let (source, task) = cli_request("cli:docs-1", "Fix the docs");
+    setup.publish(&source);
+    setup.publish(&task);
+    setup.until("inbox", |rows| rows.len() == 5);
 
     let output = setup.priory(&["inbox", "--unrouted", "--json"]);
     assert!(output.status.success(), "{output:?}");
