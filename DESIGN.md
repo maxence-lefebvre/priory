@@ -1006,11 +1006,14 @@ the adapter lives, how it reads and acts, and the data each panel needs. The app
   (52 px) with a `--pane-tile` (24 px) tile, views and chips `--pane-chip` (28 px) tall, options
   `--pane-option` (40 px) tall, the question in `--type-pane-question` (18 / 24), the desk count in
   `--type-pane-count` (40 / 1), and buttons at `--control-fine`.
-- **Width.** Every panel works at `--pane-narrow` (420 px), the side panel's default width. Below
+- **Width.** Every panel works at `--pane-narrow` (420 px), the default width of the view beside Herdr's terminals. Below
   `--pane-split` (720 px) a selected row opens its detail in place, under the row. From
   `--pane-split`, the list and the detail sit side by side.
 - **Selection.** A selected row takes the `--action-soft` fill on its own rounded surface. It has
   no 3 px leading bar: gpui-kit's design guide forbids leading-edge selection bars.
+- **Placement.** The layout follows the `default` view: each `tabs` node is a stack, and the
+  Priory bar shows one button per child of each stack. The Task panel and an Asks panel the view
+  lacks open as tabs in the center.
 - **Navigation.** Herdr owns tabs and panes, so a panel has no tab bar, rail or Answer capsule.
   `Enter` opens the selected row.
 - **Add.** The Desk and Queue panels open [Add](#add) as a card under their header, not as a
@@ -1052,8 +1055,7 @@ waiting, and the daemon does nothing different.
 
 ### Desk
 
-The calm count, then the one next thing, then the explorer list. It opens as a tab in the center
-stack.
+The calm count, then the one next thing, then the explorer list.
 
 1. **Count** in `--type-pane-count`, as the web desk's: "2 asks need you. Oldest waits 42 min. 1
    stopped. 2 snoozed. 3 events reached no task in 24 h." The last sentence shows only when the
@@ -1074,7 +1076,7 @@ the wide table with Recommends and the key hint bar (`J` `K`, `Enter`, `S`, `R`,
 
 ### Asks
 
-Every ask, with the web's ask detail fitted to the pane. It sits in the side panel stack.
+Every ask, with the web's ask detail fitted to the pane.
 
 - Saved views: Open, Snoozed, Answered and All. Facet chips: Command, Lane, Band, Risk and Task.
 - A routed ask shows the [routed mark](#routed-ask) as a tag in its row and as a line under the
@@ -1087,7 +1089,7 @@ Every ask, with the web's ask detail fitted to the pane. It sits in the side pan
 
 ### Queue
 
-What runs next and why. It sits in the side panel stack, under the same activity bar as Asks.
+What runs next and why.
 
 - **Up next**: a strip with the next 3 runs, queued or scheduled. Each line shows when ("now, on
   room", "about 11:50", "08:30 Fri"), the task or schedule, and why. It opens the task.
@@ -1099,7 +1101,7 @@ What runs next and why. It sits in the side panel stack, under the same activity
 
 ### Bonjour
 
-The morning dossier. It opens as a tab in the center stack.
+The morning dossier.
 
 - A toolbar with the date and older and newer arrows, "n of m agreed" with a progress bar, Next
   pick and search.
@@ -1123,7 +1125,7 @@ The morning dossier. It opens as a tab in the center stack.
 
 ### Costs
 
-The web's [Costs panel](#costs-panel), as a tab in the center stack.
+The web's [Costs panel](#costs-panel).
 
 - From 1024 px Costs and Attention sit side by side. Below, Costs and Attention chips in the
   header pick one, as saved views do.
@@ -1134,7 +1136,7 @@ The web's [Costs panel](#costs-panel), as a tab in the center stack.
 
 ### Flows
 
-The web's [Flows panel](#flows-panel), as a tab in the center stack.
+The web's [Flows panel](#flows-panel).
 
 - Nodes and edges paint with gpui-kit paths in the web's shapes, dashes, weights and colors, scaled
   to the pane, at most 560 px wide.

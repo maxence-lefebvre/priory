@@ -9,19 +9,38 @@ pub mod attention;
 pub const SINCE: &str = "7 days";
 
 /// The start of the window `since`: an RFC 3339 instant, or a duration back from `now` such as
-/// `7 days`, as an SQLite date modifier.
+/// `7 days`, in jiff's friendly or ISO 8601 form. `now` is an RFC 3339 instant or `now`. Calendar
+/// units count back in UTC.
 pub fn start(db: &Connection, since: &str, now: &str) -> Result<String, String> {
-    let start: Option<String> = db
-        .query_row(
-            "SELECT coalesce(strftime('%Y-%m-%dT%H:%M:%fZ', ?1),
-               strftime('%Y-%m-%dT%H:%M:%fZ', ?2, '-' || ?1))",
-            [since, now],
-            |row| row.get(0),
-        )
-        .map_err(|error| error.to_string())?;
-    start.ok_or_else(|| {
+    let refused = || {
         format!("--since {since:?} is neither an RFC 3339 instant nor a duration such as 7 days")
-    })
+    };
+    let instant = match since.parse::<jiff::Timestamp>() {
+        Ok(instant) => instant,
+        Err(_) => {
+            let span = since.parse::<jiff::Span>().map_err(|_| refused())?;
+            if span.is_negative() {
+                return Err(refused());
+            }
+            let now = match now {
+                "now" => jiff::Timestamp::now(),
+                now => now
+                    .parse()
+                    .map_err(|error| format!("now {now:?}: {error}"))?,
+            };
+            now.to_zoned(jiff::tz::TimeZone::UTC)
+                .checked_sub(span)
+                .map_err(|_| refused())?
+                .timestamp()
+        }
+    };
+    db.query_row(
+        "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ?1)",
+        [instant.to_string()],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .map_err(|error| error.to_string())?
+    .ok_or_else(refused)
 }
 
 /// Prints each step's outcome counts for `workflow` since `since`. Each rate's denominator is the
@@ -297,6 +316,8 @@ impl Tokens {
 pub struct Costs {
     by: String,
     windows: [(String, String, Total); 2],
+    /// The local date each window starts on, as the days are keyed.
+    since_days: [String; 2],
     days: BTreeMap<String, Total>,
     split: BTreeMap<String, Total>,
 }
@@ -389,12 +410,17 @@ pub fn costs(
         start,
         previous,
     } = window;
+    let local_date = |at: &str| {
+        db.query_row("SELECT date(?1, 'localtime')", [at], |row| row.get(0))
+            .map_err(error)
+    };
     let mut costs = Costs {
         by: by.to_owned(),
         windows: [
             (start.clone(), until.clone(), Total::default()),
             (previous.clone(), start.clone(), Total::default()),
         ],
+        since_days: [local_date(start)?, local_date(previous)?],
         days: BTreeMap::new(),
         split: BTreeMap::new(),
     };
@@ -475,17 +501,19 @@ pub fn costs(
 
 impl Costs {
     pub fn json(&self) -> Value {
-        let window = |(since, until, total): &(String, String, Total)| {
+        let window = |at: usize| {
+            let (since, until, total) = &self.windows[at];
             let mut json = total.json();
             json["since"] = json!(since);
+            json["since_day"] = json!(self.since_days[at]);
             json["until"] = json!(until);
             json["merges"] = json!(total.merges);
             json
         };
         json!({
             "by": self.by,
-            "current": window(&self.windows[0]),
-            "previous": window(&self.windows[1]),
+            "current": window(0),
+            "previous": window(1),
             "days": self.days.iter().map(|(day, total)| {
                 let mut json = total.json();
                 json["day"] = json!(day);

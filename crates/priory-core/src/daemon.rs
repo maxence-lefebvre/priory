@@ -707,6 +707,9 @@ fn add(
     counter: Option<&embed::Counter>,
 ) -> Result<Result<String, String>, Error> {
     use priory_intake::request::Refused;
+    if let Some(missing) = crate::relate::missing(db, &add.relates)? {
+        return Ok(Err(missing));
+    }
     let (key, error) = match priory_intake::request::add(trace.factory, add) {
         Ok(key) => (key, None),
         Err(Refused::Invalid(refused)) => return Ok(Err(refused)),

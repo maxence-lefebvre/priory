@@ -1656,6 +1656,12 @@ pub(crate) fn route_in(
         None
     };
     let seq = record(tx, message, task, outcome, outbox)?;
+    if outcome == "ignored"
+        && let Some(line) = crate::tools::unheard(tx, message)?
+    {
+        crate::post::report(tx, "priory", &line)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))?;
+    }
     crate::grades::label(tx, trace, message)?;
     if message.kind == "linear.view.changed" {
         crate::post::report(tx, "linear", &refiltered(&message.data))?;
@@ -1917,9 +1923,9 @@ fn delivered(
     Ok(None)
 }
 
-/// The events a task's subscription to its own key carries: what people say and closes. Checks,
+/// The events a task's subscription to its own key carries: what people say, edit and close. Checks,
 /// labels and pushes stay with the checks gate and waits, since each would start a run.
-const OWN_KEY: [&str; 9] = [
+const OWN_KEY: [&str; 10] = [
     "github.pull_request_review.submitted",
     "github.pull_request.comment",
     "github.pull_request_review_comment",
@@ -1928,6 +1934,7 @@ const OWN_KEY: [&str; 9] = [
     ISSUE_CLOSED,
     "linear.comment.created",
     "linear.issue.state_changed",
+    "linear.issue.updated",
     "slack.thread.replied",
 ];
 
@@ -2042,7 +2049,8 @@ pub fn ended(db: &Connection, key: &str) -> rusqlite::Result<u64> {
 
 /// The resource and the agent's last prompt of each open wait that the intake polls for, then the
 /// pull request or Linear issue and creation time of each unmet merge condition and each issue
-/// condition of an open hold, met or not, then each subscription of a task that has not failed or been dropped, then the branch of each
+/// condition of an open hold, met or not, then each subscription of a task that has not failed or
+/// been dropped, and the own key of the newest task on a key that did, then the branch of each
 /// active task, or of a task done in the last 10 minutes whose branch no event named yet, so the
 /// intake sees a pull request its worker opened itself.
 pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
@@ -2061,9 +2069,12 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
            UNION ALL
            SELECT 2, subscriptions.rowid, subscriptions.resource, subscriptions.created
            FROM subscriptions
-           JOIN tasks ON tasks.id = subscriptions.task AND tasks.state NOT IN ('failed', 'dropped')
-           -- Slack reads one thread per call, so a done task's own thread is read for a week only.
-           WHERE NOT (tasks.state = 'done' AND subscriptions.resource = tasks.key
+           JOIN tasks ON tasks.id = subscriptions.task AND (tasks.state NOT IN ('failed', 'dropped')
+             -- A comment on the own key of an ended task's newest generation asks for a revive.
+             OR (subscriptions.resource = tasks.key
+               AND tasks.id = (SELECT max(id) FROM tasks AS newest WHERE newest.key = tasks.key)))
+           -- Slack reads one thread per call, so an ended task's own thread is read for a week only.
+           WHERE NOT (tasks.state IN ('done', 'failed', 'dropped') AND subscriptions.resource = tasks.key
              AND tasks.key GLOB 'slack:*' AND julianday('now') - julianday(tasks.changed) >= 7)
            UNION ALL
            SELECT 3, owns.rowid, owns.resource, tasks.changed FROM owns

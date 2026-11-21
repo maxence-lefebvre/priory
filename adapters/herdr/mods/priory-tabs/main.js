@@ -1,13 +1,19 @@
 import { View } from "gpui-kit";
 import { h_flex, Button } from "gpui-base";
 import { appHome, exec, focused, home as herdrHome, layout, notify, panes, readTextFile, run, settings, shared, spaces, theme as herdrTheme, window } from "herdr";
+import { reveal } from "./layout.js";
 import { priory } from "./priory.js";
 
 const theme = /** @type {() => Record<string, import("gpui-kit").Color>} */ (herdrTheme);
 
-// Desk, Bonjour, Costs and Flows open as center tabs; Asks and Queue are children of the layout's side panel.
-const TABS = [["desk", "Desk", "priory-desk"], ["bonjour", "Bonjour", "priory-bonjour"], ["costs", "Costs", "priory-costs"], ["flows", "Flows", "priory-flows"]];
-const PANELS = [["asks", "Asks"], ["queue", "Queue"]];
+// The bar's label for each panel, and for the main block, which shows the `terminal` panel.
+const LABELS = { desk: "Desk", asks: "Asks", queue: "Queue", tasks: "Tasks", runs: "Runs", inbox: "Inbox", reports: "Bonjour", workflow: "Flows", costs: "Costs", terminal: "Terminal" };
+
+/** @param {any} node @returns {string} a block's panel label, or its blocks' labels joined */
+const label = (node) => (node.children ? node.children.map(label).join(" · ") : LABELS[node.id === "main" ? "terminal" : node.content?.props?.panel] ?? node.id);
+
+/** @param {any} node @returns {any[]} every stack in the tree, in its order */
+const stacks = (node) => [...(node.type === "stack" ? [node] : []), ...(node.children ?? []).flatMap(stacks)];
 
 /** @param {any} node @param {string} id @returns {any} */
 function find(node, id) {
@@ -19,8 +25,12 @@ function find(node, id) {
   return null;
 }
 
+// A tab shows in `main`, which a view can hold in a stack behind another panel.
+const showMain = () => { for (const [command, args] of reveal(layout(), "main")) run(command, args); };
+
 /** @param {string} name @param {string} mod */
 function openTab(name, mod) {
+  showMain();
   const open = (panes() ?? []).find((pane) => pane.mod === mod);
   if (open) return run("tab.select", { id: open.tab });
   run("tab.new", { space: focused()?.space, name, mod });
@@ -63,6 +73,7 @@ export default class PrioryTabs extends View {
       const { machine, home, client } = await this.priory;
       if (!space || space.machine !== machine) throw new Error(`Open a space on ${machine ?? "this machine"}, where Priory runs, then attach again.`);
       const command = await client.attach(task);
+      showMain();
       run("tab.new", { space: space.id, folder: space.folder || home, name: `Task ${task}`, argv: ["sh", "-c", command] });
     } catch (error) {
       notify({ title: `Can't attach to task ${task}`, body: error instanceof Error ? error.message : String(error), level: "error" });
@@ -85,7 +96,7 @@ export default class PrioryTabs extends View {
       cx.spawn(async () => openTab("Task", "priory-task"));
     }
     const root = /** @type {{ traffic_lights?: number[] }} */ (layout()), w = window();
-    const sidebar = find(root, "sidebar"), panel = find(root, "panel"), body = find(root, "panel-body");
+    const sidebar = find(root, "sidebar"), view = find(root, "view");
     // This bar is the top bar's first block, so it keeps clear of the macOS traffic lights.
     const lightsPadding = w?.platform === "macos" && w.titlebar === "none" && !w.fullscreen && root?.traffic_lights
       ? Math.max(10, (root.traffic_lights[0] + 64) / Number(settings().zoom || 1) - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
@@ -97,15 +108,16 @@ export default class PrioryTabs extends View {
       .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
       .hover(s => s.bg(t.hover)).active(s => s.bg(t.selected)).focus(s => s.bg(t.selected))
       .on_mouse_down("left", stop).on_click(action).child(label);
-    const shownTab = (/** @type {string} */ mod) => (panes() ?? []).some((pane) => pane.mod === mod && pane.tab === focused()?.tab);
-    const shownPanel = (/** @type {string} */ id) => Boolean(panel && !panel.hidden && body?.active === id);
-    return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
-      .children(TABS.map(([id, label, mod]) => button(id, label, shownTab(mod), () => openTab(label, mod))))
-      .children(PANELS.filter(([id]) => (body?.children ?? []).some((/** @type {{ id: string }} */ child) => child.id === id)).map(([id, label]) =>
-        button(id, label, shownPanel(id), () => {
-          if (shownPanel(id)) return run("layout.hide", { id: "panel" });
-          run("layout.select", { stack: "panel-body", child: id });
-          run("layout.show", { id: "panel" });
-        })));
+    // A child is shown when no stack above it shows another and nothing above it is hidden.
+    const shown = (/** @type {string} */ id) => reveal(root, id).length === 0;
+    // The view beside main hides from its shown button; a view around main stays, or the terminals would go.
+    const toggle = (/** @type {string} */ id) => {
+      if (shown(id) && !find(view, "main")) return run("layout.hide", { id: "view" });
+      for (const [command, args] of reveal(root, id)) run(command, args);
+    };
+    // A view's stacks can hold more buttons than the bar's width.
+    return h_flex().id("priory-bar").overflow_x_scroll().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
+      .children((view ? stacks(view) : []).flatMap((stack) => stack.children.map((/** @type {any} */ child) =>
+        button(child.id, label(child), shown(child.id), () => toggle(child.id)))));
   }
 }

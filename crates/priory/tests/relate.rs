@@ -234,6 +234,41 @@ fn a_request_with_relates_records_the_new_tasks_relations() {
 }
 
 #[test]
+fn a_request_or_add_that_relates_to_a_missing_task_is_refused_and_publishes_nothing() {
+    let setup = Setup::new("request-relates-missing");
+    setup.request("login", "Fix the login page", &[]);
+    setup.once();
+    let factory = setup.factory();
+
+    let requested = setup.priory(&[
+        "request",
+        &factory,
+        "--workflow",
+        "implement",
+        "--key",
+        "login-ui",
+        "--relates",
+        "builds-on:9",
+        "Restyle the login page",
+    ]);
+    let added = setup.priory(&["add", &factory, "--relates", "fixes:9", "Fix it"]);
+    setup.once();
+
+    assert!(!requested.status.success());
+    assert_eq!(
+        String::from_utf8(requested.stderr).unwrap(),
+        "priory request: no task 9\n"
+    );
+    assert!(!added.status.success());
+    assert_eq!(
+        String::from_utf8(added.stderr).unwrap(),
+        "priory add: no task 9\n"
+    );
+    let tasks: Value = serde_json::from_str(&setup.stdout(&["tasks", "--json"])).unwrap();
+    assert_eq!(tasks["tasks"].as_array().unwrap().len(), 1, "{tasks}");
+}
+
+#[test]
 fn a_new_task_on_the_key_of_a_dropped_one_takes_it_up() {
     let mut setup = Setup::new("takes-up");
     setup.request("login", "Fix the login page", &[]);

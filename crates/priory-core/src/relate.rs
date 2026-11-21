@@ -88,6 +88,23 @@ fn refused(
     Ok(None)
 }
 
+/// Why a new task cannot have the relations `relates` asks for: `no task <id>` for the first task
+/// that does not exist. A request is refused with it before it is published, since the daemon then
+/// skips such a relation.
+pub fn missing(db: &Connection, relates: &[Relation]) -> rusqlite::Result<Option<String>> {
+    for relation in relates {
+        let found = db
+            .query_row("SELECT 1 FROM tasks WHERE id = ?1", [relation.task], |_| {
+                Ok(())
+            })
+            .optional()?;
+        if found.is_none() {
+            return Ok(Some(format!("no task {}", relation.task)));
+        }
+    }
+    Ok(None)
+}
+
 /// Stores the relation unless it is already stored; both tasks must exist.
 pub(crate) fn insert(
     tx: &Transaction,

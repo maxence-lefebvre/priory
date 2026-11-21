@@ -25,7 +25,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/tasks?pr=RESOURCE` | | `tasks`: the active tasks that hold a pull request. See [Tasks that hold a pull request](#tasks-that-hold-a-pull-request) |
 | `/api/tasks/{id}` | `priory task ID --json` | one [task in detail](#task-in-detail) |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
-| `/api/views` | | an object: [Views](#views) |
+| `/api/views` | `priory views --json` | an object: [Views](#views) |
 | `/api/request` | | what the web view's Add prefills: `workflow` and `band`, the [`[request]`](factory.md#request) defaults, each `null` when unset; `workflows`, the factory's workflow names; and `bands`, its bands in order |
 | `/api/links` | `priory links --json` | an object: [Links](#links) |
 | `/api/flows` | `priory flows --json` | an object: [Flows](#flows) |
@@ -454,7 +454,7 @@ one of `workflow` (the default), `agent`, `model`, `machine` and `repo`. See
 | Field | Value |
 | ----- | ----- |
 | `by` | The split's dimension |
-| `current`, `previous` | The two windows: `since` and `until`, then a [total](#cost-total) and `merges` |
+| `current`, `previous` | The two windows: `since` and `until`, `since_day`, the local date `since` falls on in the daemon's timezone, as `days` are keyed, then a [total](#cost-total) and `merges` |
 | `days` | One entry per local day of either window with a record or a merge, oldest first: `day` (`YYYY-MM-DD`), a [total](#cost-total) and `merges` |
 | `split` | One entry per value of the current window's records, sorted: the value under the dimension's name, such as `"model": "claude-opus-5-5"`, and a [total](#cost-total) |
 
@@ -513,7 +513,8 @@ a wait and away time. Minutes are numbers, not rounded.
 | `factory` | string | The factory's name |
 | `views` | object | Each view by name: the views Priory ships, each replaced by the factory's view of the same name, then the factory's other views. Each is the file's tree as JSON, such as `{ "layout": { "tabs": [{ "panel": "desk" }] } }`. See [views.md](views.md) |
 
-The server reads the views when it starts.
+The server reads the views when it starts. `priory views [DIR] --json` prints the same object from
+the factory's files, with no server running.
 
 ## Links
 

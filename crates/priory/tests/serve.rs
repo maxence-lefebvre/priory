@@ -4679,6 +4679,27 @@ fn use_factory(setup: &Setup, from: &Path) {
 }
 
 #[test]
+fn priory_views_prints_what_the_views_endpoint_serves() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let factories = [
+        root.join("examples/groom"),
+        root.join("docs/reference/examples/factory"),
+    ];
+    for (index, from) in factories.iter().enumerate() {
+        let mut setup = Setup::new(&format!("views-{index}"), SERVE);
+        use_factory(&setup, from);
+        let address = setup.start(&["serve", &setup.factory(), "--listen", "127.0.0.1:0"]);
+
+        let views = api(&address, "/api/views");
+
+        let twin = setup.priory(&["views", &setup.factory(), "--json"]);
+        succeeded(&twin);
+        let twin: Value = serde_json::from_slice(&twin.stdout).unwrap();
+        assert_eq!(twin, views, "{from:?}: priory views --json");
+    }
+}
+
+#[test]
 fn the_flows_endpoint_serves_check_explains_json_and_each_graph_as_priory_flows_prints_them() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let factories = [
