@@ -1084,8 +1084,11 @@ pub fn listen(home: &Path) -> Result<Listening, String> {
     }
     let path = socket_path(home);
     private_dir(path.parent().unwrap_or(Path::new("/")), uid())?;
-    let _ = fs::remove_file(&path);
-    let listener = UnixListener::bind(&path).map_err(at)?;
+    // bind creates the file before listen: renamed after, it never refuses a client that saw it.
+    let bound = path.with_extension("new");
+    let _ = fs::remove_file(&bound);
+    let listener = UnixListener::bind(&bound).map_err(at)?;
+    fs::rename(&bound, &path).map_err(at)?;
     let (sender, lines) = mpsc::channel();
     std::thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {

@@ -172,7 +172,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         .map_err(|error| format!("listen on {listen}: {error}"))?;
     let web = config.web;
     let served = Arc::new(Served {
-        views: serde_json::json!({ "factory": factory.name, "views": factory.views() }).to_string(),
+        views: listing::views(factory).to_string(),
         links: listing::links(factory).to_string(),
         flows: listing::flows(factory).to_string(),
         schedules: listing::schedule_triggers(factory),
@@ -304,6 +304,7 @@ fn route(
     };
     let read = match path {
         "/api/events" => return events(db, query, waiters),
+        "/api/batches" => return batches(db, None),
         "/api/desk" => {
             let person = match query.split_once('=') {
                 None if query.is_empty() => listing::ME.to_owned(),
@@ -395,6 +396,9 @@ fn route(
         "/api/costs" => return costs(db, &served.prices, query),
         "/api/grades" => return grades(db, query),
         "/api/attention" => return attention(db, query),
+        _ if path.starts_with("/api/batches/") => {
+            return batches(db, path.strip_prefix("/api/batches/"));
+        }
         _ => match (
             path.strip_prefix("/api/tasks/").map(str::parse),
             path.strip_prefix("/api/reports/").map(str::parse),
@@ -411,6 +415,16 @@ fn route(
         Ok(None) if path.starts_with("/api/reports/") => Reply::error(404, "no such report"),
         Ok(None) => Reply::error(404, "no such task"),
         Err(error) => Reply::error(500, &error.to_string()),
+    }
+}
+
+/// Every batch, or the one `which` names, as `priory batch show --json` prints it.
+fn batches(db: &Connection, which: Option<&str>) -> Reply {
+    let _snapshot = db.unchecked_transaction();
+    match crate::batch::show(db, which) {
+        Ok(shown) => Reply::json(200, shown.to_string()),
+        Err(error) if error.starts_with("there is no batch") => Reply::error(404, &error),
+        Err(error) => Reply::error(500, &error),
     }
 }
 
@@ -432,6 +446,7 @@ enum Write<'a> {
     TodoDone(i64),
     Seen,
     Read(i64),
+    BatchEdit(&'a str),
 }
 
 impl<'a> Write<'a> {
@@ -462,6 +477,12 @@ impl<'a> Write<'a> {
             .and_then(|rest| rest.strip_suffix("/read"))
         {
             return seq.parse().ok().map(Write::Read);
+        }
+        if let Some(batch) = path
+            .strip_prefix("/api/batches/")
+            .and_then(|rest| rest.strip_suffix("/edit"))
+        {
+            return Some(Write::BatchEdit(batch));
         }
         if let Some((task, act)) = path
             .strip_prefix("/api/tasks/")
@@ -624,6 +645,8 @@ enum Sent {
     Task(i64, Option<i64>),
     /// The pick, the option and the report's revision the body sent.
     Pick(String, String, i64),
+    /// The batch and the plan revision the body sent.
+    Batch(String, i64),
     Nothing,
 }
 
@@ -792,6 +815,18 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
             let Empty {} = serde_json::from_slice(body).map_err(bad)?;
             Ok((line(&crate::post::ReadLine { read: *seq }), Sent::Nothing))
         }
+        Write::BatchEdit(batch) => {
+            let body: serde_json::Value = serde_json::from_slice(body).map_err(bad)?;
+            let (revision, _) =
+                crate::batch::edit_of(&body).map_err(|error| Reply::error(400, &error))?;
+            let edit = crate::batch::EditLine {
+                batch_edit: crate::batch::EditRequest {
+                    batch: (*batch).to_owned(),
+                    body,
+                },
+            };
+            Ok((line(&edit), Sent::Batch((*batch).to_owned(), revision)))
+        }
         Write::Seen => {
             let body: SeenBody = serde_json::from_slice(body).map_err(bad)?;
             let seen = state::Visit {
@@ -839,6 +874,21 @@ fn refusal(db: &Connection, sent: Sent, refused: &str) -> Reply {
             };
         }
         Sent::Pick(pick, option, sent) => return pick_refusal(db, &pick, &option, sent, refused),
+        Sent::Batch(batch, sent) => {
+            let at = db
+                .query_row(
+                    "SELECT plan_revision FROM batches WHERE CAST(id AS TEXT) = ?1 OR key = ?1",
+                    [&batch],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional();
+            return match at {
+                Ok(None) => Reply::error(404, refused),
+                Ok(Some(at)) if at != sent => Reply::error(409, refused),
+                Ok(Some(_)) => Reply::error(422, refused),
+                Err(error) => Reply::error(500, &error.to_string()),
+            };
+        }
         Sent::Nothing => return Reply::error(422, refused),
     };
     match listing::ask(db, id) {

@@ -328,6 +328,8 @@ In Indigo and Ink the ask tile and the live tile share a fill; the icon tells th
 An answered or withdrawn ask is not a task state either. In the asks list it takes a muted tile
 with the `check` icon (answered) or the `minus` icon (withdrawn).
 
+A batch is not a task state either. Its desk row takes a muted tile with the `layers` icon.
+
 ### Explorer list
 
 Every list panel (desk, asks, tasks, runs, inbox) is the same explorer over one query.
@@ -376,8 +378,11 @@ The desk is the "Needs me" view. It lists, top to bottom:
    column holds the same buttons, compact. Then **To-dos**: the person's own items, each with
    the `square` tile in the ask role, its text and due time, and a Done button in `.btn
    secondary` that marks it done (`POST /api/todos/{id}/done`). The next thing card offers Done
-   for a to-do. Then **Also waiting**: the desk's other items (held tasks, sweeps, memory waits,
-   retired tasks and worktrees that stay), each with the daemon's sentence. A held task's row carries a
+   for a to-do. Then **Also waiting**: the desk's other items (held tasks, going batches, sweeps,
+   memory waits, retired tasks and worktrees that stay), each with the daemon's sentence. A
+   batch row stands for its entries' held rows. On the phone list, its title and counts are the
+   main line and the `Next: ...` sentence a caption below; the wide table and the Herdr Desk keep the
+   line whole, as board 3 shows. Its key opens the planning task until the batch page exists. A held task's row carries a
    Release button in `.btn secondary`, and a report row under **Reports** a Read button. Release
    sends the revision the page drew (`POST /api/tasks/{id}/release`), Read sends `POST /api/inbox/{seq}/read`.
    A refused action keeps the row and shows why under it, in the row's note.
@@ -532,7 +537,8 @@ for a decision. Every ask has its own URL, such as `/asks/42`.
    "Runs a command" when its answer runs one. In the drawer the options sit in one row, each with
    its key `1` to `9`.
 6. **Write an answer**: a ghost button that expands into a 16 px text field with a "Send"
-   button. Free text is always possible.
+   button, on an ask that takes free text. A step's ask and a hold's ask take only their options,
+   so they show neither Write an answer nor Dismiss (`free_text` is false).
 7. **Dismiss** and the [snooze](#snooze) buttons: ghost buttons on the same line as "Write an
    answer". Dismiss closes the ask with no answer and sends at once, with no undo bar, as
    `priory dismiss` does. Snooze shows only on an ask that belongs to a task.
@@ -1006,11 +1012,14 @@ the adapter lives, how it reads and acts, and the data each panel needs. The app
   (52 px) with a `--pane-tile` (24 px) tile, views and chips `--pane-chip` (28 px) tall, options
   `--pane-option` (40 px) tall, the question in `--type-pane-question` (18 / 24), the desk count in
   `--type-pane-count` (40 / 1), and buttons at `--control-fine`.
-- **Width.** Every panel works at `--pane-narrow` (420 px), the side panel's default width. Below
+- **Width.** Every panel works at `--pane-narrow` (420 px), the default width of the view beside Herdr's terminals. Below
   `--pane-split` (720 px) a selected row opens its detail in place, under the row. From
   `--pane-split`, the list and the detail sit side by side.
 - **Selection.** A selected row takes the `--action-soft` fill on its own rounded surface. It has
   no 3 px leading bar: gpui-kit's design guide forbids leading-edge selection bars.
+- **Placement.** The layout follows the `default` view: each `tabs` node is a stack, and the
+  Priory bar shows one button per child of each stack. The Task panel and an Asks panel the view
+  lacks open as tabs in the center.
 - **Navigation.** Herdr owns tabs and panes, so a panel has no tab bar, rail or Answer capsule.
   `Enter` opens the selected row.
 - **Add.** The Desk and Queue panels open [Add](#add) as a card under their header, not as a
@@ -1052,8 +1061,7 @@ waiting, and the daemon does nothing different.
 
 ### Desk
 
-The calm count, then the one next thing, then the explorer list. It opens as a tab in the center
-stack.
+The calm count, then the one next thing, then the explorer list.
 
 1. **Count** in `--type-pane-count`, as the web desk's: "2 asks need you. Oldest waits 42 min. 1
    stopped. 2 snoozed. 3 events reached no task in 24 h." The last sentence shows only when the
@@ -1074,7 +1082,7 @@ the wide table with Recommends and the key hint bar (`J` `K`, `Enter`, `S`, `R`,
 
 ### Asks
 
-Every ask, with the web's ask detail fitted to the pane. It sits in the side panel stack.
+Every ask, with the web's ask detail fitted to the pane.
 
 - Saved views: Open, Snoozed, Answered and All. Facet chips: Command, Lane, Band, Risk and Task.
 - A routed ask shows the [routed mark](#routed-ask) as a tag in its row and as a line under the
@@ -1084,10 +1092,12 @@ Every ask, with the web's ask detail fitted to the pane. It sits in the side pan
   Trace and History.
 - Once the options scroll out of view, the sticky answer bar shows "3 options", the recommended
   option and the overflow menu.
+- On an ask that belongs to a task, the overflow menu offers Open task, which opens the
+  [Task](#task) panel, and Attach to task.
 
 ### Queue
 
-What runs next and why. It sits in the side panel stack, under the same activity bar as Asks.
+What runs next and why.
 
 - **Up next**: a strip with the next 3 runs, queued or scheduled. Each line shows when ("now, on
   room", "about 11:50", "08:30 Fri"), the task or schedule, and why. It opens the task.
@@ -1099,7 +1109,7 @@ What runs next and why. It sits in the side panel stack, under the same activity
 
 ### Bonjour
 
-The morning dossier. It opens as a tab in the center stack.
+The morning dossier.
 
 - A toolbar with the date and older and newer arrows, "n of m agreed" with a progress bar, Next
   pick and search.
@@ -1123,7 +1133,7 @@ The morning dossier. It opens as a tab in the center stack.
 
 ### Costs
 
-The web's [Costs panel](#costs-panel), as a tab in the center stack.
+The web's [Costs panel](#costs-panel).
 
 - From 1024 px Costs and Attention sit side by side. Below, Costs and Attention chips in the
   header pick one, as saved views do.
@@ -1134,7 +1144,7 @@ The web's [Costs panel](#costs-panel), as a tab in the center stack.
 
 ### Flows
 
-The web's [Flows panel](#flows-panel), as a tab in the center stack.
+The web's [Flows panel](#flows-panel).
 
 - Nodes and edges paint with gpui-kit paths in the web's shapes, dashes, weights and colors, scaled
   to the pane, at most 560 px wide.
@@ -1146,7 +1156,8 @@ The web's [Flows panel](#flows-panel), as a tab in the center stack.
 ### Task
 
 The web's [task detail](#task-detail-and-workflow-grid), cut to what a pane reads, as a tab in the
-center stack. Open task on the Desk and an Up next line open it.
+center stack. Open task on the Desk, in Queue and in the Asks overflow menu, and an Up next line,
+open it.
 
 - A 44 px header with the task's tile at 18 px, its key in mono, its state word in its role's text
   color, and Attach as a secondary button at the right.

@@ -339,3 +339,31 @@ test("an ask the Desk opens with priory.asks.open opens here, in a view that sho
   await settle();
   assert.equal(panel.selected, 1);
 });
+
+test("a step's ask offers no free text and no dismissal, and an agent's ask does", () => {
+  assert.equal(askDetail({ ...asks[0], free_text: false }, { now, armed: null }).takesText, false);
+  assert.equal(askDetail({ ...asks[0], free_text: true }, { now, armed: null }).takesText, true);
+});
+
+test("the Attach menu's Open task opens the ask's task in the Task panel", async () => {
+  const { context, draw, find, herdr, press, settle } = await import("./kit.js");
+  const { default: Asks } = await import("../mods/priory-asks/main.js");
+  herdr.reset();
+  herdr.replies = { asks: fixture("asks.json"), task: fixture("task.json"), links: { links: [] } };
+  const panel = new Asks();
+  const cx = context();
+  panel.init({}, cx);
+  await settle();
+  draw(panel, cx);
+  const ask = fixture("asks.json").asks.find((/** @type {any} */ item) => item.id === panel.selected);
+  assert.notEqual(ask.task, null);
+
+  panel.popover = "more";
+  const tree = draw(panel, cx);
+  // The menu's buttons are `menu-<index>-<label>`, and the snooze items before them vary.
+  const open = [0, 1, 2, 3].map((index) => `menu-${index}-Open task`).find((id) => find(tree, id));
+  assert.ok(open, "the menu offers Open task");
+  press(tree, /** @type {string} */ (open));
+  assert.equal(herdr.shared.get("priory.task.open").task, ask.task);
+  assert.equal(herdr.shared.get("priory.attach"), undefined);
+});

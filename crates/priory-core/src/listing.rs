@@ -42,7 +42,7 @@ const IRREVERSIBLE: &str = "CASE asks.kind
 /// A desk item's group in the ranking (see `RANKS`), null for the queue.
 fn urgency() -> String {
     format!(
-        "CASE WHEN desk.part = 1 THEN NULL
+        "CASE WHEN desk.part = 1 OR desk.kind = 'batch' THEN NULL
            WHEN desk.kind IN ('blocked', 'failed', 'prompt', 'command')
              OR desk.kind = 'report' AND desk.what LIKE 'intake: %' THEN 'alarm'
            WHEN desk.kind = 'ask' THEN (SELECT CASE WHEN {IRREVERSIBLE} THEN 'irreversible'
@@ -131,6 +131,13 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                WHERE holds.released IS NULL AND tasks.state = 'held' AND holds.id = (
                  SELECT min(id) FROM holds AS hold WHERE hold.task = holds.task
                  AND hold.released IS NULL)
+                 AND (tasks.batch_entry IS NULL OR EXISTS (SELECT 1 FROM holds AS hold
+                   WHERE hold.task = holds.task AND hold.released IS NULL
+                   AND (hold.kind != 'merged' OR EXISTS (SELECT 1 FROM asks WHERE asks.id = hold.ask
+                     AND asks.answer IS NULL AND asks.withdrawn IS NULL))))
+               UNION ALL
+               SELECT 0, batches.went, 'batch', batches.id, batches.task, tasks.lane, batches.title
+               FROM batches JOIN tasks ON tasks.id = batches.task WHERE batches.went IS NOT NULL
                UNION ALL
                SELECT 0, sweeps.started, 'sweep', sweeps.id, stalls.task, tasks.lane,
                  sweeps.script || ': ' || coalesce(sweeps.status
@@ -185,7 +192,9 @@ fn asks_query() -> String {
      (SELECT json_group_array(json_object('revision', revision, 'answer', answer, 'by', by,
         'why', why, 'at', created))
       FROM (SELECT * FROM ask_refusals WHERE ask = asks.id ORDER BY id)) AS refused,
-     {IRREVERSIBLE} AS irreversible, tasks.merge_risk, tasks.grade, {}
+     {IRREVERSIBLE} AS irreversible, tasks.merge_risk, tasks.grade,
+     asks.kind != 'step' AND NOT EXISTS (SELECT 1 FROM holds
+       WHERE holds.ask = asks.id AND holds.released IS NULL) AS free_text, {}
    FROM asks LEFT JOIN tasks ON tasks.id = asks.task
    LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id
    WHERE (?1 IS NULL OR asks.task = ?1) AND (?2 IS NULL OR asks.id = ?2)
@@ -230,6 +239,7 @@ pub fn inbox(db: &Connection, since: i64) -> rusqlite::Result<Value> {
 /// groups them by the resource each names first, newest first, when a task owned or subscribed to
 /// it: with that task and the command that routes the next event. `other` counts the rest per
 /// source, since no task ever owned them.
+/// `outsider` lists the comments and reviews from outside the repository, newest first.
 pub fn unrouted(db: &Connection, since: i64) -> rusqlite::Result<Value> {
     let mut owned: Vec<(String, Value, Vec<Value>)> = Vec::new();
     let mut other: Vec<(String, usize)> = Vec::new();
@@ -264,7 +274,28 @@ pub fn unrouted(db: &Connection, since: i64) -> rusqlite::Result<Value> {
         .into_iter()
         .map(|(source, events)| json!({ "source": source, "events": events }))
         .collect();
-    Ok(json!({ "unrouted": { "owned": owned, "other": other } }))
+    Ok(json!({
+        "unrouted": { "owned": owned, "other": other },
+        "outsider": outsider_events(db, since, None)?,
+    }))
+}
+
+/// Each comment or review after `since`, and within `window` (from, to) when given, from someone
+/// outside the repository, newest first, with who wrote it.
+fn outsider_events(
+    db: &Connection,
+    since: i64,
+    window: Option<(&str, &str)>,
+) -> rusqlite::Result<Value> {
+    let (from, to) = window.unzip();
+    rows(
+        db,
+        "SELECT seq, type, subject, time, json_extract(data, '$.actor') AS actor FROM inbox
+         WHERE outcome = 'outsider' AND seq > ?1
+           AND (?2 IS NULL OR julianday(time) BETWEEN julianday(?2) AND julianday(?3))
+         ORDER BY seq DESC",
+        params![since, from, to],
+    )
 }
 
 /// The newest task that owned or subscribed to `resource`, in any state.
@@ -608,6 +639,8 @@ fn asks_of(
             .chain(object.remove("grade").filter(Value::is_string))
             .collect();
         object.insert("risk".to_owned(), risk.into());
+        let free_text = object["free_text"].as_i64() == Some(1);
+        object.insert("free_text".to_owned(), free_text.into());
     }
     Ok(asks)
 }
@@ -692,6 +725,11 @@ fn asleep(db: &Connection) -> rusqlite::Result<Value> {
         .iter_mut()
         .for_each(parse_json);
     Ok(asleep)
+}
+
+/// The factory's resolved views, as `serve` and `priory views --json` show them.
+pub fn views(factory: &Factory) -> Value {
+    json!({ "factory": factory.name, "views": factory.views() })
 }
 
 /// The factory's links, as `serve` and `priory links --json` show them.
@@ -946,7 +984,8 @@ fn parse_back_early(item: &mut Value) {
 /// The person a desk is for when no one is named.
 pub const ME: &str = "me";
 
-/// The trace records and inbox entries after `person`'s last visit, newest first, at most 50.
+/// The trace records and inbox entries after `person`'s last visit, newest first, at most 50,
+/// without the events no task took.
 fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
     rows(
         db,
@@ -964,6 +1003,8 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
                  ELSE type || coalesce(' ' || subject, '') || coalesce(': ' || outcome, '') END,
                1, seq
              FROM inbox WHERE julianday(time) >= (SELECT at FROM visited)
+             -- An event no task took would crowd out the rest in a busy repository.
+             AND outcome IS NOT 'ignored'
              ORDER BY julianday(time) DESC, seq DESC LIMIT 50))
          SELECT time, task, (SELECT key FROM tasks WHERE tasks.id = events.task) AS key, what
          FROM events
@@ -1106,6 +1147,11 @@ pub fn desk(
     let mut items = rows(db, &desk_items(), [])?;
     let list = items.as_array_mut().expect("rows are an array");
     list.iter_mut().for_each(parse_back_early);
+    for item in list.iter_mut().filter(|item| item["kind"] == "batch") {
+        let id = item["id"].as_i64().expect("a batch's id is a number");
+        item["what"] = json!(crate::batch::desk_line(db, id)?);
+    }
+    list.retain(|item| item["kind"] != "batch" || !item["what"].is_null());
     let snoozed = list
         .iter()
         .filter(|item| !item["snoozed_until"].is_null())
@@ -1133,15 +1179,25 @@ pub fn desk(
         |row| row.get(0),
     )?;
     let day_ago = (now - jiff::SignedDuration::from_hours(24)).to_string();
+    let day = (day_ago.as_str(), now.to_string());
     let mut unrouted = 0;
-    for (resource, _) in unrouted_events(db, 0, Some((&day_ago, &now.to_string())))? {
+    for (resource, _) in unrouted_events(db, 0, Some((day.0, &day.1)))? {
         unrouted += usize::from(owner(db, &resource)?.is_some());
     }
+    let outside = [crate::link::banner(db)?, post::intake_banner(db)?]
+        .into_iter()
+        .flatten()
+        .reduce(|log, intake| format!("{log}; {intake}"));
+    let outsider = outsider_events(db, 0, Some((day.0, &day.1)))?
+        .as_array()
+        .map_or(0, Vec::len);
     Ok(json!({
         "paused": state::pause_banner(db)?,
         "banner": stall::banner(db)?,
-        "intake": post::intake_banner(db)?,
-        "counts": { "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted },
+        "intake": outside,
+        "counts": {
+            "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted, "outsider": outsider,
+        },
         "items": items,
         "next": ranked.first(),
         "ranked": ranked,

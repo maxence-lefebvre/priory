@@ -4,6 +4,11 @@ This page explains how R8.6 could work: "A second view host, such as a Herdr lay
 same view files as an adapter." It builds nothing. It holds the model, the first code slice with
 its tests, the slices after it, and the open questions with a recommendation for each.
 
+The first slice is built, with each recommendation taken: [herdr.md](../adapters/herdr.md#the-layout)
+describes it. Its placement differs from the tables below: a map in `layout.js` puts narrow panels in
+asides and wide ones in center tabs, and a view's nesting only orders them. It also differs here: `adapters/herdr/layout` prints the layout, and only
+`install` writes it.
+
 ## What exists today
 
 - A view is a file in `views/`: a tree of `row`, `column` and `tabs` nodes whose leaves are panels

@@ -1,0 +1,27 @@
+#!/usr/bin/env node
+// Prints the Herdr layout for the `default` view: `priory views --json | layout`.
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { layout } from "./lib/layout.js";
+
+let views, input = "";
+try {
+  input = readFileSync(0, "utf8");
+  views = JSON.parse(input).views;
+} catch {
+  views = null;
+}
+if (!views?.default) {
+  console.error("layout: reads the views on its standard input; pipe `priory views --json` into it");
+  process.exit(1);
+}
+const frame = JSON.parse(readFileSync(new URL("./layouts/frame.json", import.meta.url), "utf8"));
+try {
+  // The root id carries a hash of the view files, so `install` and `priory check` can tell a layout built from older ones.
+  const built = layout("default", views.default, frame);
+  built.id = `${built.id}-${createHash("sha256").update(input.trim()).digest("hex").slice(0, 12)}`;
+  console.log(JSON.stringify(built, null, 2));
+} catch (error) {
+  console.error(`layout: ${error instanceof Error ? error.message : error}`);
+  process.exit(1);
+}

@@ -29,6 +29,9 @@ export const routedNote = (ask) => (routedMark(ask) ? `${ask.routed_to} is answe
 /** Who answered, as the views say it: a person, or `agent:<lead>`. Null when unrecorded. @param {string | null | undefined} by */
 export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : "a person");
 
+/** Whether an ask takes free text and a dismissal: a step's or a hold's ask takes only its options. */
+export const takesText = (ask) => ask?.free_text !== false;
+
 // How long a first tap on a command option stays armed for the second.
 export const ARM_MS = 4000;
 

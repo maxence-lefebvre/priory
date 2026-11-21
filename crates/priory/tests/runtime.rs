@@ -1,4 +1,8 @@
 mod conform;
+#[cfg(feature = "postgres")]
+mod partition;
+#[cfg(feature = "postgres")]
+mod proxy;
 mod tmux_dir;
 
 use herdr_bus::{Bus, Message, Output};
@@ -82,6 +86,8 @@ struct Setup {
     bus: PathBuf,
     daemon: Option<Child>,
     tmux: TmuxDir,
+    /// The Postgres log's URL, for a factory whose `[log]` names Postgres.
+    log_url: Option<String>,
 }
 
 impl Setup {
@@ -97,6 +103,7 @@ impl Setup {
             dir,
             daemon: None,
             tmux,
+            log_url: None,
         };
         let _ = fs::remove_dir_all(&setup.dir);
         let files = [
@@ -190,6 +197,9 @@ impl Setup {
                 ),
             )
             .env("GIT_CONFIG_VALUE_0", "https://github.com/");
+        if let Some(url) = &self.log_url {
+            command.env("PRIORY_LOG_URL", url);
+        }
         command
     }
 
@@ -3555,6 +3565,23 @@ fn until_traced(setup: &Setup, kind: &str) -> serde_json::Value {
 #[test]
 fn a_snooze_ending_at_its_time_bumps_the_revision_and_is_traced() {
     let setup = asleep_on_an_ask("snooze-ends");
+    // The daemon stores the ended run's changed files a tick later, which moves the revision.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let run = rusqlite::Connection::open(setup.dir.join("priory.db")).and_then(|db| {
+            db.query_row("SELECT files_run FROM tasks", [], |row| {
+                row.get::<_, Option<i64>>(0)
+            })
+        });
+        if run.as_ref().is_ok_and(Option::is_some) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the files were never stored: {run:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let snoozed = setup.priory(&["snooze", "ask", "1", "--for", "4s"]);
     assert!(snoozed.status.success(), "{snoozed:?}");
     let json: serde_json::Value =
@@ -4623,6 +4650,23 @@ fn a_daemon_restarted_while_a_delivery_runs_waits_for_that_command_and_delivers_
         delivery["state"] == "running"
     });
     setup.written("fake/deliver.log");
+    // The command runs before the daemon stores its pid: a crash before that fails the delivery.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let pid = rusqlite::Connection::open(setup.dir.join("priory.db")).and_then(|db| {
+            db.query_row("SELECT pid FROM deliveries", [], |row| {
+                row.get::<_, Option<u32>>(0)
+            })
+        });
+        if pid.as_ref().is_ok_and(Option::is_some) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the pid was never stored: {pid:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     setup.crash();
     setup.start();
@@ -4917,6 +4961,12 @@ fn an_answer_to_a_stale_revision_or_a_second_answer_is_refused() {
         rows.first().is_some_and(|row| row[4] == "asleep")
     });
 
+    let asks = setup.priory(&["asks", "--json"]);
+    let asks: serde_json::Value = serde_json::from_slice(&asks.stdout).unwrap();
+    assert_eq!(
+        asks["asks"][0]["free_text"], true,
+        "an agent's ask takes text"
+    );
     let stale = setup.priory(&["answer", "1", "sqlite", "--revision", "2"]);
     let first = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
     let second = setup.priory(&["answer", "1", "postgres", "--revision", "1"]);
@@ -4957,6 +5007,84 @@ fn a_step_ask_takes_only_its_options() {
         "priory answer: ask 1 takes one of: approved, rejected\n"
     );
     assert_eq!(setup.rows("asks").len(), 1);
+}
+
+#[test]
+fn a_note_after_a_step_ask_s_option_reaches_the_next_step_s_prompt() {
+    let workflow = STEPS
+        .replace("start = \"plan\"", "start = \"approve\"")
+        .replace("approved = \"implement\"", "approved = \"plan\"");
+    let mut setup = Setup::with_workflow("step-note", &workflow);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let answered = setup.priory(&[
+        "answer",
+        "1",
+        "approved: skip the migration",
+        "--revision",
+        "1",
+    ]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let typed = setup.typed();
+    assert!(typed[0].starts_with("Plan the change.\n"), "{typed:?}");
+    assert!(
+        typed[0].contains(
+            "\nA person answered approved on step approve, with a note: skip the migration\n"
+        ),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_note_after_a_step_ask_s_option_that_stops_the_task_is_its_reason() {
+    let workflow = STEPS
+        .replace("start = \"plan\"", "start = \"approve\"")
+        .replace("approved = \"implement\"", "approved = \"plan\"");
+    let mut setup = Setup::with_workflow("step-note-stop", &workflow);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let answered = setup.priory(&["answer", "1", "rejected: too big", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let task = setup.priory(&["task", "1", "--json"]);
+    let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
+    assert_eq!(task["state"], "dropped");
+    assert_eq!(
+        task["reason"],
+        "A person answered rejected on step approve, with a note: too big"
+    );
+    let asks = setup.priory(&["asks", "--all", "--json"]);
+    let asks: serde_json::Value = serde_json::from_slice(&asks.stdout).unwrap();
+    assert_eq!(asks["asks"][0]["answer"], "rejected: too big");
+    assert_eq!(asks["asks"][0]["free_text"], false);
+}
+
+#[test]
+fn a_note_on_a_step_ask_whose_option_leads_to_done_is_refused() {
+    let workflow = STEPS
+        .replace("start = \"plan\"", "start = \"approve\"")
+        .replace(
+            "approved = \"implement\", rejected = \"stop\"",
+            "approved = \"done\", rejected = \"plan\"",
+        );
+    let mut setup = Setup::with_workflow("step-note-done", &workflow);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let answered = setup.priory(&["answer", "1", "approved: ship it", "--revision", "1"]);
+
+    assert!(!answered.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&answered.stderr),
+        "priory answer: ask 1 answered approved leads to done, which reads no note: answer approved alone\n"
+    );
 }
 
 #[test]
@@ -6381,6 +6509,69 @@ fn a_merge_that_moves_a_said_run_to_another_agent_kills_its_session_and_starts_t
         .status()
         .unwrap();
     assert!(!alive.success(), "the said run's agent {said} still runs");
+}
+
+#[test]
+fn a_merge_that_carries_a_said_run_into_the_next_step_queues_only_that_steps_ending() {
+    let mut setup = Setup::with_workflow("after-merge-said-ending", AFTER_MERGE);
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+        serde_json::Value::Null,
+        json!({ "name": "result", "arguments": { "outcome": "quiet", "summary": "all quiet" } }),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    setup.hold("hold-stop");
+    assert!(setup.priory(&["say", "1", "Hold on."]).status.success());
+    setup.until("outbox", |_| {
+        setup
+            .typed()
+            .iter()
+            .any(|text| text.starts_with("A person says: Hold on."))
+    });
+    // The run is busy, so this one stays queued, with the ending of the step the task is at.
+    assert!(setup.priory(&["say", "1", "And this."]).status.success());
+
+    setup.publish(&closed());
+    setup.until("runs", |rows| rows.len() == 4 && rows[3][2] == "watch");
+    setup.release("hold-stop");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let typed = setup.typed();
+    let watch = typed
+        .iter()
+        .find(|text| text.contains("Watch the release."))
+        .expect("the watch step's prompt was typed");
+    assert!(watch.contains("A person says: And this."), "{watch}");
+    assert!(watch.contains("outcomes: quiet."), "{watch}");
+    assert!(!watch.contains("outcomes: failed, passed"), "{watch}");
+}
+
+#[test]
+fn a_merge_that_marks_a_task_done_ends_its_said_run_and_kills_its_session() {
+    let setup = gated("gate-said-done");
+    setup.calls(&[serde_json::Value::Null]);
+    setup.hold("hold-stop");
+    assert!(setup.priory(&["say", "1", "Hold on."]).status.success());
+    setup.until("outbox", |_| {
+        setup
+            .typed()
+            .iter()
+            .any(|text| text.starts_with("A person says: Hold on."))
+    });
+
+    setup.publish(&closed());
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    setup.release("hold-stop");
+
+    setup.gone("priory-1");
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 3, "{runs:?}");
+    assert_eq!(runs[2][7], "done", "{runs:?}");
 }
 
 #[test]
@@ -9311,7 +9502,7 @@ fn a_close_that_does_not_say_whether_it_merged_asks_rather_than_drops() {
     assert_eq!(held_as(&setup, "1")[0], "held");
 }
 
-const REVIVED: &str = "A person revived this task as generation 2 after it was dropped. The asks and waits of its earlier generation are withdrawn. Check the worktree, then continue.\nPlan the change.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
+const REVIVED: &str = "A person revived this task as generation 2 after it was dropped: hopeless it. The asks and waits of its earlier generation are withdrawn. Check the worktree, then continue.\nPlan the change.\nEnd this step by calling the result tool of the priory MCP server with one of these outcomes: hopeless, ready, unsure.\n";
 
 #[test]
 fn a_dropped_task_revives_at_its_step_in_its_session_as_generation_2() {
@@ -9410,6 +9601,36 @@ fn an_event_for_the_wait_of_an_earlier_generation_does_not_wake_the_revived_task
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.rows("tasks")[0][4], "asleep");
     assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn a_result_that_stops_the_task_keeps_its_summary_as_the_reason_and_posts_a_report() {
+    let mut setup = Setup::new("stopped-reason");
+    let failed = json!({ "name": "result", "arguments": { "outcome": "failed",
+        "summary": "The issue holds no acceptance criteria.\nAdd them and revive it." } });
+    setup.calls(&[failed]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+
+    assert_eq!(tasks[0][7], "The issue holds no acceptance criteria.");
+    let inbox = setup.priory(&["inbox", "--json"]);
+    let inbox = String::from_utf8_lossy(&inbox.stdout);
+    assert!(
+        inbox.contains(
+            "task 1 (github:owner/repo#42) stopped at implement, failed: The issue holds no acceptance criteria."
+        ),
+        "{inbox}"
+    );
+    let desk = setup.priory(&["desk"]);
+    let desk = String::from_utf8_lossy(&desk.stdout);
+    assert!(
+        desk.contains("priory: task 1 (github:owner/repo#42) stopped"),
+        "{desk}"
+    );
 }
 
 #[test]
@@ -10095,6 +10316,64 @@ fn issue_commented(github_id: u64) -> Message {
 }
 
 #[test]
+fn a_comment_kept_during_the_turn_refuses_the_result_until_the_agent_read_it() {
+    let mut setup = Setup::new("kept-during-turn");
+    let read = json!({ "name": "result", "arguments": { "outcome": "passed", "summary": "passed it",
+                                                      "feedback": { "u": "trivial" } } });
+    setup.calls(&[result("passed"), read]);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/submitted");
+    setup.publish(&issue_commented(801));
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "kept");
+
+    setup.release("hold-call");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "feedback for this run is queued: end your turn to read it"
+    );
+    assert!(
+        setup.typed()[1].contains("\ngithub.issues.comment owner/repo#42 {"),
+        "{:?}",
+        setup.typed()
+    );
+    let (text, error) = reply(&setup.replies()[1]);
+    assert!(!error, "{text}");
+}
+
+#[test]
+fn a_comment_on_a_dropped_tasks_own_issue_posts_a_report_that_names_its_revive() {
+    let mut setup = Setup::new("dropped-comment");
+    setup.calls(&[result("failed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    // The comment comes after the task was dropped, to the second.
+    std::thread::sleep(Duration::from_millis(1100));
+
+    setup.publish(&issue_commented(802));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 4);
+    assert_eq!(inbox[2][4], "ignored", "{inbox:?}");
+    let desk = setup.priory(&["desk"]);
+    let desk = String::from_utf8_lossy(&desk.stdout);
+    assert!(
+        desk.contains(
+            "priory: github:owner/repo#42 has a new comment; its task 1 dropped: priory revive 1"
+        ),
+        "{desk}"
+    );
+    assert_eq!(setup.rows("tasks").len(), 1);
+}
+
+#[test]
 fn a_comment_on_a_done_tasks_issue_reopens_nothing_once_it_unsubscribed_or_the_issue_closed() {
     let closed = Message::new(
         "github.issues.closed",
@@ -10444,6 +10723,104 @@ fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_do
     assert!(!args.contains(SLACK_TOKEN), "{args}");
 }
 
+/// The replies the intake published, oldest first.
+fn replies(setup: &Setup) -> Vec<serde_json::Value> {
+    setup
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 100,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "slack.thread.replied")
+        .inspect(|stored| conform::conforms(&serde_json::to_value(&stored.message).unwrap()))
+        .map(|stored| stored.message.data)
+        .collect()
+}
+
+#[test]
+fn a_slack_reply_names_its_author_by_display_name_asking_slack_once_per_user() {
+    let setup = asleep_on(
+        "slack-actor",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    let later = stored.checked_add(Duration::from_secs(1)).unwrap();
+    let mut messages =
+        vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
+    messages.extend([
+        slack_message(&ts(stored), "U0PERSON"),
+        slack_message(&ts(later), "U0PERSON"),
+    ]);
+    setup.answer_curl(&[
+        (
+            "auth.test",
+            json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }),
+        ),
+        (
+            "users.info",
+            json!({ "ok": true, "user": { "id": "U0PERSON", "name": "ana.l",
+                "profile": { "display_name": "Ana", "real_name": "Ana Lima" } } }),
+        ),
+        (
+            "conversations.replies",
+            json!({ "ok": true, "messages": messages, "has_more": false }),
+        ),
+    ]);
+
+    setup.intake();
+
+    let actors: Vec<serde_json::Value> = replies(&setup)
+        .iter()
+        .map(|reply| reply["actor"].clone())
+        .collect();
+    assert_eq!(actors, [json!("Ana"), json!("Ana")]);
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+    assert_eq!(args.matches("users.info").count(), 1, "{args}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].contains(r#""actor":"Ana""#),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
+fn a_slack_reply_names_its_author_by_id_without_the_users_read_scope() {
+    let setup = asleep_on(
+        "slack-actor-scope",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
+    );
+    let stored: herdr_bus::Timestamp = setup.rows("waits")[0][5].parse().unwrap();
+    let mut messages =
+        vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
+    messages.push(slack_message(&ts(stored), "U0PERSON"));
+    setup.answer_curl(&[
+        (
+            "auth.test",
+            json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }),
+        ),
+        (
+            "users.info",
+            json!({ "ok": false, "error": "missing_scope", "needed": "users:read" }),
+        ),
+        (
+            "conversations.replies",
+            json!({ "ok": true, "messages": messages, "has_more": false }),
+        ),
+    ]);
+
+    setup.intake();
+
+    let actors: Vec<serde_json::Value> = replies(&setup)
+        .iter()
+        .map(|reply| reply["actor"].clone())
+        .collect();
+    assert_eq!(actors, [json!("U0PERSON")]);
+}
+
 #[test]
 fn a_reply_in_the_thread_of_a_slack_tasks_key_wakes_the_task_with_no_wait_on_it() {
     let mut setup = Setup::new("slack-key-thread");
@@ -10564,6 +10941,26 @@ fn a_thread_the_intake_cannot_read_fails_the_poll_and_reaches_the_desk() {
         ),
         "{desk:?}"
     );
+}
+
+#[test]
+fn the_intake_still_polls_a_dropped_slack_tasks_own_thread() {
+    let mut setup = Setup::new("slack-key-dropped");
+    setup.calls(&[result("failed")]);
+    let key = format!("slack:C0123:{THREAD}");
+    let mut request = requested(42);
+    request.data["key"] = json!(key);
+    setup.publish(&request.subject(&key));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    setup.answer_slack(&[]);
+
+    setup.intake();
+
+    let args = fs::read_to_string(setup.dir.join("curl-args")).unwrap_or_default();
+    assert!(args.contains("conversations.replies"), "{args}");
 }
 
 #[test]
@@ -10753,6 +11150,88 @@ fn a_linear_wait_makes_an_intake_without_linear_triggers_poll_linear_for_its_iss
         "{typed:?}"
     );
     assert!(!typed[1].contains("elsewhere"), "{typed:?}");
+}
+
+/// Linear issue `issue` as the issues stream reads it, with one history entry `change` made now.
+fn linear_edited(issue: &str, change: serde_json::Value) -> serde_json::Value {
+    let now = herdr_bus::Timestamp::now().to_string();
+    let mut entry = json!({ "id": format!("history-{issue}"), "createdAt": now, "actor": { "displayName": "Ana" } });
+    entry
+        .as_object_mut()
+        .unwrap()
+        .extend(change.as_object().unwrap().clone());
+    json!({
+        "id": format!("issue-{issue}"), "identifier": issue, "title": "Export fails on an empty project",
+        "description": format!("{}\n\nSteps follow.", "The export crashes. ".repeat(20)),
+        "url": format!("https://linear.app/acme/issue/{issue}"),
+        "createdAt": "2026-11-17T09:00:00.000Z", "updatedAt": now,
+        "team": { "key": "ENG" }, "project": null, "state": { "name": "In Progress" },
+        "labels": { "nodes": [] }, "creator": { "displayName": "max" },
+        "history": { "nodes": [entry] },
+        "inverseRelations": { "nodes": [], "pageInfo": { "hasNextPage": false } },
+        "relations": { "nodes": [] }
+    })
+}
+
+#[test]
+fn an_edit_of_a_linear_tasks_issue_wakes_it_with_the_changed_fields() {
+    let mut setup = Setup::new("linear-edited");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    setup.publish(&request.subject("linear:ENG-7"));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let edit = json!({
+        "fromTitle": "Export fails", "toTitle": "Export fails on an empty project",
+        "updatedDescription": true, "fromPriority": 3, "toPriority": 1
+    });
+    setup.answer_curl(&[
+        (
+            "query Issues",
+            linear_page(
+                "issues",
+                json!([
+                    linear_edited("ENG-8", edit.clone()),
+                    linear_edited("ENG-7", edit)
+                ]),
+            ),
+        ),
+        ("query Comments", linear_page("comments", json!([]))),
+    ]);
+
+    setup.intake();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("linear.issue.updated ENG-7 {")
+            && typed[1].contains(r#""changed":["title","description","priority"]"#)
+            && typed[1].contains(r#""title":"Export fails on an empty project""#)
+            && typed[1].contains(r#""description":"The export crashes. "#)
+            && !typed[1].contains("Steps follow."),
+        "{typed:?}"
+    );
+    let updated: Vec<String> = setup
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 100,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "linear.issue.updated")
+        .inspect(|stored| conform::conforms(&serde_json::to_value(&stored.message).unwrap()))
+        .map(|stored| stored.message.subject.unwrap_or_default())
+        .collect();
+    assert_eq!(
+        updated,
+        ["ENG-7"],
+        "an issue no task watches publishes none"
+    );
 }
 
 #[test]
@@ -11019,12 +11498,23 @@ fn a_grant_is_released_when_its_command_fails_or_is_killed_or_its_holder_dies() 
     listening(&setup);
 
     let failed = acquire(&setup, "40", "exit 1").wait_with_output().unwrap();
-    assert_eq!(failed.status.code(), Some(1));
+    let daemon = || fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default();
+    assert_eq!(
+        failed.status.code(),
+        Some(1),
+        "{failed:?}\ndaemon: {}",
+        daemon()
+    );
     assert!(setup.rows("memory").is_empty());
     let killed = acquire(&setup, "40", "kill -9 $$")
         .wait_with_output()
         .unwrap();
-    assert_eq!(killed.status.code(), Some(137));
+    assert_eq!(
+        killed.status.code(),
+        Some(137),
+        "{killed:?}\ndaemon: {}",
+        daemon()
+    );
     assert!(setup.rows("memory").is_empty());
 
     setup.hold("hold-orphan");
@@ -11591,8 +12081,8 @@ fn a_stalled_run_gets_a_handler_call_whose_nudge_reaches_its_pane_and_whose_cost
 
     setup.start();
 
-    // The silent turn, its Stop nudge, then the handler's nudge.
-    setup.within(20, "outbox", |rows| with(rows, 3, "confirmed") == 3);
+    // The silent turn, its Stop nudge, then the handler's nudge, after a real 2 s stall.
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 3);
     let typed = setup.typed();
     assert!(
         typed[2].contains("Run the tests, then call result."),
@@ -11712,8 +12202,8 @@ fn a_run_gets_at_most_three_handler_calls() {
 
     setup.start();
 
-    // The silent turn, its Stop nudge, then one prompt per handler call.
-    setup.within(30, "outbox", |rows| with(rows, 3, "confirmed") == 5);
+    // The silent turn, its Stop nudge, then one prompt per handler call, each after a 2 s stall.
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 5);
     std::thread::sleep(Duration::from_secs(5));
     assert_eq!(setup.handled().len(), 3);
     assert_eq!(setup.handler_records().len(), 3);
@@ -17351,15 +17841,14 @@ fn a_plan_with_a_waiting_moment_is_refused_until_stacked_entries_exist() {
 }
 
 #[test]
-fn a_plan_that_splits_an_issue_is_refused_until_splits_exist() {
+fn a_plan_with_one_part_of_an_issue_twice_is_refused() {
     let mut entries = three_entries();
+    entries.push(entry("e4", "ENG-41", &[]));
     entries[1]["part"] = json!(1);
+    entries[3]["part"] = json!(1);
     assert_eq!(
         plan_refused("batch-part", json!({ "title": "t", "entries": entries })),
-        (
-            "entry e2 is part 1 of linear:ENG-41; Priory does not split issues yet".to_owned(),
-            true
-        )
+        ("issue linear:ENG-41 has part 1 twice".to_owned(), true)
     );
 }
 
@@ -17687,6 +18176,16 @@ fn a_lost_predecessor_asks_once_per_condition_and_each_answer_moves_only_its_tas
         [false, true]
     };
     assert_eq!(met, released);
+    // Its answered ask leaves task 4 held on a batch edge alone, so the batch's row stands for it.
+    let desk = desk_json(&setup);
+    let held: Vec<_> = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["kind"] == "held")
+        .map(|item| item["task"].clone())
+        .collect();
+    assert!(held.is_empty(), "{desk}");
 }
 
 #[test]
@@ -17739,7 +18238,7 @@ fn a_go_on_a_plan_revision_the_ask_did_not_show_is_refused() {
         "batch-stale",
         json!({ "title": "t", "entries": three_entries() }),
     );
-    // shortcut: `priory batch edit` comes with a later slice, so the test revises the plan itself.
+    // `priory batch edit` asks the go again too; moving the plan alone reaches the go's own guard.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute("UPDATE batches SET plan_revision = 2", [])
         .unwrap();
@@ -17868,6 +18367,632 @@ fn an_issue_to_close_taken_between_plan_and_go_fails_the_start() {
         asks[0][3]
     );
     assert_eq!(setup.rows("tasks").len(), 2);
+}
+
+#[test]
+fn an_edit_drops_an_entry_and_asks_the_go_again_at_the_next_revision() {
+    let (setup, ask) = at_the_go(
+        "batch-edit-drop",
+        json!({ "title": "t", "entries": three_entries() }),
+    );
+
+    let edited = person(
+        &setup,
+        "batch",
+        &["edit", "1", "--expected", "1", "--drop", "e3"],
+    );
+
+    assert_eq!(edited, "batch 1 is at plan revision 2\n");
+    let asks = setup.rows("asks");
+    assert_eq!(asks[0][3], "Start batch 1: 2 tasks from 2 issues?");
+    let stale = setup.priory(&["answer", &ask, "go", "--revision", "1"]);
+    assert!(!stale.status.success());
+    person(&setup, "answer", &[&ask, "go", "--revision", "2"]);
+    let tasks = setup.until("tasks", |rows| rows.len() == 3);
+    let keys: Vec<_> = tasks.iter().skip(1).map(|row| &*row[1]).collect();
+    assert_eq!(keys, ["linear:ENG-40", "linear:ENG-41"]);
+}
+
+/// The error `priory batch edit` prints for `args`.
+fn edit_refused(setup: &Setup, args: &[&str]) -> String {
+    let refused = setup.priory(&[&["batch", "edit"], args].concat());
+    assert!(!refused.status.success(), "{refused:?}");
+    String::from_utf8(refused.stderr).unwrap()
+}
+
+#[test]
+fn an_edit_is_refused_and_changes_nothing_when_it_does_not_hold() {
+    let (setup, ask) = at_the_go(
+        "batch-edit-refused",
+        json!({ "title": "t", "entries": three_entries() }),
+    );
+
+    let refusals = [
+        (
+            &["1", "--expected", "2", "--drop", "e3"][..],
+            "the plan of batch 1 is at revision 1, not 2",
+        ),
+        (
+            &["1", "--expected", "1", "--drop", "e9"],
+            "no entry e9 in batch 1",
+        ),
+        (
+            &["1", "--expected", "1", "--drop", "e1"],
+            "entry e1 has successors e2 and e3; drop them first or add --with-successors",
+        ),
+        (
+            &["1", "--expected", "1", "--move", "e2", "--top"],
+            "entry e2 starts after e1; move it after e1",
+        ),
+        (
+            &["1", "--expected", "1", "--move", "e1", "--after", "e3"],
+            "entry e2 starts after e1; move e1 before e2",
+        ),
+        (
+            &["1", "--expected", "1", "--moment", "e2", "e1", "waiting"],
+            "entry e2 waits on e1 at `waiting`, which Priory does not build yet; use merged",
+        ),
+        (
+            &["1", "--expected", "1", "--moment", "e2", "e3", "merged"],
+            "entry e2 does not wait on e3",
+        ),
+    ];
+    for (args, error) in refusals {
+        assert_eq!(
+            edit_refused(&setup, args),
+            format!("priory batch edit: {error}\n")
+        );
+    }
+    assert_eq!(batch_json(&setup, &["1"])["plan_revision"], 1);
+
+    person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
+    setup.until("tasks", |rows| rows.len() == 4);
+    assert_eq!(
+        edit_refused(&setup, &["1", "--expected", "1", "--drop", "e3"]),
+        "priory batch edit: batch 1 is going; only an asked batch takes edits\n"
+    );
+}
+
+#[test]
+fn an_edit_moves_an_entry_or_drops_it_with_its_successors() {
+    let entries = [
+        entry("e1", "ENG-40", &[]),
+        entry("e2", "ENG-41", &["e1"]),
+        entry("e3", "ENG-43", &[]),
+    ];
+    let (setup, _) = at_the_go(
+        "batch-edit-move",
+        json!({ "title": "t", "entries": entries }),
+    );
+
+    person(
+        &setup,
+        "batch",
+        &["edit", "1", "--expected", "1", "--move", "e3", "--top"],
+    );
+    let order = |setup: &Setup| -> Vec<String> {
+        batch_json(setup, &["1"])["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["entry"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(order(&setup), ["e3", "e1", "e2"]);
+    let key = batch_json(&setup, &["1"])["key"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    person(
+        &setup,
+        "batch",
+        &[
+            "edit",
+            &key,
+            "--expected",
+            "2",
+            "--drop",
+            "e1",
+            "--with-successors",
+        ],
+    );
+
+    assert_eq!(order(&setup), ["e3"]);
+    assert_eq!(
+        setup.rows("asks")[0][3],
+        "Start batch 1: 1 task from 1 issue?"
+    );
+}
+
+#[test]
+fn a_split_issue_becomes_one_task_per_part_and_its_events_reach_the_part_that_runs_first() {
+    let mut entries = vec![
+        entry("e1", "ENG-40", &[]),
+        entry("e2", "ENG-41", &[]),
+        entry("e3", "ENG-41", &["e2"]),
+    ];
+    entries[1]["part"] = json!(1);
+    entries[2]["part"] = json!(2);
+    let splits = [json!({ "issue": "ENG-41", "why": "CSV and PDF differ" })];
+    let mut setup = batched("batch-split");
+    setup.calls(&[planned(
+        json!({ "title": "t", "entries": entries, "splits": splits }),
+    )]);
+    batch_add(&setup, &["ENG-40", "ENG-41"]);
+    setup.start();
+    let go = setup.until("asks", |rows| rows.len() == 1);
+    setup.memory(0);
+
+    person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
+
+    let tasks = setup.until("tasks", |rows| rows.len() == 4);
+    let keys: Vec<_> = tasks
+        .iter()
+        .skip(1)
+        .map(|row| [&*row[0], &row[1]])
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            ["2", "linear:ENG-40"],
+            ["3", "linear:ENG-41.1"],
+            ["4", "linear:ENG-41.2"]
+        ]
+    );
+    let shown = batch_json(&setup, &["1"]);
+    assert_eq!(shown["entries"][2]["part"], 2);
+    assert_eq!(shown["entries"][2]["key"], "linear:ENG-41.2");
+
+    setup.publish(&linear_event(
+        "linear.comment.created",
+        "ENG-41",
+        json!({ "body": "Keep the PDF small." }),
+    ));
+    let mut again = requested(0);
+    again.data["key"] = json!("linear:ENG-41");
+    setup.publish(&again.subject("linear:ENG-41"));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 7);
+    let reached: Vec<_> = inbox[5..].iter().map(|row| [&*row[1], &row[3]]).collect();
+    assert_eq!(
+        reached,
+        [
+            ["linear.comment.created", "3"],
+            ["factory.task.requested", "3"]
+        ]
+    );
+    assert_eq!(setup.rows("tasks").len(), 4);
+}
+
+fn desk_json(setup: &Setup) -> serde_json::Value {
+    let output = setup.priory(&["desk", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn a_going_batch_is_one_desk_line_in_place_of_the_held_tasks_its_edges_hold() {
+    let entries = [
+        entry("e1", "ENG-40", &[]),
+        entry("e2", "ENG-41", &["e1"]),
+        entry("e3", "ENG-42", &["e1"]),
+    ];
+    let mut setup = batched("batch-desk");
+    setup.calls(&[planned(
+        json!({ "title": "Invoice exports", "entries": entries }),
+    )]);
+    batch_add(&setup, &["ENG-40", "ENG-41", "ENG-42"]);
+    setup.start();
+    let go = setup.until("asks", |rows| rows.len() == 1);
+    setup.memory(0);
+    person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
+    setup.until("tasks", |rows| rows.len() == 4);
+    let mut other = requested(42);
+    other.data["hold"] = json!({ "reason": "needs the schema" });
+    setup.publish(&other);
+    setup.until("tasks", |rows| rows.len() == 5);
+
+    let shown = |desk: &serde_json::Value| -> Vec<(String, i64)> {
+        desk["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| !["queue", "ask"].contains(&item["kind"].as_str().unwrap()))
+            .map(|item| {
+                (
+                    item["kind"].as_str().unwrap().to_owned(),
+                    item["task"].as_i64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let desk = desk_json(&setup);
+    assert_eq!(
+        shown(&desk),
+        [("batch".to_owned(), 1), ("held".to_owned(), 5)]
+    );
+    let line = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["kind"] == "batch")
+        .unwrap();
+    assert_eq!(
+        line["what"],
+        "Invoice exports: 1 queued, 2 planned. Next: tasks 3 and 4 start when task 2 merges."
+    );
+    assert_eq!(
+        (&line["id"], &line["key"]),
+        (&json!(1), &batch_json(&setup, &["1"])["key"])
+    );
+    let ranked = desk["ranked"].as_array().unwrap();
+    assert!(ranked.iter().all(|item| item["kind"] != "batch"), "{desk}");
+
+    person(&setup, "cancel", &["2"]);
+
+    setup.until("asks", |rows| rows.len() == 2);
+    let mut held = shown(&desk_json(&setup));
+    held.sort();
+    assert_eq!(
+        held,
+        [
+            ("batch".to_owned(), 1),
+            ("held".to_owned(), 3),
+            ("held".to_owned(), 4),
+            ("held".to_owned(), 5)
+        ]
+    );
+}
+
+const SERVE_TOKEN: &str = "s3cret-token";
+
+/// `priory serve` on `setup`'s factory, beside its daemon, and the address it listens on.
+// The caller kills and waits on the server it gets back.
+#[allow(clippy::zombie_processes)]
+fn served(setup: &Setup) -> (Child, String) {
+    let factory = setup.dir.join("factory/factory.toml");
+    let settings = fs::read_to_string(&factory).unwrap();
+    fs::write(
+        &factory,
+        format!("{settings}\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n"),
+    )
+    .unwrap();
+    let mut child = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["serve", setup.dir.join("factory").to_str().unwrap()])
+        .env("TEST_TOKEN", SERVE_TOKEN)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = std::io::BufReader::new(child.stderr.take().unwrap());
+    loop {
+        let mut line = String::new();
+        assert!(
+            std::io::BufRead::read_line(&mut stderr, &mut line).unwrap() > 0,
+            "priory serve exited"
+        );
+        if let Some(address) = line.trim().strip_prefix("priory: serving on http://") {
+            std::thread::spawn(move || std::io::copy(&mut stderr, &mut std::io::sink()));
+            return (child, address.to_owned());
+        }
+    }
+}
+
+/// Sends `request` to `address` with the token unless `token` is false, and returns the status and
+/// body.
+fn http(address: &str, method: &str, path: &str, extra: &str, body: &str) -> (u16, String) {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    let auth = if extra.contains("Authorization") {
+        String::new()
+    } else {
+        format!("Authorization: Bearer {SERVE_TOKEN}\r\n")
+    };
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\n{auth}{extra}Content-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    let status = response[9..12].parse().unwrap();
+    let body = response.split_once("\r\n\r\n").map_or("", |(_, body)| body);
+    (status, body.to_owned())
+}
+
+#[test]
+fn the_batch_endpoints_list_show_and_edit_a_plan_behind_the_token_origin_and_revision() {
+    let (setup, _) = at_the_go(
+        "batch-api",
+        json!({ "title": "t", "entries": three_entries() }),
+    );
+    let (mut server, address) = served(&setup);
+    let drop = json!({ "revision": 1, "drop": "e3" }).to_string();
+    let edit = |extra: &str, body: &str| http(&address, "POST", "/api/batches/1/edit", extra, body);
+
+    let listed = http(&address, "GET", "/api/batches", "", "");
+    let shown = http(&address, "GET", "/api/batches/1", "", "");
+    let missing = http(&address, "GET", "/api/batches/9", "", "");
+    let wrong = edit("Authorization: Bearer nope\r\n", &drop);
+    let foreign = edit("Origin: http://evil.example\r\n", &drop);
+    let bad = edit("", r#"{"revision": 1}"#);
+    let stale = edit("", &json!({ "revision": 2, "drop": "e3" }).to_string());
+    let refused = edit("", &json!({ "revision": 1, "drop": "e1" }).to_string());
+    let edited = edit("", &drop);
+    let after = http(&address, "GET", "/api/batches/1", "", "");
+    server.kill().unwrap();
+    server.wait().unwrap();
+
+    let json = |reply: &(u16, String)| -> serde_json::Value {
+        assert_eq!(reply.0, 200, "{}", reply.1);
+        serde_json::from_str(&reply.1).unwrap()
+    };
+    let listed = json(&listed);
+    assert!(listed["revision"].is_i64(), "{listed}");
+    assert_eq!(listed["batches"][0]["state"], "asked");
+    assert_eq!(json(&shown)["entries"].as_array().unwrap().len(), 3);
+    let statuses = [&missing, &wrong, &foreign, &bad, &stale, &refused].map(|reply| reply.0);
+    assert_eq!(statuses, [404, 401, 403, 400, 409, 422], "{refused:?}");
+    assert_eq!(
+        json(&edited),
+        json!({ "ok": "batch 1 is at plan revision 2" })
+    );
+    let after = json(&after);
+    assert_eq!(after["plan_revision"], 2);
+    assert_eq!(after["entries"].as_array().unwrap().len(), 2);
+}
+
+/// An event of pull request `number` of task 2's stack, from `head` onto `base`.
+fn on_stack_2(
+    number: u64,
+    head: &str,
+    base: &str,
+    kind: &str,
+    extra: serde_json::Value,
+) -> Message {
+    let mut message = on_pull(kind, extra);
+    message.data["pull_request"] = json!(number);
+    message.data["head_branch"] = json!(head);
+    message.data["base_branch"] = json!(base);
+    message.subject(format!("owner/repo#{number}"))
+}
+
+#[test]
+fn a_merged_condition_on_a_stack_of_pull_requests_waits_for_every_one_to_merge() {
+    let mut setup = batched_with("batch-stack", WORKFLOW);
+    went(&mut setup, &[wait(on_pull_7("review"))]);
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    let commit = setup.commit(2, "part-a.txt");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/2");
+    assert!(
+        git(&worktree)
+            .args(["branch", "priory/2-a", &commit])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let comment = |number| json!({ "body": "noted", "actor": "ana", "github_id": 600 + number });
+    setup.publish(&on_stack_2(
+        6,
+        "priory/2-a",
+        "main",
+        "github.issue_comment.created",
+        comment(6),
+    ));
+    setup.publish(&on_stack_2(
+        7,
+        "priory/2",
+        "priory/2-a",
+        "github.issue_comment.created",
+        comment(7),
+    ));
+    let stacked = || {
+        task_json(&setup, "2")["stack"]
+            .as_array()
+            .map_or(0, Vec::len)
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while stacked() < 2 {
+        assert!(Instant::now() < deadline, "{}", task_json(&setup, "2"));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let merge = |number, head, base| {
+        on_stack_2(
+            number,
+            head,
+            base,
+            "github.pull_request.closed",
+            json!({ "merged": true, "github_id": 700 + number }),
+        )
+    };
+    setup.publish(&merge(7, "priory/2", "priory/2-a"));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(entry_state(&setup, "3"), "held");
+    setup.publish(&merge(6, "priory/2-a", "main"));
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] != "held")
+    });
+}
+
+#[test]
+fn a_failed_predecessor_asks_whether_to_release_or_drop_the_entry_that_waits_on_it() {
+    let mut setup = batched("batch-predecessor-failed");
+    let entries = [entry("e1", "ENG-40", &[]), entry("e2", "ENG-41", &["e1"])];
+    setup.calls(&[planned(json!({ "title": "t", "entries": entries }))]);
+    batch_add(&setup, &["ENG-40", "ENG-41"]);
+    setup.start();
+    let go = setup.until("asks", |rows| rows.len() == 1);
+    setup.hold("crash");
+
+    person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] == "failed")
+    });
+    let asks = setup.until("asks", |rows| rows.len() == 1 && rows[0][1] == "3");
+    assert_eq!(
+        asks[0][3],
+        "Task 2 (linear:ENG-40) of batch 1 failed, and task 3 waits on it. Release the task, or drop it?"
+    );
+    person(
+        &setup,
+        "answer",
+        &[&asks[0][0], "release", "--revision", "1"],
+    );
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] != "held")
+    });
+}
+
+#[test]
+fn a_predecessors_pull_request_closed_unmerged_asks_about_the_entry_that_waits_on_it() {
+    let mut setup = batched_with("batch-closed-unmerged", WORKFLOW);
+    went(&mut setup, &[wait(on_pull_7("review"))]);
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+
+    setup.publish(&on_pull_2(
+        "github.pull_request.closed",
+        json!({ "merged": false, "github_id": 400 }),
+    ));
+
+    let asks = setup.until("asks", |rows| rows.iter().any(|row| row[1] == "3"));
+    let ask = asks.iter().find(|row| row[1] == "3").unwrap();
+    assert_eq!(
+        ask[3],
+        "A pull request of task 2 (linear:ENG-40) of batch 1 closed without a merge, and task 3 waits on it. Release the task, or drop it?"
+    );
+    person(&setup, "answer", &[&ask[0], "drop", "--revision", "1"]);
+    assert_eq!(entry_state(&setup, "3"), "dropped");
+}
+
+#[test]
+fn the_batches_starter_closes_the_issues_its_plan_lists_as_done_after_the_go() {
+    let mut setup = Setup::starter("starter-batches", "batches");
+    let close = [json!({ "issue": "ENG-43", "why": "Fixed by #198", "evidence": "#198" })];
+    let closed = json!({ "name": "result", "arguments": {
+        "outcome": "closed", "summary": "Closed ENG-43", "evidence": "ENG-43: closed, fixed by #198"
+    } });
+    setup.calls(&[
+        planned(json!({ "title": "Done already", "entries": [], "close": close })),
+        closed,
+    ]);
+    batch_add(&setup, &["ENG-43"]);
+    setup.start();
+    let go = setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(
+        go[0][3],
+        "Start batch 1: 0 tasks from 1 issue, and close 1?"
+    );
+
+    person(&setup, "answer", &[&go[0][0], "go", "--revision", "1"]);
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let runs = setup.rows("runs");
+    let steps: Vec<_> = runs.iter().map(|row| &*row[2]).collect();
+    assert_eq!(steps, ["plan", "close"]);
+    let shown = batch_json(&setup, &["1"]);
+    assert_eq!(shown["state"], "ended");
+    assert!(shown["closes"][0]["closed"].is_string(), "{shown}");
+}
+
+#[test]
+fn a_factory_that_gained_a_runner_since_the_plan_refuses_the_start_and_asks_the_go_again() {
+    let (mut setup, ask) = at_the_go(
+        "batch-runners",
+        json!({ "title": "t", "entries": three_entries() }),
+    );
+    setup.crash();
+    fs::create_dir_all(setup.dir.join("factory/runners")).unwrap();
+    for name in ["runner", "two"] {
+        fs::write(
+            setup.dir.join(format!("factory/runners/{name}.toml")),
+            "platform = { os = \"linux\" }",
+        )
+        .unwrap();
+    }
+    setup.start();
+
+    // The crashed daemon's socket file stays until the new one binds its own.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let answered = setup.priory(&["answer", &ask, "go", "--revision", "1"]);
+        if answered.status.success() {
+            break;
+        }
+        let refused = String::from_utf8_lossy(&answered.stderr).into_owned();
+        assert!(refused.contains("no priory daemon listens"), "{refused}");
+        assert!(Instant::now() < deadline, "{refused}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let asks = setup.until("asks", |rows| rows.len() == 1 && rows[0][0] != ask);
+    assert_eq!(
+        asks[0][3],
+        "batches need one runner; this factory has 2. Start batch 1: 3 tasks from 3 issues?"
+    );
+    assert_eq!(setup.rows("tasks").len(), 1);
+    assert_eq!(batch_json(&setup, &["1"])["state"], "asked");
+}
+
+/// A batch over `ENG-40` and `ENG-41`, `ENG-41` split in two parts, the second after the first,
+/// at its go ask.
+fn split_at_the_go(name: &str) -> (Setup, String) {
+    let mut entries = vec![
+        entry("e1", "ENG-40", &[]),
+        entry("e2", "ENG-41", &[]),
+        entry("e3", "ENG-41", &["e2"]),
+    ];
+    entries[1]["part"] = json!(1);
+    entries[2]["part"] = json!(2);
+    let mut setup = batched(name);
+    setup.calls(&[planned(json!({ "title": "t", "entries": entries }))]);
+    batch_add(&setup, &["ENG-40", "ENG-41"]);
+    setup.start();
+    let go = setup.until("asks", |rows| rows.len() == 1);
+    (setup, go[0][0].clone())
+}
+
+#[test]
+fn a_part_key_taken_between_plan_and_go_fails_the_start_and_asks_the_go_again() {
+    let (setup, ask) = split_at_the_go("batch-part-taken");
+    setup.memory(0);
+    let mut other = requested(42);
+    other.data["key"] = json!("linear:ENG-41.1");
+    other.data["hold"] = json!({ "reason": "later" });
+    setup.publish(&other.subject("linear:ENG-41.1"));
+    setup.until("tasks", |rows| rows.len() == 2);
+
+    person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
+
+    let asks = setup.until("asks", |rows| rows.len() == 1 && rows[0][0] != ask);
+    assert!(
+        asks[0][3].starts_with("linear:ENG-41.1 has task 2 (held) since the plan"),
+        "{}",
+        asks[0][3]
+    );
+    assert_eq!(setup.rows("tasks").len(), 2);
+}
+
+#[test]
+fn a_failed_part_revives_while_the_next_part_waits_on_it() {
+    let (setup, ask) = split_at_the_go("batch-part-revive");
+    setup.hold("crash");
+
+    person(&setup, "answer", &[&ask, "go", "--revision", "1"]);
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] == "failed")
+    });
+    setup.release("crash");
+    let revived = person(&setup, "revive", &["3"]);
+    assert!(!revived.is_empty(), "{revived}");
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "3" && row[4] != "failed")
+    });
 }
 
 const SKILL: &str = "---\nname: release-notes\ndescription: Writes release notes from merged pull requests.\n---\nList each change in one line.\n";

@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use sha2::{Digest, Sha256};
+
 const FACTORY: &str = r#"name = "demo""#;
 
 const AGENT: &str = r#"+++
@@ -83,9 +85,15 @@ struct Outcome {
 }
 
 fn check(dir: &Path) -> Outcome {
+    let nowhere = Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-herdr");
+    check_with_herdr(dir, &nowhere)
+}
+
+fn check_with_herdr(dir: &Path, herdr: &Path) -> Outcome {
     let output = Command::new(env!("CARGO_BIN_EXE_priory"))
         .arg("check")
         .arg(dir)
+        .env("HERDR_APP_HOME", herdr)
         .output()
         .unwrap();
     Outcome {
@@ -1865,6 +1873,87 @@ fn a_writing_guide_within_the_limit_passes_quietly() {
     ));
 
     assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+}
+
+/// Herdr's folder holding a `priory.json` whose root id is `id`.
+fn herdr_with_layout(name: &str, id: &str) -> PathBuf {
+    let app = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("herdr")
+        .join(name);
+    let _ = fs::remove_dir_all(&app);
+    fs::create_dir_all(app.join("layouts")).unwrap();
+    fs::write(
+        app.join("layouts/priory.json"),
+        format!(r#"{{"id":"{id}"}}"#),
+    )
+    .unwrap();
+    app
+}
+
+/// The hash `adapters/herdr/layout` puts in a layout's root id for this factory's views.
+fn views_hash(dir: &Path) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+        .args(["views", "--json"])
+        .arg(dir)
+        .output()
+        .unwrap();
+    let json = String::from_utf8(output.stdout).unwrap();
+    Sha256::digest(json.trim().as_bytes())[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[test]
+fn a_herdr_layout_built_from_other_view_files_warns_and_still_passes() {
+    let dir = factory("herdr-stale", &valid());
+    let app = herdr_with_layout("stale", "priory-generated-000000000000");
+
+    let outcome = check_with_herdr(&dir, &app);
+
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    assert_eq!(
+        outcome.stderr,
+        format!(
+            "warning: the Herdr layout {} was built from other view files: run `priory views {} --json | adapters/herdr/install` again, with --copy if you installed copies\n",
+            app.join("layouts/priory.json").display(),
+            dir.display()
+        )
+    );
+}
+
+#[test]
+fn a_herdr_layout_built_from_these_view_files_or_not_by_priory_passes_quietly() {
+    let dir = factory("herdr-fresh", &valid());
+    let fresh = herdr_with_layout("fresh", &format!("priory-generated-{}", views_hash(&dir)));
+    let foreign = herdr_with_layout("foreign", "mine");
+    let lookalike = herdr_with_layout("lookalike", "priory-generated-custom");
+    let missing = Path::new(env!("CARGO_TARGET_TMPDIR")).join("herdr/missing");
+
+    for app in [fresh, foreign, lookalike, missing] {
+        let outcome = check_with_herdr(&dir, &app);
+        assert_eq!(
+            (outcome.code, outcome.stderr.as_str()),
+            (0, ""),
+            "{}",
+            app.display()
+        );
+    }
+}
+
+#[test]
+fn a_herdr_layout_from_before_the_hash_warns() {
+    let dir = factory("herdr-legacy", &valid());
+    let app = herdr_with_layout("legacy", "priory-generated");
+
+    let outcome = check_with_herdr(&dir, &app);
+
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    assert!(
+        outcome.stderr.contains("was built from other view files"),
+        "{}",
+        outcome.stderr
+    );
 }
 
 const SKILL: &str = "---\nname: release-notes\ndescription: Writes release notes from merged pull requests.\n---\nList each change in one line.\n";

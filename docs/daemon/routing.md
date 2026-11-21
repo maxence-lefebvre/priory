@@ -211,18 +211,24 @@ The web Inbox panel's Unrouted view offers the same actions from a phone: Revive
 `POST /api/subscribe`. The Desk counts only the first kind, over the last 24 hours (see
 [desk.md](desk.md#unrouted-events)).
 
+A comment or review from outside the repository is not unrouted: its outcome is `outsider`. The
+same listing shows these events as a group of their own, `outsider`, with each one's author and no
+command, since no task takes them. The Desk counts those of the last 24 hours in a line of its own.
+
 ## What a kept message does
 
 What happens to a `kept` message depends on the task's state:
 
 - For a `running` task, the daemon also queues an outbox prompt with the message, so the agent reads
-  it after its current turn.
+  it after its current turn. Until then, for feedback, the agent's `result` and `ask` are refused
+  (see [tools.md](tools.md#the-tools)).
 - If the message satisfies the task's open wait, the wait fires in any active state (see
   [waits.md](waits.md)). An asleep task wakes. A ready, blocked or held task keeps its state, and
   its next run gets the prompt.
 - If the task subscribes to a resource the message names and has no open wait on it, an asleep
   task at a model step wakes with it, and the outcome becomes `woke`. The subscription to the task's
-  own key takes only feedback and closes (see [tools.md](tools.md#subscribeon-and-unsubscribeon)).
+  own key takes only feedback, closes, Linear state changes and `linear.issue.updated` edits (see
+  [tools.md](tools.md#subscribeon-and-unsubscribeon)).
   Another active task that subscribes to
   it gets it too: a prompt of its own while it runs, or a wake while it sleeps (see
   [tools.md](tools.md#subscribeon-and-unsubscribeon)).
@@ -282,7 +288,7 @@ prompt is one line, then the event's own line:
 ```text
 Feedback reopened this done task as generation 2: ana commented on github:owner/name#57: Can you split this? https://github.com/owner/name/pull/57#issuecomment-701
 Feedback reopened this done task as generation 2: Ana commented on linear:ENG-7: Still broken. https://linear.app/acme/issue/ENG-7
-Feedback reopened this done task as generation 2: U0123 replied in slack:C0123:1763500000.000100: Still broken.
+Feedback reopened this done task as generation 2: Ana replied in slack:C0123:1763500000.000100: Still broken.
 ```
 
 The task is `ready`, so its next run resumes the session of the step's agent. The daemon appends a
@@ -301,6 +307,21 @@ Limits:
   person who comments as the same GitHub account Priory acts as reopens it like anyone else.
 - Only feedback from someone with write access to the repository reopens or wakes a task: GitHub's
   `author_association` must be `OWNER`, `MEMBER` or `COLLABORATOR`. A stranger's comment on a public
-  repository stays in the inbox as `outsider`, for a person to read with `priory inbox`. No factory
-  setting lets other authors through.
+  repository stays in the inbox as `outsider`, for a person to read with `priory inbox
+  --unrouted`. The Desk counts them. No factory setting lets other authors through.
+
+## Feedback on a failed or dropped task
+
+Feedback never reopens a `failed` or `dropped` task: a person stopped it, or its workflow did. When
+a comment or reply lands on the key of the newest task on that key, and that task failed or was
+dropped before the comment was written, the inbox records the comment as `ignored` and posts one
+`priory.report` that names the revive:
+
+```text
+priory: linear:ENG-7 has a new comment; its task 12 dropped: priory revive 12
+```
+
+A Linear issue that never left its view publishes no new `issue.entered`, so this report is how
+"I added the missing criterion" reaches a person. The intake keeps reading that task's key for it
+(see [watches.md](../intake/watches.md)). Priory's own comment posts no report.
 

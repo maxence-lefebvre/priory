@@ -7,6 +7,7 @@ use priory_factory::{explain, factory, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{eval, mcp, runtime};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -73,6 +74,7 @@ fn main() -> ExitCode {
         }
         Some("links") => links(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("flows") => flows(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("views") => views(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("todo") => todo(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("deliver") => deliver(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("snooze") => snooze(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
@@ -211,7 +213,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory runs\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory grades [--since <instant-or-duration>] [--json]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK [--json]\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT"
+        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory grades [--since <instant-or-duration>] [--json]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK [--json]\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER\n       priory ask ID JSON\n       priory dismiss [--expected N] ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -865,6 +867,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
         }
         if unrouted {
             print_unrouted(&value[name]);
+            print_outsider(&value["outsider"]);
             return Ok(());
         }
         let rows = &value[verb];
@@ -942,6 +945,16 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                     let events = if unrouted == 1 { "event" } else { "events" };
                     state::emit(&format!(
                         "{unrouted} {events} reached no task in the last 24 hours. See them with `priory inbox --unrouted`."
+                    ));
+                }
+                if let Some(outsider) = value["counts"]["outsider"].as_u64().filter(|n| *n > 0) {
+                    let (comments, them) = if outsider == 1 {
+                        ("comment", "it")
+                    } else {
+                        ("comments", "them")
+                    };
+                    state::emit(&format!(
+                        "{outsider} {comments} from outside the repository came in the last 24 hours. See {them} with `priory inbox --unrouted`."
                     ));
                 }
                 listing::print(
@@ -1109,6 +1122,24 @@ fn flows(mut args: Vec<String>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Prints the resolved views as `GET /api/views` serves them: `priory views [DIR] --json`.
+fn views(mut args: Vec<String>) -> ExitCode {
+    let Some(at) = args.iter().position(|arg| arg == "--json") else {
+        return usage();
+    };
+    args.remove(at);
+    let dir = match &args[..] {
+        [] => PathBuf::from("."),
+        [dir] if !dir.starts_with("--") => PathBuf::from(dir),
+        _ => return usage(),
+    };
+    let Some(factory) = load(&dir) else {
+        return ExitCode::FAILURE;
+    };
+    println!("{}", listing::views(&factory));
+    ExitCode::SUCCESS
+}
+
 /// How long `priory wait` waits without `--timeout`, as long as `serve`'s `/api/events`.
 const WAIT_TIMEOUT: Duration = Duration::from_secs(25);
 
@@ -1212,6 +1243,10 @@ fn request(args: Vec<String>) -> ExitCode {
     let Some(factory) = load(&dir) else {
         return ExitCode::FAILURE;
     };
+    if let Err(error) = related(request.relates()) {
+        eprintln!("priory request: {error}");
+        return ExitCode::FAILURE;
+    }
     match request::run(&factory, &request, None) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -1228,6 +1263,10 @@ fn add(args: Vec<String>) -> ExitCode {
     let Some(factory) = load(&dir) else {
         return ExitCode::FAILURE;
     };
+    if let Err(error) = related(&add.relates) {
+        eprintln!("priory add: {error}");
+        return ExitCode::FAILURE;
+    }
     match request::add(&factory, &add) {
         Ok(key) => {
             println!("{key}");
@@ -1237,6 +1276,18 @@ fn add(args: Vec<String>) -> ExitCode {
             eprintln!("priory add: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Refuses `--relates` to a task the state file does not hold, before anything is published.
+fn related(relates: &[request::Relation]) -> Result<(), String> {
+    if relates.is_empty() {
+        return Ok(());
+    }
+    let db = state::open()?;
+    match relate::missing(&db, relates).map_err(|error| error.to_string())? {
+        Some(missing) => Err(missing),
+        None => Ok(()),
     }
 }
 
@@ -1280,8 +1331,52 @@ fn batch(args: Vec<String>) -> ExitCode {
                 });
             exit("batch show", shown)
         }
+        Some((verb, rest)) if verb == "edit" => {
+            let Some((Some(expected), args)) = expected(rest.to_vec()) else {
+                return usage();
+            };
+            let Some((which, change)) = batch_edit(&args) else {
+                return usage();
+            };
+            let edited = state::open()
+                .and_then(|mut db| priory_core::batch::edit(&mut db, which, expected, &change));
+            exit("batch edit", edited.map(|edited| println!("{edited}")))
+        }
         _ => usage(),
     }
+}
+
+/// `BATCH (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after
+/// OTHER) | --moment ENTRY OTHER MOMENT)`, the rest of `priory batch edit` after `--expected`.
+fn batch_edit(args: &[String]) -> Option<(&str, priory_core::batch::Edit)> {
+    use priory_core::batch::{Edit, Place};
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (which, rest) = words.split_first()?;
+    let change = match *rest {
+        ["--drop", entry] | ["--drop", entry, "--with-successors"] => Edit::Drop {
+            entry: entry.to_owned(),
+            with_successors: rest.len() == 3,
+        },
+        ["--move", entry, "--top"] => Edit::Move {
+            entry: entry.to_owned(),
+            place: Place::Top,
+        },
+        ["--move", entry, "--before", other] => Edit::Move {
+            entry: entry.to_owned(),
+            place: Place::Before(other.to_owned()),
+        },
+        ["--move", entry, "--after", other] => Edit::Move {
+            entry: entry.to_owned(),
+            place: Place::After(other.to_owned()),
+        },
+        ["--moment", entry, other, moment] => Edit::Moment {
+            entry: entry.to_owned(),
+            other: other.to_owned(),
+            moment: moment.to_owned(),
+        },
+        _ => return None,
+    };
+    Some((which, change))
 }
 
 fn exit(verb: &str, done: Result<(), String>) -> ExitCode {
@@ -1892,6 +1987,28 @@ fn handled(event: &serde_json::Value, task: i64) -> String {
     text
 }
 
+/// Prints the comments and reviews from outside the repository as a group of their own: its count
+/// and one line per event, with who wrote it. No command routes them: they reach no task.
+fn print_outsider(events: &serde_json::Value) {
+    let Some(events) = events.as_array().filter(|events| !events.is_empty()) else {
+        return;
+    };
+    let plural = if events.len() == 1 { "" } else { "s" };
+    println!(
+        "from outside the repository: {} event{plural}",
+        events.len()
+    );
+    for event in events {
+        println!(
+            "  {}  {}  {}  {}",
+            event["seq"],
+            event["type"].as_str().unwrap_or_default(),
+            event["subject"].as_str().unwrap_or("-"),
+            event["actor"].as_str().unwrap_or("-")
+        );
+    }
+}
+
 fn task_json(task: &str) -> ExitCode {
     let Ok(id) = task.parse() else {
         return usage();
@@ -2209,6 +2326,7 @@ fn check(args: Vec<OsString>) -> ExitCode {
             factory::WRITING_LIMIT
         );
     }
+    warn_of_stale_herdr_layout(&factory, &dir);
     if explain {
         print_explanation(&factory, json);
         return ExitCode::SUCCESS;
@@ -2225,6 +2343,44 @@ fn check(args: Vec<OsString>) -> ExitCode {
         count(factory.runners.len(), "runner"),
     );
     ExitCode::SUCCESS
+}
+
+/// Warns when the Herdr layout `adapters/herdr/install` wrote on this machine was built from other
+/// view files: its root id ends in 12 hex digits of the SHA-256 of what `priory views --json`
+/// prints, and an id without them predates the hash. Another machine's layout is not checked.
+fn warn_of_stale_herdr_layout(factory: &factory::Factory, dir: &Path) {
+    let Some(app) = std::env::var_os("HERDR_APP_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| Path::new(&home).join(".config/herdr-app"))
+        })
+    else {
+        return;
+    };
+    let path = app.join("layouts/priory.json");
+    let Some(id) = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|layout| layout["id"].as_str().map(str::to_owned))
+    else {
+        return;
+    };
+    let hash: String = Sha256::digest(listing::views(factory).to_string().as_bytes())[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let current = id == format!("priory-generated-{hash}");
+    let ours = id == "priory-generated"
+        || id
+            .strip_prefix("priory-generated-")
+            .is_some_and(|rest| rest.len() == 12 && rest.bytes().all(|b| b.is_ascii_hexdigit()));
+    if ours && !current {
+        eprintln!(
+            "warning: the Herdr layout {} was built from other view files: run `priory views {} --json | adapters/herdr/install` again, with --copy if you installed copies",
+            path.display(),
+            dir.display()
+        );
+    }
 }
 
 /// Prints each workflow's irreversible steps with their gates, its paths to one with no human edge,

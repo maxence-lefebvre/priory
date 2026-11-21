@@ -356,6 +356,11 @@ pub struct EventLog {
     /// The environment variable that holds the Postgres connection string, `PRIORY_LOG_URL`
     /// unless named: the file never holds the string itself.
     pub url_env: Option<String>,
+    /// How long one Postgres call may wait on the database before the log counts as unreachable;
+    /// 10 seconds when unset.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub timeout: Option<Duration>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -370,6 +375,11 @@ impl EventLog {
     /// The environment variable that holds the Postgres connection string.
     pub fn url_env(&self) -> &str {
         self.url_env.as_deref().unwrap_or("PRIORY_LOG_URL")
+    }
+
+    /// How long one Postgres call may wait on the database.
+    pub fn timeout(&self) -> Duration {
+        self.timeout.unwrap_or(Duration::from_secs(10))
     }
 }
 
@@ -1392,6 +1402,7 @@ impl Factory {
         static BUILT_IN: EventLog = EventLog {
             backend: Backend::HerdrBus,
             url_env: None,
+            timeout: None,
         };
         self.settings
             .as_ref()

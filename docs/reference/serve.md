@@ -19,13 +19,15 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | -------- | --- | ------- |
 | `/api/desk?person=NAME` | `priory desk --json --person NAME` | an object: [Desk](#desk) |
 | `/api/inbox` | `priory inbox --json` | `inbox`: an array of [inbox messages](#inbox) |
-| `/api/inbox?unrouted=1` | `priory inbox --unrouted --json` | `unrouted`: an array of [unrouted groups](#unrouted) |
+| `/api/inbox?unrouted=1` | `priory inbox --unrouted --json` | `unrouted`: the [unrouted groups](#unrouted), and `outsider`: the comments from outside the repository |
 | `/api/asks?band=BAND&risk=RISK&all=1` | `priory asks --json --band BAND --risk RISK` | an object: `asks`, an array of [asks](#asks), `bands` and `older` |
 | `/api/tasks?all=1` | `priory tasks --json` | `tasks`: an array of [tasks](#tasks), and `older` |
 | `/api/tasks?pr=RESOURCE` | | `tasks`: the active tasks that hold a pull request. See [Tasks that hold a pull request](#tasks-that-hold-a-pull-request) |
 | `/api/tasks/{id}` | `priory task ID --json` | one [task in detail](#task-in-detail) |
 | `/api/queue` | `priory queue --json` | an object: [Queue](#queue) |
-| `/api/views` | | an object: [Views](#views) |
+| `/api/batches` | `priory batch show --json` | `batches`: every batch, newest first, without its entries and closes. See [batches.md](../daemon/batches.md#priory-batch-show) |
+| `/api/batches/{id}` | `priory batch show ID --json` | one batch with its entries and closes. `ID` is the batch's id or its key |
+| `/api/views` | `priory views --json` | an object: [Views](#views) |
 | `/api/request` | | what the web view's Add prefills: `workflow` and `band`, the [`[request]`](factory.md#request) defaults, each `null` when unset; `workflows`, the factory's workflow names; and `bands`, its bands in order |
 | `/api/links` | `priory links --json` | an object: [Links](#links) |
 | `/api/flows` | `priory flows --json` | an object: [Flows](#flows) |
@@ -46,6 +48,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /api/tasks/{id}/release` | `priory release ID [--expected N]` | as above |
 | `POST /api/inbox/{seq}/read` | `priory inbox read SEQ` | as above |
 | `POST /api/tasks/{id}/say` | `priory say ID TEXT` | as above |
+| `POST /api/batches/{id}/edit` | `priory batch edit ID --expected N ...` | as above |
 | `POST /api/reports/pick` | `priory report pick PICK OPTION --expected N` | `{"ok": "<what the CLI prints>"}` |
 | `POST /api/reports/comment` | `priory report comment ROW --expected N TEXT` | as above |
 | `POST /api/reports/reply` | `priory report reply COMMENT TEXT` | as above |
@@ -67,10 +70,10 @@ or a reason, is untrusted: render it as text.
 | `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`, or a `pr` that is not a pull request such as `github:owner/repo#7`; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site, and that is not one of [`[serve] extension_origins`](factory.md#serve) |
-| `404` | No such path, task, report, ask or web view file |
+| `404` | No such path, task, report, ask, batch or web view file |
 | `405` | `POST` on a path that reads, or `GET` on a write. The `Allow` header names the method |
 | `408` | The request sent no byte within 1 second, or took over 5 seconds in all |
-| `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's `revision` is no longer the state's. Or a pick's report moved past its `revision`, or another choice took the pick |
+| `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's `revision` is no longer the state's. Or a pick's report moved past its `revision`, or another choice took the pick. Or a batch edit's `revision` is no longer the plan's revision |
 | `411` | A `POST` has no `Content-Length`, or uses `Transfer-Encoding` |
 | `413` | A `GET` has a body; a write's body is over 16 KiB; a webhook's is over 1 MiB |
 | `415` | A write's `Content-Type` is not `application/json` |
@@ -104,7 +107,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 
 | Endpoint | Body |
 | -------- | ---- |
-| `POST /api/asks/{id}/answer` | `revision`, an integer, and one of `option` or `text`, a string. Both become the answer: a step's ask takes only one of its options. `run`, a boolean, default `false`: `true` confirms an answer that runs the ask's command, as `priory answer --run` does. Without it, that answer gets `422` |
+| `POST /api/asks/{id}/answer` | `revision`, an integer, and one of `option` or `text`, a string. Both become the answer: a step's ask takes only one of its options, or `OPTION: NOTE` (see [waits.md](../daemon/waits.md#asks-and-answers)). `run`, a boolean, default `false`: `true` confirms an answer that runs the ask's command, as `priory answer --run` does. Without it, that answer gets `422` |
 | `POST /api/asks/{id}/dismiss` | `revision`, an integer |
 | `POST /api/snooze` | `kind` (`ask`, `blocked`, `failed` or `prompt`) and `id`, an integer, then one of: `for`, a duration such as `1h`; `until`, an RFC 3339 time; or `"clear": true` |
 | `POST /api/request` | `text`, a string, then optionally `workflow`, `band`, `lane` and `repo`, strings, and `intervention`, `plan` or `hands-off`. What it leaves unset comes from `[request]` and the URLs in `text`, as for [`priory add`](../intake/cli.md#priory-add) |
@@ -114,6 +117,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/tasks/{id}/release` | optionally `revision`, an integer, as `--expected`. A newer state gets `409` |
 | `POST /api/tasks/{id}/say` | `text`, a string: what the task's agent hears |
 | `POST /api/subscribe` | `task`, an integer, and `resource`, a string such as `github:owner/name#7`, `linear:ENG-7` or `slack:C0123:1763500000.000100`, as `priory subscribe TASK RESOURCE`. Optionally `revision`, an integer, as `--expected`: a newer state gets `409`. A resource it cannot name gets `400`, a missing task `404`, and a resource another active task owns `422`, naming that task |
+| `POST /api/batches/{id}/edit` | `revision`, the plan revision the client showed, then one edit: `drop`, an entry id, with optionally `"with_successors": true`; or `move`, an entry id, with one of `"top": true`, `before` or `after`, an entry id; or `moment`, an object of `entry`, `other` and `moment`, which sets the moment of the edge from `entry` to `other`. A body with no edit, two edits, or a field its edit does not take gets `400`, a plan whose revision moved `409`, and an edit the plan refuses `422`. See [batches.md](../daemon/batches.md#editing-a-plan) |
 | `POST /api/inbox/{seq}/read` | `{}`: marks the report read, so its row leaves the desk. A sequence number that is not a report gets `422` |
 | `POST /api/reports/pick` | `pick`, the pick's id, `option`, one of its options, and `revision`, the report's revision the client showed |
 | `POST /api/reports/comment` | `row`, the row's id, `text`, a string, and `revision`, the report's revision the client showed. A comment verb takes `text` only with `comment` and `reply`, and `revision` only with `comment` |
@@ -190,6 +194,7 @@ gets `400`.
 | `counts.asleep` | integer | Tasks asleep on a wait |
 | `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
 | `counts.unrouted` | integer | [Unrouted](#unrouted) events from the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
+| `counts.outsider` | integer | The comments and reviews from outside the repository in the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
 | `items` | array | What waits on a person, then the queue, then worktrees that stay. `priory desk --all --json` keeps the snoozed items |
 | `next` | object or null | The item that ranks first, as in `ranked`; null when nothing waits on a person |
 | `ranked` | array | What waits on a person, best first, without the snoozed items: each a desk item with `why`, why it ranks there, and `title`, the line a notification carries. See [desk.md](../daemon/desk.md#the-next-thing) |
@@ -203,9 +208,9 @@ Each item:
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
-| `kind` | string | `ask`, `delivery`, `blocked`, `failed`, `prompt`, `command`, `held`, `sweep`, `memory`, `report`, `retired`, `queue` or `worktree`. See [desk.md](../daemon/desk.md) |
-| `id` | integer or string | The ask, task, prompt, answer's action, hold, sweep, grant, report's inbox sequence number or queue place; a worktree's path |
-| `task` | integer or null | The task |
+| `kind` | string | `ask`, `delivery`, `blocked`, `failed`, `prompt`, `command`, `held`, `batch`, `sweep`, `memory`, `report`, `retired`, `queue` or `worktree`. See [desk.md](../daemon/desk.md) |
+| `id` | integer or string | The ask, task, prompt, answer's action, hold, batch, sweep, grant, report's inbox sequence number or queue place; a worktree's path |
+| `task` | integer or null | The task; for a `batch`, its planning task |
 | `key` | string or null | The task's key |
 | `step` | string or null | The task's step |
 | `lane` | string or null | The task's lane |
@@ -238,12 +243,17 @@ group per resource, the group with the newest event first:
 | `follow_up` | string or null | The command that routes its next event, each argument shell-quoted: `priory revive ID` for a failed or dropped task, `priory add --workflow WORKFLOW 'TEXT'` with the task's workflow and `request_text` for a done one, else `priory subscribe ID RESOURCE`. Null for a done task's resource that `request_text` cannot name, such as a Slack thread |
 | `request_text` | string or null | For a GitHub or Linear resource, the text of a new task keyed by it: `Follow up on URL after event SEQ`, the issue's URL, which `priory add` turns into the resource as key, and the newest event's sequence number, so each follow-up is a new request |
 
+`outsider`, beside `unrouted`, lists the comments and reviews from someone outside the repository,
+newest first: `seq`, `type`, `subject`, `time` and `actor`. No task takes them, so they come with
+no command.
+
 `other` counts the rest, the events no task ever owned, per source (the resource's prefix, such as
 `github` or `slack`), most first: `source` and `events`.
 
 Without `--json`, `priory inbox --unrouted` prints each owned group as its resource, event count
 and task, one line per event, then its follow-up, and last one line such as `No task ever owned: 2
-github events, 1 linear event.`
+github events, 1 linear event.` Then it prints the outsider events as a group of their own,
+`from outside the repository: N events`, one line per event with its author.
 
 ## Asks
 
@@ -275,6 +285,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `revision` | integer | The question's revision. `priory answer` and `priory dismiss` take it |
 | `question` | string | The question |
 | `options` | array of strings | The options |
+| `free_text` | boolean | Whether the ask takes free text and a dismissal. False for a step's ask and a hold's ask, which take only their options |
 | `recommendation`, `tradeoff` | string or null | What the agent recommends, and the trade-off |
 | `title`, `text` | string or null | The ask's title and its Markdown body. A human step's ask has the task's [merge risk](../daemon/tools.md#merge-risk) as its body, when it has one |
 | `what_waits`, `next_action` | string or null | What waits on the answer, and what the agent does next |
@@ -454,7 +465,7 @@ one of `workflow` (the default), `agent`, `model`, `machine` and `repo`. See
 | Field | Value |
 | ----- | ----- |
 | `by` | The split's dimension |
-| `current`, `previous` | The two windows: `since` and `until`, then a [total](#cost-total) and `merges` |
+| `current`, `previous` | The two windows: `since` and `until`, `since_day`, the local date `since` falls on in the daemon's timezone, as `days` are keyed, then a [total](#cost-total) and `merges` |
 | `days` | One entry per local day of either window with a record or a merge, oldest first: `day` (`YYYY-MM-DD`), a [total](#cost-total) and `merges` |
 | `split` | One entry per value of the current window's records, sorted: the value under the dimension's name, such as `"model": "claude-opus-5-5"`, and a [total](#cost-total) |
 
@@ -513,7 +524,8 @@ a wait and away time. Minutes are numbers, not rounded.
 | `factory` | string | The factory's name |
 | `views` | object | Each view by name: the views Priory ships, each replaced by the factory's view of the same name, then the factory's other views. Each is the file's tree as JSON, such as `{ "layout": { "tabs": [{ "panel": "desk" }] } }`. See [views.md](views.md) |
 
-The server reads the views when it starts.
+The server reads the views when it starts. `priory views [DIR] --json` prints the same object from
+the factory's files, with no server running.
 
 ## Links
 

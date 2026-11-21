@@ -9,6 +9,23 @@ pub mod postgres;
 pub type Error = Box<dyn std::error::Error>;
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// The log did not answer: its link is down or hangs. A later call may reach it.
+#[derive(Debug)]
+pub struct Unreachable(pub String);
+
+impl std::fmt::Display for Unreachable {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(formatter, "the log is unreachable: {}", self.0)
+    }
+}
+
+impl std::error::Error for Unreachable {}
+
+/// Whether `error` says the log is unreachable, so that retrying later may work.
+pub fn unreachable(error: &(dyn std::error::Error + 'static)) -> bool {
+    error.is::<Unreachable>()
+}
+
 /// A message read as a consumer, to acknowledge once handled.
 #[derive(Clone, Debug)]
 pub struct Delivery {
@@ -44,20 +61,21 @@ pub trait Log {
 pub fn open(log: &EventLog) -> Result<Box<dyn Log>> {
     match log.backend {
         Backend::HerdrBus => Ok(Box::new(Bus::open_default()?)),
-        Backend::Postgres => open_postgres(log.url_env()),
+        Backend::Postgres => open_postgres(log),
     }
 }
 
 #[cfg(feature = "postgres")]
-fn open_postgres(url_env: &str) -> Result<Box<dyn Log>> {
+fn open_postgres(log: &EventLog) -> Result<Box<dyn Log>> {
+    let url_env = log.url_env();
     let url = std::env::var(url_env).map_err(|_| {
         format!("[log] backend = \"postgres\" reads its connection string from ${url_env}, which is not set")
     })?;
-    Ok(Box::new(postgres::Postgres::connect(&url)?))
+    Ok(Box::new(postgres::Postgres::connect(&url, log.timeout())?))
 }
 
 #[cfg(not(feature = "postgres"))]
-fn open_postgres(_url_env: &str) -> Result<Box<dyn Log>> {
+fn open_postgres(_log: &EventLog) -> Result<Box<dyn Log>> {
     Err("[log] backend = \"postgres\" needs a priory built with `--features postgres`".into())
 }
 

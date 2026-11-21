@@ -14,8 +14,8 @@ const total = (cost_usd, merges = 0, extra = {}) => ({ cost_usd, tokens: tokens(
 // `/api/costs` as trace.md's Costs example prints it, by workflow.
 const costs = (current, previous, rest = {}) => ({
   by: "workflow",
-  current: { since: "2026-11-15T23:00:00.000Z", until: "2026-11-17T11:00:00.000Z", ...current },
-  previous: { since: "2026-11-08T23:00:00.000Z", until: "2026-11-15T23:00:00.000Z", ...previous },
+  current: { since: "2026-11-15T23:00:00.000Z", since_day: "2026-11-16", until: "2026-11-17T11:00:00.000Z", ...current },
+  previous: { since: "2026-11-08T23:00:00.000Z", since_day: "2026-11-09", until: "2026-11-15T23:00:00.000Z", ...previous },
   days: [],
   split: [],
   ...rest,
@@ -110,9 +110,17 @@ test("each task's wall time splits into working, waiting on you, on the world an
 
 test("a day is this week's from the local date the current window starts on", () => {
   const day = (date) => ({ day: date, ...total(1) });
-  const window = { since: "2026-11-16T00:00:00.000Z", until: "2026-11-17T11:00:00.000Z" };
+  const window = { since: "2026-11-16T00:00:00.000Z", since_day: "2026-11-16", until: "2026-11-17T11:00:00.000Z" };
   const bars = dayBars(costs({ ...total(1), ...window }, total(1), { days: [day("2026-11-15"), day("2026-11-16"), day("2026-11-17")] }));
   assert.deepEqual(bars.map((bar) => bar.current), [false, true, true]);
+});
+
+test("a daemon past UTC+12 starts its week on the local date it names", () => {
+  // Kiritimati is UTC+14: Monday 00:00 local is Sunday 10:00 UTC, past the reach of a 12-hour shift.
+  const day = (date) => ({ day: date, ...total(1) });
+  const window = { since: "2026-11-15T10:00:00.000Z", since_day: "2026-11-16", until: "2026-11-17T11:00:00.000Z" };
+  const bars = dayBars(costs({ ...total(1), ...window }, total(1), { days: [day("2026-11-15"), day("2026-11-16")] }));
+  assert.deepEqual(bars.map((bar) => bar.current), [false, true]);
 });
 
 test("a task's time over a day reads in days and hours", () => {

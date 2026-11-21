@@ -11,6 +11,7 @@
 | `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
 | `command` | the answer's action | `Priory stopped while answer <answer> to ask <ask> ran <argv> in <dir>: check the target`, for an `uncertain` command (see [tools.md](tools.md#commands-an-answer-runs)) | it ended |
 | `held` | the hold | the task's reason: why it is held, and until what | it was held |
+| `batch` | the batch | its title and counts, then which entries start next: `Invoice exports: 1 merged, 3 started, 2 planned. Next: tasks 36 and 37 start when task 34 merges.` One row per going batch, in place of the `held` rows of its entries (see Batches) | the go |
 | `memory` | the memory grant | `waits for <N> GB: <command>` | it was requested |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
 | `sweep` | the script's run | its command, then `running`, or its status and output, for the open stall | it started |
@@ -26,6 +27,16 @@ web Desk and the Herdr Desk show it as "with <lead>" on the ask's row and in the
 
 It lists only asks and prompts of active tasks, holds of held tasks and waiting memory grants. Then the `queue` rows in start order, then one `worktree` row per worktree the sweep keeps. `priory asks` prints every open ask. Both leave snoozed items out, unless you pass `--all` (see Snooze).
 
+## Batches
+
+A going batch shows as one `batch` row, until it ends. Its `task` and `key` are its planning
+task's. A held entry whose every open condition is a batch edge leaves `items`: the batch row stands
+for it. An entry held on a condition with an open ask, such as the ask a failed predecessor raises,
+keeps its own `held` row and its Release button. A `batch` row never ranks as the next thing, since
+it asks for nothing. See [batches.md](batches.md). The web Desk and the Herdr Desk show it under
+Also waiting with a muted tile and the `layers` icon. The web Desk's phone list puts its `Next:`
+sentence in a caption below its counts, and its key opens the planning task.
+
 ## Unrouted events
 
 When events about a resource some task owned or subscribed to reached no task in the last 24
@@ -37,6 +48,15 @@ hours, `priory desk` prints one line before its rows. Events no task ever owned 
 
 It is a count, not an alarm: nothing ranks for it. `priory desk --json` carries it as
 `counts.unrouted`, 0 when there are none. See [routing.md](routing.md#events-that-reach-no-task).
+
+A comment or review from someone outside the repository is not unrouted: its outcome is
+`outsider`. When some came in the last 24 hours, `priory desk` prints one more line:
+
+```text
+2 comments from outside the repository came in the last 24 hours. See them with `priory inbox --unrouted`.
+```
+
+`priory desk --json` carries it as `counts.outsider`, 0 when there are none.
 
 ## The next thing
 
@@ -144,6 +164,10 @@ A tick that polls no Linear or Slack source records only `github`.
 - When no source polled in the last 5 minutes, the banner is instead `the intake has not polled
   since <time>: waits on GitHub, Linear and Slack cannot fire`. A factory whose intake never ran
   shows no banner.
+
+While the daemon cannot reach its log, the banner starts with
+`the log is unreachable since <time>: <error>; <n> messages wait to publish`, joined to the
+intake's own by `; `. See [runners.md](runners.md#a-runner-cut-off-from-the-log).
 
 The banner is `intake` in `priory desk --json` and `/api/desk`. A source that starts failing, or
 recovers, moves the state's revision, so a client that waits on `/api/events` redraws the banner at
@@ -296,7 +320,9 @@ the time to the second, as the inbox does.
 `since_you_looked`, newest first, at most 50. An event in the same second as the visit shows
 again rather than never. `--person NAME` reads that person's visit. Without a
 visit, `since_you_looked` lists the latest 50 events. An event is a trace record or an inbox entry:
-each step that ended, repair, snooze or label, and each message and report the inbox took. Each has
+each step that ended, repair, snooze or label, and each message and report the inbox took. A
+message routed to no task, `ignored`, is left out, so a busy repository does not fill the list
+(the Desk counts those as unrouted events, see [Unrouted events](#unrouted-events)). Each has
 its `time`, its `task` and the task's `key`, and `what`: the record's type, step and outcome, the
 message's type, subject and outcome, or a report's `<source>: <line>`. `priory desk` without
 `--json` lists the events after its items, under a `since you looked` header with the columns

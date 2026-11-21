@@ -1,4 +1,5 @@
 use crate::idle;
+use crate::link::Link;
 use crate::memory::{self, Gate};
 use crate::otlp;
 use crate::room::Share;
@@ -241,12 +242,19 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut swept: Option<Instant> = None;
     let mut alive = None;
     let mut aged = None;
+    let mut link = Link::default();
     loop {
-        // A runner back from away reads the log, and so drops the tasks that moved, before any run.
-        drain(&*bus, &consumer, &mut db, &trace, counting.get(&home))?;
+        // A runner back from away reads the log, and so drops the tasks that moved, before any run
+        // and before it publishes what it queued meanwhile.
+        let drained = link
+            .due()
+            .then(|| drain(&*bus, &consumer, &mut db, &trace, counting.get(&home)));
         if let Some(me) = &trace.runner {
             runners::tick(&mut db, me, intake::now()?, &mut alive)?;
-            runners::flush(&db, &*bus)?;
+        }
+        if let Some(drained) = drained {
+            let tried = drained.and_then(|()| runners::flush(&db, &*bus));
+            link.tried(&db, tried)?;
         }
         while let Ok(line) = listening.lines.try_recv() {
             apply(&mut db, line, &trace, counting.get(&home))?;
@@ -680,6 +688,7 @@ enum Input {
     Push(push::Line),
     Seen(state::SeenLine),
     Read(crate::post::ReadLine),
+    BatchEdit(crate::batch::EditLine),
 }
 
 /// `POST /api/request`'s line: `{"add": {...}}`.
@@ -699,6 +708,9 @@ fn add(
     counter: Option<&embed::Counter>,
 ) -> Result<Result<String, String>, Error> {
     use priory_intake::request::Refused;
+    if let Some(missing) = crate::relate::missing(db, &add.relates)? {
+        return Ok(Err(missing));
+    }
     let (key, error) = match priory_intake::request::add(trace.factory, add) {
         Ok(key) => (key, None),
         Err(Refused::Invalid(refused)) => return Ok(Err(refused)),
@@ -708,14 +720,12 @@ fn add(
         }
     };
     let log = log::open(trace.factory.log())?;
-    drain(
-        &*log,
-        &runners::consumer(trace.runner.as_deref()),
-        db,
-        trace,
-        counter,
-    )?;
-    runners::flush(db, &*log)?;
+    let consumer = runners::consumer(trace.runner.as_deref());
+    // A request the log took but did not hand back yet: the loop takes it in once the log answers.
+    match drain(&*log, &consumer, db, trace, counter).and_then(|()| runners::flush(db, &*log)) {
+        Err(error) if !log::unreachable(&*error) => return Err(error),
+        _ => {}
+    }
     let tx = db.transaction()?;
     let id = state::owner(&tx, std::slice::from_ref(&key))?.map(|task| task.id);
     drop(tx);
@@ -826,6 +836,9 @@ fn take(
             None,
         )),
         Ok(Input::Subscribe(line)) => Ok((replied(subscribe::apply(db, &line.subscribe)?), None)),
+        Ok(Input::BatchEdit(line)) => {
+            Ok((replied(crate::batch::apply(db, &line.batch_edit)), None))
+        }
         Ok(Input::Deliver(line)) => Ok((replied(deliver::act(db, &line)?), None)),
         Ok(Input::Add(line)) => Ok((replied(add(db, &line.add, trace, counter)?), None)),
         Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
@@ -839,12 +852,12 @@ fn take(
         Ok(Input::Call(call)) if matches!(call.tool.as_str(), "subscribe" | "unsubscribe") => {
             Ok((replied(subscribe::tool(db, &call)?), None))
         }
-        Ok(Input::Call(call)) => Ok((
-            replied(tools::call(db, &call, trace, &|worktree, branch| {
+        Ok(Input::Call(call)) => {
+            let (reply, kill) = tools::call(db, &call, trace, &|worktree, branch| {
                 runtime::kept_head(&runtime::home(), worktree, branch)
-            })?),
-            None,
-        )),
+            })?;
+            Ok((replied(reply), kill))
+        }
         Ok(Input::Proof(line)) => Ok((
             replied(crate::proof::gate(
                 db,
@@ -1093,7 +1106,8 @@ fn perform(
     Ok(())
 }
 
-/// Runs `due`'s action, or returns true when it waits for disk to add its worktree back.
+/// Runs `due`'s action, or returns true when it waits, for disk to add its worktree back or for
+/// the log to say this runner keeps it, so the next task's action may run.
 fn act(
     db: &mut Connection,
     trace: &Trace,
@@ -1101,6 +1115,12 @@ fn act(
     commands: &mut Vec<(i64, Script)>,
     due: &state::Due,
 ) -> Result<bool, Error> {
+    // A code step's action is a start like a run's: it waits until the log says this runner keeps it.
+    if let Some(me) = &trace.runner
+        && runners::cleared(db, me, due.task)? != Some(true)
+    {
+        return Ok(true);
+    }
     let factory = trace.factory;
     let step = factory.workflows[&due.workflow]
         .value
@@ -1843,8 +1863,9 @@ fn drain(
         for delivery in deliveries {
             let message = runners::clocked(delivery.message.clone(), delivery.logged);
             let ended = state::handle(db, &message, trace, counter)?;
+            // Before the ack, which can fail on a lost link: a redelivered message kills nothing.
+            ended.iter().for_each(|tmux| runtime::kill(tmux));
             bus.ack(consumer, &delivery)?;
-            ended.inspect(|tmux| runtime::kill(tmux));
         }
     }
 }

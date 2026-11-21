@@ -146,18 +146,22 @@ fn optional(arguments: &Value, name: &str) -> Result<Option<String>, String> {
 }
 
 /// Applies a tool call from the run whose harness session is `call.session`. The inner error is
-/// the tool's error, returned to the agent with nothing stored.
+/// the tool's error, returned to the agent with nothing stored. Also returns the tmux session of a
+/// run the call ended, to kill once the agent has its reply.
 pub(crate) fn call(
     db: &mut Connection,
     call: &Call,
     trace: &Trace,
     head: &dyn Fn(&Path, &str) -> Option<String>,
-) -> rusqlite::Result<Result<String, String>> {
+) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
     let factory = trace.factory;
     let workflows = &factory.workflows;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(run) = run(&tx, &call.session)? else {
-        return Ok(Err(format!("no live run has session {}", call.session)));
+        return Ok((
+            Err(format!("no live run has session {}", call.session)),
+            None,
+        ));
     };
     if let Some(outcome) = tx
         .query_row(
@@ -167,10 +171,13 @@ pub(crate) fn call(
         )
         .optional()?
     {
-        return Ok(Err(format!(
-            "run {} already has a result, {outcome}; a result is final",
-            run.id
-        )));
+        return Ok((
+            Err(format!(
+                "run {} already has a result, {outcome}; a result is final",
+                run.id
+            )),
+            None,
+        ));
     }
     // An ask and a wait may sit side by side: the first answer or event wins.
     let open_ask = tx
@@ -191,6 +198,10 @@ pub(crate) fn call(
         ("ask" | "wait", ..) if woken(&tx, &run)? => {
             Some("an answer or event for this run is queued: end your turn to read it".to_owned())
         }
+        // A result or ask would end or sleep the task over feedback it has not read yet.
+        ("result" | "ask", ..) if kept(&tx, run.task)? => {
+            Some("feedback for this run is queued: end your turn to read it".to_owned())
+        }
         // Its end would wake the task at whatever step the result moved it to.
         ("result", ..) if commanding(&tx, run.task)? => Some(
             "an answer's command for this task runs: end your turn, and its end wakes the task"
@@ -199,7 +210,7 @@ pub(crate) fn call(
         _ => None,
     };
     if let Some(refused) = refused {
-        return Ok(Err(refused));
+        return Ok((Err(refused), None));
     }
     // The run moves on from the asks and waits of earlier runs. A refused call rolls this back.
     tx.execute(
@@ -212,6 +223,7 @@ pub(crate) fn call(
          AND fired IS NULL AND withdrawn IS NULL AND NOT daemon",
         params![run.task, run.id],
     )?;
+    let mut kill = None;
     let stored = match call.tool.as_str() {
         // A result moves the task, maybe to another agent's conversation, before the compact is typed.
         "result" if compact_queued(&tx, run.task)? => Err(
@@ -223,15 +235,20 @@ pub(crate) fn call(
             Err(refused) => Err(refused),
         },
         "ask" => ask(&tx, &run, &call.arguments, factory)?,
-        "wait" => wait(&tx, &run, &call.arguments, factory)?,
+        "wait" => {
+            let (stored, ended) = wait(&tx, &run, &call.arguments, factory)?;
+            kill = ended;
+            stored
+        }
         "compact" => compact(&tx, &run, &call.arguments, factory)?,
         tool => Err(format!("unknown tool {tool}")),
     };
     if stored.is_ok() {
         tx.execute("UPDATE runs SET nudgeable = 0 WHERE id = ?1", [run.id])?;
         tx.commit()?;
+        return Ok((stored, kill));
     }
-    Ok(stored)
+    Ok((stored, None))
 }
 
 fn result(
@@ -819,6 +836,23 @@ fn woken(tx: &Transaction, run: &Run) -> rusqlite::Result<bool> {
     )
 }
 
+/// Whether a person's feedback the task kept while it ran waits in a queued prompt.
+fn kept(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+    let mut statement = tx.prepare(
+        "SELECT inbox.type, inbox.data FROM inbox JOIN outbox ON outbox.id = inbox.outbox
+         WHERE inbox.task = ?1 AND inbox.outcome = 'kept' AND outbox.state = 'queued'",
+    )?;
+    let mut rows = statement.query([task])?;
+    while let Some(row) = rows.next()? {
+        let kind: String = row.get(0)?;
+        let data: Value = serde_json::from_str(&row.get::<_, String>(1)?).unwrap_or_default();
+        if feedback_on(&kind, &data).is_some() && !settles(&kind, &data) && data["own"] != true {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn commanding(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
     tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM actions WHERE task = ?1 AND action = 'answer' AND ended IS NULL)",
@@ -903,26 +937,27 @@ pub(crate) fn resource(on: &Value) -> Result<String, String> {
 
 /// Stores a wait on each condition of `on` or `any`, and fires the first that already holds: an
 /// event since the agent's last prompt, a passed time or an ended task. The daemon reads the
-/// current states it can afterwards, outside this call (see `readable`).
+/// current states it can afterwards, outside this call (see `readable`). Also returns the tmux
+/// session of a run that a merge the catch-up judged ended, to kill once the agent has its reply.
 fn wait(
     tx: &Transaction,
     run: &Run,
     arguments: &Value,
     factory: &Factory,
-) -> rusqlite::Result<Result<String, String>> {
+) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
     let conditions = match conditions(arguments) {
         Ok(conditions) => conditions,
-        Err(error) => return Ok(Err(error)),
+        Err(error) => return Ok((Err(error), None)),
     };
     let mut ids = Vec::new();
     for on in conditions {
         match condition(tx, run, on)? {
             Ok(id) => ids.push(id.to_string()),
-            Err(error) => return Ok(Err(error)),
+            Err(error) => return Ok((Err(error), None)),
         }
     }
     let ids = ids.join(", ");
-    let caught = catch_up(tx, run.task, factory)?;
+    let (caught, kill) = catch_up(tx, run.task, factory)?;
     if !caught {
         due(tx)?;
     }
@@ -945,7 +980,7 @@ fn wait(
             "waits {ids} stored: end your turn now; Priory wakes you with the first event that satisfies one of them"
         ),
     };
-    Ok(Ok(reply))
+    Ok((Ok(reply), kill))
 }
 
 /// The conditions of a wait call: `on`, one condition, or `any`, a list of them.
@@ -1124,8 +1159,8 @@ pub(crate) fn instant(tx: &Transaction, until: &str) -> rusqlite::Result<Result<
 
 /// Fires the task's open wait on the first event since the agent's last prompt that satisfies it,
 /// on which none of its waits fired: one it kept and was not typed yet, or one another task kept
-/// since that prompt. Says whether one did.
-fn catch_up(tx: &Transaction, task: i64, factory: &Factory) -> rusqlite::Result<bool> {
+/// since that prompt. Says whether one did, with the tmux session of a run its firing ended.
+fn catch_up(tx: &Transaction, task: i64, factory: &Factory) -> rusqlite::Result<Fired> {
     let mut candidates = Vec::new();
     {
         let mut statement = tx.prepare(
@@ -1144,12 +1179,12 @@ fn catch_up(tx: &Transaction, task: i64, factory: &Factory) -> rusqlite::Result<
         }
     }
     for seq in candidates {
-        // A run a merge ends here is the caller's own; the next launch kills its session.
-        if event(tx, task, seq, factory)?.0 {
-            return Ok(true);
+        let fired = event(tx, task, seq, factory)?;
+        if fired.0 {
+            return Ok(fired);
         }
     }
-    Ok(false)
+    Ok((false, None))
 }
 
 /// Whether a wait fired, and the tmux session of a run its firing ended, to kill once committed.
@@ -1700,7 +1735,8 @@ fn merged(
 }
 
 /// Fires the daemon's checks wait `wait` on the event `seq` and marks its task done, or enters
-/// the step the gate waited to enter, ending a run a person's `say` started when that step does.
+/// the step the gate waited to enter. A run a person's `say` started ends when the task is done or
+/// that step does.
 fn done(
     tx: &Transaction,
     wait: i64,
@@ -1715,10 +1751,6 @@ fn done(
         [wait],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    let Some(after) = after else {
-        set(tx, task, "done", None, None)?;
-        return Ok((true, None));
-    };
     // A person's `say` may have started a run while the task slept on its gate.
     let live: Option<String> = tx
         .query_row(
@@ -1730,6 +1762,14 @@ fn done(
     let from = match live {
         Some(session) => run(tx, &session)?,
         None => None,
+    };
+    let Some(after) = after else {
+        set(tx, task, "done", None, None)?;
+        let Some(from) = from else {
+            return Ok((true, None));
+        };
+        end(tx, from.id, "done")?;
+        return Ok((true, Some(from.tmux)));
     };
     let kill = step_in(
         tx,
@@ -2132,7 +2172,7 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
             set(tx, run.task, "asleep", None, None)?;
             return Ok(Some(Some(run.tmux.clone())));
         }
-        return enter(
+        let tmux = enter(
             tx,
             run.task,
             &run.workflow,
@@ -2140,8 +2180,11 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
             Some(run),
             &summary,
             trace.factory,
-        )
-        .map(Some);
+        )?;
+        if target == "stop" {
+            stopped(tx, run, &outcome, &summary)?;
+        }
+        return Ok(Some(tmux));
     }
     // A schedule's tick wakes a task with its ask or wait still open: this run sleeps on them again.
     tx.execute(
@@ -2499,6 +2542,30 @@ fn set(
     .map(drop)
 }
 
+/// Keeps the first line of the summary of the result that stopped the run's task as the task's
+/// reason, and posts it as a report, so the desk shows why the work ended.
+fn stopped(tx: &Transaction, run: &Run, outcome: &str, summary: &str) -> rusqlite::Result<()> {
+    // A tab would split the reason across `priory tasks` columns.
+    let line = summary
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .replace('\t', " ");
+    tx.execute(
+        "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND state = 'dropped'",
+        params![run.task, line],
+    )?;
+    let key: String = tx.query_row("SELECT key FROM tasks WHERE id = ?1", [run.task], |row| {
+        row.get(0)
+    })?;
+    let line = format!(
+        "task {} ({key}) stopped at {}, {outcome}: {line}",
+        run.task, run.step
+    );
+    crate::post::report(tx, "priory", &line)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))
+}
+
 /// Moves `task` to `target`: a step id, `done` or `stop`. `from` is the run whose result moved it,
 /// still live; an answer moves an asleep task with none. Returns the tmux session to kill.
 fn enter(
@@ -2632,6 +2699,7 @@ fn step_in(
         set(tx, task, "blocked", None, Some(&reason))?;
         return finish("blocked");
     };
+    drop_ending(tx, task)?;
     set_ending(tx, task, Some(step))?;
     match step.decides {
         Decider::Model => {
@@ -2760,16 +2828,65 @@ fn answer_in(
         Err(error) => return Ok(Err(error)),
     };
     let options: Vec<String> = serde_json::from_str(&options).expect("options are stored as JSON");
+    let hold = crate::hold::of_ask(tx, answer.ask)?;
+    let (chosen, note) = match answer.text.split_once(':') {
+        Some((option, note))
+            if kind == "step"
+                && !options.contains(&answer.text)
+                && options.iter().any(|known| known == option.trim())
+                && !note.trim().is_empty() =>
+        {
+            (option.trim().to_owned(), Some(note.trim()))
+        }
+        _ => (answer.text.clone(), None),
+    };
     let runs = command
         .as_deref()
         .filter(|_| kind == "agent" || kind == "step")
         .and_then(|command| serde_json::from_str::<command::Command>(command).ok())
-        .filter(|command| command.runs.contains(&answer.text));
-    let hold = crate::hold::of_ask(tx, answer.ask)?;
-    if (kind == "step" || hold.is_some()) && !options.contains(&answer.text) {
+        .filter(|command| command.runs.contains(&chosen));
+    if (kind == "step" || hold.is_some()) && !options.contains(&chosen) {
         return Ok(Err(format!(
             "ask {label} takes one of: {}",
             options.join(", ")
+        )));
+    }
+    let asked = step(workflows, &workflow, &at);
+    let target = match (kind == "step", asked) {
+        (false, _) => None,
+        // A `plan` task's grading step: an approval moves it by its grade.
+        (true, Some(asked)) if asked.decides == Decider::Model => Some(match chosen.as_str() {
+            "approved" => {
+                let grade: Option<String> = match task {
+                    Some(task) => {
+                        tx.query_row("SELECT grade FROM tasks WHERE id = ?1", [task], |row| {
+                            row.get(0)
+                        })?
+                    }
+                    None => None,
+                };
+                grade
+                    .as_deref()
+                    .and_then(|grade| asked.next.get(grade))
+                    .cloned()
+                    .unwrap_or_else(|| format!("{at}?{}", grade.unwrap_or_default()))
+            }
+            _ => "stop".to_owned(),
+        }),
+        (true, _) => Some(answered_target(workflows, &workflow, &at, &chosen)),
+    };
+    // A note goes where someone reads it: the next model step's prompt, the next human step's
+    // question, or the dropped task's reason.
+    let reads_note = |target: &str| {
+        target == "stop"
+            || step(workflows, &workflow, target)
+                .is_some_and(|next| matches!(next.decides, Decider::Model | Decider::Human))
+    };
+    if let (Some(_), Some(target)) = (note, target.as_deref())
+        && (runs.is_some() || !reads_note(target))
+    {
+        return Ok(Err(format!(
+            "ask {label} answered {chosen} leads to {target}, which reads no note: answer {chosen} alone"
         )));
     }
     if let Some(runs) = &runs
@@ -2845,36 +2962,40 @@ fn answer_in(
     }
     if let Some(hold) = hold {
         crate::hold::answered(tx, hold, &answer.text)?;
-    } else if kind == "step"
-        && step(workflows, &workflow, &at).is_some_and(|asked| asked.decides == Decider::Model)
-    {
-        // A `plan` task's grading step: an approval moves it by its grade.
-        let target = match answer.text.as_str() {
-            "approved" => {
-                let grade: Option<String> =
-                    tx.query_row("SELECT grade FROM tasks WHERE id = ?1", [task], |row| {
-                        row.get(0)
-                    })?;
-                step(workflows, &workflow, &at)
-                    .and_then(|asked| asked.next.get(grade.as_deref()?))
-                    .cloned()
-                    .unwrap_or_else(|| format!("{at}?{}", grade.unwrap_or_default()))
-            }
-            _ => "stop".to_owned(),
-        };
-        enter(tx, task, &workflow, &target, None, "", trace.factory)?;
-    } else if kind == "step" {
-        let target = answered_target(workflows, &workflow, &at, &answer.text);
-        approve(
+    } else if let Some(target) = target {
+        if !asked.is_some_and(|asked| asked.decides == Decider::Model) {
+            approve(
+                tx,
+                task,
+                answer,
+                &approvals(workflows, &workflow, &at, &target),
+                head,
+            )?;
+            trace::ended(tx, trace, task, &chosen, None)?;
+            crate::grades::answered(tx, trace, task, &at, &chosen, &target)?;
+        }
+        let note = note
+            .map(|note| format!("A person answered {chosen} on step {at}, with a note: {note}"));
+        let next = step(workflows, &workflow, &target).map(|next| &next.decides);
+        if let (Some(note), Some(Decider::Model)) = (&note, next) {
+            queue_first(tx, task, note)?;
+        }
+        let context = note.as_deref().filter(|_| next == Some(&Decider::Human));
+        enter(
             tx,
             task,
-            answer,
-            &approvals(workflows, &workflow, &at, &target),
-            head,
+            &workflow,
+            &target,
+            None,
+            context.unwrap_or_default(),
+            trace.factory,
         )?;
-        trace::ended(tx, trace, task, &answer.text, None)?;
-        crate::grades::answered(tx, trace, task, &at, &answer.text, &target)?;
-        enter(tx, task, &workflow, &target, None, "", trace.factory)?;
+        if let (Some(note), "stop") = (&note, target.as_str()) {
+            tx.execute(
+                "UPDATE tasks SET reason = ?2 WHERE id = ?1",
+                params![task, note],
+            )?;
+        }
     } else {
         withdraw_waits(tx, answer.ask, "answered-elsewhere")?;
         wake(
@@ -3401,6 +3522,32 @@ pub(crate) fn reopenable(
     .optional()
 }
 
+/// The report a comment in `message` posts when it lands on the own key of the newest task on that
+/// key, which failed or was dropped before the comment was written, with no active task on the key:
+/// nothing reopens such a task, so a person decides whether to revive it.
+pub(crate) fn unheard(
+    tx: &Transaction,
+    message: &herdr_bus::Message,
+) -> rusqlite::Result<Option<String>> {
+    let data = &message.data;
+    let Some(resource) = feedback_on(&message.kind, data).filter(|_| data["own"] != true) else {
+        return Ok(None);
+    };
+    tx.query_row(
+        "SELECT id, state FROM tasks WHERE key = ?1 AND state IN ('failed', 'dropped')
+         AND julianday(?2) >= julianday(changed)
+         AND id = (SELECT max(id) FROM tasks AS newest WHERE newest.key = ?1)",
+        params![resource, message.time.to_string()],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+    )
+    .optional()
+    .map(|task| {
+        task.map(|(task, state)| {
+            format!("{resource} has a new comment; its task {task} {state}: priory revive {task}")
+        })
+    })
+}
+
 /// Moves the done `task` back, as its next generation, to its workflow's `reopen` step, else the
 /// step that opened its pull request, else its last step, with the feedback of the inbox entry
 /// `seq` as its prompt.
@@ -3718,6 +3865,38 @@ pub(crate) fn set_ending(tx: &Transaction, task: i64, step: Option<&Step>) -> ru
         params![task, ending],
     )
     .map(drop)
+}
+
+/// Removes the line that ends the task's current step from its queued prompts, as before it enters
+/// another step: a prompt queued for the old step, such as a person's `say`, must not name its
+/// outcomes.
+fn drop_ending(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+    let ending: Option<String> =
+        tx.query_row("SELECT ending FROM tasks WHERE id = ?1", [task], |row| {
+            row.get(0)
+        })?;
+    let Some(ending) = ending else {
+        return Ok(());
+    };
+    let queued = tx
+        .prepare(
+            "SELECT id, text FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0",
+        )?
+        .query_map([task], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, text) in queued {
+        let kept: Vec<&str> = text.lines().filter(|line| *line != ending).collect();
+        // A prompt always says something before the ending, so none is left empty.
+        if kept.len() != text.lines().count() && !kept.is_empty() {
+            tx.execute(
+                "UPDATE outbox SET text = ?2 WHERE id = ?1",
+                params![id, kept.join("\n")],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Fills `ending` for tasks stored before it existed.

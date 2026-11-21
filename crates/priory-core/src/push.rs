@@ -12,13 +12,14 @@ use p256::elliptic_curve::array::Array;
 use p256::elliptic_curve::consts::U16;
 use p256::{PublicKey, SecretKey};
 use priory_runtime::runtime;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use sha2::Sha256;
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Child;
+use std::time::{Duration, Instant};
 
 /// The subscriptions kept at most; one per browser a person turned notifications on in.
 const SUBSCRIPTIONS: i64 = 20;
@@ -203,17 +204,48 @@ fn host(endpoint: &str) -> Result<String, String> {
     Ok(format!("https://{}", name.to_ascii_lowercase()))
 }
 
-/// The notification in flight: its row in `push_queue` and one `curl` per subscription.
+/// The requests in flight, one `curl` each, and the retries that wait for their time.
 #[derive(Default)]
 pub(crate) struct Sending {
-    row: Option<i64>,
     requests: Vec<Request>,
+    retries: Vec<Retry>,
+    /// Names each request's files, so two tries of one row never share them.
+    files: u64,
 }
 
 struct Request {
+    row: i64,
     endpoint: String,
+    tries: u32,
     child: Child,
     files: [PathBuf; 2],
+}
+
+struct Retry {
+    row: i64,
+    endpoint: String,
+    tries: u32,
+    due: Instant,
+}
+
+/// The tries a notification gets at one subscription: the first send and four retries.
+const TRIES: u32 = 5;
+
+/// The wait after the `tries`th failed try: 15 s, then four times longer each time, so the last
+/// retry goes out about 21 minutes after the first send.
+fn backoff(tries: u32) -> Duration {
+    Duration::from_secs(15 * 4u64.pow(tries.saturating_sub(1)))
+}
+
+/// What one try at one subscription came to.
+enum Outcome {
+    Sent,
+    /// The push service dropped the subscription (404 or 410).
+    Gone,
+    /// It may pass later: `curl` failed, or the service answered 429 or 5xx.
+    Again(String),
+    /// It never will, such as a 400 or a 413.
+    Refused(String),
 }
 
 /// How long a push service keeps a notification for a phone that is off: a day.
@@ -223,109 +255,215 @@ const SUBJECT: &str = "https://github.com/maxence-lefebvre/priory";
 /// The longest title a notification carries, in characters.
 const TITLE: usize = 120;
 
-/// Sends the oldest queued notification to every subscription, one notification at a time, as the
-/// OTLP exporter sends spans. A failed send is logged and dropped: the desk still shows the item.
-/// A subscription the push service calls gone (404 or 410) is removed.
+/// Starts one `curl` that posts a request's files to a push service.
+type Post<'a> = dyn Fn(&str, &Path, &Path) -> std::io::Result<Child> + 'a;
+
+/// Sends the queued notifications, one row at a time, as the OTLP exporter sends spans. A try that
+/// may pass later is retried with backoff, up to `TRIES` tries, while later rows go out. A
+/// subscription the push service calls gone (404 or 410) is removed. A row leaves the queue once
+/// every subscription got it or gave up, so a daemon stopped before then sends it again on its next
+/// start, and the service worker drops the copy by its `id`.
 pub(crate) fn tick(db: &Connection, home: &Path, sending: &mut Sending) -> rusqlite::Result<()> {
+    send(db, home, sending, Instant::now(), &runtime::post_push)
+}
+
+fn send(
+    db: &Connection,
+    home: &Path,
+    sending: &mut Sending,
+    now: Instant,
+    post: &Post<'_>,
+) -> rusqlite::Result<()> {
+    let mut ended = Vec::new();
     let mut still = Vec::new();
     for mut request in sending.requests.drain(..) {
-        let status = match request.child.try_wait() {
+        let outcome = match request.child.try_wait() {
             Ok(None) => {
                 still.push(request);
                 continue;
             }
-            Ok(Some(status)) => Ok(status),
-            Err(error) => Err(error),
+            Ok(Some(status)) => {
+                let read = |pipe: Option<&mut dyn Read>| {
+                    let mut text = String::new();
+                    pipe.map(|pipe| pipe.read_to_string(&mut text));
+                    text.trim().to_owned()
+                };
+                let code = read(request.child.stdout.as_mut().map(|pipe| pipe as _));
+                let stderr = read(request.child.stderr.as_mut().map(|pipe| pipe as _));
+                outcome(status, &code, &stderr)
+            }
+            Err(error) => Outcome::Again(error.to_string()),
         };
-        let read = |pipe: Option<&mut dyn Read>| {
-            let mut text = String::new();
-            pipe.map(|pipe| pipe.read_to_string(&mut text));
-            text.trim().to_owned()
-        };
-        let code = read(request.child.stdout.as_mut().map(|pipe| pipe as _));
-        let stderr = read(request.child.stderr.as_mut().map(|pipe| pipe as _));
+        for file in &request.files {
+            let _ = fs::remove_file(file);
+        }
         let origin = host(&request.endpoint).unwrap_or_default();
-        match status {
-            Ok(status) if status.success() && code.starts_with('2') => {}
-            Ok(status) if status.success() && (code == "404" || code == "410") => {
+        match outcome {
+            Outcome::Sent => {}
+            Outcome::Gone => {
                 db.execute(
                     "DELETE FROM push_subscriptions WHERE endpoint = ?1",
                     [&request.endpoint],
                 )?;
                 eprintln!("priory daemon: {origin} says a subscription is gone, so it is removed");
             }
-            Ok(status) if status.success() => {
-                eprintln!("priory daemon: {origin} refused a notification with HTTP {code}");
+            Outcome::Refused(why) => {
+                eprintln!("priory daemon: {origin} refused a notification: {why}");
             }
-            Ok(status) => {
+            Outcome::Again(why) if request.tries < TRIES => {
+                let wait = backoff(request.tries);
                 eprintln!(
-                    "priory daemon: sending a notification to {origin} failed ({status}): {stderr}"
+                    "priory daemon: sending a notification to {origin} failed ({why}); \
+                     retrying in {}s",
+                    wait.as_secs()
+                );
+                sending.retries.push(Retry {
+                    row: request.row,
+                    endpoint: request.endpoint,
+                    tries: request.tries,
+                    due: now + wait,
+                });
+            }
+            Outcome::Again(why) => {
+                eprintln!(
+                    "priory daemon: sending a notification to {origin} failed ({why}) \
+                     {TRIES} times, so it is dropped"
                 );
             }
-            Err(error) => eprintln!("priory daemon: sending a notification to {origin}: {error}"),
         }
-        for file in &request.files {
-            let _ = fs::remove_file(file);
-        }
+        ended.push(request.row);
     }
     sending.requests = still;
-    if !sending.requests.is_empty() {
-        return Ok(());
-    }
-    if let Some(row) = sending.row.take() {
-        db.execute("DELETE FROM push_queue WHERE id = ?1", [row])?;
-    }
-    let Some((row, notice)) = next(db)? else {
-        return Ok(());
-    };
-    sending.row = Some(row);
-    let Some(notice) = notice else {
-        return Ok(());
-    };
-    let key = match private_key(home) {
-        Ok(key) => key,
-        Err(error) => {
-            eprintln!("priory daemon: cannot send notifications: {error}");
-            return Ok(());
+
+    let (due, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut sending.retries)
+        .into_iter()
+        .partition(|retry| retry.due <= now);
+    sending.retries = waiting;
+    for retry in due {
+        ended.push(retry.row);
+        // The item may have closed, or the subscription gone, while the retry waited.
+        let Some(notice) = notice(db, retry.row)? else {
+            continue;
+        };
+        let keys = db
+            .query_row(
+                "SELECT p256dh, auth FROM push_subscriptions WHERE endpoint = ?1",
+                [&retry.endpoint],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        if let Some((p256dh, auth)) = keys {
+            let to = (retry.endpoint, p256dh, auth);
+            begin(home, sending, retry.row, retry.tries + 1, &notice, to, post);
         }
-    };
-    let mut statement = db.prepare("SELECT endpoint, p256dh, auth FROM push_subscriptions")?;
-    let subscriptions = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ))
-    })?;
-    for (n, subscription) in subscriptions.enumerate() {
-        let (endpoint, p256dh, auth) = subscription?;
-        let files = [
-            folder(home).join(format!("{row}-{n}.headers")),
-            folder(home).join(format!("{row}-{n}.body")),
-        ];
-        match start(&key, &endpoint, &p256dh, &auth, &notice, &files) {
-            Ok(child) => sending.requests.push(Request {
-                endpoint,
-                child,
-                files,
-            }),
-            Err(error) => {
-                let origin = host(&endpoint).unwrap_or_default();
-                eprintln!("priory daemon: cannot send a notification to {origin}: {error}");
-                for file in &files {
-                    let _ = fs::remove_file(file);
-                }
+    }
+
+    finish(db, sending, ended)?;
+
+    if sending.requests.is_empty()
+        && let Some(row) = next(db, sending)?
+    {
+        if let Some(notice) = notice(db, row)? {
+            let mut statement =
+                db.prepare("SELECT endpoint, p256dh, auth FROM push_subscriptions")?;
+            let subscriptions = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect::<rusqlite::Result<Vec<(String, String, String)>>>()?;
+            for to in subscriptions {
+                begin(home, sending, row, 1, &notice, to, post);
             }
+        }
+        finish(db, sending, vec![row])?;
+    }
+    Ok(())
+}
+
+/// Removes from the queue each of `rows` that no request or retry still sends.
+fn finish(db: &Connection, sending: &Sending, mut rows: Vec<i64>) -> rusqlite::Result<()> {
+    rows.sort_unstable();
+    rows.dedup();
+    for row in rows {
+        let busy = sending.requests.iter().any(|request| request.row == row)
+            || sending.retries.iter().any(|retry| retry.row == row);
+        if !busy {
+            db.execute("DELETE FROM push_queue WHERE id = ?1", [row])?;
         }
     }
     Ok(())
 }
 
-/// The oldest queued row and its notification as JSON, `{"title", "url"}` and nothing else. The
-/// notification is `None` once the ask closed or was asked again, the task left the state that
-/// queued it, or a person snoozed the item: those send nothing.
-fn next(db: &Connection) -> rusqlite::Result<Option<(i64, Option<String>)>> {
-    use rusqlite::OptionalExtension;
+/// What a finished `curl` came to, from its exit status and the HTTP code it wrote.
+fn outcome(status: std::process::ExitStatus, code: &str, stderr: &str) -> Outcome {
+    if !status.success() {
+        return Outcome::Again(format!("{status}: {stderr}"));
+    }
+    match code {
+        _ if code.starts_with('2') => Outcome::Sent,
+        "404" | "410" => Outcome::Gone,
+        _ if code == "429" || code.starts_with('5') => Outcome::Again(format!("HTTP {code}")),
+        _ => Outcome::Refused(format!("HTTP {code}")),
+    }
+}
+
+/// Starts one try of row `row` at the subscription `to`; a failure to start is logged, not retried.
+fn begin(
+    home: &Path,
+    sending: &mut Sending,
+    row: i64,
+    tries: u32,
+    notice: &str,
+    (endpoint, p256dh, auth): (String, String, String),
+    post: &Post<'_>,
+) {
+    let origin = host(&endpoint).unwrap_or_default();
+    let key = match private_key(home) {
+        Ok(key) => key,
+        Err(error) => {
+            eprintln!("priory daemon: cannot send notifications: {error}");
+            return;
+        }
+    };
+    sending.files += 1;
+    let files = [
+        folder(home).join(format!("{row}-{}.headers", sending.files)),
+        folder(home).join(format!("{row}-{}.body", sending.files)),
+    ];
+    match start(&key, &endpoint, &p256dh, &auth, notice, &files, post) {
+        Ok(child) => sending.requests.push(Request {
+            row,
+            endpoint,
+            tries,
+            child,
+            files,
+        }),
+        Err(error) => {
+            eprintln!("priory daemon: cannot send a notification to {origin}: {error}");
+            for file in &files {
+                let _ = fs::remove_file(file);
+            }
+        }
+    }
+}
+
+/// The oldest queued row with no retry waiting on it.
+fn next(db: &Connection, sending: &Sending) -> rusqlite::Result<Option<i64>> {
+    let mut statement = db.prepare("SELECT id FROM push_queue ORDER BY id")?;
+    let rows = statement.query_map([], |row| row.get::<_, i64>(0))?;
+    for row in rows {
+        let row = row?;
+        if !sending.retries.iter().any(|retry| retry.row == row) {
+            return Ok(Some(row));
+        }
+    }
+    Ok(None)
+}
+
+/// Row `row`'s notification as JSON, `{"id", "title", "url"}` and nothing else. `id` names the
+/// row, with the time it was queued, so a service worker drops a copy even after a new state file
+/// starts its rows at 1 again. The notification is `None` once the row left the queue, the ask
+/// closed or was asked again, the task left the state that queued it, or a person snoozed the
+/// item: those send nothing.
+fn notice(db: &Connection, row: i64) -> rusqlite::Result<Option<String>> {
     let snoozed = |kind: &str, item: &str| {
         format!(
             "NOT EXISTS (SELECT 1 FROM snoozes WHERE kind = '{kind}' AND item = {item}
@@ -334,20 +472,20 @@ fn next(db: &Connection) -> rusqlite::Result<Option<(i64, Option<String>)>> {
     };
     let queued = db
         .query_row(
-            "SELECT id, kind, item, revision, state FROM push_queue ORDER BY id LIMIT 1",
-            [],
+            "SELECT kind, item, revision, state, created FROM push_queue WHERE id = ?1",
+            [row],
             |row| {
                 Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, Option<i64>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
                 ))
             },
         )
         .optional()?;
-    let Some((row, kind, item, revision, state)) = queued else {
+    let Some((kind, item, revision, state, created)) = queued else {
         return Ok(None);
     };
     let notice = if kind == "ask" {
@@ -386,11 +524,11 @@ fn next(db: &Connection) -> rusqlite::Result<Option<(i64, Option<String>)>> {
         .optional()?
         .map(|title| (title, format!("/tasks/{item}")))
     };
-    let notice = notice.map(|(title, url)| {
+    Ok(notice.map(|(title, url)| {
         let title: String = title.chars().take(TITLE).collect();
-        serde_json::json!({ "title": title, "url": url }).to_string()
-    });
-    Ok(Some((row, notice)))
+        let id = format!("{created}/{row}");
+        serde_json::json!({ "id": id, "title": title, "url": url }).to_string()
+    }))
 }
 
 /// Writes the request's header and body files, readable by their owner only, and starts `curl`.
@@ -401,6 +539,7 @@ fn start(
     auth: &str,
     notice: &str,
     files: &[PathBuf; 2],
+    post: &Post<'_>,
 ) -> Result<Child, String> {
     let origin = host(endpoint)?;
     let to = Base64UrlUnpadded::decode_vec(p256dh)
@@ -426,7 +565,7 @@ fn start(
             .and_then(|mut out| out.write_all(bytes))
             .map_err(|error| format!("{}: {error}", file.display()))?;
     }
-    runtime::post_push(endpoint, &files[0], &files[1]).map_err(|error| error.to_string())
+    post(endpoint, &files[0], &files[1]).map_err(|error| error.to_string())
 }
 
 /// The VAPID JWT (RFC 8292) for the push service at `origin`, signed with ES256, for 12 hours.
@@ -497,6 +636,196 @@ mod tests {
 
     fn bytes(text: &str) -> Vec<u8> {
         Base64UrlUnpadded::decode_vec(&text.replace(' ', "")).unwrap()
+    }
+
+    use std::cell::RefCell;
+    use std::process::{Command, Stdio};
+
+    /// A home with a key pair, a state with one subscription and one blocked task, and `rows`
+    /// notifications queued for that task.
+    fn setup(name: &str, rows: usize) -> (PathBuf, Connection) {
+        let home = std::env::temp_dir().join(format!("priory-push-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        keys(&home).unwrap();
+        let db = crate::state::memory();
+        let to = SecretKey::generate().public_key();
+        db.execute(
+            "INSERT INTO push_subscriptions (endpoint, p256dh, auth) VALUES (?1, ?2, ?3)",
+            params![
+                "https://fcm.googleapis.com/fcm/send/one",
+                public_text(&to),
+                Base64UrlUnpadded::encode_string(&[7; 16])
+            ],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO tasks
+               (key, workflow, step, state, band, lane, lane_derived, trigger, source, entered)
+             VALUES ('cli:a', 'build', 'code', 'blocked', 'now', 'cli', 0, 'cli', 'a',
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            [],
+        )
+        .unwrap();
+        for _ in 0..rows {
+            db.execute(
+                "INSERT INTO push_queue (kind, item, state) VALUES ('alarm', 1, 'blocked')",
+                [],
+            )
+            .unwrap();
+        }
+        (home, db)
+    }
+
+    /// A push service that answers each post with the next code, and counts the posts.
+    struct Service {
+        codes: RefCell<Vec<&'static str>>,
+        posts: RefCell<usize>,
+    }
+
+    impl Service {
+        fn new(codes: &[&'static str]) -> Self {
+            Self {
+                codes: RefCell::new(codes.iter().rev().copied().collect()),
+                posts: RefCell::new(0),
+            }
+        }
+
+        fn post(&self, _url: &str, _headers: &Path, _body: &Path) -> std::io::Result<Child> {
+            *self.posts.borrow_mut() += 1;
+            let code = self.codes.borrow_mut().pop().unwrap_or("201");
+            Command::new("printf")
+                .arg(code)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+        }
+    }
+
+    /// Ticks at `now` until no request is in flight.
+    fn settle(
+        db: &Connection,
+        home: &Path,
+        sending: &mut Sending,
+        now: Instant,
+        service: &Service,
+    ) {
+        let post = |url: &str, headers: &Path, body: &Path| service.post(url, headers, body);
+        send(db, home, sending, now, &post).unwrap();
+        while !sending.requests.is_empty() {
+            std::thread::sleep(Duration::from_millis(5));
+            send(db, home, sending, now, &post).unwrap();
+        }
+    }
+
+    fn queued(db: &Connection) -> Vec<i64> {
+        let mut statement = db.prepare("SELECT id FROM push_queue ORDER BY id").unwrap();
+        statement
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_failed_send_is_retried_after_its_backoff_while_later_rows_go_out() {
+        let (home, db) = setup("retry", 2);
+        let service = Service::new(&["503", "201", "201"]);
+        let mut sending = Sending::default();
+        let start = Instant::now();
+
+        // Row 1 fails, and row 2 goes out while row 1 waits for its retry.
+        settle(&db, &home, &mut sending, start, &service);
+        assert_eq!((*service.posts.borrow(), queued(&db)), (2, vec![1]));
+        settle(
+            &db,
+            &home,
+            &mut sending,
+            start + Duration::from_secs(14),
+            &service,
+        );
+        assert_eq!(*service.posts.borrow(), 2);
+
+        settle(
+            &db,
+            &home,
+            &mut sending,
+            start + Duration::from_secs(15),
+            &service,
+        );
+        assert_eq!(*service.posts.borrow(), 3);
+        settle(
+            &db,
+            &home,
+            &mut sending,
+            start + Duration::from_secs(16),
+            &service,
+        );
+        assert!(queued(&db).is_empty());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn retries_stop_after_the_last_try_and_a_refusal_is_not_retried() {
+        let (home, db) = setup("give-up", 1);
+        let service = Service::new(&["500", "429", "500", "503", "502", "500"]);
+        let mut sending = Sending::default();
+        let mut now = Instant::now();
+        for _ in 0..10 {
+            settle(&db, &home, &mut sending, now, &service);
+            now += Duration::from_secs(3600);
+        }
+        assert_eq!(*service.posts.borrow(), TRIES as usize);
+        assert!(queued(&db).is_empty());
+
+        db.execute(
+            "INSERT INTO push_queue (kind, item, state) VALUES ('alarm', 1, 'blocked')",
+            [],
+        )
+        .unwrap();
+        let service = Service::new(&["400"]);
+        for _ in 0..3 {
+            settle(&db, &home, &mut sending, now, &service);
+            now += Duration::from_secs(3600);
+        }
+        assert_eq!(*service.posts.borrow(), 1);
+        assert!(queued(&db).is_empty());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_retry_sends_nothing_once_the_item_needs_no_one() {
+        let (home, db) = setup("closed", 1);
+        let service = Service::new(&["503"]);
+        let mut sending = Sending::default();
+        let start = Instant::now();
+        settle(&db, &home, &mut sending, start, &service);
+        db.execute("UPDATE tasks SET state = 'running' WHERE id = 1", [])
+            .unwrap();
+
+        settle(
+            &db,
+            &home,
+            &mut sending,
+            start + Duration::from_secs(60),
+            &service,
+        );
+        assert_eq!(*service.posts.borrow(), 1);
+        assert!(queued(&db).is_empty());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn each_notification_carries_an_id_a_service_worker_can_drop_a_copy_by() {
+        let (home, db) = setup("id", 2);
+        let read = |row| {
+            let text = notice(&db, row).unwrap().unwrap();
+            serde_json::from_str::<serde_json::Value>(&text).unwrap()
+        };
+        let (one, two) = (read(1), read(2));
+        assert_eq!(one["title"], "task cli:a blocked");
+        assert!(one["id"].as_str().unwrap().ends_with("/1"));
+        assert_ne!(one["id"], two["id"]);
+        let _ = fs::remove_dir_all(&home);
     }
 
     #[test]

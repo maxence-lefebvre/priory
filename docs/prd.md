@@ -447,7 +447,8 @@ until its run starts.
   and its agents running with nobody logged in. M0
 - R4.12 A person hands several issues to one planning task with `priory batch add`. Its agent plans
   them into ordered entries, each starting after the entries whose code it needs merged, and closes
-  the issues already done. One ask approves the plan; the go then creates one task per entry, held
+  the issues already done. A person can drop or move an entry before the go, and the planner can
+  split an issue into parts. One ask approves the plan; the go then creates one task per entry, held
   until its predecessors' pull requests merge. M1
 
 ### R5. Agent runtime
