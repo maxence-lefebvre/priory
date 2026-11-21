@@ -1013,7 +1013,9 @@ PRAGMA user_version = 57;
 ";
 
 // A routed ask whose lead task ends or blocks without answering returns to the person: it loses
-// its lead and is asked again as its next revision, which pushes it.
+// its lead and is asked again as its next revision, which pushes it. Every alarm the desk ranks
+// pushes too: an intake failure, an uncertain prompt and an uncertain command, with the desk kind
+// in `push_queue.state`.
 const SCHEMA_58: &str = "
 CREATE TRIGGER IF NOT EXISTS ask_returns_from_its_lead AFTER UPDATE OF state ON tasks
   WHEN NEW.trigger = 'priory/lead' AND NEW.state IN ('done', 'failed', 'dropped', 'blocked')
@@ -1023,6 +1025,21 @@ CREATE TRIGGER IF NOT EXISTS ask_returns_from_its_lead AFTER UPDATE OF state ON 
   WHERE routed IS NOT NULL AND answer IS NULL AND withdrawn IS NULL
   AND (id, revision) = (SELECT json_extract(data, '$.ask'), json_extract(data, '$.revision')
     FROM inbox WHERE inbox.id = NEW.source);
+END;
+CREATE TRIGGER IF NOT EXISTS push_an_intake_failure AFTER INSERT ON inbox
+  WHEN NEW.type = 'priory.report' AND NEW.subject = 'intake'
+  AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
+  INSERT INTO push_queue (kind, item, state) VALUES ('alarm', NEW.seq, 'report');
+END;
+CREATE TRIGGER IF NOT EXISTS push_an_uncertain_prompt AFTER UPDATE OF state ON outbox
+  WHEN NEW.state = 'uncertain' AND OLD.state IS NOT 'uncertain'
+  AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
+  INSERT INTO push_queue (kind, item, state) VALUES ('alarm', NEW.id, 'prompt');
+END;
+CREATE TRIGGER IF NOT EXISTS push_an_uncertain_command AFTER UPDATE OF status ON actions
+  WHEN NEW.status = 'uncertain' AND OLD.status IS NOT 'uncertain' AND NEW.action = 'answer'
+  AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
+  INSERT INTO push_queue (kind, item, state) VALUES ('alarm', NEW.id, 'command');
 END;
 PRAGMA user_version = 58;
 ";

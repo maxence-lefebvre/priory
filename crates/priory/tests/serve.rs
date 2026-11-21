@@ -4108,6 +4108,48 @@ fn an_ask_asked_again_pushes_again() {
 }
 
 #[test]
+fn a_failing_intake_and_an_uncertain_prompt_push_an_alarm_with_only_a_title_and_url() {
+    let mut setup = Setup::new("push-alarms", SERVE);
+    setup.seed();
+    // No task starts, so none turns blocked and sends an alarm of its own.
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let phone = setup.subscribe(&address, "https://web.push.apple.com/phone");
+    let db = setup.db();
+
+    db.execute(
+        "INSERT INTO inbox (id, time, type, subject, data, links, outcome)
+         VALUES ('r900', '2026-11-17T09:00:00Z', 'priory.report', 'intake',
+           '{\"line\":\"github: HTTP 401: token abc\"}', '[]', 'report')",
+        [],
+    )
+    .unwrap();
+    setup.until_pushes(1);
+    db.execute(
+        "INSERT INTO outbox (task, text, state) VALUES (1, 'the secret plan', 'attempted')",
+        [],
+    )
+    .unwrap();
+    db.execute("UPDATE outbox SET state = 'uncertain'", [])
+        .unwrap();
+
+    let pushes = setup.until_pushes(2);
+    let payloads: Vec<Value> = pushes
+        .iter()
+        .map(|push| {
+            serde_json::from_slice(&decrypt(&base64(&push["body"]), &phone.0, &phone.1)).unwrap()
+        })
+        .collect();
+    assert_eq!(
+        payloads,
+        [
+            json!({ "title": "the intake fails to poll github", "url": "/" }),
+            json!({ "title": "task cli:docs-1 prompt", "url": "/tasks/1" }),
+        ]
+    );
+}
+
+#[test]
 fn an_ask_asked_again_before_its_first_push_went_out_pushes_once() {
     let mut setup = Setup::new("push-superseded", SERVE);
     setup.seed();

@@ -808,6 +808,32 @@ pub(crate) fn next(db: &Connection) -> rusqlite::Result<Option<Value>> {
     Ok(rank(items).into_iter().next())
 }
 
+/// The title and task of the desk's `kind` item `id` while it ranks as an alarm and no one snoozed
+/// it, for a push.
+pub(crate) fn alarm(
+    db: &Connection,
+    kind: &str,
+    id: i64,
+) -> rusqlite::Result<Option<(String, Option<i64>)>> {
+    let items = rows(db, &desk_items(), [])?;
+    Ok(items
+        .as_array()
+        .expect("rows are an array")
+        .iter()
+        .find(|item| {
+            item["kind"] == kind
+                && item["id"] == id
+                && item["urgency"] == "alarm"
+                && item["snoozed_until"].is_null()
+        })
+        .map(|item| {
+            (
+                item["title"].as_str().unwrap_or_default().to_owned(),
+                item["task"].as_i64(),
+            )
+        }))
+}
+
 /// Gives each `ask` item `acts`: what its answer does, when it runs a command or lets an
 /// irreversible step run, or null. The command's `runs` is non-empty for an ask that runs one (see
 /// `IRREVERSIBLE`).

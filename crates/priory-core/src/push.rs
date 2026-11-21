@@ -368,6 +368,11 @@ fn next(db: &Connection) -> rusqlite::Result<Option<(i64, Option<String>)>> {
         )
         .optional()?
         .map(|title| (title, format!("/asks/{item}")))
+    } else if let Some(kind @ ("report" | "prompt" | "command")) = state.as_deref() {
+        crate::listing::alarm(db, kind, item)?.map(|(title, task)| {
+            let url = task.map_or_else(|| "/".to_owned(), |task| format!("/tasks/{task}"));
+            (title, url)
+        })
     } else {
         db.query_row(
             &format!(
