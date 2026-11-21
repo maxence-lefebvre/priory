@@ -3,7 +3,8 @@ use super::{
     COMMENTED, LABELED, LOOKBACK_SECONDS, OPENED, Observed, PR_CLOSED, PR_LABELED, PR_OPENED,
     REVIEWED, THREAD_COMMENTED, claim, dispatch, now, output, publish, reported,
 };
-use herdr_bus::{Bus, Timestamp};
+use crate::log::{self, Log};
+use herdr_bus::Timestamp;
 use hmac::{Hmac, KeyInit, Mac};
 use priory_factory::factory::{Factory, Trigger};
 use priory_runtime::http::{Reply, Request};
@@ -24,7 +25,7 @@ pub struct Github {
 impl Github {
     /// Declares `factory.intake`, so a delivery can publish before the intake ever ran.
     pub fn new(secret: String, factory: &Factory) -> Result<Self, String> {
-        let bus = Bus::open_default().map_err(|error| error.to_string())?;
+        let bus = log::open().map_err(|error| error.to_string())?;
         bus.declare(&output()).map_err(|error| error.to_string())?;
         let triggers = factory
             .triggers
@@ -46,7 +47,7 @@ impl Github {
 
     /// Verifies, maps and publishes one delivery. Every delivery Priory takes or drops on purpose
     /// gets 202, so GitHub does not retry it.
-    pub fn receive(&self, bus: &Result<Bus, String>, request: &Request) -> Reply {
+    pub fn receive(&self, bus: &Result<Box<dyn Log>, String>, request: &Request) -> Reply {
         if !self.signed(request) {
             return Reply::error(
                 401,
@@ -71,7 +72,7 @@ impl Github {
             Err(error) => return Reply::error(400, &error),
         };
         let bus = match bus {
-            Ok(bus) => bus,
+            Ok(bus) => bus.as_ref(),
             Err(error) => return Reply::error(500, error),
         };
         let triggers: Vec<(&str, &Trigger)> = self

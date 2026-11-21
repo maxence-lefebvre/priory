@@ -1,5 +1,6 @@
 use super::{BASELINE, OUTPUT, dispatch, id, publish};
-use herdr_bus::{Bus, Message, MessageQuery, Timestamp};
+use crate::log::{self, Log};
+use herdr_bus::{Message, Timestamp};
 use priory_factory::factory::Trigger;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -45,7 +46,10 @@ pub(super) struct Polled {
 impl<'a> Linear<'a> {
     /// Reads the API key and where each stream stands. Every Linear trigger polls issues and
     /// comments, so that a task receives its issue's events whatever started it.
-    pub(super) fn start(bus: &Bus, triggers: Vec<(&'a str, &'a Trigger)>) -> Result<Self, String> {
+    pub(super) fn start(
+        bus: &dyn Log,
+        triggers: Vec<(&'a str, &'a Trigger)>,
+    ) -> Result<Self, String> {
         let key = std::env::var(KEY)
             .ok()
             .filter(|key| !key.is_empty())
@@ -96,7 +100,7 @@ impl<'a> Linear<'a> {
         Ok(polled)
     }
 
-    pub(super) fn publish_all(&mut self, bus: &Bus, polled: Vec<Polled>) -> Result<(), String> {
+    pub(super) fn publish_all(&mut self, bus: &dyn Log, polled: Vec<Polled>) -> Result<(), String> {
         for Polled {
             stream,
             events,
@@ -623,20 +627,15 @@ fn blockers(issue: &Value) -> Value {
 /// Fills each stream with its newest marker, read back newest first, and returns the events of
 /// each stream published after that marker, oldest first: those of a poll a crash stopped.
 fn resume(
-    bus: &Bus,
+    bus: &dyn Log,
     streams: &mut BTreeMap<String, Option<Value>>,
-) -> herdr_bus::Result<BTreeMap<String, Vec<Message>>> {
+) -> log::Result<BTreeMap<String, Vec<Message>>> {
     let mut after: BTreeMap<String, Vec<Message>> = BTreeMap::new();
     let mut before = None;
     // shortcut: reads back to each stream's newest marker, once per start; a stored cursor would
     // make this constant once the output is large.
     while streams.values().any(Option::is_none) {
-        let page = bus.messages(&MessageQuery {
-            output: Some(OUTPUT.into()),
-            before,
-            limit: 500,
-            ..MessageQuery::default()
-        })?;
+        let page = bus.messages(OUTPUT, before, 500)?;
         let Some(oldest) = page.last() else {
             break;
         };

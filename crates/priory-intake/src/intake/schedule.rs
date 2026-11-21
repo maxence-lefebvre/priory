@@ -1,5 +1,6 @@
 use super::{id, publish, task_requested};
-use herdr_bus::{Bus, Message, Timestamp};
+use crate::log::Log;
+use herdr_bus::{Message, Timestamp};
 use jiff::civil::{Date, Time};
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, ToSpan};
@@ -8,8 +9,12 @@ use serde_json::json;
 
 pub(super) const FIRED: &str = "schedule.fired";
 
-/// Publishes each schedule's latest firing, under an id that names it so herdr-bus drops a repeat.
-pub(super) fn fire(bus: &Bus, triggers: &[(&str, &Trigger)], now: Timestamp) -> Result<(), String> {
+/// Publishes each schedule's latest firing, under an id that names it so the log drops a repeat.
+pub(super) fn fire(
+    bus: &dyn Log,
+    triggers: &[(&str, &Trigger)],
+    now: Timestamp,
+) -> Result<(), String> {
     for (name, trigger) in triggers {
         let Some(slot) = latest(trigger, now) else {
             continue;

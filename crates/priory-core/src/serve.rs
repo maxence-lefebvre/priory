@@ -2,9 +2,9 @@
 //! GitHub webhook its signed deliveries.
 
 use crate::{grades, listing, push, report, sections, snooze, state, todo, tools};
-use herdr_bus::Bus;
 use priory_factory::factory::{Factory, Price, Trigger};
 use priory_intake::intake::{self, Github};
+use priory_intake::log;
 use priory_runtime::http::{self, Reply, Request};
 use priory_runtime::runtime;
 use rusqlite::{Connection, OptionalExtension};
@@ -185,12 +185,9 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         let waiters = Arc::clone(&waiters);
         let home = runtime::home();
         let served = served.clone();
-        let github = github.clone().map(|github| {
-            (
-                github,
-                Bus::open_default().map_err(|error| error.to_string()),
-            )
-        });
+        let github = github
+            .clone()
+            .map(|github| (github, log::open().map_err(|error| error.to_string())));
         move |request: &Request| match &github {
             Some((github, bus))
                 if request.method == "POST" && request.path.split('?').next() == Some(GITHUB) =>

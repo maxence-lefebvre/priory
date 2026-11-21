@@ -1,5 +1,6 @@
 use super::{BASELINE, OUTPUT, Watch, dispatch, id, publish};
-use herdr_bus::{Bus, Message, MessageQuery, Timestamp};
+use crate::log::{self, Log};
+use herdr_bus::{Message, Timestamp};
 use priory_factory::factory::Trigger;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -28,7 +29,10 @@ pub(super) struct Slack<'a> {
 
 impl<'a> Slack<'a> {
     /// Reads the token, asks Slack which bot it belongs to, and reads where each channel stands.
-    pub(super) fn start(bus: &Bus, triggers: Vec<(&'a str, &'a Trigger)>) -> Result<Self, String> {
+    pub(super) fn start(
+        bus: &dyn Log,
+        triggers: Vec<(&'a str, &'a Trigger)>,
+    ) -> Result<Self, String> {
         let token = std::env::var(TOKEN)
             .ok()
             .filter(|token| !token.is_empty())
@@ -55,7 +59,7 @@ impl<'a> Slack<'a> {
     /// Publishes the new messages of each trigger channel and the replies in each watched thread.
     /// A message published again keeps its id, so the bus drops it. A failing channel publishes
     /// nothing and fails the poll once the rest is published.
-    pub(super) fn poll(&mut self, bus: &Bus, watched: &[Watch]) -> Result<(), String> {
+    pub(super) fn poll(&mut self, bus: &dyn Log, watched: &[Watch]) -> Result<(), String> {
         let mut polled = Vec::new();
         let mut failed = Vec::new();
         for (channel, cursor) in &self.channels {
@@ -282,17 +286,12 @@ fn stream(channel: &str) -> String {
 
 /// Fills each channel with its newest marker's position, read back newest first. Messages a poll
 /// published after it are read again and dropped by the bus as duplicates.
-fn resume(bus: &Bus, channels: &mut BTreeMap<String, Option<String>>) -> herdr_bus::Result<()> {
+fn resume(bus: &dyn Log, channels: &mut BTreeMap<String, Option<String>>) -> log::Result<()> {
     let mut before = None;
     // shortcut: reads back to each channel's newest marker, once per start; a stored cursor would
     // make this constant once the output is large.
     while channels.values().any(Option::is_none) {
-        let page = bus.messages(&MessageQuery {
-            output: Some(OUTPUT.into()),
-            before,
-            limit: 500,
-            ..MessageQuery::default()
-        })?;
+        let page = bus.messages(OUTPUT, before, 500)?;
         let Some(oldest) = page.last() else {
             break;
         };

@@ -10,9 +10,9 @@ use crate::{
     deliver, embed, handler, hold, notify, progress, push, search, sections, stall, subscribe,
     summary, sweep,
 };
-use herdr_bus::{Bus, Start};
 use priory_factory::factory::{self, Factory, Harness, PermissionMode, Session};
 use priory_intake::intake::OUTPUT;
+use priory_intake::log::{self, Log};
 use priory_runtime::runtime::{self, Launch, Line};
 use priory_runtime::script::{self, Script};
 use priory_runtime::{room, slice, transcript};
@@ -76,7 +76,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     runtime::bound_commands(factory.command_timeout());
     let mut db = state::open()?;
     tools::backfill_endings(&mut db, &factory.workflows)?;
-    let bus = Bus::open_default()?;
+    let bus = log::open()?;
     state::bands(&mut db, &factory.bands())?;
     state::irreversible_asks(&mut db, &factory.workflows)?;
     for error in sections::dispatch(&db, factory, None)? {
@@ -97,7 +97,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         usage: transcript::usage,
     };
     if once {
-        drain(&bus, &mut db, &trace, counting.get(&home))?;
+        drain(&*bus, &mut db, &trace, counting.get(&home))?;
         return Ok(());
     }
     // Without its key the daemon sends no notification, but still runs tasks.
@@ -223,7 +223,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
     loop {
-        drain(&bus, &mut db, &trace, counting.get(&home))?;
+        drain(&*bus, &mut db, &trace, counting.get(&home))?;
         while let Ok(line) = listening.lines.try_recv() {
             apply(&mut db, line, &trace, counting.get(&home))?;
         }
@@ -652,7 +652,7 @@ fn add(
             (key, Some(error))
         }
     };
-    drain(&Bus::open_default()?, db, trace, counter)?;
+    drain(&*log::open()?, db, trace, counter)?;
     let tx = db.transaction()?;
     let id = state::owner(&tx, std::slice::from_ref(&key))?.map(|task| task.id);
     drop(tx);
@@ -1508,24 +1508,19 @@ fn harness(harness: &Harness) -> &'static dyn runtime::Harness {
 }
 
 fn drain(
-    bus: &Bus,
+    bus: &dyn Log,
     db: &mut Connection,
     trace: &Trace,
     counter: Option<&embed::Counter>,
 ) -> Result<(), Error> {
-    match bus.connect(CONSUMER, OUTPUT, Start::Beginning) {
-        // The intake has not declared its output yet: nothing is pending.
-        Err(herdr_bus::Error::UnknownOutput(_)) => return Ok(()),
-        connected => connected?,
-    };
     loop {
-        let deliveries = bus.pull(CONSUMER, 100)?;
+        let deliveries = bus.read(CONSUMER, OUTPUT, 100)?;
         if deliveries.is_empty() {
             return Ok(());
         }
         for delivery in deliveries {
             let ended = state::handle(db, &delivery.message, trace, counter)?;
-            bus.ack(delivery.connection, delivery.seq)?;
+            bus.ack(CONSUMER, &delivery)?;
             ended.inspect(|tmux| runtime::kill(tmux));
         }
     }
