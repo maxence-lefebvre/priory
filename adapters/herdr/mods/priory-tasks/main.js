@@ -2,7 +2,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Popover } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
 import { age, ago, follow, priory } from "./priory.js";
-import { selectable } from "./ui.js";
+import { selectable, stateTile } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { elsewhere, filtered, remoteActs, remoteSent, TASK_VIEWS, taskFacets, taskViews } from "./view.js";
 
@@ -18,13 +18,13 @@ const EMPTY = /** @type {Record<string, string>} */ ({
   blocked: "No task is blocked.",
   ended: "No task has ended yet.",
 });
-// A task state's tile: its fill, its ink and its icon, as the Task panel's; null draws a dot.
-/** @type {Record<string, [string, string, string | null]>} */
+// A task state's tile: its role and its icon, as the Task panel's; null draws a dot.
+/** @type {Record<string, [string, string | null]>} */
 const TILES = {
-  queued: ["tile-muted", "on-tile", "circle-dashed"], held: ["tile-hold", "on-tile", "pause"], ready: ["tile-live", "on-tile-live", "circle-dot"],
-  running: ["tile-live", "on-tile-live", null], asleep: ["tile-muted", "on-tile", "moon"], blocked: ["tile-warn", "on-tile", "hand"],
-  done: ["tile-ok", "on-tile", "check"], failed: ["tile-danger", "on-tile", "circle-x"], dropped: ["tile-muted", "on-tile", "minus"],
-  elsewhere: ["tile-muted", "on-tile", "server"],
+  queued: ["tile-muted", "circle-dashed"], held: ["tile-hold", "pause"], ready: ["tile-live", "circle-dot"],
+  running: ["tile-live", null], asleep: ["tile-muted", "moon"], blocked: ["tile-warn", "hand"],
+  done: ["tile-ok", "check"], failed: ["tile-danger", "circle-x"], dropped: ["tile-muted", "minus"],
+  elsewhere: ["tile-muted", "server"],
 };
 // A task state's text color (DESIGN.md, State tile); the other states take --text-2.
 const ROLE = /** @type {Record<string, string>} */ ({ running: "action-text", ready: "action-text", blocked: "warn-text", failed: "danger-text", done: "ok-text" });
@@ -49,7 +49,7 @@ async function connect() {
   const home = found.code === 0 ? found.stdout.trim() : "";
   if (!home.startsWith("/")) throw new Error(`No home folder on ${on ?? "this machine"}`);
   if (binary.startsWith("~/")) binary = home + binary.slice(1);
-  return { theme: config.theme ?? "indigo", client: priory({ exec, binary, on, factory: config.factory ?? null }) };
+  return { theme: config.theme ?? "graphite", client: priory({ exec, binary, on, factory: config.factory ?? null }) };
 }
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
@@ -68,7 +68,7 @@ export default class PrioryTasks extends View {
     this.picks = new Map();
     /** @type {string | null} the facet whose menu is open */
     this.popover = null;
-    this.font = FONTS.indigo;
+    this.font = FONTS.graphite;
     /** @type {string | null} the `runner:key` of the remote row opened in place */
     this.open = null;
     /** @type {{ act: string, at: number, target: string, generation: number } | null} a Cancel armed by a first press, for the generation it showed */
@@ -90,6 +90,7 @@ export default class PrioryTasks extends View {
       wait: (since) => client.wait(since),
       sleep: (ms) => cx.sleep(ms),
       failed: (error) => {
+        this.theme = this.priory?.theme ?? this.theme;
         this.priory = null;
         this.error = message(error);
         cx.notify();
@@ -100,9 +101,10 @@ export default class PrioryTasks extends View {
 
   /** @param {import("gpui-kit").Context} cx */
   render(cx) {
-    const theme = this.priory?.theme ?? "indigo";
+    // The last theme read stays while Priory is unreachable.
+    const theme = (this.theme = this.priory?.theme ?? this.theme ?? "graphite");
     const t = /** @type {Palette} */ (palette(theme, cx.theme().appearance));
-    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.indigo;
+    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.graphite;
     const facets = taskFacets(this.tasks ?? []);
     const views = /** @type {Record<string, any[]>} */ (taskViews(filtered(this.tasks ?? [], this.picks, facets)));
     const shown = views[this.view];
@@ -150,7 +152,7 @@ export default class PrioryTasks extends View {
     return v_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).border_b(1).border_color(t.line)
       .child(h_flex().gap(S["space-2"]).flex_wrap().children(TASK_VIEWS.map((id) => {
         const on = this.view === id;
-        return chip(`view-${id}`, on).rounded(S["radius-full"]).font_weight(on ? 600 : 500).bg(on ? t.emph : t.surface).text_color(on ? t["on-emph"] : t.text)
+        return chip(`view-${id}`, on).rounded(S["radius-md"]).font_weight(on ? 600 : 500).bg(on ? t.emph : t.surface).text_color(on ? t["on-emph"] : t.text)
           .on_click((_event, cx) => { [this.view, this.popover] = [id, null]; cx.notify(); })
           .child(LABELS[id]).child(div().opacity(0.7).child(String(views[id].length)));
       })))
@@ -263,8 +265,7 @@ export default class PrioryTasks extends View {
 
   /** @param {string} state @param {Palette} t */
   tile(state, t) {
-    const [fill, ink, icon] = TILES[state] ?? ["tile-muted", "on-tile", "circle-help"];
-    return h_flex().size(S["pane-tile"]).flex_none().items_center().justify_center().rounded(S["radius-tile"]).bg(t[fill]).accessibility_label(state)
-      .child(icon ? svg(ICON(icon)).size(14).text_color(t[ink]) : div().size(8).rounded(999).bg(t[ink]));
+    const [role, icon] = TILES[state] ?? ["tile-muted", "circle-help"];
+    return stateTile(state, icon && ICON(icon), role, t);
   }
 }

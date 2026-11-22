@@ -1,8 +1,8 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Input, InputState, ScrollHandle, TextView } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile } from "herdr";
-import { follow, priory, spansHtml } from "./priory.js";
-import { selectable } from "./ui.js";
+import { follow, markdownHtml, markdownText, priory } from "./priory.js";
+import { selectable, selectableMarkdown, stateTile } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { around, dossier, nextPick, refusal } from "./view.js";
 
@@ -14,20 +14,20 @@ const DOCUMENT = 760;
 const UNDO_MS = 4000;
 const RETRY_MS = 3000;
 const ICON = (/** @type {string} */ name) => `mods/priory-bonjour/icons/${name}.svg`;
-// A task state's tile: its fill, its ink and its icon, as DESIGN.md's state tiles; null draws a dot.
-/** @type {Record<string, [string, string, string | null]>} */
+// A task state's tile: its role and its icon, as DESIGN.md's state tiles; null draws a dot.
+/** @type {Record<string, [string, string | null]>} */
 const TILES = {
-  queued: ["tile-muted", "on-tile", "circle-dashed"], held: ["tile-hold", "on-tile", "pause"], ready: ["tile-live", "on-tile-live", "circle-dot"],
-  running: ["tile-live", "on-tile-live", null], asleep: ["tile-muted", "on-tile", "moon"], blocked: ["tile-warn", "on-tile", "hand"],
-  done: ["tile-ok", "on-tile", "check"], failed: ["tile-danger", "on-tile", "circle-x"], dropped: ["tile-muted", "on-tile", "minus"],
-  moved: ["tile-muted", "on-tile", "arrow-right"], lost: ["tile-warn", "on-tile", "unplug"], ask: ["wait", "on-wait", "ask"],
-  answered: ["tile-muted", "on-tile", "check"], withdrawn: ["tile-muted", "on-tile", "minus"],
+  queued: ["tile-muted", "circle-dashed"], held: ["tile-hold", "pause"], ready: ["tile-live", "circle-dot"],
+  running: ["tile-live", null], asleep: ["tile-muted", "moon"], blocked: ["tile-warn", "hand"],
+  done: ["tile-ok", "check"], failed: ["tile-danger", "circle-x"], dropped: ["tile-muted", "minus"],
+  moved: ["tile-muted", "arrow-right"], lost: ["tile-warn", "unplug"], ask: ["wait", "ask"],
+  answered: ["tile-muted", "check"], withdrawn: ["tile-muted", "minus"],
 };
 // `priory report show`'s error before any task wrote a report: an empty state, not a failure.
 const NO_REPORT = "no task has a report";
 
 /** @typedef {Record<string, import("gpui-kit").Color>} Palette */
-/** @typedef {typeof FONTS.indigo} Fonts */
+/** @typedef {typeof FONTS.graphite} Fonts */
 /** @typedef {{ revision: number, report: any }} Read */
 /** @typedef {ReturnType<typeof dossier>} Dossier */
 /** @typedef {Dossier["sections"][number]} Section */
@@ -54,17 +54,20 @@ async function connect() {
   const client = priory({ exec, binary, on, factory: config.factory ?? null });
   // Links are optional: without a factory priory can read, the panel shows its text unlinked.
   const links = await client.links().then((read) => read.links, () => []);
-  return { theme: config.theme ?? "indigo", client, links };
+  return { theme: config.theme ?? "graphite", client, links };
 }
 
 /**
- * Text with its autolinks; plain text stays a plain child. Linked text keeps its press, so a link
- * opens without selecting the row Button around it.
- * @param {string} id @param {{ text: string, url?: string }[]} spans
+ * Agent text drawn from its Markdown, with its autolinks; one line that shows no markup stays a
+ * plain child. Text with a link keeps its press, so the link opens without selecting the row Button around it.
+ * @param {string} id @param {string} text @param {{ pattern: string, url: string }[]} links
  */
-const linked = (id, spans) => (spans.some((span) => span.url)
-  ? div().on_mouse_down("left", (_event, cx) => cx.stop_propagation()).child(TextView.html(id, spansHtml(spans)))
-  : spans.map((span) => span.text).join(""));
+function drawn(id, text, links) {
+  const html = markdownHtml(text, links, null);
+  if (/^<p>[^<]*<\/p>$/.test(html)) return markdownText(text);
+  const view = TextView.html(id, html);
+  return html.includes("<a ") ? div().on_mouse_down("left", (_event, cx) => cx.stop_propagation()).child(view) : view;
+}
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
 
@@ -131,7 +134,7 @@ export default class PrioryBonjour extends View {
     this.query.on("blur", (_event, cx) => { this.typing = false; cx.notify(); });
     this.focus = cx.focus_handle();
     /** @type {Fonts} */
-    this.font = FONTS.indigo;
+    this.font = FONTS.graphite;
     this.scroll = ScrollHandle.new();
     this.refresh(cx);
   }
@@ -166,6 +169,7 @@ export default class PrioryBonjour extends View {
       wait: (since) => client.wait(since),
       sleep: (ms) => cx.sleep(ms),
       failed: (error) => {
+        this.theme = this.priory?.theme ?? this.theme;
         this.priory = null;
         this.error = message(error);
         cx.notify();
@@ -396,9 +400,10 @@ export default class PrioryBonjour extends View {
 
   /** @param {import("gpui-kit").Context} cx */
   render(cx) {
-    const theme = this.priory?.theme ?? "indigo";
+    // The last theme read stays while Priory is unreachable.
+    const theme = (this.theme = this.priory?.theme ?? this.theme ?? "graphite");
     const t = /** @type {Palette} */ (palette(theme, cx.theme().appearance));
-    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.indigo;
+    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.graphite;
     const now = Date.now();
     const model = this.model(now);
     const wide = this.width >= RAIL.from;
@@ -492,7 +497,7 @@ export default class PrioryBonjour extends View {
   /** @param {Dossier} model @param {Palette} t */
   chips(model, t) {
     /** @param {string} id @param {string} label @param {boolean} on @param {(cx: import("gpui-kit").Context) => void} action */
-    const chip = (id, label, on, action) => Button.new(id).h(S["pane-chip"]).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-full"])
+    const chip = (id, label, on, action) => Button.new(id).h(S["pane-chip"]).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-md"])
       .selected(on).bg(on ? t.emph : t.bg).text_color(on ? t["on-emph"] : t["text-2"]).text_size(S["type-small"][0]).font_weight(500)
       .hover((s) => s.bg(on ? t.emph : t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
       .on_click((_event, cx) => action(cx)).child(label);
@@ -570,10 +575,10 @@ export default class PrioryBonjour extends View {
     // A press selects the row; the selected row is no Button, so its text selects and copies.
     const box = selected ? h_flex().id(`row-${row.id}`).bg(t["action-soft"])
       : Button.new(`row-${row.id}`).flex().bg(t.bg).hover((s) => s.bg(t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
-        .accessibility_label([row.tile, row.key, row.text, row.owner].filter(Boolean).join(", "))
+        .accessibility_label([row.tile, row.key, markdownText(row.text ?? ""), row.owner].filter(Boolean).join(", "))
         .on_click((_event, cx) => this.select(model, row.id, cx));
-    /** @param {string} id @param {string | { text: string, url?: string }[]} text */
-    const words = (id, text) => (selected ? selectable(id, text) : typeof text === "string" ? text : linked(id, text));
+    /** @param {string} id @param {string} text */
+    const words = (id, text) => (selected ? selectableMarkdown(id, text, this.links) : drawn(id, text, this.links));
     return box.w_full().min_h(S["pane-row"]).px(S["space-2"]).py(S["space-2"]).items_start().gap(S["space-3"]).rounded(S["radius-md"])
       .child(row.tile ? this.tile(row.tile, t) : h_flex().size(S["pane-tile"]).flex_none().items_center().justify_center()
         .child(svg(ICON("file-text")).size(14).text_color(t["text-3"])))
@@ -581,16 +586,15 @@ export default class PrioryBonjour extends View {
         .child(h_flex().gap(S["space-2"]).items_start()
           .child(v_flex().flex_1().min_w_0().gap(S["space-1"])
             .when(Boolean(row.key), (el) => el.child(div().font_family(this.font.mono).text_size(S["type-caption"][0]).text_color(t["text-2"]).child(words(`key-${row.id}`, row.key ?? ""))))
-            .child(div().whitespace_normal().line_height(LINE(S["type-body"])).font_weight(500).child(words(`text-${row.id}`, row.textSpans))))
+            .child(div().whitespace_normal().line_height(LINE(S["type-body"])).font_weight(500).child(words(`text-${row.id}`, row.text ?? ""))))
           .when(Boolean(row.owner || row.time), (el) => el.child(this.side(row, t))))
         .when(Boolean(row.meta), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(words(`meta-${row.id}`, row.meta ?? "")))));
   }
 
   /** @param {string} state @param {Palette} t */
   tile(state, t) {
-    const [fill, ink, icon] = TILES[state] ?? ["tile-muted", "on-tile", null];
-    return h_flex().size(S["pane-tile"]).flex_none().items_center().justify_center().rounded(S["radius-tile"]).bg(t[fill]).accessibility_label(state)
-      .child(icon ? svg(ICON(icon)).size(14).text_color(t[ink]) : div().size(8).rounded(4).bg(t[ink]));
+    const [role, icon] = TILES[state] ?? ["tile-muted", null];
+    return stateTile(state, icon && ICON(icon), role, t);
   }
 
   /** @param {string} id @param {string | undefined} notice @param {Palette} t */
@@ -611,7 +615,7 @@ export default class PrioryBonjour extends View {
       return v_flex().w_full().px(S["space-3"]).py(S["space-2"]).gap(S["space-1"]).rounded(S["radius-md"]).border(1).border_color(t.line).bg(selected ? t["action-soft"] : t.bg)
         .child(h_flex().min_h(S["control-fine"] - 4).gap(S["space-2"]).items_center()
           .child(svg(ICON("check")).size(14).flex_none().text_color(t["ok-text"]))
-          .child(div().flex_none().max_w("40%").truncate().font_family(row.key ? this.font.mono : this.font.ui).text_size(S["type-small"][0]).text_color(t["text-2"]).child(row.key ?? row.text))
+          .child(div().flex_none().max_w("40%").truncate().font_family(row.key ? this.font.mono : this.font.ui).text_size(S["type-small"][0]).text_color(t["text-2"]).child(row.key ?? markdownText(row.text ?? "")))
           .child(div().flex_none().font_weight(600).child(pick.chosen ?? ""))
           .child(div().flex_1().min_w_0().truncate().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(pick.note ?? ""))
           .when(pick.state === "agreed" && !this.pending && !this.error, (el) => el.child(this.secondary(`change-${row.id}`, "Change", (cx) => {
@@ -628,8 +632,8 @@ export default class PrioryBonjour extends View {
         .when(Boolean(row.tile), (el) => el.child(this.tile(/** @type {string} */ (row.tile), t)))
         .child(div().flex_1().min_w_0().font_family(this.font.mono).text_size(S["type-caption"][0]).text_color(t["text-2"]).child(selectable(`key-${row.id}`, row.key ?? "")))
         .when(Boolean(row.owner || row.time), (el) => el.child(this.side(row, t)))))
-      .child(div().whitespace_normal().line_height(LINE(S["type-body"])).font_weight(600).child(selectable(`text-${row.id}`, row.textSpans)))
-      .when(Boolean(row.meta), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(selectable(`meta-${row.id}`, row.meta ?? ""))))
+      .child(div().whitespace_normal().line_height(LINE(S["type-body"])).font_weight(600).child(selectableMarkdown(`text-${row.id}`, row.text ?? "", this.links)))
+      .when(Boolean(row.meta), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(selectableMarkdown(`meta-${row.id}`, row.meta ?? "", this.links))))
       .when(Boolean(notice), (el) => el.child(this.notice(String(row.id), notice, t)))
       .child(h_flex().gap(S["space-2"]).items_center().flex_wrap()
         .child(h_flex().min_w_0().flex_wrap().p(S["space-1"]).gap(S["space-1"]).rounded(S["radius-sm"] + 2).border(1).border_color(t["control-line"]).bg(t.bg)
@@ -671,7 +675,7 @@ export default class PrioryBonjour extends View {
             .child(h_flex().gap(S["space-2"]).text_size(S["type-caption"][0])
               .child(div().font_weight(600).text_color(t["text-2"]).child(comment.author))
               .child(div().text_color(t["text-3"]).child(comment.when ?? "")))
-            .child(div().whitespace_normal().text_size(S["type-small"][0]).child(selectable(`comment-text-${comment.id}`, comment.text)))))
+            .child(div().whitespace_normal().text_size(S["type-small"][0]).child(selectableMarkdown(`comment-text-${comment.id}`, comment.text, this.links)))))
           .child(h_flex().gap(S["space-2"])
             .child(this.secondary(`reply-${thread.id}`, "Reply", (cx) => {
               this.select(model, row.id, cx);
@@ -691,7 +695,7 @@ export default class PrioryBonjour extends View {
 
   /** @param {string} id @param {string} label @param {(cx: import("gpui-kit").Context) => void} action @param {Palette} t */
   secondary(id, label, action, t) {
-    return Button.new(id).h(S["control-fine"] - 4).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-card"]).border(1).border_color(t["control-line"])
+    return Button.new(id).h(S["control-fine"] - 4).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-md"]).border(1).border_color(t["control-line"])
       .bg(t.surface).text_color(t.text).text_size(S["type-small"][0]).font_weight(600).hover((s) => s.bg(t.raised))
       .focus((s) => s.border(2).border_color(t["action-text"])).on_click((_event, cx) => action(cx)).child(label);
   }

@@ -23,7 +23,7 @@ const VIEWS = [["costs", "Costs"], ["attention", "Attention"]];
 const WHOLE = PathBuilder.fill().add_polygon([[0, 0], ["100%", 0], ["100%", "100%"], [0, "100%"]]).build();
 
 /** @typedef {Record<string, import("gpui-kit").Color>} Palette */
-/** @typedef {typeof FONTS.indigo} Fonts */
+/** @typedef {typeof FONTS.graphite} Fonts */
 /** @typedef {{ costs: any, attention: any }} Read */
 /** @typedef {{ label: string, value: string, delta?: { text: string, direction: string } | null, note?: string }} Tile */
 /** @typedef {{ weekday: string, date: string, fraction: number, merges: number, current: boolean, text: string }} Bar */
@@ -48,7 +48,7 @@ async function connect() {
   const home = found.code === 0 ? found.stdout.trim() : "";
   if (!home.startsWith("/")) throw new Error(`No home folder on ${on ?? "this machine"}`);
   if (binary.startsWith("~/")) binary = home + binary.slice(1);
-  return { theme: config.theme ?? "indigo", client: priory({ exec, binary, on, factory: config.factory ?? null }) };
+  return { theme: config.theme ?? "graphite", client: priory({ exec, binary, on, factory: config.factory ?? null }) };
 }
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
@@ -71,7 +71,7 @@ export default class PrioryCosts extends View {
     /** Bumped by each read, so a read started before another split was picked is dropped. */
     this.reads = 0;
     /** @type {Fonts} */
-    this.font = FONTS.indigo;
+    this.font = FONTS.graphite;
     this.refresh(cx);
   }
 
@@ -86,6 +86,7 @@ export default class PrioryCosts extends View {
           cx.notify();
           await cx.sleep(READ_EVERY_MS);
         } catch (error) {
+          this.theme = this.priory?.theme ?? this.theme;
           this.priory = null;
           this.error = message(error);
           cx.notify();
@@ -131,9 +132,10 @@ export default class PrioryCosts extends View {
 
   /** @param {import("gpui-kit").Context} cx */
   render(cx) {
-    const theme = this.priory?.theme ?? "indigo";
+    // The last theme read stays while Priory is unreachable.
+    const theme = (this.theme = this.priory?.theme ?? this.theme ?? "graphite");
     const t = /** @type {Palette} */ (palette(theme, cx.theme().appearance));
-    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.indigo;
+    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.graphite;
     const wide = this.width >= SIDE_BY_SIDE;
     const now = Date.now();
     return v_flex().id("priory-costs").size_full().min_h_0().bg(t.bg).text_color(t.text).font_family(this.font.ui).text_size(S["type-body"][0])
@@ -334,7 +336,7 @@ export default class PrioryCosts extends View {
    * @param {Palette} t @param {boolean} [disabled]
    */
   chip(id, label, on, action, t, disabled = false) {
-    return Button.new(id).h(S["pane-chip"]).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-full"])
+    return Button.new(id).h(S["pane-chip"]).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-md"])
       .selected(on).disabled(disabled).opacity(disabled && !on ? 0.5 : 1)
       .bg(on ? t.emph : t.bg).text_color(on ? t["on-emph"] : t["text-2"]).text_size(S["type-small"][0]).font_weight(500)
       .hover((s) => s.bg(on ? t.emph : t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))

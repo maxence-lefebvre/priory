@@ -18,9 +18,8 @@ test("the adapter's tokens are design/tokens/themes.css, every theme and both mo
   assert.deepEqual(THEMES, parse(css), "update adapters/herdr/lib/tokens.js from design/tokens/themes.css");
 });
 
-test("a palette resolves each light-dark pair for the mode, and an unknown theme gives Indigo", () => {
+test("a palette resolves each light-dark pair for the mode", () => {
   assert.equal(palette("parchment", "dark").action, THEMES.parchment.action[1]);
-  assert.equal(palette("nope", "light")["action-soft"], "#ECEBFC");
 });
 
 test("each theme's font roles are its first family in themes.css", () => {
@@ -48,5 +47,30 @@ test("every panel spaces with the structure tokens, never a raw number", () => {
   for (const file of files) {
     const raw = readFileSync(new URL(file, mods), "utf8").match(/\.(p|px|py|pt|pb|pl|pr|gap)\(\d+\)/g);
     assert.equal(raw, null, `${file} spaces with ${raw?.join(", ")}: use STRUCTURE's space-N`);
+  }
+});
+
+test("an unknown theme gives Graphite", () => {
+  assert.equal(palette("nope", "light").wait, THEMES.graphite.wait[0]);
+});
+
+// The Priory bar draws Herdr's own chrome, so it alone takes Herdr's theme.
+test("every panel draws Graphite unless settings.json's priory.theme names another theme", async () => {
+  const kit = await import("./kit.js");
+  const mods = readdirSync(new URL("../mods/", import.meta.url)).filter((mod) => mod.startsWith("priory-") && mod !== "priory-tabs");
+  for (const [theme, settings] of [["graphite", null], ["graphite", { priory: {} }], ["indigo", { priory: { theme: "indigo" } }]]) {
+    for (const mod of mods) {
+      const { default: Panel } = await import(`../mods/${mod}/main.js`);
+      kit.herdr.reset();
+      if (settings) kit.herdr.files["/herdr/settings.json"] = JSON.stringify(settings);
+      const panel = new Panel();
+      const cx = kit.context();
+      panel.init({}, cx);
+      await kit.settle();
+      // The first fill from the top of the tree: the panel's ground, or the usage line's bar.
+      const ground = (/** @type {any} */ node) => node.calls.bg?.[0] ?? node.kids.map(kit.nodeOf).filter(Boolean).map(ground).find(Boolean);
+      const fill = ground(kit.nodeOf(kit.draw(panel, cx)));
+      assert.ok([THEMES[theme].bg[0], THEMES[theme].bar[0], THEMES[theme].surface[0]].includes(fill), `${mod} with ${JSON.stringify(settings)} draws ${theme}, not ${fill}`);
+    }
   }
 });

@@ -3,7 +3,7 @@ import { v_flex, h_flex, Button, TextView } from "gpui-base";
 import { appHome, checking, exec, focused, home as herdrHome, layout as shown, nextCommand, panes, readTextFile, run, setShared, settings } from "herdr";
 import { showAsks } from "./layout.js";
 import { follow, priory, spansHtml } from "./priory.js";
-import { selectable } from "./ui.js";
+import { selectable, stateTile } from "./ui.js";
 import { addChoices } from "./add.js";
 import { AddForm } from "./add-form.js";
 import { deskModel, mergeSince, tomorrowAt } from "./view.js";
@@ -74,7 +74,7 @@ async function connect() {
   const client = priory({ exec, binary, on, factory: config.factory ?? null });
   // Links are optional: without a factory priory can read, the panel shows its text unlinked.
   const links = await client.links().then((read) => read.links, () => []);
-  return { theme: config.theme ?? "indigo", client, links };
+  return { theme: config.theme ?? "graphite", client, links };
 }
 
 /** @param {Ui} ui @param {string | undefined} text */
@@ -112,7 +112,7 @@ export default class PrioryDesk extends View {
     this.memorySent = new Map();
     /** @type {Promise<{ theme: string, client: ReturnType<typeof priory> }> | null} */
     this.client = null;
-    this.theme = "indigo";
+    this.theme = "graphite";
     this.chain = 0;
     this.reading = false;
     /** @type {string | null} */
@@ -317,7 +317,7 @@ export default class PrioryDesk extends View {
   render(cx) {
     // Every token but --scrim is a hex color.
     const t = /** @type {Record<string, import("gpui-kit").Color>} */ (palette(this.theme, window.appearance()));
-    const ui = new Ui(t, FONTS[/** @type {keyof typeof FONTS} */ (this.theme)] ?? FONTS.indigo);
+    const ui = new Ui(t, FONTS[/** @type {keyof typeof FONTS} */ (this.theme)] ?? FONTS.graphite);
     const root = v_flex().id("priory-desk").size_full().min_h_0().bg(t.bg).text_color(t.text).font_family(ui.fonts.ui).text_size(S["type-body"][0])
       .track_focus(this.focus)
       .on_size_change((/** @type {{ width: number }} */ size, /** @type {import("gpui-kit").Context} */ cx) => {
@@ -390,7 +390,7 @@ export default class PrioryDesk extends View {
     const next = /** @type {NonNullable<Model["next"]>} */ (model.next);
     return v_flex().id("next-thing").p(S["space-4"]).gap(S["space-2"]).rounded(S["radius-card"]).bg(t.surface).border(1).border_color(t.line)
       .child(h_flex().gap(S["space-2"]).items_center().text_size(S["type-caption"][0])
-        .child(ui.tile("next", "ask", 18))
+        .child(ui.tile("next", "ask", "small"))
         .child(div().font_weight(600).child("The next thing"))
         .child(ui.mono(next.key ?? ""))
         .child(div().text_color(t["text-2"]).child(next.step ?? ""))
@@ -422,7 +422,7 @@ export default class PrioryDesk extends View {
       .child(ui.button("add-open", "Add", (_e, cx) => this.adding.show(cx), { icon: "plus" }))
       .children(model.views.map((view) => {
       const on = view.id === this.view;
-      return Button.new(`view-${view.id}`).selected(on).h(S["pane-chip"]).px(S["space-3"]).gap(S["space-1"]).flex_none().items_center().rounded(S["radius-full"])
+      return Button.new(`view-${view.id}`).selected(on).h(S["pane-chip"]).px(S["space-3"]).gap(S["space-1"]).flex_none().items_center().rounded(S["radius-md"])
         .text_size(S["type-caption"][0]).font_weight(on ? 600 : 500).bg(on ? t["action-soft"] : t.surface).text_color(on ? t.text : t["text-2"])
         .border(1).border_color(on ? t["action-soft"] : t.line)
         .hover((s) => s.bg(t.raised)).focus((s) => s.border_color(t.action))
@@ -457,7 +457,7 @@ export default class PrioryDesk extends View {
     const head = table
       ? h_flex().gap(S["space-2"]).items_start().min_h(S["pane-row"] - 2 * S["space-2"])
         .child(h_flex().w(88).flex_none().gap(S["space-1"]).items_center().text_size(S["type-caption"][0]).text_color(reasonColor)
-          .child(ui.icon(row.kind, 15)).child(row.kind))
+          .child(ui.tile(`word-${row.id}`, row.kind, "small")).child(row.kind))
         .child(div().w(96).flex_none().truncate().child(ui.mono(row.key ?? "")))
         .child(div().w(80).flex_none().truncate().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(row.step ?? ""))
         .child(v_flex().flex_1().min_w_0().gap(S["space-1"])
@@ -470,7 +470,7 @@ export default class PrioryDesk extends View {
         .child(div().w(104).flex_none().truncate().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(row.recommends ?? ""))
         .child(div().w(48).flex_none().text_right().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(row.count != null ? String(row.count) : row.age ?? ""))
       : h_flex().gap(S["space-3"]).items_start()
-        .child(ui.tile(row.id, row.kind, S["pane-tile"]))
+        .child(ui.tile(row.id, row.kind, "tile"))
         .child(v_flex().flex_1().min_w_0().gap(S["space-1"])
           .child(h_flex().gap(S["space-2"]).items_center().text_size(S["type-caption"][0])
             .child(ui.mono(row.key ?? ""))
@@ -593,19 +593,10 @@ class Ui {
     this.fonts = fonts;
   }
 
-  /** @param {string} kind @param {number} size */
-  icon(kind, size) {
-    const [fill, icon] = TILES[kind] ?? MUTED_TILE;
-    if (!icon) return div().size(8).flex_none().rounded(S["radius-full"]).bg(this.t[fill]);
-    return svg(`${ICONS}/${icon}.svg`).size(size).flex_none().text_color(this.t[fill]);
-  }
-
-  /** @param {string} id @param {string} kind @param {number} size */
+  /** @param {string} id @param {string} kind @param {"tile" | "small"} size */
   tile(id, kind, size) {
-    const [fill, icon] = TILES[kind] ?? MUTED_TILE;
-    const on = this.t[kind === "ask" ? "on-wait" : kind === "running" ? "on-tile-live" : "on-tile"];
-    return div().id(`tile-${id}`).size(size).flex_none().flex().items_center().justify_center().rounded(S["radius-tile"]).bg(this.t[fill])
-      .child(icon ? svg(`${ICONS}/${icon}.svg`).size(Math.round(size * 0.6)).text_color(on) : div().size(6).rounded(S["radius-full"]).bg(on));
+    const [role, icon] = TILES[kind] ?? MUTED_TILE;
+    return stateTile(kind, icon && `${ICONS}/${icon}.svg`, role, this.t, size).id(`tile-${id}`);
   }
 
   /** @param {string} text */
