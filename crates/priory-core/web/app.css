@@ -134,6 +134,7 @@ a.facet[aria-current="true"] { background: var(--action-soft); color: var(--acti
 .strip { margin: 0 var(--gutter); padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--text-3); font: 400 var(--type-small) var(--font-ui); }
 .strip li { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; padding: 6px 0; color: var(--text-2); }
 .strip li + li { border-top: 1px solid var(--line); }
+.strip .open { display: inline-flex; align-items: center; min-height: 44px; margin-bottom: -12px; color: var(--action-text); font-weight: 500; }
 
 /* The next thing and Since you looked */
 .next { margin: 4px var(--gutter) 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); display: grid; gap: 6px; }
@@ -178,6 +179,9 @@ a.facet[aria-current="true"] { background: var(--action-soft); color: var(--acti
 .ahead .iconbtn { width: 40px; color: var(--text-2); }
 .ahead .iconbtn[aria-disabled="true"] { color: var(--text-3); opacity: 0.5; }
 .ask { display: flex; flex-direction: column; gap: 14px; padding: 4px var(--gutter) 16px; }
+.taskasks { display: grid; gap: 8px; }
+.taskasks li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); font: 500 var(--type-small) var(--font-ui); overflow-wrap: anywhere; }
+.taskasks .age { margin-left: 8px; color: var(--text-3); font-weight: 400; }
 .ctx { display: flex; gap: 6px 8px; align-items: center; flex-wrap: wrap; font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); }
 .ctx .mono { color: var(--text); }
 .write { align-self: flex-start; margin-left: -12px; }
@@ -312,6 +316,8 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .links li { border-top: 1px solid var(--line); }
 .links a { display: flex; align-items: center; gap: 12px; min-height: var(--row-min); padding: 0 var(--gutter); font-weight: 500; }
 .links a .chev { margin-left: auto; color: var(--text-3); }
+.signout { padding: var(--space-5) var(--gutter); }
+.notfound { display: grid; gap: 16px; justify-items: start; }
 
 @media (pointer: fine) { .btn, .ghost { min-height: var(--control-fine); } .btn { height: var(--control-fine); } }
 @media (prefers-contrast: more) { :root { --line: var(--control-line); } }

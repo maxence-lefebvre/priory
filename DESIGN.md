@@ -207,9 +207,13 @@ and the rubric red `--count`.
 
 - A view file (R8.2) describes the wide layout. On compact screens, each leaf panel becomes a tab
   in the tree's order. The bottom bar shows the first four and a "More" tab for the rest.
-- The default view puts the desk first, then asks, tasks and runs. The queue is a saved view of
-  the desk on wide screens, and a panel of its own under "More". Inbox, workflows, reports, costs
-  and terminals sit under "More" too.
+- The default view puts the desk first, then asks, tasks and runs, then the inbox, the queue,
+  reports, flows and costs. On a phone, these last five sit under "More". The queue is also a
+  saved view of the desk on wide screens, and the Desk's Up next strip links to its panel.
+  Terminals sit under "More" too.
+- More lists those panels, then Appearance and Notifications, as rows with a chevron. "Sign out of
+  this device" is a `.btn secondary` in its own group under them, with no chevron: it acts at
+  once, and it opens no page.
 - "Asks" names the list of every ask. The PRD's inbox stays the log of events (R3).
 - Panels lay out by their own width with container queries, not by the viewport.
 - Every task, run and ask has its own URL, such as `/asks/42`. A link from a notification opens
@@ -232,9 +236,10 @@ and the rubric red `--count`.
 
 - **Top bar**: the factory name and connection state, a command bar in the middle ("Search or run
   a command", `Ctrl K`), the runner name, and the [Add](#add) button on the right.
-- **Rail**, `--rail` (72 px) on `--bar`: Desk, Asks, Tasks, Runs, Inbox, Reports and Costs, each an
-  icon over a label, then Settings at the bottom. The active item takes `--action-soft` and
-  `--action-text`. The Desk item carries the open-ask badge.
+- **Rail**, `--rail` (72 px) on `--bar`: the default view's panels (Desk, Asks, Tasks, Runs,
+  Inbox, Queue, Reports, Flows and Costs), each an icon over a label, then Settings at the
+  bottom. The active item takes `--action-soft` and `--action-text`. The Desk item carries the
+  open-ask badge.
 - **List**: the selected view as an explorer list (below), at least 600 px wide at 1440 px. It
   holds no facet column and no histogram: facets are chips, and the histogram lives in Runs.
 - **Drawer**, `--drawer` (640 px) on `--surface`: the selected ask, task or run. It opens beside
@@ -409,7 +414,8 @@ The desk is the "Needs me" view. It lists, top to bottom:
 7. **Up next**: a strip with the next 3 runs, queued or scheduled, as in the Herdr Queue panel.
    Each line shows when, the task and why, and opens the task. A queued task waiting for its place
    shows "now, on room"; one with its own wait reason shows "now" and that reason. With none, the
-   strip says "Nothing is queued or scheduled to run next."
+   strip says "Nothing is queued or scheduled to run next." An "Open the queue" link ends the
+   strip and opens the Queue panel, where Move and Held live.
 8. **Since you looked**: a strip with the events since the person's last visit, one group per
    task, the task with the newest event first. Each group opens with the task's key, which opens
    the task page, then each event's time and what. The heading's note says "since 09:12", or
@@ -921,10 +927,14 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
 
 ### Task detail and workflow grid
 
-- On a phone the task page's back link goes to the Tasks panel, as the batch page's does.
+- The back link names the list the person came from and returns to it, view included: Desk,
+  Queue, Tasks or Inbox. A task page opened first goes back to Tasks. The batch page does the same.
 - Context line: task key in mono, the task's state tile and word, workflow, lane, band, and
   "batch 4" linking to the batch page when the task is a batch's entry or planning task.
 - Title in `--type-task`, then the task's reason in its role's text color.
+- **Open asks**, before the actions: one bordered row per open ask of the task, snoozed ones too,
+  oldest first. Each shows the ask tile, its title, its age and a primary "Answer…" link to
+  `/asks/<id>`, so a person who follows the Desk's "Open task" can still answer.
 - **Actions**, in `.btn secondary`: Resume and Cancel for a blocked task, Revive for a failed or
   dropped one, Cancel for any other active task. Cancel and Revive arm on the first tap, as a
   command option does: the button turns `--emph`, reads "Tap again to cancel" over its verb, and a
@@ -959,7 +969,8 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
 ### Batch page and lane graph
 
 The batch page, `/batches/<id>`, opens from the desk's batch row and from the task page of each of
-its tasks. On a phone it sits under the Tasks tab with a back link to the Tasks panel; on wide
+its tasks. On a phone it sits under the Tasks tab with a back link to the list the person came
+from, as the task page's; on wide
 screens it fills the list, as the task page does.
 
 - Context line: the batch tile, the planning task's key in mono, which opens the task, the batch's
@@ -1233,6 +1244,8 @@ with no change shows its line without an icon.
 - **Error**: where it failed, why, and how to fix it, with a "Retry" button. "Could not load runs:
   the daemon refused the connection. Check that the daemon runs on its runner, then retry." Keep
   any stale data visible under the error.
+- **Not found**: the title "Page not found", the sentence "No page lives at this address." and an
+  "Open the Desk" button in `.btn secondary`.
 
 ### Motion
 
@@ -1270,6 +1283,10 @@ run.
 - The sheet over `--scrim` is a modal `dialog`: focus moves into it, stays there, and returns to
   the answer bar when it closes. The section chips are a `nav` of in-page links.
 - Each panel is a `region` labelled by its title. The tab bar is a `nav`.
+- Each page has one `h1`: the panel's title, or a detail page's question or title. The phone
+  Desk's `h1` is visually hidden. In a drawer, the ask's question is an `h2` under the list's `h1`.
+- The document title names the page, then Priory: "ENG-224 · Priory", "Ask #3 · Priory",
+  "Queue · Priory".
 - A new ask is announced once through a polite live region: "New ask from task 61." Never
   assertive.
 - A state tile has the state word as its accessible name when the word is not shown beside it.

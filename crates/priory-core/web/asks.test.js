@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, takesText, writeNote } from "./asks.js";
+import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, takesText, openAsksOf, writeNote } from "./asks.js";
 
 const now = Date.parse("2026-11-20T12:00:00Z");
 const ask = (id, fields) => ({ id, state: "open", snoozed_until: null, ...fields });
@@ -137,4 +137,15 @@ test("each answer and dismiss sent to another runner's ask is a history row with
     { tile: "queued", text: "Sent merge to laptop for revision 2. Not applied yet", at: "2026-11-20T11:30:00Z" },
   ]);
   assert.deepEqual(submitted(ask(7)), []);
+});
+
+test("a task page lists its task's open asks, snoozed ones too, oldest first", () => {
+  const asks = [
+    { id: 4, task: 7, state: "open", since: "2026-11-20T11:00:00Z" },
+    { id: 3, task: 7, state: "open", since: "2026-11-20T09:00:00Z", snoozed_until: "2026-11-21T09:00:00Z" },
+    { id: 2, task: 7, state: "answered", since: "2026-11-20T08:00:00Z" },
+    { id: 1, task: 8, state: "open", since: "2026-11-20T07:00:00Z" },
+  ];
+  assert.deepEqual(openAsksOf(asks, 7).map((ask) => ask.id), [3, 4]);
+  assert.deepEqual(openAsksOf(asks, 9), []);
 });
