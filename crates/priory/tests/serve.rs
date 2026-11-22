@@ -6302,6 +6302,31 @@ fn a_replayed_honeycomb_delivery_publishes_nothing_even_under_a_new_delivery_id(
 }
 
 #[test]
+fn a_honeycomb_replay_after_a_trigger_was_added_requests_no_task_for_it() {
+    let mut setup = Setup::honeycomb_hooks("honeycomb-replay-new-trigger");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = honeycomb_alert("TRIGGERED", "production").to_string();
+    let (status, _) = deliver_honeycomb(&address, "d-1", Some(&setup.secret), &body);
+    assert_eq!(status, 202);
+    let first = setup.published();
+    let mut server = setup.server.take().unwrap();
+    server.kill().unwrap();
+    server.wait().unwrap();
+    fs::write(
+        setup.dir.join("factory/triggers/honeycomb-any.toml"),
+        "source = \"honeycomb\"\non = \"trigger.fired\"\nrepo = \"owner/repo\"\nworkflow = \"implement\"\n",
+    )
+    .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, reply) = deliver_honeycomb(&address, "d-2", Some(&setup.secret), &body);
+
+    assert_eq!(status, 202, "{reply}");
+    assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    assert_eq!(setup.published(), first);
+}
+
+#[test]
 fn a_honeycomb_alert_that_is_ok_a_test_or_matches_no_trigger_gets_202_and_publishes_nothing() {
     let mut setup = Setup::honeycomb_hooks("honeycomb-dropped");
     let address = setup.start(&["serve", &setup.factory()]);
