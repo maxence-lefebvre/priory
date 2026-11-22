@@ -120,7 +120,7 @@ a.facet[aria-current="true"] { background: var(--action-soft); color: var(--acti
 .row .l1 .tag.runner, .row .l1:has(.tag.runner) > .mono { flex: none; }
 /* A step never truncates: its words wrap in place, and a row with tags wraps its tags first. */
 .row .l1:has(.tag) { flex-wrap: wrap; }
-.row .l1:has(.tag) > span:nth-child(2) { flex: none; }
+.row .l1:has(.tag) > span:nth-child(2) { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .row .l1 .age { margin-left: auto; white-space: nowrap; }
 .row .l2 { grid-column: 2; font: 500 var(--type-body) var(--font-ui); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .row .l2.r { font-size: 14px; }
@@ -187,7 +187,7 @@ a.facet[aria-current="true"] { background: var(--action-soft); color: var(--acti
 .ahead .aq b { font: 600 var(--type-body) var(--font-ui); }
 .ahead .aq small { font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); }
 .ahead.shrunk .aq { display: flex; }
-.ahead.shrunk .back { padding-right: 4px; }
+.ahead.shrunk .back { min-width: var(--control); justify-content: center; padding: 0; }
 .ahead.shrunk .back span, .ahead.shrunk .pos { display: none; }
 .ask { display: flex; flex-direction: column; gap: 14px; padding: 4px var(--gutter) 16px; }
 .taskasks { display: grid; gap: 8px; }
@@ -387,8 +387,8 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .opt[aria-disabled="true"]:not(.rec-opt):not(.chosen), .abar .btn.secondary[aria-disabled="true"] { color: var(--text-3); }
 .medium.no-drawer, .compact.no-drawer { display: flex; flex-direction: column; }
 @media (pointer: coarse) {
-  .views a, .jump a, .facet > summary, a.facet, a.ctx, .ctx a, .l1 a.mono, .remote .chev { position: relative; }
-  .views a::after, .jump a::after, .facet > summary::after, a.facet::after, a.ctx::after, .ctx a::after, .l1 a.mono::after, .remote .chev::after {
+  .views a, .jump a, .facet > summary, a.facet, a.ctx, .ctx a, .erow .l1 a.mono, .remote .chev { position: relative; }
+  .views a::after, .jump a::after, .facet > summary::after, a.facet::after, a.ctx::after, .ctx a::after, .erow .l1 a.mono::after, .remote .chev::after {
     content: ""; position: absolute;
     inset: calc(50% - var(--control) / 2) min(0px, calc(50% - var(--control) / 2));
   }
@@ -640,7 +640,7 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .row .l1 a.mono { text-decoration: none; }
 .tbl td.mono a { color: inherit; text-decoration: none; }
 .row[data-href] .l1 > * { white-space: nowrap; flex: none; }
-.row[data-href] .l1 > span:nth-child(2) { flex: 0 1 auto; min-width: 0; white-space: normal; }
+.row[data-href] .l1 > span:nth-child(2) { flex: 0 1 auto; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .row[data-href] .l3 > span { overflow: hidden; text-overflow: ellipsis; }
 .row .l3 .tag .ico, .tbl .tag .ico { margin-right: 3px; vertical-align: -2px; }
 .tbl .t3 { color: var(--text-3); }

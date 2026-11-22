@@ -3041,11 +3041,12 @@ function watchSections(app) {
     }
     const options = scroller.querySelector(".opts");
     const bar = app.querySelector(".abar");
-    if (!options || !bar) continue;
-    const head = app.querySelector(".ahead");
+    const head = app.querySelector(".ahead:has(.aq)");
+    if (!options || !(bar || head)) continue;
     track(new IntersectionObserver(([entry]) => {
-      bar.hidden = entry.isIntersecting;
-      head?.classList.toggle("shrunk", !entry.isIntersecting);
+      if (bar) bar.hidden = entry.isIntersecting;
+      // Only options scrolled past shrink the header; options still below the fold leave it whole.
+      head?.classList.toggle("shrunk", !entry.isIntersecting && entry.boundingClientRect.bottom <= (entry.rootBounds?.top ?? 0));
     }, { root: scroller })).observe(options);
   }
 }

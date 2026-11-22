@@ -682,8 +682,9 @@ did not show. Until then the options are disabled under a `layers` note, "Readin
 **Answer while reading.** On a phone, once the options scroll out of view:
 
 - The header shrinks to one line: the question, clamped, over the task key, step and revision,
-  such as "ENG-212, approve-pr, revision 1". The back link keeps its chevron and drops its word,
-  and the position leaves. Scrolling the options back into view restores the header.
+  such as "ENG-212, approve-pr, revision 1", once the options scroll above the view. Options still
+  below the fold leave the header whole. The back link keeps its chevron and drops its word, at
+  `--control` width, and the position leaves. Scrolling the options back restores the header.
 - The section chips stick under the header.
 - A **sticky answer bar** on `--bar`, `--answer-bar` tall, holds two buttons with
   `--radius-card`: a secondary "3 options" with `chevron-up`, and the recommended option as a
@@ -1288,9 +1289,10 @@ run.
 
 - Touch targets are at least 44 by 44 px on coarse pointers and 24 by 24 px everywhere, with
   8 px between neighbours.
-- A link drawn smaller than that, such as a task key in a row, an ask's or batch's context line or
-  another runner's chevron, keeps its look and takes a transparent hit area of `--control` height
-  on coarse pointers. A chevron button is 24 by 24 px at least everywhere.
+- A link drawn smaller than that, such as an ask's or batch's context line, a task key on the batch
+  page or another runner's chevron, keeps its look and takes a transparent hit area of `--control`
+  height on coarse pointers, where no other link sits under it. A row's task key needs none: the
+  whole row opens the same task. A chevron button is 24 by 24 px at least everywhere.
 - Put the primary action of a screen in its bottom third on compact screens.
 - Every gesture has a visible button that does the same thing.
 - Allowed gestures: horizontal swipe between asks in an ask's detail and between tabs; pinch and
