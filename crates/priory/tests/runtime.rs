@@ -19845,6 +19845,86 @@ fn the_predecessor_pushing_again_wakes_the_waiting_entry_to_rebase_onto_the_new_
     );
 }
 
+impl Setup {
+    /// Pushes task `task`'s branch `priory/<task>` to the bare origin from its worktree.
+    fn push_task(&self, task: i64) {
+        let worktree = self.dir.join(format!("home/worktrees/owner/repo/{task}"));
+        assert!(
+            git(&worktree)
+                .env("GIT_CONFIG_COUNT", "1")
+                .env(
+                    "GIT_CONFIG_KEY_0",
+                    format!(
+                        "url.file://{}/.insteadOf",
+                        self.dir.join("origin").display()
+                    ),
+                )
+                .env("GIT_CONFIG_VALUE_0", "https://github.com/")
+                .args(["push", "-q", "origin", &format!("priory/{task}")])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    /// Returns once the daemon ran one whole tick after this call: the keyboard sweep at a tick's
+    /// end ends a grant that no factory with `terminal = "type"` keeps, so two such ends span one.
+    fn ticked(&self) {
+        let db = rusqlite::Connection::open(self.dir.join("priory.db")).unwrap();
+        for _ in 0..2 {
+            let grant: i64 = db
+                .query_row(
+                    "INSERT INTO keyboard_grants (run, hash, label, started, ends)
+                     VALUES (1, hex(randomblob(16)), 'tick', 'now', '9999') RETURNING id",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while db
+                .query_row(
+                    "SELECT ended IS NULL FROM keyboard_grants WHERE id = ?1",
+                    [grant],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+            {
+                assert!(Instant::now() < deadline, "the daemon never ticked");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
+#[test]
+fn an_entry_that_started_from_its_parents_unpushed_commit_is_told_only_of_a_push_past_it() {
+    let setup = stacked_entry_opened("batch-waiting-unpushed");
+    let pushed = setup.pushed("priory/2");
+    // The entry started from a commit its parent had not pushed yet.
+    let local = setup.commit(2, "c.txt");
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute("UPDATE tasks SET parent_head = ?1 WHERE id = 3", [&local])
+        .unwrap();
+
+    setup.ticked();
+    let head = setup.commit(2, "d.txt");
+    setup.push_task(2);
+
+    let line = format!("task 2 pushed priory/2 to {head}; rebase onto it");
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "3" && row[4].contains(&line))
+    });
+    let told: Vec<&String> = outbox
+        .iter()
+        .filter(|row| row[1] == "3" && row[4].contains("pushed priory/2"))
+        .map(|row| &row[4])
+        .collect();
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(!told[0].contains(&pushed), "{told:?}");
+}
+
 #[test]
 fn the_predecessors_pull_request_merging_wakes_the_waiting_entry_to_rebase_onto_its_base() {
     let setup = stacked_entry_opened("batch-waiting-restack");
