@@ -11,7 +11,7 @@ import { emptyDetail, eventWords, handled, neverOwned, routeAction, unheardActs,
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
 import { actionNote, batchParts, dueParts, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
-import { TASK_VIEWS, elsewhere, filtered, olderPart, taskFacets, taskViews, triageWords } from "./tasks.js";
+import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskViews, triageWords } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
 
@@ -147,6 +147,8 @@ const state = {
   // The task whose action is in flight, each task's last action note, and its unsent say text.
   taskBusy: null,
   taskNotices: new Map(),
+  // The remote task row opened in place, by its id `runner:key`.
+  remoteOpen: null,
   // The Unrouted view's groups, read when the view opens, and each resource's last subscribe note.
   unrouted: { groups: null, error: null, loading: false, busy: null, notices: new Map() },
   todoBusy: null,
@@ -814,16 +816,39 @@ const reasonShown = (task) => Boolean(task.reason) && ["blocked", "held", "faile
 const ago = (iso) => (/ (min|h)$/.test(age(iso)) ? `${age(iso)} ago` : `on ${age(iso)}`);
 
 // Another runner's task (DESIGN.md, Task row and run row): its hold for a state, and no page here.
+// A tap opens its actions in place; the newest action sent to it takes a line of its own.
+const TONE = { action: "t-action", warn: "t-warn", quiet: "" };
+const toggle = (id, open, key) => html`<button type="button" id="remote-${id}" class="chev" data-action="remote-open" data-task="${id}" aria-expanded="${open ? "true" : "false"}" aria-label="${open ? "Close" : "Open"} the actions of ${key}">${icon(open ? "chevron-up" : "chevron-down", "s15")}</button>`;
+const sentOf = (task) => {
+  const sent = remoteSent(task);
+  return sent ? html`<span class="${TONE[sent.tone]}">${sent.text}</span>` : "";
+};
+function remoteActions(task) {
+  const id = remoteId(task);
+  const said = state.taskBusy === id ? raw('aria-disabled="true"') : "";
+  const say = task.hold === "kept" ? html`<form class="writeform" data-action="say" data-task="${id}"><label class="sr" for="say">Say to the agent</label>
+    <textarea id="say" name="text" rows="2" placeholder="Say to the agent">${state.sayDrafts.get(id) || ""}</textarea><button class="btn primary" ${said}>Say</button></form>` : "";
+  return html`${taskActs(id, null, remoteActs(task))}${say}<p class="note acts-note">${icon("corner-down-right", "s15")}<span>This task runs on ${task.runner}. An action goes there through the log, and ${task.runner} applies it when it reads it.</span></p>`;
+}
+
 function remoteListRow(task) {
-  return html`<div class="row">${tile("elsewhere")}
+  const id = remoteId(task);
+  const open = state.remoteOpen === id;
+  const sent = sentOf(task);
+  return html`<div class="row remote" data-action="remote-open" data-task="${id}">${tile("elsewhere")}
     <span class="l1"><span class="mono">${task.key}</span><span>${task.workflow || ""}</span><span>${task.hold}</span><span class="age">${timeTag(task.since)}</span></span>
-    <span class="l2 r">${task.title || task.key}</span><span class="l3"><span>${elsewhere(task, ago)}</span></span></div>`;
+    <span class="l2 r">${task.title || task.key}</span>${sent ? html`<span class="l3">${sent}</span>` : ""}<span class="l3"><span>${elsewhere(task, ago)}</span></span>
+    ${toggle(id, open, task.key)}${open ? remoteActions(task) : ""}</div>`;
 }
 
 function remoteTableRow(task) {
-  return html`<tr><td>${tile("elsewhere", "sm")} ${task.hold}</td><td class="mono">${task.key}</td>
-    <td class="q full"><span>${task.title || task.key}</span><span class="why t3">${elsewhere(task, ago)}</span></td>
-    <td>${task.workflow || ""}</td><td>${task.lane || ""}</td><td>${task.band || ""}</td><td class="r">${timeTag(task.since)}</td></tr>`;
+  const id = remoteId(task);
+  const open = state.remoteOpen === id;
+  const sent = sentOf(task);
+  const row = html`<tr class="remote" data-action="remote-open" data-task="${id}"><td>${tile("elsewhere", "sm")} ${task.hold}</td><td class="mono">${task.key}</td>
+    <td class="q full"><span>${task.title || task.key}</span>${sent ? html`<span class="why">${sent}</span>` : ""}<span class="why t3">${elsewhere(task, ago)}</span></td>
+    <td>${task.workflow || ""}</td><td>${task.lane || ""}</td><td>${task.band || ""}</td><td class="r">${timeTag(task.since)} ${toggle(id, open, task.key)}</td></tr>`;
+  return open ? html`${row}<tr class="remote-acts"><td></td><td></td><td colspan="5">${remoteActions(task)}</td></tr>` : row;
 }
 
 function taskListRow(task) {
@@ -1252,8 +1277,8 @@ async function editPlan(target) {
 
 // Desk actions on a task, each the twin of its CLI verb. Cancel and revive arm on the first tap and
 // send on the second, as a command ask does.
-const ACTS = { resume: "Resume", revive: "Revive", cancel: "Cancel" };
-const DONE_AS = { resume: "Resumed", revive: "Revived", cancel: "Cancelled", say: "Said" };
+const ACTS = { resume: "Resume", revive: "Revive", cancel: "Cancel", release: "Release" };
+const DONE_AS = { resume: "Resumed", revive: "Revived", cancel: "Cancelled", release: "Released", say: "Said" };
 const ARMS = ["revive", "cancel"];
 const ENDED = ["done", "failed", "dropped"];
 const actsOf = (taskState) => (taskState === "blocked" ? ["resume", "cancel"] : ["failed", "dropped"].includes(taskState) ? ["revive"] : taskState === "done" ? [] : ["cancel"]);
@@ -1276,18 +1301,24 @@ function disarmTask() {
   state.taskArmed = null;
 }
 
+// A task's id from the page: its number here, or `runner:key` for another runner's task.
+const taskIdOf = (value) => (/^\d+$/.test(value) ? Number(value) : value);
+// The body an action carries: another runner's task names the generation the page drew.
+const remoteGeneration = (task) => state.data?.tasks.find((each) => each.id == null && remoteId(each) === task)?.generation;
+const remoteBody = (task, body) => (typeof task === "string" ? { ...body, generation: remoteGeneration(task) } : body);
+
 function taskAct(target) {
-  const task = Number(target.dataset.task);
+  const task = taskIdOf(target.dataset.task);
   const act = target.dataset.act;
   if (target.getAttribute("aria-disabled") === "true") return;
   const armed = state.taskArmed?.task === task && state.taskArmed.act === act;
   disarmTask();
   if (ARMS.includes(act) && !armed) {
-    state.taskArmed = { task, act, at: Date.now(), timer: setTimeout(() => { state.taskArmed = null; render(); }, ARM_MS) };
+    state.taskArmed = { task, act, generation: remoteGeneration(task), at: Date.now(), timer: setTimeout(() => { state.taskArmed = null; render(); }, ARM_MS) };
     return render();
   }
   // A cancel carries the revision the page showed, as `priory cancel --expected` does.
-  taskWrite(task, act, act === "cancel" ? { revision: state.revision } : {});
+  taskWrite(task, act, typeof task === "string" ? remoteBody(task, {}) : act === "cancel" ? { revision: state.revision } : {});
 }
 
 async function taskWrite(task, act, body) {
@@ -1303,8 +1334,13 @@ async function taskWrite(task, act, body) {
   const { status, body: answered } = reply;
   if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
   // Text typed while the say was in flight stays as the next draft.
-  if (status === 200 && act === "say" && (state.sayDrafts.get(task) || "").trim() === body.text) state.sayDrafts.delete(task);
-  state.taskNotices.set(task, status === 200 ? `${DONE_AS[act]}: ${answered.ok}.`
+  if ([200, 202].includes(status) && act === "say" && (state.sayDrafts.get(task) || "").trim() === body.text) state.sayDrafts.delete(task);
+  const remote = typeof task === "string";
+  // A sent action shows as the task's newest submission once the list reads it again.
+  if (status === 202) state.taskNotices.delete(task);
+  else state.taskNotices.set(task, status === 200 ? `${DONE_AS[act]}: ${answered.ok}.`
+    : remote && status === 409 ? `Not sent: ${answered.error}. The list reads it again: check the task, then send again.`
+    : remote && status === 503 ? `Could not send: ${answered.error}.`
     : status === 409 ? "The state changed since this page loaded. Read the task again, then tap again."
       : status === 503 ? "Could not send: no priory daemon runs beside this server. Start priory daemon, then send again."
         : status === 504 || status === 0 ? "The daemon may have applied this but did not confirm it. Check the task's state before you send again."
@@ -2743,6 +2779,8 @@ function render() {
   state.observers = [];
   // A new revision is a new question: a tap armed on the old one must not run it.
   if (state.armed && (!state.token || selectedAsk() !== String(state.armed.id) || askOnScreen()?.revision !== state.armed.revision)) disarm();
+  // Likewise a Cancel armed on another runner's task at a generation the list no longer shows.
+  if (typeof state.taskArmed?.task === "string" && remoteGeneration(state.taskArmed.task) !== state.taskArmed.generation) disarmTask();
   app.innerHTML = page().text;
   paintTerminal(app, true);
   observeTerminal(app);
@@ -2918,6 +2956,10 @@ document.addEventListener("click", (event) => {
     return render();
   }
   if (action === "task-act") return taskAct(target);
+  if (action === "remote-open" && !event.target.closest("form, .task-acts")) {
+    state.remoteOpen = state.remoteOpen === target.dataset.task ? null : target.dataset.task;
+    return render();
+  }
   if (action === "entry-menu" && state.batch?.body) {
     const edit = planEditOf(state.batch.body);
     const open = edit.open === target.dataset.entry ? null : target.dataset.entry;
@@ -2989,7 +3031,7 @@ document.addEventListener("input", (event) => {
     render();
   }
   const form = event.target.id === "say" && event.target.closest("form");
-  if (form) state.sayDrafts.set(Number(form.dataset.task), event.target.value);
+  if (form) state.sayDrafts.set(taskIdOf(form.dataset.task), event.target.value);
   if (event.target.id === "term-keys") terminal.keys = event.target.value;
   if (event.target.id === "term-line") {
     terminal.line = event.target.value;
@@ -3024,9 +3066,9 @@ document.addEventListener("submit", (event) => {
   }
   if (event.target.dataset.action === "say") {
     event.preventDefault();
-    const task = Number(event.target.dataset.task);
+    const task = taskIdOf(event.target.dataset.task);
     const text = (state.sayDrafts.get(task) || "").trim();
-    if (text && state.taskBusy === null) taskWrite(task, "say", { text });
+    if (text && state.taskBusy === null) taskWrite(task, "say", remoteBody(task, { text }));
     return;
   }
   if (event.target.dataset.action !== "sign-in") return;

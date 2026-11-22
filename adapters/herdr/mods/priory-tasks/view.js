@@ -24,6 +24,31 @@ export function elsewhere(task, ago) {
 }
 
 /**
+ * The actions another runner's task offers, by its hold, since its state stays on its runner: a
+ * kept task also takes Say. Its runner refuses what does not fit. @param {any} task @returns {string[]}
+ */
+export function remoteActs(task) {
+  if (task.id != null || !task.runner) return [];
+  return task.hold === "kept" ? ["resume", "cancel", "release"] : ["cancel"];
+}
+
+/** Another runner's task's id in `/api/tasks/{id}/{act}`: its runner and key, percent-encoded. @param {any} task */
+export const remoteId = (task) => `${task.runner}:${encodeURIComponent(task.key)}`;
+
+/**
+ * What became of the newest action sent to another runner's task: pending, refused with why, or
+ * applied, else null. @param {any} task @returns {{ text: string, tone: "action" | "warn" | "quiet" } | null}
+ */
+export function remoteSent(task) {
+  const last = task.id == null ? task.submissions?.at(-1) : null;
+  if (!last) return null;
+  const what = last.act === "say" ? `say “${last.text}”` : last.act;
+  if (last.outcome === "refused") return { text: `${task.runner} refused ${what}: ${last.why}`, tone: "warn" };
+  if (last.outcome) return { text: `${task.runner} applied ${what}`, tone: "quiet" };
+  return { text: `Sent to ${task.runner}: ${what}`, tone: "action" };
+}
+
+/**
  * Each facet's key, label and a task's values, as the Asks list's facets. A task with no lane, or
  * another runner's task with no workflow, shows under `none`. @type {[string, string, (task: any) => string[]][]}
  */

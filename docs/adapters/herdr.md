@@ -591,9 +591,12 @@ DESIGN.md's "Tasks" section holds its visual rules; this section says how it wor
   that state (a date after a day), then its title, then its lane and band, or the reason of a
   blocked, held, failed or dropped task, and its batch. Pressing a row opens it in the [Task panel](#the-task-panel).
 - **Other runners.** In a factory of several runners the panel also lists each task another runner
-  holds, with its hold for a state and "On runner a, last seen 12 min ago". Its row opens nothing,
-  since its page stays on its runner. A Runner chip then follows Workflow and marks this runner
-  `(here)`.
+  holds, with its hold for a state and "On runner a, last seen 12 min ago". Its page stays on its
+  runner, so pressing the row opens it in place: Resume, Cancel and Release for a `kept` task,
+  Cancel for a `waiting` one. Cancel acts on the second press. Each runs
+  `priory ACT --generation N RUNNER:KEY` with the generation the panel read, and a refusal shows
+  under the buttons. The newest action sent to the task shows above "On runner". A Runner chip then
+  follows Workflow and marks this runner `(here)`.
 
 ## The Runs panel
 
@@ -771,6 +774,8 @@ name: it draws the sections in the order the report gives them.
 
 - `priory tasks --json`, the object `/api/tasks` serves; see
   [serve.md's Tasks](../reference/serve.md#tasks).
+- `priory (resume | cancel | release) --generation N RUNNER:KEY` for another runner's task; see
+  [runners.md](../daemon/runners.md#acting-on-another-runners-task).
 
 ### Runs
 
