@@ -104,7 +104,7 @@ const STATES = {
   ask: ["wait", "ask"], answered: ["muted", "check"], withdrawn: ["muted", "minus"], prompt: ["warn", "hand"],
   refused: ["warn", "x"], moved: ["muted", "arrow-right"], todo: ["wait", "square"], batch: ["muted", "layers"],
   restarted: ["muted", "rotate-ccw"], cancelled: ["muted", "x"], exited: ["danger", "log-out"],
-  // Another runner's task: its tile has its own key, since `waiting` is also a task state.
+  // Another runner's task: its tile shows its hold, which is not a task state.
   elsewhere: ["muted", "server"],
   // Memory candidates an agent wrote, which wait on a person's accept or drop.
   memories: ["wait", "brain"],
@@ -2142,7 +2142,7 @@ function reportPick(row) {
   const off = Boolean(state.failed || (pending && !mine));
   return html`<div class="rpick" role="group" aria-label="Pick for ${row.key || row.text}">${pick.options.map((option) => {
     const chosen = mine ? mine.option === option.label : option.label === pick.chosen;
-    return html`<button id="${focusId("pick", pick.id, option.label)}" class="${chosen ? "chosen" : ""}" data-action="pick" data-row="${row.id}" data-option="${option.label}" aria-pressed="${chosen ? "true" : "false"}" aria-disabled="${off || mine ? "true" : "false"}">${chosen || (!mine && !reopened && option.recommended) ? icon("check", "s15") : ""}${option.label}</button>`;
+    return html`<button id="${focusId("pick", pick.id, option.label)}" class="${chosen ? "chosen" : ""}" data-action="pick" data-row="${row.id}" data-option="${option.label}" aria-pressed="${chosen ? "true" : "false"}" aria-disabled="${off || mine ? "true" : "false"}">${chosen ? icon("check", "s15") : ""}${option.label}</button>`;
   })}</div>${state.failed ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to pick.</span></p>`
     : reopened ? html`<p class="note"><span>Picked ${pick.chosen}. Pick another option to change it.</span>${mine ? "" : html`<button class="ghost" data-action="pick-keep">Keep ${pick.chosen}</button>`}</p>`
     : pick.note ? html`<p class="note">${pick.note}</p>` : ""}`;

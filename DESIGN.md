@@ -1116,8 +1116,9 @@ sits under More.
   chip strip scrolls sideways to keep the lit chip in view.
 - **Row**: its tile, its key in mono, its text, then a caption line with its meta, owner and time.
   The key and the text take the factory's autolinks.
-- **Pick**: a segmented control on `--raised`. The recommended option shows a `check` in
-  `--action-text`, and the pick's note follows in a caption. A tap turns the option solid `--emph`
+- **Pick**: a segmented control on `--raised`. A `check` means chosen, so no option shows one
+  before a choice. The recommendation is in words: the pick's note follows in a caption,
+  "Recommends Take". A tap turns the option solid `--emph`
   with a `check` and dims the other picks; a bar at the bottom says `Picking "Take"` with Undo for
   4 s, as an answer's does. Nothing is sent before the 4 s end. An agreed pick folds to one line:
   a `check` in `--ok-text`, "Picked Take." and what the workflow did with it. Until the workflow
@@ -1465,8 +1466,8 @@ The morning dossier.
 - The greeting in the display role, then the report's sections **in the order the factory gives
   them**. The panel knows no section by name. Each section has a title, an optional count and
   rows; a row may carry a pick.
-- A pick is a segmented control of its options. The recommended option shows a `check` in
-  `--action-text` until a person chooses. An agreed pick folds to one line with Change.
+- A pick is a segmented control of its options. A `check` marks the chosen option only; the
+  note says "Recommends Take". An agreed pick folds to one line with Change.
 - From 1024 px a 200 px list of the sections, with counts and "Picks", sits on the left. Below,
   the same list becomes section chips under the toolbar.
 - **Threads** sit under their row, indented to the row's text, oldest first. An open thread is a
