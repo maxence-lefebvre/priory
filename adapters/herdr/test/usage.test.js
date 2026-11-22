@@ -107,6 +107,16 @@ test("when whole parts cannot fit, the line leaves the last ones out rather than
   assert.equal(text(find(draw(view, cx), "usage-line")), "Priory $1235 of $2000 today · $12345 of $20000 wk");
 });
 
+test("after a failed read the line says so within its width, and the detail warns over the last read", async () => {
+  const { view, cx } = await drawn();
+  herdr.replies = {};
+  await view.read();
+  view.width = 320;
+  assert.equal(text(find(draw(view, cx), "usage-line")), "Priory Could not read costs $12 of $40 today");
+  view.overlay = "overlay-1";
+  assert.match(text(find(draw(view, cx), "usage-stale")), /^Could not read costs: priory costs: no such thing\. This is the last read\.$/);
+});
+
 test("an unpriced day reads -, never $0, and an idle task cap keeps its limit", async () => {
   const days = [{ day: "2026-11-17", cost_usd: null }];
   const { tree } = await drawn({ costs: { ...COSTS, days, caps: [{ scope: "factory", period: "task", cap_usd: 5, spent_usd: null, task: null }] } });

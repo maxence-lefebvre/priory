@@ -186,6 +186,7 @@ export default class PrioryUsage extends View {
   /** @param {Palette} t */
   line(t) {
     const narrow = this.width < NARROW;
+    const status = this.error ? { text: "Could not read costs", color: t["warn-text"] } : !this.costs ? { text: "Reading costs…", color: t["text-3"] } : null;
     /** @type {{ id: string, text: string, color: import("gpui-kit").Color }[]} */
     const parts = [];
     if (this.costs) {
@@ -202,10 +203,10 @@ export default class PrioryUsage extends View {
       if (held) parts.push({ id: "usage-held", text: narrow ? `${held} held` : `${held} held at a cap`, color: t.text });
       if (this.claude && !narrow) parts.push({ id: "usage-claude", text: `Claude 7d ${Math.round(this.claude.used)}%`, color: this.tone(t, this.claude.used / 100) });
       // shortcut: gpui-kit gives no text width, so an estimate drops whole parts; measure if one ever shows cut.
-      const width = () => 12 * 2 + 6 * CHAR + parts.reduce((sum, part, at) => sum + part.text.length * CHAR + 8 + (at ? CHAR + 8 : 0), 0);
+      const width = () => 12 * 2 + 6 * CHAR + (status ? status.text.length * CHAR + 8 : 0) + parts.reduce((sum, part, at) => sum + part.text.length * CHAR + 8 + (at ? CHAR + 8 : 0), 0);
+      // The usage block is at least 320 px, where the first part always fits.
       while (parts.length > 1 && width() > this.width) parts.pop();
     }
-    const status = this.error ? { text: "Could not read costs", color: t["warn-text"] } : !this.costs ? { text: "Reading costs…", color: t["text-3"] } : null;
     return h_flex().id("usage-line").size_full().px(12).gap(8).items_center().overflow_hidden().whitespace_nowrap()
       .hover((s) => s.bg(t.raised)).on_click(() => this.open())
       .bg(t.bar).border_t(1).border_color(t.line).font_family(this.font?.ui ?? FONTS.indigo.ui).text_size(12)
