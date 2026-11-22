@@ -525,7 +525,6 @@ model = "sentence-transformers/all-MiniLM-L6-v2"
 [telemetry]
 otlp = "http://127.0.0.1:4318"                 # spans go to its /v1/traces
 headers_env = "OTEL_EXPORTER_OTLP_HEADERS"     # the variable holding the headers, such as a key
-metrics = ["process"]                          # the metric groups each process sends
 
 [serve]
 listen = "127.0.0.1:7340"                      # loopback only, unless public = true
