@@ -1,0 +1,36 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/case-gh.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "`gh/<n>.toml`: one `gh` command the task's agent ran before the first irreversible step, with\nwhat it printed then. A replay's fake `gh` answers the same command with it.",
+  "properties": {
+    "args": {
+      "description": "The command's arguments after `gh`.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "output": {
+      "description": "What the command printed, as the harness transcript holds it.",
+      "type": "string"
+    },
+    "run": {
+      "description": "The run whose agent ran the command.",
+      "format": "int64",
+      "type": "integer"
+    },
+    "step": {
+      "description": "The step that run was for.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run",
+    "step",
+    "args",
+    "output"
+  ],
+  "title": "case gh answer",
+  "type": "object"
+}

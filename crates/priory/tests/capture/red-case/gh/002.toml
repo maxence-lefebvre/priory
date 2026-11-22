@@ -1,0 +1,5 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/case-gh.json
+run = 3
+step = "review"
+args = ["pr", "list", "--head", "priory/1", "--json", "number"]
+output = "[]"

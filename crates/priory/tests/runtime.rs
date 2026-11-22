@@ -22810,3 +22810,38 @@ fn a_command_scorer_whose_run_leads_outside_the_factory_folder_is_an_error_and_n
     );
     assert!(!ran.exists());
 }
+
+#[test]
+fn bench_capture_refuses_a_task_with_no_irreversible_step_or_no_start_commit() {
+    let setup = scored_task("capture-refused");
+    let factory = setup.dir.join("factory");
+    let into = setup.dir.join("case");
+    let capture = || {
+        setup.priory(&[
+            "bench",
+            "capture",
+            factory.to_str().unwrap(),
+            "1",
+            "--into",
+            into.to_str().unwrap(),
+        ])
+    };
+
+    let unbounded = capture();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute("UPDATE tasks SET base_sha = NULL WHERE id = 1", [])
+        .unwrap();
+    let unstarted = capture();
+
+    assert!(!unbounded.status.success(), "{unbounded:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&unbounded.stderr),
+        "priory bench capture: task 1 reached no irreversible step, so a replay of it would have no end\n"
+    );
+    assert!(!unstarted.status.success(), "{unstarted:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&unstarted.stderr),
+        "priory bench capture: task 1 has no start commit: it began before Priory stored one\n"
+    );
+    assert!(!into.exists(), "a refused capture wrote {}", into.display());
+}

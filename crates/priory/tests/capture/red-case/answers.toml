@@ -1,0 +1,4 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/case-answers.json
+[[answers]]
+step = "approve-plan"
+answer = "approved"

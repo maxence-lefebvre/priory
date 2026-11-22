@@ -13,6 +13,7 @@ config page gives a field table, a complete example and the errors `priory check
 | [views.md](views.md) | `views/<name>.toml`: the web view's layouts |
 | [memories.md](memories.md) | `memories/<name>.md`: the facts every run gets, and the index of them |
 | [scorers.md](scorers.md) | `scorers/<name>.toml`: the questions that grade a finished run |
+| [cases.md](cases.md) | A benchmark case folder: `case.toml`, `gh/` and `answers.toml`, and its gaps |
 | [serve.md](serve.md) | `priory serve` and the JSON of its endpoints and of the listings' `--json` |
 | [events.md](events.md) | Every message type on `factory.intake`, with an example payload |
 | [e2e-scenarios.md](e2e-scenarios.md) | The scenario file of the end-to-end factory test |

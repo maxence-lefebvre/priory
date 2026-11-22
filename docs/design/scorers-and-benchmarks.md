@@ -382,7 +382,9 @@ Tests:
 
 ## Later slices
 
-1. `priory bench capture`: the case folder, from a task with a `base_sha`. Tests capture a task of
+1. Built. `priory bench capture` ([bench.md](../daemon/bench.md),
+   [cases.md](../reference/cases.md)). It writes no `merged.patch` yet, and reads only Claude
+   Code's transcripts: a Codex run is a gap. The case folder, from a task with a `base_sha`. Tests capture a task of
    the end-to-end harness and compare the folder byte for byte, refuse a task with no start commit
    or no irreversible step, and mark a task whose transcript is gone as `partial`. The transcript
    reader is a parser of outside text, so it gets a `proptest`.
