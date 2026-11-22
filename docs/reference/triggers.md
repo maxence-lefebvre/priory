@@ -14,6 +14,7 @@ cannot tell which keys a source refuses; `priory check` does.
 - [`linear.view`](#linearview)
 - [`sentry`](#sentry)
 - [`honeycomb`](#honeycomb)
+- [`figma`](#figma)
 - [`slack`](#slack)
 - [`schedule`](#schedule)
 - [Task requests: `triggers/cli.toml` and `hold`](#task-requests-triggersclitoml-and-hold)
@@ -24,7 +25,7 @@ cannot tell which keys a source refuses; `priory check` does.
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
-| `source` | string | yes | | `github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `slack` or `schedule` | `"github"` |
+| `source` | string | yes | | `github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `figma`, `slack` or `schedule` | `"github"` |
 | `workflow` | string | yes | | The workflow a matching event starts, by file name | `"implement"` |
 | `repo` | string | per source | | The repository the trigger's tasks work in, a GitHub `owner/name`. `priory check` refuses any other shape, such as `..` or a path | `"owner/name"` |
 | `key` | string | no | per source | Which events are the same work. A factory holds at most one active task per key | `"issue.number"` |
@@ -192,6 +193,31 @@ workflow = "implement"
 key = "trigger.id"             # the task key is honeycomb:JwwZxfcP5kH
 ```
 
+## `figma`
+
+Starts a task when someone comments on a Figma file. Figma pushes the comment to
+`POST /hooks/figma`, so the trigger needs [`[webhooks.figma]`](factory.md#webhooksfigma) and a
+webhook you create for `FILE_COMMENT`. See [figma.md](../intake/figma.md).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `on` | string | yes | | `file.comment_created` | `"file.comment_created"` |
+| `filter` | table | no | | `file` (the file's key). Every key must match | `{ file = "zH44k2FUM629Fa4EMShiHL" }` |
+| `key` | string | no | the file key | `file.key`. The task key is `figma:zH44k2FUM629Fa4EMShiHL` | `"file.key"` |
+
+A `figma` trigger takes no `backfill`: Figma sends only new comments.
+
+<!-- example: factory/triggers/figma-comments.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "figma"
+on = "file.comment_created"
+filter = { file = "zH44k2FUM629Fa4EMShiHL" }   # the file's key
+repo = "owner/name"            # where its tasks work; without it they block
+workflow = "implement"
+key = "file.key"               # the task key is figma:zH44k2FUM629Fa4EMShiHL
+```
+
 ## `slack`
 
 Starts a task when someone posts in a channel, outside a thread. The intake reads a bot token from
@@ -334,7 +360,12 @@ lead = "lead"                  # agents/lead/agent.md, with session = "shared"
 | `` a Slack trigger filters on `text` only `` | Another `filter` key |
 | `` a Slack trigger names no `view` `` | `view` on a Slack trigger |
 | `` a Slack trigger's `key` is `message.ts` `` | Another `key` |
-| `` only a GitHub, Linear or Slack trigger has `backfill` `` | `backfill` on a schedule or `cli` trigger |
+| `` a `figma` trigger needs `[webhooks.figma]` in factory.toml: Figma comments arrive only by webhook `` | A `figma` trigger in a factory without `[webhooks.figma]` |
+| `` a `figma` trigger handles `file.comment_created`, not `<on>` `` | A bad `on` |
+| `` a `figma` trigger filters on `file` `` | Another `filter` key |
+| `` a Figma trigger's `repo` is `owner/name` `` | A malformed `repo` |
+| `` a Figma trigger's `key` is `file.key` `` | Another `key` |
+| `` only a GitHub, Linear or Slack trigger has `backfill` `` | `backfill` on a schedule, `cli`, `sentry`, `honeycomb` or `figma` trigger |
 | `` only a Slack trigger names a `channel` `` | `channel` on another source |
 | `` only a schedule trigger has `<key>` `` | `at`, `days`, `every`, `until`, `timezone` or `prompt` on another source |
 | `` a schedule trigger needs `at = "HH:MM"` `` | A schedule without `at` |

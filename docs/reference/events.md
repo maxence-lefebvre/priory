@@ -25,6 +25,7 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
   [`linear.comment.created`](#linearcommentcreated)
 - Sentry: [`sentry.issue.created`](#sentryissuecreated)
 - Honeycomb: [`honeycomb.trigger.fired`](#honeycombtriggerfired)
+- Figma: [`figma.file.comment_created`](#figmafilecomment_created)
 - Slack: [`slack.message.posted`](#slackmessageposted), [`slack.thread.replied`](#slackthreadreplied)
 - Others: [`schedule.fired`](#schedulefired), [`priory.task.requested.cli`](#priorytaskrequestedcli),
   [`factory.task.requested`](#factorytaskrequested), [`factory.intake.baseline`](#factoryintakebaseline)
@@ -1055,6 +1056,53 @@ Schema: [`honeycomb.trigger.fired.json`](../schemas/events/honeycomb.trigger.fir
     "triggers": ["honeycomb-alerts"]
   },
   "links": [{ "label": "trigger", "url": "https://ui.honeycomb.io/acme/environments/production/datasets/checkout/triggers/JwwZxfcP5kH" }]
+}
+```
+
+## Figma
+
+### `figma.file.comment_created`
+
+One message per comment on a Figma file that a Figma webhook delivers with the right passcode and
+some `figma` trigger matches. Only a delivery to `POST /hooks/figma` publishes it: see
+[figma.md](../intake/figma.md). Subject: the file name, else its key.
+Schema: [`figma.file.comment_created.json`](../schemas/events/figma.file.comment_created.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `file` | string | The file key. The task key is `figma:<file>` |
+| `file_name` | string or null | The file name |
+| `comment` | string | Figma's comment id, which makes the message id |
+| `text` | string | The comment's text, each mention written as `@<handle>`. Untrusted: anyone with the passcode can send it |
+| `parent` | string or null | The id of the comment it replies to |
+| `author` | string or null | The commenter's handle |
+| `mentions` | list of strings | The handles the comment mentions |
+| `url` | string | The file's page on Figma |
+| `webhook` | string or null | The id of the webhook that sent it |
+| `time` | string | The comment's `created_at` |
+
+<!-- example: events/figma.file.comment_created.json -->
+```json
+{
+  "id": "9d3c2b1a-7e6f-5a4b-8c3d-2e1f0a9b8c7d",
+  "type": "figma.file.comment_created",
+  "subject": "Mockup library",
+  "time": "2026-11-17T20:27:16Z",
+  "data": {
+    "file": "zH44k2FUM629Fa4EMShiHL",
+    "file_name": "Mockup library",
+    "comment": "32",
+    "text": "TODO: \n@Evan Wallace Change selection colors",
+    "parent": null,
+    "author": "Dylan Field",
+    "mentions": ["Evan Wallace"],
+    "url": "https://www.figma.com/file/zH44k2FUM629Fa4EMShiHL",
+    "webhook": "22",
+    "time": "2026-11-17T20:27:16Z",
+    "baseline": false,
+    "triggers": ["figma-comments"]
+  },
+  "links": [{ "label": "file", "url": "https://www.figma.com/file/zH44k2FUM629Fa4EMShiHL" }]
 }
 ```
 

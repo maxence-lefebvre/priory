@@ -22,7 +22,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `telemetry` | table | no | no export | Where trace records go. See [`[telemetry]`](#telemetry) | |
 | `notify` | table | no | no desktop notification | Notifications besides Web Push. See [`[notify]`](#notify) | |
 | `serve` | table | no | nothing listens | The HTTP server over the factory's state. See [`[serve]`](#serve) | |
-| `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub), [`[webhooks.linear]`](#webhookslinear), [`[webhooks.sentry]`](#webhookssentry) and [`[webhooks.honeycomb]`](#webhookshoneycomb) | |
+| `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub), [`[webhooks.linear]`](#webhookslinear), [`[webhooks.sentry]`](#webhookssentry), [`[webhooks.honeycomb]`](#webhookshoneycomb) and [`[webhooks.figma]`](#webhooksfigma) | |
 | `slack` | table | no | no Slack shortcut | The Slack message shortcut. See [`[slack.shortcut]`](#slackshortcut) | |
 | `asks` | table | no | answers are only stored | What happens to the answer of an ask from outside Priory. See [`[asks]`](#asks) | |
 | `links` | table of strings | no | the built-in `#n` link | Autolinks, each a regex and a URL template. See [`[links]`](#links) | |
@@ -198,6 +198,19 @@ needs it.
 
 `priory serve` and `priory daemon` refuse to start while that variable is unset or empty.
 
+## `[webhooks.figma]`
+
+See [figma.md](../intake/figma.md) for what the passcode proves, how to create the webhook and what
+a delivery publishes, and [serve.md](serve.md#post-hooksfigma) for the endpoint. With this table,
+the server takes Figma deliveries at `POST /hooks/figma`. A [`figma` trigger](triggers.md#figma)
+needs it.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `secret_env` | string | no | `"FIGMA_WEBHOOK_PASSCODE"` | The environment variable that holds the passcode the Figma webhook was created with. Never the passcode itself | `"PRIORY_FIGMA_PASSCODE"` |
+
+`priory serve` and `priory daemon` refuse to start while that variable is unset or empty.
+
 ## `[slack.shortcut]`
 
 See [slack.md](../intake/slack.md#message-shortcut) for what the shortcut does and how to set up
@@ -348,6 +361,9 @@ secret_env = "SENTRY_CLIENT_SECRET"            # the variable holding the Sentry
 
 [webhooks.honeycomb]
 secret_env = "HONEYCOMB_WEBHOOK_SECRET"        # the variable holding the Honeycomb recipient's Shared Secret
+
+[webhooks.figma]
+secret_env = "FIGMA_WEBHOOK_PASSCODE"          # the variable holding the Figma webhook's passcode
 
 [asks]
 deliver = "bin/deliver"                        # delivers outside answers, from the factory folder

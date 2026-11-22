@@ -5,8 +5,8 @@ signed delivery becomes the same message a poll publishes, and how the two never
 twice. This section is GitHub's; [Linear's](#linear) follows. The keys are under [`[webhooks.github]`](../reference/factory.md#webhooksgithub), and the
 endpoint in [serve.md](../reference/serve.md#post-hooksgithub).
 
-Sentry and Honeycomb have webhooks too, with no polling behind them: see [sentry.md](sentry.md)
-and [honeycomb.md](honeycomb.md).
+Sentry, Honeycomb and Figma have webhooks too, with no polling behind them: see
+[sentry.md](sentry.md), [honeycomb.md](honeycomb.md) and [figma.md](figma.md).
 
 Polling keeps running. A webhook only makes an event arrive sooner. A delivery that never arrives
 still reaches the factory through the next poll.

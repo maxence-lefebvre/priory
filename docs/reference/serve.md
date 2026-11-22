@@ -3,7 +3,7 @@
 The HTTP server's endpoints and the JSON they return. [serve.md](../daemon/serve.md) explains where
 the server runs, its token and its limits.
 
-Every endpoint takes `GET`, except the [writes](#writes), `POST /hooks/github`, `POST /hooks/linear`, `POST /hooks/sentry` and `POST /hooks/honeycomb`, which take
+Every endpoint takes `GET`, except the [writes](#writes), `POST /hooks/github`, `POST /hooks/linear`, `POST /hooks/sentry`, `POST /hooks/honeycomb` and `POST /hooks/figma`, which take
 `POST`. Each one under `/api` needs `Authorization: Bearer <token>`; the web view's files do not.
 Each listing returns the same JSON as
 the CLI command with `--json`, with the state's `revision`, an integer, read in the same
@@ -71,6 +71,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /hooks/linear` | | `200` for a signed Linear delivery, with `[webhooks.linear]`. See [below](#post-hookslinear) |
 | `POST /hooks/sentry` | | `202` for a signed Sentry delivery, with `[webhooks.sentry]`. See [below](#post-hookssentry) |
 | `POST /hooks/honeycomb` | | `202` for a Honeycomb delivery with the Shared Secret, with `[webhooks.honeycomb]`. See [below](#post-hookshoneycomb) |
+| `POST /hooks/figma` | | `200` for a Figma delivery with the webhook's passcode, with `[webhooks.figma]`. See [below](#post-hooksfigma) |
 | any other path | | the web view, with `web = true`: see [Web view files](#web-view-files) |
 
 Times are RFC 3339 strings in UTC. A field with no value is `null`. Agent text, such as a question
@@ -317,6 +318,22 @@ The reply is `202` with `{"outcome": "published"}`, or `{"outcome": "dropped"}` 
 test alert, one no trigger matches, or one Priory already holds. A body that is not JSON, or a
 payload that lacks a field of the template, gets `400`. When the event log cannot take the
 message, the reply is `503` with `Retry-After`, so Honeycomb retries.
+
+## `POST /hooks/figma`
+
+Served only with [`[webhooks.figma]`](factory.md#webhooksfigma). It takes no token: the passcode in
+the body is its authentication. [figma.md](../intake/figma.md) explains what the passcode proves and
+what a delivery publishes.
+
+| Part | Meaning |
+| ---- | ------- |
+| `passcode` in the JSON body | The passcode the webhook was created with. The body is parsed only to read it. Not JSON, missing or wrong: `400`, as Figma's docs ask, and nothing else in the body is read |
+| `Content-Length` | Required, at most 1 MiB. Over it: `413` before the body is read |
+
+The reply is `200`, which Figma needs to count a delivery as received, with
+`{"outcome": "published"}`, or `{"outcome": "dropped"}` for a `PING`, another event type, a comment
+no trigger matches, or one Priory already holds. A comment that lacks its file key, comment id or
+time gets `400`.
 
 ## Desk
 

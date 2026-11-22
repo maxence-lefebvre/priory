@@ -1,7 +1,8 @@
 # Bug investigation
 
 When someone adds the label `bug` to an issue of `owner/repo`, Sentry reports a new error issue
-in `my-project`, or a Honeycomb Trigger fires in `production`, an agent reproduces the bug, finds its root cause, fixes it with a test, and asks
+in `my-project`, a Honeycomb Trigger fires in `production`, or someone comments on the Figma file
+where your designers review the built app, an agent reproduces the bug, finds its root cause, fixes it with a test, and asks
 you before it opens the fix pull request.
 
 ## What it needs
@@ -23,6 +24,13 @@ recipient pointed at `<url>/hooks/honeycomb` with Priory's payload template. Put
 Shared Secret in `HONEYCOMB_WEBHOOK_SECRET`. Replace `production` in
 `triggers/honeycomb-alert.toml` with your environment's name, or delete the file and the
 `[webhooks.honeycomb]` table. See [docs/intake/honeycomb.md](../../docs/intake/honeycomb.md).
+
+The Figma trigger needs the same server, reachable from Figma, and a Figma webhook for
+`FILE_COMMENT` pointed at `<url>/hooks/figma`. Put the passcode you created it with in
+`FIGMA_WEBHOOK_PASSCODE`. Replace `my-file-key` in `triggers/figma-comment.toml` with the file's
+key. Every comment on that file reaches the same task while it is open. Delete the file and the
+`[webhooks.figma]` table if you do not use Figma. See
+[docs/intake/figma.md](../../docs/intake/figma.md).
 
 ## Gates
 
