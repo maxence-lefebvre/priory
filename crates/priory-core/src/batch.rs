@@ -1127,16 +1127,28 @@ pub(crate) fn desk_line(db: &Connection, id: i64) -> rusqlite::Result<Option<Str
             None => next.push((on, vec![task])),
         }
     }
+    // A task by its key without the source, as the views name it (DESIGN.md, Copy).
+    let name = |task: i64| {
+        batch["entries"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|entry| entry["task"] == task)
+            .and_then(|entry| entry["key"].as_str())
+            .map(|key| {
+                let key = key.strip_prefix("linear:").unwrap_or(key);
+                key.strip_prefix("github:").unwrap_or(key).to_owned()
+            })
+            .unwrap_or_else(|| format!("task {task}"))
+    };
     if let Some((on, tasks)) = next.first() {
-        let named: Vec<String> = tasks.iter().map(i64::to_string).collect();
+        let named: Vec<String> = tasks.iter().map(|task| name(*task)).collect();
         let named: Vec<&str> = named.iter().map(String::as_str).collect();
-        let (tasks, start) = match tasks.len() {
-            1 => ("task", "starts"),
-            _ => ("tasks", "start"),
-        };
+        let start = if tasks.len() == 1 { "starts" } else { "start" };
         line.push_str(&format!(
-            " Next: {tasks} {} {start} when task {on} merges.",
-            listed(&named)
+            " Next: {} {start} when {} merges.",
+            listed(&named),
+            name(*on)
         ));
     }
     Ok(Some(line))

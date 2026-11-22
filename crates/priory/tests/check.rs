@@ -61,7 +61,7 @@ fn valid() -> Vec<(&'static str, &'static str)> {
         ("agents/implementer/agent.md", AGENT),
         ("triggers/agent-label.toml", TRIGGER),
         ("workflows/implement.toml", WORKFLOW),
-        ("runners/xps13.toml", RUNNER),
+        ("runners/desktop.toml", RUNNER),
     ]
 }
 
@@ -131,7 +131,7 @@ fn a_factory_in_yaml_passes() {
             "workflows/implement.yaml",
             "start: implement\nsteps:\n  - id: implement\n    decides: model\n    agent: implementer\n    prompt: Implement the issue.\n    effect: reversible\n    next: { passed: done, failed: stop }\n",
         ),
-        ("runners/xps13.yaml", "platform: { os: linux }\n"),
+        ("runners/desktop.yaml", "platform: { os: linux }\n"),
     ];
 
     let outcome = check(&factory("yaml", &files));
@@ -351,11 +351,14 @@ fn the_bypass_permissions_mode_is_refused() {
 fn a_toml_syntax_error_names_its_file_and_line() {
     let runner = "platform = { os = \"linux\" }\nagents = { cpu = 50% }\n";
 
-    let outcome = check(&factory("toml-syntax", &with("runners/xps13.toml", runner)));
+    let outcome = check(&factory(
+        "toml-syntax",
+        &with("runners/desktop.toml", runner),
+    ));
 
     assert_eq!(outcome.code, 1);
     assert!(
-        outcome.stderr.starts_with("runners/xps13.toml:2:"),
+        outcome.stderr.starts_with("runners/desktop.toml:2:"),
         "{}",
         outcome.stderr
     );
@@ -1489,6 +1492,65 @@ fn a_sweep_table_passes_and_a_bad_one_names_its_line() {
 }
 
 #[test]
+fn repository_recipes_pass_and_a_bad_one_names_its_line() {
+    let good = "name = \"demo\"\n\n[repos.\"owner/repo\"]\nsetup = { argv = [\"npm\", \"ci\"], timeout = \"15m\" }\nresume = { shell = \"npm ci --prefer-offline\" }\nteardown = { shell = \"docker compose down\" }\n";
+    let ok = check(&factory("recipes-ok", &with("factory.toml", good)));
+    let bad = |name: &str, from: &str, to: &str| {
+        let text = good.replace(from, to);
+        check(&factory(name, &with("factory.toml", &text)))
+    };
+    let both = bad(
+        "recipes-both",
+        "argv = [\"npm\", \"ci\"]",
+        "argv = [\"npm\"], shell = \"npm ci\"",
+    );
+    let empty = bad("recipes-empty", "argv = [\"npm\", \"ci\"]", "argv = []");
+    let repo = bad("recipes-repo", "owner/repo", "repo");
+    let merge = bad(
+        "recipes-merge",
+        "docker compose down",
+        "gh pr merge --squash",
+    );
+    let unknown = bad("recipes-unknown", "teardown =", "cleanup =");
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (both.code, both.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[repos.\"owner/repo\"] setup` needs one of `argv` or `shell`, not both\n"
+        )
+    );
+    assert_eq!(
+        (empty.code, empty.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[repos.\"owner/repo\"] setup` needs a program in `argv`\n"
+        )
+    );
+    assert_eq!(
+        (repo.code, repo.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[repos]` key `repo` needs to be `owner/name`\n"
+        )
+    );
+    assert_eq!(
+        (merge.code, merge.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[repos.\"owner/repo\"] teardown` runs `gh pr merge --squash`, which the guard `gh-pr-merge` holds irreversible: a recipe runs with no person's approval\n"
+        )
+    );
+    assert_eq!(unknown.code, 1);
+    assert!(
+        unknown.stderr.contains("unknown field `cleanup`"),
+        "{}",
+        unknown.stderr
+    );
+}
+
+#[test]
 fn an_agent_disk_that_is_not_a_size_names_its_line() {
     let agent = AGENT.replace(
         "session = \"per-task\"\n",
@@ -2284,6 +2346,46 @@ fn a_skill_named_unlike_its_folder_fails_the_check() {
     );
 }
 
+#[test]
+fn a_path_glob_the_hook_cannot_match_fails_the_check_on_its_paths_line() {
+    let mut files = valid();
+    files.push((
+        "skills/changelog/SKILL.md",
+        "---\nname: changelog\ndescription: Edits the changelog.\npaths:\n  - CHANGELOG.md\n  - \"docs/**/*.{md,txt}\"\n---\nOne line per change.\n",
+    ));
+    files.push((
+        "memories/gate-cost.md",
+        "+++\nname = \"gate-cost\"\ndescription = \"How long the gate takes.\"\npaths = \"crates/*/tests/?.rs\"\n+++\nFour minutes.\n",
+    ));
+    files.push((
+        "skills/release-notes/SKILL.md",
+        "---\nname: release-notes\ndescription: Writes release notes.\npaths: [\"/etc/*.md\", \"src/../x\"]\n---\nList each change.\n",
+    ));
+    files.push((
+        "memories/release-day.md",
+        "---\nname: release-day\ndescription: When releases go out.\npaths:\n  - \"src/a**/b\"\n  - \"[ab].rs\"\n  - \"{a,{b,c}}\"\n  - \"\"\n---\nTuesdays.\n",
+    ));
+
+    let outcome = check(&factory("paths-invalid", &files));
+
+    assert_eq!(outcome.code, 1, "{}", outcome.stderr);
+    for line in [
+        "skills/release-notes/SKILL.md:4: the path glob `/etc/*.md` starts with /: a glob is relative to the repository root",
+        "skills/release-notes/SKILL.md:4: the path glob `src/../x` has a `.` or `..` part",
+        "memories/release-day.md:5: the path glob `src/a**/b` puts ** inside a part: ** stands alone between slashes",
+        "memories/release-day.md:5: the path glob `[ab].rs` holds `[`: a glob takes *, **, ? and {a,b}",
+        "memories/release-day.md:5: the path glob `{a,{b,c}}` nests braces or leaves one open",
+        "memories/release-day.md:5: a path glob is empty",
+    ] {
+        assert!(
+            outcome.stderr.contains(line),
+            "{line} in {}",
+            outcome.stderr
+        );
+    }
+    assert_eq!(outcome.stderr.lines().count(), 6, "{}", outcome.stderr);
+}
+
 fn codex_with_instructions(name: &str, instructions: &str) -> Outcome {
     let mut files = valid();
     files[1] = (
@@ -2846,5 +2948,51 @@ fn a_symlink_out_of_the_factory_is_refused_as_a_pre_script() {
             1,
             "triggers/agent-label.toml:9: `[pre] argv`: scripts/link leaves the factory folder\n"
         )
+    );
+}
+
+#[test]
+fn a_budget_needs_a_claude_agent_a_price_table_and_an_amount_above_zero() {
+    let budgeted = WORKFLOW.replace(
+        "prompt = \"Implement the issue.\"",
+        "prompt = \"Implement the issue.\"\nbudget = \"1.00\"",
+    );
+    let prices =
+        "[claude-sonnet-5-5]\ninput = 2.0\noutput = 10.0\ncache_read = 0.1\ncache_write = 2.5\n";
+    let mut files = with("workflows/implement.toml", &budgeted);
+    files.push(("prices.toml", prices));
+    assert_eq!(check(&factory("budget", &files)).stderr, "");
+
+    let unpriced = check(&factory(
+        "budget-unpriced",
+        &with("workflows/implement.toml", &budgeted),
+    ));
+    assert_eq!(unpriced.code, 1);
+    assert_eq!(
+        unpriced.stderr,
+        "workflows/implement.toml:4: step `implement`: `budget` needs prices.toml, which turns the step's tokens into dollars\n"
+    );
+
+    let negative = budgeted.replace("\"1.00\"", "\"-1\"");
+    let mut files = with("workflows/implement.toml", &negative);
+    files.push(("prices.toml", prices));
+    let refused = check(&factory("budget-negative", &files));
+    assert_eq!(refused.code, 1);
+    assert_eq!(
+        refused.stderr,
+        "workflows/implement.toml:4: step `implement`: `budget` \"-1\" is not an amount of dollars above zero, such as \"1.00\"\n"
+    );
+
+    let codex =
+        "+++\ndescription = \"Implements one task.\"\nharness = \"codex\"\n+++\nMake the change.\n";
+    let mut files = with("workflows/implement.toml", &budgeted);
+    files.retain(|(path, _)| *path != "agents/implementer/agent.md");
+    files.push(("agents/implementer/agent.md", codex));
+    files.push(("prices.toml", prices));
+    let refused = check(&factory("budget-codex", &files));
+    assert_eq!(refused.code, 1);
+    assert_eq!(
+        refused.stderr,
+        "workflows/implement.toml:4: step `implement`: `budget` needs a Claude Code agent: Priory reads no Codex tokens\n"
     );
 }

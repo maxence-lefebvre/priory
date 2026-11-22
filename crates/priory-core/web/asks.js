@@ -11,7 +11,8 @@ export const snoozed = (ask, now) => ask.state === "open" && Boolean(ask.snoozed
 
 // The asks list's groups. An ask snoozed past `now` leaves Open for Snoozed (DESIGN.md, Snooze).
 export function askGroups(asks, now) {
-  const open = asks.filter((ask) => ask.state === "open");
+  // `since` may carry any offset, so compare instants, not strings.
+  const open = asks.filter((ask) => ask.state === "open").sort((a, b) => (Date.parse(a.since) || 0) - (Date.parse(b.since) || 0));
   return {
     open: open.filter((ask) => !snoozed(ask, now)),
     snoozed: open.filter((ask) => snoozed(ask, now)),
@@ -19,6 +20,10 @@ export function askGroups(asks, now) {
     withdrawn: asks.filter((ask) => ask.state === "withdrawn").reverse(),
   };
 }
+
+/** The open asks of task `task`, snoozed ones too, oldest first. @param {any[]} asks @param {number} task */
+export const openAsksOf = (asks, task) =>
+  asks.filter((ask) => ask.task === task && ask.state === "open").sort((a, b) => Date.parse(a.since) - Date.parse(b.since));
 
 /** "with <lead>" for an open ask or desk item routed to a lead, else null. @param {any} ask */
 export const routedMark = (ask) => (ask?.routed_to && (ask.state ?? "open") === "open" ? `with ${ask.routed_to}` : null);

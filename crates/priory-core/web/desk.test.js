@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, memoryNote, memoryTag } from "./desk.js";
+import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, countWords, memoryNote, memoryTag } from "./desk.js";
 
-const why = "an alarm: work stopped and waits on a person";
+const why = "work stopped and waits on a person";
 
 test("the next thing opens the page that answers it", () => {
   assert.equal(nextLink({ kind: "ask", id: 42, task: 7 }), "/asks/42");
@@ -142,4 +142,13 @@ test("an accept or a drop says what happened, or why it was not sent", () => {
   assert.equal(memoryNote("drop", 404, { error: "no memory candidate c-9" }), "Not sent: no memory candidate c-9. The list reads it again.");
   assert.equal(memoryNote("accept", 503, { error: "the log is unreachable since 10:00: try again when it is back. Nothing was sent: try again" }), "Could not send: the log is unreachable since 10:00: try again when it is back. Nothing was sent: try again.");
   assert.equal(memoryNote("accept", 0, { error: "the connection dropped" }), "The server may have sent this but did not confirm it. Check the list before you send again.");
+});
+
+test("the Desk's count line names every item Needs me counts besides the asks", () => {
+  const none = { stopped: 0, todos: 0, reports: 0, other: 0 };
+  assert.equal(countWords({ ...none, oldest: "5 min" }), "Oldest waits 5 min.");
+  assert.equal(countWords({ ...none, oldest: "3 h", stopped: 1, other: 2 }), "Oldest waits 3 h. Also 1 stopped and 2 waiting.");
+  assert.equal(countWords({ oldest: null, stopped: 0, todos: 2, reports: 1, other: 0 }), "Also 2 to-dos and 1 report.");
+  assert.equal(countWords({ oldest: null, stopped: 2, todos: 1, reports: 3, other: 1 }), "Also 2 stopped, 1 to-do, 3 reports and 1 waiting.");
+  assert.equal(countWords({ ...none, oldest: null }), "");
 });

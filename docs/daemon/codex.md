@@ -19,6 +19,7 @@ fires at startup, so its paste and confirmation stay as they are.
 | Priory duty | Claude Code | Codex |
 | ----------- | ----------- | ----- |
 | The `priory` MCP server | `--mcp-config` | `-c mcp_servers.priory={command, args, env}`, with `default_tools_approval_mode = "approve"` in place of Claude's `mcp__priory` allow rule |
+| The agent's `mcpServers`, and no other server | `--strict-mcp-config`, with the definitions copied into the `--mcp-config` file | the definitions stay in the person's own Codex config. Codex has no strict flag, so every other server of `$CODEX_HOME/config.toml` and the worktree's `.codex/config.toml` gets `-c mcp_servers.<name>.enabled=false` |
 | Session id (R5.5) | `--session-id <UUID>` Priory chooses | the thread from the `SessionStart` hook's `session_id`, stored on the run; `priory runs` shows it |
 | Resume | `--resume <session>` | `codex resume <thread>` |
 | First prompt | pasted after `SessionStart` | the last argument, `-- <prompt>` |
@@ -28,7 +29,8 @@ fires at startup, so its paste and confirmation stay as they are.
 | A prompt shown anyway | `Notification` hook with `permission_prompt` | no equivalent: Codex has no notification hook for an approval prompt. A prompt that shows despite the deny hook stalls the turn until its step `timeout` blocks the task |
 | Permission policy (R7.2) | `--permission-mode`, `allow` and `deny` rules, `PermissionRequest` deny hook | `sandbox_mode`, `approval_policy` and `approvals_reviewer` by `defaultMode`, below, and the same `PermissionRequest` deny hook |
 | Built-in question tool (R6.4) | `PreToolUse` deny on `AskUserQuestion` | `PreToolUse` deny on `request_user_input`, which Codex offers only in plan collaboration mode, which Priory never sets |
-| Tool guard | `PreToolUse` hook on `Bash` and `mcp__.*` | the same hook on every tool. Codex 0.170 blocks a command or tool call that a `PreToolUse` hook denies; no test runs real Codex, so whether its shell tool and MCP calls reach the hook is unchecked |
+| Tool guard | `PreToolUse` hook on `Bash`, `mcp__.*` and the file tools | the same hook on every tool. Codex 0.170 blocks a command or tool call that a `PreToolUse` hook denies; no test runs real Codex, so whether its shell tool and MCP calls reach the hook is unchecked |
+| Skills and memories by path | the `PreToolUse` hook adds each file whose `paths` match a file tool's file (see [skills.md](skills.md#skills-and-memories-by-path)) | none yet: Codex has no file tool the hook reads |
 | Model, effort, agent body and the factory's writing guide | `--model`, `--effort`, `--append-system-prompt` | `-c model`, `-c model_reasoning_effort`, `-c developer_instructions` |
 | The factory's `instructions.md` | before the body, through `--append-system-prompt-file` | before the body, in `developer_instructions`, which `priory check` keeps under 8192 bytes ([skills.md](skills.md)) |
 | The factory's skills | `--plugin-dir` | none yet |
@@ -72,6 +74,10 @@ Known limits:
   `auto_review` runs before the deny hook, come from Codex's documentation, unchecked. That
   `SessionStart` comes with the first turn was seen with Codex 0.170.
 - Priory invoked by a bare name, as from `PATH`, names its resolved binary; set `PRIORY_EXE` then.
+- Priory turns off only the MCP servers it reads in `$CODEX_HOME/config.toml` and the worktree's
+  `.codex/config.toml`. A server from a Codex profile, or from a config in a folder above the
+  worktree, still starts. A name Priory found in the worktree's file starts only if Codex trusts
+  that project. Neither the config reading nor `enabled = false` was checked against a real Codex.
 - An agent whose harness changes mid-task starts a new session, since neither harness resumes the
   other's.
 - Codex keeps its transcripts under `~/.codex/sessions`, by thread. The traces slice reads token use

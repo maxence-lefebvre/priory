@@ -26,11 +26,4 @@ export function duration(run, now) {
   return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
 }
 
-/** A run's input, output and cache tokens added up: "640", "1.5k", "312k", "3.3M". @param {any} tokens */
-export function tokenText(tokens) {
-  if (!tokens) return "";
-  const total = (tokens.input ?? 0) + (tokens.output ?? 0) + (tokens.cache_read ?? 0) + (tokens.cache_write ?? 0);
-  const short = (/** @type {number} */ value, /** @type {string} */ unit) => `${value < 10 ? Math.round(value * 10) / 10 : Math.round(value)}${unit}`;
-  if (total >= 1e6) return short(total / 1e6, "M");
-  return total >= 1000 ? short(total / 1000, "k") : String(total);
-}
+export { tokenText } from "./costs.js";

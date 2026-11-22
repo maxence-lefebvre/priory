@@ -58,7 +58,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --session-id|--resume) session=$2; shift 2 ;;
     --settings) settings=$2; shift 2 ;;
-    --mcp-config) mcp=$2; shift 2 ;;
+    # Claude Code takes the config as JSON or as a file's path.
+    --mcp-config) if [ -f "$2" ]; then mcp=$(cat "$2"); else mcp=$2; fi; shift 2 ;;
     --) first=$2; shift 2 ;;
     *) shift ;;
   esac

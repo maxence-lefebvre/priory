@@ -1250,7 +1250,7 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
 }
 
 /// Why an alarm ranks first.
-pub(crate) const ALARM: &str = "an alarm: work stopped and waits on a person";
+pub(crate) const ALARM: &str = "work stopped and waits on a person";
 
 /// The ranking's groups, first to last, each with why its items rank where they do. Irreversible
 /// and review asks share a group.

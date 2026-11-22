@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { emptyDetail, eventWords, handled, unheardActs, unheardNote, unroutedNote, routeAction, neverOwned } from "./inbox.js";
+import { emptyDetail, eventWords, handled, sinceWords, unheardActs, unheardNote, unroutedNote, routeAction, neverOwned } from "./inbox.js";
 
 const event = (fields) => ({ seq: 4, type: "github.pull_request.comment", subject: "o/r#7", time: "2026-11-21T09:00:00Z", task: 1, outcome: "kept", prompt: null, wait: null, ...fields });
 
@@ -11,6 +11,7 @@ test("an inbox event says what it did, as priory task prints it", () => {
   assert.equal(handled(event({ outcome: "woke", prompt: "confirmed", wait: 3 }), 1), "woke, delivered as prompt, fired wait 3");
   assert.equal(handled(event({ outcome: "coalesced", type: "factory.task.requested" }), 1), "coalesced");
   assert.equal(handled(event({ task: 2, outcome: "kept", prompt: null, wait: 5 }), 1), "kept, fired wait 5 (routed to task 2)");
+  assert.equal(handled(event({ task: 2 }), 1, (id) => (id === 2 ? "ENG-9" : "")), "kept (routed to ENG-9)");
   assert.equal(handled(event({ prompt: "withdrawn" }), 1), "kept, prompt withdrawn");
 });
 
@@ -62,4 +63,11 @@ test("the empty detail pane beside the Inbox names an event, not an ask", () => 
   assert.equal(emptyDetail(["inbox", "terminal"]), "Open an event's task to read what the event did.");
   assert.equal(emptyDetail(["desk"]), "Select an ask to read it here.");
   assert.equal(emptyDetail(["inbox", "asks"]), "Select an ask to read it here.");
+});
+
+test("a Since you looked line names its event type in plain words and keeps its subject", () => {
+  assert.equal(sinceWords("factory.run.scored implement"), "run scored implement");
+  assert.equal(sinceWords("github.pull_request_review.submitted acme/shop#245: kept"), "GitHub pull request review submitted acme/shop#245: kept");
+  assert.equal(sinceWords("linear.issue.updated"), "Linear issue updated");
+  assert.equal(sinceWords("ENG-224: Morning report is ready"), "ENG-224: Morning report is ready");
 });

@@ -134,6 +134,7 @@ a.facet[aria-current="true"] { background: var(--action-soft); color: var(--acti
 .strip { margin: 0 var(--gutter); padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--text-3); font: 400 var(--type-small) var(--font-ui); }
 .strip li { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; padding: 6px 0; color: var(--text-2); }
 .strip li + li { border-top: 1px solid var(--line); }
+.strip .open { display: inline-flex; align-items: center; min-height: 44px; margin-bottom: -12px; color: var(--action-text); font-weight: 500; }
 
 /* The next thing and Since you looked */
 .next { margin: 4px var(--gutter) 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); display: grid; gap: 6px; }
@@ -178,6 +179,9 @@ a.facet[aria-current="true"] { background: var(--action-soft); color: var(--acti
 .ahead .iconbtn { width: 40px; color: var(--text-2); }
 .ahead .iconbtn[aria-disabled="true"] { color: var(--text-3); opacity: 0.5; }
 .ask { display: flex; flex-direction: column; gap: 14px; padding: 4px var(--gutter) 16px; }
+.taskasks { display: grid; gap: 8px; }
+.taskasks li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); font: 500 var(--type-small) var(--font-ui); overflow-wrap: anywhere; }
+.taskasks .age { margin-left: 8px; color: var(--text-3); font-weight: 400; }
 .ctx { display: flex; gap: 6px 8px; align-items: center; flex-wrap: wrap; font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); }
 .ctx .mono { color: var(--text); }
 .write { align-self: flex-start; margin-left: -12px; }
@@ -192,6 +196,25 @@ a.facet[aria-current="true"] { background: var(--action-soft); color: var(--acti
 .sh .meta .mono { font-size: 12px; color: var(--text-2); }
 a.autolink { color: var(--action-text); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .text { font: 400 var(--type-read) var(--font-ui); max-width: var(--measure); white-space: pre-wrap; overflow-wrap: anywhere; }
+.md { font: 400 var(--type-read) var(--font-ui); max-width: var(--measure); overflow-wrap: anywhere; display: grid; gap: 10px; min-width: 0; }
+.md :is(p, ul, ol, pre, h3, h4, h5) { margin: 0; }
+.md h3 { font: 700 var(--type-read-h1) var(--font-display); margin-top: 6px; }
+.md :is(h4, h5) { font: 650 var(--type-read-h2) var(--font-ui); margin-top: 4px; }
+.md :is(ul, ol) { padding-left: 22px; display: grid; gap: 4px; }
+.md ul { list-style: disc; }
+.md ol { list-style: decimal; }
+.md li::marker { color: var(--text-3); }
+.md ul.checks { list-style: none; padding-left: 0; }
+.md .checks li { display: grid; grid-template-columns: 22px minmax(0, 1fr); align-items: baseline; }
+.md .checks li.done .ico { color: var(--ok-text); align-self: center; }
+.md .checks .box { width: 12px; height: 12px; border: 1.5px solid var(--text-3); border-radius: var(--radius-sm); align-self: center; }
+.md code { font: 400 13px var(--font-mono); background: var(--raised); border-radius: var(--radius-sm); padding: 1px 4px; }
+.md pre { font: 400 var(--type-mono) var(--font-mono); background: var(--raised); border-radius: var(--radius-md); padding: 10px 12px; overflow-x: auto; white-space: pre; overflow-wrap: normal; }
+.md pre code { font: inherit; background: none; padding: 0; }
+.md a { color: var(--action-text); text-decoration: underline; text-underline-offset: 2px; }
+.md .host, .md .img { color: var(--text-3); }
+.md .host { font: 400 var(--type-small) var(--font-ui); }
+.md .img { font-style: italic; }
 .fact { display: grid; grid-template-columns: 18px 1fr; gap: 8px; font: 400 var(--type-small) var(--font-ui); color: var(--text-2); }
 .fact .ico { margin-top: 2px; color: var(--text-3); }
 .fact b { color: var(--text); font-weight: 650; }
@@ -312,6 +335,8 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .links li { border-top: 1px solid var(--line); }
 .links a { display: flex; align-items: center; gap: 12px; min-height: var(--row-min); padding: 0 var(--gutter); font-weight: 500; }
 .links a .chev { margin-left: auto; color: var(--text-3); }
+.signout { padding: var(--space-5) var(--gutter); }
+.notfound { display: grid; gap: 16px; justify-items: start; }
 
 @media (pointer: fine) { .btn, .ghost { min-height: var(--control-fine); } .btn { height: var(--control-fine); } }
 @media (prefers-contrast: more) { :root { --line: var(--control-line); } }
@@ -333,8 +358,13 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .cmd small { font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); }
 .list { container-type: inline-size; }
 /* The fixed columns take 498 px: below 760 px Answer goes first, so the question keeps its width. */
+.tbl .fifth { display: none; }
 @container (max-width: 760px) {
   .tbl th:nth-child(5), .tbl td:nth-child(5) { width: 0; padding: 0; font-size: 0; visibility: hidden; }
+  .tbl .fifth { display: block; margin-top: 6px; color: var(--text-2); font: 400 var(--type-small) var(--font-ui); }
+  .tbl td.q .fifth > span:not(.task-acts) { display: inline; overflow: visible; }
+  .tbl td.q .fifth .task-acts { display: flex; flex-wrap: wrap; }
+  .tbl td.q .tag + .fifth { margin-top: 0; }
 }
 @container (max-width: 560px) {
   .tbl th:nth-child(3), .tbl td:nth-child(3), .tbl th:nth-child(5), .tbl td:nth-child(5) { width: 0; padding: 0; font-size: 0; visibility: hidden; }
@@ -343,7 +373,7 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 }
 .tbl td.q.full span { display: block; overflow: visible; }
 .tbl td.q span.tag { display: inline-block; margin-bottom: 4px; color: var(--text-2); }
-.opt[aria-disabled="true"]:not(.rec-opt), .abar .btn.secondary[aria-disabled="true"] { color: var(--text-3); }
+.opt[aria-disabled="true"]:not(.rec-opt):not(.chosen), .abar .btn.secondary[aria-disabled="true"] { color: var(--text-3); }
 .medium.no-drawer, .compact.no-drawer { display: flex; flex-direction: column; }
 @media (pointer: coarse) {
   .views a, .jump a, .facet > summary, a.facet { position: relative; }

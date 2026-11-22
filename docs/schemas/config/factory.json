@@ -362,6 +362,78 @@
       },
       "type": "object"
     },
+    "Recipe": {
+      "additionalProperties": false,
+      "description": "One command of a repository's recipe: `argv`, which Priory execs as it is, or `shell`, which it\nruns with `sh -c`.",
+      "properties": {
+        "argv": {
+          "description": "The program and its arguments, run with no shell.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "shell": {
+          "description": "A shell command, run with `sh -c`.",
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout": {
+          "default": null,
+          "description": "How long it may run before Priory kills it with its process group; `command_timeout` when\nunset.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Repo": {
+      "additionalProperties": false,
+      "description": "`[repos.\"owner/name\"]`: what the daemon runs in a worktree of the repository, so no run has to\nfind out how to install and build it.",
+      "properties": {
+        "resume": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Recipe"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Runs after the daemon adds back the worktree a retirement removed, before its agent\nstarts. A failure blocks the task."
+        },
+        "setup": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Recipe"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Runs after the daemon adds a task's new worktree, before its agent starts. A failure blocks\nthe task."
+        },
+        "teardown": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Recipe"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Runs before the sweep or a retirement removes the worktree. A failure keeps the worktree."
+        }
+      },
+      "type": "object"
+    },
     "RequestDefaults": {
       "additionalProperties": false,
       "description": "What `priory add` and `POST /api/request` use when a request names no workflow or band.",
@@ -819,6 +891,13 @@
     },
     "queue": {
       "$ref": "#/definitions/Queue"
+    },
+    "repos": {
+      "additionalProperties": {
+        "$ref": "#/definitions/Repo"
+      },
+      "description": "Recipes by repository, each key a GitHub `owner/name`: the commands the daemon runs in a\ntask's worktree of that repository.",
+      "type": "object"
     },
     "request": {
       "anyOf": [

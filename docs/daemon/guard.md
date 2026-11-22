@@ -133,7 +133,9 @@ directly or through a wrapper.
 ## The hook and its deadline
 
 Every Claude run's settings register `priory hook PreToolUse` for `Bash` and `mcp__.*` calls, with a
-30-second hook timeout. A Codex run registers it for every tool (see [codex.md](codex.md)).
+30-second hook timeout. They register it for the file tools `Read`, `Edit`, `Write`, `MultiEdit`
+and `NotebookEdit` too, which no guard matches, so the hook can add the skills and memories whose
+`paths` match the file (see [skills.md](skills.md#skills-and-memories-by-path)). A Codex run registers it for every tool (see [codex.md](codex.md)).
 
 The hook matches the call itself, with the built-in guards and the factory's, which the run's pane
 holds in `PRIORY_GUARD`. A call no guard matches passes at once, without the daemon, so reads keep

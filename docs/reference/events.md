@@ -1502,7 +1502,7 @@ Schema: [`priory.task.claimed.json`](../schemas/events/priory.task.claimed.json)
     "key": "github:acme/widgets#42",
     "runner": "workstation",
     "request": "ef68a451-bc80-5a71-820f-2fb320bb3a8d",
-    "from": "xps13"
+    "from": "desktop"
   },
   "links": []
 }
@@ -1529,7 +1529,7 @@ key. Schema: [`priory.task.held.json`](../schemas/events/priory.task.held.json).
   "time": "2026-11-21T10:00:05Z",
   "data": {
     "key": "github:acme/widgets#42",
-    "runner": "xps13",
+    "runner": "desktop",
     "hold": "kept",
     "generation": 1
   },
@@ -1552,10 +1552,10 @@ Schema: [`priory.runner.alive.json`](../schemas/events/priory.runner.alive.json)
 {
   "id": "9d3b7e21-4c5a-5f68-a1b2-c3d4e5f6a7b8",
   "type": "priory.runner.alive",
-  "subject": "xps13",
+  "subject": "desktop",
   "time": "2026-11-21T10:00:00Z",
   "data": {
-    "runner": "xps13"
+    "runner": "desktop"
   },
   "links": []
 }
@@ -1583,10 +1583,10 @@ Schema: [`priory.ask.answered.json`](../schemas/events/priory.ask.answered.json)
 {
   "id": "0196f1c3-1b2c-7d4e-8f9a-0b1c2d3e4f5a",
   "type": "priory.ask.answered",
-  "subject": "xps13:7",
+  "subject": "desktop:7",
   "time": "2026-11-21T10:20:00Z",
   "data": {
-    "runner": "xps13",
+    "runner": "desktop",
     "ask": 7,
     "revision": 1,
     "text": "approved",
@@ -1617,10 +1617,10 @@ Schema: [`priory.ask.dismissed.json`](../schemas/events/priory.ask.dismissed.jso
 {
   "id": "0196f1c4-2c3d-7e5f-9a0b-1c2d3e4f5a6b",
   "type": "priory.ask.dismissed",
-  "subject": "xps13:8",
+  "subject": "desktop:8",
   "time": "2026-11-21T10:21:00Z",
   "data": {
-    "runner": "xps13",
+    "runner": "desktop",
     "ask": 8,
     "revision": 2,
     "submission": "0196f1c4-2c3d-7e5f-9a0b-1c2d3e4f5a6b"
@@ -1650,10 +1650,10 @@ Schema: [`priory.ask.posted.json`](../schemas/events/priory.ask.posted.json).
 {
   "id": "a3c81f5d-29e4-5b07-9c6a-d1e2f3a4b5c6",
   "type": "priory.ask.posted",
-  "subject": "xps13:7",
+  "subject": "desktop:7",
   "time": "2026-11-21T10:00:02Z",
   "data": {
-    "runner": "xps13",
+    "runner": "desktop",
     "ask": 7,
     "version": 1,
     "kind": "step",
@@ -1696,10 +1696,10 @@ The owner of an ask applied or refused an answer or dismiss another machine sent
 {
   "id": "5e2b9c47-8d1a-5f36-b0c2-4a7e9d1f3b58",
   "type": "priory.ask.applied",
-  "subject": "xps13:7",
+  "subject": "desktop:7",
   "time": "2026-11-21T10:20:01Z",
   "data": {
-    "runner": "xps13",
+    "runner": "desktop",
     "ask": 7,
     "submission": "0196f1c3-1b2c-7d4e-8f9a-0b1c2d3e4f5a",
     "outcome": "answered"
@@ -1732,10 +1732,10 @@ Schema: [`priory.task.acted.json`](../schemas/events/priory.task.acted.json).
 {
   "id": "0196f1c5-3d4e-7f60-8b1c-2d3e4f5a6b7c",
   "type": "priory.task.acted",
-  "subject": "xps13:github:acme/widgets#42",
+  "subject": "desktop:github:acme/widgets#42",
   "time": "2026-11-21T10:22:00Z",
   "data": {
-    "runner": "xps13",
+    "runner": "desktop",
     "key": "github:acme/widgets#42",
     "generation": 1,
     "act": "say",
@@ -1766,10 +1766,10 @@ A runner applied or refused an action that another machine sent to one of its ta
 {
   "id": "6f3c0d58-9e2b-5a47-c1d3-5b8f0e2a4c69",
   "type": "priory.task.applied",
-  "subject": "xps13:github:acme/widgets#42",
+  "subject": "desktop:github:acme/widgets#42",
   "time": "2026-11-21T10:22:01Z",
   "data": {
-    "runner": "xps13",
+    "runner": "desktop",
     "key": "github:acme/widgets#42",
     "generation": 1,
     "submission": "0196f1c5-3d4e-7f60-8b1c-2d3e4f5a6b7c",
@@ -1815,7 +1815,7 @@ Schema: [`priory.memory.written.json`](../schemas/events/priory.memory.written.j
     "description": "When releases go out. Read it before you plan or merge a change near a release.",
     "text": "Releases go out on Tuesdays. Merge nothing risky on a Monday afternoon.",
     "task": "github:acme/widgets#42",
-    "runner": "xps13"
+    "runner": "desktop"
   },
   "links": []
 }

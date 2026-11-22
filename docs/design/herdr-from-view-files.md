@@ -119,7 +119,7 @@ today selects `asks` in the side stack, selects that block in its stack instead.
 3. `adapters/herdr/layout` reads the views JSON on its standard input and writes `priory.json` into
    Herdr's layouts folder. Its input is only that JSON, so it does not care where Priory runs:
    `priory views --json | adapters/herdr/layout` on Priory's machine, or
-   `ssh xps13 priory views --json | adapters/herdr/layout` from another. `install` takes the same
+   `ssh desktop priory views --json | adapters/herdr/layout` from another. `install` takes the same
    input in place of linking the static file. Because the file is generated, `install` refuses to
    overwrite a `priory.json` it did not write, as it refuses for links today.
 4. `priory-tabs` reads its buttons from the generated layout's stacks, in place of its two

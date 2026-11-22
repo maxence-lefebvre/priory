@@ -56,6 +56,10 @@ fn generated() -> Vec<(String, Value)> {
         config::<GhAnswer>("case-gh"),
         config::<Answers>("case-answers"),
         schema::<priory_core::sections::Report>(SchemaSettings::draft07(), "report.json"),
+        schema::<priory_factory::readiness::Report>(
+            SchemaSettings::draft07().for_serialize(),
+            "readiness.json",
+        ),
         event::<IssueLabeled>("github.issues.labeled"),
         event::<IssueOpened>("github.issues.opened"),
         event::<IssueClosed>("github.issues.closed"),

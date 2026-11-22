@@ -631,15 +631,14 @@ export default class PrioryBonjour extends View {
         .child(h_flex().min_w_0().flex_wrap().p(2).gap(2).rounded(S["radius-sm"] + 2).border(1).border_color(t["control-line"]).bg(t.bg)
           .children(pick.options.map((option) => {
             const on = pending ? pending.option === option.label : option.label === pick.chosen;
-            const hint = !pending && !reopened && option.recommended;
             return Button.new(`pick-${row.id}-${option.key || option.label}`).h(S["pane-chip"] - 4).px(10).flex().items_center().gap(S["space-1"]).rounded(S["radius-sm"])
               .selected(on).disabled(busy && !on).opacity(busy && !on ? 0.5 : 1)
-              .bg(on ? t.emph : t.bg).text_color(on ? t["on-emph"] : hint ? t["action-text"] : t.text)
-              .text_size(S["type-small"][0]).font_weight(on || hint ? 600 : 500)
+              .bg(on ? t.emph : t.bg).text_color(on ? t["on-emph"] : t.text)
+              .text_size(S["type-small"][0]).font_weight(on ? 600 : 500)
               .when(!busy, (el) => el.hover((s) => s.bg(t.raised))).focus((s) => s.border(2).border_color(t["action-text"]))
               .accessibility_label([option.label, option.recommended && "recommended", option.key && `key ${option.key}`].filter(Boolean).join(", "))
               .on_click((_event, cx) => this.choose(model, row, option.label, cx))
-              .when(hint, (el) => el.child(svg(ICON("check")).size(13)))
+              .when(on, (el) => el.child(svg(ICON("check")).size(13)))
               .child(option.label);
           })))
         .when(Boolean(pick.note) && !pending, (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(pick.note ?? "")))

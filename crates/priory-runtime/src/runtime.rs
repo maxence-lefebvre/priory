@@ -1,7 +1,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -11,6 +11,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use serde_json::json;
+
+use crate::servers::Servers;
 
 /// Priory's own directory: `PRIORY_HOME`, else `$XDG_STATE_HOME/priory-oss`, else `~/.local/state/priory-oss`.
 pub fn home() -> PathBuf {
@@ -208,17 +210,37 @@ pub fn check_repo(repo: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// How `worktree` found or made a task's worktree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Added {
+    /// The folder was there, on its branch.
+    Kept,
+    /// The branch was there and its folder was not, as after a retirement or a sweep.
+    Restored,
+    /// A new branch, from this commit.
+    New(Option<String>),
+}
+
+impl Added {
+    /// The commit a new branch starts from; `None` when the branch already existed.
+    pub fn base(&self) -> Option<&str> {
+        match self {
+            Added::New(base) => base.as_deref(),
+            Added::Kept | Added::Restored => None,
+        }
+    }
+}
+
 /// The task's worktree folder `name` on `priory/<name>`, from the local branch `from` of Priory's
 /// own clone of `repo` (`owner/name`), else from its default branch. The clone has no checkout: a person trusts it once in Claude, and
 /// its worktrees inherit that trust. A worktree of that clone left on that branch by an interrupted
-/// start is reused. The third value is the commit a new branch starts from, and `None` when the
-/// branch already existed.
+/// start is reused. The third value says whether the folder was kept, added back, or new.
 pub fn worktree(
     home: &Path,
     repo: &str,
     name: &str,
     from: Option<&str>,
-) -> Result<(PathBuf, String, Option<String>), String> {
+) -> Result<(PathBuf, String, Added), String> {
     check_repo(repo)?;
     let clone = home.join("repos").join(repo);
     let branch = format!("priory/{name}");
@@ -251,7 +273,7 @@ pub fn worktree(
                 clone.display()
             ));
         }
-        return Ok((path, branch, None));
+        return Ok((path, branch, Added::Kept));
     }
     // A revived task whose worktree the sweep removed carries on from the branch it left.
     if head(&clone, &branch).is_some() {
@@ -261,7 +283,7 @@ pub fn worktree(
             .args(["worktree", "add", "--quiet"])
             .arg(&path)
             .arg(&branch))?;
-        return Ok((path, branch, None));
+        return Ok((path, branch, Added::Restored));
     }
     run(git(&clone).args(["fetch", "--quiet", "origin"]))?;
     run(git(&clone).args(["remote", "set-head", "origin", "--auto"]))?;
@@ -276,7 +298,7 @@ pub fn worktree(
         .arg(&path)
         .arg(start))?;
     let base = head(&path, &branch);
-    Ok((path, branch, base))
+    Ok((path, branch, Added::New(base)))
 }
 
 /// The commit `branch` points to, read from Priory's clone under `home` when `worktree` is gone, as
@@ -539,6 +561,8 @@ pub struct Launch<'a> {
     pub scope: &'a [String],
     /// Variables the run gets on top of the daemon's own, each `NAME=value`.
     pub env: &'a [String],
+    /// The MCP servers of the person's config the run gets, or turns off, beside Priory's own.
+    pub servers: &'a Servers,
 }
 
 /// A coding agent CLI that Priory runs in tmux, with hooks and tools that report to the daemon.
@@ -551,6 +575,10 @@ pub trait Harness {
     fn trust(&self, exe: &Path, clone: &str) -> String;
     /// A file the harness reads at start, and its text, which `launch` writes first.
     fn file(&self, _launch: &Launch) -> Option<(PathBuf, String)> {
+        None
+    }
+    /// A file only the person may read, which `launch` writes first, since its text can hold tokens.
+    fn private_file(&self, _exe: &Path, _launch: &Launch) -> Option<(PathBuf, String)> {
         None
     }
 }
@@ -602,12 +630,26 @@ impl Harness for ClaudeCode {
             launch.permission_mode.to_owned(),
         ]);
         args.extend(["--settings".to_owned(), settings(exe, &launch.permissions)]);
-        args.extend(["--mcp-config".to_owned(), mcp_config(exe, launch)]);
+        // Without the flag, every server of the person's own Claude config would reach the run too.
+        args.push("--strict-mcp-config".to_owned());
+        let (file, _) = self
+            .private_file(exe, launch)
+            .expect("Claude Code reads its MCP servers from a file");
+        args.extend(["--mcp-config".to_owned(), file.display().to_string()]);
         Ok(args)
     }
 
     fn trust(&self, _exe: &Path, clone: &str) -> String {
         format!("trust the clone once: cd {clone} && claude, accept, exit")
+    }
+
+    /// The servers' definitions can hold tokens, which a command line would show to every process.
+    fn private_file(&self, exe: &Path, launch: &Launch) -> Option<(PathBuf, String)> {
+        let name = format!("{}.mcp.json", launch.session);
+        Some((
+            launch.home.join("prompts").join(name),
+            mcp_config(exe, launch),
+        ))
     }
 
     /// tmux refuses a command over about 16 KiB, so instructions reach Claude through a file.
@@ -668,6 +710,10 @@ impl Harness for Codex {
         };
         for (key, value) in config {
             args.extend(["-c".to_owned(), override_of(key, value)?]);
+        }
+        // Codex has no strict flag, so each server of the person's config the agent leaves out is turned off.
+        for name in &launch.servers.off {
+            args.extend(["-c".to_owned(), format!("mcp_servers.{name}.enabled=false")]);
         }
         // A shared server would lend the run another session's environment and hook trust.
         args.push("--no-daemon".to_owned());
@@ -790,6 +836,9 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
         fs::create_dir_all(file.parent().expect("the file has a parent"))
             .and_then(|()| fs::write(&file, text))
             .map_err(|error| format!("{}: {error}", file.display()))?;
+    }
+    if let Some((file, text)) = harness.private_file(&exe, launch) {
+        write_private(&file, &text).map_err(|error| format!("{}: {error}", file.display()))?;
     }
     let mut command = tmux();
     command
@@ -1260,14 +1309,32 @@ pub fn kit_checkout(mirror: &Path, dir: &Path, commit: &str) -> Result<PathBuf, 
     }
 }
 
-/// The MCP server that serves Priory's tools to the run: `priory mcp --session <id>`.
+/// The MCP server that serves Priory's tools to the run, `priory mcp --session <id>`, and the
+/// servers its agent names.
 fn mcp_config(exe: &Path, launch: &Launch) -> String {
-    json!({ "mcpServers": { "priory": {
-        "command": exe,
-        "args": ["mcp", "--session", launch.session],
-        "env": mcp_env(launch.home),
-    } } })
-    .to_string()
+    let mut servers = launch.servers.defined.clone();
+    servers.insert(
+        "priory".to_owned(),
+        json!({
+            "command": exe,
+            "args": ["mcp", "--session", launch.session],
+            "env": mcp_env(launch.home),
+        }),
+    );
+    json!({ "mcpServers": servers }).to_string()
+}
+
+/// Writes `text` to `file`, readable by its owner alone, even when an older file was not.
+fn write_private(file: &Path, text: &str) -> std::io::Result<()> {
+    fs::create_dir_all(file.parent().expect("the file has a parent"))?;
+    let mut written = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(file)?;
+    written.set_permissions(fs::Permissions::from_mode(0o600))?;
+    written.write_all(text.as_bytes())
 }
 
 /// What `priory mcp` needs from the daemon: its home, and its state file as an absolute path, since
@@ -1301,6 +1368,10 @@ fn guard(quoted: &str, matcher: Option<&str>) -> serde_json::Value {
     group
 }
 
+/// The Claude tools whose calls reach `priory hook PreToolUse`: the guard reads the commands and
+/// MCP calls, and the file tools bring in the skills and memories whose `paths` match their file.
+const CLAUDE_HOOKED: &str = "Bash|mcp__.*|Read|Edit|Write|MultiEdit|NotebookEdit";
+
 const ASK_INSTEAD: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Priory runs this session unattended. Call the ask tool of the priory MCP server instead."}}"#;
 
 const DENY: &str = r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Priory runs this session unattended and never approves a permission prompt, so it denied this one. Go on without it. If the task cannot go on without it, call the ask or result tool of the priory MCP server."}}}"#;
@@ -1328,7 +1399,7 @@ fn settings(exe: &Path, permissions: &serde_json::Value) -> String {
                 "matcher": "AskUserQuestion",
                 "hooks": [{ "type": "command", "command": format!("printf '%s' '{ASK_INSTEAD}'") }],
             },
-            guard(&quoted, Some("Bash|mcp__.*")),
+            guard(&quoted, Some(CLAUDE_HOOKED)),
         ]),
     );
     hooks.insert(

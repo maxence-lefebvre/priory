@@ -42,6 +42,11 @@ test("each row says its moments in words, so no reader depends on the line style
   assert.equal(momentWords(plan[2], plan), "starts once #1 ENG-40 and #2 ENG-41.1 merge");
 });
 
+test("a row names a predecessor's issue without its source", () => {
+  const plan = [{ ...entry("e1"), issue: "linear:ENG-245", part: null }, { ...entry("e2", ["e1"]), issue: "github:acme/shop#190", part: null }];
+  assert.equal(momentWords(plan[1], plan), "starts once #1 ENG-245 merges");
+});
+
 test("the edit menu moves an entry past its neighbour and drops it with every entry after it", () => {
   assert.deepEqual(editBody(2, BOARD, "e3", "up"), { revision: 2, move: "e3", before: "e2" });
   assert.deepEqual(editBody(2, BOARD, "e3", "down"), { revision: 2, move: "e3", after: "e4" });

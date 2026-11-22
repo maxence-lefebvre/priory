@@ -35,6 +35,8 @@ every poll:
   `priory check` can refuse a workflow before it runs, for example one that pushes code with no
   person's approval. `priory check --explain` lists what a person approves before each
   irreversible step.
+- `priory check --repo PATH` scores what an unattended agent needs from a repository, such as one
+  test command and required checks on the default branch, and prints how to fix each gap.
 - A step can refuse an agent's `passed` until the project's gate, such as its tests, passed at the
   branch's head. `priory check --explain` lists the outcomes the daemon verifies.
 - A workflow can be a runbook of human steps only, where an answer runs a step's command once.
@@ -121,7 +123,7 @@ as a website, with search, built from `main`.
   [docs/daemon/](docs/daemon/README.md) explains how the daemon runs tasks, and
   [docs/intake/](docs/intake/README.md) how each source becomes events, one file per topic.
 - Adapters: [docs/adapters/herdr.md](docs/adapters/herdr.md), Priory's panels as Herdr mods, and
-  [adapters/github/README.md](adapters/github/README.md), Priory on a pull request's page: its
+  [docs/adapters/github.md](docs/adapters/github.md), Priory on a pull request's page: its
   task, its asks and a review guide.
 - Project: [docs/prd.md](docs/prd.md) says what Priory does and in which milestone.
   [CONTRIBUTING.md](CONTRIBUTING.md) says how to change Priory, and [DESIGN.md](DESIGN.md) holds

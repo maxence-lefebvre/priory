@@ -286,7 +286,7 @@ function connectForm() {
     h("div", { class: "read" }, "The extension reads and answers through your daemon's serve address. Your browser asks once to let it reach that address."),
     h("form", { class: "sect", onsubmit: submit },
       h("div", { class: "field" }, h("label", { for: "address" }, "Address"),
-        h("input", { id: "address", class: "input", autocomplete: "off", placeholder: "https://xps13.tailnet.ts.net", value: c.address, oninput: (event) => { c.address = event.target.value; } })),
+        h("input", { id: "address", class: "input", autocomplete: "off", placeholder: "https://desktop.tailnet.ts.net", value: c.address, oninput: (event) => { c.address = event.target.value; } })),
       h("div", { class: "field" }, h("label", { for: "token" }, "Token"),
         h("input", { id: "token", class: "input secret", type: "password", autocomplete: "off", value: c.token, oninput: (event) => { c.token = event.target.value; } }),
         h("div", { class: "note" }, icon("key", "s14"), h("span", {}, "The value of PRIORY_TOKEN on the daemon's machine."))),

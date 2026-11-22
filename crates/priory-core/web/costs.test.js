@@ -59,10 +59,10 @@ test("the split names its dimension and gives each value its cost, tokens and wh
   const table = splitTable(costs(current, total(0), { by: "model", split }));
   assert.equal(table.dimension, "Model");
   assert.deepEqual(table.rows, [
-    { name: "m1", cost: "$1.10", tokens: "2,000,000", note: "tokens unknown for 1 record" },
-    { name: "m2", cost: "-", tokens: "1,500", note: "price missing" },
+    { name: "m1", cost: "$1.10", tokens: "2M", note: "tokens unknown for 1 record" },
+    { name: "m2", cost: "-", tokens: "1.5k", note: "price missing" },
   ]);
-  assert.deepEqual(table.unpriced, [{ model: "m2", tokens: "1,500" }]);
+  assert.deepEqual(table.unpriced, [{ model: "m2", tokens: "1.5k" }]);
   assert.equal(table.unknown, "1 record has no tokens");
 });
 

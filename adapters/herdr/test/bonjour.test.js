@@ -254,3 +254,15 @@ test("Change reopens an agreed pick, and a new option goes through the revision-
 
   assert.deepEqual(herdr.argv.find((args) => args[1] === "pick"), ["report", "pick", "2026-11-20_agree_priory-schedules", "Later", "--expected", "3"]);
 });
+
+test("a check marks the chosen option only; the recommendation is the note's words", async () => {
+  const { view, press, find, all, text } = await mounted({ report: reports });
+  const row = '["sentry","fnd-2413"]';
+  const checks = (key) => all(find(view(), `pick-${row}-${key}`), "svg").length;
+  assert.equal(checks(2), 0, "the recommended option shows no check before a choice");
+  assert.match(text(view()), /Recommends Later/);
+
+  press(view(), `pick-${row}-1`);
+
+  assert.deepEqual([checks(1), checks(2)], [1, 0]);
+});

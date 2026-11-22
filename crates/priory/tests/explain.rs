@@ -92,7 +92,7 @@ fn factory(name: &str, workflows: &[(&str, &str)]) -> PathBuf {
     let files = [
         ("factory.toml".to_owned(), FACTORY),
         ("agents/implementer/agent.md".to_owned(), AGENT),
-        ("runners/xps13.toml".to_owned(), RUNNER),
+        ("runners/desktop.toml".to_owned(), RUNNER),
     ];
     for (path, content) in files.into_iter().chain(workflows) {
         let file = dir.join(path);

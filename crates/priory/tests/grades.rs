@@ -789,7 +789,7 @@ fn a_red_merge_commit_and_a_revert_each_raise_one_alarm_on_the_desk() {
         desk["next"]["why"]
             .as_str()
             .unwrap()
-            .starts_with("an alarm"),
+            .starts_with("work stopped"),
         "{desk}"
     );
     assert_eq!(

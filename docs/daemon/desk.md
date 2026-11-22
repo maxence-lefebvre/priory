@@ -11,7 +11,7 @@
 | `prompt` | the outbox prompt | its text, for an `uncertain` prompt | it was attempted |
 | `command` | the answer's action | `Priory stopped while answer <answer> to ask <ask> ran <argv> in <dir>: check the target`, for an `uncertain` command (see [tools.md](tools.md#commands-an-answer-runs)) | it ended |
 | `held` | the hold | the task's reason: why it is held, and until what | it was held |
-| `batch` | the batch | its title and counts, then which entries start next: `Invoice exports: 1 merged, 3 started, 2 planned. Next: tasks 36 and 37 start when task 34 merges.` One row per going batch, in place of the `held` rows of its entries (see Batches) | the go |
+| `batch` | the batch | its title and counts, then which entries start next: `Invoice exports: 1 merged, 3 started, 2 planned. Next: ENG-41 and ENG-42 start when ENG-40 merges.`, each task named by its key without the source. One row per going batch, in place of the `held` rows of its entries (see Batches) | the go |
 | `memory` | the memory grant | `waits for <N> GB: <command>` | it was requested |
 | `memories` | `memories` | `` <n> memory candidates wait for a person: <name>, <name>; see them with `priory memories` ``. One row while any candidate waits (see Memory candidates) | the oldest candidate was written |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
@@ -80,7 +80,7 @@ waits. `priory desk` without `--json` prints neither. The ranking has six groups
 
 | Group | Items | `why` |
 | ----- | ----- | ----- |
-| Alarms | `blocked`, `failed`, an `uncertain` `prompt` or `command`, an unread `intake` report: a source that fails to poll, and an unread `landed wrong` report: a task's merge that is red on its base branch or was reverted | `an alarm: work stopped and waits on a person` |
+| Alarms | `blocked`, `failed`, an `uncertain` `prompt` or `command`, an unread `intake` report: a source that fails to poll, and an unread `landed wrong` report: a task's merge that is red on its base branch or was reverted | `work stopped and waits on a person` |
 | Asks that open a door | an ask whose answer lets an irreversible step run (its risk is `irreversible`), and an ask of a task that reviews a pull request, whose key ends in `:review:<login>` | ``it runs `<argv[0]>` in <target>`` for an ask that runs a command (see [tools.md](tools.md#commands-an-answer-runs)), ``it lets step `<step>` run`` for another ask that approves an irreversible step, or `it reviews a pull request` |
 | Plans | another ask at a human step, such as `approve-plan` | `it approves a plan` |
 | Other asks | every other ask, such as an agent's or an outside one | `it waits on a person` |

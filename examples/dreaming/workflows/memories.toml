@@ -1,0 +1,10 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+start = "open"
+
+[[steps]]
+id = "open"
+decides = "code"
+action = "open-memories-pr"
+effect = "irreversible"
+autonomous = "a person reviews the pull request before any memory merges"
+next = { opened = "done", unchanged = "done", failed = "stop" }

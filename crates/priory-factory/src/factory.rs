@@ -79,6 +79,10 @@ pub struct Settings {
     pub kit: Option<Kit>,
     /// Spend caps in dollars for every task, and for each lane by its name.
     pub caps: Option<Caps>,
+    /// Recipes by repository, each key a GitHub `owner/name`: the commands the daemon runs in a
+    /// task's worktree of that repository.
+    #[serde(default)]
+    pub repos: BTreeMap<String, Repo>,
 }
 
 /// The factory's spend caps, in dollars, which the daemon enforces from `prices.toml` and the
@@ -129,6 +133,103 @@ fn cap<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Err
     Err(D::Error::custom(format!(
         "{dollars} is not a spend cap: give dollars above zero"
     )))
+}
+
+/// `[repos."owner/name"]`: what the daemon runs in a worktree of the repository, so no run has to
+/// find out how to install and build it.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Repo {
+    /// Runs after the daemon adds a task's new worktree, before its agent starts. A failure blocks
+    /// the task.
+    pub setup: Option<Recipe>,
+    /// Runs after the daemon adds back the worktree a retirement removed, before its agent
+    /// starts. A failure blocks the task.
+    pub resume: Option<Recipe>,
+    /// Runs before the sweep or a retirement removes the worktree. A failure keeps the worktree.
+    pub teardown: Option<Recipe>,
+}
+
+/// One command of a repository's recipe: `argv`, which Priory execs as it is, or `shell`, which it
+/// runs with `sh -c`.
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Recipe {
+    /// The program and its arguments, run with no shell.
+    #[schemars(length(min = 1))]
+    pub argv: Option<Vec<String>>,
+    /// A shell command, run with `sh -c`.
+    #[schemars(length(min = 1))]
+    pub shell: Option<String>,
+    /// How long it may run before Priory kills it with its process group; `command_timeout` when
+    /// unset.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub timeout: Option<Duration>,
+}
+
+/// When a repository's recipe runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Moment {
+    Setup,
+    Resume,
+    Teardown,
+}
+
+impl Moment {
+    pub const ALL: [Moment; 3] = [Moment::Setup, Moment::Resume, Moment::Teardown];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Moment::Setup => "setup",
+            Moment::Resume => "resume",
+            Moment::Teardown => "teardown",
+        }
+    }
+}
+
+impl Repo {
+    pub fn recipe(&self, moment: Moment) -> Option<&Recipe> {
+        match moment {
+            Moment::Setup => self.setup.as_ref(),
+            Moment::Resume => self.resume.as_ref(),
+            Moment::Teardown => self.teardown.as_ref(),
+        }
+    }
+}
+
+impl Recipe {
+    /// What the daemon execs: `argv` as it is, or `sh -c <shell>`.
+    pub fn exec(&self) -> Vec<String> {
+        match (&self.argv, &self.shell) {
+            (Some(argv), _) => argv.clone(),
+            (None, Some(shell)) => vec!["sh".into(), "-c".into(), shell.clone(), "sh".into()],
+            (None, None) => Vec::new(),
+        }
+    }
+
+    /// The command as a shell reads it, for the guard and for messages.
+    pub fn command(&self) -> String {
+        match (&self.argv, &self.shell) {
+            (Some(argv), _) => argv
+                .iter()
+                .map(|word| {
+                    if !word.is_empty()
+                        && word
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || "-_./=:@%+,".contains(c))
+                    {
+                        word.clone()
+                    } else {
+                        format!("'{}'", word.replace('\'', "'\\''"))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+            (None, Some(shell)) => shell.clone(),
+            (None, None) => String::new(),
+        }
+    }
 }
 
 /// A kit repository whose skills, instructions and memories every run gets, before the factory's
@@ -1426,6 +1527,25 @@ pub struct Step {
     #[serde(default, deserialize_with = "duration")]
     #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub timeout: Option<Duration>,
+    /// Model steps only: the dollars the task may spend at this step, such as `"1.00"`, priced
+    /// with `prices.toml` at each turn end.
+    #[schemars(regex(pattern = r"^[0-9]+(\.[0-9]+)?$"))]
+    pub budget: Option<String>,
+}
+
+impl Step {
+    /// The step's `budget` in dollars, or `None` when it has none or it is not an amount above
+    /// zero, which `priory check` refuses.
+    pub fn budget(&self) -> Option<f64> {
+        let budget = self.budget.as_deref()?.trim();
+        let digits = budget
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.');
+        budget
+            .parse::<f64>()
+            .ok()
+            .filter(|dollars| digits && dollars.is_finite() && *dollars > 0.0)
+    }
 }
 
 /// The fields of a task's source event that a human step's `question` and command `argv` may name,
@@ -1786,6 +1906,8 @@ pub struct Factory {
 #[derive(Debug)]
 pub struct Memory {
     pub description: String,
+    /// The globs whose files bring the memory into a run's context when it reads or edits one.
+    pub paths: Vec<String>,
     /// The file as it is on disk.
     pub bytes: Vec<u8>,
 }
@@ -1808,6 +1930,9 @@ pub struct MemoryFrontmatter {
     /// When an agent should read the memory. The index shows it on one line.
     #[schemars(required, length(min = 1))]
     pub description: Option<String>,
+    /// Globs relative to the repository root, such as `src/**/*.rs`: a run that reads, edits or
+    /// creates a matching file gets the memory's file in its context, once per run.
+    pub paths: Option<crate::paths::Globs>,
 }
 
 /// The size past which `priory check` refuses a memory, so the index stays one look.
@@ -1823,6 +1948,8 @@ pub const SKILL_FOLDER: &str = "$PRIORY_HOME/kit/<hash>/plugin/skills";
 #[derive(Debug)]
 pub struct Skill {
     pub description: String,
+    /// The globs whose files bring `SKILL.md` into a run's context when it reads or edits one.
+    pub paths: Vec<String>,
     /// Every file of the skill's folder, by its path inside the folder, as bytes.
     pub files: BTreeMap<PathBuf, Vec<u8>>,
 }
@@ -1832,6 +1959,7 @@ pub struct Skill {
 struct SkillFrontmatter {
     name: Option<String>,
     description: Option<String>,
+    paths: Option<crate::paths::Globs>,
 }
 
 /// The file whose text goes before every agent's own prompt.
@@ -1896,6 +2024,16 @@ impl Factory {
             .as_ref()
             .map(|settings| settings.value.guard.clone())
             .unwrap_or_default()
+    }
+
+    /// The recipe of `repo` that runs at `moment`, if the factory has one.
+    pub fn recipe(&self, repo: &str, moment: Moment) -> Option<&Recipe> {
+        self.settings
+            .as_ref()?
+            .value
+            .repos
+            .get(repo)?
+            .recipe(moment)
     }
 
     /// How long one git, gh or tmux command may run; 5 minutes when unset.
@@ -2571,7 +2709,15 @@ impl Loader<'_> {
             });
             return None;
         }
-        Some((Skill { description, files }, lines))
+        let paths = self.globs(&relative, front.paths, &lines);
+        Some((
+            Skill {
+                description,
+                paths,
+                files,
+            },
+            lines,
+        ))
     }
 
     /// The memory in `file`, once it is a `<name>.md` file under the limit whose frontmatter names
@@ -2643,11 +2789,33 @@ impl Loader<'_> {
                 return None;
             }
         };
+        let paths = self.globs(&relative, front.paths, &lines);
         let memory = Memory {
             description,
+            paths,
             bytes: source.into_bytes(),
         };
         Some((memory, lines))
+    }
+
+    /// The globs of a frontmatter's `paths`, each one the hook cannot match reported on its line.
+    fn globs(
+        &mut self,
+        file: &Path,
+        globs: Option<crate::paths::Globs>,
+        lines: &Lines,
+    ) -> Vec<String> {
+        let globs = globs.map(crate::paths::Globs::into_vec).unwrap_or_default();
+        for glob in &globs {
+            if let Some(message) = crate::paths::problem(glob) {
+                self.problems.push(Problem {
+                    file: file.to_path_buf(),
+                    at: Some(lines.field("paths").unwrap_or(1).to_string()),
+                    message,
+                });
+            }
+        }
+        globs
     }
 
     fn parse<T: DeserializeOwned>(&mut self, file: &Path) -> Option<(T, Lines)> {

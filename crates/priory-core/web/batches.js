@@ -1,4 +1,5 @@
 // The batch page and the go ask's plan (DESIGN.md, Batch page and Lane graph), as pure functions.
+import { taskLabel } from "./tasks.js";
 
 /**
  * One row per entry in start order, each in a lane, and one edge per `after`. An entry continues the
@@ -31,8 +32,8 @@ const STAGES = ["merged", "started", "waiting", "queued", "blocked", "planned", 
 /** Each stage with entries, and how many. @param {Record<string, number>} counts */
 export const stages = (counts) => STAGES.filter((stage) => counts[stage] > 0).map((stage) => [stage, counts[stage]]);
 
-/** An entry's issue as a row names it: `ENG-41.1` for a part of a split issue. */
-export const issueName = (entry) => (entry.part == null ? entry.issue : `${entry.issue}.${entry.part}`);
+/** An entry's issue as a row names it, without its source: `ENG-41.1` for a part of a split issue. */
+export const issueName = (entry) => (entry.part == null ? taskLabel(entry.issue) : `${taskLabel(entry.issue)}.${entry.part}`);
 
 /**
  * When an entry starts, in words: `starts at the go`, `stacks on #1 ENG-40`, or `starts once #1

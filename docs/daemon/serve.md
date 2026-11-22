@@ -87,7 +87,7 @@ never matches `Host`. `[serve] extension_origins` lists the extension origins th
 anyway, each exactly. A web page cannot send another origin's `Origin`, so the list keeps the
 rule's point, and the token still guards every call. The extension reaches the server with a host
 permission instead of CORS, so the server still answers no preflight.
-[adapters/github/README.md](../../adapters/github/README.md) is the extension that needs it.
+[The GitHub extension](../adapters/github.md) is the extension that needs it.
 
 ## Beyond this machine
 

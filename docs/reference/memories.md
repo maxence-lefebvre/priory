@@ -22,6 +22,7 @@ skipped.
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `name` | string | yes | | The memory's name, the same as its file's | `"release-day"` |
 | `description` | string | yes | | When an agent should read the memory. The index shows it on one line | `"When releases go out."` |
+| `paths` | string or list of strings | no | none | [Path globs](#path-globs): a Claude Code run that reads, edits or creates a matching file gets the memory's file in its context, once per run | `["CHANGELOG.md", "docs/**/*.md"]` |
 
 Priory ignores any other key.
 
@@ -66,7 +67,39 @@ The factory's memories are in <folder>, one fact per file. Read a memory's file 
 
 Each line starts with the file and line, such as `memories/release-day.md:2:`. The name and
 description errors point at line 1, except a wrong `name`, which points at its line. A file or
-folder that is not a memory has no line.
+folder that is not a memory has no line. The [path glob errors](#errors-in-path-globs) point at the
+line of `paths`, or of its first item in a YAML list on its own lines.
+
+## Path globs
+
+A memory's `paths`, and a skill's `paths` in its `SKILL.md` (see
+[skills.md](../daemon/skills.md#skills-and-memories-by-path)), hold globs relative to the root of
+the task's repository. One glob is a string, several are a list.
+
+| Glob part | Matches | Example | Matches | Does not match |
+| --------- | ------- | ------- | ------- | -------------- |
+| text | itself | `CHANGELOG.md` | `CHANGELOG.md` | `docs/CHANGELOG.md` |
+| `*` | any characters within one part of the path | `src/*.rs` | `src/main.rs` | `src/bin/main.rs` |
+| `?` | one character within one part | `crates/?/x` | `crates/a/x` | `crates/ab/x` |
+| `**` | any number of whole parts, none included | `docs/**/*.md` | `docs/a.md`, `docs/a/b.md` | `doc/a.md` |
+| `{a,b}` | either text | `*.{md,txt}` | `notes.txt` | `notes.rs` |
+
+A glob matches the whole path, so `*.md` matches files at the root only: write `**/*.md` for any
+folder.
+
+### Errors in path globs
+
+| Message | Cause |
+| ------- | ----- |
+| `a path glob is empty` | A blank glob |
+| `` the path glob `<glob>` starts with /: a glob is relative to the repository root `` | An absolute path |
+| `` the path glob `<glob>` holds `[`: a glob takes *, **, ? and {a,b} `` | `[`, `]` or `\`, which Priory's globs do not read |
+| `` the path glob `<glob>` nests braces or leaves one open `` | `{a,{b,c}}`, `{a` or `a}` |
+| `` the path glob `<glob>` has an empty part, as in a//b or a trailing / `` | Two slashes in a row, or a slash at the end |
+| `` the path glob `<glob>` has a `.` or `..` part `` | A part that is `.` or `..` |
+| `` the path glob `<glob>` puts ** inside a part: ** stands alone between slashes `` | `**` beside other text, as in `src/a**/b` |
+
+A skill's errors start with its `skills/<name>/SKILL.md` and the same line.
 
 ## Candidates
 
@@ -144,6 +177,44 @@ reaches runs again. An open pull request that still holds the retired text is no
 | `a memory needs a text: the fact itself` | A blank `text` |
 | `a memory holds one fact in at most 4096 bytes: this one is <n> bytes` | The candidate's file, as above, is over 4096 bytes |
 | `the text looks like it holds a credential: a memory reaches every later run, so keep secrets out of it` | The name, description or text matches a GitHub, Anthropic, OpenAI, AWS, Slack or Linear key, or a PEM private key. A secret with no known shape, such as a webhook secret, passes |
+| `<name> already holds this text` | `remember` with the name, description and text of the memory the task sees under that name, its own candidates included |
+| `candidate <id> already proposes this text for <name>, and waits for a person` | `remember` equal to a `sending` or `pending` candidate of that name, from any task |
+| `a person dropped this text for <name> on <date>: propose it again only with new evidence` | `remember` equal to a `dropped` candidate of that name |
+
+A changed description or text under the same name is not a repeat: it is how a memory is
+corrected. The runner that serves the call applies the repeat rule. A candidate read from the log
+is recorded as before, since two runners can write the same text before either reads the other.
+
+### `priory recap`
+
+```sh
+priory recap [--since <instant-or-duration>] [--max-bytes N]
+```
+
+`priory recap` prints what a nightly dream reads: the records of the window, `24h` back from now by
+default, oldest first, as Markdown. It reads the state file `PRIORY_DB`, so it covers the runner it
+runs on.
+
+| Part | What it shows |
+| ---- | ------------- |
+| Memory names not to propose again | The name of each `pending` candidate and each candidate dropped in the last 30 days, with the date. No description or text |
+| Result | Each result's task, workflow, step, outcome and time, with its summary and evidence |
+| Answer | Each answered ask's step, options and recommendation, whether the answer went against it, then the question and the answer with its note |
+| A person said | Each line of a prompt that starts with `A person says: `, as `priory say` and the desk's say queue them |
+| Step ended | Each `factory.step.ended` record's workflow, step, outcome and token counts |
+| Failed or blocked | Each task that became `failed` or `blocked` in the window, with its reason |
+
+Each quoted text sits in a fenced block whose info string names its task and its author, such as
+`task 7 (github:owner/repo#12), by agent implementer` or `by a person`. The fence is longer than any
+run of backticks in the text.
+
+It never prints a transcript, a run's screen, a prompt file, an outside event's body, a worktree's
+file or an environment variable. It replaces each credential shape that `remember` refuses with
+`[redacted]`.
+
+The output is at most `--max-bytes` bytes, `200000` by default. When the window holds more, it keeps
+the candidate names and the newest records, and ends with `Left out the <n> oldest of <total>
+records to stay under <N> bytes.`
 | `no memory <name> reaches your task: your instructions' index lists those that do` | `memory` names a memory the caller's task does not see |
 
 A runner applies the same rules to each `priory.memory.written` it reads, since anyone who can

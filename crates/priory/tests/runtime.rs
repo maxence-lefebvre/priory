@@ -42,7 +42,7 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Undoes migration 90: the `pre` script's task columns and the pending requests.
+/// Undoes migration 92: the `pre` script's task columns and the pending requests.
 macro_rules! undo_pre {
     () => {
         "DROP VIEW task_text; CREATE VIEW task_text AS SELECT tasks.id AS task,
@@ -206,6 +206,9 @@ impl Setup {
             .env("PRIORY_HOME", self.dir.join("home"))
             .env("FAKE_DIR", self.dir.join("fake"))
             .env("PRIORY_PROC", self.dir.join("proc"))
+            // The person's own harness configs, which a run's MCP servers come from.
+            .env("CLAUDE_CONFIG_DIR", self.dir.join("claude"))
+            .env("CODEX_HOME", self.dir.join("codex"))
             .env("GIT_CONFIG_COUNT", "1")
             .env(
                 "GIT_CONFIG_KEY_0",
@@ -624,8 +627,7 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
     for flag in ["--plugin-dir", "--append-system-prompt-file"] {
         assert!(!args.contains(&flag), "{flag} in {args:?}");
     }
-    let mcp = args.windows(2).find(|w| w[0] == "--mcp-config").unwrap()[1];
-    let mcp: serde_json::Value = serde_json::from_str(mcp).unwrap();
+    let (_, _, mcp) = claude_mcp(&setup);
     assert_eq!(
         mcp["mcpServers"]["priory"]["env"],
         json!({
@@ -843,6 +845,235 @@ fn an_agent_in_auto_mode_gets_a_run_in_auto_mode_and_its_rules_join_priorys_own(
         })
     );
     assert!(settings["hooks"]["PermissionRequest"].is_array());
+}
+
+/// A token in the person's own MCP server definitions, which no argument, log or reason may hold.
+const TOKEN: &str = "sntrys_s3cret-token";
+
+/// Plants the person's Claude Code config with two user-scope MCP servers, `sentry` and `linear`.
+fn plant_claude_servers(setup: &Setup) -> serde_json::Value {
+    let servers = json!({
+        "sentry": {"command": "npx", "args": ["@sentry/mcp-server"], "env": {"SENTRY_TOKEN": TOKEN}},
+        "linear": {"type": "http", "url": "https://mcp.linear.app/mcp"},
+    });
+    fs::create_dir_all(setup.dir.join("claude")).unwrap();
+    fs::write(
+        setup.dir.join("claude/.claude.json"),
+        json!({"numStartups": 3, "mcpServers": servers}).to_string(),
+    )
+    .unwrap();
+    servers
+}
+
+/// Plants the person's Codex config with two MCP servers, `sentry` and `linear`.
+fn plant_codex_servers(setup: &Setup) {
+    fs::create_dir_all(setup.dir.join("codex")).unwrap();
+    fs::write(
+        setup.dir.join("codex/config.toml"),
+        format!(
+            "model = \"gpt-6\"\n\n[mcp_servers.sentry]\ncommand = \"npx\"\nargs = [\"@sentry/mcp-server\"]\nenv = {{ SENTRY_TOKEN = \"{TOKEN}\" }}\n\n[mcp_servers.linear]\nurl = \"https://mcp.linear.app/mcp\"\n"
+        ),
+    )
+    .unwrap();
+}
+
+/// The agent's frontmatter with `mcpServers` set to `servers`.
+fn with_servers(agent: &str, servers: &str) -> String {
+    agent.replacen("+++\n", &format!("+++\nmcpServers = {servers}\n"), 1)
+}
+
+/// The `--mcp-config` the fake `claude` got at its latest launch, read from its file.
+fn claude_mcp(setup: &Setup) -> (Vec<String>, PathBuf, serde_json::Value) {
+    let args = launched(setup);
+    let file = PathBuf::from(&args.windows(2).find(|w| w[0] == "--mcp-config").unwrap()[1]);
+    let config = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    (args, file, config)
+}
+
+fn assert_no_token(setup: &Setup, files: &[&str]) {
+    for file in files {
+        let text = fs::read_to_string(setup.dir.join(file)).unwrap_or_default();
+        assert!(!text.contains(TOKEN), "{file} holds the token: {text}");
+    }
+}
+
+#[test]
+fn a_claude_run_whose_agent_names_no_mcp_server_gets_priorys_alone_with_strict_mcp_config() {
+    let mut setup = Setup::new("mcp-none");
+    plant_claude_servers(&setup);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let (args, file, config) = claude_mcp(&setup);
+    assert_eq!(
+        args[args.len() - 3..],
+        [
+            "--strict-mcp-config",
+            "--mcp-config",
+            &file.display().to_string()
+        ]
+    );
+    let names: Vec<&String> = config["mcpServers"].as_object().unwrap().keys().collect();
+    assert_eq!(names, ["priory"]);
+    assert_no_token(&setup, &["fake/args.log", "daemon.log"]);
+}
+
+#[test]
+fn a_claude_run_gets_the_mcp_servers_its_agent_names_from_the_persons_claude_config() {
+    let mut setup = Setup::new("mcp-named");
+    let servers = plant_claude_servers(&setup);
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        with_servers(AGENT, "[\"sentry\"]"),
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let (args, file, config) = claude_mcp(&setup);
+    assert_eq!(
+        args[args.len() - 3..],
+        [
+            "--strict-mcp-config",
+            "--mcp-config",
+            &file.display().to_string()
+        ]
+    );
+    let names: Vec<&String> = config["mcpServers"].as_object().unwrap().keys().collect();
+    assert_eq!(names, ["priory", "sentry"]);
+    assert_eq!(config["mcpServers"]["sentry"], servers["sentry"]);
+    assert_eq!(
+        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "{} holds the person's tokens",
+        file.display()
+    );
+    assert!(
+        file.starts_with(setup.dir.join("home")),
+        "{}",
+        file.display()
+    );
+    assert_no_token(&setup, &["fake/args.log", "daemon.log"]);
+}
+
+#[test]
+fn a_claude_run_whose_agent_names_an_mcp_server_the_person_never_defined_is_blocked() {
+    let mut setup = Setup::new("mcp-unknown");
+    plant_claude_servers(&setup);
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        with_servers(AGENT, "[\"sentry\", \"honeycomb\"]"),
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    assert_eq!(
+        tasks[0][7],
+        format!(
+            "agent implementer names MCP server honeycomb, which the mcpServers of {} do not define; add it with claude mcp add --scope user",
+            setup.dir.join("claude/.claude.json").display()
+        )
+    );
+    assert!(!setup.dir.join("fake/args.log").exists(), "claude started");
+    assert!(setup.rows("runs").is_empty());
+    assert_no_token(&setup, &["daemon.log"]);
+}
+
+#[test]
+fn a_codex_run_turns_off_every_mcp_server_of_the_persons_codex_config_its_agent_does_not_name() {
+    let mut setup = Setup::new("mcp-codex-none");
+    plant_codex_servers(&setup);
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let servers = &codex_config(&setup)["mcp_servers"];
+    let names: Vec<&String> = servers.as_object().unwrap().keys().collect();
+    assert_eq!(names, ["linear", "priory", "sentry"]);
+    assert_eq!(servers["linear"], json!({"enabled": false}));
+    assert_eq!(servers["sentry"], json!({"enabled": false}));
+    let off: Vec<String> = codex_args(&setup)
+        .into_iter()
+        .filter(|arg| arg.starts_with("mcp_servers.") && !arg.starts_with("mcp_servers.priory="))
+        .collect();
+    assert_eq!(
+        off,
+        [
+            "mcp_servers.linear.enabled=false",
+            "mcp_servers.sentry.enabled=false"
+        ]
+    );
+    assert_no_token(&setup, &["fake/codex-args.log", "daemon.log"]);
+}
+
+#[test]
+fn a_codex_run_keeps_the_mcp_server_its_agent_names_from_the_persons_codex_config() {
+    let mut setup = Setup::new("mcp-codex-named");
+    plant_codex_servers(&setup);
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        with_servers(CODEX, "[\"sentry\"]"),
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let servers = &codex_config(&setup)["mcp_servers"];
+    let names: Vec<&String> = servers.as_object().unwrap().keys().collect();
+    assert_eq!(
+        names,
+        ["linear", "priory"],
+        "sentry comes from the person's own config"
+    );
+    assert_eq!(servers["linear"], json!({"enabled": false}));
+    assert_no_token(&setup, &["fake/codex-args.log", "daemon.log"]);
+}
+
+#[test]
+fn a_codex_run_whose_agent_names_an_mcp_server_the_person_never_defined_is_blocked() {
+    let mut setup = Setup::new("mcp-codex-unknown");
+    plant_codex_servers(&setup);
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        with_servers(CODEX, "[\"honeycomb\"]"),
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    assert_eq!(
+        tasks[0][7],
+        format!(
+            "agent implementer names MCP server honeycomb, which neither {} nor {} defines under mcp_servers",
+            setup.dir.join("codex/config.toml").display(),
+            setup
+                .dir
+                .join("home/worktrees/owner/repo/1/.codex/config.toml")
+                .display()
+        )
+    );
+    assert!(
+        !setup.dir.join("fake/codex-args.log").exists(),
+        "codex started"
+    );
+    assert_no_token(&setup, &["daemon.log"]);
 }
 
 const CODEX: &str = "+++\ndescription = \"Reviews one change.\"\nharness = \"codex\"\nmodel = \"gpt-6-astra\"\neffort = \"low\"\n+++\nYou review one change.\n";
@@ -12883,6 +13114,180 @@ fn a_dirty_asleep_task_never_retires_and_says_why() {
     assert!(setup.worktree(1).join("notes.txt").exists());
 }
 
+impl Setup {
+    /// Gives `owner/repo` the recipes `table`, the body of its `[repos."owner/repo"]` table.
+    fn recipes(&self, table: &str) {
+        let text = format!("name = \"demo\"\n\n[repos.\"owner/repo\"]\n{table}\n");
+        fs::write(self.dir.join("factory/factory.toml"), text).unwrap();
+    }
+
+    fn faked(&self, file: &str) -> String {
+        fs::read_to_string(self.dir.join("fake").join(file)).unwrap_or_default()
+    }
+}
+
+#[test]
+fn a_setup_runs_in_a_new_worktree_before_its_agent_starts() {
+    let mut setup = Setup::new("recipe-setup");
+    setup.recipes(
+        r#"setup = { shell = "echo $PRIORY_TASK $PWD > $FAKE_DIR/set-up; while [ -e $FAKE_DIR/hold-setup ]; do sleep 0.05; done" }"#,
+    );
+    setup.hold("hold-setup");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    setup.written("fake/set-up");
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[7] == "runs its setup")
+    });
+    assert_eq!(tasks[0][4], "queued");
+    assert_eq!(setup.rows("runs"), Vec::<Vec<String>>::new());
+
+    setup.release("hold-setup");
+
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "done");
+    assert_eq!(tasks[0][7], "-");
+    assert_eq!(
+        setup.faked("set-up"),
+        format!("1 {}\n", setup.worktree(1).display())
+    );
+    assert_eq!(setup.rows("runs").len(), 1);
+}
+
+#[test]
+fn a_failed_setup_blocks_the_task_with_its_redacted_tail_and_a_resume_runs_it_again() {
+    let mut setup = Setup::new("recipe-setup-failed");
+    setup.recipes(
+        r#"setup = { shell = "[ -e $FAKE_DIR/fixed ] && exit 0; echo installing; echo token ghp_aaaaaaaaaaaaaaaaaaaaaaaa; echo 'npm ERR! missing script: build' >&2; exit 3" }"#,
+    );
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+
+    assert_eq!(
+        tasks[0][7],
+        "setup failed: exit 3. Its output ended with: installing | token [redacted] | npm ERR! missing script: build"
+    );
+    assert_eq!(setup.rows("runs"), Vec::<Vec<String>>::new());
+    let desk: Vec<_> = setup
+        .rows("desk")
+        .into_iter()
+        .filter(|row| row[1] == "blocked")
+        .map(|row| row[5].clone())
+        .collect();
+    assert_eq!(desk, [tasks[0][7].clone()]);
+
+    fs::write(setup.dir.join("fake/fixed"), "").unwrap();
+    let resumed = setup.priory(&["resume", "1"]);
+
+    assert!(resumed.status.success(), "{resumed:?}");
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    assert!(setup.typed()[0].starts_with("Implement the issue."));
+}
+
+#[test]
+fn a_setup_a_stopped_daemon_left_running_blocks_its_task() {
+    let mut setup = Setup::new("recipe-setup-restart");
+    setup.recipes(
+        r#"setup = { shell = "touch $FAKE_DIR/set-up; while [ -e $FAKE_DIR/hold-setup ]; do sleep 0.05; done" }"#,
+    );
+    setup.hold("hold-setup");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[7] == "runs its setup")
+    });
+
+    setup.crash();
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "blocked");
+    assert_eq!(tasks[0][7], "setup failed: interrupted by a daemon restart");
+    assert_eq!(setup.rows("runs"), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn a_teardown_runs_in_the_worktree_before_the_sweep_removes_it() {
+    let mut setup = Setup::ended("recipe-teardown", 1);
+    let torn = setup.dir.join("fake/torn");
+    setup.recipes(&format!(
+        r#"teardown = {{ argv = ["cp", "README.md", "{}"] }}"#,
+        torn.display()
+    ));
+
+    setup.swept();
+
+    assert_eq!(fs::read_to_string(torn).unwrap(), "demo\n");
+}
+
+#[test]
+fn a_failed_teardown_keeps_the_worktree_and_the_desk_says_why() {
+    let mut setup = Setup::ended("recipe-teardown-failed", 1);
+    setup.recipes(r#"teardown = { shell = "echo cannot stop the database; exit 1" }"#);
+    setup.work_on(1);
+    setup.push(1);
+    setup.merge(1);
+
+    setup.start();
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let wanted = "teardown failed: exit 1. Its output ended with: cannot stop the database";
+    while setup.stays(1).as_deref() != Some(wanted) {
+        assert!(
+            Instant::now() < deadline,
+            "the desk says {:?}\ndaemon: {}",
+            setup.stays(1),
+            fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(setup.worktree(1).is_dir());
+}
+
+#[test]
+fn a_retiring_task_tears_down_first_and_resumes_when_it_resurrects_without_a_new_setup() {
+    let mut setup = Setup::new("recipe-retire");
+    setup.recipes(concat!(
+        r#"setup = { shell = "echo $PRIORY_TASK >> $FAKE_DIR/set-up" }"#,
+        "\n",
+        r#"resume = { shell = "echo $PRIORY_TASK $PWD >> $FAKE_DIR/resumed" }"#,
+        "\n",
+        r#"teardown = { shell = "echo $PRIORY_TASK >> $FAKE_DIR/torn" }"#,
+    ));
+    setup.calls(&[wait(on_pull_7("pull_request")), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    setup.gone("priory-1");
+    setup.commit(1, "widget.txt");
+    setup.disk(10);
+    setup.publish(&requested(43));
+
+    setup.removed(1);
+
+    assert_eq!(setup.faked("torn"), "1\n");
+    assert_eq!(setup.faked("resumed"), "");
+    setup.disk(100);
+    setup.until("tasks", |rows| rows[1][4] == "done");
+    setup.publish(&closed());
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[2] == "3" && row[3] == "confirmed")
+    });
+    assert_eq!(
+        setup.faked("resumed"),
+        format!("1 {}\n", setup.worktree(1).display())
+    );
+    assert_eq!(setup.faked("set-up"), "1\n2\n");
+}
+
 #[test]
 fn a_task_that_waited_on_a_linear_issue_is_done_on_its_result_without_a_pull_request() {
     let mut setup = Setup::new("linear-done");
@@ -20206,7 +20611,7 @@ fn a_going_batch_is_one_desk_line_in_place_of_the_held_tasks_its_edges_hold() {
         .unwrap();
     assert_eq!(
         line["what"],
-        "Invoice exports: 1 queued, 2 planned. Next: tasks 3 and 4 start when task 2 merges."
+        "Invoice exports: 1 queued, 2 planned. Next: ENG-41 and ENG-42 start when ENG-40 merges."
     );
     assert_eq!(
         (&line["id"], &line["key"]),
@@ -23490,6 +23895,67 @@ fn a_claude_run_gets_an_index_of_the_factorys_memories_and_reads_their_files_fro
     assert_ne!(setup.rows("runs")[1][8], kit);
 }
 
+/// The text a `PreToolUse` hook added to the model's context, if any.
+fn added_context(reply: &serde_json::Value) -> Option<&str> {
+    let output = &reply["hookSpecificOutput"];
+    (output["hookEventName"] == "PreToolUse")
+        .then(|| output["additionalContext"].as_str())
+        .flatten()
+}
+
+#[test]
+fn a_run_that_reads_or_edits_a_path_under_a_glob_gets_its_memory_or_skill_once() {
+    let mut setup = Setup::new("paths-scoped");
+    setup.memories();
+    fs::write(
+        setup.dir.join("factory/memories/release-day.md"),
+        "---\nname: release-day\ndescription: When releases go out.\npaths: [\"CHANGELOG.md\", \"docs/**/*.md\"]\n---\nReleases go out on Tuesdays.\n",
+    )
+    .unwrap();
+    let skill = setup.dir.join("factory/skills/migrations");
+    fs::create_dir_all(&skill).unwrap();
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: migrations\ndescription: Writes a schema migration.\npaths: \"crates/*/src/state.rs\"\n---\nTake the next free version.\n",
+    )
+    .unwrap();
+    let call =
+        |tool: &str, key: &str, path: &str| json!({ "name": tool, "arguments": { key: path } });
+    setup.calls(&[json!([
+        call("Read", "file_path", "src/main.rs"),
+        call("Read", "file_path", "docs/guides/release.md"),
+        call("Edit", "file_path", "CHANGELOG.md"),
+        call("Write", "file_path", "crates/core/src/state.rs"),
+        call("Read", "file_path", "crates/core/src/state.rs"),
+    ])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let replies = setup.replied(5);
+    assert_eq!(added_context(&replies[0]), None, "{}", replies[0]);
+    let memory = added_context(&replies[1]).unwrap_or_else(|| panic!("{}", replies[1]));
+    assert!(memory.contains("Releases go out on Tuesdays."), "{memory}");
+    assert!(
+        memory.contains("`docs/guides/release.md` matches `docs/**/*.md`"),
+        "{memory}"
+    );
+    assert_eq!(
+        added_context(&replies[2]),
+        None,
+        "once per run: {}",
+        replies[2]
+    );
+    let skill = added_context(&replies[3]).unwrap_or_else(|| panic!("{}", replies[3]));
+    assert!(skill.contains("Take the next free version."), "{skill}");
+    assert!(skill.contains("skills/migrations/SKILL.md"), "{skill}");
+    assert_eq!(added_context(&replies[4]), None, "{}", replies[4]);
+    assert!(
+        !memory.contains("four minutes"),
+        "a memory without paths stays in the index only"
+    );
+}
+
 #[test]
 fn a_codex_run_gets_the_memory_index_in_its_developer_instructions() {
     let mut setup = Setup::with_workflow("memories-codex", TWO_AGENTS);
@@ -26535,4 +27001,431 @@ fn a_trigger_day_cap_holds_its_running_task_after_the_turn_that_crossed_it() {
         "held: spent $203.00 of trigger agent-label's day cap of $150.00, until a person raises the cap or stops the task"
     );
     assert_eq!(setup.open_asks().len(), 1);
+}
+
+/// One model step whose run may spend `budget` dollars.
+fn budgeted(budget: &str) -> String {
+    format!(
+        r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+budget = "{budget}"
+next = {{ passed = "done", failed = "stop" }}
+"#
+    )
+}
+
+/// Each turn n of the fake `claude` costs (111 + 2n) * $0.0001 at this price.
+const DEAR: &str =
+    "[claude-fake-5]\ninput = 100.0\noutput = 100.0\ncache_read = 0.0\ncache_write = 0.0\n";
+
+impl Setup {
+    /// A task at a step with `budget`, priced by `prices`, whose turns take `calls`.
+    fn spend(name: &str, budget: &str, prices: &str, calls: &[serde_json::Value]) -> Self {
+        Self::spend_held(name, budget, prices, calls, &[])
+    }
+
+    /// As `spend`, with the fake's `holds` in place before the daemon starts.
+    fn spend_held(
+        name: &str,
+        budget: &str,
+        prices: &str,
+        calls: &[serde_json::Value],
+        holds: &[&str],
+    ) -> Self {
+        let mut setup = Setup::with_workflow(name, &budgeted(budget));
+        fs::write(setup.dir.join("factory/prices.toml"), prices).unwrap();
+        setup.calls(calls);
+        for hold in holds {
+            setup.hold(hold);
+        }
+        setup.publish(&requested(42));
+        setup.start();
+        setup
+    }
+
+    /// Waits until task 1 is `state`, and returns its reason.
+    fn until_task(&self, state: &str) -> String {
+        self.until("tasks", |rows| {
+            rows.first().is_some_and(|row| row[4] == state)
+        })[0][7]
+            .clone()
+    }
+}
+
+#[test]
+fn a_turn_over_its_steps_budget_with_no_result_fails_the_task_and_one_under_it_goes_on() {
+    let over = Setup::spend("budget-over", "0.01", DEAR, &[json!(null)]);
+    assert_eq!(
+        over.until_task("failed"),
+        "step implement spent $0.011200, over its budget of $0.01"
+    );
+    assert_eq!(over.rows("runs")[0][7], "budget");
+
+    let under = Setup::spend(
+        "budget-under",
+        "1.00",
+        DEAR,
+        &[json!(null), result("passed")],
+    );
+    under.until_task("done");
+    assert_eq!(under.rows("runs").len(), 1, "the nudged run went on");
+}
+
+#[test]
+fn a_turn_over_its_budget_that_sent_its_result_moves_the_task_and_its_record_carries_the_overrun() {
+    let setup = Setup::spend("budget-result", "0.01", DEAR, &[result("passed")]);
+    setup.until_task("done");
+    let ended: Vec<serde_json::Value> = setup
+        .trace()
+        .into_iter()
+        .filter(|record| record["type"] == "factory.step.ended")
+        .collect();
+    assert_eq!(ended.len(), 1, "{ended:?}");
+    assert_eq!(ended[0]["data"]["outcome"], "passed");
+    assert_eq!(
+        ended[0]["data"]["overrun"],
+        json!({ "budget_usd": 0.01, "spent_usd": 0.0112 })
+    );
+}
+
+#[test]
+fn a_budget_whose_cost_is_unknown_fails_the_task() {
+    let missing = Setup::spend_held(
+        "budget-no-transcript",
+        "1.00",
+        DEAR,
+        &[result("passed")],
+        &["no-transcript"],
+    );
+    let reason = missing.until_task("failed");
+    assert!(reason.contains("cost is unknown"), "{reason}");
+    assert_eq!(
+        reason,
+        "step implement has a budget, and run 1's cost is unknown: its transcript gave no tokens"
+    );
+
+    let other = "[other-model]\ninput = 1.0\noutput = 1.0\ncache_read = 1.0\ncache_write = 1.0\n";
+    let unpriced = Setup::spend("budget-unpriced", "1.00", other, &[result("passed")]);
+    assert_eq!(
+        unpriced.until_task("failed"),
+        "step implement has a budget, and run 1's cost is unknown: price missing for claude-fake-5"
+    );
+}
+
+#[test]
+fn a_resumed_run_counts_the_steps_earlier_turns_toward_its_budget() {
+    let setup = Setup::spend("budget-resumed", "0.02", DEAR, &[ask(), json!(null)]);
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    assert_eq!(
+        setup.until_task("failed"),
+        "step implement spent $0.022600, over its budget of $0.02"
+    );
+    assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn remember_refuses_an_exact_repeat_of_a_memory_a_pending_and_a_dropped_candidate() {
+    let mut setup = Setup::with_workflow("remember-repeat", STEPS);
+    let memories = setup.dir.join("factory/memories");
+    fs::create_dir_all(&memories).unwrap();
+    fs::write(
+        memories.join("deploys.md"),
+        "---\nname: deploys\ndescription: What deploys says.\n---\nDeploys need the VPN.\n",
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+    let (first, second) = (runs[0][4].clone(), runs[1][4].clone());
+    let call = |session: &str, call| reply(&setup.mcp(session, &[mcp_call(call)])[0]);
+
+    assert_eq!(
+        call(&first, remember("deploys", "Deploys need the VPN.")),
+        ("deploys already holds this text".to_owned(), true)
+    );
+    assert!(!call(&first, remember("release-day", "Tuesdays.")).1);
+    assert_eq!(
+        call(&first, remember("release-day", "Tuesdays.")),
+        ("release-day already holds this text".to_owned(), true),
+        "its own task sees it"
+    );
+    let candidates = setup.until_candidates(|candidates| {
+        candidates.len() == 1 && candidates[0]["state"] == "pending"
+    });
+    let id = candidates[0]["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        call(&second, remember("release-day", "Tuesdays.")),
+        (
+            format!(
+                "candidate {id} already proposes this text for release-day, and waits for a person"
+            ),
+            true
+        )
+    );
+
+    setup.decide("drop", &id);
+    let decided = setup.candidates()[0]["decided"].as_str().unwrap()[..10].to_owned();
+    assert_eq!(
+        call(&second, remember("release-day", "Tuesdays.")),
+        (
+            format!(
+                "a person dropped this text for release-day on {decided}: propose it again only with new evidence"
+            ),
+            true
+        )
+    );
+    assert!(
+        !call(&second, remember("release-day", "Wednesdays.")).1,
+        "a changed text is a correction"
+    );
+    setup.until_candidates(|candidates| candidates.len() == 2);
+}
+
+#[test]
+fn a_recap_prints_the_days_results_answers_says_and_stuck_tasks_and_nothing_else() {
+    let mut setup = Setup::with_workflow("recap", STEPS);
+    let token = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123";
+    setup.calls(&[
+        json!([
+            { "name": "Bash", "arguments": { "command": "env" }, "output": "TRANSCRIPT-ONLY" },
+            ask()
+        ]),
+        result("unsure"),
+        json!({ "name": "result", "arguments": {
+            "outcome": "passed", "summary": format!("Shipped with {token}.") } }),
+        json!({ "name": "Write", "arguments": { "file_path": "x" } }),
+    ]);
+    setup.hold("undecided");
+    let mut first = requested(42);
+    first.data["prompt"] = json!("ISSUE-BODY-ONLY");
+    setup.publish(&first);
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    let answered = setup.priory(&["answer", "1", "postgres", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("asks", |rows| rows.iter().any(|row| row[0] == "2"));
+    let said = setup.priory(&["say", "1", "Prefer Postgres from now on."]);
+    assert!(said.status.success(), "{said:?}");
+    let answered = setup.priory(&["answer", "2", "approved", "--revision", "2"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until_task("done");
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "blocked");
+
+    let recap = setup.priory(&["recap"]);
+    assert!(recap.status.success(), "{recap:?}");
+    let recap = String::from_utf8(recap.stdout).unwrap();
+    for absent in [token, "TRANSCRIPT-ONLY", "ISSUE-BODY-ONLY"] {
+        assert!(!recap.contains(absent), "{absent} in {recap}");
+    }
+    let at = |text: &str| {
+        recap
+            .find(text)
+            .unwrap_or_else(|| panic!("no {text:?} in {recap}"))
+    };
+    for text in [
+        "## Answer on task 1 (github:owner/repo#42)",
+        "A person said to task 1",
+        "Shipped with [redacted].",
+        "## task 2 (github:owner/repo#43) is blocked",
+    ] {
+        at(text);
+    }
+    // The state keeps whole seconds, so records of one second keep a fixed order among themselves.
+    let times: Vec<jiff::Timestamp> = recap
+        .lines()
+        .skip(1)
+        .flat_map(|line| line.split(' '))
+        .filter_map(|word| word.trim_end_matches(['.', ':']).parse().ok())
+        .collect();
+    assert!(times.len() >= 8, "{times:?} in {recap}");
+    assert!(times.is_sorted(), "{times:?} in {recap}");
+    assert!(
+        at("## Answer on task 1") < at("## task 2 (github:owner/repo#43) is blocked"),
+        "{recap}"
+    );
+    at("Recommended: sqlite: one file. The answer went against it.");
+    at("``` task 1 (github:owner/repo#42), by agent implementer\nWhich database?\n```");
+    at("``` task 1 (github:owner/repo#42), by a person\nPrefer Postgres from now on.\n```");
+    at("Workflow implement, step plan, outcome unsure");
+
+    let bounded = setup.priory(&["recap", "--max-bytes", "900"]);
+    let bounded = String::from_utf8(bounded.stdout).unwrap();
+    assert!(bounded.len() <= 900, "{} bytes: {bounded}", bounded.len());
+    assert!(
+        bounded.contains("is blocked"),
+        "the newest stays: {bounded}"
+    );
+    assert!(!bounded.contains("## Answer on"), "{bounded}");
+    assert!(
+        bounded
+            .trim_end()
+            .ends_with("records to stay under 900 bytes."),
+        "{bounded}"
+    );
+}
+
+#[test]
+fn a_recap_names_pending_and_recently_dropped_candidates_and_nothing_of_their_text() {
+    let mut setup = Setup::with_workflow("recap-names", STEPS);
+    setup.publish(&requested(42));
+    setup.start();
+    let session = setup.until("runs", |rows| rows.len() == 1)[0][4].clone();
+    for (name, text) in [
+        ("old-drop", "OLD-DROP-TEXT"),
+        ("new-drop", "NEW-DROP-TEXT"),
+        ("pending-one", "PENDING-TEXT"),
+    ] {
+        let (text, failed) = reply(&setup.mcp(&session, &[mcp_call(remember(name, text))])[0]);
+        assert!(!failed, "{text}");
+    }
+    let candidates = setup.until_candidates(|candidates| {
+        candidates.len() == 3 && candidates.iter().all(|c| c["state"] == "pending")
+    });
+    for (name, text) in [("old-drop", "OLD-DROP-TEXT"), ("new-drop", "NEW-DROP-TEXT")] {
+        setup.decide("drop", &candidate(&candidates, name, Some(text)));
+    }
+    let decided = setup.candidates()[0]["decided"]
+        .as_str()
+        .unwrap()
+        .parse::<jiff::Timestamp>()
+        .unwrap();
+    let recap = |days: i64| {
+        let now = decided + jiff::SignedDuration::from_hours(24 * days);
+        let output = setup
+            .command(env!("CARGO_BIN_EXE_priory"))
+            .arg("recap")
+            .env("PRIORY_NOW", now.to_string())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+
+    let soon = recap(3);
+    assert!(soon.contains("- `old-drop`: dropped on "), "{soon}");
+    assert!(soon.contains("- `new-drop`: dropped on "), "{soon}");
+    assert!(soon.contains("- `pending-one`: pending since "), "{soon}");
+    for text in [
+        "OLD-DROP-TEXT",
+        "NEW-DROP-TEXT",
+        "PENDING-TEXT",
+        "What old-drop says",
+    ] {
+        assert!(!soon.contains(text), "{text} in {soon}");
+    }
+    let later = recap(31);
+    assert!(!later.contains("drop`"), "{later}");
+    assert!(later.contains("- `pending-one`"), "{later}");
+}
+
+const DREAMER: &str = include_str!("../../../examples/dreaming/agents/dreamer/agent.md");
+const DREAM: &str = include_str!("../../../examples/dreaming/workflows/dream.toml");
+
+/// A firing of the nightly `dream` schedule, at `scheduled`.
+fn dream_night(scheduled: &str) -> Message {
+    let key = "schedule:dream";
+    Message::new(
+        "factory.task.requested",
+        json!({
+            "workflow": "dream",
+            "repo": "owner/repo",
+            "key": key,
+            "band": "later",
+            "lane": null,
+            "trigger": "nightly",
+            "source": format!("source-{scheduled}"),
+            "scheduled": scheduled,
+            "prompt": null
+        }),
+    )
+    .subject(key)
+}
+
+#[test]
+fn a_nightly_dream_proposes_candidates_that_reach_other_tasks_only_once_accepted() {
+    let mut setup = Setup::new("dream");
+    for (path, content) in [
+        ("factory/agents/dreamer/agent.md", DREAMER),
+        ("factory/workflows/dream.toml", DREAM),
+        (
+            "factory/prices.toml",
+            "[claude-fake-5]\ninput = 1.0\noutput = 1.0\ncache_read = 0.0\ncache_write = 0.0\n",
+        ),
+    ] {
+        let file = setup.dir.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, content).unwrap();
+    }
+    let checked = setup.priory(&["check", setup.dir.join("factory").to_str().unwrap()]);
+    assert!(checked.status.success(), "{checked:?}");
+    setup.calls(&[json!([
+        remember("release-day", "Releases go out on Tuesdays."),
+        remember("staging-vpn", "The staging database needs the VPN."),
+        { "name": "result", "arguments": { "outcome": "proposed", "summary": "Two memories." } }
+    ])]);
+    setup.hold("hold-call");
+    setup.publish(&dream_night("2026-11-22T03:00:00Z"));
+    setup.start();
+
+    let args = setup.claude_args(0);
+    let settings: serde_json::Value =
+        serde_json::from_str(&arg(&args, "--settings").unwrap()).unwrap();
+    let deny = &settings["permissions"]["deny"];
+    for tool in ["mcp__priory__ask", "mcp__priory__wait"] {
+        assert!(
+            deny.as_array().unwrap().contains(&json!(tool)),
+            "{settings}"
+        );
+    }
+    assert_eq!(arg(&args, "--permission-mode").as_deref(), Some("dontAsk"));
+
+    setup.publish(&dream_night("2026-11-23T03:00:00Z"));
+    setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(
+        setup.rows("tasks").len(),
+        1,
+        "the second firing joins the first task"
+    );
+    setup.release("hold-call");
+    setup.until_task("done");
+    let candidates = setup.until_candidates(|candidates| {
+        candidates.len() == 2 && candidates.iter().all(|c| c["state"] == "pending")
+    });
+    let desk = setup.priory(&["desk", "--json"]);
+    let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+    let rows: Vec<&serde_json::Value> = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["kind"] == "memories")
+        .collect();
+    assert_eq!(rows.len(), 1, "{desk}");
+    assert_eq!(rows[0]["candidates"].as_array().unwrap().len(), 2, "{desk}");
+
+    setup.publish(&requested(1));
+    assert_eq!(remembered(&setup.claude_args(1)), [], "no accept yet");
+    for candidate in &candidates {
+        setup.decide("accept", candidate["id"].as_str().unwrap());
+    }
+    setup.publish(&requested(2));
+    assert_eq!(
+        remembered(&setup.claude_args(2))
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>(),
+        ["release-day.md", "staging-vpn.md"]
+    );
 }
