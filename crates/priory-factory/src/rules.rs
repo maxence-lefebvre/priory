@@ -1,7 +1,7 @@
 use crate::factory::{
     ASK_SHAPE, Agent, Backend, CODEX_PROMPT_LIMIT, Decider, Effect, Factory, Harness, INSTRUCTIONS,
-    Intervention, Loaded, MEMORY_FOLDER, OnChange, PermissionMode, Problem, Proof, ScoreKind,
-    ScoreOn, Scorer, Session, Step, Trigger, Until, Workflow,
+    Intervention, Loaded, MEMORY_FOLDER, OPEN_MEMORIES_PR, OnChange, PermissionMode, Problem,
+    Proof, ScoreKind, ScoreOn, Scorer, Session, Step, Trigger, Until, Workflow,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
 use crate::lanes::{self, Lanes};
@@ -1035,6 +1035,16 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
             Decider::Code => match (step.action.as_deref() == Some("run"), &step.run) {
                 (true, None) => report("a `run` action needs a `run` command".into()),
                 (false, Some(_)) => report("only a `run` action has a `run` command".into()),
+                _ if step.action.as_deref() == Some(OPEN_MEMORIES_PR)
+                    && factory
+                        .settings
+                        .as_ref()
+                        .is_none_or(|settings| settings.value.kit.is_none()) =>
+                {
+                    report(format!(
+                        "an `{OPEN_MEMORIES_PR}` action writes to the kit repository, so factory.toml needs a `[kit]`"
+                    ))
+                }
                 _ => {}
             },
         }

@@ -2306,3 +2306,27 @@ fn a_kit_path_that_leaves_the_repository_or_a_ref_git_reads_as_an_option_fails_t
          factory.toml:3: `[kit]` `memories` is `/etc`: a kit path is relative and stays inside the repository\n"
     );
 }
+
+const MEMORIES_WORKFLOW: &str = "start = \"open\"\n\n[[steps]]\nid = \"open\"\ndecides = \"code\"\naction = \"open-memories-pr\"\neffect = \"irreversible\"\nautonomous = \"a person reviews the pull request before any memory merges\"\nnext = { opened = \"done\", unchanged = \"done\", failed = \"stop\" }\n";
+
+#[test]
+fn an_open_memories_pr_step_needs_a_kit() {
+    let mut files = valid();
+    files.push(("workflows/memories.toml", MEMORIES_WORKFLOW));
+    let without = check(&factory("memories-pr-no-kit", &files));
+    let toml =
+        "name = \"demo\"\n\n[kit]\nrepo = \"git@github.com:owner/abbey.git\"\nref = \"main\"\n";
+    let mut files: Vec<_> = files
+        .into_iter()
+        .filter(|(file, _)| *file != "factory.toml")
+        .collect();
+    files.push(("factory.toml", toml));
+    let with_kit = check(&factory("memories-pr-kit", &files));
+
+    assert_eq!(without.code, 1);
+    assert_eq!(
+        without.stderr,
+        "workflows/memories.toml:3: step `open`: an `open-memories-pr` action writes to the kit repository, so factory.toml needs a `[kit]`\n"
+    );
+    assert_eq!(with_kit.code, 0, "{}", with_kit.stderr);
+}
