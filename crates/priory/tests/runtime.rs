@@ -30168,10 +30168,11 @@ fn an_event_that_arrives_while_the_gate_grades_waits_for_its_verdict() {
 }
 
 /// Task 1 at `GATED_STEP` gated by the judge `asked` with no calibration, holding outcome passed
-/// on the one ask that names the judge.
-fn held_by_an_uncalibrated_judge(name: &str) -> (Setup, serde_json::Value) {
+/// on the one ask that names the judge. `factory` is the factory's `factory.toml`.
+fn held_by_an_uncalibrated_judge(name: &str, factory: &str) -> (Setup, serde_json::Value) {
     let mut setup = Setup::with_workflow(name, &GATED_STEP.replace("check", "asked"));
     judge_scorer(&setup, "0.8");
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
     setup.hold("hold-call");
     setup.publish(&requested(42));
     setup.start();
@@ -30194,8 +30195,20 @@ fn held_by_an_uncalibrated_judge(name: &str) -> (Setup, serde_json::Value) {
 }
 
 #[test]
+fn the_pre_review_judge_in_an_ordinary_gate_still_holds_the_result_while_uncalibrated() {
+    let (_setup, ask) = held_by_an_uncalibrated_judge(
+        "gate-judge-pre-review-uncalibrated",
+        "name = \"demo\"\npre_review = \"asked\"\n",
+    );
+
+    let question = ask["question"].as_str().unwrap();
+    assert!(question.contains("asked is not calibrated"), "{ask}");
+}
+
+#[test]
 fn a_judge_that_lost_its_calibration_holds_the_result_on_one_ask_that_names_it() {
-    let (setup, ask) = held_by_an_uncalibrated_judge("gate-judge-uncalibrated");
+    let (setup, ask) =
+        held_by_an_uncalibrated_judge("gate-judge-uncalibrated", "name = \"demo\"\n");
 
     let question = ask["question"].as_str().unwrap();
     assert!(
@@ -30225,7 +30238,7 @@ fn a_judge_that_lost_its_calibration_holds_the_result_on_one_ask_that_names_it()
 
 #[test]
 fn grade_again_after_a_calibration_lets_the_judge_grade_the_held_result() {
-    let (setup, _) = held_by_an_uncalibrated_judge("gate-judge-regrade");
+    let (setup, _) = held_by_an_uncalibrated_judge("gate-judge-regrade", "name = \"demo\"\n");
     let mut answers = AGREE_NINE.to_vec();
     answers.push("pass\nIt adds a.txt.");
     judge_answers(&setup, &answers);

@@ -422,7 +422,8 @@ fn apply(
         .map(|(score, _)| format!("{}: {}", score.scorer, score.reason))
         .collect();
     // A person reads the approval ask after a pre-review anyway, so an uncalibrated one asks nothing.
-    let reviewer = trace.factory.pre_review();
+    // Only a gate that holds lessons is a pre-review: the same judge in another gate still holds.
+    let reviewer = lessons.as_ref().and(trace.factory.pre_review());
     let uncalibrated: Vec<String> = graded
         .iter()
         .filter(|(score, counts)| !counts && reviewer != Some(score.scorer.as_str()))
