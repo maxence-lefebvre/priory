@@ -56,7 +56,8 @@ test("renders a numbered list and a checklist that marks done items", () => {
   assert.equal(
     markdown(text, [], null),
     "<ol><li>Add the table.</li><li>Backfill it.</li></ol>" +
-      `<ul class="checks"><li class="done"><svg class="ico s15" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span>Migration</span></li><li><span class="box" aria-hidden="true"></span><span>Backfill</span></li></ul>`,
+      `<ul class="checks"><li class="done"><svg class="ico s15" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg><span><span class="visually-hidden">Done: </span>Migration</span></li>` +
+        `<li><span class="box" aria-hidden="true"></span><span><span class="visually-hidden">Not done: </span>Backfill</span></li></ul>`,
   );
 });
 
@@ -82,4 +83,27 @@ test("random text yields only the subset's tags and https links", () => {
     for (const [, url] of html.matchAll(/href="([^"]*)"/g)) assert.match(url, /^https:\/\//, JSON.stringify(text));
     assert.doesNotMatch(html.replace(/<[^>]*>/g, ""), /[<>"]/, JSON.stringify(text));
   }
+});
+
+test("keeps code and links inside bold", () => {
+  const links = [{ pattern: String.raw`\b[A-Z]{2,5}-\d+\b`, url: "https://linear.app/i/$0" }];
+
+  assert.equal(
+    markdown("**`ENG-7` and [the run](https://ci.example.com/r)**", links, null),
+    `<p><strong><code>ENG-7</code> and <a href="https://ci.example.com/r" rel="noopener noreferrer" target="_blank">the run</a> <span class="host">ci.example.com</span></strong></p>`,
+  );
+});
+
+test("keeps balanced parentheses in a link target", () => {
+  assert.equal(
+    markdown("[ref](https://en.example.org/wiki/F_(math)).", [], null),
+    `<p><a href="https://en.example.org/wiki/F_(math)" rel="noopener noreferrer" target="_blank">ref</a> <span class="host">en.example.org</span>.</p>`,
+  );
+});
+
+test("renders a line of unmatched brackets and backticks in linear time", () => {
+  const started = performance.now();
+  markdown("[".repeat(64000) + "`".repeat(64000), [], null);
+
+  assert.ok(performance.now() - started < 500);
 });

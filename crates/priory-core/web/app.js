@@ -92,7 +92,6 @@ function html(strings, ...values) {
 }
 // Agent text with the factory's autolinks; `linked` escapes it.
 const autolinked = (text, repo) => raw(linked(text ?? "", state.data?.links || [], repo ?? null));
-// Ask text, briefs and plans as sanitized Markdown with the same autolinks.
 const md = (text, repo) => html`<div class="md">${raw(markdown(text, state.data?.links || [], repo ?? null))}</div>`;
 const icon = (name, size = "") => raw(`<svg class="ico ${size}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`);
 
