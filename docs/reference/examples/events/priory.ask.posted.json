@@ -1,10 +1,10 @@
 {
   "id": "a3c81f5d-29e4-5b07-9c6a-d1e2f3a4b5c6",
   "type": "priory.ask.posted",
-  "subject": "xps13:7",
+  "subject": "desktop:7",
   "time": "2026-11-21T10:00:02Z",
   "data": {
-    "runner": "xps13",
+    "runner": "desktop",
     "ask": 7,
     "version": 1,
     "kind": "step",

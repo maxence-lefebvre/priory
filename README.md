@@ -121,7 +121,7 @@ as a website, with search, built from `main`.
   [docs/daemon/](docs/daemon/README.md) explains how the daemon runs tasks, and
   [docs/intake/](docs/intake/README.md) how each source becomes events, one file per topic.
 - Adapters: [docs/adapters/herdr.md](docs/adapters/herdr.md), Priory's panels as Herdr mods, and
-  [adapters/github/README.md](adapters/github/README.md), Priory on a pull request's page: its
+  [docs/adapters/github.md](docs/adapters/github.md), Priory on a pull request's page: its
   task, its asks and a review guide.
 - Project: [docs/prd.md](docs/prd.md) says what Priory does and in which milestone.
   [CONTRIBUTING.md](CONTRIBUTING.md) says how to change Priory, and [DESIGN.md](DESIGN.md) holds

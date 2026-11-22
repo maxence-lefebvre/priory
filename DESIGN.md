@@ -582,14 +582,14 @@ Another runner's ask shows:
 
 - **Rows** (Desk, Asks list): a `.tag` with the runner's name on line 1, which never shrinks. Once
   the runner's last alive message is over 3 minutes old, the tag takes `--warn-text` and line 3
-  starts with "xps13 last seen 40 min ago" in `--warn-text`. The wide table shows the whole tag,
-  "xps13, last seen 40 min ago", after the question.
+  starts with "desktop last seen 40 min ago" in `--warn-text`. The wide table shows the whole tag,
+  "desktop, last seen 40 min ago", after the question.
 - **Runner facet**: a facet chip like Band, offering each runner with its count. This runner reads
   "workstation (here)". It shows only when the asks name runners.
 - **Sent**: an answer or dismiss to another runner's ask is a submission, which its runner applies
-  when it reads the log. Until then line 3 reads "Sent to xps13: approved" in `--action-text`, and
-  the detail says under the question "Sent to xps13: approved. It applies when xps13 reads the
-  log." A refused submission reads "xps13 refused approved: why" in `--warn-text` instead. An
+  when it reads the log. Until then line 3 reads "Sent to desktop: approved" in `--action-text`, and
+  the detail says under the question "Sent to desktop: approved. It applies when desktop reads the
+  log." A refused submission reads "desktop refused approved: why" in `--warn-text` instead. An
   applied one shows as the ask's own answer.
 - **Could not send**: a write the log did not take shows its error in place of the Sent line:
   nothing was sent, and the draft stays.
@@ -767,8 +767,8 @@ answered says nothing. An answered row in the lists and the answered card say it
 Merge by agent:lead", and "By agent:lead." after the age.
 A refused answer shows on a warn tile with "Refused:" and the answer in `--warn-text`, and why.
 Another runner's ask also lists each answer and dismiss sent to it, at the time it was sent: "Sent
-approve to xps13 for revision 2. Not applied yet" on a `queued` tile, then "xps13 applied it" on an
-`answered` tile, or on a `withdrawn` tile for a dismiss. A refused one reads "xps13 refused it: why"
+approve to desktop for revision 2. Not applied yet" on a `queued` tile, then "desktop applied it" on an
+`answered` tile, or on a `withdrawn` tile for a dismiss. A refused one reads "desktop refused it: why"
 on a warn tile in `--warn-text`.
 
 ### Appearance screen
