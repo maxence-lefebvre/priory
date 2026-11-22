@@ -1180,7 +1180,7 @@ left, with a hairline between them.
   date, with the weekday from 520 px, and its merges. Each bar has a `title` with its sentence, and
   the chart's accessible name lists every sentence.
 - **Split**: "This week by workflow" with a Split by `select` (workflow, agent, model, machine,
-  repo), then a table of the value in mono, cost, tokens and notes. The first column sticks when
+  repo, lane), then a table of the value in mono, cost, tokens and notes. The first column sticks when
   the table scrolls sideways.
 - **Scores**: under the split, when the window has scores, "Scores by workflow" with the caption
   "The pass rate leaves out errors and not applicable." Then a table of the value and the scorer in
@@ -1448,7 +1448,7 @@ The web's [Costs panel](#costs-panel).
 
 - From 1024 px Costs and Attention sit side by side. Below, Costs and Attention chips in the
   header pick one, as saved views do.
-- The Split by `select` becomes a row of chips, `workflow` to `repo`, beside the split's title.
+- The Split by `select` becomes a row of chips, `workflow` to `lane`, beside the split's title.
 - The day chart and each task's bar are drawn with elements, not SVG. The week line is a dashed
   `--text-3` edge before this week's first bar. Waiting on you keeps its `--wait` stripes.
 - Loading reads "Reading costs…", with no skeleton.

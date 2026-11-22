@@ -45,7 +45,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /api/asks/{id}/answer` | `priory answer ID TEXT --revision N` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
 | `POST /api/asks/{id}/dismiss` | `priory dismiss --expected N ID` | as above |
 | `POST /api/snooze` | `priory snooze KIND ID (--for D \| --until T \| --clear)` | as above |
-| `POST /api/request` | `priory add TEXT` | `{"key": "<task key>", "id": <task id>}`. See [Writes](#writes) |
+| `POST /api/request` | `priory add TEXT` | `{"key": "<task key>", "id": <task id>, "outcome": "<what it did>"}`. See [Writes](#writes) |
 | `POST /api/tasks/{id}/resume` | `priory resume ID` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
 | `POST /api/tasks/{id}/revive` | `priory revive ID [--step STEP]` | as above |
 | `POST /api/tasks/{id}/cancel` | `priory cancel ID [--expected N]` | as above |
@@ -90,7 +90,7 @@ or a reason, is untrusted: render it as text.
 | ---- | ---- |
 | `200` | The endpoint answered |
 | `202` | A signed webhook delivery was taken: published, or dropped on purpose |
-| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`, or a `pr` that is not a pull request such as `github:owner/repo#7`; `/api/runs` has a parameter other than `all=1`; a run screen's `history` is not a whole number; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); a keys body whose text or key the [Keyboard](#keyboard) section refuses; for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
+| `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`, or a `pr` that is not a pull request such as `github:owner/repo#7`; `/api/runs` has a parameter other than `all=1`; a run screen's `history` is not a whole number; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the six [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); a keys body whose text or key the [Keyboard](#keyboard) section refuses; for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site, and that is not one of [`[serve] extension_origins`](factory.md#serve). Or a keys or keyboard return request whose secret matches no open grant of the run |
 | `404` | No such path, task, report, ask, batch, memory candidate or web view file; a run screen whose run ended or does not exist; any run screen with `[serve] terminal = "off"`; any [keyboard](#keyboard) path, for any method, unless `[serve] terminal = "type"` |
@@ -249,7 +249,7 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | ----- | ---- |
 | `200` `{"ok": "ask 42 answered"}` | The daemon applied it |
 | `202` `{"sent": "xps13", "submission": "<id>"}` | For another runner's ask or task: the write is on the log for that runner, which applies it when it reads it. `submission` names it in the ask's or task's `submissions` |
-| `200` `{"key": "cli:2026-11-20-1", "id": 7}` | For `/api/request`: the daemon published the request and task `id` holds `key`. `id` is `null` when no task took the key |
+| `200` `{"key": "cli:2026-11-20-1", "id": 7, "outcome": "created"}` | For `/api/request`: the daemon published the request and task `id` holds `key`. `id` is `null` when no task took the key. `outcome` is `created` for a new task; `said` when the text joined an active task that hears it now, or that shows it on its open step's ask; `kept` when it joined a task with no run yet, which reads it in its first prompt; `null` while the log has not handed the request back |
 | `409` `{"error", "ask"}` | The ask's revision is no longer the one sent, or it was answered, dismissed or withdrawn. `ask` is its current state |
 | `409` `{"error"}` | Another runner's task is held by a third runner, or is at another generation than the one sent. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report is at another revision than the one sent, or the pick already holds that choice or an applied one: read the report again |
 | `409` `{"error", "key", "id"}` | For `/api/request`: the same text already went to `key`, so nothing was added. `id` is the active task that holds `key`, or `null` |
@@ -436,17 +436,17 @@ group per resource, the group with the newest event first:
 | `request_text` | string or null | For a GitHub or Linear resource, the text of a new task keyed by it: `Follow up on URL after event SEQ`, the issue's URL, which `priory add` turns into the resource as key, and the newest event's sequence number, so each follow-up is a new request |
 
 `unheard` groups, one group per task, the newest event first, the events that a task kept and no
-agent read: the outcome `kept`, no prompt carries it, no wait took it, and the task is not
-`running`. Only feedback, closes, Linear state changes and edits, and Slack replies count, the kinds
-a task's own key carries, and not the agent's own. An event shows once it is 5 minutes old, by the
+agent read: the outcome `kept`, for the task that routing gave it to or for a second task through
+a subscription, no prompt carries it, no wait took it, and the task is not `running`. Only feedback, closes, Linear state changes and edits, Slack replies, the kinds a task's own
+key carries, and a `priory add` that joined the task count, and not the agent's own. An event shows once it is 5 minutes old, by the
 event's `time` against now (`PRIORY_NOW` when set), so a task about to start or wake is left out:
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `task` | object | The task that kept them: `id`, `key`, `state`, `workflow` |
 | `events` | array | Its events, newest first, as in `owned` |
-| `follow_up` | string or null | `priory say ID 'Read the events that came while you slept.'` for an `asleep` or `blocked` task, whose next run carries them. For a done, failed or dropped task, the command `owned` gives for its key. Null for a task whose next run reads them anyway, such as a `queued` or `ready` one |
-| `say_text` | string or null | The text `follow_up` says to an `asleep` or `blocked` task, which the web Inbox's Say sends; null for any other task |
+| `follow_up` | string or null | `priory say ID 'Read the events that came while you slept.'` for an `asleep` or `blocked` task, whose next run carries them. For a done, failed or dropped task, the command `owned` gives for its key. Null for a task whose next run reads them anyway, such as a `queued` or `ready` one, and for a task that waits on a step's ask, which shows them |
+| `say_text` | string or null | The text `follow_up` says to an `asleep` or `blocked` task, which the web Inbox's Say sends; null for any other task, and for a task that waits on a step's ask |
 | `request_text` | string or null | For a done task, the text of a new task keyed by its key, as in `owned`: null when its key is not a GitHub or Linear resource, and for any other task |
 
 `outsider`, beside `unrouted`, lists the comments and reviews from someone outside the repository,
@@ -719,7 +719,7 @@ A held task lists each condition of its hold, in the order it was given, under `
 
 `/api/costs` prices from the `prices.toml` of the factory `serve` runs, read when it starts. Both
 parameters are optional: `since` takes an RFC 3339 instant or a duration such as `30 days`, and `by`
-one of `workflow` (the default), `agent`, `model`, `machine` and `repo`. See
+one of `workflow` (the default), `agent`, `model`, `machine`, `repo` and `lane`. See
 [trace.md](../daemon/trace.md#costs) for the windows and what each dimension reads.
 
 | Field | Value |

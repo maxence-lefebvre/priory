@@ -60,6 +60,12 @@ pull request from a fork, or from a branch someone else pushed under a task's na
 A fork's branch is not a resource of the event at all, so its events reach no task by branch. A
 task whose worktree the sweep removed claims no new pull request.
 
+When a Linear issue moves to another team, the intake publishes a `linear.issue.updated` with
+`changed: ["identifier"]` and `previous_issue` (see [linear.md](../intake/linear.md#team-moves)).
+Before it routes that event, the daemon renames every task key `linear:<previous_issue>`, and the
+keys of its batch entries, to the new identifier. It moves owned and subscribed resources, open
+waits and open holds the same way. So the event and every later one of the issue reach the task.
+
 ### Stacks
 
 A task's stack is every pull request its `open-pr` opened or the claim gave it. Each one is based on
@@ -126,7 +132,8 @@ Each inbox entry gets one of these outcomes:
 | A schedule's or review request's `factory.task.requested`, with a task asleep at a model step owning its key | `woke` | that task, now `ready` |
 | A schedule's or review request's `factory.task.requested`, with a task in another active state owning its key | `coalesced` | that task, unchanged |
 | A review, comment or review thread comment, with no active task owning a resource it names, and a done task it reopens | `reopened` | that task, now `ready` at its reopen step |
-| `priory.task.requested.cli`, with an active task owning its key, at a model step whose agent started | `said` | that task, which hears the text as `priory say` sends it |
+| `priory.task.requested.cli`, with an active task owning its key, at a model step whose agent started or waiting on a step's ask | `said` | that task, which hears the text as `priory say` sends it |
+| `priory.task.requested.cli`, with an active task owning its key whose agent has not started | `kept` | that task, which reads the text in its first prompt |
 | `github.pull_request.review_request_removed` with `reviewed: false`, with an active task whose key is its review key | `withdrew` | that task, now `dropped`, its live run ended |
 | Any other, with an active task asleep at a model step subscribing to a resource it names, that fires no wait | `woke` | that task, now `ready` (see [tools.md](tools.md#subscribeon-and-unsubscribeon)) |
 | Any other, with an active task owning a resource it names | `kept` | that task                   |
@@ -178,7 +185,8 @@ state until its next run.
 
 When routing gives an event to one task and a subscription delivers it to a second, the second
 task's inbox lists it with `task` naming the first. Its `outcome` and `prompt` are the second
-task's own: `woke` when the event woke it, or `kept` when it queued a prompt while the task ran.
+task's own: `woke` when the event woke it, or `kept` when it queued a prompt while the task ran or
+kept the event for the task's next run.
 A comment that wakes the second task from its checks gate shows no `wait`, since that delivery
 records the prompt but not the wait.
 
@@ -221,13 +229,16 @@ command, since no task takes them. The Desk counts those of the last 24 hours in
 A `kept` event reaches a task, but a task that is not running reads it only at its next run. An
 asleep task may sleep for hours on a wait that the event does not fire, and a task can end before
 it runs again. So `priory inbox --unrouted` lists a third group, `unheard`: per task, the events it
-kept that no prompt carries and no wait took, once they are 5 minutes old (see
+kept, itself or through a subscription, that no prompt carries and no wait took, once they are 5 minutes old (see
 [serve.md](../reference/serve.md#unrouted)). Only what people say, edit and close counts: the
-kinds a task's own key carries, and not the agent's own comments. Checks and pushes stay with the
+kinds a task's own key carries, and a `priory add` that joined the task, and not the agent's own
+comments. Checks and pushes stay with the
 checks gate.
 
 Each group names its task and a command: `priory say ID` for an asleep or blocked task, whose next
-run carries the events after the text, or what the owned group gives for an ended task. The Desk
+run carries the events after the text, or what the owned group gives for an ended task. A task that
+waits on a step's ask gets no command: its ask shows the events already (see
+[What a kept message does](#what-a-kept-message-does)). The Desk
 counts these events over the last 24 hours (see [desk.md](desk.md#unrouted-events)).
 
 The web and Herdr Inbox panels list these groups first, under Unheard. On the web, Say sends the
@@ -240,8 +251,8 @@ group's Revive or Request a task. The Herdr panel has no Say: it shows an asleep
 What happens to a `kept` message depends on the task's state:
 
 - For a `running` task, the daemon also queues an outbox prompt with the message, so the agent reads
-  it after its current turn. Until then, for feedback, the agent's `result` and `ask` are refused
-  (see [tools.md](tools.md#the-tools)).
+  it after its current turn. Until then, for feedback, the agent's `result`, `ask` and `wait` are
+  refused (see [tools.md](tools.md#the-tools)).
 - If the message satisfies the task's open wait, the wait fires in any active state (see
   [waits.md](waits.md)). An asleep task wakes. A ready, blocked or held task keeps its state, and
   its next run gets the prompt.
@@ -251,8 +262,14 @@ What happens to a `kept` message depends on the task's state:
   `linear.issue.left` (see
   [tools.md](tools.md#subscribeon-and-unsubscribeon)).
   Another active task that subscribes to
-  it gets it too: a prompt of its own while it runs, or a wake while it sleeps (see
+  it gets it too: a prompt of its own while it runs, a wake while it sleeps at a model step, or
+  else the event kept for its next run, as this list says for the first task (see
   [tools.md](tools.md#subscribeon-and-unsubscribeon)).
+- For a task that waits on a step's ask, where a person decides and no agent runs, a message of
+  the kinds the task's own key takes, and not the agent's own, is added to that ask as its next
+  revision: `While this waited: <who> on <subject>: <first line> <url>`. The new revision pushes,
+  and an answer to the earlier revision is refused, so the person who answers reads it. The answer
+  may lead to `done` with no agent run at all. If a run follows, it reads the message too.
 - Any other kept message waits for the task's next run, which reads it in its first prompt.
 
 ## Schedule firings

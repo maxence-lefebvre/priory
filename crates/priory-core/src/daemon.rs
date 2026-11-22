@@ -843,9 +843,9 @@ struct AddLine {
     add: priory_intake::request::Add,
 }
 
-/// Publishes `add` as `priory add` does, then takes it in at once, so the reply names the task:
-/// `{"key": ..., "id": ...}`, with no id when no active task has the key. A repeated text adds
-/// `error`, which says nothing was added.
+/// Publishes `add` as `priory add` does, then takes it in at once, so the reply names the task and
+/// what the request did: `{"key": ..., "id": ..., "outcome": ...}`, with no id when no active task
+/// has the key. A repeated text adds `error`, which says nothing was added, in place of `outcome`.
 fn add(
     db: &mut Connection,
     add: &priory_intake::request::Add,
@@ -875,10 +875,26 @@ fn add(
     let id = state::owner(&tx, std::slice::from_ref(&key))?.map(|task| task.id);
     drop(tx);
     let mut reply = serde_json::json!({ "key": key, "id": id });
-    if let Some(error) = error {
-        reply["error"] = serde_json::json!(error);
+    match error {
+        Some(error) => reply["error"] = serde_json::json!(error),
+        None => reply["outcome"] = serde_json::json!(added(db, &key)?),
     }
     Ok(Ok(reply.to_string()))
+}
+
+/// What the newest request for `key` did: `created` its task, `said` its text to the task's agent,
+/// or `kept` it for the task's next run. None while the log has not handed it back.
+fn added(db: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
+    db.query_row(
+        "SELECT CASE WHEN outcome IN ('said', 'kept') THEN outcome
+           WHEN (SELECT outcome FROM inbox WHERE type = 'factory.task.requested' AND subject = ?1
+             ORDER BY seq DESC LIMIT 1) = 'created' THEN 'created' END
+         FROM inbox WHERE type = ?2 AND subject = ?1 ORDER BY seq DESC LIMIT 1",
+        rusqlite::params![key, priory_intake::request::REQUESTED],
+        |row| row.get(0),
+    )
+    .optional()
+    .map(Option::flatten)
 }
 
 /// The reads of wait conditions' current states that run on threads of their own, so a slow

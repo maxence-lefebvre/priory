@@ -1807,6 +1807,44 @@ pub(crate) fn handle_in(
     route_in(tx, message, trace, counter)
 }
 
+/// Moves what names a Linear issue moved to another team onto its new identifier `to`: the keys
+/// of its tasks and their batch entries, what they own and subscribe to, and open waits and holds.
+fn renamed(tx: &Transaction, message: &Message, to: Option<&String>) -> rusqlite::Result<()> {
+    let (Some(to), Some(previous)) = (to, message.data["previous_issue"].as_str()) else {
+        return Ok(());
+    };
+    let moved = message.kind == "linear.issue.updated"
+        && message.data["changed"]
+            .as_array()
+            .is_some_and(|changed| changed.iter().any(|field| field == "identifier"));
+    let from = format!("linear:{previous}");
+    if !moved || from == *to {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE OR IGNORE tasks SET key = ?2 || substr(key, length(?1) + 1)
+         WHERE key = ?1 OR substr(key, 1, length(?1) + 1) = ?1 || '.'",
+        params![from, to],
+    )?;
+    for table in ["owns", "subscriptions", "closed_subscriptions"] {
+        tx.execute(
+            &format!("UPDATE OR IGNORE {table} SET resource = ?2 WHERE resource = ?1"),
+            params![from, to],
+        )?;
+        // What is left already names the new identifier too.
+        tx.execute(&format!("DELETE FROM {table} WHERE resource = ?1"), [&from])?;
+    }
+    tx.execute(
+        "UPDATE waits SET resource = ?2 WHERE resource = ?1 AND fired IS NULL",
+        params![from, to],
+    )?;
+    tx.execute(
+        "UPDATE holds SET resource = ?2 WHERE resource = ?1 AND released IS NULL",
+        params![from, to],
+    )
+    .map(drop)
+}
+
 /// Routes `message` in `tx` and records it, or records its new route when the inbox holds it.
 /// Returns the tmux session of each run it ended, to kill once it commits.
 pub(crate) fn route_in(
@@ -1829,6 +1867,7 @@ pub(crate) fn route_in(
         return Ok(kill);
     }
     let resources = route::resources(message);
+    renamed(tx, message, resources.first())?;
     claim_pull_request(tx, message)?;
     // The intake publishes no reopen, so a later event of an open pull request or issue tells it,
     // and gives back the subscriptions its close ended.
@@ -1988,6 +2027,11 @@ pub(crate) fn route_in(
     {
         crate::hold::left(tx, resource, message.data["view"].as_str())?;
     }
+    if message.kind == "linear.issue.entered"
+        && let Some(resource) = resources.first()
+    {
+        crate::hold::entered(tx, resource, message.data["view"].as_str())?;
+    }
     if message.kind == priory_intake::intake::PR_CLOSED && message.data["merged"] == true {
         crate::tools::restack_stacked(tx, trace, seq, &message.data)?;
     }
@@ -1997,10 +2041,19 @@ pub(crate) fn route_in(
     for other in owners.iter().filter(|other| Some(other.id) != task) {
         let (fired, ended) = crate::tools::event(tx, other.id, seq, factory)?;
         kill.extend(ended);
-        if !fired
-            && let Some((outcome, prompt)) =
-                delivered(tx, other.id, message, &resources, None, factory)?
-        {
+        if fired {
+            continue;
+        }
+        let heard = match delivered(tx, other.id, message, &resources, None, factory)? {
+            Some(heard) => Some(heard),
+            // A task that cannot hear it now keeps it for its next run, as the first owner does.
+            None if subscribes(tx, other.id, &resources, &message.kind)? => {
+                told(tx, other.id, message)?;
+                Some(("kept", None))
+            }
+            None => None,
+        };
+        if let Some((outcome, prompt)) = heard {
             tx.execute(
                 "INSERT OR IGNORE INTO subscription_deliveries (seq, task, outcome, outbox)
                  VALUES (?1, ?2, ?3, ?4)",
@@ -2012,11 +2065,14 @@ pub(crate) fn route_in(
         (Some(task), "kept") => {
             let (fired, ended) = crate::tools::event(tx, task, seq, factory)?;
             kill.extend(ended);
-            if !fired
-                && delivered(tx, task, message, &resources, Some(seq), factory)?
+            if !fired {
+                if delivered(tx, task, message, &resources, Some(seq), factory)?
                     .is_some_and(|(outcome, _)| outcome == "woke")
-            {
-                tx.execute("UPDATE inbox SET outcome = 'woke' WHERE seq = ?1", [seq])?;
+                {
+                    tx.execute("UPDATE inbox SET outcome = 'woke' WHERE seq = ?1", [seq])?;
+                } else {
+                    told(tx, task, message)?;
+                }
             }
         }
         (Some(task), "woke") => {
@@ -2040,7 +2096,7 @@ pub(crate) fn route_in(
             let text = message.data["text"].as_str().unwrap_or_default();
             let text = format!("{}{text}", crate::tools::SAYS);
             // An agent that cannot hear it yet reads the request with its next prompt instead.
-            if crate::tools::say(tx, task, &text, &state, &factory.workflows)?.is_err() {
+            if crate::tools::say_or_hold(tx, task, &text, &state, &factory.workflows)?.is_err() {
                 tx.execute("UPDATE inbox SET outcome = 'kept' WHERE seq = ?1", [seq])?;
                 kill.extend(crate::tools::event(tx, task, seq, factory)?.1);
             } else {
@@ -2251,6 +2307,16 @@ fn delivered(
         return Ok(Some(("kept", Some(tx.last_insert_rowid()))));
     }
     Ok(None)
+}
+
+/// Adds what a person said in `message` to the open step ask of `task`, since no agent runs while
+/// a person decides and the answer may lead to `done` with no run at all.
+fn told(tx: &Transaction, task: i64, message: &Message) -> rusqlite::Result<bool> {
+    if !OWN_KEY.contains(&message.kind.as_str()) || message.data["own"] == true {
+        return Ok(false);
+    }
+    let line = crate::tools::heard(&message.kind, message.subject.as_deref(), &message.data);
+    crate::tools::tell_ask(tx, task, &line)
 }
 
 /// The events a task's subscription to its own key carries: what people say, edit, close and take
@@ -3196,27 +3262,15 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
         "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
         params![run.task, route::branch(run.repo, run.branch)],
     )?;
-    let mut events = Vec::new();
     let mut text = run.prompt.unwrap_or_default().to_owned();
-    {
-        let mut statement = tx.prepare(
-            "SELECT seq, type, subject, data FROM inbox WHERE outbox IS NULL
-             AND ((task = ?1 AND outcome = 'kept') OR id = (SELECT source FROM tasks WHERE id = ?1))
-             ORDER BY seq",
-        )?;
-        let mut rows = statement.query([run.task])?;
-        while let Some(row) = rows.next()? {
-            events.push(row.get::<_, i64>(0)?);
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            text.push_str(&line(
-                &row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?.as_deref(),
-                &row.get::<_, String>(3)?,
-            ));
+    let unread = unread(&tx, run.task, true, None)?;
+    for (_, _, line) in &unread {
+        if !text.is_empty() {
+            text.push('\n');
         }
+        text.push_str(line);
     }
+    let events: Vec<i64> = unread.iter().map(|(seq, _, _)| *seq).collect();
     if crate::triage::any(&tx, &events)? {
         text = format!("{text}\n{}", crate::triage::RULE);
     }
@@ -3225,19 +3279,72 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
             "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
             params![run.task, text],
         )?;
-        let outbox = tx.last_insert_rowid();
-        for seq in events {
-            tx.execute(
-                "UPDATE inbox SET outbox = ?1 WHERE seq = ?2",
-                params![outbox, seq],
-            )?;
-        }
+        carry(&tx, run.task, tx.last_insert_rowid(), &unread)?;
     }
     if run.shared {
         share(&tx, run)?;
     }
     tx.commit()?;
     Ok(id)
+}
+
+/// Each event `task` kept that no prompt carries, by seq, with whether a subscription delivered it
+/// (its inbox entry belongs to another task) and its line: its own kept events, those a
+/// subscription kept for it, and with `source` its source event, leaving out `except`.
+pub(crate) fn unread(
+    tx: &Transaction,
+    task: i64,
+    source: bool,
+    except: Option<i64>,
+) -> rusqlite::Result<Vec<(i64, bool, String)>> {
+    let mut statement = tx.prepare(
+        "SELECT seq, 0, type, subject, data FROM inbox WHERE outbox IS NULL AND seq IS NOT ?3
+           AND ((task = ?1 AND outcome = 'kept')
+             OR (?2 AND id = (SELECT source FROM tasks WHERE id = ?1)))
+         UNION ALL
+         SELECT inbox.seq, 1, inbox.type, inbox.subject, inbox.data
+         FROM subscription_deliveries AS heard JOIN inbox ON inbox.seq = heard.seq
+         WHERE heard.task = ?1 AND heard.outcome = 'kept' AND heard.outbox IS NULL
+           AND heard.seq IS NOT ?3
+         ORDER BY 1",
+    )?;
+    let mut rows = statement.query(params![task, source, except])?;
+    let mut events = Vec::new();
+    while let Some(row) = rows.next()? {
+        events.push((
+            row.get(0)?,
+            row.get(1)?,
+            line(
+                &row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?.as_deref(),
+                &row.get::<_, String>(4)?,
+            ),
+        ));
+    }
+    Ok(events)
+}
+
+/// Records that prompt `outbox` carries the `unread` events of `task`.
+pub(crate) fn carry(
+    tx: &Transaction,
+    task: i64,
+    outbox: i64,
+    unread: &[(i64, bool, String)],
+) -> rusqlite::Result<()> {
+    for (seq, heard, _) in unread {
+        if *heard {
+            tx.execute(
+                "UPDATE subscription_deliveries SET outbox = ?1 WHERE seq = ?2 AND task = ?3",
+                params![outbox, seq, task],
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE inbox SET outbox = ?1 WHERE seq = ?2",
+                params![outbox, seq],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Records the run's session as its agent's shared one, and names the task in its first prompt.

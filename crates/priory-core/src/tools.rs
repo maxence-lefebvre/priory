@@ -198,8 +198,8 @@ pub(crate) fn call(
         ("ask" | "wait", ..) if woken(&tx, &run)? => {
             Some("an answer or event for this run is queued: end your turn to read it".to_owned())
         }
-        // A result or ask would end or sleep the task over feedback it has not read yet.
-        ("result" | "ask", ..) if kept(&tx, run.task)? => {
+        // A result, ask or wait would end or sleep the task over feedback it has not read yet.
+        ("result" | "ask" | "wait", ..) if kept(&tx, run.task)? => {
             Some("feedback for this run is queued: end your turn to read it".to_owned())
         }
         // Its end would wake the task at whatever step the result moved it to.
@@ -839,11 +839,16 @@ fn woken(tx: &Transaction, run: &Run) -> rusqlite::Result<bool> {
     )
 }
 
-/// Whether a person's feedback the task kept while it ran waits in a queued prompt.
+/// Whether a person's feedback the task kept, itself or through a subscription, waits in a queued
+/// prompt.
 fn kept(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
     let mut statement = tx.prepare(
         "SELECT inbox.type, inbox.data FROM inbox JOIN outbox ON outbox.id = inbox.outbox
-         WHERE inbox.task = ?1 AND inbox.outcome = 'kept' AND outbox.state = 'queued'",
+         WHERE inbox.task = ?1 AND inbox.outcome = 'kept' AND outbox.state = 'queued'
+         UNION ALL
+         SELECT inbox.type, inbox.data FROM subscription_deliveries AS heard
+         JOIN inbox ON inbox.seq = heard.seq JOIN outbox ON outbox.id = heard.outbox
+         WHERE heard.task = ?1 AND heard.outcome = 'kept' AND outbox.state = 'queued'",
     )?;
     let mut rows = statement.query([task])?;
     while let Some(row) = rows.next()? {
@@ -2175,29 +2180,20 @@ pub(crate) fn wake_on(
             text = format!("{text}\n{line}");
         }
     }
-    {
-        let mut statement = tx.prepare(
-            "SELECT seq, type, subject, data FROM inbox
-             WHERE task = ?1 AND outcome = 'kept' AND outbox IS NULL AND seq IS NOT ?2 ORDER BY seq",
-        )?;
-        let mut rows = statement.query(params![task, seq])?;
-        while let Some(row) = rows.next()? {
-            carried.push(row.get(0)?);
-            text.push('\n');
-            text.push_str(&crate::state::line(
-                &row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?.as_deref(),
-                &row.get::<_, String>(3)?,
-            ));
-        }
+    let unread = crate::state::unread(tx, task, false, seq)?;
+    for (seq, _, line) in &unread {
+        carried.push(*seq);
+        text.push('\n');
+        text.push_str(line);
     }
     if crate::triage::any(tx, &carried)? {
         text = format!("{text}\n{}", crate::triage::RULE);
     }
     let id = wake(tx, task, &text)?;
-    for seq in carried {
+    if let Some(seq) = seq.filter(|seq| carried.contains(seq)) {
         tx.execute("UPDATE inbox SET outbox = ?1 WHERE seq = ?2", [id, seq])?;
     }
+    crate::state::carry(tx, task, id, &unread)?;
     set_ready(tx, task)
 }
 
@@ -3525,7 +3521,10 @@ pub(crate) fn act_in_tx(
             };
             // A fixed first line keeps a text starting with `/` from running as a slash command.
             let text = format!("{SAYS}{text}");
-            Ok((say(tx, act.task, &text, &state, &factory.workflows)?, None))
+            Ok((
+                say_or_hold(tx, act.task, &text, &state, &factory.workflows)?,
+                None,
+            ))
         }
         "cancel" if ["done", "failed", "dropped"].contains(&state.as_str()) => {
             Ok((Err(format!("task {} is already {state}", act.task)), None))
@@ -3573,6 +3572,30 @@ pub(crate) fn cancel(
 /// The first words of a person's `say` text in the agent's prompt.
 pub(crate) const SAYS: &str = "A person says: ";
 
+/// As `say`, but a task that waits on a step's ask, where no agent runs while a person decides,
+/// shows `text` on that ask and queues it for its next agent run.
+pub(crate) fn say_or_hold(
+    tx: &Transaction,
+    task: i64,
+    text: &str,
+    state: &str,
+    workflows: &Workflows,
+) -> rusqlite::Result<Result<String, String>> {
+    if !["done", "failed", "dropped"].contains(&state) && tell_ask(tx, task, text)? {
+        tx.execute(
+            "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
+            params![task, text],
+        )?;
+        let at: String = tx.query_row("SELECT step FROM tasks WHERE id = ?1", [task], |row| {
+            row.get(0)
+        })?;
+        return Ok(Ok(format!(
+            "task {task} waits at step {at}: its ask shows it, and its next agent run reads it"
+        )));
+    }
+    say(tx, task, text, state, workflows)
+}
+
 /// Queues `text` as the next prompt of the agent at the task's model step, as an answer
 /// is: typed once its run is idle, or waking an asleep task into a new run that resumes the session.
 pub(crate) fn say(
@@ -3614,6 +3637,37 @@ pub(crate) fn say(
         set(tx, task, "ready", None, None)?;
     }
     Ok(Ok(format!("task {task} will hear it")))
+}
+
+/// Adds `line` to the open step ask of `task` as its next revision, which pushes, so the person
+/// who answers reads it. Returns whether the task waits on such an ask.
+pub(crate) fn tell_ask(tx: &Transaction, task: i64, line: &str) -> rusqlite::Result<bool> {
+    let told = tx.execute(
+        "UPDATE asks SET revision = revision + 1,
+           text = coalesce(text || char(10) || char(10), '') || 'While this waited: ' || ?2
+         WHERE id = (SELECT max(id) FROM asks WHERE task = ?1 AND kind = 'step'
+           AND answer IS NULL AND withdrawn IS NULL)",
+        params![task, line],
+    )?;
+    Ok(told > 0)
+}
+
+/// Who said what on which resource in an event, `ana on owner/repo#42: Also the empty case. URL`,
+/// for a person to read on an ask.
+pub(crate) fn heard(kind: &str, subject: Option<&str>, data: &Value) -> String {
+    let who = data["actor"]
+        .as_str()
+        .or(data["user"].as_str())
+        .unwrap_or(kind);
+    let said = ["body", "text", "title"]
+        .iter()
+        .find_map(|field| data[field].as_str())
+        .and_then(|text| text.lines().find(|line| !line.trim().is_empty()))
+        .unwrap_or(kind);
+    let url = data["url"].as_str().unwrap_or_default();
+    format!("{who} on {}: {said} {url}", subject.unwrap_or("-"))
+        .trim_end()
+        .to_owned()
 }
 
 /// Moves a failed or dropped task back into its step, or `act.step`, as its next generation, and

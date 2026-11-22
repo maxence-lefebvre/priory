@@ -319,23 +319,23 @@ pub fn unrouted(db: &Connection, since: i64, now: Timestamp) -> rusqlite::Result
         .into_iter()
         .map(|(source, events)| json!({ "source": source, "events": events }))
         .collect();
-    let mut unheard: Vec<(Value, Vec<Value>)> = Vec::new();
-    for (task, event) in unheard_events(db, since, None, now)? {
+    let mut unheard: Vec<(Value, bool, Vec<Value>)> = Vec::new();
+    for (task, asking, event) in unheard_events(db, since, None, now)? {
         match unheard
             .iter_mut()
-            .find(|(named, _)| named["id"] == task["id"])
+            .find(|(named, _, _)| named["id"] == task["id"])
         {
-            Some((_, events)) => events.push(event),
-            None => unheard.push((task, vec![event])),
+            Some((_, _, events)) => events.push(event),
+            None => unheard.push((task, asking, vec![event])),
         }
     }
     let unheard: Vec<Value> = unheard
         .into_iter()
-        .map(|(task, events)| {
+        .map(|(task, asking, events)| {
             let state = task["state"].as_str().unwrap_or_default();
-            let say_text = ["asleep", "blocked"]
-                .contains(&state)
-                .then_some(UNHEARD_SAY);
+            // A task at a step a person decides shows its events on that step's ask.
+            let say_text =
+                (["asleep", "blocked"].contains(&state) && !asking).then_some(UNHEARD_SAY);
             let request_text = (state == "done")
                 .then(|| request_text(task["key"].as_str().unwrap_or_default(), &events))
                 .flatten();
@@ -357,29 +357,40 @@ pub fn unrouted(db: &Connection, since: i64, now: Timestamp) -> rusqlite::Result
 const UNHEARD_AFTER: jiff::SignedDuration = jiff::SignedDuration::from_mins(5);
 
 /// Each event after `since`, and within `window` (from, to) when given, newest first, that a task
-/// that is not running kept, that no prompt carries and no wait took, written more than
+/// that is not running kept, itself or through a subscription, that no prompt carries and no wait took, written more than
 /// `UNHEARD_AFTER` before `now` by someone other than the agent, with its task. Only what people
-/// say, edit and close counts: checks and pushes stay with the checks gate.
+/// say, edit and close counts: checks and pushes stay with the checks gate. Each comes with whether
+/// its task waits on a step's ask.
 fn unheard_events(
     db: &Connection,
     since: i64,
     window: Option<(&str, &str)>,
     now: Timestamp,
-) -> rusqlite::Result<Vec<(Value, Value)>> {
-    let kinds = serde_json::to_string(&state::OWN_KEY).expect("kinds serialize");
+) -> rusqlite::Result<Vec<(Value, bool, Value)>> {
+    let kinds = state::OWN_KEY
+        .iter()
+        .chain([&priory_intake::request::REQUESTED])
+        .collect::<Vec<_>>();
+    let kinds = serde_json::to_string(&kinds).expect("kinds serialize");
     let before = (now - UNHEARD_AFTER).to_string();
     let (from, to) = window.unzip();
     let mut statement = db.prepare(
-        "SELECT inbox.seq, inbox.type, inbox.subject, inbox.time, inbox.data,
-           tasks.id, tasks.key, tasks.state, tasks.workflow
-         FROM inbox JOIN tasks ON tasks.id = inbox.task
-         WHERE inbox.outcome = 'kept' AND inbox.outbox IS NULL AND tasks.state != 'running'
+        "WITH kept (seq, task) AS (
+           SELECT seq, task FROM inbox WHERE outcome = 'kept' AND outbox IS NULL
+           UNION ALL SELECT seq, task FROM subscription_deliveries
+             WHERE outcome = 'kept' AND outbox IS NULL)
+         SELECT inbox.seq, inbox.type, inbox.subject, inbox.time, inbox.data,
+           tasks.id, tasks.key, tasks.state, tasks.workflow,
+           EXISTS (SELECT 1 FROM asks WHERE asks.task = tasks.id AND kind = 'step'
+             AND answer IS NULL AND withdrawn IS NULL)
+         FROM kept JOIN inbox ON inbox.seq = kept.seq JOIN tasks ON tasks.id = kept.task
+         WHERE tasks.state != 'running'
            AND inbox.seq > ?1
            AND (?2 IS NULL OR julianday(inbox.time) BETWEEN julianday(?2) AND julianday(?3))
            AND inbox.type IN (SELECT value FROM json_each(?4))
            AND julianday(inbox.time) <= julianday(?5)
            AND coalesce(json_extract(inbox.data, '$.own'), 0) != 1
-           AND inbox.seq NOT IN (SELECT inbox FROM waits WHERE task = inbox.task
+           AND inbox.seq NOT IN (SELECT inbox FROM waits WHERE task = kept.task
              AND inbox IS NOT NULL)
          ORDER BY inbox.seq DESC",
     )?;
@@ -397,7 +408,7 @@ fn unheard_events(
             "id": row.get::<_, i64>(5)?, "key": row.get::<_, String>(6)?,
             "state": row.get::<_, String>(7)?, "workflow": row.get::<_, String>(8)?,
         });
-        events.push((task, event));
+        events.push((task, row.get(9)?, event));
     }
     Ok(events)
 }

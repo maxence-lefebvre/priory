@@ -79,7 +79,7 @@ last one, and `priory report list` lists the earlier ones. The web view's Report
 `priory report pick` and `priory report comment` do. See [docs/daemon/reports.md](../daemon/reports.md).
 
 The web view's Costs panel shows what the factory spent this week against last week, each day, and
-split by workflow, agent, model, machine or repository, as `priory costs` prints it. Beside it,
+split by workflow, agent, model, machine, repository or lane, as `priory costs` prints it. Beside it,
 Attention shows the minutes of your attention per merged pull request, how long asks waited for
 you, and where each task's time went, as `priory report attention` prints it. On a phone, both sit
 under More. The Herdr Costs panel shows the same. See [docs/daemon/trace.md](../daemon/trace.md#costs).

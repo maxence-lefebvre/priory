@@ -265,7 +265,8 @@ impl<'a> Linear<'a> {
              issues(filter: $filter, first: $first, after: $after, orderBy: updatedAt, \
              includeArchived: true) {{ nodes {{ \
              ...issue description history(first: 50, orderBy: createdAt) {{ nodes {{ id createdAt \
-             fromState {{ name }} toState {{ name }} actor {{ displayName }} {EDITS} }} }} \
+             fromState {{ name }} toState {{ name }} fromTeam {{ key }} toTeam {{ key }} \
+             actor {{ displayName }} {EDITS} }} }} previousIdentifiers \
              {BLOCKING} relations(first: 20) {{ nodes {{ type relatedIssue {{ id }} }} }} }} {PAGE} }} }} {ISSUE}"
         );
         let issues = self.nodes(&query, page(since, "updatedAt"), "/issues", since.is_some())?;
@@ -295,6 +296,7 @@ impl<'a> Linear<'a> {
                 let name = format!("linear:history:{}", text(&change["id"]));
                 events.push(self.message(STATE_CHANGED, &name, data, since.is_none())?);
             }
+            events.extend(self.moved(issue, since, watched)?);
             let Some(watched) = watched.get(text(&issue["identifier"])) else {
                 continue;
             };
@@ -367,6 +369,52 @@ impl<'a> Linear<'a> {
             events.push(self.message(BLOCKERS, &name, data, since.is_none())?);
         }
         Ok(polled(ISSUES, events, &issues, "updatedAt", since))
+    }
+
+    /// One `linear.issue.updated` per history entry that moved `issue` out of a team while a task
+    /// watched it under that team's identifier, which `previousIdentifiers` keeps.
+    fn moved(
+        &self,
+        issue: &Value,
+        since: Option<&str>,
+        watched: &BTreeMap<&str, Timestamp>,
+    ) -> Result<Vec<Message>, String> {
+        let previous: Vec<&str> = issue["previousIdentifiers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(text)
+            .collect();
+        let mut events = Vec::new();
+        let changes = issue["history"]["nodes"].as_array().into_iter().flatten();
+        for change in changes.filter(|change| {
+            change["fromTeam"].is_object()
+                && change["toTeam"].is_object()
+                && after(since, &change["createdAt"])
+        }) {
+            let team = format!("{}-", text(&change["fromTeam"]["key"]));
+            let time = change["createdAt"]
+                .as_str()
+                .and_then(|time| time.parse().ok());
+            let Some(old) = previous.iter().rev().find(|old| {
+                old.starts_with(&team)
+                    && watched
+                        .get(*old)
+                        .is_some_and(|since| time.is_none_or(|time: Timestamp| time >= *since))
+            }) else {
+                continue;
+            };
+            let mut data = fields(issue);
+            data["linear_id"] = change["id"].clone();
+            data["changed"] = json!(["identifier"]);
+            data["previous_issue"] = json!(old);
+            data["description"] = Value::Null;
+            data["actor"] = change["actor"]["displayName"].clone();
+            data["time"] = change["createdAt"].clone();
+            let name = format!("linear:history:{}:moved", text(&change["id"]));
+            events.push(self.message(UPDATED, &name, data, since.is_none())?);
+        }
+        Ok(events)
     }
 
     /// Comments created since the stream's position, the last `createdAt` seen.

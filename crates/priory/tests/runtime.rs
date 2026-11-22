@@ -8427,7 +8427,12 @@ fn a_shared_session_whose_tasks_each_end_in_one_result_is_compacted_when_resumed
     fs::write(setup.dir.join("factory/agents/implementer/agent.md"), lead).unwrap();
     setup.contexts(&[6000, 6000, 1000]);
     // Task 2's first result is refused while the compact is queued, so it ends its turn.
-    setup.calls(&[result("passed"), result("passed"), result("passed")]);
+    setup.calls(&[
+        result("passed"),
+        result("passed"),
+        result("passed"),
+        result("passed"),
+    ]);
     setup.publish(&requested(42));
     setup.publish(&requested(43));
 
@@ -9728,6 +9733,100 @@ fn an_issue_that_leaves_the_view_before_its_task_ran_asks_to_drop_or_keep_it() {
 }
 
 #[test]
+fn an_issue_that_enters_the_view_again_answers_keep_for_its_task() {
+    let mut setup = Setup::new("left-view-entered");
+    setup.memory(0);
+    let source = linear_7("linear.issue.entered", &[]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    request.data["source"] = json!(source.id.to_string());
+    setup.publish(&source);
+    setup.publish(&request);
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 1);
+    setup.publish(&left_view());
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let mut entered = linear_7("linear.issue.entered", &[]);
+    entered.data["view"] = json!("My loop backlog");
+    setup.publish(&entered);
+
+    setup.until("tasks", |rows| rows[0][4] == "queued");
+    assert!(setup.rows("asks").is_empty());
+    let (answer, met): (String, String) = rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row(
+            "SELECT asks.answer, holds.met_as FROM holds JOIN asks ON asks.id = holds.ask",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        [answer.as_str(), &met],
+        ["keep", "ENG-7 entered the view My loop backlog again"]
+    );
+}
+
+#[test]
+fn an_issue_moved_to_another_team_keeps_its_task_and_events() {
+    let mut setup = Setup::new("linear-team-move");
+    setup.memory(0);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    setup.publish(&request);
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 1);
+
+    let mut moved = Message::new(
+        "linear.issue.updated",
+        json!({ "issue": "OPS-3", "linear_id": "history-1", "team": "OPS", "state": "Todo",
+                "changed": ["identifier"], "previous_issue": "ENG-7" }),
+    )
+    .subject("OPS-3");
+    moved.data["description"] = json!(null);
+    setup.publish(&moved);
+    setup.publish(
+        &Message::new(
+            "linear.comment.created",
+            json!({ "issue": "OPS-3", "linear_id": "comment-1", "body": "Not before Monday" }),
+        )
+        .subject("OPS-3"),
+    );
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 3);
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let routed: Vec<(String, Option<i64>)> = db
+        .prepare("SELECT type, task FROM inbox ORDER BY seq")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        routed[1..],
+        [
+            ("linear.issue.updated".to_owned(), Some(1)),
+            ("linear.comment.created".to_owned(), Some(1)),
+        ],
+        "{inbox:?}"
+    );
+    let resources = |table: &str| -> Vec<String> {
+        db.prepare(&format!("SELECT resource FROM {table} WHERE task = 1"))
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let key: String = db
+        .query_row("SELECT key FROM tasks WHERE id = 1", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(key, "linear:OPS-3");
+    assert_eq!(resources("owns"), ["linear:OPS-3"]);
+    assert_eq!(resources("subscriptions"), ["linear:OPS-3"]);
+}
+
+#[test]
 fn an_issue_that_leaves_the_view_wakes_its_asleep_task() {
     let mut setup = Setup::new("left-view-asleep");
     setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
@@ -10694,6 +10793,201 @@ fn a_comment_kept_during_the_turn_refuses_the_result_until_the_agent_read_it() {
 }
 
 #[test]
+fn a_comment_kept_during_the_turn_refuses_a_wait_until_the_agent_read_it() {
+    let mut setup = Setup::new("kept-before-wait");
+    let wait =
+        json!({ "name": "wait", "arguments": { "on": { "type": "time", "until": "1 hour" } } });
+    let read = json!({ "name": "result", "arguments": { "outcome": "passed", "summary": "passed it",
+                                                      "feedback": { "u": "trivial" } } });
+    setup.calls(&[wait, read]);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/submitted");
+    setup.publish(&issue_commented(803));
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "kept");
+
+    setup.release("hold-call");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "feedback for this run is queued: end your turn to read it"
+    );
+    assert!(
+        setup.typed()[1].contains("\ngithub.issues.comment owner/repo#42 {"),
+        "{:?}",
+        setup.typed()
+    );
+    assert!(setup.rows("waits").is_empty(), "{:?}", setup.rows("waits"));
+}
+
+const IMPLEMENT_THEN_APPROVE: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "approve", failed = "stop" }
+
+[[steps]]
+id = "approve"
+decides = "human"
+effect = "none"
+options = ["approved", "revise"]
+next = { approved = "done", revise = "implement" }
+"#;
+
+/// A task at its `approve` step of `IMPLEMENT_THEN_APPROVE`, asking its first revision.
+fn at_approve(name: &str) -> Setup {
+    let mut setup = Setup::with_workflow(name, IMPLEMENT_THEN_APPROVE);
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first()
+            .is_some_and(|row| row[3] == "approve" && row[4] == "asleep")
+    });
+    setup.until("asks", |rows| rows.len() == 1 && rows[0][2] == "1");
+    setup
+}
+
+#[test]
+fn a_comment_kept_while_a_person_decides_joins_the_steps_ask_and_gets_no_say() {
+    let setup = at_approve("kept-at-human-step");
+    let written = herdr_bus::Timestamp::now() - jiff::SignedDuration::from_mins(10);
+
+    setup.publish(&issue_commented(804).time(written));
+
+    setup.until("asks", |rows| rows.len() == 1 && rows[0][2] == "2");
+    let ask = &asks_json(&setup)["asks"][0];
+    assert!(
+        ask["text"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with("While this waited: ana on owner/repo#42: Also the empty case. u"),
+        "{ask}"
+    );
+    let output = setup.priory(&["inbox", "--unrouted", "--json"]);
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let unheard = &listed["unrouted"]["unheard"][0];
+    assert_eq!(unheard["task"]["id"], 1, "{listed}");
+    assert_eq!(unheard["follow_up"], json!(null), "{listed}");
+    assert_eq!(unheard["say_text"], json!(null), "{listed}");
+    let stale = setup.priory(&["answer", "1", "approved", "--revision", "1"]);
+    assert!(!stale.status.success(), "{stale:?}");
+    let answered = setup.priory(&["answer", "1", "approved", "--revision", "2"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
+fn say_while_a_person_decides_joins_the_steps_ask_and_reaches_the_next_agent_run() {
+    let setup = at_approve("say-at-human-step");
+
+    let said = setup.priory(&["say", "1", "Use the v2 API."]);
+
+    let text = String::from_utf8_lossy(&said.stdout);
+    assert!(said.status.success(), "{said:?}");
+    assert!(
+        text.contains(
+            "task 1 waits at step approve: its ask shows it, and its next agent run reads it"
+        ),
+        "{text}"
+    );
+    setup.until("asks", |rows| rows.len() == 1 && rows[0][2] == "2");
+    let ask = &asks_json(&setup)["asks"][0];
+    assert!(
+        ask["text"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with("While this waited: A person says: Use the v2 API."),
+        "{ask}"
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+    setup.calls(&[result("passed")]);
+    let answered = setup.priory(&["answer", "1", "revise", "--revision", "2"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("Implement the issue.")
+            && typed[1].contains("\nA person says: Use the v2 API."),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_second_subscriber_that_cannot_hear_an_event_keeps_it_for_its_next_run() {
+    let mut setup = Setup::with_workflow("kept-by-subscriber", IMPLEMENT_THEN_APPROVE);
+    setup.calls(&[
+        result("passed"),
+        result("passed"),
+        result("passed"),
+        result("passed"),
+    ]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.len() == 2
+            && rows
+                .iter()
+                .all(|row| row[3] == "approve" && row[4] == "asleep")
+    });
+    let subscribed = setup.priory(&["subscribe", "2", "github:owner/repo#7"]);
+    assert!(subscribed.status.success(), "{subscribed:?}");
+    let written = herdr_bus::Timestamp::now() - jiff::SignedDuration::from_mins(10);
+
+    // Task 1 owns the pull request's branch, so routing gives it the comment.
+    setup.publish(&commented().time(written));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 3);
+    assert_eq!([&inbox[2][3], &inbox[2][4]], ["1", "kept"], "{inbox:?}");
+    let heard = task_json(&setup, "2")["inbox"].clone();
+    let comment = heard
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["type"] == "github.pull_request.comment")
+        .unwrap_or_else(|| panic!("{heard}"));
+    assert_eq!(comment["outcome"], "kept", "{heard}");
+    let output = setup.priory(&["inbox", "--unrouted", "--json"]);
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let unheard = listed["unrouted"]["unheard"].as_array().unwrap().clone();
+    assert!(
+        unheard.iter().any(|group| group["task"]["id"] == 2),
+        "{listed}"
+    );
+    let asks = asks_json(&setup);
+    let ask = asks["asks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|ask| ask["key"] == "github:owner/repo#43")
+        .unwrap_or_else(|| panic!("{asks}"));
+    assert_eq!(ask["revision"], 2, "{ask}");
+
+    let id = ask["id"].to_string();
+    let answered = setup.priory(&["answer", &id, "revise", "--revision", "2"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    // Its next run reads the comment after the step's prompt, before its result.
+    setup.until("outbox", |rows| {
+        rows.iter().any(|row| {
+            row[1] == "2"
+                && row[3] == "confirmed"
+                && row[4].contains("github.pull_request.comment owner/repo#7 {")
+        })
+    });
+}
+
+#[test]
 fn a_comment_on_a_dropped_tasks_own_issue_posts_a_report_that_names_its_revive() {
     let mut setup = Setup::new("dropped-comment");
     setup.calls(&[result("failed")]);
@@ -11284,6 +11578,37 @@ fn a_reply_with_a_file_or_also_sent_to_the_channel_wakes_the_task_with_its_file_
 }
 
 #[test]
+fn a_wait_on_a_replys_ts_fails_the_poll_as_not_a_threads_first_message() {
+    let reply = "1763500001.000001";
+    let setup = asleep_on(
+        "slack-thread-reply-ts",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": reply }),
+    );
+    setup.answer_curl(&[
+        (
+            "auth.test",
+            json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }),
+        ),
+        (
+            "conversations.replies",
+            json!({ "ok": true, "has_more": false,
+                    "messages": [slack_message(reply, "U0PERSON")] }),
+        ),
+    ]);
+
+    let output = setup.poll(&[]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "thread C0123:{reply}: not a thread's first message"
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn a_thread_the_intake_cannot_read_fails_the_poll_and_reaches_the_desk() {
     let setup = asleep_on(
         "slack-thread-fails",
@@ -11648,6 +11973,63 @@ fn an_edit_of_a_linear_tasks_issue_wakes_it_with_the_changed_fields() {
         ["ENG-7"],
         "an issue no task watches publishes none"
     );
+}
+
+#[test]
+fn a_linear_tasks_issue_moved_to_another_team_wakes_it_under_its_new_identifier() {
+    let mut setup = Setup::new("linear-moved");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    setup.publish(&request.subject("linear:ENG-7"));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let mut moved = linear_edited(
+        "OPS-3",
+        json!({ "fromTeam": { "key": "ENG" }, "toTeam": { "key": "OPS" } }),
+    );
+    moved["team"] = json!({ "key": "OPS" });
+    moved["previousIdentifiers"] = json!(["ENG-7"]);
+    let mut elsewhere = linear_edited(
+        "OPS-4",
+        json!({ "fromTeam": { "key": "ENG" }, "toTeam": { "key": "OPS" } }),
+    );
+    elsewhere["previousIdentifiers"] = json!(["ENG-8"]);
+    setup.answer_curl(&[
+        (
+            "query Issues",
+            linear_page("issues", json!([elsewhere, moved])),
+        ),
+        ("query Comments", linear_page("comments", json!([]))),
+    ]);
+
+    setup.intake();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("linear.issue.updated OPS-3 {")
+            && typed[1].contains(r#""changed":["identifier"]"#)
+            && typed[1].contains(r#""previous_issue":"ENG-7""#),
+        "{typed:?}"
+    );
+    let updated: Vec<String> = setup
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 100,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "linear.issue.updated")
+        .inspect(|stored| conform::conforms(&serde_json::to_value(&stored.message).unwrap()))
+        .map(|stored| stored.message.subject.unwrap_or_default())
+        .collect();
+    assert_eq!(updated, ["OPS-3"], "a move no task watches publishes none");
+    assert_eq!(setup.rows("tasks")[0][1], "linear:OPS-3");
 }
 
 #[test]
@@ -14475,6 +14857,33 @@ fn an_event_an_asleep_task_keeps_and_no_agent_read_is_listed_and_counted_as_unhe
         text.contains("1 event kept by a sleeping task reached no agent. See it with `priory inbox --unrouted`."),
         "{text}"
     );
+}
+
+#[test]
+fn a_quick_add_a_task_kept_before_its_first_run_is_listed_as_unheard() {
+    let mut setup = Setup::new("inbox-unheard-add");
+    // No room, so the task never runs and nothing reads the request.
+    setup.memory(1);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "queued");
+    let written = herdr_bus::Timestamp::now() - jiff::SignedDuration::from_mins(10);
+    let (source, _) = cli_request("github:owner/repo#42", "Also rename the flag");
+
+    setup.publish(&source.time(written));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(inbox[1][4], "kept");
+    let output = setup.priory(&["inbox", "--unrouted", "--json"]);
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let unheard = &listed["unrouted"]["unheard"];
+    assert_eq!(unheard.as_array().map(Vec::len), Some(1), "{listed}");
+    assert_eq!(unheard[0]["task"]["state"], "queued", "{listed}");
+    assert_eq!(unheard[0]["events"][0]["seq"], 2, "{listed}");
+    assert_eq!(unheard[0]["events"][0]["line"], "Also rename the flag");
+    let desk = setup.priory(&["desk", "--json"]);
+    let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+    assert_eq!(desk["counts"]["unheard"], 1, "{desk}");
 }
 
 #[test]
@@ -22310,7 +22719,18 @@ fn a_cancel_sent_to_another_runners_task_is_applied_by_its_runner_and_a_revive_b
 
 #[test]
 fn a_say_that_another_runner_refuses_comes_back_with_its_reason_on_the_still_listed_task() {
-    let (a, b, _ask, address) = asked_on_a("remote-say");
+    let mut a = runner("remote-say", "a", None);
+    let mut b = runner("remote-say", "b", Some(&a));
+    with_serve(&b);
+    // No room on `a`, so its agent never starts and the say has no run to reach.
+    a.memory(1);
+    a.publish(&requested(1));
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    a.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "queued");
+    let address = start_serving(&mut b, T0);
     until_task(&address, ASKED_KEY, "a", |task| {
         task.is_some_and(|task| task["generation"] == 1)
     });
@@ -22336,10 +22756,10 @@ fn a_say_that_another_runner_refuses_comes_back_with_its_reason_on_the_still_lis
     assert_eq!(submission["act"], "say", "{refused}");
     assert_eq!(submission["text"], "look at the tests", "{refused}");
     assert_eq!(
-        submission["why"], "task 1 is at step approve, which no agent runs",
+        submission["why"], "task 1 has no run yet: say it once its agent started",
         "{refused}"
     );
-    assert_eq!(a.rows("tasks")[0][4], "asleep");
+    assert_eq!(a.rows("tasks")[0][4], "queued");
 }
 
 #[test]

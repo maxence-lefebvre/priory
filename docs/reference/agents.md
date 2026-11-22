@@ -17,7 +17,7 @@ against it, but `priory check` applies the same rules.
 | `harness` | `claude-code` or `codex` | yes | | The coding agent CLI that runs it. See [codex.md](../daemon/codex.md) | `"claude-code"` |
 | `model` | string | no | the harness's default | The harness's model name | `"sonnet"` |
 | `effort` | string | no | the harness's default | The harness's reasoning effort | `"high"` |
-| `runner` | string | no | | The runner it runs on, by Tailscale hostname, or `any`. Not read yet: every run starts on the daemon's machine | `"any"` |
+| `runner` | string | no | | Reserved for pinning the agent's runs to one runner, by Tailscale hostname, or `any`. `priory check` accepts it and nothing reads it yet: a run starts on the runner whose daemon owns its task | `"any"` |
 | `session` | `per-task` or `shared` | no | `"per-task"` | `per-task`: one conversation per task. `shared`: one conversation across tasks, such as a lead. See [sessions.md](../daemon/sessions.md) | `"shared"` |
 | `compactAt` | integer | no | | The context size, in tokens, past which the daemon compacts the conversation between turns. Claude Code only. See [sessions.md](../daemon/sessions.md#compacting-a-long-session) | `150000` |
 | `idleCompactAt` | integer | no | | The context size, in tokens, past which the daemon compacts a shared session idle for 55 minutes, before its prompt cache expires. Claude Code and `session = "shared"` only. See [sessions.md](../daemon/sessions.md#compacting-an-idle-session) | `60000` |

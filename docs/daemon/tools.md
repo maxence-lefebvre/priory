@@ -23,7 +23,7 @@ beside a wait in [waits.md](waits.md)).
 Feedback the task kept while the agent ran waits in a queued prompt (see
 [routing.md](routing.md#what-a-kept-message-does)). Feedback is a person's comment, reply or review
 that asks for something, as [routing.md](routing.md#feedback-reopens-a-done-task) lists it, and not
-Priory's own comment. Until that prompt is typed, `result` and `ask` are refused with
+Priory's own comment. Until that prompt is typed, `result`, `ask` and `wait` are refused with
 `feedback for this run is queued: end your turn to read it`. So a review comment read during the
 turn reaches the agent before the task ends or sleeps. Other kept events, such as check runs, do
 not refuse them.
@@ -411,8 +411,11 @@ subscription to its pull request or issue. Linear issues and Slack threads stay 
 after it was done (see [watches.md](../intake/watches.md)).
 
 When another task takes an event on the resource, such as the task keyed by that pull request, the
-subscriber still gets it: a prompt of its own while it runs, or a wake while it sleeps. A close
-reaches the subscribers before it ends their subscriptions.
+subscriber still gets it: a prompt of its own while it runs, or a wake while it sleeps where an
+event can wake it. A subscriber that cannot hear it now, such as a `ready`, `blocked` or `held`
+task, or one at a human step, keeps it for its next run, as the first task does (see
+[routing.md](routing.md#what-a-kept-message-does)). A close reaches the subscribers before it ends
+their subscriptions.
 
 `unsubscribe` ends the subscription. What the task owns otherwise, such as its key, a pull request
 its `open-pr` opened or one it waited on, it still owns. Unsubscribing from a resource the task does

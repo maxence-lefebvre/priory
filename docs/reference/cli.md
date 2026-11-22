@@ -167,7 +167,7 @@ See [Columns](#columns).
 - `priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]`:
   prints the person-minutes per merged pull request and how long asks waited. See
   [trace.md](../daemon/trace.md#attention).
-- `priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]`:
+- `priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo|lane] [--json]`:
   prints the cost per day and split by one dimension. See [trace.md](../daemon/trace.md#costs).
 - `priory grades [--since <instant-or-duration>] [--by lane] [--json]`: prints how each grade's
   tasks turned out. See [trace.md](../daemon/trace.md#grades).

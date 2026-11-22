@@ -55,7 +55,7 @@ on the first that fires. Each condition fires the wait on:
 | `task`         | `task`                  | the daemon's loop, once that task is done, failed or dropped            |
 | `linear_comment` | `issue`, such as `ENG-7` | `linear.comment.created` on that issue                               |
 | `linear_state` | `issue`, `state`, such as `Done` | `linear.issue.state_changed` on that issue, with `to` equal to `state` |
-| `slack_reply`  | `channel`, `thread_ts`  | `slack.thread.replied` in that thread, which the intake never publishes for its own bot |
+| `slack_reply`  | `channel`, `thread_ts`, the `ts` of the thread's first message | `slack.thread.replied` in that thread, which the intake never publishes for its own bot |
 | `disk`         | `gb`, a number above 0  | the daemon's loop, once the room's disk reading shows `gb` GB free (a GB is 1024³ bytes) |
 
 ```json
