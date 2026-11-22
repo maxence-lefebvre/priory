@@ -3,7 +3,7 @@ import { h_flex, v_flex, Button } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
 import { follow, priory } from "./priory.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
-import { eventWords, neverOwned, routeAction } from "./view.js";
+import { eventWords, neverOwned, routeAction, unheardActs } from "./view.js";
 
 const RETRY_MS = 3000;
 // The events a group shows, newest first, as the web view's Inbox does.
@@ -19,6 +19,7 @@ const TILES = {
 
 /** @typedef {Record<string, import("gpui-kit").Color>} Palette */
 /** @typedef {{ resource: string, task: { id: number, key: string, state: string, workflow: string }, events: any[], request_text: string | null }} Group */
+/** @typedef {{ task: Group["task"], events: any[], follow_up: string | null, request_text: string | null }} Unheard */
 
 // settings.json's "priory" object: { binary, machine, factory, theme }, each optional. Mirrors priory-costs.
 async function connect() {
@@ -47,18 +48,18 @@ export default class PrioryInbox extends View {
   init(_props, cx) {
     /** @type {Awaited<ReturnType<typeof connect>> | null} */
     this.priory = null;
-    /** @type {{ owned: Group[], other: { source: string, events: number }[] } | null} */
+    /** @type {{ owned: Group[], other: { source: string, events: number }[], unheard?: Unheard[] } | null} */
     this.groups = null;
     /** @type {string | null} */
     this.error = null;
-    /** @type {string | null} the resource whose action is in flight, or whose result no read shows yet */
+    /** @type {string | null} the group whose action is in flight, or whose result no read shows yet */
     this.busy = null;
     /** @type {number | null} the revision of the groups shown */
     this.revision = null;
     /** Counts reads; an action's result shows from the read numbered `settles` on. */
     this.reads = 0;
     this.settles = 0;
-    /** @type {Map<string, string>} what the last action on each resource did */
+    /** @type {Map<string, string>} what the last action on each group did */
     this.notices = new Map();
     this.font = FONTS.indigo;
     /** @type {ReturnType<typeof priory>} the client of the last read, which its wait uses */
@@ -86,21 +87,21 @@ export default class PrioryInbox extends View {
   }
 
   /**
-   * Runs one route action on a group; its notice says what happened. The buttons stay disabled
-   * until a read started after the action shows its result; a refused action frees them at once.
-   * @param {Group} group @param {(client: ReturnType<typeof priory>) => Promise<string>} verb @param {import("gpui-kit").Context} cx
+   * Runs one action on the group `key` names; its notice says what happened. The buttons stay
+   * disabled until a read started after the action shows its result; a refused action frees them at once.
+   * @param {string} key @param {(client: ReturnType<typeof priory>) => Promise<string>} verb @param {import("gpui-kit").Context} cx
    */
-  act(group, verb, cx) {
+  act(key, verb, cx) {
     if (this.busy || !this.priory) return;
     const client = this.priory.client;
-    this.busy = group.resource;
+    this.busy = key;
     cx.notify();
     cx.spawn(async (cx) => {
       try {
-        this.notices.set(group.resource, await verb(client));
+        this.notices.set(key, await verb(client));
         this.settles = this.reads + 1;
       } catch (error) {
-        this.notices.set(group.resource, `Could not route it: ${message(error)}.`);
+        this.notices.set(key, `Could not route it: ${message(error)}.`);
         this.busy = null;
       }
       cx.notify();
@@ -133,18 +134,49 @@ export default class PrioryInbox extends View {
     if (!this.groups.owned.length) {
       return [div().whitespace_normal().text_color(t["text-2"]).child("No event of a task's resource went unrouted. An event about an ended task's pull request or issue shows here."), ...restLine];
     }
-    return [...this.groups.owned.map((group) => this.group(group, t)), ...restLine];
+    const unheard = this.groups.unheard ?? [];
+    const heard = unheard.length ? [this.heading("Unheard", "no agent read them", t), ...unheard.map((group) => this.unheard(group, t)), this.heading("Unrouted", "reached no task", t)] : [];
+    return [...heard, ...this.groups.owned.map((group) => this.card(group.resource, group, this.route(group, t), t)), ...restLine];
   }
 
-  /** @param {Group} group @param {Palette} t */
-  group(group, t) {
+  /** A section's title and its note. @param {string} title @param {string} note @param {Palette} t */
+  heading(title, note, t) {
+    return h_flex().justify_between().items_baseline().text_size(S["type-caption"][0])
+      .child(div().font_weight(600).text_color(t["text-2"]).child(title)).child(div().text_color(t["text-3"]).child(note));
+  }
+
+  /**
+   * A task's unheard events, with what gets them to an agent (view.js, unheardActs): the say
+   * command for an asleep task, since Say stays on the web; Resume for a blocked one; an ended
+   * one's route. @param {Unheard} group @param {Palette} t
+   */
+  unheard(group, t) {
     const { task } = group;
-    const notice = this.notices.get(group.resource);
+    const key = `unheard-${task.id}`;
+    const [first, ...rest] = unheardActs(task);
+    const line = (/** @type {string} */ words) => div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-2"]).child(words);
+    const action = rest.includes("resume")
+      ? h_flex().gap(S["space-2"]).items_center()
+        .child(this.button(key, `Resume task ${task.id}`, async (client) => { await client.resume(task.id); return `Resumed task ${task.id}.`; }, t))
+        .child(line("It reads them when it resumes."))
+      : first === "say" ? line(group.follow_up ?? "").font_family(this.font.mono)
+        : first ? this.route({ ...group, resource: task.key }, t, first, key)
+          : line("Its next run reads them.");
+    return this.card(task.key, { ...group, resource: task.key }, action, t, key);
+  }
+
+  /**
+   * A group's card: its `title`, its task, its newest events, then `action`; `key` names its notice.
+   * @param {string} title @param {Group} group @param {any} action @param {Palette} t
+   */
+  card(title, group, action, t, key = group.resource) {
+    const { task } = group;
+    const notice = this.notices.get(key);
     return v_flex().gap(S["space-2"]).p(S["space-3"]).rounded(S["radius-md"]).border(1).border_color(t.line).bg(t.surface)
       .child(h_flex().gap(S["space-2"]).items_baseline()
-        .child(div().flex_1().min_w_0().truncate().font_family(this.font.mono).text_size(S["type-small"][0]).child(group.resource))
+        .child(div().flex_1().min_w_0().truncate().font_family(this.font.mono).text_size(S["type-small"][0]).child(title))
         .child(div().text_size(S["type-small"][0]).text_color(t["text-2"]).child(String(group.events.length))))
-      .child(Button.new(`open-${group.resource}`).h(S["pane-tile"] + 8).flex().gap(S["space-2"]).items_center().rounded(S["radius-sm"])
+      .child(Button.new(`open-${key}`).h(S["pane-tile"] + 8).flex().gap(S["space-2"]).items_center().rounded(S["radius-sm"])
         .text_size(S["type-small"][0]).text_color(t["text-2"]).hover((s) => s.bg(t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
         .accessibility_label(`Open task ${task.id}`)
         .on_click(() => setShared("priory.task.open", { task: task.id, at: Date.now() }))
@@ -157,14 +189,16 @@ export default class PrioryInbox extends View {
           .child(div().flex_none().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(when(event.time))))
         .when(Boolean(event.line), (el) => el.child(div().whitespace_normal().text_color(t["text-2"]).child(event.line)))))
       .when(group.events.length > SHOWN, (el) => el.child(div().text_size(S["type-small"][0]).text_color(t["text-3"]).child(`and ${group.events.length - SHOWN} older`)))
-      .child(this.route(group, t))
+      .child(action)
       .when(Boolean(notice), (el) => el.child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-2"]).accessibility_label(notice ?? "").child(notice ?? "")));
   }
 
-  /** The way to route the group's next event, by its owner's state (view.js, routeAction). @param {Group} group @param {Palette} t */
-  route(group, t) {
+  /**
+   * The way to route the group's next event, by its owner's state (view.js, routeAction).
+   * @param {Group} group @param {Palette} t @param {string} action @param {string} key
+   */
+  route(group, t, action = routeAction(group.task), key = group.resource) {
     const { task } = group;
-    const action = routeAction(task);
     if (action === "request" && !group.request_text) {
       return div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-3"]).child("No new task can take this resource from here: start one from its thread.");
     }
@@ -175,11 +209,19 @@ export default class PrioryInbox extends View {
       subscribe: [`Subscribe task ${task.id}`, async (client) => `Subscribed: ${(await client.subscribe(task.id, group.resource, this.revision)).trim()}. Its next event goes to task ${task.id}.`],
     };
     const [label, verb] = verbs[action];
+    return h_flex().child(this.button(`route-${key}`, label, verb, t, key));
+  }
+
+  /**
+   * An action's button, disabled while any action waits for its result.
+   * @param {string} id @param {string} label @param {(client: ReturnType<typeof priory>) => Promise<string>} verb @param {Palette} t @param {string} key
+   */
+  button(id, label, verb, t, key = id) {
     const off = this.busy !== null || !this.priory;
-    return h_flex().child(Button.new(`route-${group.resource}`).h(S["control-fine"]).px(S["space-3"]).flex().items_center().rounded(S["radius-sm"])
+    return Button.new(id).h(S["control-fine"]).px(S["space-3"]).flex().items_center().rounded(S["radius-sm"])
       .border(1).border_color(t["control-line"]).bg(t.bg).text_size(S["type-small"][0]).font_weight(500)
       .disabled(off).opacity(off ? 0.5 : 1).hover((s) => s.bg(t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
-      .on_click((_event, cx) => this.act(group, verb, cx)).child(label));
+      .on_click((_event, cx) => this.act(key, verb, cx)).child(label);
   }
 
   /** @param {string} state @param {Palette} t */

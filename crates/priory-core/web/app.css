@@ -215,6 +215,8 @@ a.autolink { color: var(--action-text); text-decoration: underline; text-underli
 .ugroup .l1 { display: flex; justify-content: space-between; gap: 8px; margin: 0 0 4px; }
 .ugroup .l1 .num { color: var(--text-3); font-variant-numeric: tabular-nums; }
 .routeform { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.routeform .task-acts { margin: 0; }
+.routeform > .meta, .routeform .acts-note { flex-basis: 100%; margin: 0; }
 .ugroup > .meta { display: flex; align-items: center; gap: 6px; }
 .unowned { padding: 12px 16px; border-top: 1px solid var(--line); }
 .hist li .meta { display: block; }

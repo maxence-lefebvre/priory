@@ -7,7 +7,8 @@ process.env.TZ = "UTC";
 const { default: Inbox } = await import("../mods/priory-inbox/main.js");
 
 // `priory inbox --unrouted --json` with the groups of crates/priory/tests/serve.rs's unrouted test:
-// a dropped, a done and an asleep owner, and one Linear event no task ever owned.
+// a dropped, a done and an asleep owner, and one Linear event no task ever owned. Then a blocked and
+// an asleep task's unheard events, as its unheard test serves them.
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/unrouted.json", import.meta.url), "utf8"));
 
 /** The Inbox panel after its first read. */
@@ -87,6 +88,28 @@ test("pressing a group's owner opens it in the Task panel", async () => {
   press(drawn(), "open-github:owner/repo#7");
 
   assert.equal(/** @type {any} */ (herdr.shared.get("priory.task.open")).task, 11);
+});
+
+test("lists the unheard groups first, an asleep task's with the command that tells it to read them", async () => {
+  const { drawn } = await inbox();
+
+  const shown = text(drawn());
+  assert.match(shown, /Unheard no agent read them linear:ENG-24 1 task 15 blocked/);
+  assert.ok(shown.indexOf("github:owner/repo#9") < shown.indexOf("github:owner/repo#8"), shown);
+  assert.match(shown, /task 14 asleep github:owner\/repo#9 GitHub pull request comment owner\/repo#9 Nov 17, 11:40 Cap the backoff at 10 minutes\. priory say 14 'Read the events that came while you slept\.'/);
+  assert.match(shown, /Unrouted reached no task github:owner\/repo#8/);
+});
+
+test("a blocked task's unheard group resumes it, since it reads them when it resumes", async () => {
+  const panel = await inbox();
+  herdr.replies.resume = "";
+
+  assert.match(text(panel.drawn()), /Resume task 15 It reads them when it resumes\./);
+  press(panel.drawn(), "unheard-15");
+  await settle();
+
+  assert.deepEqual(herdr.argv.filter((args) => args[0] === "resume"), [["resume", "15"]]);
+  assert.match(text(panel.drawn()), /Resumed task 15\./);
 });
 
 test("the view model is the web view's inbox.js, copied", () => {

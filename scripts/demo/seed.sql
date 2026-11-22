@@ -111,3 +111,13 @@ INSERT INTO inbox (id,type,subject,time,data,links,outcome) VALUES
 INSERT INTO claims (key,runner,request,hold,won) VALUES
 ('ENG-262','laptop','r-262','kept',(SELECT seq FROM inbox WHERE id='c-262')),
 ('ENG-264','xps13','r-264','waiting',(SELECT seq FROM inbox WHERE id='c-264'));
+-- events a task kept that no agent read: an asleep task, the blocked task 3 and a done task
+INSERT INTO tasks (id,key,workflow,step,state,band,lane,trigger,source,repo,tldr,created,changed,entered,model,branch) VALUES
+(10,'linear:ENG-245','implement','implement','asleep','today','payments','linear','seed-10','acme/shop','Retry webhook deliveries',strftime('%Y-%m-%dT%H:%M:%SZ','now','-6 hours'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-90 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-90 minutes'),'claude-sonnet-5-5','eng-245'),
+(11,'github:acme/shop#190','implement','done','done','later','payments','github','seed-11','acme/shop','Add a currency column',strftime('%Y-%m-%dT%H:%M:%SZ','now','-20 hours'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-5 hours'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-5 hours'),'claude-sonnet-5-5','eng-190');
+INSERT OR IGNORE INTO owns (task, resource) VALUES (10,'linear:ENG-245'),(11,'github:acme/shop#190');
+INSERT INTO inbox (id,type,subject,time,data,links,outcome,task) VALUES
+('k1','linear.comment.created','ENG-245',strftime('%Y-%m-%dT%H:%M:%SZ','now','-40 minutes'),'{"issue":"ENG-245","body":"Use exponential backoff, capped at 10 minutes.","actor":"lead-a"}','[]','kept',10),
+('k2','github.pull_request_review.submitted','acme/shop#245',strftime('%Y-%m-%dT%H:%M:%SZ','now','-25 minutes'),'{"repo":"acme/shop","pull_request":245,"state":"commented","body":"Looks good once the cap is configurable.","url":"https://github.com/acme/shop/pull/245#pullrequestreview-9","actor":"reviewer-a"}','[]','kept',10),
+('k3','linear.comment.created','ENG-224',strftime('%Y-%m-%dT%H:%M:%SZ','now','-70 minutes'),'{"issue":"ENG-224","body":"staging-b is back up, use it.","actor":"ops-a"}','[]','kept',3),
+('k4','github.pull_request.comment','acme/shop#190',strftime('%Y-%m-%dT%H:%M:%SZ','now','-2 hours'),'{"repo":"acme/shop","pull_request":190,"body":"This broke the CSV export of old invoices.","url":"https://github.com/acme/shop/pull/190#c4","actor":"reviewer-b"}','[]','kept',11);

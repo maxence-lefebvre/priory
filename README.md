@@ -60,7 +60,7 @@ plan as a lane graph, and you can move or drop an entry before you answer.
 
 ![The desk on a phone in light mode, scrolled to a stopped task and the batch row "Invoice exports: 1 merged, 2 started, 1 planned. Next: task 9 starts when task 8 merges."](docs/images/web-view-batch-390-light.png)
 
-The inbox groups unrouted events by resource and offers actions to subscribe an existing task or request a new one.
+The inbox groups unrouted events by resource and offers actions to subscribe an existing task or request a new one. Above them, it lists the events a sleeping task kept that no agent read, with a Say that tells the task to read them.
 
 ![The inbox on a 1440 px screen in light mode: unrouted events grouped by resource, each with its task and a button to subscribe the task or request a new one.](docs/images/web-view-inbox-1440-light.png)
 
