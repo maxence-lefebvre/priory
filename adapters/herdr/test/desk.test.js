@@ -43,7 +43,7 @@ test("the next thing is the desk's next, so an alarm comes before every ask", ()
     key: "cli:PRI-55",
     step: "triage",
     age: "31 min",
-    why: "an alarm: work stopped and waits on a person",
+    why: "work stopped and waits on a person",
     question: "Permission prompt denied: write to ~/.ssh/config, outside the worktree.",
     questionSpans: [{ text: "Permission prompt denied: write to ~/.ssh/config, outside the worktree." }],
     recommendation: "Resume",

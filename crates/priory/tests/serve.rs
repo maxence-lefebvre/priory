@@ -832,10 +832,7 @@ fn the_desk_ranks_alarms_then_irreversible_asks_then_plans_then_the_rest_each_ol
         ]
     );
     assert_eq!(desk["next"]["kind"], "blocked");
-    assert_eq!(
-        desk["next"]["why"],
-        "an alarm: work stopped and waits on a person"
-    );
+    assert_eq!(desk["next"]["why"], "work stopped and waits on a person");
     assert_eq!(desk["ranked"][2]["why"], "it lets step `open-pr` run");
     assert_eq!(desk["ranked"][3]["why"], "it approves a plan");
 }
@@ -945,7 +942,7 @@ fn a_failing_intake_ranks_as_an_alarm_whose_title_names_the_source_not_the_error
         (
             &json!("report"),
             &json!("the intake fails to poll github"),
-            &json!("an alarm: work stopped and waits on a person")
+            &json!("work stopped and waits on a person")
         )
     );
 }

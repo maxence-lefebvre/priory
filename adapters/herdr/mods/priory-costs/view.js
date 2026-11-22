@@ -3,6 +3,15 @@
 // test keeps the two the same. Herdr's engine has no Intl, so numbers and dates format by hand.
 
 const grouped = (/** @type {string} */ digits) => digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+// runs.js's tokenText, copied: each Herdr mod carries its own files.
+/** Input, output and cache tokens added up: "640", "1.5k", "312k", "3.3M". @param {any} tokens */
+function tokenText(tokens) {
+  if (!tokens) return "";
+  const total = (tokens.input ?? 0) + (tokens.output ?? 0) + (tokens.cache_read ?? 0) + (tokens.cache_write ?? 0);
+  const short = (/** @type {number} */ value, /** @type {string} */ unit) => `${value < 10 ? Math.round(value * 10) / 10 : Math.round(value)}${unit}`;
+  if (total >= 1e6) return short(total / 1e6, "M");
+  return total >= 1000 ? short(total / 1000, "k") : String(total);
+}
 export const money = (/** @type {number | null} */ value) => {
   if (value == null) return "-";
   // toPrecision drops the binary noise that makes 1.005 * 100 read 100.4999..., so half a cent rounds up.
@@ -56,7 +65,6 @@ export function dayBars(costs) {
 }
 
 export const SPLITS = ["workflow", "agent", "model", "machine", "repo", "lane"];
-const tokenCount = (/** @type {any} */ tokens) => grouped(String(tokens.input + tokens.output + tokens.cache_read + tokens.cache_write));
 const records = (/** @type {number} */ n) => `${n} record${n === 1 ? "" : "s"}`;
 
 /** The current window split by `costs.by`, and what in it has no cost. @param {any} costs */
@@ -67,10 +75,10 @@ export function splitTable(costs) {
     rows: costs.split.map((/** @type {any} */ row) => ({
       name: row[by] ?? "-",
       cost: money(row.cost_usd),
-      tokens: tokenCount(row.tokens),
+      tokens: tokenText(row.tokens),
       note: [row.unpriced.length ? "price missing" : "", row.unknown ? `tokens unknown for ${records(row.unknown)}` : ""].filter(Boolean).join(", "),
     })),
-    unpriced: current.unpriced.map((/** @type {any} */ entry) => ({ model: entry.model, tokens: tokenCount(entry.tokens) })),
+    unpriced: current.unpriced.map((/** @type {any} */ entry) => ({ model: entry.model, tokens: tokenText(entry.tokens) })),
     unknown: current.unknown ? `${records(current.unknown)} ${current.unknown === 1 ? "has" : "have"} no tokens` : null,
   };
 }

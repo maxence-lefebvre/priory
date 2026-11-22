@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, memoryNote, memoryTag } from "./desk.js";
 
-const why = "an alarm: work stopped and waits on a person";
+const why = "work stopped and waits on a person";
 
 test("the next thing opens the page that answers it", () => {
   assert.equal(nextLink({ kind: "ask", id: 42, task: 7 }), "/asks/42");
