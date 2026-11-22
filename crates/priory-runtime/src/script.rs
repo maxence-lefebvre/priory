@@ -53,6 +53,23 @@ pub fn spawn_held(
     start(command, dir, log, Some(errors), Stdio::piped(), timeout)
 }
 
+/// Execs `argv` as `spawn_held` does, with its stdout and stderr going to `log` in the order they
+/// were written.
+pub fn spawn_held_merged(
+    argv: &[&str],
+    env: &[(&str, &std::ffi::OsStr)],
+    dir: &Path,
+    log: &Path,
+    timeout: Duration,
+) -> Result<Script, String> {
+    let mut command = Command::new("sh");
+    command
+        .args(["-c", "read -r _ && exec \"$@\" </dev/null", "sh"])
+        .args(argv)
+        .envs(env.iter().copied());
+    start(command, dir, log, None, Stdio::piped(), timeout)
+}
+
 fn start(
     mut command: Command,
     dir: &Path,

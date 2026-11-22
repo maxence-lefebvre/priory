@@ -1,3 +1,5 @@
+use crate::recipe::{self, Teardown};
+use priory_factory::factory::Factory;
 use priory_runtime::worktrees::{self, Found};
 use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
@@ -8,15 +10,15 @@ struct Entry {
     stays: Option<String>,
 }
 
+/// The task a worktree folder is named after: `<task>`, or `<runner>-<task>` with runners.
+fn task_of(found: &Found) -> Option<i64> {
+    found.name.rsplit('-').next().and_then(|id| id.parse().ok())
+}
+
 fn assess(db: &Connection, home: &Path) -> rusqlite::Result<Vec<Entry>> {
     let mut entries = Vec::new();
     for found in worktrees::found(home) {
-        // With runners the folder is `<runner>-<task>`.
-        let task = found
-            .name
-            .rsplit('-')
-            .next()
-            .and_then(|id| id.parse::<i64>().ok());
+        let task = task_of(&found);
         let task = task
             .map(|id| {
                 db.query_row(
@@ -53,7 +55,17 @@ fn assess(db: &Connection, home: &Path) -> rusqlite::Result<Vec<Entry>> {
                     )
                     .optional()?
                     .flatten();
-                worktrees::blocker(home, &found, head.as_deref())
+                match worktrees::blocker(home, &found, head.as_deref()) {
+                    Some(stays) => Some(stays),
+                    None => match task_of(&found).map(|id| recipe::teardown_of(db, id)) {
+                        Some(found) => match found? {
+                            Some(Teardown::Runs) => Some("teardown runs".to_owned()),
+                            Some(Teardown::Failed(reason)) => Some(reason),
+                            Some(Teardown::Done) | None => None,
+                        },
+                        None => None,
+                    },
+                }
             }
         };
         entries.push(Entry { found, stays });
@@ -61,8 +73,10 @@ fn assess(db: &Connection, home: &Path) -> rusqlite::Result<Vec<Entry>> {
     Ok(entries)
 }
 
-/// Removes the worktree and branch of every ended task that nothing keeps, after fetching each clone.
-pub fn run(db: &Connection, home: &Path) -> rusqlite::Result<()> {
+/// Removes the worktree and branch of every ended task that nothing keeps, after fetching each
+/// clone, and after the repository's teardown succeeded in it. A teardown owed here starts at the
+/// daemon's next tick.
+pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<()> {
     let mut repos: Vec<_> = worktrees::found(home)
         .into_iter()
         .map(|found| found.repo)
@@ -75,10 +89,26 @@ pub fn run(db: &Connection, home: &Path) -> rusqlite::Result<()> {
             unfetched.push(repo);
         }
     }
-    for entry in assess(db, home)?
-        .into_iter()
-        .filter(|entry| entry.stays.is_none() && !unfetched.contains(&entry.found.repo))
-    {
+    for entry in assess(db, home)? {
+        if unfetched.contains(&entry.found.repo) {
+            continue;
+        }
+        // A teardown that failed stays failed until the factory's teardown changes.
+        let torn = match (&entry.stays, task_of(&entry.found)) {
+            (None, Some(task)) => {
+                recipe::teardown(db, factory, task, &entry.found.repo, &entry.found.path)?
+            }
+            (Some(_), Some(task))
+                if matches!(recipe::teardown_of(db, task)?, Some(Teardown::Failed(_))) =>
+            {
+                recipe::teardown(db, factory, task, &entry.found.repo, &entry.found.path)?;
+                continue;
+            }
+            _ => continue,
+        };
+        if !matches!(torn, Teardown::Done) {
+            continue;
+        }
         if let Err(error) = worktrees::remove(home, &entry.found) {
             eprintln!(
                 "priory daemon: removing {}: {error}",
@@ -93,6 +123,7 @@ pub fn run(db: &Connection, home: &Path) -> rusqlite::Result<()> {
 /// clean worktree and keeps its branch and sessions. A task that cannot retire gets the reason once.
 pub(crate) fn retire(
     db: &Connection,
+    factory: &Factory,
     home: &Path,
     mut short: impl FnMut() -> bool,
 ) -> rusqlite::Result<()> {
@@ -118,6 +149,15 @@ pub(crate) fn retire(
         };
         // Marked first, so a crash before the removal leaves a mark on a worktree, not the reverse.
         let mut stays = worktrees::retire_blocker(home, found);
+        if stays.is_none() {
+            // One teardown at a time: the next task's waits until this one retired and the disk
+            // is measured again.
+            match recipe::teardown(db, factory, task, &found.repo, &found.path)? {
+                Teardown::Done => {}
+                Teardown::Runs => return Ok(()),
+                Teardown::Failed(reason) => stays = Some(reason),
+            }
+        }
         if stays.is_none() {
             db.execute(
                 "UPDATE tasks SET retired = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), reason = NULL

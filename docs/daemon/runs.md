@@ -15,7 +15,8 @@ step. A held task gets its ask once its hold releases it.
 
 The daemon creates the worktree on a new branch from `origin/HEAD`, and stores that commit as the
 task's `base_sha` the first time. A revived task keeps it, so a scorer and a benchmark know where
-the task started. The daemon then records the run and task as `running`, and starts the agent's
+the task started. When the repository has recipes, a setup or resume runs first (see Recipes). The
+daemon then records the run and task as `running`, and starts the agent's
 harness in a detached tmux session named `priory-<task id>`, in the worktree. It first kills a
 session of that name left by an ended run, since the task has no other live run. An agent with
 `harness = "claude-code"` runs `claude` (below). One with `harness = "codex"` runs `codex` (see
@@ -67,6 +68,68 @@ prompt is queued again after the one that says the run was lost.
 A code step's `run` action is not a run: it starts a command without tmux, an agent or a room check,
 and a restarted daemon kills that command and ends its step `failed` instead of keeping it. See The
 `run` action in [tools.md](tools.md#the-run-action).
+
+## Recipes
+
+A repository's recipes tell the daemon how to prepare a worktree, so no run has to find out how to
+install and build it. `factory.toml` holds them under [`[repos."owner/name"]`](../reference/factory.md#repos):
+
+```toml
+[repos."owner/name"]
+setup = { argv = ["npm", "ci"], timeout = "15m" }
+resume = { argv = ["npm", "ci", "--prefer-offline"] }
+teardown = { shell = "docker compose down --remove-orphans" }
+```
+
+| Recipe | When it runs |
+| ------ | ------------ |
+| `setup` | After the daemon adds a task's new worktree, before the first run's agent starts |
+| `resume` | After the daemon adds back a worktree that a retirement or a sweep removed, before the next run's agent starts. Also after a teardown ran in a worktree that then stayed |
+| `teardown` | Before the sweep removes the worktree of an ended task, and before a retirement removes the worktree of an asleep task (see [sweep.md](sweep.md)) |
+
+A recipe runs as a code step's command does. Priory execs `argv` as it is, with no shell, or runs
+`shell` with `sh -c`. It runs in the task's worktree, in its own process group, with stdin closed and
+the environment of the [`run` action](tools.md#the-run-action): `PRIORY_TASK`, `PRIORY_HOME`,
+`PRIORY_DB` and `PRIORY_FACTORY`. Past its `timeout`, or `command_timeout` when it sets none, it is
+killed with its children. Children it leaves in the background are killed when it ends. Its status
+is `exit <code>`, `killed by a signal`, `timed out after <n>s` or `cannot start: <error>`, and only
+`exit 0` succeeds. The daemon keeps the last 2000 bytes of its stdout and stderr together, in the
+order it wrote them.
+
+A recipe runs in the background, so the daemon goes on with other tasks and hooks. While a setup
+or resume runs, its task stays `queued` or `ready` with the reason `runs its setup` or
+`runs its resume`, and no run starts for it. When it succeeds, the reason clears and the run starts
+at the next tick, with the step's prompt as usual.
+
+A failed setup or resume blocks the task, so it reaches the desk. Its reason names the status and the
+last 5 lines of output, with secrets hidden as a run's screen hides them (see
+[Run screen](../reference/serve.md#run-screen)):
+
+```text
+setup failed: exit 3. Its output ended with: installing | token [redacted] | npm ERR! missing script: build
+```
+
+`priory resume <task>` runs the recipe again, then starts the run once it succeeds. A cancelled
+task's setup or resume is killed. The daemon reads `factory.toml` when it starts, so a fix to the
+recipe itself takes a daemon restart.
+
+A recipe has no decider or effect of its own: it works in the task's worktree, which is reversible,
+and the factory's pull request is the person's approval of what it runs. So `priory check` refuses a
+recipe whose command the [tool guard](guard.md) holds irreversible, such as `gh pr merge` or a
+`[guard]` command of the factory.
+
+A daemon restart never leaves a recipe running. The restarted daemon kills a recipe its predecessor
+left running and ends it `interrupted by a daemon restart`. A setup or resume it ends blocks its task,
+and `priory resume` runs it again.
+
+A code step that adds back a retired worktree, such as `open-pr`, runs no resume. The task owes it,
+and its next run starts it first.
+
+Known limits:
+
+- The room check does not count a recipe's memory or CPU: the agent's admission comes after it.
+- A recipe's output stays in the state file. Only the block reason and the desk show it.
+- A recipe runs on the runner that owns the task, so each runner needs the recipe's tools.
 
 ## Queue
 

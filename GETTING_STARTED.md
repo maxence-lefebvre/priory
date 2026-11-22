@@ -245,6 +245,8 @@ with a key such as `github:owner/name#42`. It goes through the same steps.
   [A task's life](docs/daemon/README.md#a-tasks-life).
 - Stop an agent's irreversible command, or make an outcome need proof: [the tool guard](docs/daemon/guard.md)
   and [proofs](docs/daemon/tools.md#proofs).
+- Install and build each new worktree before its agent starts, and clean it up before the sweep
+  removes it: [recipes](docs/daemon/runs.md#recipes).
 - Give every agent the same writing guide, facts and skills: [writing.md](docs/daemon/writing.md) and
   [skills.md](docs/daemon/skills.md).
 - Run one factory on two machines: [How to add a second machine](docs/adding-a-second-machine.md).
