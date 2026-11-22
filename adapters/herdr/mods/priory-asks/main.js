@@ -2,13 +2,13 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Popover, ScrollHandle, Textarea, TextareaState } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared, shared } from "herdr";
 import { follow, priory, runnerOf } from "./priory.js";
-import { selectable } from "./ui.js";
+import { selectable, stateTile } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { ARM_MS, askDetail, asksList, press, refusal, tomorrowAt } from "./view.js";
 
 // The --pane-* tokens of design/tokens/structure.css, and the type and radii this panel uses.
 const PANE = { split: 720, head: 44, chip: 28, row: 52, tile: 24, option: 40, bar: 52, control: 32 };
-const RADIUS = { sm: 5, tile: 8, md: 12, card: 14 };
+const RADIUS = { sm: S["radius-sm"], md: S["radius-md"], card: S["radius-card"] };
 // Size and line height; gpui-kit reads a bare line height as a multiplier, so heights are lengths.
 /** @type {Record<"question" | "body" | "small" | "caption", [number, `${number}px`]>} */
 const TYPE = { question: [18, "24px"], body: [14, "20px"], small: [13, "18px"], caption: [12, "16px"] };
@@ -21,7 +21,7 @@ const ICON = (/** @type {string} */ name) => `mods/priory-asks/icons/${name}.svg
 const CHECK_ICONS = /** @type {Record<string, [string, string]>} */ ({ passed: ["check", "ok-text"], failed: ["x", "danger-text"], running: ["clock", "text-3"], skipped: ["minus", "text-3"] });
 
 /** @typedef {Record<string, import("gpui-kit").Color>} Palette */
-/** @typedef {typeof FONTS.indigo} Fonts */
+/** @typedef {typeof FONTS.graphite} Fonts */
 /** @typedef {[string, string, (cx: import("gpui-kit").Context) => void, string?]} MenuItem a label, a key hint, an action and an icon */
 
 // settings.json's "priory" object: { binary, machine, factory, theme }, each optional. Mirrors priory-tabs.
@@ -43,7 +43,7 @@ async function connect() {
   const client = priory({ exec, binary, on, factory: config.factory ?? null });
   // Links are optional: without a factory priory can read, the panel shows its text unlinked.
   const links = await client.links().then((read) => read.links, () => []);
-  return { theme: config.theme ?? "indigo", client, links };
+  return { theme: config.theme ?? "graphite", client, links };
 }
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
@@ -94,7 +94,7 @@ export default class PrioryAsks extends View {
     this.typing = false;
     this.focus = cx.focus_handle();
     /** @type {Fonts} */
-    this.font = FONTS.indigo;
+    this.font = FONTS.graphite;
     this.scroll = ScrollHandle.new();
     /** When the last request to open an ask was made; an older request, as one left by an earlier session, opens nothing. */
     this.asked = Date.now() - OPEN_FRESH_MS;
@@ -139,6 +139,7 @@ export default class PrioryAsks extends View {
       wait: (since) => client.wait(since),
       sleep: (ms) => cx.sleep(ms),
       failed: (error) => {
+        this.theme = this.priory?.theme ?? this.theme;
         this.priory = null;
         this.error = message(error);
         cx.notify();
@@ -373,9 +374,10 @@ export default class PrioryAsks extends View {
   /** @param {import("gpui-kit").Context} cx */
   render(cx) {
     this.opening(cx);
-    const theme = this.priory?.theme ?? "indigo";
+    // The last theme read stays while Priory is unreachable.
+    const theme = (this.theme = this.priory?.theme ?? this.theme ?? "graphite");
     const t = /** @type {Palette} */ (palette(theme, cx.theme().appearance));
-    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.indigo;
+    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.graphite;
     const now = Date.now();
     const list = this.list(now);
     const ask = this.selectedAsk();
@@ -437,7 +439,7 @@ export default class PrioryAsks extends View {
     };
     return v_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).border_b(1).border_color(t.line)
       .child(h_flex().gap(S["space-2"]).flex_wrap().children(list.views.map((view) =>
-        chip(`view-${view.id}`, `${view.label} ${view.count}`, this.view === view.id, (cx) => { this.view = view.id; this.refilter(cx); }, 999))))
+        chip(`view-${view.id}`, `${view.label} ${view.count}`, this.view === view.id, (cx) => { this.view = view.id; this.refilter(cx); }, RADIUS.md))))
       .child(h_flex().gap(S["space-2"]).flex_wrap()
         .child(chip("facet-command", "Command", Boolean(this.facets.command), (cx) => {
           if (this.facets.command) delete this.facets.command;
@@ -526,11 +528,8 @@ export default class PrioryAsks extends View {
 
   /** @param {string} kind ask, answered or withdrawn @param {Palette} t */
   tile(kind, t) {
-    const [fill, icon, ink] = kind === "ask" ? [t.wait, "ask", t["on-wait"]]
-      : kind === "refused" ? [t["tile-warn"], "x", t["on-tile"]]
-      : [t["tile-muted"], kind === "answered" ? "check" : "minus", t["on-tile"]];
-    return h_flex().size(PANE.tile).flex_none().items_center().justify_center().rounded(RADIUS.tile).bg(fill)
-      .accessibility_label(kind === "ask" ? "ask" : kind).child(svg(ICON(icon)).size(14).text_color(ink));
+    const [role, icon] = kind === "ask" ? ["wait", "ask"] : kind === "refused" ? ["tile-warn", "x"] : ["tile-muted", kind === "answered" ? "check" : "minus"];
+    return stateTile(kind, ICON(icon), role, t);
   }
 
   /** @param {string} label @param {Palette} t */
@@ -560,9 +559,9 @@ export default class PrioryAsks extends View {
       .when(Boolean(detail.sent) && !notice, (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(detail.sent?.refused ? t["warn-text"] : t["action-text"])
         .child(selectable(`sent-${ask.id}`, detail.sent?.refused ? `${detail.sent.text}.` : `${detail.sent?.text}. It applies when ${ask.runner} reads the log.`))))
       .when(Boolean(notice), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["warn-text"]).child(selectable(`notice-${ask.id}`, notice ?? ""))))
-      .when(Boolean(detail.decided), (el) => el.child(div().p(S["space-3"]).rounded(RADIUS.md).bg(t.raised).font_weight(600).child(selectable(`decided-${ask.id}`, detail.decided ?? ""))))
+      .when(Boolean(detail.decided), (el) => el.child(div().p(S["space-3"]).rounded(RADIUS.card).bg(t.raised).font_weight(600).child(selectable(`decided-${ask.id}`, detail.decided ?? ""))))
       .when(Boolean(detail.ran), (el) => el.child(this.note("terminal", detail.ran?.text ?? "", detail.ran?.warn ? t["warn-text"] : t["text-2"])))
-      .when(Boolean(detail.recommendation) && ask.state === "open", (el) => el.child(v_flex().p(S["space-3"]).gap(S["space-2"]).rounded(RADIUS.md).bg(t["action-soft"])
+      .when(Boolean(detail.recommendation) && ask.state === "open", (el) => el.child(v_flex().p(S["space-3"]).gap(S["space-2"]).rounded(RADIUS.card).bg(t["action-soft"])
         .child(div().whitespace_normal().font_weight(600).text_color(t["action-text"]).child(selectable(`recommendation-${ask.id}`, detail.recommendation?.text ?? "")))
         .when(Boolean(detail.recommendation?.next), (el) => el.child(h_flex().gap(S["space-2"]).items_start().text_size(TYPE.small[0]).text_color(t["text-2"])
           .child(svg(ICON("corner-down-right")).size(14).flex_none().mt(2)).child(div().flex_1().min_w_0().whitespace_normal().child(selectable(`next-${ask.id}`, detail.recommendation?.next ?? "")))))))
@@ -606,14 +605,14 @@ export default class PrioryAsks extends View {
   /** @param {Palette} t */
   sending(t) {
     const pending = /** @type {NonNullable<typeof this.pending>} */ (this.pending);
-    return h_flex().gap(S["space-2"]).p(S["space-3"]).items_center().rounded(RADIUS.md).bg(t.raised).text_size(TYPE.small[0])
+    return h_flex().gap(S["space-2"]).p(S["space-3"]).items_center().rounded(RADIUS.card).bg(t.raised).text_size(TYPE.small[0])
       .child(div().flex_1().min_w_0().whitespace_normal().child(`Sending "${pending.text}"`))
       .when(Boolean(pending.timer), (el) => el.child(this.secondary("undo", "Undo", (cx) => this.undo(cx), t)));
   }
 
   /** @param {string} id @param {string} label @param {(cx: import("gpui-kit").Context) => void} action @param {Palette} t */
   secondary(id, label, action, t) {
-    return Button.new(id).h(PANE.control).px(S["space-3"]).flex().flex_none().items_center().rounded(RADIUS.card).border(1).border_color(t["control-line"])
+    return Button.new(id).h(PANE.control).px(S["space-3"]).flex().flex_none().items_center().rounded(RADIUS.md).border(1).border_color(t["control-line"])
       .bg(t.surface).text_color(t.text).text_size(TYPE.small[0]).font_weight(600).hover((s) => s.bg(t.raised))
       .focus((s) => s.border(2).border_color(t["action-text"])).on_click((_event, cx) => action(cx)).child(label);
   }
@@ -699,7 +698,7 @@ export default class PrioryAsks extends View {
         .child(Textarea.new(draft).w_full().text_size(16).text_color(t.text)))
       .child(h_flex().gap(S["space-2"]).items_center()
         .child(div().flex_1().text_size(TYPE.caption[0]).text_color(t["text-3"]).child("Ctrl+Enter sends. Free text goes as the answer."))
-        .child(Button.new(`send-${ask.id}`).h(PANE.control).px(S["space-3"]).flex().items_center().rounded(RADIUS.card).bg(t.action).text_color(t["on-action"])
+        .child(Button.new(`send-${ask.id}`).h(PANE.control).px(S["space-3"]).flex().items_center().rounded(RADIUS.md).bg(t.action).text_color(t["on-action"])
           .font_weight(600).disabled(!text || this.busy()).opacity(!text || this.busy() ? 0.5 : 1)
           .focus((s) => s.border(2).border_color(t["action-text"])).on_click((_event, cx) => send(cx)).child("Send")));
   }
@@ -709,7 +708,7 @@ export default class PrioryAsks extends View {
     const detail = askDetail(ask, { now: Date.now(), armed: null, task: this.task, links: this.links });
     const current = this.reading ?? (this.width >= PANE.split ? "why" : null);
     return h_flex().flex_none().gap(S["space-1"]).flex_wrap().children(detail.chips.map(([id, label]) =>
-      Button.new(`chip-${ask.id}-${id}`).h(PANE.chip).px(S["space-3"]).flex().items_center().rounded(999).selected(current === id)
+      Button.new(`chip-${ask.id}-${id}`).h(PANE.chip).px(S["space-3"]).flex().items_center().rounded(RADIUS.md).selected(current === id)
         .bg(current === id ? t.emph : t.bg).text_color(current === id ? t["on-emph"] : t["text-2"]).text_size(TYPE.small[0]).font_weight(500)
         .hover((s) => s.bg(current === id ? t.emph : t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
         .on_click((_event, cx) => {
@@ -786,7 +785,7 @@ export default class PrioryAsks extends View {
    * @param {NonNullable<ReturnType<typeof askDetail>["command"]>} command @param {Palette} t @param {string} where
    */
   commandBlock(command, t, where) {
-    return v_flex().gap(S["space-2"]).p(S["space-3"]).rounded(RADIUS.md).bg(t.raised)
+    return v_flex().gap(S["space-2"]).p(S["space-3"]).rounded(RADIUS.card).bg(t.raised)
       .child(h_flex().flex_wrap().gap(S["space-1"]).children(command.words.map((word, index) => div().min_w(14).px(S["space-1"]).rounded(RADIUS.sm).border(1)
         .border_color(t["control-line"]).bg(t.surface).font_family(this.font.mono).text_size(12.5).whitespace_nowrap().child(selectable(`word-${where}-${index}`, word)))))
       .child(h_flex().gap(S["space-2"]).items_start()
@@ -832,7 +831,7 @@ export default class PrioryAsks extends View {
       .child(div().flex_none().px(S["space-4"]).py(S["space-2"]).border_b(1).border_color(t.line).child(this.chips(ask, t)))
       .child(v_flex().id("ask-reading").flex_1().min_h_0().overflow_y_scrollbar().p(S["space-4"]).gap(S["space-3"])
         .when(this.notices.has(ask.id), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["warn-text"]).child(this.notices.get(ask.id) ?? "")))
-        .when(Boolean(detail.decided), (el) => el.child(div().p(S["space-3"]).rounded(RADIUS.md).bg(t.raised).font_weight(600).child(selectable(`decided-${ask.id}`, detail.decided ?? ""))))
+        .when(Boolean(detail.decided), (el) => el.child(div().p(S["space-3"]).rounded(RADIUS.card).bg(t.raised).font_weight(600).child(selectable(`decided-${ask.id}`, detail.decided ?? ""))))
         .child(this.section(ask, this.reading ?? "why", t, now))
         .when(ask.state === "open" && this.writing.has(ask.id), (el) => el.child(this.composer(ask, t))))
       .when(Boolean(detail.bar), (el) => el.child(this.bar(ask, detail, t, now)));
@@ -854,7 +853,7 @@ export default class PrioryAsks extends View {
       .child(h_flex().min_h(PANE.bar - 20).gap(S["space-2"]).items_center()
         .child(Popover.new(`options-menu-${ask.id}`).trigger(trigger).anchor("bottom_left").open(opened)
           .on_open_change((/** @type {boolean} */ next, /** @type {import("gpui-kit").Context} */ cx) => { this.popover = next ? "options" : null; cx.notify(); })
-          .content(v_flex().w(Math.max(260, this.width - 40)).p(S["space-3"]).gap(S["space-2"]).rounded(RADIUS.md).bg(t.surface).border(1).border_color(t["control-line"])
+          .content(v_flex().w(Math.max(260, this.width - 40)).p(S["space-3"]).gap(S["space-2"]).rounded(RADIUS.card).bg(t.surface).border(1).border_color(t["control-line"])
             .child(div().text_size(TYPE.small[0]).font_weight(600).child(`Answer ask #${ask.id}, revision ${ask.revision}`))
             .child(this.options(ask, detail, t, now))))
         .child(Button.new(`bar-answer-${ask.id}`).flex_1().min_w_0().min_h(PANE.control).px(S["space-3"]).py(S["space-1"]).flex().items_center().rounded(RADIUS.card)

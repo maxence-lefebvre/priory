@@ -162,7 +162,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut db = state::open()?;
     tools::backfill_endings(&mut db, &factory.workflows)?;
     let bus = log::open(factory.log())?;
-    state::bands(&mut db, &factory.bands())?;
+    state::bands(&mut db, &factory.bands(), factory.age())?;
     state::fairness(&db, factory.fair())?;
     state::irreversible_asks(&mut db, &factory.workflows)?;
     for error in sections::dispatch(&db, factory, None)? {
@@ -1101,7 +1101,7 @@ fn take(
             Ok((replied(subscribe::tool(db, &call)?), None))
         }
         Ok(Input::Call(call)) => {
-            let (reply, kill) = tools::call(db, &call, trace, &|worktree, branch| {
+            let (reply, kill) = tools::call(db, &call, trace, kit, &|worktree, branch| {
                 runtime::kept_head(&runtime::home(), worktree, branch)
             })?;
             Ok((replied(reply), kill))

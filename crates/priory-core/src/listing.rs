@@ -973,22 +973,25 @@ pub fn queue(
     now: Timestamp,
 ) -> rusqlite::Result<Value> {
     let waiting = format!(
-        "{} SELECT position, band_position, id, key, title, workflow, step, state, band, lane, reason,
-           since, conditions, stops, protected FROM (
+        "{} SELECT position, band_position, id, key, title, workflow, step, state, band, aged, lane,
+           reason, since, conditions, stops, protected FROM (
            SELECT 0 AS part, queue.place AS position, queue.band_place AS band_position, id, key,
-             {TITLE}, workflow, step, state, band, lane, reason, changed AS since, NULL AS conditions,
+             {TITLE}, workflow, step, state, band, {aged} AS aged, lane, reason, changed AS since,
+             NULL AS conditions,
              (SELECT json_group_array(runs.task) FROM runs
                WHERE runs.preempted_for = tasks.id AND runs.ended IS NULL) AS stops,
              coalesce(tasks.protected, '[]') AS protected,
              queue.place AS sort
            FROM tasks JOIN queue USING (id)
            UNION ALL
-           SELECT 1, NULL, NULL, tasks.id, key, {TITLE}, workflow, step, state, band, lane, tasks.reason,
+           SELECT 1, NULL, NULL, tasks.id, key, {TITLE}, workflow, step, state, band, NULL, lane,
+             tasks.reason,
              changed, {CONDITIONS}, '[]', '[]',
              (SELECT min(id) FROM holds WHERE holds.task = tasks.id AND holds.released IS NULL)
            FROM tasks WHERE tasks.state = 'held'
          ) ORDER BY part, sort",
-        places()
+        places(),
+        aged = state::AGED_BAND
     );
     let mut waiting = rows(db, &waiting, [])?;
     waiting

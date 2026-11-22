@@ -187,6 +187,29 @@ test("the selected row's key, text and meta select and copy; the other rows stay
   assert.equal(find(tree, `text-${second.id}`), null);
 });
 
+test("a row draws its Markdown: a link shows its label, linked, selected or not", async () => {
+  // A row of Max's report, 2026-11-22: its text is a Markdown link.
+  const text = "[Fragments: November 20](https://martinfowler.com/fragments/2026-11-20.html): light reading";
+  const linked = { ...read, report: { ...read.report, sections: [{ id: "s", title: "S", count: null, rows: [{ id: "r", text }] }] } };
+  const { find, panel, view, text: shown } = await mounted({ report: (/** @type {string[]} */ args) => (args[1] === "list" ? { revision: 6, reports: [] } : linked), links: { links: [] } });
+  const id = '["s","r"]';
+  for (const selected of [null, id]) {
+    panel.selected = selected;
+    const words = find(view(), `text-${id}`);
+    assert.equal(shown(words), "Fragments: November 20: light reading");
+    assert.match(words.html, /<a href="https:\/\/martinfowler\.com\/fragments\/2026-11-20\.html">Fragments: November 20<\/a>/);
+  }
+});
+
+test("a press on a row's formatted text without a link selects the row, and an image shows its alt text", async () => {
+  const rows = [{ id: "bold", text: "**Ship** it" }, { id: "image", text: "![the chart](https://img.test/c.png)" }];
+  const formatted = { ...read, report: { ...read.report, sections: [{ id: "s", title: "S", count: null, rows }] } };
+  const { find, panel, press, view, text: shown } = await mounted({ report: (/** @type {string[]} */ args) => (args[1] === "list" ? { revision: 6, reports: [] } : formatted), links: { links: [] } });
+  assert.equal(shown(find(view(), 'row-["s","image"]')), "the chart");
+  press(view(), 'text-["s","bold"]');
+  assert.equal(panel.selected, '["s","bold"]');
+});
+
 /** The Bonjour panel drawn against `replies`, once its first read settled. @param {Record<string, unknown>} replies */
 async function mounted(replies) {
   const kit = await import("./kit.js");

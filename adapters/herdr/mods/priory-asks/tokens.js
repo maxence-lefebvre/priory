@@ -243,9 +243,9 @@ export const FONTS = {
   abbey: { display: "Alegreya", ui: "Alegreya Sans", mono: "IBM Plex Mono" },
 };
 
-/** The colors of `theme` (Indigo when unknown) for a "light" or "dark" appearance. @param {string} theme @param {"light" | "dark"} mode */
+/** The colors of `theme` (Graphite when unknown) for a "light" or "dark" appearance. @param {string} theme @param {"light" | "dark"} mode */
 export function palette(theme, mode) {
-  const tokens = THEMES[/** @type {keyof typeof THEMES} */ (theme)] ?? THEMES.indigo;
+  const tokens = THEMES[/** @type {keyof typeof THEMES} */ (theme)] ?? THEMES.graphite;
   return Object.fromEntries(Object.entries(tokens).map(([token, pair]) => [token, pair[mode === "dark" ? 1 : 0]]));
 }
 

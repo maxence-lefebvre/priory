@@ -16,6 +16,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `command_timeout` | duration | no | `"5m"` | How long one `git`, `gh` or `tmux` command may run before Priory kills it. See [home.md](../daemon/home.md) | `"20m"` |
 | `gate` | string | no | none: no step can name the `gate-passed` proof | The project's check, such as its tests. `priory gate` runs it with `sh -c` in a task's worktree. See Proofs in [tools.md](../daemon/tools.md#proofs) | `"cargo test"` |
 | `critic` | string | no | none: a plan no person reads moves on unread | A [scorer](scorers.md) on `result` that grades a plan no person reads: a `red`, `yellow` or `green` outcome that leads to a model or code step, of a task without `intervention = "plan"`. It can only refuse the plan. See Gates in [score.md](../daemon/score.md#gates) | `"plan-is-sound"` |
+| `pre_review` | string | no | none: an approval ask reaches the desk unreviewed | A judge [scorer](scorers.md) that reads the lessons kept for an approval step before that step asks a person. A result that repeats one goes back to the agent once, with the lessons. It never approves anything. See Pre-review in [score.md](../daemon/score.md#pre-review) | `"repeats-a-lesson"` |
 | `writing` | path | no | none: agents get only their own prompt | A file, relative to the factory folder, whose text Priory appends to the system prompt of every agent it starts. `priory check` refuses a missing file and warns past 4096 bytes. See [writing.md](../daemon/writing.md) | `"WRITING.md"` |
 | `sweep` | table | no | the built-in worktree sweep alone | How the daemon frees room. See [`[sweep]`](#sweep) | |
 | `search` | table | no | keyword search, no summarizer | How tasks are found. See [`[search]`](#search) | |
@@ -42,6 +43,7 @@ A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m
 
 See [runs.md](../daemon/runs.md#overlapping-files) for how the overlap hold works,
 [room.md](../daemon/room.md#urgent-wakes) for how `preempt` stops a run,
+[runs.md](../daemon/runs.md#aging) for how `age` moves a waiting task up,
 [runs.md](../daemon/runs.md#turns-between-lanes) for how `fair` orders a band, and
 [runs.md](../daemon/runs.md#review-limit) for how `review_limit` holds new starts.
 
@@ -49,6 +51,7 @@ See [runs.md](../daemon/runs.md#overlapping-files) for how the overlap hold work
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `overlap` | boolean | no | `true` | Whether a task waits for an earlier active task whose branch changes the same files | `false` |
 | `preempt` | list of bands | no | `[]` | The bands whose task at the head of the queue, waiting for memory or disk, may stop runs of a lower band at the end of their turn | `["blocker"]` |
+| `age` | duration | no | none: no task moves | How long a task waits in the queue for each band it moves up in start order, up to the highest band not in `preempt` | `"24h"` |
 | `review_limit` | integer, at least 1 | no | no limit | How many pull requests of a lane, or of a batch, may wait for a person before its new tasks wait to start. A task of the first band never waits | `5` |
 | `fair` | `lane` | no | oldest first | What the queue takes turns between inside a band, among the tasks no person ordered | `"lane"` |
 
@@ -569,14 +572,17 @@ day = 10.0                                     # dollars the lane may spend in a
 
 | Message | Cause |
 | ------- | ----- |
+| `<folder>: missing: no such folder` | The folder named on the command line does not exist, as after a typo or from the wrong working folder |
 | `missing: a factory needs factory.toml or factory.yaml` | The folder has neither file |
 | `` `writing` names <file>, which does not exist `` | `writing` points at a file that is not in the factory folder (a file that cannot be read says `cannot be read` and why) |
 | `` `gate` is empty `` | `gate` is blank, and `sh -c ""` exits 0, so it would pass every proof |
 | `` the critic `<name>` is no scorer in scorers/ `` | `critic` names a scorer the factory lacks |
 | `` the critic `<name>` reads on = "<on>": a critic reads a plan, which names no commit, so use one on result `` | `critic` names a scorer on `diff` or `ask` |
+| `` the pre-review `<name>` is no scorer in scorers/ `` | `pre_review` names a scorer the factory lacks |
+| `` the pre-review `<name>` is of kind <kind>: a pre-review is a judge, which reads the lessons `` | `pre_review` names a scorer that is not a `judge` |
 | `` `[guard]` command `<name>` has the name of another guard `` | A `[guard]` command takes a built-in guard's name or another command's |
 | `` `[guard]` command `<name>` needs a program in `run` `` | A `[guard]` command with an empty `run` |
-| `` unknown field `<key>`, expected one of ... `` | A key the tables above do not list |
+| `` unknown field `<key>`, expected one of ... `` | A key the tables above do not list, or a top-level key such as `gate` written below a table such as `[serve]`, which makes it that table's key |
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A duration that is not a whole number and `s`, `m` or `h` |
 | `` `factory` is also defined in factory.toml `` | Both `factory.toml` and `factory.yaml` exist |
 | `` `bands` needs at least one band, each named once `` | `bands` is empty or names a band twice |
@@ -639,6 +645,7 @@ reports only its parse error, so fix those first.
 In a factory with a spend cap and `prices.toml`, `priory check` also warns, and passes, for the
 agent of a model step whose spend no cap counts:
 `` warning: agents/<name>/agent.md:<line>: the spend caps count nothing for agent `<name>`: <why> ``,
-where `<why>` is `` prices.toml has no price for its model `<model>` `` or
-`Priory reads no Codex tokens`. A Claude Code alias such as `sonnet` never warns: the transcript
-names the full model, which `priory check` cannot know.
+where `<why>` is `` prices.toml has no price for its model `<model>` ``. A Claude Code agent's
+alias such as `sonnet` never warns: the transcript names the full model, which `priory check`
+cannot know. A Codex agent's `model` always needs its price, since Codex names the model it was
+given.

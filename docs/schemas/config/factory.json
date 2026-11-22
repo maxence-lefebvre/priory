@@ -531,6 +531,12 @@
       "additionalProperties": false,
       "description": "How the queue orders tasks.",
       "properties": {
+        "age": {
+          "default": null,
+          "description": "How long a task waits in the queue for each band it moves up in start order, up to the\nhighest band not in `preempt`; no task moves when unset.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        },
         "fair": {
           "anyOf": [
             {
@@ -1143,6 +1149,13 @@
         {
           "type": "null"
         }
+      ]
+    },
+    "pre_review": {
+      "description": "The judge that reads a step's lessons before an approval step asks a person: a result that\nrepeats one goes back to the agent once. It can only send the result back.",
+      "type": [
+        "string",
+        "null"
       ]
     },
     "queue": {

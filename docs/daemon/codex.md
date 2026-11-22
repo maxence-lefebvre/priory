@@ -26,6 +26,8 @@ fires at startup, so its paste and confirmation stay as they are.
 | Idle signal for the outbox (R5.4) | `SessionStart`, `UserPromptSubmit`, `Stop` hooks in `--settings` | the same three hooks, as `-c hooks.<Event>`; Codex hooks take Claude's stdin and output shapes |
 | End of a `/compact` | `SessionStart` with `source: compact` | `PostCompact`, since Codex 0.170 fires `SessionStart` with `source: compact` only at the next turn's start |
 | Stop signal for health (R7.1) | `Stop` hook, and the pane for an exit | the same |
+| Tokens, for traces, `budget`, spend caps and `compactAt` | the transcript's assistant messages | the session file's `token_count` events (see [trace.md](trace.md)) |
+| `idleCompactAt` | resumes the session and types `/compact` after `SessionStart` | none: a resumed Codex session sends no `SessionStart` before its first prompt |
 | A prompt shown anyway | `Notification` hook with `permission_prompt` | no equivalent: Codex has no notification hook for an approval prompt. A prompt that shows despite the deny hook stalls the turn until its step `timeout` blocks the task |
 | Permission policy (R7.2) | `--permission-mode`, `allow` and `deny` rules, `PermissionRequest` deny hook | `sandbox_mode`, `approval_policy` and `approvals_reviewer` by `defaultMode`, below, and the same `PermissionRequest` deny hook |
 | Built-in question tool (R6.4) | `PreToolUse` deny on `AskUserQuestion` | `PreToolUse` deny on `request_user_input`, which Codex offers only in plan collaboration mode, which Priory never sets |

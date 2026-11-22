@@ -348,9 +348,9 @@ If the daemon reports a state not in these tables, show it as a muted tile with 
 the `circle-help` icon. Add it here in the same change that adds it to the daemon.
 
 Each role's fill in each theme, light / dark, from
-[`design/tokens/themes.css`](design/tokens/themes.css). The web view draws these only in charts,
-the stage bar and the danger button; a Herdr pane still fills its tiles with them. The table
-leaves Graphite out: its panes still draw Indigo.
+[`design/tokens/themes.css`](design/tokens/themes.css). The web view and the Herdr panes draw
+these only in charts, the stage bar and the danger button, never in a tile. The table leaves
+Graphite out; `themes.css` holds its values.
 
 | Role   | Token           | States                                               | Indigo                | Ink                   | Parchment             | Abbey                 |
 | ------ | --------------- | ---------------------------------------------------- | --------------------- | --------------------- | --------------------- | --------------------- |
@@ -361,8 +361,6 @@ leaves Graphite out: its panes still draw Indigo.
 | ok     | `--tile-ok`     | done                                                 | `#248A3D` / `#2E8B47` | `#18793A` / `#24873F` | `#3F6B2A` / `#4A7A33` | `#2F6B4F` / `#2F7A57` |
 | hold   | `--tile-hold`   | held                                                 | `#8944AB` / `#9A55BF` | `#7340B8` / `#8550C8` | `#4B3F8F` / `#5C4FA8` | `#5B4A9C` / `#6A58B5` |
 | muted  | `--tile-muted`  | queued, asleep, dropped, moved, restarted, cancelled | `#8E8E93` / `#636366` | `#8A8A8A` / `#555555` | `#8A7A5C` / `#6A5D48` | `#8C8170` / `#4C5468` |
-
-In a Herdr pane, Indigo and Ink's ask tile and live tile share a fill; the icon tells them apart.
 
 An answered or withdrawn ask is not a task state either. In the asks list it takes a muted tile
 with the `check` icon (answered) or the `minus` icon (withdrawn).
@@ -1439,8 +1437,15 @@ the adapter lives and how it reads and acts, and [`docs/reference/herdr-panels.m
 - **Pointer.** Buttons keep the arrow cursor. Only links that leave Priory take the pointing hand.
 - **Mode.** A mod draws with Priory's tokens, not Herdr's theme. The adapter resolves each
   `light-dark()` pair from Herdr's appearance.
-- **Theme.** The panels still draw Indigo, with filled tiles and badges, until their Graphite
-  slice lands. Graphite's tokens are already in `adapters/herdr/lib/tokens.js`.
+- **Theme.** A panel draws the theme that `priory.theme` in Herdr's `settings.json` names, and
+  Graphite when it names none. Its state tiles are stroke icons with no fill, as in the web view,
+  drawn by `stateTile` in `adapters/herdr/lib/ui.js`.
+- **Fonts.** gpui-kit loads no font file: a mod names a family, and the machine must have it
+  installed. Without it, Herdr falls back to its own UI font. Install Instrument Sans on the
+  machine that runs Herdr to see Graphite's type.
+- **Markdown.** Herdr's `TextView` drops `<br>`, so `markdownHtml` in `lib/priory.js` draws each
+  line of a paragraph as its own paragraph, a check list's boxes as characters, and a link
+  without its host. The Bonjour panel draws a row's text, meta and comments with it.
 
 gpui-kit lacks `light-dark()`, conic gradients, repeating stripes, `position: sticky`, container
 queries and a line clamp with an ellipsis. So the answer bar and section chips sit outside the

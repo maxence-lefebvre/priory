@@ -12,7 +12,13 @@ The head stores the runs it may not stop in `tasks.protected` and stamps each ma
 `runs.marked`, so `priory queue --json` and the trace record can read them. A stopped run's
 resumed session compacts after its first turn, as any session that resumes past `compactAt` does,
 since a new run's first prompt is never a `/compact`. And a reason names a run that is too small to
-help as `the runs it may stop free too little`. The later slices are not built.
+help as `the runs it may stop free too little`.
+
+Later slice 1, `[queue] age`, is built: [runs.md](../daemon/runs.md#aging) describes it. The daemon
+records `age` and the highest band a task can reach in the state file's `aging` table, so
+`priory queue` reads the aged band without the factory. A task's wait counts from when it last
+became `queued` or `ready`. In the band it reaches, an aged task starts after the tasks a person
+ordered there. The other later slices are not built.
 
 ## What existed when this note was written
 
@@ -172,7 +178,7 @@ A stop costs the stopped task time. Four rules bound that cost:
    starts before the younger tasks of its band, as soon as the head has started and room remains.
 3. **No chains.** Only the head of the queue marks runs, and a task woken by a stop marks nothing
    unless it becomes the head itself in a `preempt` band.
-4. **Waiting counts.** This is a later slice. `[queue] age = "24h"` moves a task up by one band,
+4. **Waiting counts.** Built in later slice 1. `[queue] age = "24h"` moves a task up by one band,
    for start order only, for each `age` it has waited in the queue. It stops at the highest band
    that is not in `preempt`, and it never gains the right to stop a run.
 
@@ -298,7 +304,7 @@ steers the room:
 
 ## Later slices
 
-1. `[queue] age`, as fairness rule 4 says, with the aged band in `priory queue`.
+1. `[queue] age`, as fairness rule 4 says, with the aged band in `priory queue`. Built.
 2. `wake_band` on a workflow, as [Which band a source gets](#which-band-a-source-gets) says.
 3. A stop inside a turn, after the head has waited a set time. See open question 1.
 4. A count of stops on the web and Herdr Desks, from a design a person reviewed.

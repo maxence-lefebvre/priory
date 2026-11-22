@@ -19,7 +19,7 @@ against it, but `priory check` applies the same rules.
 | `effort` | string | no | the harness's default | The harness's reasoning effort | `"high"` |
 | `runner` | string | no | | Reserved for pinning the agent's runs to one runner, by Tailscale hostname, or `any`. `priory check` accepts it and nothing reads it yet: a run starts on the runner whose daemon owns its task | `"any"` |
 | `session` | `per-task` or `shared` | no | `"per-task"` | `per-task`: one conversation per task. `shared`: one conversation across tasks, such as a lead. See [sessions.md](../daemon/sessions.md) | `"shared"` |
-| `compactAt` | integer | no | | The context size, in tokens, past which the daemon compacts the conversation between turns. Claude Code only. See [sessions.md](../daemon/sessions.md#compacting-a-long-session) | `150000` |
+| `compactAt` | integer | no | | The context size, in tokens, past which the daemon compacts the conversation between turns. See [sessions.md](../daemon/sessions.md#compacting-a-long-session) | `150000` |
 | `idleCompactAt` | integer | no | | The context size, in tokens, past which the daemon compacts a shared session idle for 55 minutes, before its prompt cache expires. Claude Code and `session = "shared"` only. See [sessions.md](../daemon/sessions.md#compacting-an-idle-session) | `60000` |
 | `onChange` | `tell` or `fresh` | no | `"tell"` | What a resumed shared session gets when the agent changed since it started. `tell`: a line naming what changed. `fresh`: a new session. `session = "shared"` only. See [sessions.md](../daemon/sessions.md#when-the-agent-changes) | `"fresh"` |
 | `memory` | size | no | | What a runner must have free to admit a run. See [memory-gate.md](../daemon/memory-gate.md) | `"6GB"` |
@@ -153,8 +153,7 @@ Answer in one short paragraph.
 | `` `bypassPermissions` is not allowed: Priory never skips permission checks `` | `defaultMode = "bypassPermissions"` |
 | `` a codex agent cannot take `permissions.defaultMode = "plan"`: use manual, acceptEdits, auto or dontAsk `` | A Codex agent in plan mode |
 | `` a codex agent cannot take `permissions.allow`: Codex has no per-tool rules, so its sandbox and approvals follow `defaultMode` alone `` | A Codex agent with `allow`. The same for `deny` |
-| `` a codex agent cannot take `compactAt`: Priory reads no Codex tokens, so it never knows the context size `` | A Codex agent with `compactAt` |
-| `` a codex agent cannot take `idleCompactAt`: Priory reads no Codex tokens, so it never knows the context size `` | A Codex agent with `idleCompactAt` |
+| `` a codex agent cannot take `idleCompactAt`: a resumed Codex session sends no `SessionStart` before its first prompt, so Priory never knows when to type `/compact` `` | A Codex agent with `idleCompactAt` |
 | `` a codex agent takes its own prompt on its command line, as `developer_instructions`: it is <n> bytes, over the limit of 8192 `` | A Codex agent's prompt and the writing guide pass 8192 bytes. With `instructions.md`, memories or skills, the message names each part it counts and says `together they are` (see [skills.md](../daemon/skills.md#a-codex-run)) |
 | `` `idleCompactAt` needs `session = "shared"`: only a shared session is resumed across tasks `` | `idleCompactAt` on a `per-task` agent. The same for `onChange = "fresh"` |
 | `` `skills` names `<name>`, which is not a skill of this factory: <names> `` | A name in `skills` with no folder in `skills/`, in a factory without `[kit]`. With `[kit]`, the kit may hold it, and `priory check` accepts it |

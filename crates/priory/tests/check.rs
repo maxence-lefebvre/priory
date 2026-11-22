@@ -234,7 +234,7 @@ fn a_codex_agent_passes_and_its_claude_only_permissions_are_refused_with_their_l
 }
 
 #[test]
-fn compact_at_takes_a_positive_token_count_on_a_claude_agent_only() {
+fn compact_at_takes_a_positive_token_count_on_a_claude_or_codex_agent() {
     let agent = |harness: &str, compact_at: &str| {
         format!(
             "+++\ndescription = \"Leads.\"\nharness = \"{harness}\"\ncompactAt = {compact_at}\n+++\n"
@@ -269,11 +269,7 @@ fn compact_at_takes_a_positive_token_count_on_a_claude_agent_only() {
         "compact-at-codex",
         &with("agents/implementer/agent.md", &agent("codex", "150000")),
     ));
-    assert_eq!(outcome.code, 1);
-    assert_eq!(
-        outcome.stderr,
-        "agents/implementer/agent.md:4: a codex agent cannot take `compactAt`: Priory reads no Codex tokens, so it never knows the context size\n"
-    );
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
 }
 
 #[test]
@@ -314,7 +310,7 @@ fn idle_compact_at_and_on_change_need_a_shared_claude_agent() {
             "codex",
             "shared",
             "idleCompactAt = 60000",
-            "agents/implementer/agent.md:5: a codex agent cannot take `idleCompactAt`: Priory reads no Codex tokens, so it never knows the context size\n",
+            "agents/implementer/agent.md:5: a codex agent cannot take `idleCompactAt`: a resumed Codex session sends no `SessionStart` before its first prompt, so Priory never knows when to type `/compact`\n",
         ),
     ] {
         let outcome = check(&factory(
@@ -1478,6 +1474,31 @@ fn preempt_names_bands_the_factory_has_above_its_last() {
     assert_eq!(
         last.stderr,
         "factory.toml:3: `preempt` names band `later`, the last band, which has no band below it\n"
+    );
+}
+
+#[test]
+fn queue_age_takes_a_duration() {
+    let good = "name = \"demo\"\n\n[queue]\nage = \"24h\"\n";
+    let ok = check(&factory("age-ok", &with("factory.toml", good)));
+    let day = good.replace("\"24h\"", "\"1 day\"");
+    let day = check(&factory("age-day", &with("factory.toml", &day)));
+    let zero = good.replace("\"24h\"", "\"0h\"");
+    let zero = check(&factory("age-zero", &with("factory.toml", &zero)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(day.code, 1);
+    assert!(
+        day.stderr
+            .starts_with("factory.toml:4:7: \"1 day\" is not a duration such as 90s, 15m or 2h"),
+        "{}",
+        day.stderr
+    );
+    assert_eq!(zero.code, 1);
+    assert!(
+        zero.stderr.contains("\"0h\" is not a duration such as"),
+        "{}",
+        zero.stderr
     );
 }
 
@@ -3536,7 +3557,7 @@ fn a_symlink_out_of_the_factory_is_refused_as_a_pre_script() {
 }
 
 #[test]
-fn a_budget_needs_a_claude_agent_a_price_table_and_an_amount_above_zero() {
+fn a_budget_needs_a_price_table_and_an_amount_above_zero_on_either_harness() {
     let budgeted = WORKFLOW.replace(
         "prompt = \"Implement the issue.\"",
         "prompt = \"Implement the issue.\"\nbudget = \"1.00\"",
@@ -3573,12 +3594,8 @@ fn a_budget_needs_a_claude_agent_a_price_table_and_an_amount_above_zero() {
     files.retain(|(path, _)| *path != "agents/implementer/agent.md");
     files.push(("agents/implementer/agent.md", codex));
     files.push(("prices.toml", prices));
-    let refused = check(&factory("budget-codex", &files));
-    assert_eq!(refused.code, 1);
-    assert_eq!(
-        refused.stderr,
-        "workflows/implement.toml:4: step `implement`: `budget` needs a Claude Code agent: Priory reads no Codex tokens\n"
-    );
+    let codex = check(&factory("budget-codex", &files));
+    assert_eq!((codex.code, codex.stderr.as_str()), (0, ""));
 }
 
 #[test]
@@ -3860,7 +3877,7 @@ fn a_spend_cap_needs_a_price_table() {
 }
 
 #[test]
-fn a_spend_cap_warns_for_an_agent_whose_model_has_no_price_or_that_runs_codex() {
+fn a_spend_cap_warns_for_an_agent_whose_model_has_no_price_on_either_harness() {
     let capped = format!("{FACTORY}\n\n[caps]\nday = 50.0\n");
     let unpriced = AGENT.replace("session = ", "model = \"claude-opus-5-5\"\nsession = ");
     let mut files = with("factory.toml", &capped);
@@ -3890,14 +3907,33 @@ fn a_spend_cap_warns_for_an_agent_whose_model_has_no_price_or_that_runs_codex() 
     files.retain(|(path, _)| *path != "agents/implementer/agent.md");
     files.push(("agents/implementer/agent.md", codex));
     files.push(("prices.toml", PRICES));
-    let warned = check(&factory("caps-codex", &files));
-    assert_eq!(
-        (warned.code, warned.stderr.as_str()),
-        (
-            0,
-            "warning: agents/implementer/agent.md:3: the spend caps count nothing for agent `implementer`: Priory reads no Codex tokens\n"
-        )
-    );
+    let quiet = check(&factory("caps-codex", &files));
+    assert_eq!((quiet.code, quiet.stderr.as_str()), (0, ""));
+
+    // Codex names the model it was given, so a Claude alias is no exception there.
+    for (name, model) in [
+        ("caps-codex-unpriced", "gpt-6-astra"),
+        ("caps-codex-alias", "sonnet"),
+    ] {
+        let agent = format!(
+            "+++\ndescription = \"Implements one task.\"\nharness = \"codex\"\nmodel = \"{model}\"\n+++\nMake the change.\n"
+        );
+        let mut files = with("factory.toml", &capped);
+        files.retain(|(path, _)| *path != "agents/implementer/agent.md");
+        files.push(("agents/implementer/agent.md", &agent));
+        files.push(("prices.toml", PRICES));
+        let warned = check(&factory(name, &files));
+        assert_eq!(
+            (warned.code, warned.stderr),
+            (
+                0,
+                format!(
+                    "warning: agents/implementer/agent.md:4: the spend caps count nothing for agent `implementer`: prices.toml has no price for its model `{model}`\n"
+                )
+            ),
+            "{name}"
+        );
+    }
 }
 
 /// `WORKFLOW` with `record = <path>` on its model step.
@@ -4175,6 +4211,48 @@ fn a_lead_cannot_be_an_investigator() {
 }
 
 #[test]
+fn a_pre_review_names_a_judge_and_a_lesson_names_an_approval_step() {
+    let judge = critic_files("diff");
+    let mut files = with("factory.toml", "name = \"demo\"\npre_review = \"critic\"\n");
+    files.extend(judge.iter().map(|(path, text)| (*path, text.as_str())));
+    files.push((
+        "memories/lesson-tests.md",
+        "---\nname: lesson-tests\ndescription: What a person rejected before.\nstep: implement/approve-pr\n---\nEvery pull request needs a test.\n",
+    ));
+
+    let outcome = check(&factory("pre-review-valid", &files));
+
+    assert_eq!(outcome.stderr, "");
+    assert_eq!(outcome.code, 0);
+}
+
+#[test]
+fn a_pre_review_that_is_no_judge_and_a_lesson_on_no_approval_step_are_refused() {
+    let mut files = with("factory.toml", "name = \"demo\"\npre_review = \"passed\"\n");
+    files.extend_from_slice(&[
+        ("scorers/passed.toml", PASSED),
+        (
+            "memories/lesson-tests.md",
+            "---\nname: lesson-tests\ndescription: What a person rejected before.\nstep: implement/implement\n---\nEvery pull request needs a test.\n",
+        ),
+        (
+            "memories/lesson-gone.md",
+            "---\nname: lesson-gone\ndescription: What a person rejected before.\nstep: approve-pr\n---\nNo workflow.\n",
+        ),
+    ]);
+
+    let outcome = check(&factory("pre-review-refused", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "factory.toml:2: the pre-review `passed` is of kind outcome: a pre-review is a judge, which reads the lessons\n\
+         memories/lesson-gone.md:4: `step` is `approve-pr`: a lesson names `<workflow>/<step>`, a human step with `approves`\n\
+         memories/lesson-tests.md:4: `step` is `implement/implement`: a lesson names `<workflow>/<step>`, a human step with `approves`\n"
+    );
+}
+
+#[test]
 fn a_trigger_with_an_intent_and_noop_cases_passes() {
     let trigger = format!(
         "{TRIGGER}intent = \"Fix each labeled bug with a reviewed pull request.\"\nnoop = [\"The issue is a question, not a bug.\", \"A pull request already fixes it.\"]\n"
@@ -4270,5 +4348,18 @@ fn an_intent_scorer_reads_results_with_a_decision_model_in_the_factory_folder() 
          scorers/b.toml:5: `key_env` names the environment variable that holds the model's key, such as TYPESAFE_API_KEY, never the key itself\n\
          scorers/b.toml:4: `run` names scripts/gone, which is missing from the factory folder\n\
          scorers/c.toml:5: `key_env` is for kind `intent`, not `outcome`\n"
+    );
+}
+
+#[test]
+fn a_factory_folder_that_does_not_exist_is_named() {
+    let dir = factory("no-such-folder", &[]).join("exampel");
+
+    let outcome = check(&dir);
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        format!("{}: missing: no such folder\n", dir.display())
     );
 }

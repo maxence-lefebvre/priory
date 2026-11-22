@@ -189,6 +189,106 @@ export function spansHtml(spans) {
   return lines.map((line) => `<p>${line}</p>`).join("");
 }
 
+// DESIGN.md's Markdown subset, as crates/priory-core/web/markdown.js parses it, drawn as the HTML Herdr's
+// TextView takes: no <br>, no class, and a check list's box as a character.
+const LISTS = [{ tag: "ul", item: /^\s*[-*+]\s+(.*)$/s }, { tag: "ol", item: /^\s*\d+[.)]\s+(.*)$/s }];
+const BOX = /^\[([ xX])\]\s+(.*)$/s;
+const FENCE = /^\s*```/;
+const HEADING = /^ {0,3}(#{1,6})[ \t]+(.*)$/s;
+// A heading's closing hashes, scanned by hand: a regex for them backtracks on long trailing space.
+const unclosed = (/** @type {string} */ text) => {
+  const trimmed = text.trimEnd();
+  let end = trimmed.length;
+  while (end && trimmed[end - 1] === "#") end -= 1;
+  return end < trimmed.length && /\s/.test(trimmed[end - 1] ?? "") ? trimmed.slice(0, end).trimEnd() : trimmed;
+};
+const URL_PART = String.raw`https:\/\/(?:[^\s()]|\([^\s()]*\))+`;
+// A label holds no `[`, so unmatched brackets scan in linear time. Each bold token is atomic: a whole
+// code span or link when one forms, else one character.
+const INLINE = new RegExp(
+  String.raw`\x60(?<code>[^\x60]+)\x60|\*\*(?<bold>(?:(?=(?<token>\x60[^\x60]+\x60|\[[^[\]]*\]\(${URL_PART}\)|[^*]))\k<token>)+)\*\*|(?<image>!?)\[(?<label>[^[\]]*)\]\((?<url>${URL_PART})\)`,
+  "g",
+);
+const startsBlock = (/** @type {string} */ line) => FENCE.test(line) || HEADING.test(line) || LISTS.some(({ item }) => item.test(line));
+
+/**
+ * Splits Markdown into blocks: `{ tag, lines }`, where `tag` is "p", "h3" to "h5", "ul", "ol" or
+ * "pre", and `lines` holds a paragraph's lines, a heading, a list's items or a code block's lines.
+ * @param {string} text
+ */
+function blocks(text) {
+  const lines = String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
+  /** @type {{ tag: string, lines: string[] }[]} */
+  const out = [];
+  for (let at = 0; at < lines.length;) {
+    const line = lines[at];
+    if (!line.trim()) {
+      at += 1;
+      continue;
+    }
+    if (FENCE.test(line)) {
+      const code = [];
+      for (at += 1; at < lines.length && !FENCE.test(lines[at]); at += 1) code.push(lines[at]);
+      out.push({ tag: "pre", lines: code });
+      at += 1;
+      continue;
+    }
+    const heading = line.match(HEADING);
+    if (heading) {
+      out.push({ tag: `h${Math.min(heading[1].length, 3) + 2}`, lines: [unclosed(heading[2])] });
+      at += 1;
+      continue;
+    }
+    const list = LISTS.find(({ item }) => item.test(line));
+    const para = [];
+    if (list) {
+      for (; at < lines.length && list.item.test(lines[at]); at += 1) para.push(/** @type {RegExpMatchArray} */ (lines[at].match(list.item))[1]);
+      const boxes = para.map((item) => item.match(BOX));
+      const checks = list.tag === "ul" && boxes.every(Boolean);
+      out.push({ tag: list.tag, lines: checks ? boxes.map((box) => `${box?.[1] === " " ? "☐" : "☑"} ${box?.[2]}`) : para });
+      continue;
+    }
+    for (; at < lines.length && lines[at].trim() && !startsBlock(lines[at]); at += 1) para.push(lines[at]);
+    out.push({ tag: "p", lines: para });
+  }
+  return out;
+}
+
+/**
+ * Markdown as HTML for Herdr's `TextView.html`: DESIGN.md's subset, every other character escaped, with
+ * the factory's autolinks. A link or image whose target is not `https:` shows as its source; an image
+ * shows its alt text and loads nothing.
+ * @param {string} text @param {{ pattern: string, url: string }[]} links @param {string | null} repo
+ */
+export function markdownHtml(text, links, repo) {
+  const plain = (/** @type {string} */ part) => spansHtml(autolink(part, links, repo)).slice(3, -4);
+  const inline = (/** @type {string} */ line) => {
+    let html = "";
+    let at = 0;
+    for (const match of line.matchAll(INLINE)) {
+      const { code, bold, image, label, url } = /** @type {Record<string, string>} */ (match.groups);
+      html += plain(line.slice(at, match.index));
+      if (code) html += `<code>${escapeHtml(code)}</code>`;
+      else if (bold) html += `<strong>${inline(bold)}</strong>`;
+      else html += image ? escapeHtml(label) : `<a href="${escapeHtml(url)}">${escapeHtml(label)}</a>`;
+      at = match.index + match[0].length;
+    }
+    return html + plain(line.slice(at));
+  };
+  return blocks(text).map(({ tag, lines }) => {
+    if (tag === "pre") return `<pre><code>${escapeHtml(lines.join("\n"))}</code></pre>`;
+    if (tag === "p") return lines.map((line) => `<p>${inline(line)}</p>`).join("");
+    if (tag === "ul" || tag === "ol") return `<${tag}>${lines.map((item) => `<li>${inline(item)}</li>`).join("")}</${tag}>`;
+    return `<${tag}>${inline(lines[0])}</${tag}>`;
+  }).join("");
+}
+
+/** The words Markdown shows, on one line, for a label that cannot hold its links. @param {string} text */
+export function markdownText(text) {
+  const inline = (/** @type {string} */ line) => line.replace(INLINE, (_match, code, bold, _token, _image, label) => code ?? (bold ? inline(bold) : label));
+  return blocks(text).flatMap(({ tag, lines }) => (tag === "pre" ? lines : lines.map(inline))).join(" ");
+}
+
 /** A count and its noun: "1 task", "2 tasks"; `many` covers irregular plurals. @param {number} count @param {string} one @param {string} [many] */
 export const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 

@@ -2,7 +2,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Input, InputState, Popover } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
 import { follow, priory } from "./priory.js";
-import { selectable } from "./ui.js";
+import { selectable, stateTile } from "./ui.js";
 import { addChoices } from "./add.js";
 import { AddForm } from "./add-form.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
@@ -10,13 +10,13 @@ import { moveTargets, queueList, reorder, upNext } from "./view.js";
 
 // The --pane-* tokens of design/tokens/structure.css, and the type and radii this panel uses.
 const PANE = { split: 720, head: 44, chip: 28, row: 52, tile: 24, control: 32, grip: 20 };
-const RADIUS = { sm: 5, tile: 8, md: 12, card: 14 };
+const RADIUS = { sm: S["radius-sm"], md: S["radius-md"] };
 // Size and line height; gpui-kit reads a bare line height as a multiplier, so heights are lengths.
 /** @type {Record<"title" | "body" | "small" | "caption", [number, `${number}px`]>} */
 const TYPE = { title: [18, "24px"], body: [14, "20px"], small: [13, "18px"], caption: [12, "16px"] };
 const RETRY_MS = 3000;
 const ICON = (/** @type {string} */ name) => `mods/priory-queue/icons/${name}.svg`;
-/** A state's tile: its role's fill and its icon (DESIGN.md, State tile). A running tile holds a live dot. */
+/** A state's tile: its role and its icon (DESIGN.md, State tile). A running tile holds a live dot. */
 /** @type {Record<string, [string, string]>} */
 const TILES = {
   queued: ["tile-muted", "circle-dashed"],
@@ -54,7 +54,7 @@ async function connect() {
   const client = priory({ exec, binary, on, factory: config.factory ?? null });
   // Links are optional: without a factory priory can read, the panel shows its text unlinked.
   const links = await client.links().then((read) => read.links, () => []);
-  return { theme: config.theme ?? "indigo", client, links };
+  return { theme: config.theme ?? "graphite", client, links };
 }
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
@@ -108,7 +108,7 @@ export default class PrioryQueue extends View {
       [this.view, this.facets, this.addedKey] = ["next", {}, key];
     });
     this.focus = cx.focus_handle();
-    this.font = FONTS.indigo;
+    this.font = FONTS.graphite;
     this.refresh(cx);
   }
 
@@ -129,6 +129,7 @@ export default class PrioryQueue extends View {
       wait: (since) => client.wait(since),
       sleep: (ms) => cx.sleep(ms),
       failed: (error) => {
+        this.theme = this.priory?.theme ?? this.theme;
         this.priory = null;
         this.error = message(error);
         cx.notify();
@@ -275,9 +276,10 @@ export default class PrioryQueue extends View {
   render(cx) {
     // Each action sends the revision of the read on screen, so priory refuses it once the queue changed.
     this.drawn = this.data?.revision ?? null;
-    const theme = this.priory?.theme ?? "indigo";
+    // The last theme read stays while Priory is unreachable.
+    const theme = (this.theme = this.priory?.theme ?? this.theme ?? "graphite");
     const t = /** @type {Palette} */ (palette(theme, cx.theme().appearance));
-    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.indigo;
+    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.graphite;
     const now = Date.now();
     const list = this.list(now);
     const row = this.selectedRow();
@@ -366,7 +368,7 @@ export default class PrioryQueue extends View {
     return v_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).border_b(1).border_color(t.line)
       .child(h_flex().gap(S["space-2"]).flex_wrap().children(list.views.map((view) => {
         const on = this.view === view.id;
-        return Button.new(`view-${view.id}`).h(PANE.chip).px(S["space-3"]).flex().flex_none().items_center().gap(S["space-1"]).rounded(999)
+        return Button.new(`view-${view.id}`).h(PANE.chip).px(S["space-3"]).flex().flex_none().items_center().gap(S["space-1"]).rounded(RADIUS.md)
           .selected(on).text_size(TYPE.small[0]).font_weight(on ? 600 : 500).bg(on ? t.emph : t.surface).text_color(on ? t["on-emph"] : t.text)
           .hover((s) => s.opacity(0.88)).focus((s) => s.border(2).border_color(t["action-text"]))
           .on_click((_event, cx) => { this.view = view.id; this.refilter(cx); })
@@ -429,7 +431,7 @@ export default class PrioryQueue extends View {
     // A schedule that wakes an asleep task names a task the queue does not list.
     const all = queueList(this.data, { view: "all", now }).sections.flatMap((section) => section.rows);
     const listed = (/** @type {number | null} */ task) => all.some((row) => row.id === task);
-    return v_flex().mx(16).mt(12).p(S["space-1"]).rounded(RADIUS.md).border(1).border_color(t.line).bg(t.surface)
+    return v_flex().mx(16).mt(12).p(S["space-1"]).rounded(S["radius-card"]).border(1).border_color(t.line).bg(t.surface)
       .child(h_flex().px(S["space-2"]).py(S["space-1"]).gap(S["space-2"]).items_center().text_size(TYPE.caption[0])
         .child(svg(ICON("calendar-clock")).size(14).text_color(t["text-2"]))
         .child(div().font_weight(600).child("Up next")).child(div().text_color(t["text-3"]).child("the next 3 runs")))
@@ -502,10 +504,8 @@ export default class PrioryQueue extends View {
 
   /** @param {string} state @param {Palette} t */
   tile(state, t) {
-    const [fill, icon] = TILES[state] ?? ["tile-muted", "circle-help"];
-    return h_flex().size(PANE.tile).flex_none().items_center().justify_center().rounded(RADIUS.tile).bg(t[fill])
-      .accessibility_label(state)
-      .child(icon ? svg(ICON(icon)).size(14).text_color(t["on-tile"]) : div().size(8).rounded(999).bg(t["on-tile-live"]));
+    const [role, icon] = TILES[state] ?? ["tile-muted", "circle-help"];
+    return stateTile(state, icon ? ICON(icon) : null, role, t);
   }
 
   /** What an opened row shows: why it waits, and the person's actions. @param {Row} row @param {Palette} t @param {boolean} wide */
@@ -534,7 +534,7 @@ export default class PrioryQueue extends View {
     const off = this.acting || Boolean(this.error);
     /** @param {string} id @param {string} icon @param {string} label @param {(cx: import("gpui-kit").Context) => void} action */
     const button = (id, icon, label, action) => Button.new(`${id}-${row.id}`).h(PANE.control).px(S["space-3"]).flex().flex_none().items_center().gap(S["space-2"])
-      .rounded(RADIUS.card).border(1).border_color(t["control-line"]).bg(this.popover === id ? t.raised : t.surface).text_color(t.text)
+      .rounded(RADIUS.md).border(1).border_color(t["control-line"]).bg(this.popover === id ? t.raised : t.surface).text_color(t.text)
       .text_size(TYPE.small[0]).font_weight(600).disabled(off).opacity(off ? 0.5 : 1).hover((s) => s.bg(t.raised))
       .focus((s) => s.border(2).border_color(t["action-text"])).on_click((_event, cx) => action(cx))
       .when(Boolean(icon), (el) => el.child(svg(ICON(icon)).size(14))).child(label);
@@ -569,7 +569,7 @@ export default class PrioryQueue extends View {
       }))
       .when(waiting || row.tile === "held" || row.tile === "running", (el) => el.child(popover("cancel", "x", "Cancel…", v_flex().w(260).p(S["space-3"]).gap(S["space-2"]).rounded(RADIUS.md).bg(t.surface).border(1).border_color(t["control-line"])
         .child(div().whitespace_normal().text_size(TYPE.small[0]).child(`Cancel ${row.key}? Its run stops and the task ends as dropped.`))
-        .child(Button.new(`cancel-confirm-${task}`).h(PANE.control).px(S["space-3"]).flex().items_center().rounded(RADIUS.card).bg(t["tile-danger"]).text_color(t["on-tile"])
+        .child(Button.new(`cancel-confirm-${task}`).h(PANE.control).px(S["space-3"]).flex().items_center().rounded(RADIUS.md).bg(t["tile-danger"]).text_color(t["on-tile"])
           .font_weight(600).focus((s) => s.border(2).border_color(t["action-text"]))
           .on_click((_event, cx) => this.act(task, "Cancel", (client, revision) => client.cancel(task, revision), cx)).child(`Cancel ${row.key}`)))));
   }

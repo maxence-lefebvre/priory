@@ -436,6 +436,8 @@ until its run starts.
   run of a lower band at its turn end, when its task waits for that run's room. M1 With
   `[queue] fair = "lane"`, the tasks of a band that no person ordered take turns between lanes. A
   lane or a trigger can set `max_running`, past which its new runs wait. M1
+  With `[queue] age`, a task that waits moves up one band in start order for each `age`, up to the
+  highest band not in `[queue] preempt`, and never stops a run. M1
   With `[queue] review_limit`, a lane's or a batch's new tasks wait to start while that many of its
   pull requests wait for a person, and the desk says so. M1
 - R4.5 A person can move a task to another band or position, from the CLI or a view. M1
@@ -576,6 +578,10 @@ Priory serves these as MCP tools.
   at one step for the same reason. Its count grows as new tasks match, the desk shows it, and a
   person closes or dismisses it or captures its tasks as benchmark cases, so a factory change can
   be compared on the failures it means to end. M4
+- R10.9 A person's rejection of an approval, with why, becomes a lesson for that step, which other
+  tasks get once a person accepts it. A pre-review judge reads the step's lessons before the step
+  asks a person, and sends a result that repeats one back to the agent once. It never approves
+  anything. M4
 
 ### R11. Sharing between machines
 

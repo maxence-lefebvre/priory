@@ -229,11 +229,13 @@ while :; do
   tokens() {
     if [ -n "${FAKE_CODEX_MODEL-}" ]; then
       # Codex counts cached input inside input_tokens.
-      [ -e "$FAKE_DIR/no-transcript" ] || jq -nc --argjson n "$turn" --arg model "$FAKE_CODEX_MODEL" \
+      # A context line makes the call's whole input that size, as for Claude.
+      [ -e "$FAKE_DIR/no-transcript" ] || jq -nc --argjson n "$turn" --arg model "$FAKE_CODEX_MODEL" --arg context "$context" \
         '{type: "turn_context", payload: {model: $model}},
          {type: "event_msg", payload: {type: "token_count", info: {
            total_token_usage: {input_tokens: (2000 + $n), cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: (2000 + $n)},
-           last_token_usage: {input_tokens: (300 + $n), cached_input_tokens: 100, output_tokens: (20 + $n), reasoning_output_tokens: 0, total_tokens: (320 + 2 * $n)}}}}' \
+           last_token_usage: (if $context == "" then {input_tokens: (300 + $n), cached_input_tokens: 100, output_tokens: (20 + $n), reasoning_output_tokens: 0, total_tokens: (320 + 2 * $n)}
+             else {input_tokens: ($context | tonumber), cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: ($context | tonumber)} end)}}}' \
         >> "$transcript_file"
     else
       [ -e "$FAKE_DIR/no-transcript" ] || printf '%s\n%s\n' "$message" "$message" >> "$FAKE_DIR/transcript.jsonl"

@@ -39,6 +39,13 @@
         }
       ],
       "description": "Globs relative to the repository root, such as `src/**/*.rs`: a run that reads, edits or\ncreates a matching file gets the memory's file in its context, once per run."
+    },
+    "step": {
+      "description": "The approval step the memory is a lesson for, as `<workflow>/<step>`: a human step with\n`approves`. The factory's pre-review reads its lessons before that step asks a person.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [
