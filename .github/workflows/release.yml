@@ -104,13 +104,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Pack the Herdr adapter and the GitHub extension
+      - name: Pack the Herdr adapter, the GitHub extension and the Claude Code plugin
         run: |
           mkdir dist
           tar -czf dist/priory-herdr.tar.gz -C adapters --exclude=herdr/test herdr
+          tar -czf dist/priory-claude-plugin.tar.gz -C adapters --exclude=claude-plugin/test claude-plugin
           (cd adapters/github && zip -qr ../../dist/priory-github-extension.zip . -x 'test/*' package.json)
           cd dist
-          for asset in priory-herdr.tar.gz priory-github-extension.zip; do
+          for asset in priory-herdr.tar.gz priory-github-extension.zip priory-claude-plugin.tar.gz; do
             sha256sum "$asset" > "$asset.sha256"
           done
           cat ./*.sha256

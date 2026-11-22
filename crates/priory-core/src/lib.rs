@@ -26,6 +26,7 @@ pub mod memory;
 mod model;
 mod notify;
 mod otlp;
+pub mod outside;
 mod overlap;
 pub mod pending;
 pub mod post;

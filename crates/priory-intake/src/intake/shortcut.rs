@@ -289,6 +289,7 @@ fn submit(factory: &Factory, payload: &Value, ended: Ended) -> String {
         repo: value("repo"),
         relates: Vec::new(),
         intervention: None,
+        session: None,
     };
     let key = format!("slack:{channel}:{thread}");
     let ended = match ended(&key) {

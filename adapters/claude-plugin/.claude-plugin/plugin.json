@@ -1,0 +1,6 @@
+{
+  "name": "priory",
+  "description": "Read the Priory desk, ask the person a question that outlives the session, and add a task, from your own Claude Code session.",
+  "license": "MIT",
+  "homepage": "https://github.com/maxence-lefebvre/priory"
+}

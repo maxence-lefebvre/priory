@@ -77,9 +77,16 @@ class Chapters(unittest.TestCase):
         }
         self.assertEqual(on_disk - set(listed), set())
 
-    def test_the_adapters_group_lists_herdr_then_github(self):
+    def test_the_adapters_group_lists_herdr_then_github_then_the_claude_plugin(self):
         adapters = dict(build.chapters())["Adapters"]
-        self.assertEqual(adapters, ["docs/adapters/herdr.md", "docs/adapters/github.md"])
+        self.assertEqual(
+            adapters,
+            [
+                "docs/adapters/herdr.md",
+                "docs/adapters/github.md",
+                "docs/adapters/claude-plugin.md",
+            ],
+        )
 
     def test_the_split_pages_sit_in_their_diataxis_groups(self):
         groups = dict(build.chapters())

@@ -558,7 +558,8 @@ the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
 (when the task last changed state), `grade` (`red`, `yellow`, `green` or null), `grade_reason`,
 `progress`, `conditions`, a held task's [conditions](#conditions) or null, `title` (its TL;DR, else
 the first line of its request, cut to 120 characters), `batch` (the id of the batch it is an entry
-or the planning task of, or null), `stack` and `relations`. See Grades in [tools.md](tools.md#grades).
+or the planning task of, or null), `added_by` (the outside session that added it through
+[`priory mcp --outside`](../daemon/tools.md#the-outside-server), or null), `stack` and `relations`. See Grades in [tools.md](tools.md#grades).
 
 In a factory of several runners, each task also has `runner`, this runner's name, `hold`, the
 hold this runner last published for it (`waiting`, `kept`, `ended`, or null before its first claim),

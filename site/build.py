@@ -32,6 +32,7 @@ GROUPS = [
         "docs/evaluating-a-prompt.md",
         "docs/setting-up-a-nightly-dream.md",
         "docs/filtering-and-enriching-events.md",
+        "docs/using-priory-from-your-own-session.md",
     ]),
     ("Reference", "docs/reference", ["docs/reference/README.md", "docs/reference/cli.md"]),
     ("How it works", "docs/daemon", [
@@ -40,7 +41,11 @@ GROUPS = [
         "docs/daemon/README.md",
     ]),
     ("The intake", "docs/intake", ["docs/intake/README.md"]),
-    ("Adapters", "docs/adapters", ["docs/adapters/herdr.md", "docs/adapters/github.md"]),
+    ("Adapters", "docs/adapters", [
+        "docs/adapters/herdr.md",
+        "docs/adapters/github.md",
+        "docs/adapters/claude-plugin.md",
+    ]),
     ("Decisions", None, ["docs/prd.md"]),
     ("Architecture decisions", "docs/adr", []),
     ("Design notes", "docs/design", []),

@@ -803,6 +803,7 @@ enum Input {
     Label(crate::label::Line),
     Deliver(deliver::Line),
     Add(AddLine),
+    Outside(crate::outside::Line),
     Signal(Signal),
     Call(Call),
     Answer(Answer),
@@ -1027,6 +1028,17 @@ fn take(
         )),
         Ok(Input::Deliver(line)) => Ok((replied(deliver::act(db, &line)?), None)),
         Ok(Input::Add(line)) => Ok((replied(add(db, &line.add, trace, counter)?), None)),
+        Ok(Input::Outside(line)) => {
+            let call = &line.outside;
+            let reply = match call.tool.as_str() {
+                "add" => match crate::outside::request(call) {
+                    Ok(request) => add(db, &request, trace, counter)?,
+                    Err(refused) => Err(refused),
+                },
+                _ => crate::outside::apply(db, call, trace.factory, &runtime::home())?,
+            };
+            Ok((replied(reply), None))
+        }
         Ok(Input::Signal(signal)) => Ok((
             "ok".to_owned(),
             state::signal(db, &signal, trace, &watched)?,

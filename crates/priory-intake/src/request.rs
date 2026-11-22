@@ -69,6 +69,9 @@ pub struct Request {
     /// A planning task's batch: its issues and its entries' workflow.
     #[serde(skip)]
     batch: Option<crate::events::BatchRequest>,
+    /// The outside session that added the task.
+    #[serde(skip)]
+    session: Option<String>,
 }
 
 pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
@@ -144,6 +147,7 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
         intervention: intervention_of(intervention)?,
         text,
         batch: None,
+        session: None,
     };
     Some((dir, request))
 }
@@ -184,6 +188,10 @@ pub struct Add {
     pub relates: Vec<Relation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intervention: Option<Intervention>,
+    /// The outside session that asked for the task through `priory mcp --outside`. Only the
+    /// daemon sets it, so neither a flag nor a request body can.
+    #[serde(skip)]
+    pub session: Option<String>,
 }
 
 pub fn parse_add(args: Vec<String>) -> Option<(PathBuf, Add)> {
@@ -222,6 +230,7 @@ pub fn parse_add(args: Vec<String>) -> Option<(PathBuf, Add)> {
         repo,
         relates,
         intervention: intervention_of(intervention)?,
+        session: None,
     };
     Some((dir, add))
 }
@@ -394,6 +403,7 @@ pub fn add_batch(factory: &Factory, batch: &Batch) -> Result<String, Refused> {
         repo: batch.repo.clone(),
         relates: Vec::new(),
         intervention: None,
+        session: None,
     };
     let mut request = quick(factory, &add, repo)?;
     request.batch = Some(crate::events::BatchRequest {
@@ -496,6 +506,7 @@ fn quick(factory: &Factory, add: &Add, repo: Option<String>) -> Result<Request, 
         intervention: add.intervention,
         text: add.text.clone(),
         batch: None,
+        session: add.session.clone(),
     };
     check(factory, &request)?;
     Ok(request)
@@ -701,6 +712,9 @@ fn task(request: &Request, key: &str, source: &Message) -> Message {
     }
     if let Some(batch) = &request.batch {
         data["batch"] = json!(batch);
+    }
+    if let Some(session) = &request.session {
+        data["session"] = json!(session);
     }
     Message::new(TASK_REQUESTED, data)
         .id(intake::id(&format!(

@@ -210,6 +210,7 @@ fn main() -> ExitCode {
             _ => usage(),
         },
         Some("mcp") => match (args.next(), args.next(), args.next()) {
+            (Some(flag), None, None) if flag == "--outside" => outside_mcp(),
             (Some(flag), Some(session), debate)
                 if flag == "--session"
                     && debate.as_ref().is_none_or(|debate| debate == "--debate")
@@ -240,8 +241,11 @@ fn main() -> ExitCode {
             _ => usage(),
         },
         Some("eval") => prompt_eval(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
-        Some("hook") => match (args.next(), args.next()) {
-            (Some(event), None) => hook(&event.to_string_lossy()),
+        Some("hook") => match (args.next(), args.next(), args.next()) {
+            (Some(event), None, None) => hook(&event.to_string_lossy()),
+            (Some(event), Some(flag), None) if event == "PreToolUse" && flag == "--outside" => {
+                outside_hook()
+            }
             _ => usage(),
         },
         _ => usage(),
@@ -250,7 +254,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory check [DIR] --repo PATH [--json]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory intake pre [DIR] TRIGGER < EVENT.json    runs the trigger's pre script on one event, publishes nothing\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory daemon --view-only [DIR]    mirrors every runner's asks and tasks and serves them, runs nothing\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen [DIR] (TASK | --run RUN) [--history N] [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory recap [--since <instant-or-duration>] [--max-bytes N]\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--by lane] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo|lane] [--json]\n       priory grades [--since <instant-or-duration>] [--by lane] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]\n       priory score [DIR] --calibrate SCORER --budget USD [--json]\n       priory calibrate triage [DIR] [--json]\n       priory bench capture [DIR] TASK --into FOLDER\n       priory bench replay [DIR] CASE --budget USD [--turn-timeout DURATION]\n       priory bench FILE --base REF --head REF --budget USD [--runs N] [--case NAME] [--turn-timeout DURATION] [--post OWNER/NAME#N]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY\n       priory say [--generation N] [DIR] RUNNER:KEY TEXT\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory memories [DIR] [--all] [--json]\n       priory memories (accept | drop) [DIR] CANDIDATE\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID [--debate]\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT"
+        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory check [DIR] --repo PATH [--json]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory intake pre [DIR] TRIGGER < EVENT.json    runs the trigger's pre script on one event, publishes nothing\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory daemon --view-only [DIR]    mirrors every runner's asks and tasks and serves them, runs nothing\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen [DIR] (TASK | --run RUN) [--history N] [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory recap [--since <instant-or-duration>] [--max-bytes N]\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--by lane] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo|lane] [--json]\n       priory grades [--since <instant-or-duration>] [--by lane] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]\n       priory score [DIR] --calibrate SCORER --budget USD [--json]\n       priory calibrate triage [DIR] [--json]\n       priory bench capture [DIR] TASK --into FOLDER\n       priory bench replay [DIR] CASE --budget USD [--turn-timeout DURATION]\n       priory bench FILE --base REF --head REF --budget USD [--runs N] [--case NAME] [--turn-timeout DURATION] [--post OWNER/NAME#N]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY\n       priory say [--generation N] [DIR] RUNNER:KEY TEXT\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory memories [DIR] [--all] [--json]\n       priory memories (accept | drop) [DIR] CANDIDATE\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID [--debate]\n       priory mcp --outside\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT\n       priory hook PreToolUse --outside"
     );
     ExitCode::from(2)
 }
@@ -3754,22 +3758,7 @@ fn guard(input: &Value) -> Option<String> {
         _ => Default::default(),
     };
     let tool = input["tool_name"].as_str().unwrap_or_default();
-    let command = match &input["tool_input"]["command"] {
-        Value::String(command) => Some(command.clone()),
-        Value::Array(words) => Some(
-            words
-                .iter()
-                .map(|word| {
-                    format!(
-                        "'{}'",
-                        word.as_str().unwrap_or_default().replace('\'', r"'\''")
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(" "),
-        ),
-        _ => None,
-    };
+    let command = shell_command(input);
     let cwd = input["cwd"].as_str().map(PathBuf::from);
     let git = |dir: Option<&str>, args: &[&str]| {
         let mut git = Command::new("git");
@@ -3821,6 +3810,81 @@ fn guard(input: &Value) -> Option<String> {
     }
     report_connector_use(tool);
     None
+}
+
+/// A shell tool's command in a hook's input: Claude's string, or Codex's words quoted for a shell.
+fn shell_command(input: &Value) -> Option<String> {
+    match &input["tool_input"]["command"] {
+        Value::String(command) => Some(command.clone()),
+        Value::Array(words) => Some(
+            words
+                .iter()
+                .map(|word| {
+                    format!(
+                        "'{}'",
+                        word.as_str().unwrap_or_default().replace('\'', r"'\''")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        _ => None,
+    }
+}
+
+/// Prints the `PreToolUse` hook's deny for `reason`.
+fn print_deny(reason: &str) {
+    let output = serde_json::json!({ "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": reason,
+    } });
+    println!("{output}");
+}
+
+/// The `PreToolUse` hook of a person's own session: it denies a verb only a person runs, since the
+/// model decided the call, and asks no daemon. It exits 0 with a deny, as a failed hook lets a call through.
+fn outside_hook() -> ExitCode {
+    let reason = match serde_json::from_reader::<_, Value>(std::io::stdin()) {
+        Err(error) => Some(format!(
+            "Priory's person guard could not read this call ({error}), so it denied it."
+        )),
+        Ok(input) => shell_command(&input)
+            .and_then(|command| priory_factory::guard::person(&command).into_iter().next())
+            .map(|hit| match hit.guard.as_str() {
+                priory_factory::guard::PERSON => format!(
+                    "Priory denied `{}`: only a person runs it, and a model decided this call. Tell the person, who can run it themselves: ! {}",
+                    hit.call, hit.call
+                ),
+                _ => format!(
+                    "Priory denied {}: the guard cannot read it, so it cannot tell whether it runs a verb only a person runs.",
+                    hit.call
+                ),
+            }),
+    };
+    if let Some(reason) = reason {
+        print_deny(&reason);
+    }
+    ExitCode::SUCCESS
+}
+
+/// `priory mcp --outside`: the MCP server of a session Priory did not start. A run has its own
+/// server, and the daemon's home and state name the factory it reaches.
+fn outside_mcp() -> ExitCode {
+    if std::env::var_os("PRIORY_SESSION").is_some() {
+        eprintln!(
+            "priory mcp --outside: this shell is a run's (PRIORY_SESSION is set), and a run has its own server"
+        );
+        return ExitCode::from(2);
+    }
+    let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    if !set("PRIORY_HOME") || !set("PRIORY_DB") {
+        eprintln!(
+            "priory mcp --outside: set PRIORY_HOME and PRIORY_DB to the daemon's, so the server reaches its factory"
+        );
+        return ExitCode::from(2);
+    }
+    exit("mcp", mcp::serve_outside(asking_session().as_deref()))
 }
 
 /// How long the hook waits for the daemon to say which matching files a run has not got yet.
@@ -3985,12 +4049,7 @@ fn hook(event: &str) -> ExitCode {
             (Some(reason), None)
         });
         if let Some(reason) = denied {
-            let output = serde_json::json!({ "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            } });
-            println!("{output}");
+            print_deny(&reason);
         } else if let Some(context) = input.and_then(|input| {
             // Best effort: a lookup that fails or hangs adds nothing and never holds the call.
             let (sender, receiver) = std::sync::mpsc::channel();

@@ -66,8 +66,8 @@ AGENTS.md](AGENTS.md#verify) and fix every failure. CI runs the same checks on e
 ## Releases
 
 A pushed `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml). It builds
-`priory` for Linux x86_64 and aarch64 (static, musl) and macOS arm64, packs the Herdr adapter and
-the GitHub extension, and publishes them with a `.sha256` beside each as a GitHub Release. It
+`priory` for Linux x86_64 and aarch64 (static, musl) and macOS arm64, packs the Herdr adapter,
+the GitHub extension and the Claude Code plugin, and publishes them with a `.sha256` beside each as a GitHub Release. It
 attests the build provenance of each asset, which `install.sh` checks with `gh attestation verify`
 when gh is signed in. The workflow refuses a tag that differs from the workspace version or that
 points at a commit not on `main`. A version with a pre-release part, such as `0.2.0-rc1`, publishes

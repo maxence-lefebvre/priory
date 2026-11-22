@@ -138,9 +138,11 @@ as a website, with search, built from `main`.
   eleven similar products and says what Priory lacks.
   [docs/daemon/](docs/daemon/README.md) explains how the daemon runs tasks, and
   [docs/intake/](docs/intake/README.md) how each source becomes events, one file per topic.
-- Adapters: [docs/adapters/herdr.md](docs/adapters/herdr.md), Priory's panels as Herdr mods, and
+- Adapters: [docs/adapters/herdr.md](docs/adapters/herdr.md), Priory's panels as Herdr mods.
   [docs/adapters/github.md](docs/adapters/github.md), Priory on a pull request's page: its
   task, its asks and a review guide.
+  [docs/adapters/claude-plugin.md](docs/adapters/claude-plugin.md), the Claude Code plugin that lets
+  your own session read the desk, ask you a question and add a task.
 - Project: [docs/prd.md](docs/prd.md) says what Priory does and in which milestone.
   [CONTRIBUTING.md](CONTRIBUTING.md) says how to change Priory, and [DESIGN.md](DESIGN.md) holds
   the design system of the web view.

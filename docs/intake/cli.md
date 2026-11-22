@@ -149,7 +149,7 @@ The fields and examples are in [events.md](../reference/events.md#priorytaskrequ
 | Message | Data |
 | ------- | ---- |
 | `priory.task.requested.cli` | `text`, `person` (`$USER`, or null), `time` and `repo` |
-| `factory.task.requested` | `trigger` `cli`, `source` this event's id, the same key, and `band`, `lane` and `repo` from the flags, null when absent, and `intervention` when a flag sets it |
+| `factory.task.requested` | `trigger` `cli`, `source` this event's id, the same key, and `band`, `lane` and `repo` from the flags, null when absent, and `intervention` when a flag sets it. The daemon adds `session` for a task that the `add` tool of [`priory mcp --outside`](../daemon/tools.md#the-outside-server) asked for |
 
 The type has no `github.` prefix because no GitHub event produced it. It ends in `.cli` because a
 later source, such as Linear, adds its own `priory.task.requested.<source>`. It is a request, not a
