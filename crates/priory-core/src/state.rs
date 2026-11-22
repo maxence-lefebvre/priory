@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 103;
+const VERSION: i64 = 104;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1865,6 +1865,17 @@ ALTER TABLE gates ADD COLUMN lessons TEXT;
 PRAGMA user_version = 103;
 ";
 
+// `[queue] age`: how many seconds a task waits in the queue for each band it moves up in start
+// order, and the rank of the highest band it can reach. No row when the factory sets no age.
+const SCHEMA_104: &str = "
+CREATE TABLE IF NOT EXISTS aging (
+  id    INTEGER PRIMARY KEY CHECK (id = 1),
+  every INTEGER NOT NULL CHECK (every > 0),
+  top   INTEGER NOT NULL
+);
+PRAGMA user_version = 104;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1879,25 +1890,74 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
-    SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103,
+    SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104,
 ];
 
+/// A task's band rank, null for a band the factory no longer has.
+macro_rules! rank {
+    () => {
+        "(SELECT rank FROM bands WHERE bands.name = tasks.band)"
+    };
+}
+
+/// The rank a queued or ready task starts in under `[queue] age`: one band higher for each `every`
+/// it has waited since it entered the queue, down to rank `top`. Null without an age.
+macro_rules! aged {
+    () => {
+        "(SELECT CASE WHEN tasks.state IN ('queued', 'ready') AND bands.rank > aging.top
+           THEN max(aging.top, bands.rank - max(0, CAST((julianday('now')
+             - julianday(coalesce(tasks.changed, tasks.created))) * 86400 / aging.every AS INTEGER)))
+           ELSE bands.rank END
+         FROM bands JOIN aging WHERE bands.name = tasks.band)"
+    };
+}
+
+/// Whether a task starts in a higher band than its own, by `[queue] age`.
+macro_rules! moved_up {
+    () => {
+        concat!("coalesce(", aged!(), " < ", rank!(), ", 0)")
+    };
+}
+
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
-/// no longer has comes after the last one. With `[queue] fair = "lane"`, the tasks a person has not
-/// ordered take turns between lanes before age: the oldest of each lane first, and among those the
-/// lane whose last run started longest ago, so a lane that never ran comes first.
-pub const START_ORDER: &str = "coalesce((SELECT rank FROM bands WHERE bands.name = tasks.band),
-  (SELECT count(*) FROM bands)), tasks.position IS NULL, tasks.position,
-  CASE WHEN tasks.position IS NULL AND tasks.state IN ('queued', 'ready')
+/// no longer has comes after the last one. A task that `[queue] age` moved up starts in the higher
+/// band after the tasks a person ordered there. With `[queue] fair = "lane"`, the tasks a person has
+/// not ordered take turns between lanes before age: the oldest of each lane first, and among those
+/// the lane whose last run started longest ago, so a lane that never ran comes first.
+pub const START_ORDER: &str = concat!(
+    "coalesce(",
+    aged!(),
+    ", ",
+    rank!(),
+    ", (SELECT count(*) FROM bands)), ",
+    moved_up!(),
+    " OR tasks.position IS NULL, iif(",
+    moved_up!(),
+    ", NULL, tasks.position),
+  CASE WHEN (tasks.position IS NULL OR ",
+    moved_up!(),
+    ") AND tasks.state IN ('queued', 'ready')
     AND EXISTS (SELECT 1 FROM fairness WHERE fairness.key = 'lane')
   THEN (SELECT count(*) FROM tasks AS ahead WHERE ahead.band IS tasks.band
     AND ahead.lane IS tasks.lane AND ahead.state IN ('queued', 'ready')
     AND ahead.position IS NULL AND ahead.id < tasks.id) END,
-  CASE WHEN tasks.position IS NULL AND tasks.state IN ('queued', 'ready')
+  CASE WHEN (tasks.position IS NULL OR ",
+    moved_up!(),
+    ") AND tasks.state IN ('queued', 'ready')
     AND EXISTS (SELECT 1 FROM fairness WHERE fairness.key = 'lane')
   THEN (SELECT max(runs.id) FROM tasks AS served JOIN runs ON runs.task = served.id
     WHERE served.band IS tasks.band AND served.lane IS tasks.lane) END,
-  tasks.id";
+  tasks.id"
+);
+
+/// The band `[queue] age` moved a queued or ready task up to, null when it starts in its own.
+pub const AGED_BAND: &str = concat!(
+    "(SELECT name FROM bands WHERE rank = ",
+    aged!(),
+    " AND ",
+    moved_up!(),
+    ")"
+);
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
@@ -2704,10 +2764,25 @@ pub fn check_band(db: &Connection, band: &str) -> Result<(), String> {
     Err(format!("band `{band}` is not one of {}", bands.join(", ")))
 }
 
-/// Records the factory's bands, highest first, so listings and moves read them without the factory.
-pub(crate) fn bands(db: &mut Connection, bands: &[&str]) -> rusqlite::Result<()> {
+/// Records the factory's bands, highest first, and its `[queue] age`, so listings and moves read
+/// them without the factory.
+pub(crate) fn bands(
+    db: &mut Connection,
+    bands: &[&str],
+    age: Option<(Duration, usize)>,
+) -> rusqlite::Result<()> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute("DELETE FROM bands", [])?;
+    tx.execute("DELETE FROM aging", [])?;
+    if let Some((every, top)) = age {
+        tx.execute(
+            "INSERT INTO aging (id, every, top) VALUES (1, ?1, ?2)",
+            params![
+                i64::try_from(every.as_secs()).unwrap_or(i64::MAX),
+                top as i64
+            ],
+        )?;
+    }
     for (rank, band) in bands.iter().enumerate() {
         tx.execute(
             "INSERT INTO bands (name, rank) VALUES (?1, ?2)",

@@ -973,6 +973,11 @@ pub struct Queue {
     /// wait to start; no limit when unset. A task of the first band never waits.
     #[serde(default)]
     pub review_limit: Option<std::num::NonZeroU32>,
+    /// How long a task waits in the queue for each band it moves up in start order, up to the
+    /// highest band not in `preempt`; no task moves when unset.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub age: Option<Duration>,
     /// `lane` makes the queue take turns between lanes inside a band; oldest first when unset.
     pub fair: Option<Fair>,
 }
@@ -994,6 +999,7 @@ impl Default for Queue {
             overlap: true,
             preempt: Vec::new(),
             review_limit: None,
+            age: None,
             fair: None,
         }
     }
@@ -2761,6 +2767,18 @@ impl Factory {
         self.settings
             .as_ref()
             .map_or(&[], |settings| settings.value.queue.preempt.as_slice())
+    }
+
+    /// How long a task waits in the queue for each band it moves up in start order, and the
+    /// highest band it can reach, the first not in `preempt`; none when unset.
+    pub fn age(&self) -> Option<(Duration, usize)> {
+        let every = self.settings.as_ref()?.value.queue.age?;
+        let preempt = self.preempt();
+        let top = self
+            .bands()
+            .iter()
+            .position(|band| !preempt.iter().any(|named| named == band))?;
+        Some((every, top))
     }
 
     /// How many pull requests of a lane or a batch may wait for a person before its new tasks wait.

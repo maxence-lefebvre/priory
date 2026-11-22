@@ -269,7 +269,8 @@ and tokens.
 `priory outbox` prints each prompt: id, task, run, state and text, with newlines shown as `\n`.
 
 `priory queue` prints the waiting tasks in start order, then the held ones: position, position in
-the band, id, key, workflow, step, state, band, lane and reason. When a task is asleep, a blank
+the band, id, key, workflow, step, state, band, the band `[queue] age` moved it up to or `-`, lane
+and reason. When a task is asleep, a blank
 line and an `asleep` table follow: id, key, since when it sleeps, and what each open wait waits on
 and since when, or `an ask`. `priory queue DIR` reads the factory in `DIR` too, so its up next
 includes schedule firings.

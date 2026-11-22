@@ -43,6 +43,7 @@ A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m
 
 See [runs.md](../daemon/runs.md#overlapping-files) for how the overlap hold works,
 [room.md](../daemon/room.md#urgent-wakes) for how `preempt` stops a run,
+[runs.md](../daemon/runs.md#aging) for how `age` moves a waiting task up,
 [runs.md](../daemon/runs.md#turns-between-lanes) for how `fair` orders a band, and
 [runs.md](../daemon/runs.md#review-limit) for how `review_limit` holds new starts.
 
@@ -50,6 +51,7 @@ See [runs.md](../daemon/runs.md#overlapping-files) for how the overlap hold work
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `overlap` | boolean | no | `true` | Whether a task waits for an earlier active task whose branch changes the same files | `false` |
 | `preempt` | list of bands | no | `[]` | The bands whose task at the head of the queue, waiting for memory or disk, may stop runs of a lower band at the end of their turn | `["blocker"]` |
+| `age` | duration | no | none: no task moves | How long a task waits in the queue for each band it moves up in start order, up to the highest band not in `preempt` | `"24h"` |
 | `review_limit` | integer, at least 1 | no | no limit | How many pull requests of a lane, or of a batch, may wait for a person before its new tasks wait to start. A task of the first band never waits | `5` |
 | `fair` | `lane` | no | oldest first | What the queue takes turns between inside a band, among the tasks no person ordered | `"lane"` |
 

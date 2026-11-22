@@ -1476,6 +1476,31 @@ fn preempt_names_bands_the_factory_has_above_its_last() {
 }
 
 #[test]
+fn queue_age_takes_a_duration() {
+    let good = "name = \"demo\"\n\n[queue]\nage = \"24h\"\n";
+    let ok = check(&factory("age-ok", &with("factory.toml", good)));
+    let day = good.replace("\"24h\"", "\"1 day\"");
+    let day = check(&factory("age-day", &with("factory.toml", &day)));
+    let zero = good.replace("\"24h\"", "\"0h\"");
+    let zero = check(&factory("age-zero", &with("factory.toml", &zero)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(day.code, 1);
+    assert!(
+        day.stderr
+            .starts_with("factory.toml:4:7: \"1 day\" is not a duration such as 90s, 15m or 2h"),
+        "{}",
+        day.stderr
+    );
+    assert_eq!(zero.code, 1);
+    assert!(
+        zero.stderr.contains("\"0h\" is not a duration such as"),
+        "{}",
+        zero.stderr
+    );
+}
+
+#[test]
 fn review_limit_takes_a_positive_number() {
     let good = "name = \"demo\"\n\n[queue]\nreview_limit = 5\n";
     let ok = check(&factory("review-limit-ok", &with("factory.toml", good)));

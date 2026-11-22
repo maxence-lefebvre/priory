@@ -179,6 +179,33 @@ its next turn end for task 12 (blocker)`. The stopped task is `ready` again in i
 own place, and its next run resumes its session. See
 [room.md](room.md#urgent-wakes).
 
+### Aging
+
+Strict band order lets a steady flow of `today` tasks keep a `later` task waiting forever.
+`[queue] age` in `factory.toml` bounds that wait:
+
+```toml
+[queue]
+age = "24h"
+```
+
+For each `age` a task has waited in the queue, it starts as if it were one band higher. Its wait
+counts from when it last became `queued` or `ready`, so a run, a sleep or a hold starts it again.
+It stops at the highest band that is not in `preempt`: with `preempt = ["blocker"]`, a `later`
+task reaches `now` after two days and goes no higher. In the band it reaches, it starts after the
+tasks a person ordered there, then with the other tasks by age. With
+[`fair = "lane"`](#turns-between-lanes), it takes its lane's turn among them, counted in its own
+band.
+
+Aging changes start order only. The task keeps its own band: `priory move` and the listings name
+it, and an urgent wake reads it, so an aged task never stops a run. `priory queue` shows the band a
+task moved up to in its `aged` column. The daemon records `age` in the state file when it starts,
+as it records the bands. Without `age`, no task moves.
+
+One wait remains by design. An aged task never passes a task of a band above the highest band
+that does not preempt, so a factory whose `blocker` tasks never end still keeps every other band
+waiting.
+
 `priory move`, `hold`, `release` and `cancel` take `--expected REVISION`, the state revision that
 every listing carries. When the state's revision differs from it, the verb changes nothing and fails with `the
 state is at revision <current>, not <REVISION>`, so a change made on a stale read never applies.
