@@ -14,12 +14,12 @@
   --space-8: 48px;  /* empty state padding */
   --gutter: max(var(--space-4), env(safe-area-inset-left));
 
-  /* Radii: radius marks what an element is. */
-  --radius-sm: 5px;      /* tags, kbd hints */
-  --radius-tile: 8px;    /* state tiles */
-  --radius-md: 12px;     /* inputs, banners, segmented control, workflow grid, terminal */
-  --radius-card: 14px;   /* next-ask card, option buttons, theme cards */
-  --radius-full: 999px;  /* Answer capsule, live dots, badges */
+  /* Radii: 6 px for controls, 10 px for panels and options; a full radius only for dots. */
+  --radius-sm: 4px;      /* tags, kbd hints */
+  --radius-tile: 8px;    /* a Herdr pane's state tile */
+  --radius-md: 6px;      /* buttons, chips, inputs, segmented control, terminal */
+  --radius-card: 10px;   /* banners, the next-ask card, option buttons, the Answer capsule, sheets, theme cards */
+  --radius-full: 999px;  /* live dots */
 
   /* Sizes */
   --top-bar: 52px;
@@ -29,7 +29,7 @@
   --desk-end: calc(var(--capsule) + 2 * var(--capsule-gap)); /* bottom padding of the phone desk list */
   --row-min: 64px;           /* phone rows */
   --row-wide: 38px;          /* table rows on wide screens */
-  --tile: 30px;              /* state tile; wide tables show a 15px icon instead */
+  --tile: 20px;              /* the state icon's column in a phone row; wide tables show a 15px icon beside the word */
   --option-min: 58px;        /* ask option buttons */
   --control: 44px;           /* buttons and inputs on a coarse pointer */
   --control-fine: 32px;      /* buttons and inputs on a fine pointer */
@@ -50,11 +50,11 @@
   --pane-bar: 52px;          /* the sticky answer bar in a pane */
 
   /* Type scale: size / line height. The family comes from the theme's font roles. */
-  --type-count: 64px/0.85;    /* the desk's ask count on a phone, display role */
-  --type-count-wide: 44px/1;  /* the ask count in the wide list header, display role */
+  --type-count: 28px/32px;    /* the desk's ask count on a phone, display role */
+  --type-count-wide: 22px/28px; /* the ask count in the wide list header, display role */
   --type-screen: 34px/40px;   /* screen titles such as Appearance, display role */
   --type-task: 32px/38px;     /* task title on wide screens, display role */
-  --type-question: 25px/31px; /* the question in an ask's detail on a phone, display role */
+  --type-question: 22px/28px; /* the question in an ask's detail on a phone, display role */
   --type-question-wide: 22px/28px; /* the question in the ask drawer, display role */
   --type-hero: 20px/24px;     /* "asks need you" beside the count, display role */
   --type-read: 15px/23px;     /* Markdown body: ask text, briefs and plans, UI role */
@@ -70,8 +70,7 @@
   --type-pane-question: 18px/24px; /* an ask's question in a Herdr pane, display role */
   --type-pane-count: 40px/1;  /* the desk count in a Herdr pane, display role */
 
-  /* Elevation: hairlines separate; a shadow means the element floats. */
-  --shadow-float: 0 6px 20px rgba(0, 0, 0, 0.18); /* Answer capsule */
+  /* Elevation: hairlines separate; only a sheet or a menu casts a shadow. */
   --shadow-sheet: 0 -8px 32px rgba(0, 0, 0, 0.24); /* sheets, over the theme's --scrim */
 
   /* Motion */
