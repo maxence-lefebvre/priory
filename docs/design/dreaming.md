@@ -10,7 +10,7 @@ questions with a recommendation for each.
 ## What existed when this note was written
 
 - An agent saves a fact with `remember(name, description, text)` and removes one with
-  `forget(name)` (#267, [tools.md](../daemon/tools.md#remembername-description-text-forgetname-and-memoryname)).
+  `forget(name)` (#267, [tools.md](../reference/tools.md#remembername-description-text-forgetname-and-memoryname)).
   Each call is a candidate (`write`, `crates/priory-core/src/memories.rs:88`).
 - A candidate reaches its own task's later runs at once, and other tasks' runs only once a person
   accepts it ([skills.md](../daemon/skills.md#which-run-gets-which-candidate)).
