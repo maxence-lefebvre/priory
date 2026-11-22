@@ -897,3 +897,57 @@ fn a_mark_refuses_a_missing_task_evidence_that_is_no_url_and_a_date_after_now() 
         assert_eq!(setup.label(1, args).status.code(), Some(2), "{args:?}");
     }
 }
+
+#[test]
+fn by_lane_splits_each_target_and_its_rows_by_the_tasks_lane() {
+    let setup = Setup::new("by-lane", 3);
+    setup.sql("UPDATE tasks SET lane = 'web' WHERE id IN (1, 2)", &[]);
+    setup.sql("UPDATE tasks SET lane = NULL WHERE id = 3", &[]);
+    for task in 1..=3 {
+        setup.reached(task, 40);
+    }
+    setup.handle(&[
+        opened(1, 1, 40),
+        merged(1, 1, 39),
+        revert(1, 30),
+        opened(2, 2, 40),
+        merged(2, 2, 39),
+        opened(3, 3, 40),
+        merged(3, 3, 39),
+        revert(3, 30),
+    ]);
+
+    let json: Value = serde_json::from_str(&setup.report(&["--by", "lane", "--json"])).unwrap();
+    assert_eq!(json["by"], "lane");
+    let lane = |name: &str| {
+        json["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|target| target["step"] == "open-pr" && target["lane"] == name)
+            .unwrap()
+            .clone()
+    };
+    let (web, none) = (lane("web"), lane("-"));
+    assert_eq!(counts(&row(&web, "open-pr", None)), (2, 1, 1));
+    assert_eq!(counts(&row(&web, "plan", Some("green"))), (2, 1, 1));
+    assert_eq!(web["reached"], 2);
+    assert_eq!(web["adverse"][0]["task"], "1");
+    assert_eq!(counts(&row(&none, "open-pr", None)), (1, 1, 1));
+    assert_eq!(none["reached"], 1);
+
+    let text = setup.report(&["--by", "lane"]);
+    assert!(
+        text.lines().any(|line| line
+            == "implement / open-pr, lane web: reached 2, caught 0 at its gate, pending 0, unjudged 0, undated 0, open 0, late 0"),
+        "{text}"
+    );
+    assert_eq!(setup.json()["by"], Value::Null);
+    assert!(setup.json()["targets"][0].get("lane").is_none());
+    assert!(
+        !setup
+            .priory(&["report", "risk", &setup.factory(), "--by", "model"])
+            .status
+            .success()
+    );
+}

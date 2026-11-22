@@ -257,9 +257,9 @@ Known limits:
 
 ## Grades
 
-`priory grades [--since <window>] [--json]` compares each grade with its tasks' outcome labels. It
-counts the tasks with a grade, created since `--since`, which takes what `report --since` takes, or
-every graded task without it. A task counts under its grade now.
+`priory grades [--since <window>] [--by lane] [--json]` compares each grade with its tasks' outcome
+labels. It counts the tasks with a grade, created since `--since`, which takes what `report --since`
+takes, or every graded task without it. A task counts under its grade now.
 
 ```
 green one-shot: 50.0% (1 of 2), target 90%
@@ -275,15 +275,19 @@ outcome, against the 90 % target. `outcomes` counts the tasks with a final outco
 share is its count over them; `-` when there are none. A task still waiting for its pull request's
 first review has no outcome yet.
 
-`--json` prints one object, which `GET /api/grades` also answers (see
+`--by lane` splits each grade's row by the lane its tasks have now, with `-` for a task with none.
+The table gains a first `lane` column, with one row per lane and grade. The headline still counts
+green's tasks in every lane.
+
+`--json` prints one object, which `GET /api/grades` also answers without `--by lane` (see
 [the serve reference](../reference/serve.md#grades)).
 
 ## Risk
 
-`priory report risk [DIR] [--workflow <name>] [--since <window>] [--json]` estimates R10.6: of the
-tasks that ran an irreversible step, what share got an adverse outcome label within 30 days. It reads
-the factory in `DIR` for each irreversible step and the human steps that approve it, and the
-`factory.step.ended` and `factory.step.labeled` records and pull requests of the state. Nothing
+`priory report risk [DIR] [--workflow <name>] [--since <window>] [--by lane] [--json]` estimates
+R10.6: of the tasks that ran an irreversible step, what share got an adverse outcome label within
+30 days. It reads the factory in `DIR` for each irreversible step and the human steps that approve
+it, and the `factory.step.ended` and `factory.step.labeled` records and pull requests of the state. Nothing
 reads the estimate to answer an ask, skip a step, or order, route or prompt work.
 [risk-estimate.md](../design/risk-estimate.md) explains the model and the choices behind it.
 
@@ -343,6 +347,13 @@ and no percentage. `--json` carries the interval at any `n`, with `"shown": fals
 `--since` takes what `report --since` takes, and defaults to `180 days`. `--workflow` keeps one
 workflow's targets.
 
+`--by lane` splits each target by the lane its tasks have now, with `-` for a task with none. Each
+lane gets its own block, headed `implement / open-pr, lane web:`, with its own counts, rows, adverse
+trials and candidates. A lane appears when a task of the workflow has it. A lane's rows hold fewer
+trials, so most read `needs 20`. No row borrows from its workflow's rate: each lane's estimate uses
+the same Beta(1, 1) prior and its own trials only. `--json` then holds `"by": "lane"` and a `lane`
+on each target. Without `--by lane`, `by` is null and a target has no `lane`.
+
 The candidates table lists, under each target, the `fixes` relations whose fixed task reached the
 target in the window and has no mark left. Priory records such a relation whenever a request links
 a merged pull request ([relations.md](relations.md)), and an agent can record one too, so a relation
@@ -375,7 +386,7 @@ The target's own row also shows in three places, over the default window:
 
 Known limits:
 
-- `--by lane` and `GET /api/risk` come in later slices.
+- `GET /api/risk` comes in a later slice.
 - An ask whose answer runs a command, and lets no irreversible step run, has no `risk_estimate`.
 
 ## Attention

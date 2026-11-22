@@ -743,8 +743,9 @@ counts the tasks created since then; without it, every graded task. See
 | Field | Value |
 | ----- | ----- |
 | `since` | The window's start as an instant, or null |
+| `by` | `"lane"` from `priory grades --by lane`, else null. `/api/grades` answers null |
 | `one_shot` | Green's headline: `clean`, its `approved-clean` tasks; `outcomes`, its tasks with a final outcome; `rate`, `clean` over `outcomes`, or null with none; and `target`, `0.9` |
-| `grades` | One entry per grade, `red`, `yellow` then `green`: `grade`; `tasks`, its tasks; `outcomes`, those with a final outcome; and `labels`, an object with each of the six labels as a key, each `{"count": N, "share": S}`, where `share` is `count` over `outcomes`, or null with none |
+| `grades` | One entry per grade, `red`, `yellow` then `green`: `grade`; `tasks`, its tasks; `outcomes`, those with a final outcome; and `labels`, an object with each of the six labels as a key, each `{"count": N, "share": S}`, where `share` is `count` over `outcomes`, or null with none. With `by` set to `lane`, one entry per lane and grade, each with `lane`, the lane its tasks have now or `-` |
 
 ## Attention
 

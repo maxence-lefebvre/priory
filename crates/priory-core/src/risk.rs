@@ -119,6 +119,8 @@ struct Candidate {
 struct Target {
     workflow: String,
     step: String,
+    /// The lane of every task the target counts, with `--by lane`; `-` for a task with none.
+    lane: Option<String>,
     reached: usize,
     caught: BTreeSet<String>,
     pending: usize,
@@ -181,6 +183,7 @@ impl Gates {
 /// Each target's trials and estimates.
 pub struct Risk {
     since: String,
+    by_lane: bool,
     targets: Vec<Target>,
 }
 
@@ -214,7 +217,8 @@ fn instant(text: &str) -> Result<Timestamp, String> {
 }
 
 /// The trials of each irreversible step of `gates`' workflows and of the records, or only
-/// `workflow`'s, whose reach lies between `start` and `now`.
+/// `workflow`'s, whose reach lies between `start` and `now`. With `by_lane`, each target splits
+/// into one per lane its tasks have now.
 pub fn risk(
     db: &Connection,
     gates: &Gates,
@@ -222,6 +226,7 @@ pub fn risk(
     since: &str,
     start: &str,
     now: Timestamp,
+    by_lane: bool,
 ) -> Result<Risk, String> {
     let error = |error: rusqlite::Error| error.to_string();
     let start = instant(start)?;
@@ -338,6 +343,16 @@ pub fn risk(
         })
         .map_err(error)?;
 
+    let lanes: BTreeMap<String, String> = db
+        .prepare("SELECT CAST(id AS TEXT), coalesce(lane, '-') FROM tasks")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect()
+        })
+        .map_err(error)?;
+    let lane_of = |task: &str| lanes.get(task).map_or("-", String::as_str);
+
     let mut wanted: BTreeSet<(String, String)> = gates.0.keys().cloned().collect();
     wanted.extend(
         ended
@@ -349,11 +364,6 @@ pub fn risk(
 
     let mut targets = Vec::new();
     for (name, step) in wanted {
-        let mut target = Target {
-            workflow: name.clone(),
-            step: step.clone(),
-            ..Target::default()
-        };
         let approving = gates
             .0
             .get(&(name.clone(), step.clone()))
@@ -364,131 +374,153 @@ pub fn risk(
             .filter(|record| record.workflow == name)
             .map(|record| record.task.as_str())
             .collect();
-        for task in tasks {
-            let records: Vec<&Ended> = ended
+        let groups: Vec<Option<&str>> = match by_lane {
+            true => tasks
                 .iter()
-                .filter(|record| record.task == task && record.workflow == name)
-                .collect();
-            let reach = records.iter().position(|record| record.step == step);
-            let before = &records[..reach.unwrap_or(records.len())];
-            let rejected = before.iter().any(|record| {
-                (start..=now).contains(&record.time)
-                    && approving.iter().any(|gate| {
-                        gate.id == record.step
-                            && (record.outcome.to_lowercase().starts_with("reject")
-                                || gate.stops.contains(&record.outcome))
-                    })
-            });
-            if rejected {
-                target.caught.insert(task.to_owned());
-            }
-            let Some(reach) = reach.map(|at| records[at]) else {
-                continue;
+                .map(|task| lane_of(task))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .map(Some)
+                .collect(),
+            false => vec![None],
+        };
+        for group in groups {
+            let mut target = Target {
+                workflow: name.clone(),
+                step: step.clone(),
+                lane: group.map(str::to_owned),
+                ..Target::default()
             };
-            if !(start..=now).contains(&reach.time) {
-                continue;
-            }
-            target.reached += 1;
-            target.tasks.insert(task.to_owned());
-            let end = reach.time + horizon;
-            if end > now {
-                target.pending += 1;
-                continue;
-            }
-            let pulls = pulls.get(task).map(Vec::as_slice).unwrap_or_default();
-            if !pulls.iter().any(|pull| pull.seen <= end) {
-                target.unjudged += 1;
-                continue;
-            }
-            let labels = labels.get(task).map(Vec::as_slice).unwrap_or_default();
-            let dated: Option<Vec<(&Label, Timestamp)>> = labels
+            for &task in tasks
                 .iter()
-                .map(|label| label.happened.map(|happened| (label, happened)))
-                .collect();
-            let Some(dated) = dated else {
-                target.undated += 1;
-                continue;
-            };
-            let merged_by = |at: Timestamp| {
-                pulls
-                    .iter()
-                    .any(|pull| pull.merged.is_some_and(|merged| merged <= at))
-            };
-            let first = |landed: bool| {
-                dated
-                    .iter()
-                    .filter(|(label, happened)| {
-                        let label = label.label.as_str();
-                        let counts = match landed {
-                            true => {
-                                LANDED.contains(&label)
-                                    || (label == MARKED_WRONG && merged_by(*happened))
-                            }
-                            false => JUDGED.contains(&label),
-                        };
-                        counts && *happened > reach.time
-                    })
-                    .min_by_key(|(_, happened)| *happened)
-                    .copied()
-            };
-            let landed = first(true).filter(|(_, happened)| *happened <= end);
-            let judged = first(false).filter(|(_, happened)| *happened <= end);
-            if judged.is_none() && first(false).is_some() {
-                target.late += 1;
-            }
-            if pulls
-                .iter()
-                .any(|pull| pull.seen <= end && pull.closed.is_none_or(|closed| closed > end))
+                .filter(|task| group.is_none_or(|lane| lane_of(task) == lane))
             {
-                target.open += 1;
-            }
-            if let Some((label, happened)) = landed.or(judged) {
-                target.adverse.push(Adverse {
-                    task: task.to_owned(),
-                    outcome: if landed.is_some() {
-                        "landed wrong"
-                    } else {
-                        "judged wrong"
-                    },
-                    label: label.label.clone(),
-                    happened,
-                    evidence: label.evidence.clone(),
+                let records: Vec<&Ended> = ended
+                    .iter()
+                    .filter(|record| record.task == task && record.workflow == name)
+                    .collect();
+                let reach = records.iter().position(|record| record.step == step);
+                let before = &records[..reach.unwrap_or(records.len())];
+                let rejected = before.iter().any(|record| {
+                    (start..=now).contains(&record.time)
+                        && approving.iter().any(|gate| {
+                            gate.id == record.step
+                                && (record.outcome.to_lowercase().starts_with("reject")
+                                    || gate.stops.contains(&record.outcome))
+                        })
                 });
+                if rejected {
+                    target.caught.insert(task.to_owned());
+                }
+                let Some(reach) = reach.map(|at| records[at]) else {
+                    continue;
+                };
+                if !(start..=now).contains(&reach.time) {
+                    continue;
+                }
+                target.reached += 1;
+                target.tasks.insert(task.to_owned());
+                let end = reach.time + horizon;
+                if end > now {
+                    target.pending += 1;
+                    continue;
+                }
+                let pulls = pulls.get(task).map(Vec::as_slice).unwrap_or_default();
+                if !pulls.iter().any(|pull| pull.seen <= end) {
+                    target.unjudged += 1;
+                    continue;
+                }
+                let labels = labels.get(task).map(Vec::as_slice).unwrap_or_default();
+                let dated: Option<Vec<(&Label, Timestamp)>> = labels
+                    .iter()
+                    .map(|label| label.happened.map(|happened| (label, happened)))
+                    .collect();
+                let Some(dated) = dated else {
+                    target.undated += 1;
+                    continue;
+                };
+                let merged_by = |at: Timestamp| {
+                    pulls
+                        .iter()
+                        .any(|pull| pull.merged.is_some_and(|merged| merged <= at))
+                };
+                let first = |landed: bool| {
+                    dated
+                        .iter()
+                        .filter(|(label, happened)| {
+                            let label = label.label.as_str();
+                            let counts = match landed {
+                                true => {
+                                    LANDED.contains(&label)
+                                        || (label == MARKED_WRONG && merged_by(*happened))
+                                }
+                                false => JUDGED.contains(&label),
+                            };
+                            counts && *happened > reach.time
+                        })
+                        .min_by_key(|(_, happened)| *happened)
+                        .copied()
+                };
+                let landed = first(true).filter(|(_, happened)| *happened <= end);
+                let judged = first(false).filter(|(_, happened)| *happened <= end);
+                if judged.is_none() && first(false).is_some() {
+                    target.late += 1;
+                }
+                if pulls
+                    .iter()
+                    .any(|pull| pull.seen <= end && pull.closed.is_none_or(|closed| closed > end))
+                {
+                    target.open += 1;
+                }
+                if let Some((label, happened)) = landed.or(judged) {
+                    target.adverse.push(Adverse {
+                        task: task.to_owned(),
+                        outcome: if landed.is_some() {
+                            "landed wrong"
+                        } else {
+                            "judged wrong"
+                        },
+                        label: label.label.clone(),
+                        happened,
+                        evidence: label.evidence.clone(),
+                    });
+                }
+                target.revisions.extend(reach.revision.clone());
+                target
+                    .models
+                    .extend(before.iter().filter_map(|record| record.model.clone()));
+                let mut last: BTreeMap<&str, &str> = BTreeMap::new();
+                for record in before {
+                    last.insert(&record.step, &record.outcome);
+                }
+                let (judged, landed) = (judged.is_some(), landed.is_some());
+                target.own.count(judged, landed);
+                for (step, outcome) in last {
+                    let key = (step.to_owned(), outcome.to_owned());
+                    target.rows.entry(key).or_default().count(judged, landed);
+                }
             }
-            target.revisions.extend(reach.revision.clone());
-            target
-                .models
-                .extend(before.iter().filter_map(|record| record.model.clone()));
-            let mut last: BTreeMap<&str, &str> = BTreeMap::new();
-            for record in before {
-                last.insert(&record.step, &record.outcome);
-            }
-            let (judged, landed) = (judged.is_some(), landed.is_some());
-            target.own.count(judged, landed);
-            for (step, outcome) in last {
-                let key = (step.to_owned(), outcome.to_owned());
-                target.rows.entry(key).or_default().count(judged, landed);
-            }
+            target.candidates = fixes
+                .iter()
+                .filter(|(fixed, ..)| {
+                    let fixed = fixed.to_string();
+                    target.tasks.contains(&fixed)
+                        && !labels.get(&fixed).is_some_and(|labels| {
+                            labels.iter().any(|label| label.label == MARKED_WRONG)
+                        })
+                })
+                .map(|(fixed, fixed_by, by)| Candidate {
+                    task: fixed.to_string(),
+                    fixed_by: *fixed_by,
+                    by: by.clone(),
+                })
+                .collect();
+            targets.push(target);
         }
-        target.candidates = fixes
-            .iter()
-            .filter(|(fixed, ..)| {
-                let fixed = fixed.to_string();
-                target.tasks.contains(&fixed)
-                    && !labels.get(&fixed).is_some_and(|labels| {
-                        labels.iter().any(|label| label.label == MARKED_WRONG)
-                    })
-            })
-            .map(|(fixed, fixed_by, by)| Candidate {
-                task: fixed.to_string(),
-                fixed_by: *fixed_by,
-                by: by.clone(),
-            })
-            .collect();
-        targets.push(target);
     }
     Ok(Risk {
         since: since.to_owned(),
+        by_lane,
         targets,
     })
 }
@@ -534,7 +566,7 @@ impl Row {
 /// Every target's trials over the default window up to `now`, for the asks and the flows.
 pub fn recent(db: &Connection, gates: &Gates, now: Timestamp) -> Result<Risk, String> {
     let start = crate::report::start(db, SINCE, &now.to_string())?;
-    risk(db, gates, None, SINCE, &start, now)
+    risk(db, gates, None, SINCE, &start, now, false)
 }
 
 impl Risk {
@@ -586,7 +618,9 @@ impl Risk {
             "horizon_days": HORIZON_DAYS,
             "floor": FLOOR,
             "since": self.since,
-            "targets": self.targets.iter().map(|target| json!({
+            "by": self.by_lane.then_some("lane"),
+            "targets": self.targets.iter().map(|target| {
+                let mut value = json!({
                 "workflow": target.workflow,
                 "step": target.step,
                 "reached": target.reached,
@@ -613,7 +647,12 @@ impl Risk {
                     "fixed_by": candidate.fixed_by.to_string(),
                     "by": candidate.by,
                 })).collect::<Vec<_>>(),
-            })).collect::<Vec<_>>(),
+                });
+                if let Some(lane) = &target.lane {
+                    value["lane"] = json!(lane);
+                }
+                value
+            }).collect::<Vec<_>>(),
         })
     }
 
@@ -622,8 +661,12 @@ impl Risk {
             if at > 0 {
                 crate::state::emit("");
             }
+            let lane = target
+                .lane
+                .as_ref()
+                .map_or_else(String::new, |lane| format!(", lane {lane}"));
             crate::state::emit(&format!(
-                "{} / {}: reached {}, caught {} at its gate, pending {}, unjudged {}, undated {}, open {}, late {}",
+                "{} / {}{lane}: reached {}, caught {} at its gate, pending {}, unjudged {}, undated {}, open {}, late {}",
                 target.workflow,
                 target.step,
                 target.reached,
