@@ -124,7 +124,8 @@ pub const PERSON: &str = "priory-person";
 /// The guard on a script nested too deep for the guard to read, which nothing grants.
 pub const UNREADABLE: &str = "unreadable";
 
-/// The `priory` verbs only a person runs, as an answer approves a step. `report pick` is one too.
+/// The `priory` verbs only a person runs, as an answer approves a step. `report pick`,
+/// `memories accept`, `memories drop`, `batch edit` and `score --calibrate` are too.
 pub const PERSON_VERBS: &[&str] = &[
     "answer",
     "dismiss",
@@ -153,7 +154,12 @@ pub fn person_verb(args: &[String]) -> bool {
     let mut words = vec!["priory".to_owned()];
     words.extend_from_slice(args);
     match positional(&words)[..] {
-        ["report", "pick", ..] => true,
+        ["report", "pick", ..] | ["memories", "accept" | "drop", ..] | ["batch", "edit", ..] => {
+            true
+        }
+        ["score", ..] => args
+            .iter()
+            .any(|arg| arg == "--calibrate" || arg.starts_with("--calibrate=")),
         [verb, ..] => PERSON_VERBS.contains(&verb),
         [] => false,
     }
@@ -1757,6 +1763,11 @@ mod tests {
             "priory give github:o/r#12 b",
             "priory eval prompts/review.md",
             "priory label 7 wrong --evidence https://example.com/pull/9",
+            "priory memories accept 3",
+            "priory memories drop ~/factory 3",
+            "priory score --budget 5 --calibrate review",
+            "priory score . --calibrate=review --budget 5",
+            "priory batch edit 2 --expected 1 --drop 4",
         ] {
             let hits = guards.hits("Bash", Some(command), &git);
             assert_eq!(hits[0].guard, "priory-person", "{command}");
@@ -1766,6 +1777,10 @@ mod tests {
             "priory tasks",
             "priory report reply 3 ok",
             "priory gate",
+            "priory memories --all",
+            "priory score 7 --budget 1",
+            "priory batch show 2",
+            "priory batch add 12 13",
         ] {
             assert_eq!(hit(command), None, "{command}");
         }
