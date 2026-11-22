@@ -652,7 +652,10 @@ fn a_restart_between_the_ask_and_the_report_starts_one_investigator_and_reports_
         rows.len() == 2 && rows[1][3] == "confirmed"
     });
     setup.crash();
+    // The held call reaches the daemon once released, so the new daemon must listen first.
+    let _ = fs::remove_file(setup.socket());
     setup.start();
+    listening(&setup);
     setup.release("hold-call");
 
     setup.until("tasks", |rows| with(rows, 4, "done") == 2);
