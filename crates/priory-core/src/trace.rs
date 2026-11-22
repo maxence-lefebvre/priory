@@ -158,13 +158,23 @@ pub(crate) fn ended(
     }
     if let Some(agent) = agent {
         if let Some(run) = run {
-            data["kit_hash"] = tx
-                .query_row("SELECT kit_hash FROM runs WHERE id = ?1", [run], |row| {
-                    row.get::<_, Option<String>>(0)
-                })
+            let (hash, commit) = tx
+                .query_row(
+                    "SELECT kit_hash, kit_commit FROM runs WHERE id = ?1",
+                    [run],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                        ))
+                    },
+                )
                 .optional()?
-                .flatten()
-                .map_or(Value::Null, Value::from);
+                .unwrap_or_default();
+            data["kit_hash"] = hash.map_or(Value::Null, Value::from);
+            if let Some(commit) = commit {
+                data["kit_commit"] = Value::from(commit);
+            }
         }
         data["harness"] = json!(agent.value.harness);
         data["model"] = json!(ended.model.or_else(|| agent.value.model.clone()));

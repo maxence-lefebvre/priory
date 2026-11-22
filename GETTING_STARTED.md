@@ -201,6 +201,14 @@ memories and reads a file when its description fits the task. `priory check` cou
 `ok` line. To change a memory, edit the file and merge it like any other change to the factory.
 See [memories.md](docs/reference/memories.md) for the file's keys.
 
+### Share a kit across factories
+
+To keep skills, instructions and memories in their own repository, name it under `[kit]` in
+`factory.toml`, with `repo` and the `ref` to follow. Each runner fetches it at start and every five
+minutes, with git's own credentials, and every run gets its files before the factory's. A failed
+fetch keeps the last good commit and shows a banner on the desk. See
+[skills.md](docs/daemon/skills.md#a-kit-repository) for the details.
+
 ## 5. Run it
 
 Priory keeps its state in three places, each named by an environment variable:
@@ -332,7 +340,9 @@ The web view's Tasks panel lists every task, with the saved views Active, Blocke
 filters by state, lane and workflow; each row opens the task's page, and a batch's entries link to
 the batch. The Runs panel lists the runs of the last 7 days with their agent, model, outcome,
 duration and tokens, filtered by outcome, agent or step. `priory tasks` and `priory runs` print the
-same tasks and runs, and the Herdr Tasks and Runs panels show them too.
+same tasks and runs, and the Herdr Tasks and Runs panels show them too. In a factory of several
+runners, both Tasks panels also list the tasks the other runners hold and filter by runner. Such a
+task's row opens nothing here: its page stays on its runner.
 
 The Queue panel, under More on a phone, shows Up next, then each band's waiting tasks in the order
 they start, with why each one waits. Its Move menu moves a task to the top of its band, up or down

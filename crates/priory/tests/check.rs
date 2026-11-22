@@ -2282,3 +2282,27 @@ fn the_memory_index_counts_toward_the_codex_limit() {
         outcome.stderr
     );
 }
+
+#[test]
+fn a_kit_takes_a_repository_and_paths_inside_it() {
+    let toml = "name = \"demo\"\n\n[kit]\nrepo = \"git@github.com:owner/abbey.git\"\nref = \"main\"\ninstructions = \"claude/CLAUDE.md\"\nevery = \"10m\"\n";
+
+    let outcome = check(&factory("kit-valid", &with("factory.toml", toml)));
+
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+}
+
+#[test]
+fn a_kit_path_that_leaves_the_repository_or_a_ref_git_reads_as_an_option_fails_the_check() {
+    let toml = "name = \"demo\"\n\n[kit]\nrepo = \"../abbey\"\nref = \"--upload-pack=touch\"\nskills = \"../skills\"\nmemories = \"/etc\"\n";
+
+    let outcome = check(&factory("kit-leaves", &with("factory.toml", toml)));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "factory.toml:3: `[kit]` `ref` is `--upload-pack=touch`: it cannot start with `-`\n\
+         factory.toml:3: `[kit]` `skills` is `../skills`: a kit path is relative and stays inside the repository\n\
+         factory.toml:3: `[kit]` `memories` is `/etc`: a kit path is relative and stays inside the repository\n"
+    );
+}

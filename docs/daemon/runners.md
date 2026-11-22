@@ -172,7 +172,8 @@ which it applies when it reads the log again.
 The web view and the Herdr Desk and Asks panels tag each of another runner's asks with its runner,
 and say when that runner was last seen once it is quiet for over 3 minutes. The Asks list offers a
 Runner facet. Each answer sent there shows as `Sent to <runner>` until that runner applies it, then
-as the answer, or as the refusal and its reason.
+as the answer, or as the refusal and its reason. The ask's answer history in the web view and the
+Herdr Asks panel lists every submission, with its runner, its outcome and when it was sent.
 
 ## Every runner's tasks
 
@@ -184,7 +185,7 @@ workflow, band, lane and title come from the task's request. No new message cros
 Only the owner and hold cross. The task's state, steps, runs and terminal stay on its runner, so its
 `id` is null and the row opens no page here: open that runner's own view for them. A task whose hold
 is `ended` leaves the list. Tasks of this runner carry its `runner` and `hold` too. The Herdr Tasks
-panel lists this runner's tasks only.
+panel lists them as well, and both panels offer a Runner facet that marks this runner `(here)`.
 
 ## Answering another runner's ask
 
