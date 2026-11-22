@@ -18,7 +18,7 @@ must answer goes to the desk, never only to a terminal. The rule that shapes it 
 - `priory ask ID JSON` stores an ask from a session Priory did not start
   (`crates/priory/src/main.rs:203`, `:2642`). Without `session` in the JSON, it stores the hc
   terminal and the Claude session from `HC_TERMINAL_ID` and `CLAUDE_CODE_SESSION_ID` (`:2667`).
-  See [tools.md](../daemon/tools.md#asks-from-outside-priory).
+  See [tools.md](../reference/tools.md#asks-from-outside-priory).
 - The answer reaches that session through the factory's `deliver` command, which types it into
   the terminal or resumes the session ([asks.md](../daemon/asks.md), `adapters/herdr/deliver`).
 - `priory mcp --session ID` is the MCP server of one run (`main.rs:207`,

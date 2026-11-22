@@ -204,7 +204,7 @@ pull request is [`github.pull_request.comment`](#githubpull_requestcomment) inst
 | `body` | string | The comment's Markdown, as written |
 | `github_id` | integer | GitHub's comment id |
 | `association` | string, optional | GitHub's `author_association`, such as `OWNER`, `COLLABORATOR` or `NONE`. Feedback from anyone but `OWNER`, `MEMBER` or `COLLABORATOR` reaches no task (see [routing.md](../daemon/routing.md#outcomes)) |
-| `own` | boolean, optional | Whether the login `gh api user` names wrote it; absent while `gh` cannot say. `false` wakes a task even when written during its agent's turn (see [tools.md](../daemon/tools.md)) |
+| `own` | boolean, optional | Whether the login `gh api user` names wrote it; absent while `gh` cannot say. `false` wakes a task even when written during its agent's turn (see [Subscriptions](../daemon/tools.md#subscriptions)) |
 
 <!-- example: events/github.issues.comment.json -->
 ```json
@@ -366,7 +366,7 @@ The pull request fields, and:
 | `open` | boolean | Whether the pull request was open when the intake read it. A done task reopens only for feedback on an open one |
 | `github_id` | integer | GitHub's review id |
 | `association` | string, optional | GitHub's `author_association`, such as `OWNER`, `COLLABORATOR` or `NONE`. Feedback from anyone but `OWNER`, `MEMBER` or `COLLABORATOR` reaches no task (see [routing.md](../daemon/routing.md#outcomes)) |
-| `own` | boolean, optional | Whether the login `gh api user` names wrote it; absent while `gh` cannot say. `false` wakes a task even when written during its agent's turn (see [tools.md](../daemon/tools.md)) |
+| `own` | boolean, optional | Whether the login `gh api user` names wrote it; absent while `gh` cannot say. `false` wakes a task even when written during its agent's turn (see [Subscriptions](../daemon/tools.md#subscriptions)) |
 
 <!-- example: events/github.pull_request_review.submitted.json -->
 ```json
@@ -411,7 +411,7 @@ The pull request fields, and:
 | `body` | string | The comment's Markdown, as written |
 | `github_id` | integer | GitHub's comment id |
 | `association` | string, optional | GitHub's `author_association`, such as `OWNER`, `COLLABORATOR` or `NONE`. Feedback from anyone but `OWNER`, `MEMBER` or `COLLABORATOR` reaches no task (see [routing.md](../daemon/routing.md#outcomes)) |
-| `own` | boolean, optional | Whether the login `gh api user` names wrote it; absent while `gh` cannot say. `false` wakes a task even when written during its agent's turn (see [tools.md](../daemon/tools.md)) |
+| `own` | boolean, optional | Whether the login `gh api user` names wrote it; absent while `gh` cannot say. `false` wakes a task even when written during its agent's turn (see [Subscriptions](../daemon/tools.md#subscriptions)) |
 
 A webhook's message has null head and base fields: its payload names no branch.
 
@@ -459,7 +459,7 @@ The pull request fields, and:
 | `thread` | integer | The thread: the id of its first comment |
 | `github_id` | integer | GitHub's comment id |
 | `association` | string, optional | GitHub's `author_association`, such as `OWNER`, `COLLABORATOR` or `NONE`. Feedback from anyone but `OWNER`, `MEMBER` or `COLLABORATOR` reaches no task (see [routing.md](../daemon/routing.md#outcomes)) |
-| `own` | boolean, optional | Whether the login `gh api user` names wrote it; absent while `gh` cannot say. `false` wakes a task even when written during its agent's turn (see [tools.md](../daemon/tools.md)) |
+| `own` | boolean, optional | Whether the login `gh api user` names wrote it; absent while `gh` cannot say. `false` wakes a task even when written during its agent's turn (see [Subscriptions](../daemon/tools.md#subscriptions)) |
 
 <!-- example: events/github.pull_request_review_comment.json -->
 ```json

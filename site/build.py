@@ -23,6 +23,7 @@ GROUPS = [
         "docs/starting-from-a-starter.md",
         "docs/installing-a-release.md",
         "docs/using-the-web-view.md",
+        "docs/installing-the-herdr-adapter.md",
         "docs/running-as-services.md",
         "docs/testing-a-factory.md",
         "docs/adding-a-second-machine.md",

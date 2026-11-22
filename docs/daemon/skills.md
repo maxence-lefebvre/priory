@@ -1,5 +1,9 @@
 # Skills, instructions and memories
 
+Skills, instructions and memories are the factory's shared know-how: how to do a kind of work, the
+text before every agent's own prompt, and facts every run gets. Sharing them means each run starts
+with what the factory already knows, on whichever runner it lands.
+
 A factory's `skills/` folder, `instructions.md` and `memories/` folder reach every run on every
 runner, through the factory checkout each runner already has (R11.1). A kit repository that
 `[kit]` names adds its own, and a memories repository that `[memories]` names adds memories. Each
@@ -173,7 +177,7 @@ it.
 ### Candidates
 
 Each `remember(name, description, text)` or `forget(name)` call is one candidate (see
-[tools.md](tools.md#remembername-description-text-forgetname-and-memoryname)). The daemon stores it
+[tools.md](../reference/tools.md#remembername-description-text-forgetname-and-memoryname)). The daemon stores it
 in its state file, then publishes it as `priory.memory.written` through its queue, as it does a
 claim, so a runner cut off from the log publishes it once the link is back. The message's id is the
 candidate's id. A later write of the same name is a new candidate, never an edit. A forget is a

@@ -81,14 +81,14 @@ does and the page that describes it.
   answers an ask. `--run` confirms an answer that runs the ask's command. `RUNNER:ASK` answers
   another runner's ask. Without a revision (`--revision N` or `--expected N`), it says the ask
   needs the one `priory asks` prints, and exits 2. See [waits.md](../daemon/waits.md#asks-and-answers),
-  [tools.md](../daemon/tools.md#commands-an-answer-runs) and
+  [tools.md](tools.md#commands-an-answer-runs) and
   [runners.md](../daemon/runners.md#answering-another-runners-ask).
 - `priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK`: closes an ask with no answer.
   `RUNNER:ASK` needs a revision too, and exits 2 without it, as `answer` does.
 - `priory deliver ASK (--retry | --clear)`: sends a failed answer delivery again, or clears it from
   the desk. See [asks.md](../daemon/asks.md).
 - `priory ask ID JSON`: stores an ask from a session Priory did not start. See
-  [tools.md](../daemon/tools.md#asks-from-outside-priory).
+  [tools.md](tools.md#asks-from-outside-priory).
 - `priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)`:
   hides a desk item until then, or brings it back. See [desk.md](../daemon/desk.md#snooze).
 - `priory todo add TEXT [--band B] [--due TIME]`, `priory todo done ID`, `priory todo list [--json]`:
@@ -131,14 +131,14 @@ does and the page that describes it.
   again. See [desk.md](../daemon/desk.md#pause).
 - `priory subscribe TASK RESOURCE [--expected REVISION]`, `priory unsubscribe TASK RESOURCE`: routes
   a pull request's, Linear issue's or Slack thread's events to a task, or stops routing them. See
-  [tools.md](../daemon/tools.md#subscribeon-and-unsubscribeon).
+  [tools.md](tools.md#subscribeon-and-unsubscribeon).
 - `priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]`: records how a task relates
   to another, or removes the relation. See [relations.md](../daemon/relations.md).
 - `priory search QUERY [--state STATE[,STATE...]] [--limit N]`: finds tasks by what they are about.
   See [search.md](../daemon/search.md).
 - `priory tldr TASK TEXT`: sets a task's summary by hand.
 - `priory progress TASK JSON`: sets a task's progress fields, as the `progress` tool does. See
-  [tools.md](../daemon/tools.md).
+  [tools.md](tools.md#progressgoal-acceptancecriteria-latestchange-nextaction).
 - `priory attach (TASK | --run RUN) [--read-only] [--print]`: attaches your terminal to a task's
   agent, or prints the command that would. See
   [sessions.md](../daemon/sessions.md#attaching-to-a-run).

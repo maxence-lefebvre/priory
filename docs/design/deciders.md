@@ -36,7 +36,7 @@ command, as it runs a sweep script or a `command` scorer.
 - An agent sorts review feedback. A wake that carries a review, a pull request comment, a review
   thread comment, an issue comment or a Linear comment adds a rule to the prompt: sort each item by
   its URL as `trivial`, `nothing-to-do` or `persons-call`. The result's `feedback` field holds the
-  classes, and the task keeps them as `triage` ([tools.md](../daemon/tools.md)). Every such item
+  classes, and the task keeps them as `triage` ([tools.md](../reference/tools.md#review-feedback)). Every such item
   wakes a sleeping task: it fires a `pull_request` or `review` wait, or the checks gate before
   `done` ([waits.md](../daemon/waits.md#feedback-on-a-pull-request)).
 - One kind of feedback already wakes nothing: a review whose `state` is `approved` or `dismissed`

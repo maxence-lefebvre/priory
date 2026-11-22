@@ -142,5 +142,5 @@ row = [
 
 `priory views [DIR] --json` prints the resolved views as `GET /api/views` serves them: the views
 Priory ships, each replaced by the factory's view of the same name, then the factory's other views.
-See [serve.md](serve.md#views). The [Herdr adapter](../adapters/herdr.md#installing) builds one
+See [serve.md](serve.md#views). The [Herdr adapter](../installing-the-herdr-adapter.md#installing) builds one
 layout per view from this output.

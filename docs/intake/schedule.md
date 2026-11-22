@@ -46,7 +46,7 @@ task asleep at a model step with the trigger's `prompt`, and coalesces the firin
 state, so firings never stack (see [routing.md](../daemon/routing.md)).
 
 A run that finds problems hands each to a fix task with the `finding` tool, and the next firing's
-prompt lists them (see [`finding`](../daemon/tools.md#findingkey-title-details)).
+prompt lists them (see [`finding`](../reference/tools.md#findingkey-title-details)).
 
 ## Next firing
 

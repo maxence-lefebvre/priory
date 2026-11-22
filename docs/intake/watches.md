@@ -12,7 +12,7 @@ On every poll, the intake reads the state file that `PRIORY_DB` names and collec
 | ---- | ----- |
 | open waits | `linear_comment`, `linear_state`, `slack_reply`, `pull_request`, `checks` and `review` (see [waits.md](../daemon/waits.md)) |
 | open holds | unmet `--merge` and `--after <issue>` conditions (see Holds in [runs.md](../daemon/runs.md)) |
-| subscriptions | every resource a task subscribes to, its own key's among them (see `subscribe` in [tools.md](../daemon/tools.md#subscribeon-and-unsubscribeon)) |
+| subscriptions | every resource a task subscribes to, its own key's among them (see `subscribe` in [tools.md](../reference/tools.md#subscribeon-and-unsubscribeon)) |
 | task branches | `github:<owner/name>@priory/<task>` of an active task, or of one done in the last 10 minutes whose branch no event named yet |
 
 It skips the waits and holds of a task that is `done`, `failed` or `dropped`, and the subscriptions
