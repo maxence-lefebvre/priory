@@ -713,6 +713,12 @@ any more. The ask loses its lead and is asked again as its next revision, which 
 notification. Its question gains the reason, such as `Which database? (lead did not answer:
 its task is done)`. A lead that skips ends `done`.
 
+A routed step ask that gains a revision while it waits, from a comment or a `say` (see
+[routing.md](routing.md)), returns to the person too, since the lead's answer is for the earlier
+revision and would be refused. Its question gains `(<lead> did not answer: the ask changed while it
+waited)`, and a lead task still `queued` is dropped with the reason `ask <id> changed while it
+waited`. A lead task already running reads the refusal of its answer and ends `skipped`.
+
 Known limits:
 
 - Each lead task gets its own worktree of the repository, like any task, although the lead only

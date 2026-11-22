@@ -3676,6 +3676,15 @@ pub(crate) fn tell_ask(tx: &Transaction, task: i64, line: &str) -> rusqlite::Res
             "UPDATE asks SET revision = revision + 1, text = ?2 WHERE id = ?1",
             params![ask, text],
         )?;
+        // A lead was called for the earlier revision, so its answer would be refused: the person
+        // decides the new one.
+        tx.execute(
+            "UPDATE asks SET routed = NULL,
+               question = question || ' (' || routed || ' did not answer: the ask changed while it waited)'
+             WHERE id = ?1 AND routed IS NOT NULL",
+            [ask],
+        )?;
+        drop_lead(tx, ask, &format!("ask {ask} changed while it waited"))?;
         return Ok(true);
     }
     let (kept, counted) = match text.rsplit_once("\n\n") {

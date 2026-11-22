@@ -17026,6 +17026,41 @@ fn a_person_who_answers_a_routed_ask_first_drops_its_queued_lead_task() {
 }
 
 #[test]
+fn a_routed_step_ask_that_changes_while_it_waits_returns_to_the_person_and_drops_its_lead() {
+    let mut setup = hands_off("hands-off-told", IMPLEMENT_THEN_APPROVE);
+    // The lead fits only once more memory is free, so its task stays queued.
+    let lead = LEAD.replace(
+        "session = \"shared\"\n",
+        "session = \"shared\"\nmemory = \"8GB\"\n",
+    );
+    fs::write(setup.dir.join("factory/agents/lead/agent.md"), lead).unwrap();
+    setup.memory(12);
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 2 && rows[0][4] == "asleep");
+    assert_eq!(asks_json(&setup)["asks"][0]["routed_to"], json!("lead"));
+
+    let said = setup.priory(&["say", "1", "Use the v2 API."]);
+
+    assert!(said.status.success(), "{said:?}");
+    let ask = &asks_json(&setup)["asks"][0];
+    assert_eq!(
+        [&ask["state"], &ask["routed_to"], &ask["revision"]],
+        [&json!("open"), &json!(null), &json!(2)],
+        "{ask}"
+    );
+    let tasks = setup.rows("tasks");
+    assert_eq!(
+        [&tasks[1][4], &tasks[1][7]],
+        ["dropped", "ask 1 changed while it waited"]
+    );
+    let answered = setup.priory(&["answer", "1", "approved", "--revision", "2"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
 fn a_comment_on_its_issue_does_not_wake_a_plan_task_waiting_for_its_approval() {
     let mut setup = intervened("plan-comment", GRADED, "plan", "");
     setup.calls(&[result("green")]);
