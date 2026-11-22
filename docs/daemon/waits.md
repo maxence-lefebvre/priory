@@ -2,8 +2,8 @@
 
 An ask is a question to a person, with options, a recommendation and a trade-off. A wait is the
 conditions an agent names before it sleeps. Both let a task sleep with no process until an answer
-or an event wakes it, and the checks gate keeps a task from being done until its pull request's
-checks have run.
+or an event wakes it. The checks gate makes a task that reaches `done` wait on its pull request, so
+its agent fixes what the checks find before the task ends.
 
 ## Asks and answers
 

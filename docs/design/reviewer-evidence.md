@@ -26,7 +26,7 @@ narrow where a secret could come from, and the model below says where that line 
 - The task page's API gives each result's `evidence` as text
   ([serve.md](../reference/serve.md#task-in-detail)).
 - A plan carries `testing` and `verification`, and each later model step gets `Prove the change
-  with:` and the verification ([tools.md](../daemon/tools.md)). The proof is the agent's sentence.
+  with:` and the verification ([tools.md](../reference/tools.md#resultoutcome-summary-evidence-commit-reason-branches-risk-goal-testing-brief-verification-feedback-batch)). The proof is the agent's sentence.
 - One proof is checked by code: `gate-passed`, from `priory gate`
   ([tools.md](../daemon/tools.md#proofs)).
 - A run's screen is served with known secrets replaced by `[redacted]`: the values of the

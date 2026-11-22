@@ -1,8 +1,8 @@
 # MCP tools
 
 Every run gets one MCP server, `priory`, whose tools let its agent end a step, ask a person, or
-sleep until an event. This page lists each tool: its arguments, an example call, its reply and its
-refusals. [Tools](../daemon/tools.md) explains how a run uses them: which tools end a turn, how a
+sleep until an event. This page lists each tool with its arguments, and with its examples, replies and
+refusals where it has them. [Tools](../daemon/tools.md) explains how a run uses them: which tools end a turn, how a
 subscription carries events, and how the task moves on.
 
 ## `result(outcome, summary, evidence?, commit?, reason?, branches?, risk?, goal?, testing?, brief?, verification?, feedback?, batch?)`

@@ -1,7 +1,7 @@
 # Herdr panels
 
-The Herdr adapter shows Priory's views as Herdr panels, one mod per panel. This page lists where
-each panel opens, what it reads, what it shows and which verbs it runs, then the data each panel
+The Herdr adapter shows Priory's views as Herdr panels, most drawn by a mod of their own. This page
+lists where each panel opens, what it reads, what it shows and which verbs it runs, then the data each panel
 needs. [How the Herdr adapter works](../adapters/herdr.md) explains the module they share, and
 [DESIGN.md](../../DESIGN.md), under "Herdr adapter", holds the visual rules.
 

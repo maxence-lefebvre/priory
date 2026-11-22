@@ -1,8 +1,8 @@
 # Trace
 
-The trace is one record per step: its decider, effect, outcome, tokens and time, exported as
-OpenTelemetry spans. It is the factory's account of what each step did and cost, and the reports,
-costs, grades and labels on this page read it.
+The trace is the factory's history of what each step did and cost: one record per step end, beside
+records for repairs, reopens, labels, gates and scores. The reports, costs, grades and labels on
+this page read it, and the daemon can export its step records as OpenTelemetry spans.
 
 The daemon appends one `factory.step.ended` record per step end, in the transaction that moves the
 task on, as [the trace schema](../trace-schema.md) defines it. A model step ends with its run's

@@ -1,8 +1,8 @@
 # How to install the Herdr adapter
 
 This guide shows how to install Priory's panels into Herdr, keep their layouts in step with the
-factory's views, and serve a Herdr that runs on another machine. It assumes a clone of this
-repository and Node.js on the machine Herdr runs on. [How the Herdr adapter
+factory's views, and use Herdr on another machine. It assumes a clone of this repository and
+Node.js on the machine that runs `install`. [How the Herdr adapter
 works](adapters/herdr.md) explains what the install sets up.
 
 ## Installing

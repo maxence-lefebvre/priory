@@ -1,10 +1,10 @@
 # Runs
 
-A run is one agent process working on a task, from its start to its sleep or exit. The daemon
-starts runs in queue order, and only when they fit in the room, so a factory never runs more agents
-than its machines can take.
+A run is one task step worked by one agent's `claude` process. The daemon starts runs in queue
+order, and only when they fit in the room, so a factory never runs more agents than its machines can
+take.
 
-A run is one task step worked by one agent's `claude` process. A model step that leads to another
+A model step that leads to another
 model step with the same agent carries the process on into a new run, so each run has at most one
 result. A model step with another agent gets a new run and a new process (see Moving on). Each
 second, the daemon starts a run for each `queued` or `ready` task whose step decides `model`, in

@@ -1,5 +1,9 @@
 # Skills, instructions and memories
 
+Skills, instructions and memories are the factory's shared know-how: how to do a kind of work, the
+text before every agent's own prompt, and facts every run gets. Sharing them means each run starts
+with what the factory already knows, on whichever runner it lands.
+
 A factory's `skills/` folder, `instructions.md` and `memories/` folder reach every run on every
 runner, through the factory checkout each runner already has (R11.1). A kit repository that
 `[kit]` names adds its own, and a memories repository that `[memories]` names adds memories. Each
