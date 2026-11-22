@@ -22402,6 +22402,264 @@ fn a_write_sent_while_the_tasks_runner_is_away_is_applied_once_when_it_starts_ag
     assert_eq!(on_log(&a, "priory.task.applied").len(), 1);
 }
 
+impl Setup {
+    /// Starts `priory daemon --view-only` at `now` with the serve token, and returns the address
+    /// its server listens on.
+    fn start_viewing(&mut self, now: &str) -> String {
+        let factory = self.dir.join("factory");
+        let log = fs::File::create(self.dir.join("daemon.log")).unwrap();
+        self.daemon = Some(
+            self.command(env!("CARGO_BIN_EXE_priory"))
+                .args(["daemon", "--view-only", factory.to_str().unwrap()])
+                .env("PRIORY_NOW", now)
+                .env("PRIORY_TEST_TOKEN", SERVE_TOKEN)
+                .stderr(log)
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let log = fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default();
+            if let Some(address) = log
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("priory: serving on http://"))
+            {
+                return address.to_owned();
+            }
+            assert!(Instant::now() < deadline, "the view never served: {log}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// Runner `a` asleep on an approve ask, and `laptop`, a machine of the same factory with no runner
+/// file, serving with `--view-only` on `a`'s log: returns both, the ask's id on `a` and the view's
+/// address.
+fn asked_on_a_viewed(test: &str) -> (Setup, Setup, String, String) {
+    let mut a = runner(test, "a", None);
+    let mut laptop = runner(test, "laptop", Some(&a));
+    with_serve(&laptop);
+    let mut asked = requested(1);
+    asked.data["workflow"] = json!("approve");
+    a.publish(&asked);
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    let asks = a.until("asks", |rows| rows.len() == 1);
+    let address = laptop.start_viewing(T0);
+    (a, laptop, asks[0][0].clone(), address)
+}
+
+#[test]
+fn a_view_only_machine_lists_every_runners_asks_and_tasks_and_publishes_nothing() {
+    let (a, laptop, ask, address) = asked_on_a_viewed("view-only-lists");
+    let id = format!("a:{ask}");
+    let key = "github:owner/repo#1";
+
+    let listed = until_ask(&address, &id, |ask| ask["state"] == "open");
+    let task = until_task(&address, key, "a", |task| {
+        task.is_some_and(|task| task["hold"] == "kept")
+    })
+    .unwrap();
+
+    assert_eq!(listed["runner"], "a", "{listed}");
+    assert!(task["last_seen"].is_string(), "{task}");
+    let (_, desk) = runner_http(&address, "GET", "/api/desk", "");
+    assert!(
+        desk["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == id && item["runner"] == "a"),
+        "{desk}"
+    );
+    // The view reads the request as a runner does, and claims it for no one.
+    let inbox = laptop.rows("inbox");
+    let request = inbox
+        .iter()
+        .find(|row| row[1] == "factory.task.requested")
+        .unwrap();
+    assert_eq!(request[4], "elsewhere", "{inbox:?}");
+    let claims = on_log(&a, "priory.task.claimed");
+    assert!(
+        claims.iter().all(|claim| claim.data["runner"] == "a"),
+        "{claims:?}"
+    );
+    for kind in [
+        "priory.runner.alive",
+        "priory.task.held",
+        "priory.ask.posted",
+    ] {
+        assert!(
+            on_log(&a, kind)
+                .iter()
+                .all(|message| message.data["runner"] == "a"),
+            "{kind}"
+        );
+    }
+    assert!(laptop.own_tasks().is_empty());
+}
+
+#[test]
+fn an_answer_sent_from_a_view_only_machine_is_applied_by_its_runner() {
+    let (a, _laptop, ask, address) = asked_on_a_viewed("view-only-answer");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+
+    let (status, sent) = runner_http(
+        &address,
+        "POST",
+        &format!("/api/asks/{id}/answer"),
+        r#"{"option": "approved", "revision": 1}"#,
+    );
+
+    assert_eq!(status, 202, "{sent}");
+    let closed = until_ask(&address, &id, |ask| {
+        ask["state"] == "answered" && ask["submissions"][0]["outcome"] == "answered"
+    });
+    assert_eq!(closed["answer"], "approved", "{closed}");
+    a.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
+fn a_dismiss_from_a_view_only_machines_command_line_reaches_its_runner() {
+    let (a, laptop, ask, address) = asked_on_a_viewed("view-only-dismiss");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+    let factory = laptop.dir.join("factory");
+
+    let sent = laptop.priory(&["dismiss", "--revision", "1", factory.to_str().unwrap(), &id]);
+
+    assert!(
+        sent.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    // The approve step moves its task on by its options, so a refuses the dismiss and says why.
+    let refused = until_ask(&address, &id, |ask| {
+        ask["submissions"][0]["outcome"] == "refused"
+    });
+    assert_eq!(
+        refused["submissions"][0]["why"],
+        format!("ask {ask} moves its task on by its options: answer it instead"),
+        "{refused}"
+    );
+    assert_eq!(a.rows("asks").len(), 1);
+}
+
+#[test]
+fn a_view_only_machine_refuses_a_write_of_its_own() {
+    let (_a, laptop, ask, address) = asked_on_a_viewed("view-only-local");
+    until_ask(&address, &format!("a:{ask}"), |ask| ask["state"] == "open");
+
+    let resumed = laptop.priory(&["resume", "1"]);
+    let (status, seen) = runner_http(
+        &address,
+        "POST",
+        "/api/seen",
+        r#"{"at": "2026-11-21T10:00:00Z"}"#,
+    );
+
+    assert!(!resumed.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&resumed.stderr),
+        format!("priory resume: {VIEW_ONLY}\n")
+    );
+    // Since you looked is this machine's own, so the view records it.
+    assert_eq!(status, 200, "{seen}");
+}
+
+const VIEW_ONLY: &str = "this machine is view-only: it runs no task and changes none here. Answer \
+     or dismiss an ask as <runner>:<ask>, or act on a task as <runner>:<key>, which goes to its \
+     runner through the log";
+
+#[test]
+fn a_cancel_sent_from_a_view_only_machine_is_applied_by_its_runner() {
+    let (a, _laptop, _ask, address) = asked_on_a_viewed("view-only-cancel");
+    until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| task["generation"] == 1)
+    });
+
+    let (status, sent) = runner_http(
+        &address,
+        "POST",
+        &remote_act("a", ASKED_KEY, "cancel"),
+        r#"{"generation": 1}"#,
+    );
+
+    assert_eq!(status, 202, "{sent}");
+    let submission = sent["submission"].as_str().unwrap().to_owned();
+    a.until("tasks", |rows| rows[0][4] == "dropped");
+    logged(
+        &a,
+        "priory.task.applied",
+        json!({ "submission": submission, "outcome": "applied", "key": ASKED_KEY }),
+    );
+    until_task(&address, ASKED_KEY, "a", |task| task.is_none());
+}
+
+#[test]
+fn a_view_only_machine_records_memory_candidates_and_its_accept_reaches_every_runner() {
+    let (a, laptop, ask, address) = asked_on_a_viewed("view-only-memory");
+    until_ask(&address, &format!("a:{ask}"), |ask| ask["state"] == "open");
+    a.publish(&Message::new(
+        "priory.memory.written",
+        json!({
+            "name": "release-day", "description": "When releases go out.",
+            "text": "Releases go out on Tuesdays.", "task": "github:owner/repo#1", "runner": "a",
+        }),
+    ));
+    let written = laptop.until_candidates(|candidates| {
+        candidates
+            .iter()
+            .any(|candidate| candidate["state"] == "pending")
+    });
+    let id = candidate(
+        &written,
+        "release-day",
+        Some("Releases go out on Tuesdays."),
+    );
+
+    laptop.decide("accept", &id);
+
+    a.until_candidates(|candidates| {
+        candidates
+            .iter()
+            .any(|candidate| candidate["id"] == id && candidate["state"] == "accepted")
+    });
+    // Only the person's accept came from the laptop; it wrote no candidate.
+    assert_eq!(on_log(&a, "priory.memory.written").len(), 1);
+}
+
+#[test]
+fn view_only_refuses_a_machine_with_a_runner_file_and_a_factory_of_one_runner() {
+    let a = runner("view-only-runner", "a", None);
+    let one = Setup::new("view-only-one");
+
+    let on_a = a.priory(&[
+        "daemon",
+        "--view-only",
+        a.dir.join("factory").to_str().unwrap(),
+    ]);
+    let on_one = one.priory(&[
+        "daemon",
+        "--view-only",
+        one.dir.join("factory").to_str().unwrap(),
+    ]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&on_a.stderr),
+        "priory daemon: this machine, `a`, has a runner file in runners/: run `priory daemon` \
+         without --view-only\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&on_one.stderr),
+        "priory daemon: --view-only needs a factory of several runners: with one, its daemon \
+         serves every task and posts no ask\n"
+    );
+}
+
 const RELEASE_DAY: &str = "---\nname: release-day\ndescription: When releases go out.\n---\nReleases go out on Tuesdays.\n";
 const GATE_COST: &str = "+++\nname = \"gate-cost\"\ndescription = \"How long the gate takes.\"\n+++\nThe gate takes about four minutes.\n";
 

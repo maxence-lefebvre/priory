@@ -79,6 +79,82 @@ pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
     serve(factory, once).map_err(|error| error.to_string())
 }
 
+/// Why a view-only machine refuses a write on its socket.
+pub const VIEW_ONLY: &str = "this machine is view-only: it runs no task and changes none here. \
+     Answer or dismiss an ask as <runner>:<ask>, or act on a task as <runner>:<key>, which goes to \
+     its runner through the log";
+
+/// Reads the whole log into mirrors of every runner's asks and tasks, and serves them when the
+/// factory has `[serve]`. It claims, runs and publishes nothing: a person's answer, dismiss or task
+/// action goes to its runner through the log, from the server or the command line.
+pub fn view_only(factory: &Factory) -> Result<(), String> {
+    view(factory).map_err(|error| error.to_string())
+}
+
+fn view(factory: &Factory) -> Result<(), Error> {
+    let machine = room::hostname();
+    let viewer = runners::viewer(factory, machine.as_deref())?;
+    let mut db = state::open()?;
+    let bus = log::open(factory.log())?;
+    let trace = Trace {
+        factory,
+        revision: runtime::revision(&factory.dir),
+        runner: None,
+        machine,
+        usage: transcript::usage,
+    };
+    // The listings add every runner's asks and tasks once this state file names its machine.
+    runners::name(&db, Some(&viewer))?;
+    let consumer = runners::view_consumer(&viewer);
+    // The socket's lock keeps a second daemon off this state file.
+    let listening = runtime::listen(&runtime::home())?;
+    if let Some(config) = factory.serve() {
+        crate::serve::start(factory, config.listen)?;
+    }
+    let mut link = Link::default();
+    loop {
+        if link.due() {
+            let drained = view_drain(&*bus, &consumer, &mut db, &viewer, &trace);
+            link.tried(&db, drained)?;
+        }
+        match listening.lines.recv_timeout(EVERY) {
+            Ok(line) => {
+                let reply = match serde_json::from_str::<Input>(&line.text) {
+                    // Since you looked is this machine's own.
+                    Ok(Input::Seen(line)) => state::seen(&db, &line.seen.person, line.seen.at)
+                        .map_err(|error| error.to_string()),
+                    _ => Err(VIEW_ONLY.to_owned()),
+                };
+                let reply = serde_json::to_string(&reply).expect("a result serializes");
+                let _ = line.applied.send(reply);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
+        }
+    }
+}
+
+/// Reads every message past the view's cursor into its mirrors.
+fn view_drain(
+    bus: &dyn Log,
+    consumer: &str,
+    db: &mut Connection,
+    viewer: &str,
+    trace: &Trace,
+) -> Result<(), Error> {
+    loop {
+        let deliveries = bus.read(consumer, OUTPUT, 100)?;
+        if deliveries.is_empty() {
+            return Ok(());
+        }
+        for delivery in deliveries {
+            let message = runners::clocked(delivery.message.clone(), delivery.logged);
+            runners::view(db, &message, viewer, trace)?;
+            bus.ack(consumer, &delivery)?;
+        }
+    }
+}
+
 fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     runtime::bound_commands(factory.command_timeout());
     let mut db = state::open()?;

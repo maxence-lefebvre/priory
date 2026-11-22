@@ -181,7 +181,9 @@ Tests, on two daemons that share one herdr-bus file, as the runner tests already
    answers. The owner publishes the generation in `priory.task.held`. The web and Herdr Tasks
    panels open a remote row in place with the actions its hold allows. See
    [runners.md](../daemon/runners.md#acting-on-another-runners-task).
-3. `priory daemon --view-only`, for a machine with no runner file.
+3. Built: `priory daemon --view-only`, for a machine with no runner file. It reads the log as
+   `priory.view.<hostname>`, keeps the mirrors, serves them, and sends only answers, dismisses and
+   task actions through the log. See [runners.md](../daemon/runners.md#a-machine-that-only-views).
 4. A task's detail and runs across machines, if linking to the owner's web view proves too thin.
 
 ## Open questions

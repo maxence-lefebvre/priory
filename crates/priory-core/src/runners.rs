@@ -39,6 +39,69 @@ pub(crate) fn consumer(runner: Option<&str>) -> String {
     runner.map_or_else(|| "priory".to_owned(), |runner| format!("priory.{runner}"))
 }
 
+/// The name a view-only machine goes by: its hostname, which no runner file may name, since a
+/// view-only machine owns nothing. Refused in a factory of one runner, which posts no ask.
+pub(crate) fn viewer(factory: &Factory, host: Option<&str>) -> Result<String, String> {
+    if factory.runners.len() < 2 {
+        return Err(
+            "--view-only needs a factory of several runners: with one, its daemon serves \
+             every task and posts no ask"
+                .to_owned(),
+        );
+    }
+    match host {
+        Some(host) if factory.runners.contains_key(host) => Err(format!(
+            "this machine, `{host}`, has a runner file in runners/: run `priory daemon` without \
+             --view-only"
+        )),
+        Some(host) => Ok(host.to_owned()),
+        None => Ok("view".to_owned()),
+    }
+}
+
+/// The consumer a view-only machine reads the log as, apart from every runner's.
+pub(crate) fn view_consumer(viewer: &str) -> String {
+    format!("priory.view.{viewer}")
+}
+
+/// Records `message` on a view-only machine named `viewer`: it keeps the runners' claims, holds,
+/// leases, posts, submissions and memory candidates as a runner does, and claims, routes and
+/// applies nothing. A task
+/// request is `elsewhere`, and any other source event `ignored`.
+pub(crate) fn view(
+    db: &mut Connection,
+    message: &Message,
+    viewer: &str,
+    trace: &Trace,
+) -> Result<(), Error> {
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let seen = tx
+        .query_row(
+            "SELECT 1 FROM inbox WHERE id = ?1",
+            [message.id.to_string()],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if seen.is_none() {
+        let outcome = if crate::route::outsider(message) {
+            Some("outsider")
+        } else if crate::memories::handle(&tx, message)?.is_some() {
+            None
+        } else if crate::route::requests(message) {
+            Some("elsewhere")
+        } else if handle(&tx, message, viewer, trace, None)?.is_some() {
+            None
+        } else {
+            Some("ignored")
+        };
+        if let Some(outcome) = outcome {
+            crate::state::record(&tx, message, None, outcome, None)?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 /// The messages that name the runner they come from or go to, refused for a runner without a file.
 const NAMED: [&str; 8] = [
     ALIVE,

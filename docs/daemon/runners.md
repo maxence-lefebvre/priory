@@ -215,6 +215,63 @@ task](#acting-on-another-runners-task) its hold allows: Resume, Cancel and Relea
 and Cancel for a `waiting` one, which has no run yet. The web adds Say for a `kept` task. The row's
 newest submission shows under its title: sent, refused with why, or applied.
 
+## A machine that only views
+
+```sh
+priory daemon --view-only [DIR]
+```
+
+serves every runner's asks and tasks on a machine with no runner file, such as a laptop. It needs
+the factory in `DIR`, `.` by default, its log, and a state file of its own in `PRIORY_DB`. It reads
+`factory.intake` as the consumer `priory.view.<hostname>`, and records each runner's claims,
+holds, alive messages, posts, outcomes and memory candidates as a runner does. With `[serve]`, it serves them on the
+web view and the API, as [serve.md](serve.md) describes.
+
+A view-only machine can:
+
+- list every runner's open asks on its desk and Asks list, and every runner's tasks with their
+  hold and when their runner was last seen, from `priory asks`, `priory tasks`, `priory desk` and
+  the endpoints;
+- answer or dismiss an ask as `<runner>:<ask>`, from the web view, the endpoints or the command
+  line, which publishes the write for that runner, as the next section says;
+- resume, revive, cancel, release or say on a task as `<runner>:<key>`, from the Tasks panels, the
+  endpoints or the command line, which publishes the action for that runner, as
+  [Acting on another runner's task](#acting-on-another-runners-task) says;
+- give a task to a runner with `priory give`;
+- list the memory candidates that agents wrote, and accept or drop one with
+  `priory memories accept` or `priory memories drop`, which publishes the verdict for every runner
+  (see [skills.md](skills.md));
+- record Since you looked with `priory seen` and `POST /api/seen`.
+
+A view-only machine cannot:
+
+- claim a task, start a run or apply an answer: it records each task request as `elsewhere` and
+  every other source event as `ignored`;
+- publish an alive, held, claimed, posted, applied or memory candidate message: no runner's
+  lease, claim or memory depends on it;
+- change anything else. Its socket refuses every other write, such as `priory resume`, a snooze,
+  a pick or a todo, with:
+
+```text
+this machine is view-only: it runs no task and changes none here. Answer or dismiss an ask as <runner>:<ask>, or act on a task as <runner>:<key>, which goes to its runner through the log
+```
+
+Runners refuse a message that names a runner with no file in `runners/`. A view-only machine sends
+only answers, dismisses and task actions, each of which names the runner that applies it, so that
+runner applies them as it applies another runner's, and memory accepts and drops, which name no
+runner.
+
+`priory daemon --view-only` refuses to start on a machine that has a runner file, and in a factory
+of fewer than two runners, which posts no ask:
+
+```text
+this machine, `<hostname>`, has a runner file in runners/: run `priory daemon` without --view-only
+--view-only needs a factory of several runners: with one, its daemon serves every task and posts no ask
+```
+
+It takes no `--once`. Give each view-only machine its own hostname, since two that share one read
+the log as one consumer and each miss what the other read.
+
 ## Answering another runner's ask
 
 ```sh
@@ -330,7 +387,7 @@ Every runner also refuses a claim for a runner without a runner file.
   on the old runner.
 - Each ask change adds one post to `factory.intake`.
 - Snoozes stay on their machine: another runner's ask cannot be snoozed here.
-- A machine without a runner file runs no daemon, so it has no copy of the asks or tasks to serve.
+- A machine without a runner file serves the asks and tasks only with `priory daemon --view-only`.
 - Another runner's task shows its hold, not its state. Its actions are sent through the log, and
   hold has no remote form: hold it on its runner.
 - A key's newer task starts at generation 1 again. An action sent to the old task and read after
