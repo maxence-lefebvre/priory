@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, countWords, memoryNote, memoryTag, capsuleWords, countHead, deskBanners } from "./desk.js";
+import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, countWords, memoryNote, memoryTag, capsuleWords, countHead, deskBanners, arrivalAsk } from "./desk.js";
 
 const why = "work stopped and waits on a person";
 
@@ -163,6 +163,18 @@ test("the capsule answers while live, and only reads the asks while offline", ()
   assert.deepEqual(capsuleWords(7, false), { text: "Answer 7 asks", icon: "ask", off: false });
   assert.deepEqual(capsuleWords(1, false), { text: "Answer 1 ask", icon: "ask", off: false });
   assert.deepEqual(capsuleWords(7, true), { text: "Read 7 asks, offline", icon: "unplug", off: true });
+});
+
+test("a wide Desk opens its oldest ask on arrival, and stays empty once that drawer closes", () => {
+  const asks = [{ id: 7 }, { id: 3 }];
+  assert.equal(arrivalAsk({ from: null, list: "desk", view: "needs", asks }), 7);
+  assert.equal(arrivalAsk({ from: "/tasks/4", list: "desk", view: "needs", asks }), 7);
+  assert.equal(arrivalAsk({ from: "/asks/9", list: "asks", view: "needs", asks }), 7);
+  assert.equal(arrivalAsk({ from: "/asks/7", list: "desk", view: "needs", asks }), null);
+  assert.equal(arrivalAsk({ from: "/", list: "desk", view: "needs", asks }), null);
+  assert.equal(arrivalAsk({ from: "/?view=running", list: "desk", view: "needs", asks }), null);
+  assert.equal(arrivalAsk({ from: "/tasks", list: "desk", view: "running", asks }), null);
+  assert.equal(arrivalAsk({ from: null, list: "desk", view: "needs", asks: [] }), null);
 });
 
 test("the desk's banners say why runs wait: the pause first, then room, intake and each cap reached", () => {

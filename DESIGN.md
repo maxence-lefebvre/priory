@@ -91,7 +91,8 @@ The view sets two attributes on `<html>`:
 [`design/tokens/structure.css`](design/tokens/structure.css) holds the values. The rules:
 
 - **Spacing:** a 4 px grid, `--space-1` (4 px) to `--space-8` (48 px). Lay out siblings with
-  `gap`, not margins. The side gutter is `--gutter`, 16 px or the safe-area inset.
+  `gap`, not margins. The side gutter is `--gutter`, 16 px or the safe-area inset, and 20 px
+  in the wide layout.
 - **Radii:** `--radius-sm` (5 px) for tags and key hints, `--radius-tile` (8 px) for state tiles,
   `--radius-md` (12 px) for inputs, banners, the segmented control, the workflow grid and the
   terminal, `--radius-card` (14 px) for option buttons, the answer bar's buttons, sheets and theme
@@ -243,9 +244,15 @@ and the rubric red `--count`.
 - **List**: the selected view as an explorer list (below), at least 600 px wide at 1440 px. It
   holds no facet column and no histogram: facets are chips, and the histogram lives in Runs.
 - **Drawer**, `--drawer` (640 px) on `--surface`: the selected ask, task or run. It opens beside
-  the list and never covers it.
+  the list and never covers it. A person who arrives on the Desk's Needs me view finds its oldest
+  ask open in the drawer, its row marked; once they close it, the drawer stays empty until they
+  leave the Desk. Tasks, Runs and Queue have no drawer, nor has the Inbox in a plain tabs
+  layout: the list takes the width.
+- **Page width**: the task, batch and memories pages, and the Inbox's groups, are at most 960 px
+  wide, against the rail. The Tasks, Runs and Queue tables keep the full width.
+- **Back link**: its chevron lines up with the context line under it.
 - **Key hint bar** at the bottom of the Desk, Asks and Inbox lists, 40 px: `J` `K` move, `Enter`
-  open, `Esc` close, `N` add.
+  open, `Esc` close, `N` add. It sits at `--gutter`, as the list's rows do.
 
 ## Iconography
 
@@ -508,8 +515,7 @@ workflow, then its 5 newest events with the `asleep` tile. Under them, by the ta
 group's `say_text` through the task's say verb, with "Say sends “...”" in `--text-2`; Say and the
 task page's **Resume** for a blocked one, whose line adds "It reads them when it resumes."; the
 owned group's Revive or Request a task for an ended one; "Its next run reads them." otherwise.
-Events open no detail, so the empty drawer beside the panel says "Open an event's task to read what the event
-did."
+Events open no detail, so the Inbox has no drawer on wide screens.
 
 ### Add
 
@@ -981,6 +987,8 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
   1.5 px `--danger-text` edge and the `lock` icon.
 - **Feedback**, in the pull request section: each review feedback item the agent sorted, as a
   history row with its link and its class in plain words: "trivial", "nothing to do" or "your call".
+  On wide screens each check's result and each item's class sit beside its name, in one column,
+  not at the row's right edge.
 - **Inbox**, after the pull request: the events routed to the task, newest first, at most 20, as
   history rows. Each shows a tile for its prompt (`done` delivered, `queued` still queued, `running`
   being typed, `prompt` unconfirmed, `dropped` withdrawn, `asleep` kept for the next run, `ready`

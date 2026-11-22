@@ -11,7 +11,7 @@ import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedP
 import { emptyDetail, eventWords, handled, neverOwned, sinceWords, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
-import { actionNote, batchParts, capsuleWords, countHead, countWords, deskBanners, dueParts, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
+import { actionNote, arrivalAsk, batchParts, capsuleWords, countHead, countWords, deskBanners, dueParts, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskLabel, taskViews, triageWords, workStep } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { PANELS, backTo, pageTitle } from "./pages.js";
@@ -140,6 +140,8 @@ const state = {
   signInError: null,
   list: "desk",
   listUrl: "/",
+  // The page the last loaded render drew, so the Desk knows a person arrived rather than closed an ask.
+  drawn: null,
   // The last list the person opened; a task or batch page opened next keeps it in its history entry.
   from: null,
   snapshot: null,
@@ -326,7 +328,7 @@ function signOut(reason) {
   watch.stop();
   // Before the token goes: giving the keyboard back needs it.
   keyboard.leave();
-  Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, flowsError: null, all: { asks: false, tasks: false, runs: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
+  Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, drawn: null, flowsError: null, all: { asks: false, tasks: false, runs: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
   render();
 }
 
@@ -1515,7 +1517,7 @@ function taskSections(task) {
   if (pr) {
     sections.push(["pr", "PR", sect("pr", "workflow", `#${pr.number} ${pr.title || ""}`, stateWords(pr.review),
       html`<p class="meta">${pr.branch} into ${pr.base}, head <span class="mono">${String(pr.head_sha).slice(0, 7)}</span>, ${pr.state}</p>
-      <ol class="hist">${pr.checks.map((check) => html`<li>${tile(checkState(check.conclusion), "sm")}<span>${check.name}</span><span>${check.conclusion ? stateWords(check.conclusion) : "running"}</span></li>`)}</ol>${prStackList(task.stack, pr)}${triageList(task.triage)}`)]);
+      <ol class="hist pair">${pr.checks.map((check) => html`<li>${tile(checkState(check.conclusion), "sm")}<span>${check.name}</span><span>${check.conclusion ? stateWords(check.conclusion) : "running"}</span></li>`)}</ol>${prStackList(task.stack, pr)}${triageList(task.triage)}`)]);
   } else if (prs(task)) {
     // The summary needs the pull request's events; the stack does not.
     sections.push(["pr", "PR", sect("pr", "workflow", prs(task), "", html`${prStackList(task.stack, null)}${triageList(task.triage)}`)]);
@@ -1771,7 +1773,7 @@ function triageList(triage) {
   if (!triage?.length) return "";
   const label = (item) => item.replace(/^https:\/\/github\.com\//, "");
   const named = (item) => (item.startsWith("https://") ? html`<a class="autolink" href="${item}" rel="noopener noreferrer" target="_blank">${label(item)}</a>` : item);
-  return html`<p class="meta">Feedback, as the agent sorted it</p><ol class="hist" aria-label="Review feedback items">${triage.map((entry) => html`<li>${tile(TRIAGE_TILES[entry.class] || "queued", "sm")}<span>${named(entry.item)}</span><span>${triageWords(entry.class)}</span></li>`)}</ol>`;
+  return html`<p class="meta">Feedback, as the agent sorted it</p><ol class="hist pair" aria-label="Review feedback items">${triage.map((entry) => html`<li>${tile(TRIAGE_TILES[entry.class] || "queued", "sm")}<span>${named(entry.item)}</span><span>${triageWords(entry.class)}</span></li>`)}</ol>`;
 }
 
 const PULL_TILES = { merged: "done", closed: "dropped" };
@@ -2758,7 +2760,7 @@ function listPanel(panel, wide) {
       ${nextCard(model)}${views}${banner}<div class="scroll">${rows}</div>${wide ? keyHints() : ""}</div>`;
   }
   if (panel === "inbox") {
-    return html`<div class="list" role="region" aria-label="Inbox"><div class="lhead"><h1>Inbox</h1></div>${inboxViews()}<div class="scroll">${unroutedRows()}</div>${wide ? keyHints() : ""}</div>`;
+    return html`<div class="list inbox" role="region" aria-label="Inbox"><div class="lhead"><h1>Inbox</h1></div>${inboxViews()}<div class="scroll">${unroutedRows()}</div>${wide ? keyHints() : ""}</div>`;
   }
   if (panel === "asks") {
     const { views, rows } = asksBody(wide);
@@ -2956,6 +2958,12 @@ function page() {
   if (!state.data) return loading();
   const size = layout();
   const here = current();
+  const arrival = size === "wide" && here === "desk" && !selectedAsk() && arrivalAsk({ from: state.drawn, list: state.list, view: deskView(), asks: openAsks() });
+  if (arrival) {
+    Object.assign(state, { list: "desk", listUrl: routeKey(), from: routeKey() });
+    history.replaceState(history.state, "", `/asks/${encodeURIComponent(arrival)}`);
+  }
+  state.drawn = routeKey();
   if (["desk", "asks"].includes(here) && !selectedAsk()) Object.assign(state, { list: here, listUrl: routeKey() });
   const taskId = here === "tasks" && /^\d+$/.test(route()[1] || "") ? Number(route()[1]) : null;
   const batchId = here === "batches" && /^\d+$/.test(route()[1] || "") ? route()[1] : null;
@@ -2992,12 +3000,15 @@ function page() {
   const utility = taskId ? taskPage(taskId) : batchId ? batchPage(batchId) : here === "memories" ? memoriesPage() : here === "reports" ? reportsPage(false) : here === "costs" ? costsPage(false) : here === "workflow" ? flowsPage(false) : here === "settings" ? settingsScreen() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
   const nav = (kind) => tabs(here === "settings" && wide ? "settings" : here === "settings" ? "more" : batchId ? "tasks" : here === "memories" ? "desk" : list, kind);
   if (utility) {
-    return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}<div class="list">${utility}</div></div>${wide ? "" : nav("bar")}`;
+    const capped = taskId || batchId || here === "memories" ? "page" : "";
+    return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}<div class="list ${capped}">${utility}</div></div>${wide ? "" : nav("bar")}`;
   }
   if (OWN_PAGE_LISTS[list]) return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}${listPanel(list, wide)}</div>${wide ? "" : nav("bar")}`;
   if (!wide) return html`${staleStrip()}${top}<div class="medium">${listPanel(list, false)}${drawer(false, [list])}</div>${nav("bar")}`;
   const layoutNode = view().layout;
   const plain = layoutNode.tabs?.every((child) => child.panel);
+  // Events open no detail, so a wide Inbox takes the drawer's width too.
+  if (plain && list === "inbox") return html`${staleStrip()}${top}<div class="wide no-drawer">${nav("rail")}${listPanel(list, true)}</div>`;
   const main = plain ? listPanel(list, true) : tree(layoutNode, list);
   return html`${staleStrip()}${top}<div class="wide">${nav("rail")}${main}${drawer(true, plain ? [list] : shownPanels(layoutNode, list))}</div>`;
 }

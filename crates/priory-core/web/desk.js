@@ -151,6 +151,19 @@ export function capsuleWords(n, offline) {
 }
 
 /**
+ * The ask a wide Desk opens in its drawer as the person arrives, else null. Arrival comes from
+ * another page; a redraw, another saved view, or a closed Desk ask leaves the drawer empty.
+ * @param {{ from: string | null, list: string, view: string, asks: { id: any }[] }} at
+ */
+export function arrivalAsk({ from, list, view, asks }) {
+  if (view !== "needs" || !asks.length) return null;
+  const [first, id] = (from || "").split(/[?#]/)[0].split("/").filter(Boolean);
+  if (from !== null && (!first || first === "index.html")) return null;
+  if (first === "asks" && id && list === "desk") return null;
+  return asks[0].id;
+}
+
+/**
  * The Desk's banners, each the daemon's sentence: the pause, the room, the intake, then one per
  * day or week spend cap reached, as `priory desk` prints them.
  * @param {any} desk `/api/desk`

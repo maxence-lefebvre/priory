@@ -109,8 +109,8 @@ tabs = [
 ```
 
 On a phone, every leaf becomes a tab in the tree's order: the bottom bar shows the first four and
-More holds the rest. On a wide screen, a `tabs` root becomes the rail beside the list and the
-drawer; any other root is laid out as written. See [DESIGN.md](../../DESIGN.md#layout).
+More holds the rest. On a wide screen, a `tabs` root becomes the rail beside the list, and
+the drawer beside the Desk and Asks; any other root is laid out as written. See [DESIGN.md](../../DESIGN.md#layout).
 
 ## Example
 
