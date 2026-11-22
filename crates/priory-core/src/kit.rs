@@ -2,6 +2,7 @@
 //! them (R11.1).
 
 use priory_factory::factory::{self, Factory, KitFiles, Memory, Skill};
+use priory_factory::paths::Scoped;
 use priory_runtime::runtime;
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -153,6 +154,57 @@ impl Sources<'_> {
             .map(|(name, memory)| (PathBuf::from(format!("{name}.md")), memory.bytes.as_slice()))
             .collect();
         runtime::write_once(&home.join("kit").join(hash), "memories", &files).map(Some)
+    }
+
+    /// The file that lists each skill and memory with `paths`, `<home>/kit/<hash>/paths/paths.json`,
+    /// for a run whose skills are in `plugin` and memories in `memories`, or none when none has them.
+    pub(crate) fn scoped(
+        &self,
+        home: &Path,
+        plugin: Option<&Path>,
+        memories: Option<&Path>,
+    ) -> Result<Option<PathBuf>, String> {
+        let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+        let mut scoped = Vec::new();
+        if let Some(plugin) = plugin {
+            for (name, skill) in self.skills.iter().filter(|(_, s)| !s.paths.is_empty()) {
+                let file = plugin.join("skills").join(name).join("SKILL.md");
+                scoped.push(Scoped {
+                    kind: "skill".into(),
+                    name: (*name).to_owned(),
+                    file: file.display().to_string(),
+                    globs: skill.paths.clone(),
+                    text: text(
+                        skill
+                            .files
+                            .get(Path::new("SKILL.md"))
+                            .map_or(&[][..], Vec::as_slice),
+                    ),
+                });
+            }
+        }
+        if let Some(memories) = memories {
+            for (name, memory) in self.memories.iter().filter(|(_, m)| !m.paths.is_empty()) {
+                scoped.push(Scoped {
+                    kind: "memory".into(),
+                    name: (*name).to_owned(),
+                    file: memories.join(format!("{name}.md")).display().to_string(),
+                    globs: memory.paths.clone(),
+                    text: text(&memory.bytes),
+                });
+            }
+        }
+        if scoped.is_empty() {
+            return Ok(None);
+        }
+        let json = serde_json::to_vec(&scoped).expect("scoped files serialize");
+        let hash = digest([&b"paths"[..], &json]);
+        let folder = runtime::write_once(
+            &home.join("kit").join(hash),
+            "paths",
+            &[(PathBuf::from("paths.json"), json.as_slice())],
+        )?;
+        Ok(Some(folder.join("paths.json")))
     }
 
     /// The plugin folder that holds the skills, `<home>/kit/<hash>/plugin`, written once per

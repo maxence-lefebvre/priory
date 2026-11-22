@@ -37,6 +37,7 @@ pub mod risk;
 mod room;
 mod route;
 pub mod runners;
+mod scoped;
 pub mod score;
 pub mod screen;
 pub mod search;

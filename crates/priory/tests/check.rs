@@ -2346,6 +2346,46 @@ fn a_skill_named_unlike_its_folder_fails_the_check() {
     );
 }
 
+#[test]
+fn a_path_glob_the_hook_cannot_match_fails_the_check_on_its_paths_line() {
+    let mut files = valid();
+    files.push((
+        "skills/changelog/SKILL.md",
+        "---\nname: changelog\ndescription: Edits the changelog.\npaths:\n  - CHANGELOG.md\n  - \"docs/**/*.{md,txt}\"\n---\nOne line per change.\n",
+    ));
+    files.push((
+        "memories/gate-cost.md",
+        "+++\nname = \"gate-cost\"\ndescription = \"How long the gate takes.\"\npaths = \"crates/*/tests/?.rs\"\n+++\nFour minutes.\n",
+    ));
+    files.push((
+        "skills/release-notes/SKILL.md",
+        "---\nname: release-notes\ndescription: Writes release notes.\npaths: [\"/etc/*.md\", \"src/../x\"]\n---\nList each change.\n",
+    ));
+    files.push((
+        "memories/release-day.md",
+        "---\nname: release-day\ndescription: When releases go out.\npaths:\n  - \"src/a**/b\"\n  - \"[ab].rs\"\n  - \"{a,{b,c}}\"\n  - \"\"\n---\nTuesdays.\n",
+    ));
+
+    let outcome = check(&factory("paths-invalid", &files));
+
+    assert_eq!(outcome.code, 1, "{}", outcome.stderr);
+    for line in [
+        "skills/release-notes/SKILL.md:4: the path glob `/etc/*.md` starts with /: a glob is relative to the repository root",
+        "skills/release-notes/SKILL.md:4: the path glob `src/../x` has a `.` or `..` part",
+        "memories/release-day.md:5: the path glob `src/a**/b` puts ** inside a part: ** stands alone between slashes",
+        "memories/release-day.md:5: the path glob `[ab].rs` holds `[`: a glob takes *, **, ? and {a,b}",
+        "memories/release-day.md:5: the path glob `{a,{b,c}}` nests braces or leaves one open",
+        "memories/release-day.md:5: a path glob is empty",
+    ] {
+        assert!(
+            outcome.stderr.contains(line),
+            "{line} in {}",
+            outcome.stderr
+        );
+    }
+    assert_eq!(outcome.stderr.lines().count(), 6, "{}", outcome.stderr);
+}
+
 fn codex_with_instructions(name: &str, instructions: &str) -> Outcome {
     let mut files = valid();
     files[1] = (

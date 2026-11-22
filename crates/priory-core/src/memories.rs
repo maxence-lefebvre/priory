@@ -295,6 +295,7 @@ pub(crate) fn layer(
         let memory = kept.map(|(description, text)| Memory {
             bytes: file(&name, &description, &text).into_bytes(),
             description,
+            paths: Vec::new(),
         });
         Ok((name, memory))
     })?

@@ -1860,6 +1860,8 @@ pub struct Factory {
 #[derive(Debug)]
 pub struct Memory {
     pub description: String,
+    /// The globs whose files bring the memory into a run's context when it reads or edits one.
+    pub paths: Vec<String>,
     /// The file as it is on disk.
     pub bytes: Vec<u8>,
 }
@@ -1882,6 +1884,9 @@ pub struct MemoryFrontmatter {
     /// When an agent should read the memory. The index shows it on one line.
     #[schemars(required, length(min = 1))]
     pub description: Option<String>,
+    /// Globs relative to the repository root, such as `src/**/*.rs`: a run that reads, edits or
+    /// creates a matching file gets the memory's file in its context, once per run.
+    pub paths: Option<crate::paths::Globs>,
 }
 
 /// The size past which `priory check` refuses a memory, so the index stays one look.
@@ -1897,6 +1902,8 @@ pub const SKILL_FOLDER: &str = "$PRIORY_HOME/kit/<hash>/plugin/skills";
 #[derive(Debug)]
 pub struct Skill {
     pub description: String,
+    /// The globs whose files bring `SKILL.md` into a run's context when it reads or edits one.
+    pub paths: Vec<String>,
     /// Every file of the skill's folder, by its path inside the folder, as bytes.
     pub files: BTreeMap<PathBuf, Vec<u8>>,
 }
@@ -1906,6 +1913,7 @@ pub struct Skill {
 struct SkillFrontmatter {
     name: Option<String>,
     description: Option<String>,
+    paths: Option<crate::paths::Globs>,
 }
 
 /// The file whose text goes before every agent's own prompt.
@@ -2655,7 +2663,15 @@ impl Loader<'_> {
             });
             return None;
         }
-        Some((Skill { description, files }, lines))
+        let paths = self.globs(&relative, front.paths, &lines);
+        Some((
+            Skill {
+                description,
+                paths,
+                files,
+            },
+            lines,
+        ))
     }
 
     /// The memory in `file`, once it is a `<name>.md` file under the limit whose frontmatter names
@@ -2727,11 +2743,33 @@ impl Loader<'_> {
                 return None;
             }
         };
+        let paths = self.globs(&relative, front.paths, &lines);
         let memory = Memory {
             description,
+            paths,
             bytes: source.into_bytes(),
         };
         Some((memory, lines))
+    }
+
+    /// The globs of a frontmatter's `paths`, each one the hook cannot match reported on its line.
+    fn globs(
+        &mut self,
+        file: &Path,
+        globs: Option<crate::paths::Globs>,
+        lines: &Lines,
+    ) -> Vec<String> {
+        let globs = globs.map(crate::paths::Globs::into_vec).unwrap_or_default();
+        for glob in &globs {
+            if let Some(message) = crate::paths::problem(glob) {
+                self.problems.push(Problem {
+                    file: file.to_path_buf(),
+                    at: Some(lines.field("paths").unwrap_or(1).to_string()),
+                    message,
+                });
+            }
+        }
+        globs
     }
 
     fn parse<T: DeserializeOwned>(&mut self, file: &Path) -> Option<(T, Lines)> {

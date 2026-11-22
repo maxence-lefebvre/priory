@@ -23831,6 +23831,67 @@ fn a_claude_run_gets_an_index_of_the_factorys_memories_and_reads_their_files_fro
     assert_ne!(setup.rows("runs")[1][8], kit);
 }
 
+/// The text a `PreToolUse` hook added to the model's context, if any.
+fn added_context(reply: &serde_json::Value) -> Option<&str> {
+    let output = &reply["hookSpecificOutput"];
+    (output["hookEventName"] == "PreToolUse")
+        .then(|| output["additionalContext"].as_str())
+        .flatten()
+}
+
+#[test]
+fn a_run_that_reads_or_edits_a_path_under_a_glob_gets_its_memory_or_skill_once() {
+    let mut setup = Setup::new("paths-scoped");
+    setup.memories();
+    fs::write(
+        setup.dir.join("factory/memories/release-day.md"),
+        "---\nname: release-day\ndescription: When releases go out.\npaths: [\"CHANGELOG.md\", \"docs/**/*.md\"]\n---\nReleases go out on Tuesdays.\n",
+    )
+    .unwrap();
+    let skill = setup.dir.join("factory/skills/migrations");
+    fs::create_dir_all(&skill).unwrap();
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: migrations\ndescription: Writes a schema migration.\npaths: \"crates/*/src/state.rs\"\n---\nTake the next free version.\n",
+    )
+    .unwrap();
+    let call =
+        |tool: &str, key: &str, path: &str| json!({ "name": tool, "arguments": { key: path } });
+    setup.calls(&[json!([
+        call("Read", "file_path", "src/main.rs"),
+        call("Read", "file_path", "docs/guides/release.md"),
+        call("Edit", "file_path", "CHANGELOG.md"),
+        call("Write", "file_path", "crates/core/src/state.rs"),
+        call("Read", "file_path", "crates/core/src/state.rs"),
+    ])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let replies = setup.replied(5);
+    assert_eq!(added_context(&replies[0]), None, "{}", replies[0]);
+    let memory = added_context(&replies[1]).unwrap_or_else(|| panic!("{}", replies[1]));
+    assert!(memory.contains("Releases go out on Tuesdays."), "{memory}");
+    assert!(
+        memory.contains("`docs/guides/release.md` matches `docs/**/*.md`"),
+        "{memory}"
+    );
+    assert_eq!(
+        added_context(&replies[2]),
+        None,
+        "once per run: {}",
+        replies[2]
+    );
+    let skill = added_context(&replies[3]).unwrap_or_else(|| panic!("{}", replies[3]));
+    assert!(skill.contains("Take the next free version."), "{skill}");
+    assert!(skill.contains("skills/migrations/SKILL.md"), "{skill}");
+    assert_eq!(added_context(&replies[4]), None, "{}", replies[4]);
+    assert!(
+        !memory.contains("four minutes"),
+        "a memory without paths stays in the index only"
+    );
+}
+
 #[test]
 fn a_codex_run_gets_the_memory_index_in_its_developer_instructions() {
     let mut setup = Setup::with_workflow("memories-codex", TWO_AGENTS);

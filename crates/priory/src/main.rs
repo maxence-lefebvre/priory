@@ -3585,16 +3585,8 @@ const GUARD_DEADLINE: Duration = Duration::from_secs(8);
 /// The `PreToolUse` hook's reason to deny the call, if any: none for a call no guard matches, and
 /// the daemon's answer for one that matches. Anything but the daemon's yes denies, since a hook
 /// that fails lets the call through.
-fn guard() -> Option<String> {
+fn guard(input: &Value) -> Option<String> {
     let deny = |reason: &str| Some(reason.to_owned());
-    let input: Value = match serde_json::from_reader(std::io::stdin()) {
-        Ok(input) => input,
-        Err(error) => {
-            return deny(&format!(
-                "Priory's tool guard could not read this call ({error}), so it denied it."
-            ));
-        }
-    };
     let guards: priory_factory::guard::Guards = match std::env::var("PRIORY_GUARD") {
         Ok(json) if !json.is_empty() => match serde_json::from_str(&json) {
             Ok(guards) => guards,
@@ -3676,6 +3668,122 @@ fn guard() -> Option<String> {
     None
 }
 
+/// How long the hook waits for the daemon to say which matching files a run has not got yet.
+const SCOPED_WAIT: Duration = Duration::from_secs(1);
+
+/// How long the whole lookup of a file tool's skills and memories may take.
+const SCOPED_DEADLINE: Duration = Duration::from_secs(3);
+
+/// The Claude tools that read, edit or create the file their input names.
+const FILE_TOOLS: [&str; 5] = ["Read", "Edit", "Write", "MultiEdit", "NotebookEdit"];
+
+/// The text of each skill and memory whose `paths` match the file a file tool's call names, that
+/// the run has not got yet. Without a daemon to ask, every match counts as new.
+fn scoped_context(input: &Value) -> Option<String> {
+    let tool = input["tool_name"].as_str()?;
+    if !FILE_TOOLS.contains(&tool) {
+        return None;
+    }
+    let arguments = &input["tool_input"];
+    let path = arguments["file_path"]
+        .as_str()
+        .or_else(|| arguments["notebook_path"].as_str())?;
+    let listed = std::env::var_os("PRIORY_PATHS").filter(|file| !file.is_empty())?;
+    let root = std::env::var_os("PRIORY_WORKTREE").filter(|root| !root.is_empty())?;
+    let cwd = input["cwd"]
+        .as_str()
+        .map_or_else(|| PathBuf::from(&root), PathBuf::from);
+    let relative = relative_path(&cwd.join(path), Path::new(&root))?;
+    let scoped: Vec<priory_factory::paths::Scoped> =
+        serde_json::from_slice(&std::fs::read(listed).ok()?).ok()?;
+    let matched: Vec<(&priory_factory::paths::Scoped, &str)> = scoped
+        .iter()
+        .filter_map(|entry| {
+            let glob = entry
+                .globs
+                .iter()
+                .find(|glob| priory_factory::paths::matches(glob, &relative))?;
+            Some((entry, glob.as_str()))
+        })
+        .collect();
+    if matched.is_empty() {
+        return None;
+    }
+    let session = std::env::var("PRIORY_SESSION")
+        .ok()
+        .filter(|id| !id.is_empty())
+        .or_else(|| input["session_id"].as_str().map(str::to_owned))
+        .unwrap_or_default();
+    let files: Vec<&str> = matched
+        .iter()
+        .map(|(entry, _)| entry.file.as_str())
+        .collect();
+    let line = serde_json::json!({ "scoped": { "session": session, "files": files } });
+    let new: Option<Vec<String>> = runtime::call(&runtime::home(), &line.to_string(), SCOPED_WAIT)
+        .ok()
+        .and_then(|reply| serde_json::from_str::<Result<String, String>>(&reply).ok())
+        .and_then(Result::ok)
+        .map(|new| new.lines().map(str::to_owned).collect());
+    let texts: Vec<String> = matched
+        .iter()
+        .filter(|(entry, _)| new.as_ref().is_none_or(|new| new.contains(&entry.file)))
+        .map(|(entry, glob)| {
+            format!(
+                "Priory adds the {} `{}` ({}) because `{relative}` matches `{glob}`. This run gets it once.\n\n{}",
+                entry.kind,
+                entry.name,
+                entry.file,
+                entry.text.trim_end()
+            )
+        })
+        .collect();
+    (!texts.is_empty()).then(|| texts.join("\n\n"))
+}
+
+/// `path` relative to `root`, with `/` between its parts, once `.` and `..` are resolved; none for
+/// a path outside `root`. A link in either, such as macOS's `/tmp`, resolves through the parts
+/// that exist.
+fn relative_path(path: &Path, root: &Path) -> Option<String> {
+    let lexical = |path: &Path| {
+        let mut out = PathBuf::new();
+        for part in path.components() {
+            match part {
+                std::path::Component::ParentDir => {
+                    out.pop();
+                }
+                std::path::Component::CurDir => {}
+                part => out.push(part),
+            }
+        }
+        out
+    };
+    let resolved = |path: &Path| {
+        let path = lexical(path);
+        let mut existing = path.as_path();
+        let mut rest = Vec::new();
+        loop {
+            if let Ok(real) = existing.canonicalize() {
+                return Some(
+                    rest.iter()
+                        .rev()
+                        .fold(real, |real: PathBuf, part| real.join(part)),
+                );
+            }
+            rest.push(existing.file_name()?.to_owned());
+            existing = existing.parent()?;
+        }
+    };
+    let inside = |path: &Path, root: &Path| {
+        let relative = path.strip_prefix(root).ok()?;
+        let parts: Option<Vec<&str>> = relative
+            .components()
+            .map(|part| part.as_os_str().to_str())
+            .collect();
+        Some(parts?.join("/")).filter(|relative| !relative.is_empty())
+    };
+    inside(&lexical(path), &lexical(root)).or_else(|| inside(&resolved(path)?, &resolved(root)?))
+}
+
 /// Tells the daemon a run used a connector with an open sign-in to-do, so it can clear the item.
 /// Best effort after the guards allowed the call: a daemon that does not answer holds it for 1s at most.
 fn report_connector_use(tool: &str) {
@@ -3702,18 +3810,41 @@ fn hook(event: &str) -> ExitCode {
         // A hook that fails or that Claude kills lets the call through, so a guard that panics or
         // hangs anywhere, in git, the connect or the reply, denies before Claude's timeout.
         let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || sender.send(guard()));
-        let denied = receiver.recv_timeout(GUARD_DEADLINE).unwrap_or_else(|_| {
-            Some(format!(
+        std::thread::spawn(move || {
+            let checked = match serde_json::from_reader::<_, Value>(std::io::stdin()) {
+                Ok(input) => (guard(&input), Some(input)),
+                Err(error) => (
+                    Some(format!(
+                        "Priory's tool guard could not read this call ({error}), so it denied it."
+                    )),
+                    None,
+                ),
+            };
+            sender.send(checked)
+        });
+        let (denied, input) = receiver.recv_timeout(GUARD_DEADLINE).unwrap_or_else(|_| {
+            let reason = format!(
                 "Priory's tool guard failed or did not finish within {}s on this call, so it denied it.",
                 GUARD_DEADLINE.as_secs()
-            ))
+            );
+            (Some(reason), None)
         });
         if let Some(reason) = denied {
             let output = serde_json::json!({ "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
                 "permissionDecisionReason": reason,
+            } });
+            println!("{output}");
+        } else if let Some(context) = input.and_then(|input| {
+            // Best effort: a lookup that fails or hangs adds nothing and never holds the call.
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || sender.send(scoped_context(&input)));
+            receiver.recv_timeout(SCOPED_DEADLINE).ok().flatten()
+        }) {
+            let output = serde_json::json!({ "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": context,
             } });
             println!("{output}");
         }
