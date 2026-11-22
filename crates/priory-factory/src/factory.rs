@@ -1907,8 +1907,7 @@ pub fn memory_index<'a>(
     index
 }
 
-/// The index of `skills`, whose folders are in `folder`, or nothing without any. Codex reads skills
-/// only from its own home, so a Codex run gets this index in place of a plugin folder.
+/// The index of `skills`, whose folders are in `folder`, or nothing without any.
 pub fn skill_index<'a>(
     folder: &str,
     skills: impl IntoIterator<Item = (&'a str, &'a Skill)>,
