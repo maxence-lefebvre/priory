@@ -348,3 +348,20 @@ test("another runner's ask as the next thing names its runner and offers no snoo
   assert.equal(model.next.runner, "xps13");
   assert.equal(model.next.away, "never seen");
 });
+
+test("the memories row lists each candidate with its full text, its tag and the text it replaces", () => {
+  const item = { kind: "memories", id: "memories", what: "2 memory candidates wait for a person: release-day, kit-fact; see them with `priory memories`", since: "2026-11-20T10:00:00Z", candidates: [] };
+  const desk = { ...data.desk, items: [...data.desk.items, item] };
+  // `priory memories DIR --json`: each candidate with the memory of its name runs get now.
+  const memories = { candidates: [
+    { id: "c-1", name: "release-day", description: "When releases go out.", text: "Wednesdays.", forget: false, task: "ENG-212", runner: "laptop", replaces: true, current_text: "Tuesdays." },
+    { id: "c-2", name: "kit-fact", description: null, text: null, forget: true, task: "ENG-224", runner: null, replaces: false, current_text: null },
+  ] };
+  const row = deskModel({ ...data, desk, memories }, { now }).sections("needs").flatMap((section) => section.rows).find((each) => each.kind === "memories");
+  assert.equal(row.text, "2 memory candidates: release-day, kit-fact");
+  assert.equal(row.age, "2 h");
+  assert.deepEqual(row.memories, [
+    { id: "c-1", name: "release-day", tag: "replaces a memory runs get", warn: true, description: "When releases go out.", text: "Wednesdays.", current: "Tuesdays.", by: "Written by ENG-212 on laptop, candidate c-1" },
+    { id: "c-2", name: "kit-fact", tag: "forget", warn: false, description: null, text: "Forgets kit-fact: runs stop getting it.", current: null, by: "Written by ENG-224, candidate c-2" },
+  ]);
+});

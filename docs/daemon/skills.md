@@ -145,6 +145,9 @@ priory memories accept 0196f1d0-4a5b-7c6d-8e9f-0a1b2c3d4e5f
 priory memories drop 0196f1d0-9a8b-7c6d-8e9f-0a1b2c3d4e5f
 ```
 
+The web Desk and the Herdr Desk offer the same Accept and Drop, beside each candidate's full text
+and the text it replaces (see [desk.md](desk.md#memory-candidates)).
+
 Each publishes its verdict on the log, and every runner applies it as it reads it. A drop also
 takes the candidate from its own task's later runs. A candidate takes one verdict: the first in log
 order stands.
@@ -158,8 +161,6 @@ order stands.
   [runners.md](runners.md#every-runner-reads-the-whole-log)).
 - The credential check matches common key shapes only. A memory reaches other tasks only after a
   person reads it, so read each one for secrets and for instructions an issue may have planted.
-- The web and Herdr Desks show the `memories` item as a plain row with its line, and no Accept or
-  Drop button, since [DESIGN.md](../../DESIGN.md) describes none. Use `priory memories`.
 
 The plugin folder, the memory snapshot and the kit checkout below are read-only: each file is
 `0444` and each folder `0555`. An agent can still make them writable with a shell, so before each

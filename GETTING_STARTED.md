@@ -202,8 +202,9 @@ memories and reads a file when its description fits the task. `priory check` cou
 See [memories.md](docs/reference/memories.md) for the file's keys.
 
 Agents save memories too, with the `remember` tool. The task that saved one gets it at once; every
-other task gets it once you accept it. The desk lists the candidates that wait, and
-`priory memories accept ID` or `priory memories drop ID` decides each (see
+other task gets it once you accept it. The desk lists the candidates that wait. Open that row on
+the web or Herdr Desk to read each one and accept or drop it, or run `priory memories accept ID` or
+`priory memories drop ID` (see
 [skills.md](docs/daemon/skills.md#memories-agents-write)).
 
 ### Share a kit across factories

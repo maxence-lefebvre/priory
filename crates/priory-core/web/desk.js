@@ -108,3 +108,18 @@ export function batchParts(what) {
   const at = what.lastIndexOf(" Next: ");
   return at < 0 ? { line: what, next: null } : { line: what.slice(0, at), next: what.slice(at + 1) };
 }
+
+/** A memory candidate's tag: whether it replaces or forgets a memory runs get now. @param {any} candidate */
+export function memoryTag(candidate) {
+  if (candidate.forget) return candidate.replaces ? { label: "forgets a memory runs get", warn: true } : { label: "forget", warn: false };
+  return candidate.replaces ? { label: "replaces a memory runs get", warn: true } : { label: "new", warn: false };
+}
+
+/** What an accept or a drop did, or why it was not sent, for the note under the candidate. @param {string} verb @param {number} status @param {any} body */
+export function memoryNote(verb, status, body) {
+  if (status === 200) return `${body.ok.charAt(0).toUpperCase()}${body.ok.slice(1)}, then it leaves this list.`;
+  if (status === 404 || status === 409) return `Not sent: ${body.error}. The list reads it again.`;
+  if (status === 503) return `Could not send: ${body.error}.`;
+  if (status === 504 || status === 0) return "The server may have sent this but did not confirm it. Check the list before you send again.";
+  return `Could not ${verb} it: ${body?.error || `the server answered ${status}`}.`;
+}
