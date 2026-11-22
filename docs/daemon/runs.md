@@ -169,9 +169,9 @@ the task and asks a person whether to drop or keep it, since the view may have s
 `ENG-7 left the view My loop backlog. Drop the task?`, with the options `drop` and `keep`. The
 reason reads `held: left the view My loop backlog, until a person answers whether to keep it`.
 `drop` drops the task with the reason `dropped by a person after its issue left the view`. `keep`
-releases that hold, back to the state it was held from. When the issue enters a watched view again
-before anyone answers, the daemon answers `keep` itself and the hold's condition reads
-`ENG-7 entered the view My loop backlog again`. A task that already ran gets no ask: its
+releases that hold, back to the state it was held from. When the issue enters the view it left
+again before anyone answers, the daemon answers `keep` itself and the hold's condition reads
+`ENG-7 entered the view My loop backlog again`. Entering another view answers nothing. A task that already ran gets no ask: its
 agent hears `linear.issue.left` as an event of its own key, which wakes it when it sleeps at a model
 step (see [tools.md](tools.md#subscribeon-and-unsubscribeon)). A batch entry gets the same ask.
 

@@ -9768,6 +9768,35 @@ fn an_issue_that_enters_the_view_again_answers_keep_for_its_task() {
 }
 
 #[test]
+fn an_issue_that_enters_another_view_leaves_the_ask_of_the_view_it_left() {
+    let mut setup = Setup::new("left-view-other");
+    setup.memory(0);
+    let source = linear_7("linear.issue.entered", &[]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    request.data["source"] = json!(source.id.to_string());
+    setup.publish(&source);
+    setup.publish(&request);
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 1);
+    setup.publish(&left_view());
+    setup.until("asks", |rows| rows.len() == 1);
+
+    for view in ["Triage", "My loop backlog"] {
+        let mut entered = linear_7("linear.issue.entered", &[]);
+        entered.data["view"] = json!(view);
+        setup.publish(&entered);
+    }
+
+    setup.until("tasks", |rows| rows[0][4] == "queued");
+    let met: String = rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT met_as FROM holds", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(met, "ENG-7 entered the view My loop backlog again");
+}
+
+#[test]
 fn an_issue_moved_to_another_team_keeps_its_task_and_events() {
     let mut setup = Setup::new("linear-team-move");
     setup.memory(0);
