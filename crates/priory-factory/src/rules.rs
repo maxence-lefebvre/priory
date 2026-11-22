@@ -295,6 +295,12 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 factory.honeycomb_webhook().is_some(),
                 &mut problems,
             ),
+            "intercom" => check_hooked(
+                trigger,
+                &INTERCOM,
+                factory.intercom_webhook().is_some(),
+                &mut problems,
+            ),
             _ if trigger.value.backfill.is_some() => problems.push(problem(
                 trigger,
                 trigger.lines.field("backfill"),
@@ -308,6 +314,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             "linear.view",
             "sentry",
             "honeycomb",
+            "intercom",
             "slack",
             "schedule",
         ];
@@ -845,7 +852,7 @@ struct Hooked {
     source: &'static str,
     vendor: &'static str,
     on: &'static str,
-    filters: [&'static str; 2],
+    filters: &'static [&'static str],
     key: &'static str,
     events: &'static str,
 }
@@ -854,7 +861,7 @@ const SENTRY: Hooked = Hooked {
     source: "sentry",
     vendor: "Sentry",
     on: "issue.created",
-    filters: ["project", "level"],
+    filters: &["project", "level"],
     key: "issue.id",
     events: "events",
 };
@@ -863,9 +870,18 @@ const HONEYCOMB: Hooked = Hooked {
     source: "honeycomb",
     vendor: "Honeycomb",
     on: "trigger.fired",
-    filters: ["environment", "trigger"],
+    filters: &["environment", "trigger"],
     key: "trigger.id",
     events: "alerts",
+};
+
+const INTERCOM: Hooked = Hooked {
+    source: "intercom",
+    vendor: "Intercom",
+    on: "conversation.created",
+    filters: &[],
+    key: "conversation.id",
+    events: "conversations",
 };
 
 /// A trigger of a webhook-only source takes its one event, its filters and its key, and needs its
@@ -880,6 +896,11 @@ fn check_hooked(
     let Hooked {
         source, vendor, on, ..
     } = hooked;
+    let a = if source.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    };
     let mut report = |field: &str, message: String| {
         let line = trigger.lines.field(field).or(trigger.lines.field("source"));
         problems.push(problem(trigger, line, message));
@@ -894,7 +915,7 @@ fn check_hooked(
         report(
             "source",
             format!(
-                "a `{source}` trigger needs `[webhooks.{source}]` in factory.toml: {vendor} {} arrive only by webhook",
+                "{a} `{source}` trigger needs `[webhooks.{source}]` in factory.toml: {vendor} {} arrive only by webhook",
                 hooked.events
             ),
         );
@@ -902,7 +923,7 @@ fn check_hooked(
     if value.on != *on {
         report(
             "on",
-            format!("a `{source}` trigger handles `{on}`, not `{}`", value.on),
+            format!("{a} `{source}` trigger handles `{on}`, not `{}`", value.on),
         );
     }
     if value.filter.as_ref().is_some_and(|filter| {
@@ -910,22 +931,25 @@ fn check_hooked(
             .keys()
             .any(|key| !hooked.filters.contains(&key.as_str()))
     }) {
-        let [first, second] = hooked.filters;
-        report(
-            "filter",
-            format!("a `{source}` trigger filters on `{first}` or `{second}`"),
-        );
+        let message = match hooked.filters {
+            [] => format!("{a} `{source}` trigger takes no `filter`"),
+            filters => format!(
+                "{a} `{source}` trigger filters on `{}`",
+                filters.join("` or `")
+            ),
+        };
+        report("filter", message);
     }
     if value.repo.as_deref().is_some_and(|repo| !owner_name(repo)) {
         report(
             "repo",
-            format!("a {vendor} trigger's `repo` is `owner/name`"),
+            format!("{a} {vendor} trigger's `repo` is `owner/name`"),
         );
     }
     if value.key.as_deref().is_some_and(|key| key != hooked.key) {
         report(
             "key",
-            format!("a {vendor} trigger's `key` is `{}`", hooked.key),
+            format!("{a} {vendor} trigger's `key` is `{}`", hooked.key),
         );
     }
 }

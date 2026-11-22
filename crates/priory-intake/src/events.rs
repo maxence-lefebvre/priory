@@ -598,6 +598,32 @@ pub struct SentryIssueCreated {
     pub source: Source,
 }
 
+/// A contact started an Intercom conversation, from a signed webhook delivery.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IntercomConversationCreated {
+    /// Intercom's conversation id, such as `1295`.
+    pub conversation: String,
+    /// The workspace id, the notification's `app_id`.
+    pub workspace: String,
+    /// The conversation's title; null when it has none.
+    pub title: Option<String>,
+    /// The first message's subject, as on an email; null when it has none.
+    pub subject: Option<String>,
+    /// The first message's text: plain text from API version 2.15, HTML before it.
+    pub body: Option<String>,
+    /// The name of whoever wrote the first message.
+    pub author: Option<String>,
+    /// The author's type, such as `user` or `lead`.
+    pub author_type: Option<String>,
+    /// The page where the contact started the conversation; null for email and bots.
+    pub page: Option<String>,
+    /// The notification's id, which starts with `notif_`. Intercom signs it with the body.
+    pub delivery: Option<String>,
+    #[serde(flatten)]
+    pub source: Source,
+}
+
 /// A Honeycomb Trigger fired, from a webhook delivery that carried the Shared Secret.
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]

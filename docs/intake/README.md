@@ -61,6 +61,7 @@ factory such as herdr-bowtie. Each message type also has a JSON Schema in
 | [webhooks.md](webhooks.md) | GitHub and Linear webhooks: the signature, what a delivery publishes, and duplicates with polling |
 | [sentry.md](sentry.md) | `sentry.issue.created`, which only Sentry's signed webhook publishes |
 | [honeycomb.md](honeycomb.md) | `honeycomb.trigger.fired`, which only Honeycomb's webhook publishes, and its payload template |
+| [intercom.md](intercom.md) | `intercom.conversation.created`, which only Intercom's signed webhook publishes, and the workspace filter |
 | [watches.md](watches.md) | The Linear issues, Slack threads and pull requests an open wait makes the intake watch |
 | [cli.md](cli.md) | `priory request`, `priory add`, `priory batch add` and the `priory.task.requested.cli` event |
 | [task-requests.md](task-requests.md) | `factory.task.requested`, which creates tasks, and its `hold` |
