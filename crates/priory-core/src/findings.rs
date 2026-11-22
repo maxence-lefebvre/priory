@@ -85,6 +85,7 @@ pub(crate) fn tool(
             }],
             intervention: None,
             session: None,
+            auto_answer: None,
         };
         match add_to(factory, &add, &fix) {
             Ok(_) | Err(Refused::Repeated(_)) => {}

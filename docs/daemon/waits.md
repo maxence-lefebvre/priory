@@ -13,7 +13,7 @@ The drawing follows one ask, from the agent's `ask` call to the prompt that carr
 ![The life of an ask, between the agent, the daemon and a person. The agent calls ask with a question, options and a recommendation, and the task sleeps with no process. The desk lists the ask in the web view, Herdr and priory desk. The person can snooze it, say for an hour, and it comes back when the time is up. The person answers with an option or a text at the ask's revision. The first answer stands, and the next run resumes the agent's session and types the answer as a prompt.](../images/diagrams/ask.svg)
 
 `priory asks` prints each open ask: id, task, revision, question, options, then the fields of
-[`ask`](../reference/tools.md#askquestion-options-recommendation-tradeoff-title-text-whatwaits-nextaction-command) and of an outside ask.
+[`ask`](../reference/tools.md#askquestion-options-recommendation-tradeoff-confidence-rationale-title-text-whatwaits-nextaction-command) and of an outside ask.
 `priory answer <ask> <option-or-text> --revision <n>` sends the answer to the daemon. `--expected`
 is the same flag, and `--` ends the flags, as in `priory answer --expected 2 -- cache.ship ship`.
 The first answer to the ask's revision stands. Refused: an answer to another revision, a second
@@ -47,6 +47,36 @@ ask are refused, since only one of their options moves the task on.
 
 A `ready` task's next run resumes the session of the current step's agent and types its queued
 prompts.
+
+### Answered by auto
+
+A task can have an `auto_answer` level, `high` or `medium`, from its trigger or its request (see
+[triggers.md](../reference/triggers.md#auto_answer)). The task keeps the level it had when it was
+created. The daemon answers an ask with its recommendation, in the transaction that stores it, when
+all of these hold:
+
+1. An agent's `ask` call made it, with a [`confidence`](../reference/tools.md#confidence) at or above the
+   task's level. A human step's ask, a plan's ask, a hold's ask, an approval asked again at a new
+   commit and an outside ask never qualify.
+2. A `hands-off` lead could answer it: it runs no command, its step has no `approves`, and its
+   answer cannot let an irreversible step run before a person decides again. The workflow's shape
+   decides this, never the confidence.
+
+The answer is recorded as answered by `auto` and queued as the task's next prompt, as a person's
+answer would be. The run's turn still ends, and the answer is typed after its `Stop`, so the task
+holds its process for the length of a tick. The daemon appends a `factory.ask.auto_answered`
+record to the trace (see [trace-schema.md](../trace-schema.md#factoryaskauto_answered)). The first
+answer stands, so a person's later `priory answer` is refused.
+
+An auto-answered ask sends no notification. It shows in `priory asks --all --json` and
+`/api/asks` with `answered_by` `auto`, on the task page with its rationale, and in the desk's
+[Since you looked](desk.md#since-you-looked) as `ask 14 answered "document --format" by auto
+(high): the flag duplicates --format`. An ask below the level, or without a confidence, goes to the
+desk as usual, and its desk item carries `confidence` and `rationale`.
+
+The irreversible step still waits for a person, who can read the auto-answered asks before
+approving it. `priory check --explain` lists the same irreversible steps and paths with no human
+decision whatever the level.
 
 ## Waits
 

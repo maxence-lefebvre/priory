@@ -262,7 +262,13 @@ session, instead of the person. These asks still go to the person:
 - an ask whose answer runs a command;
 - the asks the daemon makes itself: a hold's, a stack's, and an approval asked again at a new
   commit;
-- every ask once no trigger names the task's lead any more, since its workflow is gone.
+- every ask once no trigger names the task's lead any more, since its workflow is gone;
+- an agent's ask stated at `low` [confidence](../reference/tools.md#confidence).
+
+A task with an [`auto_answer`](../reference/triggers.md#auto_answer) level as well has an eligible
+ask answered by `auto` first, so no lead task starts for it (see
+[waits.md](waits.md#answered-by-auto)). The same check decides what a lead and the daemon may
+answer, so the two lists cannot drift.
 
 In the transaction that stores a routed ask, the daemon queues a lead task for it, with the key
 `priory:ask:<ask>:<revision>`, the trigger `priory/lead`, and the asking task's repository, band and

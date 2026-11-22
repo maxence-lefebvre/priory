@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 97;
+const VERSION: i64 = 98;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1754,6 +1754,15 @@ const SCHEMA_97: &str = "ALTER TABLE tasks ADD COLUMN added_by TEXT;
 PRAGMA user_version = 97;
 ";
 
+// The confidence and rationale an agent states on its ask, and the lowest confidence at which the
+// daemon answers a task's asks with their recommendation.
+const SCHEMA_98: &str = "
+ALTER TABLE asks ADD COLUMN confidence TEXT CHECK (confidence IN ('high', 'medium', 'low'));
+ALTER TABLE asks ADD COLUMN rationale TEXT;
+ALTER TABLE tasks ADD COLUMN auto_answer TEXT CHECK (auto_answer IN ('high', 'medium'));
+PRAGMA user_version = 98;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1767,7 +1776,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
-    SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
+    SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97, SCHEMA_98,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -2089,9 +2098,9 @@ pub(crate) fn route_in(
             tx.execute(
                 "INSERT INTO tasks
                    (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, repo, entered, tldr, intervention, lead,
-                    pre_title, pre_text, pre_context, pre_script, added_by)
+                    pre_title, pre_text, pre_context, pre_script, added_by, auto_answer)
                  VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?12, ?13, ?14,
-                   ?15, ?16, ?17, ?18, ?19)",
+                   ?15, ?16, ?17, ?18, ?19, ?20)",
                 params![
                     new.key,
                     new.workflow,
@@ -2115,7 +2124,8 @@ pub(crate) fn route_in(
                     new.text,
                     new.context,
                     new.pre.as_ref().map(|pre| &pre.script),
-                    new.session
+                    new.session,
+                    new.auto_answer.map(|level| level.as_str())
                 ],
             )?;
             let id = tx.last_insert_rowid();

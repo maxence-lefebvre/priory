@@ -15,6 +15,15 @@
       ],
       "description": "What a hold's `after` waits for: another task to end, or a Linear issue to close."
     },
+    "Confidence": {
+      "description": "How sure an agent is that its recommendation is what the person would pick, and the lowest\nsuch confidence a task's `auto_answer` lets the daemon act on.",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "type": "string"
+    },
     "Hold": {
       "additionalProperties": false,
       "description": "Why a task is held, and the conditions that release it once all of them hold. With none, a\nperson does.",
@@ -187,6 +196,17 @@
       "additionalProperties": false,
       "description": "A task request: `priory request`'s flags, or a report pick option's request.",
       "properties": {
+        "auto_answer": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Confidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The lowest confidence at which the daemon answers the task's asks; `triggers/cli.toml`'s\nwhen unset."
+        },
         "band": {
           "type": [
             "string",

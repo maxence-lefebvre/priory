@@ -1,4 +1,4 @@
-use priory_factory::factory::{Decider, Factory};
+use priory_factory::factory::{Confidence, Decider, Factory};
 use priory_runtime::transcript::Usage;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
@@ -458,6 +458,59 @@ pub(crate) fn preempted(
         fields.retain(|_, value| !value.is_null());
     }
     append(tx, trace, "factory.run.preempted", &time, data)
+}
+
+/// Appends a `factory.ask.auto_answered` record: the daemon answered ask `ask` of `run`, at its
+/// `revision`, with its recommended `option`, since its stated confidence met its task's level.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn auto_answered(
+    tx: &Transaction,
+    trace: &Trace,
+    run: i64,
+    ask: i64,
+    revision: i64,
+    option: &str,
+    [confidence, level]: [Confidence; 2],
+    rationale: &str,
+) -> rusqlite::Result<()> {
+    let (task, workflow, step, key, generation, time): (i64, String, String, String, i64, String) =
+        tx.query_row(
+            "SELECT tasks.id, tasks.workflow, asks.step, tasks.key, tasks.generation,
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             FROM asks JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
+            [ask],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )?;
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "workflow": workflow,
+        "task": task.to_string(),
+        "key": key,
+        "run": run.to_string(),
+        "generation": generation,
+        "step": step,
+        "machine": trace.machine,
+        "ask": ask.to_string(),
+        "revision": revision,
+        "option": option,
+        "confidence": confidence.as_str(),
+        "rationale": rationale,
+        "level": level.as_str(),
+    });
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    append(tx, trace, "factory.ask.auto_answered", &time, data)
 }
 
 /// Appends a `factory.task.repaired` record for the repair of `task` after `run` failed.

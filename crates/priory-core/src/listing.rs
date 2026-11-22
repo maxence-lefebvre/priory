@@ -222,6 +222,7 @@ fn asks_query() -> String {
        WHEN 'predecessor-revived' THEN 'the task it waits on was revived' ELSE asks.withdrawn_reason END AS withdrawn_why,
      asks.revision, asks.question, asks.options, asks.recommendation, asks.tradeoff, asks.answer,
      asks.answered AS answered_at, asks.answered_by, asks.routed AS routed_to, asks.created AS since, asks.title, asks.text,
+     asks.confidence, asks.rationale,
      asks.what_waits, asks.next_action, asks.command, asks.coordinator, asks.run_id, asks.session,
      (SELECT json_object('state', state, 'revision', revision, 'tries', tries, 'error', error,
         'since', coalesce(ended, created), 'cleared', cleared)
@@ -1269,8 +1270,12 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
         "WITH visited AS (SELECT coalesce((SELECT julianday(seen) FROM visits WHERE person = ?1), 0) AS at),
          events AS (
            SELECT * FROM (SELECT time, CAST(json_extract(event, '$.data.task') AS INTEGER) AS task,
-               type || coalesce(' ' || json_extract(event, '$.data.step'), '')
-                 || coalesce(': ' || json_extract(event, '$.data.outcome'), '') AS what,
+               CASE type WHEN 'factory.ask.auto_answered' THEN 'ask ' || json_extract(event, '$.data.ask')
+                   || ' answered ' || json_quote(json_extract(event, '$.data.option')) || ' by auto ('
+                   || json_extract(event, '$.data.confidence') || '): '
+                   || json_extract(event, '$.data.rationale')
+                 ELSE type || coalesce(' ' || json_extract(event, '$.data.step'), '')
+                   || coalesce(': ' || json_extract(event, '$.data.outcome'), '') END AS what,
                0 AS source, seq
              FROM trace WHERE julianday(time) >= (SELECT at FROM visited)
              ORDER BY julianday(time) DESC, seq DESC LIMIT 50)
@@ -1403,15 +1408,20 @@ fn acts(db: &Connection, items: &mut [Value]) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Gives each `ask` item the lead it is routed to, or null.
+/// Gives each `ask` item the lead it is routed to, and the confidence and rationale its agent
+/// stated, each or null.
 fn routed_to(db: &Connection, items: &mut [Value]) -> rusqlite::Result<()> {
-    let mut routed = db.prepare("SELECT routed FROM asks WHERE id = ?1")?;
+    let mut routed = db.prepare("SELECT routed, confidence, rationale FROM asks WHERE id = ?1")?;
     for item in items.iter_mut().filter(|item| item["kind"] == "ask") {
-        let to = match item["id"].as_i64() {
-            Some(ask) => routed.query_row([ask], |row| row.get::<_, Option<String>>(0))?,
-            None => None,
+        let [to, confidence, rationale] = match item["id"].as_i64() {
+            Some(ask) => routed.query_row([ask], |row| {
+                Ok([row.get::<_, Option<String>>(0)?, row.get(1)?, row.get(2)?])
+            })?,
+            None => [None, None, None],
         };
         item["routed_to"] = json!(to);
+        item["confidence"] = json!(confidence);
+        item["rationale"] = json!(rationale);
     }
     Ok(())
 }
@@ -1523,7 +1533,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         &format!(
             "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
                generation, retired, tldr, changed AS since, repo, branch, base_sha, grade, grade_reason,
-               merge_risk, progress, plan_goal, plan_testing, plan_brief, verification, intervention, lead, batch, added_by, {CONDITIONS}
+               merge_risk, progress, plan_goal, plan_testing, plan_brief, verification, intervention, lead, auto_answer, batch, added_by, {CONDITIONS}
              FROM tasks LEFT JOIN queue USING (id) WHERE id = ?1",
             places()
         ),

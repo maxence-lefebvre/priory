@@ -1867,6 +1867,52 @@ fn a_hands_off_trigger_with_a_shared_lead_passes() {
 }
 
 #[test]
+fn a_low_auto_answer_level_fails_with_its_line() {
+    let trigger = format!("{TRIGGER}auto_answer = \"low\"\n");
+
+    let outcome = check(&factory(
+        "auto-answer-low",
+        &with("triggers/agent-label.toml", &trigger),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/agent-label.toml:8: `auto_answer = \"low\"` would answer every ask an agent makes: use `high` or `medium`, or leave it unset\n"
+    );
+}
+
+#[test]
+fn an_unknown_auto_answer_level_fails_with_its_line() {
+    let trigger = format!("{TRIGGER}auto_answer = \"always\"\n");
+
+    let outcome = check(&factory(
+        "auto-answer-unknown",
+        &with("triggers/agent-label.toml", &trigger),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/agent-label.toml:8:15: unknown variant `always`, expected one of `low`, `medium`, `high`\n"
+    );
+}
+
+#[test]
+fn a_high_or_medium_auto_answer_level_passes() {
+    for level in ["high", "medium"] {
+        let trigger = format!("{TRIGGER}auto_answer = \"{level}\"\n");
+
+        let outcome = check(&factory(
+            &format!("auto-answer-{level}"),
+            &with("triggers/agent-label.toml", &trigger),
+        ));
+
+        assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+    }
+}
+
+#[test]
 fn telemetry_headers_env_names_a_variable_and_never_holds_the_headers() {
     let telemetry = "name = \"demo\"\n\n[telemetry]\notlp = \"http://127.0.0.1:4318\"\n";
     let named = format!("{telemetry}headers_env = \"OTEL_EXPORTER_OTLP_HEADERS\"\n");

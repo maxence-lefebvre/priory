@@ -1,3 +1,4 @@
+mod auto_answer;
 mod conform;
 mod debate;
 #[cfg(feature = "postgres")]
@@ -45,11 +46,13 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Undoes migrations 97, the task's `added_by`, and 93: the `pre` script's task columns and the
+/// Undoes migrations 98, the stated confidence and the `auto_answer` level, 97, the task's
+/// `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
     () => {
-        "ALTER TABLE tasks DROP COLUMN added_by; DROP VIEW task_text; CREATE VIEW task_text AS SELECT tasks.id AS task,
+        "ALTER TABLE asks DROP COLUMN confidence; ALTER TABLE asks DROP COLUMN rationale;
+  ALTER TABLE tasks DROP COLUMN auto_answer; ALTER TABLE tasks DROP COLUMN added_by; DROP VIEW task_text; CREATE VIEW task_text AS SELECT tasks.id AS task,
     coalesce(json_extract(inbox.data, '$.title'), '') AS title,
     coalesce(json_extract(inbox.data, '$.text'), json_extract(inbox.data, '$.body'),
       json_extract(inbox.data, '$.description'), json_extract(inbox.data, '$.prompt'), '') AS request,
