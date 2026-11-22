@@ -1,6 +1,6 @@
 use crate::factory::{
     ASK_SHAPE, Agent, Backend, CODEX_PROMPT_LIMIT, Decider, Effect, Factory, Harness, INSTRUCTIONS,
-    Intervention, Loaded, MEMORY_FOLDER, OnChange, PermissionMode, Problem, Proof, ScoreKind,
+    Intervention, Loaded, OPEN_MEMORIES_PR, OnChange, PermissionMode, Problem, Proof, ScoreKind,
     ScoreOn, Scorer, Session, Step, Trigger, Until, Workflow,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
@@ -33,6 +33,12 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 settings.lines.field("sweep"),
                 format!("the sweeper agent `{agent}` does not exist"),
             ));
+        }
+        if let Some(kit) = &settings.value.kit {
+            let at = settings.lines.field("kit");
+            for message in kit_problems(kit) {
+                problems.push(problem(settings, at, message));
+            }
         }
         let one_shots = [
             ("handler", "handler", settings.value.handler.as_ref()),
@@ -540,14 +546,17 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
     if !matches!(value.harness, Harness::Codex) {
         return;
     }
-    let instructions = factory.run_instructions(MEMORY_FOLDER);
+    let instructions = factory.codex_instructions();
     let size = instructions.len() + "\n\n".len() + factory.prompt(value).len();
     if !instructions.is_empty() && size > CODEX_PROMPT_LIMIT {
-        let parts = if factory.memories.is_empty() {
-            format!("{INSTRUCTIONS} and its own prompt")
-        } else {
-            format!("{INSTRUCTIONS}, the memory index and its own prompt")
-        };
+        let mut parts = vec![INSTRUCTIONS];
+        if !factory.memories.is_empty() {
+            parts.push("the memory index");
+        }
+        if !factory.skills.is_empty() {
+            parts.push("the skill index");
+        }
+        let parts = format!("{} and its own prompt", parts.join(", "));
         problems.push(problem(
             agent,
             agent.lines.field("harness"),
@@ -1085,6 +1094,16 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
             Decider::Code => match (step.action.as_deref() == Some("run"), &step.run) {
                 (true, None) => report("a `run` action needs a `run` command".into()),
                 (false, Some(_)) => report("only a `run` action has a `run` command".into()),
+                _ if step.action.as_deref() == Some(OPEN_MEMORIES_PR)
+                    && factory
+                        .settings
+                        .as_ref()
+                        .is_none_or(|settings| settings.value.kit.is_none()) =>
+                {
+                    report(format!(
+                        "an `{OPEN_MEMORIES_PR}` action writes to the kit repository, so factory.toml needs a `[kit]`"
+                    ))
+                }
                 _ => {}
             },
         }
@@ -1222,4 +1241,34 @@ fn has_go(workflow: &Workflow) -> bool {
                 .step(next)
                 .is_some_and(|step| step.decides == Decider::Human)
         })
+}
+
+/// What `priory check` refuses in `[kit]`: an empty repository or ref, one git would read as an
+/// option, and a path that leaves the repository.
+fn kit_problems(kit: &crate::factory::Kit) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (key, value) in [
+        ("repo", Some(kit.repo.as_str())),
+        ("ref", kit.reference.as_deref()),
+    ] {
+        match value.map(str::trim) {
+            Some("") => problems.push(format!("`[kit]` `{key}` is empty")),
+            Some(value) if value.starts_with('-') => problems.push(format!(
+                "`[kit]` `{key}` is `{value}`: it cannot start with `-`"
+            )),
+            _ => {}
+        }
+    }
+    for (key, path) in kit.paths() {
+        let inside = !path.is_empty()
+            && std::path::Path::new(path)
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)));
+        if !inside {
+            problems.push(format!(
+                "`[kit]` `{key}` is `{path}`: a kit path is relative and stays inside the repository"
+            ));
+        }
+    }
+    problems
 }

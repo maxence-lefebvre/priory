@@ -136,6 +136,48 @@ struct Target {
     candidates: Vec<Candidate>,
 }
 
+/// A human step that approves a target: its id and the outcomes that lead to `stop`.
+struct Gate {
+    id: String,
+    stops: BTreeSet<String>,
+}
+
+/// Each workflow's irreversible steps with the human steps that approve them, read from the
+/// factory once. The default knows none, and finds the targets in the records alone.
+#[derive(Default)]
+pub struct Gates(BTreeMap<(String, String), Vec<Gate>>);
+
+impl Gates {
+    pub fn of(factory: &Factory) -> Self {
+        let mut gates = BTreeMap::new();
+        for (name, loaded) in &factory.workflows {
+            let steps = &loaded.value.steps;
+            for target in steps
+                .iter()
+                .filter(|step| step.effect == Effect::Irreversible)
+            {
+                let approving = steps
+                    .iter()
+                    .filter(|gate| {
+                        gate.decides == Decider::Human && gate.approves.contains(&target.id)
+                    })
+                    .map(|gate| Gate {
+                        id: gate.id.clone(),
+                        stops: gate
+                            .next
+                            .iter()
+                            .filter(|(_, to)| *to == "stop")
+                            .map(|(outcome, _)| outcome.clone())
+                            .collect(),
+                    })
+                    .collect();
+                gates.insert((name.clone(), target.id.clone()), approving);
+            }
+        }
+        Gates(gates)
+    }
+}
+
 /// Each target's trials and estimates.
 pub struct Risk {
     since: String,
@@ -171,11 +213,11 @@ fn instant(text: &str) -> Result<Timestamp, String> {
         .map_err(|error| format!("time {text:?}: {error}"))
 }
 
-/// The trials of each irreversible step of `factory`'s workflows, or only `workflow`'s, whose reach
-/// lies between `start` and `now`.
+/// The trials of each irreversible step of `gates`' workflows and of the records, or only
+/// `workflow`'s, whose reach lies between `start` and `now`.
 pub fn risk(
     db: &Connection,
-    factory: &Factory,
+    gates: &Gates,
     workflow: Option<&str>,
     since: &str,
     start: &str,
@@ -190,7 +232,13 @@ pub fn risk(
                json_extract(event, '$.data.step'), json_extract(event, '$.data.effect'),
                json_extract(event, '$.data.outcome'),
                json_extract(event, '$.data.factory_revision'), json_extract(event, '$.data.model')
-             FROM trace WHERE type = 'factory.step.ended' ORDER BY seq",
+             FROM trace WHERE type = 'factory.step.ended'
+               AND json_extract(event, '$.data.task') IS NOT NULL
+               AND json_extract(event, '$.data.workflow') IS NOT NULL
+               AND json_extract(event, '$.data.step') IS NOT NULL
+               AND json_extract(event, '$.data.effect') IS NOT NULL
+               AND json_extract(event, '$.data.outcome') IS NOT NULL
+             ORDER BY seq",
         )
         .and_then(|mut statement| {
             statement
@@ -290,18 +338,7 @@ pub fn risk(
         })
         .map_err(error)?;
 
-    let mut wanted: BTreeSet<(String, String)> = factory
-        .workflows
-        .iter()
-        .flat_map(|(name, loaded)| {
-            loaded
-                .value
-                .steps
-                .iter()
-                .filter(|step| step.effect == Effect::Irreversible)
-                .map(move |step| (name.clone(), step.id.clone()))
-        })
-        .collect();
+    let mut wanted: BTreeSet<(String, String)> = gates.0.keys().cloned().collect();
     wanted.extend(
         ended
             .iter()
@@ -317,17 +354,10 @@ pub fn risk(
             step: step.clone(),
             ..Target::default()
         };
-        let gates: Vec<_> = factory
-            .workflows
-            .get(&name)
-            .map(|loaded| {
-                loaded
-                    .value
-                    .steps
-                    .iter()
-                    .filter(|gate| gate.decides == Decider::Human && gate.approves.contains(&step))
-                    .collect()
-            })
+        let approving = gates
+            .0
+            .get(&(name.clone(), step.clone()))
+            .map(Vec::as_slice)
             .unwrap_or_default();
         let tasks: BTreeSet<&str> = ended
             .iter()
@@ -343,13 +373,10 @@ pub fn risk(
             let before = &records[..reach.unwrap_or(records.len())];
             let rejected = before.iter().any(|record| {
                 (start..=now).contains(&record.time)
-                    && gates.iter().any(|gate| {
+                    && approving.iter().any(|gate| {
                         gate.id == record.step
                             && (record.outcome.to_lowercase().starts_with("reject")
-                                || gate
-                                    .next
-                                    .get(&record.outcome)
-                                    .is_some_and(|to| to == "stop"))
+                                || gate.stops.contains(&record.outcome))
                     })
             });
             if rejected {
@@ -504,7 +531,56 @@ impl Row {
     }
 }
 
+/// Every target's trials over the default window up to `now`, for the asks and the flows.
+pub fn recent(db: &Connection, gates: &Gates, now: Timestamp) -> Result<Risk, String> {
+    let start = crate::report::start(db, SINCE, &now.to_string())?;
+    risk(db, gates, None, SINCE, &start, now)
+}
+
 impl Risk {
+    /// The own row of `workflow`'s irreversible step `step`, with the one History line an ask
+    /// shows. A step no task reached has no trials.
+    pub fn estimate(&self, workflow: &str, step: &str) -> Value {
+        let target = self
+            .targets
+            .iter()
+            .find(|target| target.workflow == workflow && target.step == step);
+        let empty = Row::default();
+        let own = target.map_or(&empty, |target| &target.own);
+        let mut value = own.json(step, None);
+        let line = format!(
+            "History: {} of {} tasks through this step were judged wrong within {HORIZON_DAYS} days, {} after the merge.",
+            own.judged, own.n, own.landed
+        );
+        let line = match own.n < FLOOR {
+            true => format!("{line} Too few to estimate."),
+            false => format!(
+                "{line} 95\u{a0}% posterior upper bounds: {:.1}\u{a0}% and {:.1}\u{a0}%.",
+                value["judged_wrong"]["p95"].as_f64().unwrap_or_default() * 100.0,
+                value["landed_wrong"]["p95"].as_f64().unwrap_or_default() * 100.0
+            ),
+        };
+        if let Some(object) = value.as_object_mut() {
+            object.remove("outcome");
+        }
+        value["workflow"] = json!(workflow);
+        value["line"] = json!(line);
+        value
+    }
+
+    /// `estimate` with `caught`, the tasks a person stopped at the step's gate, as the flows show
+    /// it. Only a `Risk` built with the factory's `Gates` knows them.
+    pub fn step_history(&self, workflow: &str, step: &str) -> Value {
+        let caught = self
+            .targets
+            .iter()
+            .find(|target| target.workflow == workflow && target.step == step)
+            .map_or(0, |target| target.caught.len());
+        let mut value = self.estimate(workflow, step);
+        value["caught"] = json!(caught);
+        value
+    }
+
     pub fn json(&self) -> Value {
         json!({
             "horizon_days": HORIZON_DAYS,

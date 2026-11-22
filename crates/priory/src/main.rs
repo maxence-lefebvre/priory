@@ -40,6 +40,15 @@ fn main() -> ExitCode {
                 _ => usage(),
             }
         }
+        Some("daemon") if std::env::args_os().any(|arg| arg == "--view-only") => {
+            let dirs: Vec<_> = args.filter(|arg| *arg != "--view-only").collect();
+            let dir = match dirs.as_slice() {
+                [] => PathBuf::from("."),
+                [dir] if *dir != "--once" => PathBuf::from(dir),
+                _ => return usage(),
+            };
+            serve("daemon", &dir, |factory, _| daemon::view_only(factory), false)
+        }
         Some(verb @ ("intake" | "daemon")) => {
             let (once, dirs): (Vec<_>, Vec<_>) = args.partition(|arg| arg == "--once");
             let dir = match dirs.as_slice() {
@@ -81,8 +90,9 @@ fn main() -> ExitCode {
         Some("serve") => serve_http(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("runs") => match (args.next(), args.next()) {
             (None, _) => list(
-                "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend\tkit",
-                "SELECT id, task, step, tmux, coalesce(thread, session), started, ended, ended_as, kit_hash
+                "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend\tkit\tcommit",
+                "SELECT id, task, step, tmux, coalesce(thread, session), started, ended, ended_as, kit_hash,
+                   kit_commit
                  FROM runs ORDER BY id",
             ),
             (Some(flag), None) if flag == "--json" => runs_json(),
@@ -104,6 +114,8 @@ fn main() -> ExitCode {
         Some("report") => report(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("costs") => costs(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("grades") => grades(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("score") => score(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("bench") => bench(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("move") => move_task(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some(verb @ ("resume" | "cancel" | "revive" | "release" | "say")) => act(
             verb,
@@ -166,6 +178,7 @@ fn main() -> ExitCode {
         },
         Some("search") => search(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("memory") => memory(args.collect()),
+        Some("memories") => memories(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("gate") if args.next().is_none() => project_gate(),
         Some("answer") => answer(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("give") => {
@@ -227,7 +240,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen (TASK | --run RUN) [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory grades [--since <instant-or-duration>] [--json]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT"
+        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory daemon --view-only [DIR]    mirrors every runner's asks and tasks and serves them, runs nothing\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen [DIR] (TASK | --run RUN) [--history N] [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory grades [--since <instant-or-duration>] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--json]\n       priory bench capture [DIR] TASK --into FOLDER\n       priory bench replay [DIR] CASE --budget USD [--turn-timeout DURATION]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY\n       priory say [--generation N] [DIR] RUNNER:KEY TEXT\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory memories [DIR] [--all] [--json]\n       priory memories (accept | drop) [DIR] CANDIDATE\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -256,11 +269,15 @@ fn watched() -> Result<Vec<intake::Watch>, String> {
     let watched = state::watched(&db).map_err(|error| format!("open waits: {error}"))?;
     watched
         .into_iter()
-        .map(|(resource, since)| {
+        .map(|(resource, since, rank)| {
             let since = since
                 .parse()
                 .map_err(|error| format!("wait on {resource} since `{since}`: {error}"))?;
-            Ok(intake::Watch { resource, since })
+            Ok(intake::Watch {
+                resource,
+                since,
+                rank,
+            })
         })
         .collect()
 }
@@ -382,30 +399,49 @@ fn attach(args: Vec<String>) -> ExitCode {
     exit("attach", Err(format!("{}: {error}", command[0])))
 }
 
-/// Prints the screen of a task's live run, or of one run, with the default secret variables' values
-/// and the secret shapes hidden, as `GET /api/runs/{id}/screen` shows it.
+/// Prints the screen of a task's live run, or of one run, after up to `--history` rows of its
+/// scrollback, as `GET /api/runs/{id}/screen` shows it. It hides the secret shapes and the values of
+/// the secret variables of the factory in `DIR`, or the default ones without it.
 fn screen(args: Vec<String>) -> ExitCode {
-    let (mut target, mut json) = (None, false);
+    let (mut run, mut json, mut history, mut positional) = (None, false, 0, Vec::new());
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--json" => json = true,
-            "--run" if target.is_none() => match args.next().map(|run| run.parse()) {
-                Some(Ok(run)) => target = Some(state::Attach::Run(run)),
+            "--history" => match args.next().map(|rows| rows.parse::<usize>()) {
+                Some(Ok(rows)) => history = rows.min(priory_core::screen::HISTORY),
                 _ => return usage(),
             },
-            _ if target.is_none() => match arg.parse() {
-                Ok(task) => target = Some(state::Attach::Task(task)),
-                Err(_) => return usage(),
+            "--run" if run.is_none() => match args.next().map(|run| run.parse()) {
+                Some(Ok(id)) => run = Some(id),
+                _ => return usage(),
             },
-            _ => return usage(),
+            _ if arg.starts_with("--") => return usage(),
+            _ => positional.push(arg),
         }
     }
+    let task = |task: &String| task.parse().ok().map(state::Attach::Task);
+    let (dir, target) = match (run, &positional[..]) {
+        (Some(run), []) => (None, Some(state::Attach::Run(run))),
+        (Some(run), [dir]) => (Some(dir), Some(state::Attach::Run(run))),
+        (None, [one]) => (None, task(one)),
+        (None, [dir, one]) => (Some(dir), task(one)),
+        _ => return usage(),
+    };
     let Some(target) = target else {
         return usage();
     };
-    let secrets = priory_core::screen::secrets(&factory::Factory::default().secret_envs());
-    let read = state::open().and_then(|db| priory_core::screen::read(&db, &target, &secrets, 0));
+    let factory = match dir {
+        Some(dir) => match load(Path::new(dir)) {
+            Some(factory) => factory,
+            None => return ExitCode::FAILURE,
+        },
+        None => factory::Factory::default(),
+    };
+    let secrets = priory_core::screen::secrets(&factory.secret_envs());
+    let read = state::open().and_then(|db| {
+        priory_core::screen::read(&db, &target, &secrets, history).map_err(String::from)
+    });
     let colours = std::io::IsTerminal::is_terminal(&std::io::stdout());
     exit(
         "screen",
@@ -445,6 +481,189 @@ fn trace() -> ExitCode {
 
 /// Prints `priory costs [DIR] [--since <window>] [--by <split>] [--json]`, priced from the factory's
 /// `prices.toml`.
+/// `priory score [DIR] TASK [--scorer NAME] [--json]`: grades the latest finished run of each step
+/// of the task with the factory's scorers, one row per run and scorer.
+fn score(args: Vec<String>) -> ExitCode {
+    let (mut only, mut json, mut positional) = (None, false, Vec::new());
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--scorer" => match args.next() {
+                Some(name) => only = Some(name),
+                None => return usage(),
+            },
+            _ if arg.starts_with("--") => return usage(),
+            _ => positional.push(arg),
+        }
+    }
+    let (dir, task) = match &positional[..] {
+        [task] => (".", task),
+        [dir, task] => (dir.as_str(), task),
+        _ => return usage(),
+    };
+    let Ok(task) = task.parse() else {
+        return usage();
+    };
+    let Some(factory) = load(Path::new(dir)) else {
+        return ExitCode::FAILURE;
+    };
+    let scored = state::open().and_then(|mut db| {
+        let scores =
+            priory_core::score::score(&mut db, &factory, &runtime::home(), task, only.as_deref())?;
+        let rows = serde_json::Value::Array(scores.iter().map(|score| score.json()).collect());
+        if json {
+            println!("{}", serde_json::json!({ "scores": rows }));
+        } else {
+            listing::print(&["run", "step", "scorer", "verdict", "reason"], &rows);
+        }
+        Ok(())
+    });
+    exit("score", scored)
+}
+
+/// `priory bench capture` and `priory bench replay`.
+fn bench(args: Vec<String>) -> ExitCode {
+    let Some((verb, args)) = args.split_first().map(|(verb, rest)| (verb.as_str(), rest)) else {
+        return usage();
+    };
+    match verb {
+        "capture" => capture(args),
+        "replay" => replay(args),
+        _ => usage(),
+    }
+}
+
+/// `priory bench replay [DIR] CASE --budget USD [--turn-timeout DURATION]`: plays one case again
+/// under the factory in `DIR`, and prints its estimate, its ending and what it spent.
+fn replay(args: &[String]) -> ExitCode {
+    let (mut budget, mut turn, mut positional) = (None, priory_core::replay::TURN, Vec::new());
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--budget" => match args.next().and_then(|value| value.parse::<f64>().ok()) {
+                Some(value) if value > 0.0 && value.is_finite() => budget = Some(value),
+                _ => return usage(),
+            },
+            "--turn-timeout" => match args
+                .next()
+                .and_then(|value| value.parse::<jiff::SignedDuration>().ok())
+                .and_then(|value| Duration::try_from(value).ok())
+                .filter(|value| !value.is_zero())
+            {
+                Some(value) => turn = value,
+                None => return usage(),
+            },
+            _ if arg.starts_with("--") => return usage(),
+            _ => positional.push(arg.as_str()),
+        }
+    }
+    let (dir, case) = match positional[..] {
+        [case] => (".", case),
+        [dir, case] => (dir, case),
+        _ => return usage(),
+    };
+    let Some(budget) = budget else {
+        eprintln!("priory bench replay: give --budget USD, the most the replay may spend");
+        return ExitCode::FAILURE;
+    };
+    let Some(factory) = load(Path::new(dir)) else {
+        return ExitCode::FAILURE;
+    };
+    let replayed = priory_factory::case::load(Path::new(case)).and_then(|loaded| {
+        let estimate = priory_core::replay::estimate(&loaded.case, &factory, turn)?;
+        println!(
+            "estimate: ${:.4} of a ${budget:.4} budget, plus at most ${:.4} if it ends inside a turn of {}",
+            estimate.dollars,
+            estimate.overrun,
+            jiff::SignedDuration::try_from(turn).map_or_else(|_| format!("{turn:?}"), |turn| format!("{turn:#}"))
+        );
+        priory_core::replay::fits(&estimate, budget)?;
+        let options = priory_core::replay::Options { budget, turn };
+        let replayed = priory_core::replay::replay(
+            Path::new(dir),
+            &factory,
+            &loaded,
+            &options,
+            &mut |line| println!("{line}"),
+        )?;
+        if replayed.ending.incomplete() {
+            println!("Incomplete");
+        }
+        println!("ending: {}", replayed.ending);
+        println!(
+            "spent: ${:.4} of ${budget:.4} in {}s",
+            replayed.spent,
+            replayed.took.as_secs()
+        );
+        println!("gh calls not recorded: {}", replayed.unrecorded.len());
+        for call in &replayed.unrecorded {
+            println!("  gh {call}");
+        }
+        Ok(())
+    });
+    exit("bench replay", replayed)
+}
+
+/// `priory bench capture [DIR] TASK --into FOLDER`: captures a past task into a new benchmark case
+/// folder.
+fn capture(args: &[String]) -> ExitCode {
+    let (mut into, mut positional) = (None, Vec::new());
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--into" => match args.next() {
+                Some(folder) => into = Some(PathBuf::from(folder)),
+                None => return usage(),
+            },
+            _ if arg.starts_with("--") => return usage(),
+            _ => positional.push(arg.as_str()),
+        }
+    }
+    let (dir, task) = match positional[..] {
+        [task] => (".", task),
+        [dir, task] => (dir, task),
+        _ => return usage(),
+    };
+    let (Some(into), Ok(task)) = (into, task.parse()) else {
+        return usage();
+    };
+    let Some(factory) = load(Path::new(dir)) else {
+        return ExitCode::FAILURE;
+    };
+    let captured = state::open().and_then(|db| {
+        if into.exists() {
+            return Err(format!(
+                "{} already exists: capture into a new folder",
+                into.display()
+            ));
+        }
+        let read = |path: &str| std::fs::read(path);
+        let case = priory_core::capture::capture(&db, &factory, task, &read)?;
+        for (path, text) in &case.files {
+            let file = into.join(path);
+            let written = file
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(&file, text));
+            written.map_err(|error| format!("{}: {error}", file.display()))?;
+        }
+        let state = match case.gaps {
+            0 => "complete".to_owned(),
+            1 => "partial, 1 gap".to_owned(),
+            gaps => format!("partial, {gaps} gaps"),
+        };
+        println!(
+            "captured task {task} into {}: {} gh answer(s), {} answer(s), {state}",
+            into.display(),
+            case.gh,
+            case.answers
+        );
+        Ok(())
+    });
+    exit("bench capture", captured)
+}
+
 fn costs(args: Vec<String>) -> ExitCode {
     let (mut since, mut by, mut json, mut dirs) = (None, "workflow".to_owned(), false, Vec::new());
     let mut args = args.into_iter();
@@ -577,7 +796,8 @@ fn report_risk(args: Vec<String>) -> ExitCode {
     let printed = intake::now().and_then(|now| {
         let db = state::open()?;
         let start = report::start(&db, &since, &now.to_string())?;
-        let risk = risk::risk(&db, &factory, workflow.as_deref(), &since, &start, now)?;
+        let gates = risk::Gates::of(&factory);
+        let risk = risk::risk(&db, &gates, workflow.as_deref(), &since, &start, now)?;
         match json {
             true => state::emit(&risk.json().to_string()),
             false => risk.print(),
@@ -941,7 +1161,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             .is_some();
     // Without the factory folder, the queue knows no schedules or workflows, so up next lists none.
     let (mut schedules, mut workflows, mut now) = (Vec::new(), Vec::new(), jiff::Timestamp::now());
-    if ["queue", "desk"].contains(&verb) {
+    if ["queue", "desk"].contains(&verb) || unrouted {
         now = match intake::now() {
             Ok(now) => now,
             Err(error) => return exit(verb, Err(error)),
@@ -997,7 +1217,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
         let name = if unrouted { "unrouted" } else { verb };
         let value = listing::revised(&db, name, |db| {
             match verb {
-                "inbox" if unrouted => listing::unrouted(db, since.unwrap_or(0)),
+                "inbox" if unrouted => listing::unrouted(db, since.unwrap_or(0), now),
                 "inbox" => listing::inbox(db, since.unwrap_or(0)),
                 "tasks" => listing::tasks(db, lane, grade),
                 "asks" => listing::asks(db, &bands, &risks),
@@ -1060,6 +1280,9 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                             });
                             ask["merge_risk"] = lines.join("; ").into();
                         }
+                        if let Some(estimate) = ask.get_mut("risk_estimate") {
+                            *estimate = estimate["line"].clone();
+                        }
                         ask
                     })
                     .collect();
@@ -1082,6 +1305,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                         "run_id",
                         "session",
                         "merge_risk",
+                        "risk_estimate",
                     ],
                     &serde_json::Value::Array(open),
                 );
@@ -1100,6 +1324,16 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                     let events = if unrouted == 1 { "event" } else { "events" };
                     state::emit(&format!(
                         "{unrouted} {events} reached no task in the last 24 hours. See them with `priory inbox --unrouted`."
+                    ));
+                }
+                if let Some(unheard) = value["counts"]["unheard"].as_u64().filter(|n| *n > 0) {
+                    let (events, it) = if unheard == 1 {
+                        ("event", "it")
+                    } else {
+                        ("events", "them")
+                    };
+                    state::emit(&format!(
+                        "{unheard} {events} kept by a sleeping task reached no agent. See {it} with `priory inbox --unrouted`."
                     ));
                 }
                 if let Some(outsider) = value["counts"]["outsider"].as_u64().filter(|n| *n > 0) {
@@ -1273,8 +1507,19 @@ fn flows(mut args: Vec<String>) -> ExitCode {
     let Some(factory) = load(&dir) else {
         return ExitCode::FAILURE;
     };
-    println!("{}", listing::flows(&factory));
+    let mut flows = listing::flows(&factory);
+    listing::with_risk_estimates(&mut flows, history(&factory).as_ref());
+    println!("{flows}");
     ExitCode::SUCCESS
+}
+
+/// Each irreversible step's trials, when `PRIORY_DB` names a state file this priory reads.
+fn history(factory: &factory::Factory) -> Option<risk::Risk> {
+    let db = state::read_only().ok()?;
+    intake::now()
+        .and_then(|now| risk::recent(&db, &risk::Gates::of(factory), now))
+        .inspect_err(|error| eprintln!("warning: no history from the state: {error}"))
+        .ok()
 }
 
 /// Prints the resolved views as `GET /api/views` serves them: `priory views [DIR] --json`.
@@ -1976,10 +2221,104 @@ fn remote_ask(runner: &str, ask: i64, revision: i64) -> Result<Option<serde_json
     Ok(mirrored)
 }
 
+/// The generation to send with an action on runner `runner`'s task of `key`: `generation`, checked
+/// against this machine's claims, else the one they hold. A machine without a state file sends the
+/// one the person named unchecked, which the runner checks again anyway.
+fn remote_generation(runner: &str, key: &str, generation: Option<i64>) -> Result<i64, String> {
+    let Ok(db) = state::open() else {
+        return generation.ok_or_else(|| {
+            format!("this machine knows no generation of task {runner}:{key}: pass --generation N")
+        });
+    };
+    match runners::task_generation(&db, runner, key, generation) {
+        Ok(Ok(generation)) => Ok(generation),
+        Ok(Err(runners::Refused::Unknown(why) | runners::Refused::Stale(why))) => Err(why),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 /// Splits `<runner>:<ask>` when `ask` names no ask of this machine.
 fn remote_id(ask: &str, local: &Result<i64, String>) -> Option<(String, i64)> {
     let (runner, id) = ask.split_once(':').filter(|_| local.is_err())?;
     Some((runner.to_owned(), id.parse().ok()?))
+}
+
+/// `priory memories [--all] [--json]` lists the memory candidates that wait for a person, or every
+/// one; `priory memories (accept | drop) [DIR] CANDIDATE` publishes a person's verdict on the log.
+fn memories(args: Vec<String>) -> ExitCode {
+    let verdict = match args.first().map(String::as_str) {
+        Some("accept") => Some(true),
+        Some("drop") => Some(false),
+        _ => None,
+    };
+    if let Some(accept) = verdict {
+        let (dir, id) = match &args[1..] {
+            [id] => (".", id),
+            [dir, id] => (dir.as_str(), id),
+            _ => return usage(),
+        };
+        let Some(factory) = load(Path::new(dir)) else {
+            return ExitCode::FAILURE;
+        };
+        let decided = state::read_only().and_then(|db| {
+            priory_core::memories::decide(factory.log(), &db, accept, id).map_err(String::from)
+        });
+        return reply("memories", decided);
+    }
+    let (mut all, mut json, mut dir) = (false, false, None);
+    for arg in &args {
+        match arg.as_str() {
+            "--all" => all = true,
+            "--json" => json = true,
+            _ if dir.is_none() && !arg.starts_with('-') => dir = Some(arg),
+            _ => return usage(),
+        }
+    }
+    // With the factory's folder, each candidate says what memory of its name runs get now.
+    let factory = match dir {
+        Some(dir) => match load(Path::new(dir)) {
+            Some(factory) => Some(factory),
+            None => return ExitCode::FAILURE,
+        },
+        None => None,
+    };
+    let listed = state::read_only().and_then(|db| {
+        let mut candidates =
+            priory_core::memories::list(&db, all).map_err(|error| error.to_string())?;
+        if let Some(factory) = &factory {
+            priory_core::memories::Held::of(factory)
+                .mark(&db, &runtime::home(), &mut candidates)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(candidates)
+    });
+    let candidates = match listed {
+        Ok(candidates) => candidates,
+        Err(error) => return exit("memories", Err(error)),
+    };
+    if json {
+        println!("{}", serde_json::json!({ "candidates": candidates }));
+        return ExitCode::SUCCESS;
+    }
+    println!("id\tname\tkind\tstate\ttask\trunner\twritten");
+    for candidate in candidates {
+        let field = |name: &str| candidate[name].as_str().unwrap_or("-").to_owned();
+        let kind = if candidate["forget"] == true {
+            "forget"
+        } else {
+            "remember"
+        };
+        println!(
+            "{}\t{}\t{kind}\t{}\t{}\t{}\t{}",
+            field("id"),
+            field("name"),
+            field("state"),
+            field("task"),
+            field("runner"),
+            field("written")
+        );
+    }
+    ExitCode::SUCCESS
 }
 
 fn reply(verb: &str, done: Result<String, String>) -> ExitCode {
@@ -2114,7 +2453,8 @@ fn asking_session() -> Option<String> {
 /// Sets a task's TL;DR by hand.
 /// Prints `priory task TASK --json`: the body `/api/tasks/TASK` returns.
 /// Prints `priory inbox --unrouted`: each group of a resource a task owned, with that task, its
-/// events and the command that routes the next one, then one count per source for the rest.
+/// events and the command that routes the next one, then each task that kept events no agent read,
+/// then one count per source for the rest.
 fn print_unrouted(unrouted: &serde_json::Value) {
     let events = |count: u64, what: &str| {
         format!("{count} {what}event{}", if count == 1 { "" } else { "s" })
@@ -2142,6 +2482,30 @@ fn print_unrouted(unrouted: &serde_json::Value) {
             group["follow_up"]
                 .as_str()
                 .unwrap_or("no command can key a new task by it: start one from its thread")
+        );
+    }
+    for group in unrouted["unheard"].as_array().into_iter().flatten() {
+        let task = &group["task"];
+        println!(
+            "task {} {} kept {} no agent read:",
+            task["id"],
+            task["state"].as_str().unwrap_or_default(),
+            events(group["events"].as_array().map_or(0, Vec::len) as u64, ""),
+        );
+        for event in group["events"].as_array().into_iter().flatten() {
+            println!(
+                "  {}  {}  {}  {}",
+                event["seq"],
+                event["type"].as_str().unwrap_or_default(),
+                event["subject"].as_str().unwrap_or("-"),
+                event["line"].as_str().unwrap_or("")
+            );
+        }
+        println!(
+            "  {}",
+            group["follow_up"]
+                .as_str()
+                .unwrap_or("its next run reads them")
         );
     }
     let other: Vec<String> = unrouted["other"]
@@ -2527,13 +2891,25 @@ fn hold(args: Vec<String>) -> ExitCode {
 }
 
 /// Sends `priory resume`, `cancel`, `revive TASK [--step STEP]`, `release`, `say TASK TEXT` or `hold` for one task to
-/// the daemon, which applies it.
+/// the daemon, which applies it. Each but `hold` also takes `[DIR] RUNNER:KEY [--generation N]`,
+/// another runner's task, which it publishes on the log for that runner to apply.
 fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCode {
     // Taken first, so a text such as `--step` stays text.
     let text = match act {
-        "say" if args.len() == 2 => args.pop(),
+        "say" if (2..=5).contains(&args.len()) => args.pop(),
         "say" => return usage(),
         _ => None,
+    };
+    let generation = match args.iter().position(|arg| arg == "--generation") {
+        Some(flag) if hold.is_none() => match args.get(flag + 1).map(|value| value.parse()) {
+            Some(Ok(generation)) => {
+                args.drain(flag..flag + 2);
+                Some(generation)
+            }
+            _ => return usage(),
+        },
+        Some(_) => return usage(),
+        None => None,
     };
     let (expected, mut args) = match act {
         "hold" | "release" | "cancel" => match expected(args) {
@@ -2547,6 +2923,50 @@ fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCod
         Some(_) => return usage(),
         None => None,
     };
+    let remote = match &args[..] {
+        [task] if task.parse::<i64>().is_err() => Some((".", task)),
+        [dir, task] => Some((dir.as_str(), task)),
+        _ => None,
+    };
+    if let Some((dir, task)) = remote.filter(|_| hold.is_none()) {
+        let Some((runner, key)) = task.split_once(':') else {
+            return usage();
+        };
+        if expected.is_some() {
+            return exit(
+                act,
+                Err(format!(
+                    "task {task} is another runner's: name its --generation N, not --expected"
+                )),
+            );
+        }
+        let Some(factory) = load(Path::new(dir)) else {
+            return ExitCode::FAILURE;
+        };
+        let sent = runners::known(&factory, runner)
+            .and_then(|()| remote_generation(runner, key, generation))
+            .and_then(|generation| {
+                let sent = runners::TaskAct {
+                    act,
+                    runner,
+                    key,
+                    generation,
+                    text: text.as_deref(),
+                    step: step.as_deref(),
+                    by: "cli",
+                };
+                runners::act(factory.log(), &sent)
+            })
+            .map(|submission| {
+                format!(
+                    "{act} of task {task} sent to {runner} as submission {submission}: it applies when {runner} reads the log"
+                )
+            });
+        return reply(act, sent);
+    }
+    if generation.is_some() {
+        return usage();
+    }
     let [task] = &args[..] else {
         return usage();
     };
@@ -2687,8 +3107,10 @@ fn warn_of_stale_herdr_layout(factory: &factory::Factory, dir: &Path) {
 /// the guarded calls each agent can make and the outcomes the daemon verifies, as four tables or
 /// as JSON.
 fn print_explanation(factory: &factory::Factory, json: bool) {
+    let risk = history(factory);
     if json {
         let mut flows = listing::flows(factory);
+        listing::with_risk_estimates(&mut flows, risk.as_ref());
         if let Some(flows) = flows.as_object_mut() {
             flows.remove("workflows");
         }
@@ -2719,23 +3141,52 @@ fn print_explanation(factory: &factory::Factory, json: bool) {
             .replace('\r', "\\r")
             .replace('\n', "\\n")
     };
-    state::emit("workflow\tstep\tgate");
+    let history = |workflow: &str, step: &str| {
+        let Some(risk) = &risk else {
+            return "-\t-\t-".to_owned();
+        };
+        let history = risk.step_history(workflow, step);
+        let share = |outcome: &str| {
+            let (k, n) = (&history[outcome]["k"], &history["trials"]);
+            match history["shown"].as_bool() {
+                Some(true) => format!(
+                    "{k} of {n}, 95% bound {:.1}%",
+                    history[outcome]["p95"].as_f64().unwrap_or_default() * 100.0
+                ),
+                _ => format!("{k} of {n}, needs {}", risk::FLOOR),
+            }
+        };
+        format!(
+            "{}\t{}\t{}",
+            history["caught"],
+            share("judged_wrong"),
+            share("landed_wrong")
+        )
+    };
+    state::emit("workflow\tstep\tgate\tcaught\tjudged wrong\tlanded wrong");
     for (name, gate) in &gates {
         let shown = match &gate.autonomous {
             Some(reason) => format!("autonomous: {reason}"),
             None => gate.approved_by.join(", "),
         };
         state::emit(&format!(
-            "{}\t{}\t{}",
+            "{}\t{}\t{}\t{}",
             cell(name),
             cell(&gate.step),
-            cell(&shown)
+            cell(&shown),
+            history(name, &gate.step)
         ));
     }
     state::emit("");
-    state::emit("workflow\tpath with no human decision");
+    state::emit("workflow\tpath with no human decision\tcaught\tjudged wrong\tlanded wrong");
     for (name, path) in &paths {
-        state::emit(&format!("{}\t{}", cell(name), cell(&path.join(" -> "))));
+        let step = path.last().map_or("", String::as_str);
+        state::emit(&format!(
+            "{}\t{}\t{}",
+            cell(name),
+            cell(&path.join(" -> ")),
+            history(name, step)
+        ));
     }
     state::emit("");
     state::emit("agent\tguard\tworkflow\twhy");

@@ -37,6 +37,16 @@ pub const ASK_DISMISSED: &str = "priory.ask.dismissed";
 pub const ASK_POSTED: &str = "priory.ask.posted";
 /// A runner applied or refused an answer or dismiss another machine sent.
 pub const ASK_APPLIED: &str = "priory.ask.applied";
+/// A person on one runner resumes, revives, cancels, releases or says to a task of another.
+pub const TASK_ACTED: &str = "priory.task.acted";
+/// A runner applied or refused an action on one of its tasks that another machine sent.
+pub const TASK_APPLIED: &str = "priory.task.applied";
+/// An agent saves or forgets a memory: a candidate that other tasks' runs get once accepted.
+pub const MEMORY_WRITTEN: &str = "priory.memory.written";
+/// A person accepts a memory candidate, so every task's runs get it.
+pub const MEMORY_ACCEPTED: &str = "priory.memory.accepted";
+/// A person drops a memory candidate, so no run gets it.
+pub const MEMORY_DROPPED: &str = "priory.memory.dropped";
 const LABELED: &str = "github.issues.labeled";
 const OPENED: &str = "github.issues.opened";
 pub const ISSUE_CLOSED: &str = "github.issues.closed";
@@ -108,6 +118,11 @@ pub fn output() -> Output {
             ASK_DISMISSED,
             ASK_POSTED,
             ASK_APPLIED,
+            TASK_ACTED,
+            TASK_APPLIED,
+            MEMORY_WRITTEN,
+            MEMORY_ACCEPTED,
+            MEMORY_DROPPED,
         ])
 }
 
@@ -117,6 +132,9 @@ pub fn output() -> Output {
 pub struct Watch {
     pub resource: String,
     pub since: Timestamp,
+    /// Which the intake reads first when a source limits its reads: 0 for an open wait or hold, 1
+    /// for an active task, 2 for a task that ended.
+    pub rank: u8,
 }
 
 /// A task's pull request merged recently: the intake reads the check runs at its merge commit on the

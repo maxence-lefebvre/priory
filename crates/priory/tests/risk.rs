@@ -185,6 +185,29 @@ impl Setup {
         );
     }
 
+    /// Open ask `id` of `task` at human step `step`.
+    fn ask(&self, id: i64, task: u64, step: &str) {
+        self.sql(
+            "INSERT INTO asks (id, task, step, kind, question, options, created)
+             VALUES (?1, ?2, ?3, 'step', 'Go?', '[]', ?4)",
+            &[&id, &(task as i64), &step, &NOW],
+        );
+    }
+
+    /// Ask `id` as `priory asks --json` lists it.
+    fn listed_ask(&self, id: i64) -> Value {
+        let output = self.priory(&["asks", "--json"]);
+        succeeded(&output);
+        let asks: Value = serde_json::from_slice(&output.stdout).unwrap();
+        asks["asks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|ask| ask["id"] == id)
+            .unwrap()
+            .clone()
+    }
+
     fn report(&self, args: &[&str]) -> String {
         let output = self.priory(&[&["report", "risk", &self.factory()][..], args].concat());
         succeeded(&output);
@@ -503,6 +526,168 @@ fn a_row_shows_percentages_from_20_trials_and_since_leaves_out_older_reaches() {
     let since = setup.report(&["--since", "60 days", "--json"]);
     let since: Value = serde_json::from_str(&since).unwrap();
     assert_eq!(since["targets"][1]["rows"][0]["trials"], 19);
+}
+
+#[test]
+fn an_irreversible_asks_estimate_is_the_own_row_of_the_step_its_answer_lets_run() {
+    let setup = Setup::new("ask-row", 21);
+    for task in 1..=20 {
+        setup.reached(task, 40);
+        setup.handle(&[opened(task, task, 40)]);
+    }
+    setup.ask(1, 21, "approve-pr");
+    setup.ask(2, 21, "approve-merge");
+    setup.ask(3, 21, "plan");
+
+    let before_open_pr = setup.listed_ask(1);
+    assert_eq!(before_open_pr["risk"], json!(["irreversible"]));
+    let estimate = &before_open_pr["risk_estimate"];
+    assert_eq!(
+        (
+            &estimate["workflow"],
+            &estimate["step"],
+            &estimate["trials"]
+        ),
+        (&json!("implement"), &json!("open-pr"), &json!(20))
+    );
+    assert_eq!(
+        estimate["line"],
+        "History: 0 of 20 tasks through this step were judged wrong within 30 days, 0 after the merge. 95\u{a0}% posterior upper bounds: 13.3\u{a0}% and 13.3\u{a0}%."
+    );
+    let before_merge = setup.listed_ask(2);
+    assert_eq!(before_merge["risk_estimate"]["step"], "merge-pr");
+    assert_eq!(before_merge["risk_estimate"]["trials"], 0);
+    let plan = setup.listed_ask(3);
+    assert_eq!(plan["risk"], json!([]));
+    assert!(plan.get("risk_estimate").is_none(), "{plan}");
+
+    let desk = setup.priory(&["desk", "--json"]);
+    succeeded(&desk);
+    let desk: Value = serde_json::from_slice(&desk.stdout).unwrap();
+    let item = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["kind"] == "ask" && item["id"] == 1)
+        .unwrap();
+    assert_eq!(item["risk_estimate"]["step"], "open-pr");
+
+    let asks = setup.priory(&["asks"]);
+    succeeded(&asks);
+    assert!(
+        String::from_utf8_lossy(&asks.stdout)
+            .contains("History: 0 of 20 tasks through this step were judged wrong"),
+        "{}",
+        String::from_utf8_lossy(&asks.stdout)
+    );
+}
+
+#[test]
+fn an_asks_estimate_under_20_trials_gives_the_counts_and_too_few_to_estimate() {
+    let setup = Setup::new("ask-few", 13);
+    for task in 1..=12 {
+        setup.reached(task, 40);
+        setup.handle(&[opened(task, task, 40)]);
+    }
+    setup.handle(&[
+        merged(1, 1, 39),
+        revert(1, 30),
+        merged(2, 2, 39),
+        revert(2, 30),
+    ]);
+    setup.ask(1, 13, "approve-pr");
+
+    let estimate = &setup.listed_ask(1)["risk_estimate"];
+    assert_eq!(estimate["shown"], false);
+    assert_eq!(
+        estimate["line"],
+        "History: 2 of 12 tasks through this step were judged wrong within 30 days, 2 after the merge. Too few to estimate."
+    );
+}
+
+#[test]
+fn check_explain_shows_each_steps_history_when_it_finds_the_state_file_and_dashes_otherwise() {
+    let setup = Setup::new("explain", 21);
+    for task in 1..=20 {
+        setup.reached(task, 40);
+        setup.handle(&[opened(task, task, 40)]);
+    }
+    setup.ended(21, "plan", "green", 41);
+    setup.ended(21, "approve-pr", "rejected", 40);
+
+    let explained = setup.priory(&["check", &setup.factory(), "--explain"]);
+    succeeded(&explained);
+    let text = String::from_utf8(explained.stdout).unwrap();
+    assert_eq!(
+        text.lines().take(3).collect::<Vec<_>>(),
+        [
+            "workflow\tstep\tgate\tcaught\tjudged wrong\tlanded wrong",
+            "implement\topen-pr\tapprove-pr\t1\t0 of 20, 95% bound 13.3%\t0 of 20, 95% bound 13.3%",
+            "implement\tmerge-pr\tapprove-merge\t0\t0 of 0, needs 20\t0 of 0, needs 20",
+        ]
+    );
+    let flows = setup.priory(&["flows", &setup.factory(), "--json"]);
+    succeeded(&flows);
+    let flows: Value = serde_json::from_slice(&flows.stdout).unwrap();
+    let open_pr = &flows["irreversible"][0]["risk_estimate"];
+    assert_eq!(
+        (&open_pr["caught"], &open_pr["trials"]),
+        (&json!(1), &json!(20))
+    );
+
+    let missing = setup.dir.join("missing.db");
+    let without = Command::new(env!("CARGO_BIN_EXE_priory"))
+        .env("PRIORY_DB", &missing)
+        .args(["check", &setup.factory(), "--explain"])
+        .output()
+        .unwrap();
+    succeeded(&without);
+    assert_eq!(
+        String::from_utf8(without.stdout).unwrap().lines().nth(1),
+        Some("implement\topen-pr\tapprove-pr\t-\t-\t-")
+    );
+    let lint = Command::new(env!("CARGO_BIN_EXE_priory"))
+        .env("PRIORY_DB", &missing)
+        .args(["check", &setup.factory()])
+        .output()
+        .unwrap();
+    succeeded(&lint);
+    assert!(!missing.exists());
+}
+
+#[test]
+fn a_step_record_missing_a_field_a_trial_needs_is_skipped() {
+    let setup = Setup::new("partial", 1);
+    setup.reached(1, 40);
+    setup.handle(&[opened(1, 1, 40)]);
+    let event = json!({ "id": "partial", "type": "factory.step.ended", "time": ago(5),
+                        "data": { "step": "implement", "model": "m" } });
+    setup.sql(
+        "INSERT INTO trace (id, type, time, event) VALUES ('partial', 'factory.step.ended', ?1, ?2)",
+        &[&ago(5), &event.to_string()],
+    );
+
+    assert_eq!(
+        counts(&row(&setup.target("open-pr"), "open-pr", None)),
+        (1, 0, 0)
+    );
+}
+
+#[test]
+fn an_ask_lists_with_a_null_estimate_when_the_history_cannot_be_read() {
+    let setup = Setup::new("broken-history", 1);
+    let event = json!({ "id": "broken", "type": "factory.step.ended", "time": "yesterday",
+                        "data": { "task": "1", "workflow": "implement", "step": "open-pr",
+                                  "effect": "irreversible", "outcome": "opened" } });
+    setup.sql(
+        "INSERT INTO trace (id, type, time, event) VALUES ('broken', 'factory.step.ended', 'yesterday', ?1)",
+        &[&event.to_string()],
+    );
+    setup.ask(1, 1, "approve-pr");
+
+    let ask = setup.listed_ask(1);
+    assert_eq!(ask["risk"], json!(["irreversible"]));
+    assert_eq!(ask.get("risk_estimate"), Some(&Value::Null));
 }
 
 impl Setup {

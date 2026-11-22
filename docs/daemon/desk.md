@@ -13,6 +13,7 @@
 | `held` | the hold | the task's reason: why it is held, and until what | it was held |
 | `batch` | the batch | its title and counts, then which entries start next: `Invoice exports: 1 merged, 3 started, 2 planned. Next: tasks 36 and 37 start when task 34 merges.` One row per going batch, in place of the `held` rows of its entries (see Batches) | the go |
 | `memory` | the memory grant | `waits for <N> GB: <command>` | it was requested |
+| `memories` | `memories` | `` <n> memory candidates wait for a person: <name>, <name>; see them with `priory memories` ``. One row while any candidate waits (see Memory candidates) | the oldest candidate was written |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
 | `sweep` | the script's run | its command, then `running`, or its status and output, for the open stall | it started |
 | `report` | the report's inbox sequence number | `<source>: <line>`, for an unread report | it was posted |
@@ -50,6 +51,18 @@ hours, `priory desk` prints one line before its rows. Events no task ever owned 
 It is a count, not an alarm: nothing ranks for it. `priory desk --json` carries it as
 `counts.unrouted`, 0 when there are none. See [routing.md](routing.md#events-that-reach-no-task).
 
+An event a task kept while it was not running reached a task, but no agent read it yet, until the
+task's next run. When such events came in the last 24 hours and are at least 5 minutes old,
+`priory desk` prints one more line:
+
+```text
+1 event kept by a sleeping task reached no agent. See it with `priory inbox --unrouted`.
+```
+
+`priory desk --json` carries it as `counts.unheard`, 0 when there are none. The web Desk shows it
+as a calm row under the unrouted one, and the Herdr Desk's count line ends with "2 events no agent
+read." See [routing.md](routing.md#events-no-agent-read).
+
 A comment or review from someone outside the repository is not unrouted: its outcome is
 `outsider`. When some came in the last 24 hours, `priory desk` prints one more line:
 
@@ -67,7 +80,7 @@ waits. `priory desk` without `--json` prints neither. The ranking has six groups
 
 | Group | Items | `why` |
 | ----- | ----- | ----- |
-| Alarms | `blocked`, `failed`, an `uncertain` `prompt` or `command`, and an unread `intake` report: a source that fails to poll | `an alarm: work stopped and waits on a person` |
+| Alarms | `blocked`, `failed`, an `uncertain` `prompt` or `command`, an unread `intake` report: a source that fails to poll, and an unread `landed wrong` report: a task's merge that is red on its base branch or was reverted | `an alarm: work stopped and waits on a person` |
 | Asks that open a door | an ask whose answer lets an irreversible step run (its risk is `irreversible`), and an ask of a task that reviews a pull request, whose key ends in `:review:<login>` | ``it runs `<argv[0]>` in <target>`` for an ask that runs a command (see [tools.md](tools.md#commands-an-answer-runs)), ``it lets step `<step>` run`` for another ask that approves an irreversible step, or `it reviews a pull request` |
 | Plans | another ask at a human step, such as `approve-plan` | `it approves a plan` |
 | Other asks | every other ask, such as an agent's or an outside one | `it waits on a person` |
@@ -114,6 +127,22 @@ It leaves the desk in two ways:
 
 A run started before the item was added does not clear it. If the connector still needs a sign-in,
 the next denial adds the item again.
+
+## Memory candidates
+
+While any memory candidate waits for a person, the desk shows one `memories` row for all of them,
+so reviewing memories costs one look a day, not one per memory. In `priory desk --json` and
+`/api/desk`, the item carries `candidates`, each as `priory memories --json` lists it. It ranks
+with the rest, and its title is `memory candidates wait for a person`. A person accepts or drops
+each with `priory memories accept ID` or `priory memories drop ID`, and the row leaves once none
+waits. See [skills.md](skills.md#memories-agents-write).
+
+In `/api/desk`, each candidate also carries `replaces` and `current_text`: whether runs get a memory
+of its name now, and that memory's text (see
+[the reference](../reference/memories.md#priory-memories)). `POST /api/memories/{id}/accept` and
+`/drop` decide one, as the CLI does (see [serve.md](../reference/serve.md#writes)).
+
+The web and Herdr Desks show it as a plain row with its line, without Accept or Drop buttons.
 
 ## Reports
 
@@ -169,6 +198,10 @@ A tick that polls no Linear or Slack source records only `github`.
 While the daemon cannot reach its log, the banner starts with
 `the log is unreachable since <time>: <error>; <n> messages wait to publish`, joined to the
 intake's own by `; `. See [runners.md](runners.md#a-runner-cut-off-from-the-log).
+
+While the last fetch of the factory's kit failed, the banner ends with `the kit fails to fetch since
+<time>: <error>; runs keep commit <commit>`, or `; runs start without the kit` when the runner has
+no good commit yet. See [skills.md](skills.md#a-kit-repository).
 
 The banner is `intake` in `priory desk --json` and `/api/desk`. A source that starts failing, or
 recovers, moves the state's revision, so a client that waits on `/api/events` redraws the banner at

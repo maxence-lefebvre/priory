@@ -1,0 +1,40 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/case-answers.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Answer": {
+      "additionalProperties": false,
+      "description": "A person's answer at one human step.",
+      "properties": {
+        "answer": {
+          "description": "The option or text the person answered.",
+          "type": "string"
+        },
+        "step": {
+          "description": "The human step.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "step",
+        "answer"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "`answers.toml`: the answer a person gave at each human step before the first irreversible\nstep, in order.",
+  "properties": {
+    "answers": {
+      "items": {
+        "$ref": "#/definitions/Answer"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "answers"
+  ],
+  "title": "case answers",
+  "type": "object"
+}

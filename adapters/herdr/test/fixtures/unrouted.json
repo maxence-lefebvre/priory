@@ -30,7 +30,23 @@
         "request_text": "Follow up on ENG-7 after event 29"
       }
     ],
-    "other": [{ "source": "linear", "events": 1 }]
+    "other": [{ "source": "linear", "events": 1 }],
+    "unheard": [
+      {
+        "task": { "id": 15, "key": "linear:ENG-24", "state": "blocked", "workflow": "implement" },
+        "events": [{ "seq": 33, "type": "linear.comment.created", "subject": "ENG-24", "time": "2026-11-17T11:45:00Z", "line": "staging-b is back up, use it.", "url": null }],
+        "follow_up": "priory say 15 'Read the events that came while you slept.'",
+        "say_text": "Read the events that came while you slept.",
+        "request_text": null
+      },
+      {
+        "task": { "id": 14, "key": "github:owner/repo#9", "state": "asleep", "workflow": "implement" },
+        "events": [{ "seq": 32, "type": "github.pull_request.comment", "subject": "owner/repo#9", "time": "2026-11-17T11:40:00Z", "line": "Cap the backoff at 10 minutes.", "url": null }],
+        "follow_up": "priory say 14 'Read the events that came while you slept.'",
+        "say_text": "Read the events that came while you slept.",
+        "request_text": null
+      }
+    ]
   },
   "outsider": []
 }

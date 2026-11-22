@@ -112,6 +112,7 @@ fn priory(args: &[&str], dir: &Path) -> Outcome {
     let output = Command::new(env!("CARGO_BIN_EXE_priory"))
         .args(args)
         .arg(dir)
+        .env_remove("PRIORY_DB")
         .env(
             "HERDR_APP_HOME",
             Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-herdr"),
@@ -137,10 +138,10 @@ fn the_example_workflow_gates_open_pr_on_approve_pr() {
     assert_eq!(outcome.code, 0);
     assert_eq!(
         outcome.stdout,
-        "workflow\tstep\tgate\n\
-         implement\topen-pr\tapprove-pr\n\
+        "workflow\tstep\tgate\tcaught\tjudged wrong\tlanded wrong\n\
+         implement\topen-pr\tapprove-pr\t-\t-\t-\n\
          \n\
-         workflow\tpath with no human decision\n\
+         workflow\tpath with no human decision\tcaught\tjudged wrong\tlanded wrong\n\
          \n\
          agent\tguard\tworkflow\twhy\n\
          \n\
@@ -156,11 +157,11 @@ fn an_autonomous_step_lists_its_reason_and_the_path_with_no_human_decision() {
     assert_eq!(outcome.code, 0);
     assert_eq!(
         outcome.stdout,
-        "workflow\tstep\tgate\n\
-         draft\topen-pr\tautonomous: draft PRs only\n\
+        "workflow\tstep\tgate\tcaught\tjudged wrong\tlanded wrong\n\
+         draft\topen-pr\tautonomous: draft PRs only\t-\t-\t-\n\
          \n\
-         workflow\tpath with no human decision\n\
-         draft\tplan -> open-pr\n\
+         workflow\tpath with no human decision\tcaught\tjudged wrong\tlanded wrong\n\
+         draft\tplan -> open-pr\t-\t-\t-\n\
          \n\
          agent\tguard\tworkflow\twhy\n\
          \n\
@@ -176,19 +177,19 @@ fn json_holds_the_same_rows_as_the_table() {
 
     assert_eq!(outcome.code, 0);
     let json: Value = serde_json::from_str(&outcome.stdout).unwrap();
-    let mut rebuilt = String::from("workflow\tstep\tgate\n");
+    let mut rebuilt = String::from("workflow\tstep\tgate\tcaught\tjudged wrong\tlanded wrong\n");
     for gate in json["irreversible"].as_array().unwrap() {
         let gated = match gate["autonomous"].as_str() {
             Some(reason) => format!("autonomous: {reason}"),
             None => gate["approved_by"][0].as_str().unwrap().to_owned(),
         };
         rebuilt += &format!(
-            "{}\t{}\t{gated}\n",
+            "{}\t{}\t{gated}\t-\t-\t-\n",
             gate["workflow"].as_str().unwrap(),
             gate["step"].as_str().unwrap()
         );
     }
-    rebuilt += "\nworkflow\tpath with no human decision\n";
+    rebuilt += "\nworkflow\tpath with no human decision\tcaught\tjudged wrong\tlanded wrong\n";
     for path in json["paths"].as_array().unwrap() {
         let steps: Vec<_> = path["path"]
             .as_array()
@@ -197,7 +198,7 @@ fn json_holds_the_same_rows_as_the_table() {
             .map(|step| step.as_str().unwrap())
             .collect();
         rebuilt += &format!(
-            "{}\t{}\n",
+            "{}\t{}\t-\t-\t-\n",
             path["workflow"].as_str().unwrap(),
             steps.join(" -> ")
         );
@@ -220,10 +221,10 @@ fn an_explicit_by_overrides_the_steps_decider() {
     assert_eq!(outcome.stderr, "");
     assert_eq!(
         outcome.stdout,
-        "workflow\tstep\tgate\n\
-         draft\topen-pr\tautonomous: draft PRs only\n\
+        "workflow\tstep\tgate\tcaught\tjudged wrong\tlanded wrong\n\
+         draft\topen-pr\tautonomous: draft PRs only\t-\t-\t-\n\
          \n\
-         workflow\tpath with no human decision\n\
+         workflow\tpath with no human decision\tcaught\tjudged wrong\tlanded wrong\n\
          \n\
          agent\tguard\tworkflow\twhy\n\
          \n\
@@ -279,7 +280,7 @@ next = { ok = "done" }
     assert!(
         outcome
             .stdout
-            .starts_with("workflow\tstep\tgate\npublish\tpublish\tapprove\n")
+            .starts_with("workflow\tstep\tgate\tcaught\tjudged wrong\tlanded wrong\npublish\tpublish\tapprove\t-\t-\t-\n")
     );
 }
 
@@ -292,7 +293,7 @@ fn a_multiline_reason_stays_on_one_row() {
     assert!(
         outcome
             .stdout
-            .contains("draft\topen-pr\tautonomous: draft\\tPRs\\nonly\n")
+            .contains("draft\topen-pr\tautonomous: draft\\tPRs\\nonly\t-\t-\t-\n")
     );
 }
 
@@ -514,10 +515,10 @@ fn an_outcome_with_a_proof_is_listed_as_verified() {
     assert_eq!(outcome.stderr, "");
     assert_eq!(
         outcome.stdout,
-        "workflow\tstep\tgate\n\
-         implement\topen-pr\tapprove-pr\n\
+        "workflow\tstep\tgate\tcaught\tjudged wrong\tlanded wrong\n\
+         implement\topen-pr\tapprove-pr\t-\t-\t-\n\
          \n\
-         workflow\tpath with no human decision\n\
+         workflow\tpath with no human decision\tcaught\tjudged wrong\tlanded wrong\n\
          \n\
          agent\tguard\tworkflow\twhy\n\
          \n\

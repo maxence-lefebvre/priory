@@ -102,3 +102,29 @@ INSERT INTO remote_asks (runner,ask,version,data) VALUES
 INSERT INTO remote_submissions (submission,runner,ask,revision,verb,text,sent,outcome,why,applied) VALUES
 ('0193f0a2-demo-0001','xps13',12,1,'answer','approved',strftime('%Y-%m-%dT%H:%M:%SZ','now','-5 minutes'),NULL,NULL,NULL),
 ('0193f0a2-demo-0002','laptop',4,1,'answer','keep one',strftime('%Y-%m-%dT%H:%M:%SZ','now','-9 minutes'),'refused','ask 4 is at revision 2',strftime('%Y-%m-%dT%H:%M:%SZ','now','-8 minutes'));
+-- two tasks the other runners hold, from their claims: laptop keeps one, xps13 waits on one
+INSERT INTO inbox (id,type,subject,time,data,links,outcome) VALUES
+('r-262','priory.task.requested','ENG-262',strftime('%Y-%m-%dT%H:%M:%SZ','now','-50 minutes'),'{"key":"ENG-262","workflow":"implement","band":"now","lane":"payments","tldr":"Deploy the rate limiter to staging"}','[]','ignored'),
+('r-264','priory.task.requested','ENG-264',strftime('%Y-%m-%dT%H:%M:%SZ','now','-30 minutes'),'{"key":"ENG-264","workflow":"implement","band":"today","lane":"search","tldr":"Reindex the product catalog"}','[]','ignored'),
+('c-262','priory.task.claimed','ENG-262',strftime('%Y-%m-%dT%H:%M:%SZ','now','-48 minutes'),'{"key":"ENG-262","runner":"laptop"}','[]','ignored'),
+('c-264','priory.task.claimed','ENG-264',strftime('%Y-%m-%dT%H:%M:%SZ','now','-28 minutes'),'{"key":"ENG-264","runner":"xps13"}','[]','ignored');
+INSERT INTO claims (key,runner,request,hold,won,generation) VALUES
+('ENG-262','laptop','r-262','kept',(SELECT seq FROM inbox WHERE id='c-262'),2),
+('ENG-264','xps13','r-264','waiting',(SELECT seq FROM inbox WHERE id='c-264'),1);
+-- a cancel sent to xps13's task, which xps13 has not read yet
+INSERT INTO remote_task_submissions (submission,runner,key,generation,act,sent) VALUES
+('0193f0a2-demo-0003','xps13','ENG-264',1,'cancel',strftime('%Y-%m-%dT%H:%M:%SZ','now','-3 minutes'));
+-- events a task kept that no agent read: an asleep task, the blocked task 3 and a done task
+INSERT INTO tasks (id,key,workflow,step,state,band,lane,trigger,source,repo,tldr,created,changed,entered,model,branch) VALUES
+(10,'linear:ENG-245','implement','implement','asleep','today','payments','linear','seed-10','acme/shop','Retry webhook deliveries',strftime('%Y-%m-%dT%H:%M:%SZ','now','-6 hours'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-90 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-90 minutes'),'claude-sonnet-5-5','eng-245'),
+(11,'github:acme/shop#190','implement','done','done','later','payments','github','seed-11','acme/shop','Add a currency column',strftime('%Y-%m-%dT%H:%M:%SZ','now','-20 hours'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-5 hours'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-5 hours'),'claude-sonnet-5-5','eng-190');
+INSERT OR IGNORE INTO owns (task, resource) VALUES (10,'linear:ENG-245'),(11,'github:acme/shop#190');
+INSERT INTO inbox (id,type,subject,time,data,links,outcome,task) VALUES
+('k1','linear.comment.created','ENG-245',strftime('%Y-%m-%dT%H:%M:%SZ','now','-40 minutes'),'{"issue":"ENG-245","body":"Use exponential backoff, capped at 10 minutes.","actor":"lead-a"}','[]','kept',10),
+('k2','github.pull_request_review.submitted','acme/shop#245',strftime('%Y-%m-%dT%H:%M:%SZ','now','-25 minutes'),'{"repo":"acme/shop","pull_request":245,"state":"commented","body":"Looks good once the cap is configurable.","url":"https://github.com/acme/shop/pull/245#pullrequestreview-9","actor":"reviewer-a"}','[]','kept',10),
+('k3','linear.comment.created','ENG-224',strftime('%Y-%m-%dT%H:%M:%SZ','now','-70 minutes'),'{"issue":"ENG-224","body":"staging-b is back up, use it.","actor":"ops-a"}','[]','kept',3),
+('k4','github.pull_request.comment','acme/shop#190',strftime('%Y-%m-%dT%H:%M:%SZ','now','-2 hours'),'{"repo":"acme/shop","pull_request":190,"body":"This broke the CSV export of old invoices.","url":"https://github.com/acme/shop/pull/190#c4","actor":"reviewer-b"}','[]','kept',11);
+-- two memory candidates that wait for a person: one replaces the factory's release-day, one is new
+INSERT INTO memory_candidates (id,name,description,text,key,runner,written,logged) VALUES
+('0193f0a2-mem-0001','release-day','When releases go out. Read it before you plan or merge a change near a release.','Releases go out on Wednesdays since November 2026, not Tuesdays. Merge nothing risky on a Tuesday afternoon.'||char(10)||char(10)||'The release train freezes main at 14:00 UTC, so a pull request merged after that waits a week.','ENG-212','laptop',strftime('%Y-%m-%dT%H:%M:%SZ','now','-2 hours'),1),
+('0193f0a2-mem-0002','search-staging','Which search cluster the integration tests use.','staging-a refuses connections from runners outside the VPN. Run the search integration tests against staging-b, and rerun the two index-version tests once if they fail.','ENG-224',NULL,strftime('%Y-%m-%dT%H:%M:%SZ','now','-25 minutes'),2);

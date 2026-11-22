@@ -128,6 +128,170 @@ export async function sayLine(post, task, text) {
   return { said: false, note };
 }
 
+// Each row element's markup as last written.
+const painted = new WeakMap();
+
+/**
+ * Makes `pre` hold one span per row of `rows`, each row's markup, and writes only the rows that
+ * changed: a person's selection in the others stays, since a poll leaves their text alone.
+ * @param {HTMLElement} pre
+ * @param {string[]} rows
+ */
+export function paintRows(pre, rows) {
+  [...pre.children].slice(rows.length).forEach((row) => row.remove());
+  rows.forEach((markup, at) => {
+    let row = pre.children[at];
+    if (!row) pre.append((row = pre.ownerDocument.createElement("span")));
+    if (painted.get(row) === markup) return;
+    row.innerHTML = markup;
+    painted.set(row, markup);
+  });
+}
+
+// The keys the server sends, each with its label and whether it interrupts; null splits groups.
+export const KEYS = [["Escape", "Esc", true], ["C-c", "⌃C", true], null, ["Enter", "⏎ Enter"], ["Tab", "Tab"], ["BTab", "⇧Tab"], null,
+  ["Up", "↑"], ["Down", "↓"], ["Left", "←"], ["Right", "→"], ["PageUp", "PgUp"], ["PageDown", "PgDn"], null,
+  ["C-d", "⌃D"], ["y", "y"], ["n", "n"], null, ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((digit) => [String(digit), String(digit)])];
+
+// The server's sentence as the end of a note.
+const sentence = (status, body) => `${(body?.error || `the server answered ${status}`).replace(/\.$/, "")}.`;
+
+async function sent(post, path, body) {
+  try {
+    return await post(path, body);
+  } catch {
+    return { status: 0, body: {} };
+  }
+}
+
+/**
+ * Takes run `run`'s keyboard (docs/reference/serve.md#keyboard).
+ * The grant's secret stays in the page's memory only.
+ * @param {(path: string, body: object) => Promise<{ status: number, body: any }>} post
+ */
+export async function takeKeyboard(post, run) {
+  const { status, body } = await sent(post, `/api/runs/${run}/keyboard`, {});
+  if (status === 401) return { signOut: true };
+  if (status === 200) return { held: { grant: body.grant, ends: body.ends, secret: body.secret } };
+  const why = status === 0 ? "the connection dropped. Try again." : sentence(status, body);
+  return { note: `Could not take the keyboard: ${why}` };
+}
+
+/**
+ * Sends one `{ text }` or `{ key }` under the grant `secret`, with a request id of its own, so a
+ * repeat never types twice. `ended` says the grant is gone; `note` what the pane says, if anything.
+ */
+export async function sendKeys(post, run, secret, input) {
+  const request = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const { status, body } = await sent(post, `/api/runs/${run}/keys`, { secret, request, ...input });
+  if (status === 401) return { signOut: true };
+  if (status === 403 || status === 404) {
+    const why = sentence(status, body);
+    return { ended: why[0].toUpperCase() + why.slice(1) };
+  }
+  const unsure = "this may have reached the pane. Look at the screen before you send it again.";
+  if (status === 0) return { note: `The connection dropped, so ${unsure}` };
+  if (status !== 200) return { note: `Could not send: ${sentence(status, body)}` };
+  if (body.outcome === "uncertain") return { note: unsure[0].toUpperCase() + unsure.slice(1) };
+  if (body.outcome !== "sent") return { note: `Could not send: ${sentence(status, body)}` };
+  return { note: input.text === undefined ? null : `Sent ${[...input.text].length} characters. Press ⏎ to submit them.` };
+}
+
+/** Gives run `run`'s keyboard back; a grant that already ended counts as given back. */
+export async function giveBack(post, run, secret) {
+  const { status, body } = await sent(post, `/api/runs/${run}/keyboard/return`, { secret });
+  if (status === 401) return { signOut: true };
+  if (status === 200 || status === 403 || status === 404) return { returned: true };
+  return { note: `Could not give back: ${status === 0 ? "the connection dropped. Try again." : sentence(status, body)}` };
+}
+
+/**
+ * This page's hold on one run's keyboard: taking it, sending keys in order, giving it back and its
+ * end. Every reply checks it still belongs to the grant and the run it was sent for, so a late one
+ * changes nothing, and a grant that arrives after the page left goes back at once. The secret stays
+ * in this closure. `format` writes a time for a note; `changed` runs when the state a page draws changed.
+ * @param {{ post: (path: string, body: object) => Promise<{ status: number, body: any }>, signOut?: () => void,
+ *   changed?: () => void, format?: (iso: string) => string, timer?: typeof setTimeout, clear?: typeof clearTimeout, now?: () => number }} io
+ */
+export function keyboardSession({ post, signOut = () => {}, changed = () => {}, format = (iso) => iso, timer = setTimeout, clear = clearTimeout, now = Date.now }) {
+  // `generation` moves whenever the page leaves a run; `held` carries the grant, its secret and its queue.
+  let generation = 0, run = null, pane = null, held = null, returning = false, ended = null, note = null, pasting = false, expiry = null;
+
+  function drop(why) {
+    clear(expiry);
+    [held, returning, pasting, note, ended] = [null, false, false, null, why];
+    changed();
+  }
+
+  return {
+    state: () => ({ run, held: held && { grant: held.grant, ends: held.ends }, returning, ended, note, pasting }),
+    /**
+     * The pane shows run `next` on tmux pane `on`: a grant on another pane goes back. A run carried
+     * into the next step keeps its pane, and the server moved the grant with it.
+     */
+    at(next, on = null) {
+      if (next === run) return;
+      if (held && next !== null && on !== null && on === pane) return void ((run = next), changed());
+      this.leave();
+      [run, pane] = [next, on];
+    },
+    /** The page left the run, or signs out: its grant goes back, without waiting. */
+    leave() {
+      if (run === null && !held) return;
+      if (held) giveBack(post, run, held.secret);
+      generation++;
+      clear(expiry);
+      [run, held, returning, pasting, note, ended] = [null, null, false, false, null, null];
+      changed();
+    },
+    async take(target) {
+      if (target !== run || held) return;
+      const asked = generation;
+      const taken = await takeKeyboard(post, target);
+      if (asked !== generation) return void (taken.held && giveBack(post, target, taken.held.secret));
+      if (taken.signOut) return signOut();
+      if (!taken.held) return void ((ended = taken.note), changed());
+      const grant = { ...taken.held, queue: Promise.resolve() };
+      [held, ended, note] = [grant, null, null];
+      expiry = timer(() => held === grant && drop(`Your keyboard of run ${target} returned: it expired at ${format(grant.ends)}.`), Date.parse(grant.ends) - now());
+      changed();
+    },
+    /** Sends `{ text }` or `{ key }` after the grant's earlier sends; resolves whether it was sent. */
+    send(input) {
+      if (!held || returning || (input.text !== undefined && pasting)) return Promise.resolve(false);
+      const [grant, target] = [held, run];
+      if (input.text !== undefined) pasting = true;
+      const done = grant.queue.then(async () => {
+        if (held !== grant) return false;
+        const reply = await sendKeys(post, target, grant.secret, input);
+        if (held !== grant) return false;
+        if (input.text !== undefined) pasting = false;
+        if (reply.signOut) return signOut(), false;
+        if (reply.ended) return drop(reply.ended), false;
+        note = reply.note;
+        changed();
+        return !note || input.text !== undefined && note.startsWith("Sent ");
+      });
+      grant.queue = done;
+      return done;
+    },
+    /** Gives the keyboard back once the keys already sent went. */
+    async giveBack() {
+      if (!held || returning) return;
+      const [grant, target] = [held, run];
+      returning = true;
+      changed();
+      await grant.queue;
+      const given = await giveBack(post, target, grant.secret);
+      if (held !== grant) return;
+      if (given.signOut) return signOut();
+      if (given.returned) return drop(null);
+      [returning, note] = [false, given.note];
+      changed();
+    },
+  };
+}
+
 // xterm's eight colours, to which a 256-palette or RGB colour falls by distance. A colour that is
 // not grey is brightened first, so a dark diff background keeps its hue instead of turning black.
 const EIGHT = [[0, 0, 0], [205, 0, 0], [0, 205, 0], [205, 205, 0], [0, 0, 238], [205, 0, 205], [0, 205, 205], [229, 229, 229]];
@@ -194,18 +358,46 @@ function classes({ flags, fg, bg }) {
 /**
  * The screen's rows as parts of text, each with the classes of its SGR style and whether it is a
  * `[redacted]` the pane draws dim. The style carries from row to row, as tmux writes it. Only SGR
- * codes are read; any other escape stays text.
+ * codes are read; any other escape stays text. The part under `cursor`, a cell of `lines` from the
+ * top left at 0, carries `cursor: true`.
  * @param {string[]} lines
+ * @param {{ x: number, y: number } | null} [cursor]
  */
-export function screenRows(lines) {
+export function screenRows(lines, cursor = null) {
   let style = { flags: new Set(), fg: null, bg: null };
-  return lines.map((line) => {
+  return lines.map((line, row) => {
     const parts = [];
     line.split(/\x1b\[([0-9;:]*)m/).forEach((piece, at) => {
       if (at % 2) return void (style = apply(style, piece));
       const cls = classes(style);
       for (const text of piece.split(/(\[redacted\])/)) if (text) parts.push({ text, cls, hidden: text === "[redacted]" });
     });
-    return parts;
+    return cursor?.y === row ? withCursor(parts, cursor.x) : parts;
   });
+}
+
+const graphemes = new Intl.Segmenter("en", { granularity: "grapheme" });
+// shortcut: wide cells are emoji and the main CJK blocks, not the full East Asian Width table; add ranges if agents print others.
+const WIDE = /\p{Extended_Pictographic}|[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6\u{20000}-\u{3FFFD}]/u;
+
+// `parts` with the character on cell `x` split out as the cursor's, padded with spaces past the
+// row's end. A `[redacted]` stays whole and carries the cursor itself.
+function withCursor(parts, x) {
+  const out = [];
+  let column = 0, found = false;
+  for (const part of parts) {
+    const pieces = [...graphemes.segment(part.text)].map(({ segment }) => segment);
+    const cells = pieces.map((piece) => (WIDE.test(piece) ? 2 : 1));
+    let at = -1;
+    for (let i = 0; i < cells.length; column += cells[i++]) if (!found && at < 0 && column + cells[i] > x) at = i;
+    if (at < 0) out.push(part);
+    else if (part.hidden) out.push({ ...part, cursor: true });
+    else for (const [text, cursor] of [[pieces.slice(0, at).join("")], [pieces[at], true], [pieces.slice(at + 1).join("")]]) {
+      if (text) out.push(cursor ? { ...part, text, cursor } : { ...part, text });
+    }
+    found ||= at >= 0;
+  }
+  if (found) return out;
+  if (x > column) out.push({ text: " ".repeat(x - column), cls: "", hidden: false });
+  return out.concat({ text: " ", cls: "", hidden: false, cursor: true });
 }

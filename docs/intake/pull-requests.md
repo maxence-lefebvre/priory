@@ -63,7 +63,9 @@ Commit statuses are not published. A re-run gets a new check run id, so it publi
 A check that fails on the base branch after a merge is how a task turns out red
 ([`red-after-merge`](../daemon/trace.md#outcome-labels)). A pull request's own query stops at its
 head commit, so the intake also reads the merge commit. The same `github.check_run.completed` event
-carries the merge commit as `head_sha` and the branch it merged into as `base_branch`.
+carries the merge commit as `head_sha` and the branch it merged into as `base_branch`. A failing one
+also raises a `landed wrong` alarm on the desk, once per merge commit (see
+[trace.md](../daemon/trace.md#outcome-labels)).
 
 - It reads the pull requests that a task owns, by its stack or its head branch, and that merged in the
   last 7 days, in a repository it polls. It learns them from the state file, so without `PRIORY_DB` it reads none.

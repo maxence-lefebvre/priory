@@ -235,25 +235,33 @@ fn json_of(setup: &Setup, verb: &str) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-/// Whether process `pid` holds a listening TCP socket.
-fn listening(pid: u32) -> bool {
+/// Whether process `pid` holds a listening TCP socket, or `None` when this host's `/proc` shows
+/// neither its descriptors nor a TCP table to read them against.
+fn listening(pid: u32) -> Option<bool> {
     let sockets: Vec<String> = fs::read_dir(format!("/proc/{pid}/fd"))
-        .unwrap()
+        .ok()?
         .filter_map(|fd| fs::read_link(fd.ok()?.path()).ok())
         .filter_map(|link| {
             let link = link.to_string_lossy().into_owned();
             Some(link.strip_prefix("socket:[")?.strip_suffix(']')?.to_owned())
         })
         .collect();
-    ["tcp", "tcp6"].iter().any(|table| {
-        fs::read_to_string(format!("/proc/{pid}/net/{table}"))
-            .unwrap()
+    // A kernel built without IPv6 has no tcp6 table, and so no IPv6 socket to listen on.
+    let tables: Vec<String> = ["tcp", "tcp6"]
+        .iter()
+        .filter_map(|table| fs::read_to_string(format!("/proc/{pid}/net/{table}")).ok())
+        .collect();
+    if tables.is_empty() {
+        return None;
+    }
+    Some(tables.iter().any(|table| {
+        table
             .lines()
             .skip(1)
             .map(|line| line.split_whitespace().collect::<Vec<_>>())
             // State 0A is LISTEN; column 9 is the socket's inode.
             .any(|cells| cells[3] == "0A" && sockets.contains(&cells[9].to_owned()))
-    })
+    }))
 }
 
 #[test]
@@ -439,7 +447,7 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     let asks = String::from_utf8(setup.priory(&["asks"]).stdout).unwrap();
     assert_eq!(
         asks,
-        "id\ttask\trevision\tquestion\toptions\tsnoozed_until\tback_early\ttitle\ttext\twhat_waits\tnext_action\tcommand\tcoordinator\tkey\trun_id\tsession\tmerge_risk\n1\t1\t2\tWhich way?\\nPick one.\t[\"left\",\"right\"]\t-\t-\t-\t-\t-\t-\t-\t-\tcli:docs-1\t-\t-\t-\n"
+        "id\ttask\trevision\tquestion\toptions\tsnoozed_until\tback_early\ttitle\ttext\twhat_waits\tnext_action\tcommand\tcoordinator\tkey\trun_id\tsession\tmerge_risk\trisk_estimate\n1\t1\t2\tWhich way?\\nPick one.\t[\"left\",\"right\"]\t-\t-\t-\t-\t-\t-\t-\t-\tcli:docs-1\t-\t-\t-\t-\n"
     );
     let queue = api(&address, "/api/queue");
     let waiting = &queue["waiting"];
@@ -455,7 +463,7 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     assert_eq!(queue["running"], json!([]));
     assert_eq!(
         api(&address, "/api/desk")["counts"],
-        json!({ "asleep": 0, "snoozed": 0, "unrouted": 0, "outsider": 0 })
+        json!({ "asleep": 0, "snoozed": 0, "unrouted": 0, "unheard": 0, "outsider": 0 })
     );
     let desk = api(&address, "/api/desk");
     assert_eq!(desk["banner"], Value::Null);
@@ -1743,7 +1751,12 @@ fn the_daemon_listens_nowhere_without_a_serve_table() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    assert!(!listening(pid));
+    match listening(pid) {
+        Some(listens) => assert!(!listens),
+        None => eprintln!(
+            "skipped: this host's /proc shows no descriptors or TCP table for process {pid}"
+        ),
+    }
 }
 
 #[test]
@@ -3343,6 +3356,35 @@ fn up_next_lists_the_next_three_runs_queued_held_or_scheduled_in_time_order() {
 }
 
 #[test]
+fn up_next_says_a_queued_task_waits_for_its_own_reason_before_its_place() {
+    let setup = Setup::new("up-next-reason", SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "UPDATE tasks SET reason = 'waits for its claim to reach the log' WHERE id = 1",
+        [],
+    )
+    .unwrap();
+    let factory = setup.factory();
+
+    let queue = setup.json_at("2026-11-17T12:00:00Z", &["queue", &factory, "--json"]);
+
+    let whys: Vec<&Value> = queue["up_next"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| &entry["why"])
+        .collect();
+    assert_eq!(
+        whys,
+        [
+            &json!("waits for its claim to reach the log"),
+            &json!("queue position 2")
+        ]
+    );
+}
+
+#[test]
 fn up_next_lists_each_firing_of_a_keyless_schedule_and_none_of_a_held_one() {
     let setup = Setup::new("up-next-firings", SERVE);
     setup.schedule(
@@ -3854,6 +3896,25 @@ fn move_through_its_endpoint_does_what_priory_move_does_at_the_revision_the_page
     setup.seed();
     succeeded(&setup.priory(&["pause"]));
     let address = setup.start(&["daemon", &setup.factory()]);
+    // The daemon's first pass records a summary per task after it listens, which bumps the revision.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while db
+        .query_row(
+            "SELECT count(*) FROM tasks
+             WHERE id NOT IN (SELECT task FROM summaries WHERE answered IS NOT NULL)",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+        > 0
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never summarized the tasks"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let queue = || json_of(&setup, "queue");
     let order = || -> Vec<(Value, Value)> {
         queue()["waiting"]
@@ -5701,6 +5762,58 @@ fn unrouted_events_split_into_ended_owners_with_their_follow_up_and_a_count_per_
 }
 
 #[test]
+fn an_unheard_group_carries_the_text_its_follow_up_sends() {
+    let mut setup = Setup::new("unheard-texts", SERVE);
+    unrouted_comment(&setup, 7, "2026-11-17T11:00:00Z");
+    unrouted_comment(&setup, 8, "2026-11-17T11:30:00Z");
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    let done = setup.owner("done", &["github:owner/repo#7"]);
+    let blocked = setup.owner("blocked", &["github:owner/repo#8"]);
+    // Each comment as the task that owns its pull request kept it while it was not running.
+    setup
+        .db()
+        .execute(
+            "UPDATE inbox SET outcome = 'kept', task = (SELECT task FROM owns
+               WHERE resource = 'github:' || inbox.subject)",
+            [],
+        )
+        .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let unheard = &api(&address, "/api/inbox?unrouted=1")["unrouted"]["unheard"];
+    let texts: Vec<_> = unheard
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|group| {
+            (
+                group["task"]["id"].clone(),
+                group["say_text"].clone(),
+                group["request_text"].clone(),
+            )
+        })
+        .collect();
+    let seq = &unheard[1]["events"][0]["seq"];
+    assert_eq!(
+        texts,
+        [
+            (
+                json!(blocked),
+                json!("Read the events that came while you slept."),
+                Value::Null
+            ),
+            (
+                json!(done),
+                Value::Null,
+                json!(format!(
+                    "Follow up on https://github.com/owner/repo/issues/7 after event {seq}"
+                ))
+            ),
+        ]
+    );
+}
+
+#[test]
 fn an_outsider_comment_is_counted_on_the_desk_and_listed_as_a_group_of_its_own() {
     let setup = Setup::new("desk-outsider", SERVE);
     let message = herdr_bus::Message::new(
@@ -5728,7 +5841,10 @@ fn an_outsider_comment_is_counted_on_the_desk_and_listed_as_a_group_of_its_own()
 
     assert_eq!(desk["counts"]["outsider"], 1);
     assert_eq!(desk["counts"]["unrouted"], 0);
-    assert_eq!(unrouted["unrouted"], json!({ "owned": [], "other": [] }));
+    assert_eq!(
+        unrouted["unrouted"],
+        json!({ "owned": [], "other": [], "unheard": [] })
+    );
     assert_eq!(unrouted["outsider"][0]["subject"], "owner/repo#7");
     assert_eq!(unrouted["outsider"][0]["actor"], "stranger");
     assert!(
@@ -6034,4 +6150,286 @@ fn a_sentry_issue_without_its_id_gets_400_and_a_body_over_1_mib_gets_413() {
     assert_eq!(reply, r#"{"error":"the payload lacks the issue's `id`"}"#);
     assert_eq!(big, 413);
     assert!(setup.published().is_empty());
+}
+#[test]
+fn the_unsubscribe_endpoint_ends_a_subscription_as_priory_unsubscribe_does() {
+    let mut setup = Setup::new("web-unsubscribe", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["pause"]));
+    let pull = "github:owner/repo#7";
+    succeeded(&setup.priory(&["subscribe", "1", pull]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let unsubscribe =
+        |extra: &str, body: Value| post(&address, "/api/unsubscribe", extra, &body.to_string());
+
+    let foreign = unsubscribe(
+        "Origin: http://evil.example\r\n",
+        json!({ "task": 1, "resource": pull }),
+    );
+    let malformed = unsubscribe("", json!({ "task": 1, "resource": "owner/repo#7" }));
+    let revised = unsubscribe("", json!({ "task": 1, "resource": pull, "revision": 1 }));
+    let missing = unsubscribe("", json!({ "task": 9, "resource": pull }));
+    let done = unsubscribe("", json!({ "task": 1, "resource": pull }));
+    let again = unsubscribe("", json!({ "task": 1, "resource": pull }));
+
+    assert_eq!(foreign.0, 403, "{}", foreign.1);
+    assert_eq!(malformed.0, 400, "{}", malformed.1);
+    assert_eq!(
+        revised.0, 400,
+        "unsubscribe takes no revision: {}",
+        revised.1
+    );
+    assert_eq!(missing.0, 404, "{}", missing.1);
+    assert_eq!(
+        done,
+        (
+            200,
+            json!({ "ok": "task 1 unsubscribed from github:owner/repo#7" }).to_string()
+        )
+    );
+    assert_eq!(again.0, 422, "{}", again.1);
+    let output = setup.priory(&["task", "1", "--json"]);
+    succeeded(&output);
+    let task_json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        !task_json["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["resource"] == pull && row["chosen"] == true),
+        "{task_json}"
+    );
+}
+
+#[test]
+fn the_label_endpoint_marks_a_task_wrong_and_clears_it_as_priory_label_does() {
+    let mut setup = Setup::new("web-label", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let label = |extra: &str, task: &str, body: Value| {
+        post(
+            &address,
+            &format!("/api/tasks/{task}/label"),
+            extra,
+            &body.to_string(),
+        )
+    };
+    let evidence = "https://github.com/owner/repo/pull/91";
+
+    let foreign = label(
+        "Origin: http://evil.example\r\n",
+        "1",
+        json!({ "evidence": evidence }),
+    );
+    let both = label("", "1", json!({ "evidence": evidence, "clear": true }));
+    let neither = label("", "1", json!({}));
+    let missing = label("", "9", json!({ "evidence": evidence }));
+    let no_url = label("", "1", json!({ "evidence": "the fix" }));
+    let not_marked = label("", "1", json!({ "clear": true }));
+    let marked = label(
+        "",
+        "1",
+        json!({ "evidence": evidence, "happened": "2026-10-02" }),
+    );
+
+    assert_eq!(foreign.0, 403, "{}", foreign.1);
+    assert_eq!(both.0, 400, "{}", both.1);
+    assert_eq!(neither.0, 400, "{}", neither.1);
+    assert_eq!(missing.0, 404, "{}", missing.1);
+    assert_eq!(no_url.0, 422, "{}", no_url.1);
+    assert!(no_url.1.contains("is not a URL"), "{}", no_url.1);
+    assert_eq!(not_marked.0, 422, "{}", not_marked.1);
+    assert_eq!(
+        marked,
+        (
+            200,
+            json!({ "ok": format!("task 1 marked wrong: {evidence}") }).to_string()
+        )
+    );
+    let cleared = label("", "1", json!({ "clear": true }));
+    assert_eq!(
+        cleared,
+        (
+            200,
+            json!({ "ok": "task 1 is no longer marked wrong" }).to_string()
+        )
+    );
+    let output = setup.priory(&["label", &setup.factory(), "1", "wrong", "--clear"]);
+    assert!(
+        !output.status.success(),
+        "the web's clear withdrew the mark"
+    );
+}
+
+impl Setup {
+    /// Two memory candidates on the log that wait for a person: `release-day`, written by task 1
+    /// on runner `laptop`, and `search-staging`, written here.
+    fn candidates(&self) {
+        self.db()
+            .execute_batch(
+                "INSERT INTO memory_candidates (id, name, description, text, key, runner, written, logged)
+                 VALUES ('c-release', 'release-day', 'When releases go out.',
+                   'Releases go out on Wednesdays.', 'docs-1', 'laptop', '2026-11-17T10:00:00Z', 1),
+                 ('c-search', 'search-staging', 'Which cluster the tests use.',
+                   'Use staging-b.', 'docs-2', NULL, '2026-11-17T11:00:00Z', 2)",
+            )
+            .unwrap();
+    }
+
+    /// Each memory candidate's id and state, as `priory memories --all --json` lists them.
+    fn candidate_states(&self) -> Vec<(Value, Value)> {
+        let output = self.priory(&["memories", "--all", "--json"]);
+        succeeded(&output);
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|candidate| (candidate["id"].clone(), candidate["state"].clone()))
+            .collect()
+    }
+}
+
+#[test]
+fn a_person_accepts_or_drops_a_memory_candidate_through_its_endpoint_as_the_cli_does() {
+    let mut setup = Setup::new("web-memories", SERVE);
+    setup.seed();
+    setup.candidates();
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+
+    let accepted = post(&address, "/api/memories/c-release/accept", "", "{}");
+    let dropped = post(&address, "/api/memories/c-search/drop", "", "{}");
+
+    assert_eq!(
+        accepted,
+        (
+            200,
+            json!({ "ok": "release-day accepted: every runner applies it as it reads the log" })
+                .to_string()
+        )
+    );
+    assert_eq!(dropped.0, 200, "{}", dropped.1);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let applied = [
+        (json!("c-release"), json!("accepted")),
+        (json!("c-search"), json!("dropped")),
+    ];
+    while setup.candidate_states() != applied {
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never applied them: {:?}",
+            setup.candidate_states()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let again = post(&address, "/api/memories/c-release/drop", "", "{}");
+    assert_eq!(
+        again,
+        (
+            409,
+            json!({ "error": "candidate c-release is accepted" }).to_string()
+        )
+    );
+    assert_eq!(post(&address, "/api/memories/nope/accept", "", "{}").0, 404);
+    assert_eq!(
+        post(&address, "/api/memories/c-search/accept", "", r#"{"x":1}"#).0,
+        400
+    );
+    assert_eq!(
+        post(
+            &address,
+            "/api/memories/c-search/accept",
+            "Origin: http://evil.example\r\n",
+            "{}"
+        )
+        .0,
+        403
+    );
+}
+
+#[test]
+fn each_memory_candidate_on_the_desk_says_whether_it_replaces_a_memory_runs_get_and_its_current_text()
+ {
+    let mut setup = Setup::new(
+        "web-memories-desk",
+        &format!("{SERVE}\n[kit]\nrepo = \"kit\"\n"),
+    );
+    let kit = setup.dir.join("home/kit/c0ffee/memories");
+    fs::create_dir_all(&kit).unwrap();
+    fs::write(
+        kit.join("kit-fact.md"),
+        "---\nname: kit-fact\ndescription: Where the kit lives.\n---\nThe kit lives in git.\n",
+    )
+    .unwrap();
+    let memories = setup.dir.join("factory/memories");
+    fs::create_dir_all(&memories).unwrap();
+    fs::write(
+        memories.join("release-day.md"),
+        "---\nname: release-day\ndescription: When releases go out.\n---\nReleases go out on Tuesdays.\n",
+    )
+    .unwrap();
+    setup.seed();
+    setup.candidates();
+    let unchecked = setup.priory(&["memories", &setup.factory(), "--json"]);
+    succeeded(&unchecked);
+    let unchecked: Value = serde_json::from_slice(&unchecked.stdout).unwrap();
+    assert_eq!(
+        unchecked["candidates"][1]["replaces"],
+        Value::Null,
+        "with a kit no commit of which is checked out here, whether it replaces one is unknown"
+    );
+    setup
+        .db()
+        .execute_batch(
+            "INSERT INTO kit (id, kit_commit) VALUES (1, 'c0ffee');
+             INSERT INTO memory_candidates (id, name, key, written, logged)
+             VALUES ('c-forget', 'kit-fact', 'docs-1', '2026-11-17T11:30:00Z', 3)",
+        )
+        .unwrap();
+    let listed = setup.priory(&["memories", &setup.factory(), "--json"]);
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let desk = api(&address, "/api/desk");
+
+    let item = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["kind"] == "memories")
+        .unwrap_or_else(|| panic!("{desk}"));
+    let fields: Vec<(&Value, &Value, &Value)> = item["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|candidate| {
+            (
+                &candidate["name"],
+                &candidate["replaces"],
+                &candidate["current_text"],
+            )
+        })
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            (
+                &json!("release-day"),
+                &json!(true),
+                &json!("Releases go out on Tuesdays.")
+            ),
+            (&json!("search-staging"), &json!(false), &Value::Null),
+            (
+                &json!("kit-fact"),
+                &json!(true),
+                &json!("The kit lives in git.")
+            ),
+        ]
+    );
+    succeeded(&listed);
+    let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(
+        listed["candidates"], item["candidates"],
+        "priory memories DIR --json, which Herdr reads, marks them the same"
+    );
 }

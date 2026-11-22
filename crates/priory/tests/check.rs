@@ -2316,3 +2316,85 @@ fn a_sentry_trigger_needs_the_sentry_webhook_and_a_supported_event_filter_and_ke
         unhooked.stderr
     );
 }
+
+#[test]
+fn the_skill_index_counts_toward_the_codex_limit() {
+    let description = "d".repeat(3000);
+    let skills: Vec<(String, String)> = ["one", "two", "three"]
+        .map(|name| {
+            (
+                format!("skills/{name}/SKILL.md"),
+                format!("---\nname: {name}\ndescription: {description}\n---\nDo it.\n"),
+            )
+        })
+        .into();
+    let mut files: Vec<(&str, &str)> = valid();
+    files[1] = (
+        "agents/implementer/agent.md",
+        "+++\ndescription = \"Implements one task.\"\nharness = \"codex\"\n+++\nMake the smallest correct change.\n",
+    );
+    files.extend(
+        skills
+            .iter()
+            .map(|(file, text)| (file.as_str(), text.as_str())),
+    );
+
+    let outcome = check(&factory("codex-skill-index", &files));
+
+    assert_eq!(outcome.code, 1, "{}", outcome.stderr);
+    assert!(
+        outcome.stderr.starts_with(
+            "agents/implementer/agent.md:3: a codex agent takes instructions.md, the skill index and its own prompt on its command line"
+        ),
+        "{}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn a_kit_takes_a_repository_and_paths_inside_it() {
+    let toml = "name = \"demo\"\n\n[kit]\nrepo = \"git@github.com:owner/abbey.git\"\nref = \"main\"\ninstructions = \"claude/CLAUDE.md\"\nevery = \"10m\"\n";
+
+    let outcome = check(&factory("kit-valid", &with("factory.toml", toml)));
+
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+}
+
+#[test]
+fn a_kit_path_that_leaves_the_repository_or_a_ref_git_reads_as_an_option_fails_the_check() {
+    let toml = "name = \"demo\"\n\n[kit]\nrepo = \"../abbey\"\nref = \"--upload-pack=touch\"\nskills = \"../skills\"\nmemories = \"/etc\"\n";
+
+    let outcome = check(&factory("kit-leaves", &with("factory.toml", toml)));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "factory.toml:3: `[kit]` `ref` is `--upload-pack=touch`: it cannot start with `-`\n\
+         factory.toml:3: `[kit]` `skills` is `../skills`: a kit path is relative and stays inside the repository\n\
+         factory.toml:3: `[kit]` `memories` is `/etc`: a kit path is relative and stays inside the repository\n"
+    );
+}
+
+const MEMORIES_WORKFLOW: &str = "start = \"open\"\n\n[[steps]]\nid = \"open\"\ndecides = \"code\"\naction = \"open-memories-pr\"\neffect = \"irreversible\"\nautonomous = \"a person reviews the pull request before any memory merges\"\nnext = { opened = \"done\", unchanged = \"done\", failed = \"stop\" }\n";
+
+#[test]
+fn an_open_memories_pr_step_needs_a_kit() {
+    let mut files = valid();
+    files.push(("workflows/memories.toml", MEMORIES_WORKFLOW));
+    let without = check(&factory("memories-pr-no-kit", &files));
+    let toml =
+        "name = \"demo\"\n\n[kit]\nrepo = \"git@github.com:owner/abbey.git\"\nref = \"main\"\n";
+    let mut files: Vec<_> = files
+        .into_iter()
+        .filter(|(file, _)| *file != "factory.toml")
+        .collect();
+    files.push(("factory.toml", toml));
+    let with_kit = check(&factory("memories-pr-kit", &files));
+
+    assert_eq!(without.code, 1);
+    assert_eq!(
+        without.stderr,
+        "workflows/memories.toml:3: step `open`: an `open-memories-pr` action writes to the kit repository, so factory.toml needs a `[kit]`\n"
+    );
+    assert_eq!(with_kit.code, 0, "{}", with_kit.stderr);
+}

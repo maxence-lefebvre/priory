@@ -19,6 +19,10 @@ for new messages every second and runs agents, as [runs.md](runs.md) describes.
 `--once` routes what is pending and exits. It starts no runs, since no daemon would stay to hear
 their hooks.
 
+`priory daemon --view-only [DIR]`, on a machine with no runner file in a factory of several,
+mirrors every runner's asks and tasks and serves them, and runs nothing (see
+[runners.md](runners.md#a-machine-that-only-views)).
+
 ## State
 
 The daemon keeps its state in one SQLite file, which `PRIORY_DB` names. It holds the inbox, tasks,
@@ -68,7 +72,9 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [signals.md](signals.md): the hook signals a run sends, the nudge after a silent turn, and the
   nudge's evaluation.
 - [skills.md](skills.md): how the factory's skills, `instructions.md` and memories reach every
-  run, and the hash each run records.
+  run, the `[kit]` repository each runner fetches, the hash and commit each run records, and the
+  memories agents write with `remember` and `forget`, which a person accepts, and the daily pull
+  request that moves accepted ones into the kit.
 - [writing.md](writing.md): the factory's writing guide, which every agent's system prompt carries,
   and its evaluation.
 - [guard.md](guard.md): the tool guard, which denies irreversible tool calls no person approved.
@@ -84,6 +90,10 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [reports.md](reports.md): reports of sections that a workflow writes, and the picks a person
   makes on them.
 - [trace.md](trace.md): trace records, token counts, `priory report`, `priory costs`, the attention report, outcome labels, `priory grades`, `priory report risk` and the OpenTelemetry export.
+- [score.md](score.md): `priory score`, which grades a task's finished runs with the factory's
+  scorers.
+- [bench.md](bench.md): `priory bench capture`, which turns a past task into a benchmark case, and
+  `priory bench replay`, which plays one case under one configuration.
 - [otel-recipes.md](otel-recipes.md): how to send the export to a local ClickStack, Honeycomb or Grafana Cloud.
 - [batches.md](batches.md): batches, `priory batch add`, `priory batch show` and `priory batch edit`, split issues, the plan a
   planning task sends, the go and the `merged` hold condition.

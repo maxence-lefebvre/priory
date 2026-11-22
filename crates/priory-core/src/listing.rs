@@ -4,7 +4,7 @@ use crate::{post, snooze, stall, state, sweep};
 use jiff::Timestamp;
 use priory_factory::explain;
 use priory_factory::factory::{Factory, Trigger};
-use priory_intake::intake::schedule;
+use priory_intake::intake::{CHECKED, schedule};
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OptionalExtension, Params, params};
 use serde_json::{Map, Value, json};
@@ -39,12 +39,40 @@ const IRREVERSIBLE: &str = "CASE asks.kind
        WHEN 'agent' THEN coalesce(json_array_length(asks.command, '$.runs') > 0, 0)
        ELSE 0 END";
 
+/// The workflow and irreversible step a step ask's answer lets run, as a JSON array, or null.
+const LETS: &str = "(SELECT json_array(gate.workflow, gate.lets) FROM irreversible_asks AS gate
+       WHERE gate.workflow = tasks.workflow AND gate.step = asks.step AND asks.kind = 'step'
+         AND gate.lets != '')";
+
+/// Gives each ask with `lets` its `risk_estimate`, null when the trace cannot be read.
+fn risk_estimates(db: &Connection, asks: &mut [Value]) {
+    let lets = |ask: &mut Value| {
+        let lets = ask.as_object_mut()?.remove("lets")?;
+        serde_json::from_str::<(String, String)>(lets.as_str()?).ok()
+    };
+    let wanted: Vec<_> = asks.iter_mut().map(lets).collect();
+    if wanted.iter().all(Option::is_none) {
+        return;
+    }
+    let risk = priory_intake::intake::now()
+        .and_then(|now| crate::risk::recent(db, &crate::risk::Gates::default(), now))
+        .ok();
+    for (ask, lets) in asks.iter_mut().zip(wanted) {
+        if let Some((workflow, step)) = lets {
+            ask["risk_estimate"] = risk
+                .as_ref()
+                .map_or(Value::Null, |risk| risk.estimate(&workflow, &step));
+        }
+    }
+}
+
 /// A desk item's group in the ranking (see `RANKS`), null for the queue.
 fn urgency() -> String {
     format!(
         "CASE WHEN desk.part = 1 OR desk.kind = 'batch' THEN NULL
            WHEN desk.kind IN ('blocked', 'failed', 'prompt', 'command')
-             OR desk.kind = 'report' AND desk.what LIKE 'intake: %' THEN 'alarm'
+             OR desk.kind = 'report' AND (desk.what LIKE 'intake: %'
+               OR desk.what LIKE 'priory: landed wrong: %') THEN 'alarm'
            WHEN desk.kind = 'ask' THEN (SELECT CASE WHEN {IRREVERSIBLE} THEN 'irreversible'
                WHEN tasks.key GLOB '*:review:*' THEN 'review'
                WHEN asks.kind = 'step' THEN 'plan' ELSE 'ask' END
@@ -64,10 +92,13 @@ const DESK_TITLE: &str = "CASE WHEN desk.kind = 'ask' THEN (SELECT coalesce(asks
            FROM asks LEFT JOIN tasks ON tasks.id = asks.task
            WHERE coalesce(asks.name, asks.id) = desk.id
              AND asks.answer IS NULL AND asks.withdrawn IS NULL)
+         WHEN desk.kind = 'memories' THEN 'memory candidates wait for a person'
          WHEN desk.task IS NOT NULL THEN 'task '
            || (SELECT key FROM tasks WHERE tasks.id = desk.task) || ' ' || desk.kind
          WHEN desk.kind = 'report' AND desk.what LIKE 'intake: %' THEN 'the intake fails to poll '
            || substr(desk.what, 9, instr(substr(desk.what, 9), ':') - 1)
+         WHEN desk.kind = 'report' AND desk.what LIKE 'priory: landed wrong: %'
+           THEN 'a merge landed wrong'
          WHEN desk.kind = 'report' THEN 'a report from '
            || substr(desk.what, 1, instr(desk.what, ':') - 1)
          ELSE desk.kind || ' ' || desk.id END AS title";
@@ -167,6 +198,13 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                SELECT 0, created, 'todo', id, NULL, NULL,
                  text || coalesce(', due ' || due, '') FROM todos WHERE done IS NULL
                UNION ALL
+               SELECT 0, min(written), 'memories', 'memories', NULL, NULL,
+                 count(*) || CASE count(*) WHEN 1 THEN ' memory candidate waits'
+                   ELSE ' memory candidates wait' END || ' for a person: '
+                   || group_concat(name, ', ') || '; see them with `priory memories`'
+               FROM memory_candidates
+               WHERE logged IS NOT NULL AND accepted IS NULL AND dropped IS NULL
+               HAVING count(*) > 0               UNION ALL
                SELECT 1, tasks.changed, 'queue', queue.place, tasks.id, tasks.lane,
                  coalesce(tasks.band, '-') || coalesce(': ' || tasks.reason, '')
                FROM tasks JOIN queue USING (id)";
@@ -198,7 +236,7 @@ fn asks_query() -> String {
      (SELECT json_group_array(json_object('revision', revision, 'answer', answer, 'by', by,
         'why', why, 'at', created))
       FROM (SELECT * FROM ask_refusals WHERE ask = asks.id ORDER BY id)) AS refused,
-     {IRREVERSIBLE} AS irreversible, tasks.merge_risk, tasks.grade,
+     {IRREVERSIBLE} AS irreversible, {LETS} AS lets, tasks.merge_risk, tasks.grade,
      asks.kind != 'step' AND NOT EXISTS (SELECT 1 FROM holds
        WHERE holds.ask = asks.id AND holds.released IS NULL) AS free_text, {}
    FROM asks LEFT JOIN tasks ON tasks.id = asks.task
@@ -245,8 +283,9 @@ pub fn inbox(db: &Connection, since: i64) -> rusqlite::Result<Value> {
 /// groups them by the resource each names first, newest first, when a task owned or subscribed to
 /// it: with that task and the command that routes the next event. `other` counts the rest per
 /// source, since no task ever owned them.
+/// `unheard` groups by task what a task kept and no agent read: see `unheard_events`.
 /// `outsider` lists the comments and reviews from outside the repository, newest first.
-pub fn unrouted(db: &Connection, since: i64) -> rusqlite::Result<Value> {
+pub fn unrouted(db: &Connection, since: i64, now: Timestamp) -> rusqlite::Result<Value> {
     let mut owned: Vec<(String, Value, Vec<Value>)> = Vec::new();
     let mut other: Vec<(String, usize)> = Vec::new();
     for (resource, event) in unrouted_events(db, since, None)? {
@@ -280,10 +319,109 @@ pub fn unrouted(db: &Connection, since: i64) -> rusqlite::Result<Value> {
         .into_iter()
         .map(|(source, events)| json!({ "source": source, "events": events }))
         .collect();
+    let mut unheard: Vec<(Value, Vec<Value>)> = Vec::new();
+    for (task, event) in unheard_events(db, since, None, now)? {
+        match unheard
+            .iter_mut()
+            .find(|(named, _)| named["id"] == task["id"])
+        {
+            Some((_, events)) => events.push(event),
+            None => unheard.push((task, vec![event])),
+        }
+    }
+    let unheard: Vec<Value> = unheard
+        .into_iter()
+        .map(|(task, events)| {
+            let state = task["state"].as_str().unwrap_or_default();
+            let say_text = ["asleep", "blocked"]
+                .contains(&state)
+                .then_some(UNHEARD_SAY);
+            let request_text = (state == "done")
+                .then(|| request_text(task["key"].as_str().unwrap_or_default(), &events))
+                .flatten();
+            let follow_up = unheard_follow_up(&task, say_text, request_text.as_deref());
+            json!({
+                "task": task, "events": events, "follow_up": follow_up,
+                "say_text": say_text, "request_text": request_text,
+            })
+        })
+        .collect();
     Ok(json!({
-        "unrouted": { "owned": owned, "other": other },
+        "unrouted": { "owned": owned, "other": other, "unheard": unheard },
         "outsider": outsider_events(db, since, None)?,
     }))
+}
+
+/// How long a kept event waits for an agent before `unheard_events` lists it: a few polls, so a
+/// task about to start or wake is not listed.
+const UNHEARD_AFTER: jiff::SignedDuration = jiff::SignedDuration::from_mins(5);
+
+/// Each event after `since`, and within `window` (from, to) when given, newest first, that a task
+/// that is not running kept, that no prompt carries and no wait took, written more than
+/// `UNHEARD_AFTER` before `now` by someone other than the agent, with its task. Only what people
+/// say, edit and close counts: checks and pushes stay with the checks gate.
+fn unheard_events(
+    db: &Connection,
+    since: i64,
+    window: Option<(&str, &str)>,
+    now: Timestamp,
+) -> rusqlite::Result<Vec<(Value, Value)>> {
+    let kinds = serde_json::to_string(&state::OWN_KEY).expect("kinds serialize");
+    let before = (now - UNHEARD_AFTER).to_string();
+    let (from, to) = window.unzip();
+    let mut statement = db.prepare(
+        "SELECT inbox.seq, inbox.type, inbox.subject, inbox.time, inbox.data,
+           tasks.id, tasks.key, tasks.state, tasks.workflow
+         FROM inbox JOIN tasks ON tasks.id = inbox.task
+         WHERE inbox.outcome = 'kept' AND inbox.outbox IS NULL AND tasks.state != 'running'
+           AND inbox.seq > ?1
+           AND (?2 IS NULL OR julianday(inbox.time) BETWEEN julianday(?2) AND julianday(?3))
+           AND inbox.type IN (SELECT value FROM json_each(?4))
+           AND julianday(inbox.time) <= julianday(?5)
+           AND coalesce(json_extract(inbox.data, '$.own'), 0) != 1
+           AND inbox.seq NOT IN (SELECT inbox FROM waits WHERE task = inbox.task
+             AND inbox IS NOT NULL)
+         ORDER BY inbox.seq DESC",
+    )?;
+    let mut rows = statement.query(params![since, from, to, kinds, before])?;
+    let mut events = Vec::new();
+    while let Some(row) = rows.next()? {
+        let (_, event) = event_json(
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            &row.get::<_, String>(4)?,
+        );
+        let task = json!({
+            "id": row.get::<_, i64>(5)?, "key": row.get::<_, String>(6)?,
+            "state": row.get::<_, String>(7)?, "workflow": row.get::<_, String>(8)?,
+        });
+        events.push((task, event));
+    }
+    Ok(events)
+}
+
+/// What `priory say` tells an asleep or blocked task that kept unheard events.
+const UNHEARD_SAY: &str = "Read the events that came while you slept.";
+
+/// The command that gets a task's unheard events to an agent: `say` with `say_text`, which wakes an
+/// asleep task and reaches a blocked one when it resumes; for an ended task, what an unrouted event
+/// of it would get. None for a task whose next run reads them anyway.
+fn unheard_follow_up(
+    task: &Value,
+    say_text: Option<&str>,
+    request_text: Option<&str>,
+) -> Option<String> {
+    if let Some(text) = say_text {
+        return Some(format!("priory say {} {}", task["id"], quoted(text)));
+    }
+    match task["state"].as_str().unwrap_or_default() {
+        "done" | "failed" | "dropped" => {
+            follow_up(task, task["key"].as_str().unwrap_or_default(), request_text)
+        }
+        _ => None,
+    }
 }
 
 /// Each comment or review after `since`, and within `window` (from, to) when given, from someone
@@ -391,27 +529,48 @@ fn unrouted_events(
     let mut rows = statement.query(params![since, from, to])?;
     let mut events = Vec::new();
     while let Some(row) = rows.next()? {
-        let (kind, subject): (String, Option<String>) = (row.get(1)?, row.get(2)?);
         let data: String = row.get(4)?;
-        let mut message = herdr_bus::Message::new(
-            kind.as_str(),
-            serde_json::from_str(&data).unwrap_or(Value::Null),
-        );
-        message.subject = subject.clone();
-        let Some(resource) = crate::route::resources(&message).into_iter().next() else {
+        let (resource, event) =
+            event_json(row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, &data);
+        let Some(resource) = resource else {
             continue;
         };
-        let said = ["body", "text", "title"]
-            .iter()
-            .find_map(|field| message.data[field].as_str())
-            .and_then(|text| text.lines().find(|line| !line.trim().is_empty()));
-        let event = json!({
-            "seq": row.get::<_, i64>(0)?, "type": kind, "subject": subject,
-            "time": row.get::<_, String>(3)?, "line": said, "url": message.data["url"].as_str(),
-        });
         events.push((resource, event));
     }
     Ok(events)
+}
+
+/// An inbox entry as the unrouted listing shows it, with the first resource it names.
+fn event_json(
+    seq: i64,
+    kind: String,
+    subject: Option<String>,
+    time: String,
+    data: &str,
+) -> (Option<String>, Value) {
+    let mut message = herdr_bus::Message::new(
+        kind.as_str(),
+        serde_json::from_str(data).unwrap_or(Value::Null),
+    );
+    message.subject = subject.clone();
+    let resource = crate::route::resources(&message).into_iter().next();
+    let said = ["body", "text", "title"]
+        .iter()
+        .find_map(|field| message.data[field].as_str())
+        .and_then(|text| text.lines().find(|line| !line.trim().is_empty()))
+        .map(str::to_owned)
+        .or_else(|| checked(&kind, &message.data));
+    let event = json!({
+        "seq": seq, "type": kind, "subject": subject,
+        "time": time, "line": said, "url": message.data["url"].as_str(),
+    });
+    (resource, event)
+}
+
+/// A check run's name and conclusion, `test (ubuntu) failure`, as the line of its event.
+fn checked(kind: &str, data: &Value) -> Option<String> {
+    let name = data["name"].as_str().filter(|_| kind == CHECKED)?;
+    Some(format!("{name} {}", data["conclusion"].as_str()?))
 }
 
 /// Every task in start order, or the tasks of one lane, of one grade, or both.
@@ -685,6 +844,9 @@ fn asks_of(
         let free_text = object["free_text"].as_i64() == Some(1);
         object.insert("free_text".to_owned(), free_text.into());
     }
+    if let Some(asks) = asks.as_array_mut() {
+        risk_estimates(db, asks);
+    }
     Ok(asks)
 }
 
@@ -780,9 +942,20 @@ pub fn links(factory: &Factory) -> Value {
     json!({ "links": factory.links() })
 }
 
-/// What `priory check --explain --json` prints and `GET /api/flows` serves: the irreversible steps
-/// with their gates, the paths to one with no human decision, the tools reached, and, for the
-/// drawing, each workflow's steps and edges.
+/// Gives each irreversible step of `flows` its `risk_estimate` from `risk`, or null when no state
+/// was read.
+pub fn with_risk_estimates(flows: &mut Value, risk: Option<&crate::risk::Risk>) {
+    for step in flows["irreversible"].as_array_mut().into_iter().flatten() {
+        step["risk_estimate"] = match (risk, step["workflow"].as_str(), step["step"].as_str()) {
+            (Some(risk), Some(workflow), Some(id)) => risk.step_history(workflow, id),
+            _ => Value::Null,
+        };
+    }
+}
+
+/// What `priory check --explain --json` prints and `GET /api/flows` serves, before
+/// `with_risk_estimates`: the irreversible steps with their gates, the paths to one with no human
+/// decision, the tools reached, and, for the drawing, each workflow's steps and edges.
 pub fn flows(factory: &Factory) -> Value {
     let mut irreversible = Vec::new();
     let mut paths = Vec::new();
@@ -895,9 +1068,15 @@ fn up_next(
     let mut next: Vec<(Timestamp, Value)> = Vec::new();
     for row in waiting.as_array().into_iter().flatten() {
         if let Some(position) = row["position"].as_i64() {
-            let why = match (position, row["band_position"].as_i64()) {
-                (1, _) => "first in the queue".to_owned(),
-                (_, Some(1)) => "a band above it".to_owned(),
+            // A queued task's reason, such as waiting for room or its claim, says why it has not started.
+            let why = match (
+                row["reason"].as_str(),
+                position,
+                row["band_position"].as_i64(),
+            ) {
+                (Some(reason), _, _) => reason.to_owned(),
+                (None, 1, _) => "first in the queue".to_owned(),
+                (None, _, Some(1)) => "a band above it".to_owned(),
                 _ => format!("queue position {position}"),
             };
             next.push((
@@ -1136,16 +1315,19 @@ pub(crate) fn alarm(
 /// irreversible step run, or null. The command's `runs` is non-empty for an ask that runs one (see
 /// `IRREVERSIBLE`).
 fn acts(db: &Connection, items: &mut [Value]) -> rusqlite::Result<()> {
-    let mut asked = db.prepare(
-        "SELECT asks.command, (SELECT nullif(gate.lets, '') FROM irreversible_asks AS gate
-           WHERE gate.workflow = tasks.workflow AND gate.step = asks.step AND asks.kind = 'step')
-         FROM asks LEFT JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
-    )?;
+    let mut asked = db.prepare(&format!(
+        "SELECT asks.command, {LETS}
+             FROM asks LEFT JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1"
+    ))?;
     for item in items.iter_mut().filter(|item| item["kind"] == "ask") {
         let (command, lets) = match item["id"].as_i64() {
             Some(ask) => asked.query_row([ask], |row| Ok((row.get(0)?, row.get(1)?)))?,
             None => (None::<String>, None::<String>),
         };
+        item["lets"] = json!(lets);
+        let lets = lets
+            .and_then(|lets| serde_json::from_str::<(String, String)>(&lets).ok())
+            .map(|(_, step)| step);
         item["acts"] = command
             .and_then(|command| serde_json::from_str::<Value>(&command).ok())
             .filter(|command| {
@@ -1201,6 +1383,7 @@ pub fn desk(
         .count();
     routed_to(db, list)?;
     acts(db, list)?;
+    risk_estimates(db, list);
     if let Some(me) = crate::runners::me(db)? {
         for item in list.iter_mut().filter(|item| item["kind"] == "ask") {
             item["runner"] = json!(me);
@@ -1214,6 +1397,9 @@ pub fn desk(
         let added = remote.len();
         list.splice(waiting..waiting, remote);
         list[..waiting + added].sort_by(|a, b| a["since"].as_str().cmp(&b["since"].as_str()));
+    }
+    for item in list.iter_mut().filter(|item| item["kind"] == "memories") {
+        item["candidates"] = json!(crate::memories::list(db, false)?);
     }
     let ranked = rank(list);
     for item in list.iter_mut() {
@@ -1241,10 +1427,15 @@ pub fn desk(
     for (resource, _) in unrouted_events(db, 0, Some((day.0, &day.1)))? {
         unrouted += usize::from(owner(db, &resource)?.is_some());
     }
-    let outside = [crate::link::banner(db)?, post::intake_banner(db)?]
-        .into_iter()
-        .flatten()
-        .reduce(|log, intake| format!("{log}; {intake}"));
+    let unheard = unheard_events(db, 0, Some((day.0, &day.1)), now)?.len();
+    let outside = [
+        crate::link::banner(db)?,
+        post::intake_banner(db)?,
+        crate::kit::banner(db)?,
+    ]
+    .into_iter()
+    .flatten()
+    .reduce(|first, next| format!("{first}; {next}"));
     let outsider = outsider_events(db, 0, Some((day.0, &day.1)))?
         .as_array()
         .map_or(0, Vec::len);
@@ -1253,7 +1444,8 @@ pub fn desk(
         "banner": stall::banner(db)?,
         "intake": outside,
         "counts": {
-            "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted, "outsider": outsider,
+            "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted, "unheard": unheard,
+            "outsider": outsider,
         },
         "items": items,
         "next": ranked.first(),

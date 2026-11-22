@@ -332,8 +332,11 @@ with the `check` icon (answered) or the `minus` icon (withdrawn).
 
 A batch is not a task state either. Its desk row takes a muted tile with the `layers` icon.
 
-Another runner's task shows its hold instead of a state: `kept` or `waiting`, each a muted tile with
-the `server` icon.
+Memory candidates are not a task state either. Their desk row takes the ask role's `--wait` tile
+with the `brain` icon, since they wait on a person.
+
+Another runner's task shows its hold instead of a state: `kept` or `waiting`, beside a muted tile
+with the `server` icon. A task of this runner in the `waiting` state keeps its own tile.
 
 ### Explorer list
 
@@ -384,7 +387,9 @@ The desk is the "Needs me" view. It lists, top to bottom:
    the `square` tile in the ask role, its text and due time, and a Done button in `.btn
    secondary` that marks it done (`POST /api/todos/{id}/done`). The next thing card offers Done
    for a to-do. Then **Also waiting**: the desk's other items (held tasks, going batches, sweeps,
-   memory waits, retired tasks and worktrees that stay), each with the daemon's sentence. A
+   memory waits, retired tasks and worktrees that stay), each with the daemon's sentence. The
+   [memory candidates](#memory-candidates) row names the candidates instead and opens their
+   review list; on wide screens its Recommends column holds a Review button. A
    batch row stands for its entries' held rows. On the phone list, its title and counts are the
    main line and the `Next: ...` sentence a caption below; the wide table and the Herdr Desk keep the
    line whole, as board 3 shows. Its key opens the [batch page](#batch-page-and-lane-graph). A held task's row carries a
@@ -392,8 +397,9 @@ The desk is the "Needs me" view. It lists, top to bottom:
    sends the revision the page drew (`POST /api/tasks/{id}/release`), Read sends `POST /api/inbox/{seq}/read`.
    A refused action keeps the row and shows why under it, in the row's note.
 7. **Up next**: a strip with the next 3 runs, queued or scheduled, as in the Herdr Queue panel.
-   Each line shows when, the task and why, and opens the task. With none, the strip says "Nothing
-   is queued or scheduled to run next."
+   Each line shows when, the task and why, and opens the task. A queued task waiting for its place
+   shows "now, on room"; one with its own wait reason shows "now" and that reason. With none, the
+   strip says "Nothing is queued or scheduled to run next."
 8. **Since you looked**: a strip with the events since the person's last visit, one group per
    task, the task with the newest event first. Each group opens with the task's key, which opens
    the task page, then each event's time and what. The heading's note says "since 09:12", or
@@ -406,6 +412,9 @@ The desk is the "Needs me" view. It lists, top to bottom:
 10. **Unrouted**: when events reached no task in the last 24 hours, one calm row under Asleep,
    "3 events reached no task in the last 24 hours", with the `queued` tile and the count, that
    opens the [Inbox](#inbox) panel's Unrouted view. It never ranks and never takes an alarm color.
+   Under it, when a task kept events no agent read (`counts.unheard`), one more calm row, "2 events
+   kept by a sleeping task reached no agent", with the `asleep` tile and the count, that opens the
+   same view at its Unheard section.
 11. Reports waiting for review, when there are any.
 On a phone, the **Answer capsule** floats above the tab bar: a full-width `--action` button,
 `--capsule` (54 px) tall, `--capsule-gap` above the tab bar, with `--radius-full` and
@@ -420,6 +429,29 @@ selected row.
 - A round [Add](#add) button, `--capsule` wide and tall, sits at the right of the capsule with
   `--space-2` between them. It stays where the capsule hides. It takes `--surface` with a
   `--control-line` edge and `--action-text`, so the capsule stays the one primary action.
+
+### Memory candidates
+
+`/memories` lists the memory candidates that wait for a person, oldest first, as a page of its own
+with a back link to the Desk, like the batch page. Accepting one gives it to every task's runs, so
+the page shows everything a person needs before they tap:
+
+- A heading with the count, and one note: an agent wrote each one; Accept gives it to every task's
+  runs, on every runner; Drop discards it.
+- Per candidate, in a section: a small memories tile, the name in mono, a tag, and the age. The tag
+  is `new`, `forget`, or in `--warn-text` `replaces a memory runs get`, `forgets a memory runs
+  get` or `may replace a memory runs get`, when this machine cannot tell, such as one with no kit
+  checkout. It never says `new` unless the server confirmed it. Then the description in `--text-2`, the full text on `--raised` with `--radius-md`, never
+  cut, and for a candidate that replaces a memory, the current text behind a "Current text"
+  disclosure, closed by default, which stays as the person left it across redraws. Then "Written by KEY on RUNNER, candidate ID" in `--text-3`.
+- Accept in `.btn primary` and Drop in `.btn secondary`. Accept arms on its first tap, as Cancel
+  does, and sends on the second within 4 seconds. Drop sends at once: a dropped candidate reaches
+  no other task.
+- Once sent, both buttons turn off and a note under them says what the server answered. The
+  candidate leaves the list once the daemon reads the verdict from the log. A refusal says why in
+  the same note.
+- With none waiting: "No memory candidate waits. Agents write them with the remember and forget
+  tools."
 
 ### Inbox
 
@@ -438,8 +470,17 @@ thread."); **Subscribe task 12** for an active one (`POST /api/subscribe` with t
 Inbox read was at). The daemon's sentence shows under the row, as a
 desk action's note does. A last `--text-2` line counts the events no task ever owned: "No task
 ever owned: 41 github events, 6 slack events." With no owned group: "No event of a task's resource
-went unrouted. An event about an ended task's pull request or issue shows here." Events open
-no detail, so the empty drawer beside the panel says "Open an event's task to read what the event
+went unrouted. An event about an ended task's pull request or issue shows here."
+
+When `unrouted.unheard` has groups, an **Unheard** section, "no agent read them", comes first, then
+an **Unrouted** heading, "reached no task", over the owned groups. Each unheard group is the owned
+group's card for one task: its key in mono with its event count, the caption line with its
+workflow, then its 5 newest events with the `asleep` tile. Under them, by the task's state:
+**Say to task 12** (`.btn secondary`, one tap, not armed) for an asleep task, which sends the
+group's `say_text` through the task's say verb, with "Say sends “...”" in `--text-2`; Say and the
+task page's **Resume** for a blocked one, whose line adds "It reads them when it resumes."; the
+owned group's Revive or Request a task for an ended one; "Its next run reads them." otherwise.
+Events open no detail, so the empty drawer beside the panel says "Open an event's task to read what the event
 did."
 
 ### Add
@@ -561,6 +602,9 @@ for a decision. Every ask has its own URL, such as `/asks/42`.
    previous and next buttons.
 2. **Context line**: the ask tile, task key, step, lane, a "Command" tag for a command ask, age
    and revision. It wraps. Tapping it opens the task.
+   An ask whose answer lets an irreversible step run, and that has a `risk_estimate`, adds a
+   **History line** under it: the `lock` icon and the server's `line` in `--type-caption` and
+   `--text-2`. It takes no color, tile or level, so it never reads as a verdict on this change.
 3. **Question** in `--type-question`, or `--type-question-wide` in the drawer.
 4. **Recommendation** on `--action-soft` with `--radius-md`: "Recommended: Merge." in
    `--action-text`, the agent's reason, then a `corner-down-right` line with what the agent does
@@ -712,6 +756,10 @@ person" for an answer from the CLI or the web view. An answer from before Priory
 answered says nothing. An answered row in the lists and the answered card say it too: "Answered
 Merge by agent:lead", and "By agent:lead." after the age.
 A refused answer shows on a warn tile with "Refused:" and the answer in `--warn-text`, and why.
+Another runner's ask also lists each answer and dismiss sent to it, at the time it was sent: "Sent
+approve to xps13 for revision 2. Not applied yet" on a `queued` tile, then "xps13 applied it" on an
+`answered` tile, or on a `withdrawn` tile for a dismiss. A refused one reads "xps13 refused it: why"
+on a warn tile in `--warn-text`.
 
 ### Appearance screen
 
@@ -788,8 +836,34 @@ open Priory window when there is one.
 - Tokens add up input, output and cache tokens: "640", "1.5k", "312k", "3.3M".
 - Another runner's task row shows its hold's tile and word in place of the state, and its workflow
   without a step. Its line 3, or the line under its title on wide screens, reads "On runner a, last
-  seen 12 min ago" in `--text-3`, or "On runner a, never seen alive". Its key is plain text and the
-  row has no chevron: its page stays on its runner.
+  seen 12 min ago" in `--text-3`, or "On runner a, never seen alive". Its key is plain text: its
+  page stays on its runner. See [Another runner's task](#another-runners-task) for its actions.
+
+### Another runner's task
+
+A remote task row has no page here, so a tap anywhere on it opens it in place, under its lines, and
+a second tap closes it. A `chevron-down` button, `chevron-up` while open, ends the row for the
+keyboard, with `aria-expanded`. On wide screens the open part is a row of its own under the task's,
+in the title column.
+
+- **Actions** follow the hold, since the state stays on its runner: Resume, Cancel and Release for a
+  `kept` task, Cancel only for a `waiting` one, which has no run to resume, release or say to. They
+  reuse the task page's `.btn secondary` buttons, and Cancel arms on the first tap. A `kept` task
+  adds the Say box. There is no Revive, since an ended task leaves the list, and no Hold.
+- **Note**, under them, with the `corner-down-right` icon: "This task runs on laptop. An action goes
+  there through the log, and laptop applies it when it reads it."
+- **Sent**: the newest submission takes a line of its own above "On runner", never sharing it, so
+  "last seen" is never cut. "Sent to laptop: cancel" in `--action-text` while pending; "laptop
+  refused resume: task 2 is running, not blocked" in `--warn-text`; "laptop applied release" in
+  `--text-3`. A say reads `say “text”`.
+- **Not sent**: a 409 says "Not sent: task laptop:ENG-262 is at generation 3, not 2. The list reads
+  it again: check the task, then send again."; a 503 says "Could not send: why. Nothing was sent: try again.";
+  both under the actions, as the task page's notes. The Say draft stays. A sent action leaves no note:
+  it shows as the Sent line once the list reads it again. A Cancel armed at one generation disarms
+  when the list shows another.
+
+It adds no token: it reuses `.task-acts`, `.acts-note`, `.writeform`, `--action-text` and
+`--warn-text`. The board is in `~/shared/priory-remote-task-actions/board/` on the author's machine.
 
 ### Tasks panel
 
@@ -799,7 +873,9 @@ values A to Z with counts; a task with no lane shows under `none`. Ended lists t
 and loads the older tasks once the person scrolls to its end, with or without a facet set; a set
 facet counts the loaded tasks only. The rows take the whole width, with no
 drawer: each opens the task's page. In a factory of several runners, Active also lists each task
-another runner holds, after this runner's, and the State facet counts them under `elsewhere`.
+another runner holds, after this runner's, and the State facet counts them under `elsewhere`. A
+Runner facet then offers each runner with its count, as the Asks list's does: this runner reads
+"workstation (here)".
 
 ### Runs panel
 
@@ -835,6 +911,7 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
 
 ### Task detail and workflow grid
 
+- On a phone the task page's back link goes to the Tasks panel, as the batch page's does.
 - Context line: task key in mono, the task's state tile and word, workflow, lane, band, and
   "batch 4" linking to the batch page when the task is a batch's entry or planning task.
 - Title in `--type-task`, then the task's reason in its role's text color.
@@ -918,18 +995,42 @@ The **lane graph** draws a plan, in the batch page and in a go ask.
 
 - Always the `--term-*` tokens, dark in every theme and mode, with `--radius-md`. Mono at 12 / 16
   on compact, 12.5 / 19 on wide.
-- tmux sets the width, so lines never wrap. The pane scrolls sideways inside its own box. A "Fit"
-  toggle scales the text down to fit the width, never below 9 px.
+- tmux sets the width, so lines never wrap. The pane scrolls sideways inside its own box, and its
+  scrollbar takes the `--term-*` colours in every theme. A "Fit" toggle scales the text down to fit
+  the width, never below 9 px.
+- A new screen rewrites only the rows whose text or style changed, so a selection in the other rows
+  stays while the agent writes.
+- The cursor fills its cell with `--term-fg`, its character in `--term-bg`, without blinking. It
+  shows only when the screen carries one, never while earlier rows sit above the screen and never
+  on an ended run. Under forced colours it takes a `CanvasText` outline.
 - Read-only by default. "Type" opens a one-line input at the bottom, with a "Say" button, that
   sends the line on Enter through the task's say verb: it reaches the agent once its run is idle,
   never as a slash command. The header's tag reads `read-only`, or `say` while the input is open.
   A said line clears and a `--term-green` line under the input says so; a refused line stays in
   the input and a `--term-yellow` line says why. Escape or "Type" again closes it. An ended run
   has no "Type".
-- Header: the `terminal` icon, session name in mono, run id, "Type", "Copy screen", "Fit",
-  "Attach". In the web view "Attach" copies `priory attach N --read-only`, since a page cannot open
-  a tmux client. Under 480 px of pane width the buttons show their icon only, with their name as a
-  label, and under 400 px the run id hides.
+- Header: the `terminal` icon, session name in mono, run id, "Type" with the `message-text` icon,
+  "Copy screen", "Fit", and a menu (`more`). The menu holds "Copy attach command", which copies
+  `priory attach N --read-only`, since a page cannot open a tmux client, and the keyboard rows
+  below. Under 480 px of pane width the buttons show their icon only, with their name as a label,
+  and under 400 px the run id hides.
+- Keys, only when the screen says `keyboard: true` (`[serve] terminal = "type"`). The menu's "Take
+  the keyboard" opens a confirm sheet, a modal `dialog` over `--scrim` like Add's: "Take the
+  keyboard of run N?", then the line "Your keys reach the agent and its shell directly. Priory's
+  guard does not check them." in `--warn-text` with `shield`, then three facts with `clock`,
+  `pause` and `pencil`: 15 minutes, the agent's prompts wait, the trace keeps each key and each
+  text's length, never the text. "Take the keyboard" is the danger button; "Keep watching" closes.
+- While the page holds the keyboard, the pane takes a 2 px `--term-yellow` ring and the tag reads
+  `keys` in `--term-yellow`. A bar at the bottom says "Your keys until 14:32" with "Give back". Its
+  input pastes text without Enter: Return in it sends the text only, and a note says "Sent 15
+  characters. Press ⏎ to submit them." Under it a key row sends one key a tap: Esc and ⌃C first,
+  edged in `--term-red`, then ⏎ Enter, Tab, ⇧Tab, the arrows, PgUp, PgDn, ⌃D, y, n and 1 to 9,
+  scrolling sideways, each `--control` on a coarse pointer. Each send reads the screen at once.
+- "Give back" opens a second sheet that shows the screen's last two rows and says that text typed
+  and not submitted stays in the agent's input box: clear it with ⌃C or submit it with ⏎ first.
+  "Give back" there is primary. When a grant ends on its own (its 15 minutes, another device took
+  it, the run ended), the bar and ring go and a `.note` above the pane says why, with "Take it
+  again". The grant's secret lives in the page's memory only; leaving the page or switching runs gives the keyboard back.
 - SGR colours draw in the eight `--term-*` colours. Bright colours, the 256 palette and RGB take the
   nearest of the eight. A background is its colour at 30 % over `--term-bg`. Reverse video fills the
   cell with the text's colour, solid, in `--term-bg` text. Bold, faint, italic and underline show;
@@ -999,7 +1100,7 @@ sits under More.
 ### Flows panel
 
 The web view's `/workflow`, named Flows: each workflow of the factory drawn as a timeline, from
-`GET /api/flows`. It reads the factory once, so it needs no refresh. On a phone it sits under More.
+`GET /api/flows`. It reads the factory once, so it needs no refresh; the history is as of that read. On a phone it sits under More.
 
 - **Key**: a `.sect` under the header with the six node shapes, the four line styles and the
   highlight, in `--type-caption` and `--text-2`, so no reader has to guess a mark.
@@ -1028,6 +1129,14 @@ The web view's `/workflow`, named Flows: each workflow of the factory drawn as a
   `human` edge, the paths `priory check --explain` lists, has a 6 px `--danger-text` halo at 22 %.
   Under the diagram, "Reaches an irreversible step with no person's decision:" lists each path in mono
   in `--danger-text`.
+- **History**: when `GET /api/flows` carries a `risk_estimate`, a `.ctbl` table follows the
+  diagram, under "Tasks through each irreversible step in the last 180 days, judged within 30 days
+  of it." in `--type-caption` and `--text-2`. One row per irreversible step: Step in mono, Caught,
+  Judged wrong and Landed wrong. Each outcome cell holds its count, such as "17 of 53", over "95 %
+  bound 43.4 %" or "needs 20" in caption `--text-3`. Under 600 px of panel width the table stacks:
+  the step and "Caught 4" on one line, then "Judged wrong 17 of 53, 95 % bound 43.4 %" and "Landed
+  wrong 3 of 53, 95 % bound 13.7 %" as two caption lines, so Landed wrong never starts off screen.
+  With no state, the table is left out.
 - **Text alternative**: the SVG has `role="img"` and an `aria-label` that reads each step, its kind
   and where each outcome leads, decided by whom. Each node and edge has a `title`. A "Steps as
   text" disclosure, 44 px tall, lists the same facts as an ordered list.
@@ -1192,8 +1301,10 @@ the adapter lives, how it reads and acts, and the data each panel needs. The app
   `--pane-split`, the list and the detail sit side by side.
 - **Selection.** A selected row takes the `--action-soft` fill on its own rounded surface. It has
   no 3 px leading bar: gpui-kit's design guide forbids leading-edge selection bars.
-- **Placement.** The layout follows the `default` view: each `tabs` node is a stack, and the
-  Priory bar shows one button per child of each stack. The Task panel and an Asks panel the view
+- **Placement.** Each view gets its own layout, and the default layout follows the `default`
+  view. Narrow panels open as asides and wide ones as tabs in the center, and the Priory bar shows
+  one button per aside and per center tab. When the view files change, the bar posts one notice,
+  "The view files changed", whose click regenerates the layouts. The Task panel and an Asks panel the view
   lacks open as tabs in the center.
 - **Navigation.** Herdr owns tabs and panes, so a panel has no tab bar, rail or Answer capsule.
   `Enter` opens the selected row.
@@ -1239,15 +1350,18 @@ waiting, and the daemon does nothing different.
 The calm count, then the one next thing, then the explorer list.
 
 1. **Count** in `--type-pane-count`, as the web desk's: "2 asks need you. Oldest waits 42 min. 1
-   stopped. 2 snoozed. 3 events reached no task in 24 h." The last sentence shows only when the
-   count is above zero. The Unrouted view is the [Inbox](#inbox-1) panel.
+   stopped. 2 snoozed. 3 events reached no task in 24 h. 2 events no agent read." Each of the last
+   two sentences shows only when its count is above zero. The Unrouted view is the [Inbox](#inbox-1) panel.
 2. **The next thing**: a card on `--surface` with the desk's `next`: an alarm or the ask that ranks
    first, why it ranks first, its recommendation, and the buttons Answer… (primary, for an ask),
    Open task, Attach and Snooze 1 h. Answer… opens the
    ask in the Asks panel, so a person answers in one place. Open task opens the [Task](#task)
    panel; Attach opens the live run's terminal.
 3. **Saved views**: Needs me, Running, Asleep, Snoozed and All.
-4. The room banner, Asks, Stopped, To-dos and Later, as on the web desk. A routed ask shows the
+4. The room banner, Asks, Stopped, To-dos and Later, as on the web desk. The memories row's detail
+   lists each candidate as on the web's [memory candidates](#memory-candidates) page, with a Current
+   text button instead of the disclosure, and an armed Accept that reads "Press again to accept".
+   A routed ask shows the
    [routed mark](#routed-ask) under its question, and in the next thing's card. A selected
    to-do's detail offers Done.
 5. **Since you looked**, from 1024 px: the events since the person's last visit.
@@ -1266,7 +1380,7 @@ Every ask, with the web's ask detail fitted to the pane.
   shows the same tag and lines, and offers no snooze on it.
 - A routed ask shows the [routed mark](#routed-ask) as a tag in its row and as a line under the
   question in its detail. An answered row and the history say who answered.
-- The detail keeps the web's order: context line, question, recommendation with what happens next,
+- The detail keeps the web's order: context line, History line, question, recommendation with what happens next,
   options with keys `1` to `9`, write an answer, then the section chips Why, Brief, Plan, PR,
   Trace and History.
 - Once the options scroll out of view, the sticky answer bar shows "3 options", the recommended
@@ -1283,7 +1397,8 @@ What runs next and why.
 - Then Running, the bands in order (Blocker, Now, Today, Later, or the factory's names), Held with
   each hold's reason, and Last day, folded.
 - Each waiting row shows its position in its band and why it has not started, in its role's text
-  color. A grip in a fixed trailing lane, and `Shift J` and `Shift K`, reorder a band.
+  color. A task with its own wait reason, such as "Waits for its claim to reach the log.", says
+  that reason, in its row and in Up next, where "on room" is left out. A grip in a fixed trailing lane, and `Shift J` and `Shift K`, reorder a band.
 - An opened row offers Move…, Hold… and Cancel…, and Open task.
 
 ### Bonjour
@@ -1331,6 +1446,9 @@ The web's [Flows panel](#flows-panel).
   characters, and the drawing keeps 76 px on its right for it.
 - "Steps as text" is a button that shows or hides the list under the drawing. "Read again" in the
   header reads the flows again.
+- The history always takes the web's stacked layout, since gpui-kit draws no table: the step and
+  "Caught 4", then the Judged wrong and Landed wrong lines in caption `--text-2`, each step under a
+  hairline.
 
 ### Task
 
@@ -1365,6 +1483,10 @@ The web's [Inbox](#inbox) panel, as a tab in the center stack.
   workflow, with no Add card, since that text names the resource the new task must own.
 - The verb's sentence shows under the button in `--text-2`; a refusal says why. Subscribe carries
   the revision the panel read, as the web's does.
+- Unheard cards come first under an "Unheard" heading, then "Unrouted" over the owned cards, as on
+  the web. An asleep task's card shows its `follow_up` command in mono `--text-2` instead of Say,
+  which stays on the web. A blocked task's card has Resume task 15 and "It reads them when it
+  resumes."
 - While it reads: "Reading the unrouted events…"
 
 ### Tasks
@@ -1379,7 +1501,16 @@ The web's [Tasks panel](#tasks-panel), as a tab in the center stack.
   and band in `--text-3`, or the reason in its role's text color, then `batch N`. A row opens the
   [Task](#task) panel.
 - The batch tag is text: Herdr has no batch panel yet.
-- Another runner's tasks stay out: Herdr has no row for a task with no page here yet.
+- Another runner's task row shows its hold's tile, the `server` icon on `--tile-muted`, and word in
+  place of the state, and its workflow without a step. Its last line reads "On runner a, last seen
+  12 min ago" in `--text-3`. Its page stays on its runner, so pressing it opens it in place, under
+  the row, at every width: Resume, Cancel and Release (Cancel only for `waiting`) as `.btn
+  secondary` buttons at `--control-fine`, Cancel armed by the first press with the draining bar,
+  then the web's note. Its newest submission takes a caption line above "On runner", in the web's
+  colors, and a failed send shows under the buttons in `--warn-text`. Say stays on the web, as for
+  the Task panel.
+- In a factory of several runners a Runner chip follows Workflow, and this runner reads
+  "workstation (here)", as on the web.
 - While it reads: "Reading the tasks…"
 
 ### Runs

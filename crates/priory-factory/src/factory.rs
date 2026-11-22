@@ -76,6 +76,93 @@ pub struct Settings {
     #[serde(default, deserialize_with = "links")]
     #[schemars(with = "BTreeMap<String, String>", extend("default" = {}))]
     pub links: Vec<Link>,
+    pub kit: Option<Kit>,
+}
+
+/// A kit repository whose skills, instructions and memories every run gets, before the factory's
+/// own. Each runner fetches it with git's own credentials.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Kit {
+    /// The repository, as `git fetch` takes it: a URL, or a path, which a relative one takes from
+    /// the factory folder.
+    #[schemars(length(min = 1))]
+    pub repo: String,
+    /// The branch, tag or commit to fetch; the repository's default branch when unset.
+    #[serde(rename = "ref")]
+    pub reference: Option<String>,
+    /// The skills folder inside the repository; `skills` when unset.
+    pub skills: Option<String>,
+    /// The instructions file inside the repository; `instructions.md` when unset.
+    pub instructions: Option<String>,
+    /// The memories folder inside the repository; `memories` when unset.
+    pub memories: Option<String>,
+    /// How often a runner fetches the ref again; every 5 minutes when unset.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub every: Option<Duration>,
+}
+
+/// The code step action that opens the pull request of accepted memories to the kit repository.
+pub const OPEN_MEMORIES_PR: &str = "open-memories-pr";
+
+/// How often a runner fetches the kit when `[kit]` sets no `every`.
+pub const KIT_EVERY: Duration = Duration::from_secs(300);
+
+impl Kit {
+    /// The ref to fetch: `HEAD`, the remote's default branch, when unset.
+    pub fn reference(&self) -> &str {
+        self.reference.as_deref().unwrap_or("HEAD")
+    }
+
+    /// The skills folder, instructions file and memories folder inside the repository, as
+    /// `(key, path)`.
+    pub fn paths(&self) -> [(&'static str, &str); 3] {
+        [
+            ("skills", self.skills.as_deref().unwrap_or("skills")),
+            (
+                "instructions",
+                self.instructions.as_deref().unwrap_or(INSTRUCTIONS),
+            ),
+            ("memories", self.memories.as_deref().unwrap_or("memories")),
+        ]
+    }
+
+    pub fn every(&self) -> Duration {
+        self.every.unwrap_or(KIT_EVERY)
+    }
+}
+
+/// What a kit commit gives every run: its skills, instructions and memories.
+#[derive(Default)]
+pub struct KitFiles {
+    pub skills: BTreeMap<String, Loaded<Skill>>,
+    pub instructions: Option<String>,
+    pub memories: BTreeMap<String, Loaded<Memory>>,
+}
+
+/// Loads the skills, instructions and memories of the kit checked out in `dir`, as `kit` places
+/// them, with the problems `priory check` would report for the same files in a factory.
+pub fn load_kit(dir: &Path, kit: &Kit) -> (KitFiles, Vec<Problem>) {
+    let mut files = KitFiles::default();
+    let mut problems = Vec::new();
+    let mut found = Loader {
+        dir,
+        problems: &mut problems,
+    };
+    let [(_, skills), (_, instructions), (_, memories)] = kit.paths();
+    match fs::read_to_string(dir.join(instructions)) {
+        Ok(text) => files.instructions = Some(text),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => found.problems.push(Problem {
+            file: instructions.into(),
+            at: None,
+            message: format!("cannot be read: {error}"),
+        }),
+    }
+    found.skills(skills, &mut files.skills);
+    found.memories(memories, &mut files.memories);
+    (files, problems)
 }
 
 /// Text that `pattern` matches links to `url`, its `$1`-style groups filled in and `{repo}` the
@@ -1108,7 +1195,8 @@ pub struct Step {
     /// The answers a person picks from at a human step.
     #[serde(default)]
     pub options: Vec<String>,
-    /// The built-in action a code step runs: `open-pr`, `open-issue` or `run`.
+    /// The built-in action a code step runs: `open-pr`, `open-issue`, `open-memories-pr`, `run` or
+    /// `start-batch`.
     pub action: Option<String>,
     /// The command a `run` action runs with `sh -c`.
     pub run: Option<String>,
@@ -1480,6 +1568,13 @@ pub struct Memory {
     pub bytes: Vec<u8>,
 }
 
+impl Memory {
+    /// The fact: the file's text after its frontmatter.
+    pub fn text(&self) -> String {
+        body(&String::from_utf8_lossy(&self.bytes))
+    }
+}
+
 /// The frontmatter of `memories/<name>.md`: one fact every run gets in its index. Priory reads
 /// these keys and ignores any other.
 #[derive(Deserialize, JsonSchema)]
@@ -1498,6 +1593,9 @@ pub const MEMORY_LIMIT: usize = 4096;
 
 /// The folder each run's memory index names when `priory check` counts it, as Priory home holds it.
 pub const MEMORY_FOLDER: &str = "$PRIORY_HOME/kit/<hash>/memories";
+
+/// The folder a Codex run's skill index names when `priory check` counts it, as Priory home holds it.
+pub const SKILL_FOLDER: &str = "$PRIORY_HOME/kit/<hash>/plugin/skills";
 
 /// A skill: `skills/<name>/SKILL.md` and the files beside it.
 #[derive(Debug)]
@@ -1778,31 +1876,26 @@ impl Factory {
 
     /// The index of the factory's memories, whose files are in `folder`, or nothing without any.
     pub fn memory_index(&self, folder: &str) -> String {
-        if self.memories.is_empty() {
-            return String::new();
-        }
-        let mut index = format!(
-            "# Memories\n\nThe factory's memories are in {folder}, one fact per file. Read a memory's \
-             file when its description fits your task. Never edit these files: a memory changes only \
-             through a pull request to the factory.\n"
-        );
-        for (name, memory) in &self.memories {
-            let description = memory.value.description.split_whitespace();
-            index.push_str(&format!(
-                "\n- {name}.md: {}",
-                description.collect::<Vec<_>>().join(" ")
-            ));
-        }
-        index
+        memory_index(
+            folder,
+            self.memories
+                .iter()
+                .map(|(name, memory)| (name.as_str(), &memory.value)),
+        )
     }
 
     /// The instructions, then the index of the memories in `folder`, as every run gets them.
     pub fn run_instructions(&self, folder: &str) -> String {
-        [self.instructions(), &self.memory_index(folder)]
-            .into_iter()
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n")
+        join_instructions(self.instructions(), &self.memory_index(folder))
+    }
+
+    /// `run_instructions`, then the index of the skills, as a Codex run gets them.
+    pub fn codex_instructions(&self) -> String {
+        let skills = self.skills.iter().map(|(n, s)| (n.as_str(), &s.value));
+        join_instructions(
+            &self.run_instructions(MEMORY_FOLDER),
+            &skill_index(SKILL_FOLDER, skills),
+        )
     }
 
     pub fn bands(&self) -> Vec<&str> {
@@ -1815,6 +1908,62 @@ impl Factory {
             None => BANDS.to_vec(),
         }
     }
+}
+
+/// The index of `memories`, whose files are in `folder`, or nothing without any.
+pub fn memory_index<'a>(
+    folder: &str,
+    memories: impl IntoIterator<Item = (&'a str, &'a Memory)>,
+) -> String {
+    let mut memories = memories.into_iter().peekable();
+    if memories.peek().is_none() {
+        return String::new();
+    }
+    let mut index = format!(
+        "# Memories\n\nThe factory's memories are in {folder}, one fact per file. Read a memory's \
+         file when its description fits your task. Never edit these files: save a fact with the \
+         remember tool, and remove a wrong one with forget.\n"
+    );
+    for (name, memory) in memories {
+        let description = memory.description.split_whitespace();
+        index.push_str(&format!(
+            "\n- {name}.md: {}",
+            description.collect::<Vec<_>>().join(" ")
+        ));
+    }
+    index
+}
+
+/// The index of `skills`, whose folders are in `folder`, or nothing without any.
+pub fn skill_index<'a>(
+    folder: &str,
+    skills: impl IntoIterator<Item = (&'a str, &'a Skill)>,
+) -> String {
+    let mut skills = skills.into_iter().peekable();
+    if skills.peek().is_none() {
+        return String::new();
+    }
+    let mut index = format!(
+        "# Skills\n\nThe factory's skills are in {folder}, one folder per skill. Read a skill's \
+         SKILL.md when its description fits your task, and follow it. Never edit these files.\n"
+    );
+    for (name, skill) in skills {
+        let description = skill.description.split_whitespace();
+        index.push_str(&format!(
+            "\n- {name}/SKILL.md: {}",
+            description.collect::<Vec<_>>().join(" ")
+        ));
+    }
+    index
+}
+
+/// `instructions`, then the memory `index`, apart by a blank line, either left out when empty.
+pub fn join_instructions(instructions: &str, index: &str) -> String {
+    [instructions, index]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
@@ -1883,31 +2032,8 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
             message: format!("cannot be read: {error}"),
         }),
     }
-    for path in found
-        .entries("skills")
-        .into_iter()
-        .filter(|path| path.is_dir())
-    {
-        if let Some((skill, lines)) = found.skill(&path) {
-            found.define(
-                &mut factory.skills,
-                file_name(&path),
-                &path.join("SKILL.md"),
-                skill,
-                lines,
-            );
-        }
-    }
-    for path in found.entries("memories").into_iter().filter(|path| {
-        // A dotfile such as .gitkeep keeps an empty folder in git.
-        !file_name(path).starts_with('.')
-    }) {
-        if let Some((memory, lines)) = found.memory(&path) {
-            let name = file_name(&path);
-            let name = name.trim_end_matches(".md").to_owned();
-            found.define(&mut factory.memories, name, &path, memory, lines);
-        }
-    }
+    found.skills("skills", &mut factory.skills);
+    found.memories("memories", &mut factory.memories);
     for path in found
         .entries("agents")
         .into_iter()
@@ -2050,6 +2176,34 @@ impl Loader<'_> {
             return;
         }
         map.insert(name, Loaded { file, value, lines });
+    }
+
+    /// Each skill of the folder `folder`, by its own folder's name.
+    fn skills(&mut self, folder: &str, skills: &mut BTreeMap<String, Loaded<Skill>>) {
+        for path in self
+            .entries(folder)
+            .into_iter()
+            .filter(|path| path.is_dir())
+        {
+            if let Some((skill, lines)) = self.skill(&path) {
+                let file = path.join("SKILL.md");
+                self.define(skills, file_name(&path), &file, skill, lines);
+            }
+        }
+    }
+
+    /// Each memory of the folder `folder`, by its file's name without `.md`.
+    fn memories(&mut self, folder: &str, memories: &mut BTreeMap<String, Loaded<Memory>>) {
+        for path in self.entries(folder).into_iter().filter(|path| {
+            // A dotfile such as .gitkeep keeps an empty folder in git.
+            !file_name(path).starts_with('.')
+        }) {
+            if let Some((memory, lines)) = self.memory(&path) {
+                let name = file_name(&path);
+                let name = name.trim_end_matches(".md").to_owned();
+                self.define(memories, name, &path, memory, lines);
+            }
+        }
     }
 
     /// The entries of a factory folder; a missing folder has none.

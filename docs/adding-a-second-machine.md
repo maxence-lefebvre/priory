@@ -127,6 +127,9 @@ added this guide.
 
 - Every user of the second machine can reach `127.0.0.1:PORT` there, since loopback is shared.
   Only the password keeps them out, so generate it.
+- Whoever holds the password can approve on both runners: a message on the log is applied as a
+  person's answer, as [runners.md](daemon/runners.md#every-runner-reads-the-whole-log) says. Give
+  `PRIORY_LOG_URL` only to the two daemons and to people who may approve.
 - When the tunnel closes or hangs, the second daemon keeps its started tasks going and shows
   `the log is unreachable since <time>` on its desk, as
   [runners.md](daemon/runners.md#a-runner-cut-off-from-the-log) says. It catches up once the

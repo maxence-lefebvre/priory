@@ -760,6 +760,10 @@ pub struct TaskHeld {
     pub runner: String,
     /// `waiting`, `kept` or `ended`.
     pub hold: String,
+    /// The task's generation: 1, then one more at each revive or reopen. A write from another
+    /// machine names it, so the owner refuses one meant for an earlier generation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generation: Option<i64>,
 }
 
 /// A runner renews its lease, once a minute while its daemon runs. Its lease ends 30 minutes after
@@ -846,6 +850,97 @@ pub struct AskApplied {
     /// Why it was refused.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+}
+
+/// A person on one runner resumes, revives, cancels, releases or says to a task of another, with
+/// `priory resume RUNNER:KEY` and its siblings or their endpoints. Only that runner applies it, with
+/// the checks of a local action, and only while it holds the key at that generation.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaskActed {
+    /// The runner the person sent it to.
+    pub runner: String,
+    /// The task's key.
+    pub key: String,
+    /// The task's generation the person saw.
+    pub generation: i64,
+    /// `resume`, `revive`, `cancel`, `release` or `say`.
+    pub act: String,
+    /// What `say` tells the task's agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The step `revive` restarts at, instead of the one the task ended on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    /// Where the action came from: `cli` or `serve`.
+    pub by: String,
+    /// The action's own message id, which the runner's `priory.task.applied` names.
+    #[schemars(extend("format" = "uuid"))]
+    pub submission: String,
+}
+
+/// A runner applied or refused an action that another machine sent to one of its tasks.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaskApplied {
+    /// The runner the action was sent to.
+    pub runner: String,
+    /// The task's key.
+    pub key: String,
+    /// The generation the action named.
+    pub generation: i64,
+    /// The `id` of the `priory.task.acted` message.
+    #[schemars(extend("format" = "uuid"))]
+    pub submission: String,
+    /// `applied` or `refused`.
+    pub outcome: String,
+    /// Why it was refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+/// An agent saves a memory with the `remember` tool, or removes one with `forget`. Each message is
+/// one candidate, known by its `id`: its own task's later runs get it at once, and other tasks'
+/// runs only once a person accepts it. A later write of the same name is a new candidate.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryWritten {
+    /// The memory's name, in lowercase letters, digits and hyphens.
+    pub name: String,
+    /// When an agent should read the memory. Absent for a forget.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The fact. Absent for a forget.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// True for a forget: the candidate removes the memory of its name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forget: Option<bool>,
+    /// The key of the task whose run wrote it.
+    pub task: String,
+    /// The runner that wrote it, or null in a factory of one runner.
+    pub runner: Option<String>,
+}
+
+/// A person accepts a memory candidate with `priory memories accept`. Every runner gives it to
+/// every task's later runs. Between two accepted candidates of one name, the later accept in log
+/// order wins.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryAccepted {
+    /// The `id` of the `priory.memory.written` message.
+    #[schemars(extend("format" = "uuid"))]
+    pub candidate: String,
+}
+
+/// A person drops a memory candidate with `priory memories drop`. No run gets it, not even its own
+/// task's.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryDropped {
+    /// The `id` of the `priory.memory.written` message.
+    #[schemars(extend("format" = "uuid"))]
+    pub candidate: String,
 }
 
 /// Where a stream stands after a poll that moved it; a missing marker means the stream is still

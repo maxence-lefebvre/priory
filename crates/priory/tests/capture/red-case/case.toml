@@ -1,0 +1,78 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/case.json
+# Captured from task 1 by priory bench capture. Read it before you share it.
+workflow = "groom"
+key = "github:owner/repo#42"
+repo = "owner/repo"
+start = "280754ddff3d9064d54abdfab6e40999b7156695"
+ends_at = "open-pr"
+partial = true
+gaps = ["run 1: `gh issue view 42 --comments | head -n 20` is not one gh command alone"]
+
+[request]
+type = "factory.task.requested"
+subject = "github:owner/repo#42"
+
+[request.data]
+key = "github:owner/repo#42"
+source = "e2e-request"
+trigger = "groom-label"
+workflow = "groom"
+
+[reference]
+path = ["groom:red", "approve-plan:approved", "implement:passed", "review:clean", "risk:low", "describe:described", "open-pr:opened"]
+labels = []
+
+[[spent]]
+step = "groom"
+model = "claude-fake-5"
+minutes = 1
+
+[spent.tokens]
+input = 101
+output = 11
+cache_read = 1001
+cache_write = 51
+
+[[spent]]
+step = "implement"
+model = "claude-fake-5"
+minutes = 1
+
+[spent.tokens]
+input = 102
+output = 12
+cache_read = 1002
+cache_write = 52
+
+[[spent]]
+step = "review"
+model = "claude-fake-5"
+minutes = 1
+
+[spent.tokens]
+input = 103
+output = 13
+cache_read = 1003
+cache_write = 53
+
+[[spent]]
+step = "risk"
+model = "claude-fake-5"
+minutes = 1
+
+[spent.tokens]
+input = 104
+output = 14
+cache_read = 1004
+cache_write = 54
+
+[[spent]]
+step = "describe"
+model = "claude-fake-5"
+minutes = 1
+
+[spent.tokens]
+input = 105
+output = 15
+cache_read = 1005
+cache_write = 55

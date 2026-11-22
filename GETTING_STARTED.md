@@ -133,7 +133,9 @@ workflow as a Mermaid flowchart, with each step's decider and effect, and each a
 who decides it.
 
 `priory check --explain example` lists the irreversible step `open-pr` and the human step
-`approve-pr` that approves it. See [workflows.md](docs/reference/workflows.md#irreversible-steps-and-their-gates).
+`approve-pr` that approves it. Once tasks ran it, the row adds its history: how many tasks a person
+stopped at the gate, and how many were judged wrong within 30 days. With no state file it shows `-`.
+See [workflows.md](docs/reference/workflows.md#irreversible-steps-and-their-gates).
 The web view's Flows panel, under More, draws each workflow as a timeline, with the paths that
 reach an irreversible step with no person's decision highlighted. `priory flows example --json`
 prints what it draws, and the [Herdr](docs/adapters/herdr.md) Flows panel draws the same.
@@ -198,6 +200,20 @@ A fact every run should know, such as the day releases go out, goes in its own f
 memories and reads a file when its description fits the task. `priory check` counts them in its
 `ok` line. To change a memory, edit the file and merge it like any other change to the factory.
 See [memories.md](docs/reference/memories.md) for the file's keys.
+
+Agents save memories too, with the `remember` tool. The task that saved one gets it at once; every
+other task gets it once you accept it. The desk lists the candidates that wait. Open that row on
+the web or Herdr Desk to read each one and accept or drop it, or run `priory memories accept ID` or
+`priory memories drop ID` (see
+[skills.md](docs/daemon/skills.md#memories-agents-write)).
+
+### Share a kit across factories
+
+To keep skills, instructions and memories in their own repository, name it under `[kit]` in
+`factory.toml`, with `repo` and the `ref` to follow. Each runner fetches it at start and every five
+minutes, with git's own credentials, and every run gets its files before the factory's. A failed
+fetch keeps the last good commit and shows a banner on the desk. See
+[skills.md](docs/daemon/skills.md#a-kit-repository) for the details.
 
 ## 5. Run it
 
@@ -271,10 +287,12 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | ------- | ------------ |
 | `priory desk` | Lists what waits on you: asks, blocked and failed tasks, held tasks, the queue |
 | `priory answer ASK OPTION --revision N` | Answers an ask. `--expected N` is the same flag. `priory answer [DIR] RUNNER:ASK ...` answers another runner's ask (see [runners.md](docs/daemon/runners.md)) |
+| `priory daemon --view-only [DIR]` | On a machine with no runner file, such as a laptop, serves every runner's asks and tasks, sends answers and task actions to their runners, and runs nothing (see [runners.md](docs/daemon/runners.md#a-machine-that-only-views)) |
 | `priory give [DIR] KEY RUNNER [--force]` | Moves a task to another runner of a factory of several, once its runner's lease ends or with `--force` (see [runners.md](docs/daemon/runners.md)) |
 | `priory dismiss [--expected N] ASK` | Closes an ask with no answer. `priory dismiss --revision N [DIR] RUNNER:ASK` dismisses another runner's ask |
 | `priory deliver ASK (--retry \| --clear)` | Sends a failed answer delivery again, or clears it from the desk |
 | `priory snooze KIND ID --for 2h`, `--until TIME`, `--clear` | Hides a desk item until then, or brings it back |
+| `priory memories [--all]`, `priory memories (accept \| drop) [DIR] ID` | Lists the memories agents saved that wait for you, and accepts or drops one, on every runner |
 | `priory todo add TEXT [--band B] [--due TIME]`, `priory todo done ID`, `priory todo list` | Adds a to-do of your own to the desk, marks it done, or lists them |
 | `priory tasks [--lane LANE] [--grade GRADE]` | Lists tasks in start order, with their grade, and other runners' tasks in a factory of several |
 | `priory runs [--json]` | Lists every run; `--json` adds its task key, outcome, model and tokens |
@@ -283,13 +301,14 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory relate TASK KIND OTHER [--remove]` | Records that a task `builds-on`, `fixes`, `takes-up` or `relates` to another, or removes it |
 | `priory task TASK --json` | Prints one task with its brief, plan, pull request, runs and asks |
 | `priory attach TASK [--read-only]` | Attaches your terminal to a task's agent |
-| `priory screen TASK [--json]` | Prints what a task's agent shows now, in colour on a terminal, with secrets hidden. The task's page in the web view shows the same screen, with Load earlier for scrollback and Type to say a line to the agent |
+| `priory screen [DIR] TASK [--history N] [--json]` | Prints what a task's agent shows now, in colour on a terminal, with secrets hidden: the factory's secret variables when you name its `DIR`, and `N` rows of scrollback above. The task's page in the web view shows the same screen, with Load earlier for scrollback and Type to say a line to the agent |
 | `priory resume TASK` | Resumes a blocked task |
 | `priory say TASK TEXT` | Sends a task's agent a message, waking it if it sleeps |
 | `priory subscribe TASK RESOURCE [--expected REVISION]`, `priory unsubscribe TASK RESOURCE` | Routes a pull request's, Linear issue's or Slack thread's events to a task until it closes, or stops routing them. Every task already subscribes to its own key, such as the Slack thread that started it. `--expected` refuses the subscribe once the state moved past that revision |
 | `priory pause [REASON]`, `priory unpause` | Stops new tasks from starting, then lets them start again |
 | `priory cancel TASK [--expected N]` | Drops an active task and ends its run |
 | `priory revive TASK [--step STEP]` | Restarts a failed or dropped task |
+| `priory (resume \| cancel \| release \| revive \| say) [DIR] RUNNER:KEY` | Sends the action to another runner's task, which applies it if the task is still at the generation this machine saw. Takes `--generation N` (see [runners.md](docs/daemon/runners.md#acting-on-another-runners-task)) |
 | `priory hold TASK --reason TEXT`, `priory release TASK` | Holds a task back, then lets it go. Both take `--expected N` |
 | `priory move TASK --band BAND [--expected N]` | Moves a task to another priority band. `--expected N` refuses the move once the state's revision differs from `N` |
 | `priory search QUERY` | Finds tasks by what they are about |
@@ -304,8 +323,10 @@ Run `priory` with no arguments to print its usage.
 
 If you work in [Herdr](docs/adapters/herdr.md), its Desk panel shows the same desk, and its Asks
 panel lists the same asks and answers them through these verbs. `priory views --json |
-adapters/herdr/install` links them into Herdr and writes a layout from your `default` view: narrow panels as asides you toggle, wide ones as center tabs, and Herdr's own Files and Changes panels. `priory check`
-warns when that layout was built from other view files. On a Herdr that reads its folder through
+adapters/herdr/install` links them into Herdr and writes a layout from each view, `priory` for
+your `default` view and `priory-NAME` for each other: narrow panels as asides you toggle, wide ones
+as center tabs, and Herdr's own Files and Changes panels. `priory check` warns when those layouts
+were built from other view files, and the Priory bar offers to regenerate them. On a Herdr that reads its folder through
 Syncthing, which carries no links, use `install --copy`.
 
 If you review on GitHub, the [GitHub extension](adapters/github/README.md) shows the task that holds
@@ -328,7 +349,11 @@ The web view's Tasks panel lists every task, with the saved views Active, Blocke
 filters by state, lane and workflow; each row opens the task's page, and a batch's entries link to
 the batch. The Runs panel lists the runs of the last 7 days with their agent, model, outcome,
 duration and tokens, filtered by outcome, agent or step. `priory tasks` and `priory runs` print the
-same tasks and runs, and the Herdr Tasks and Runs panels show them too.
+same tasks and runs, and the Herdr Tasks and Runs panels show them too. In a factory of several
+runners, both Tasks panels also list the tasks the other runners hold and filter by runner. Such a
+task's page stays on its runner, so a tap opens its row in place, with the actions its hold allows:
+Resume, Cancel, Release and Say for a `kept` task, Cancel for a `waiting` one. Each goes to its
+runner through the log, and the row then shows "Sent to laptop: cancel", or what laptop did with it.
 
 The Queue panel, under More on a phone, shows Up next, then each band's waiting tasks in the order
 they start, with why each one waits. Its Move menu moves a task to the top of its band, up or down
@@ -420,7 +445,8 @@ carries over between them. See [docs/daemon/runs.md](docs/daemon/runs.md).
 **Inbox and routing.** Every event the intake publishes lands in the daemon's inbox before anything
 acts on it. The daemon then finds the task the event concerns, such as the task that owns the pull
 request a check ran on. `priory task ID --json` lists the events routed to a task, and
-`priory inbox --unrouted` lists those that reached none, as the web and Herdr Inbox panels do. See
+`priory inbox --unrouted` lists those that reached none, as the web and Herdr Inbox panels do. It
+also lists the events a sleeping task kept that no agent read yet. See
 [docs/daemon/routing.md](docs/daemon/routing.md).
 
 **Waits and asks.** An agent ends a turn with one of three tools: `result` reports the step's

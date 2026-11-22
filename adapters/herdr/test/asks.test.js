@@ -393,7 +393,7 @@ test("the runner facet narrows to one runner's asks and offers each runner with 
 
 test("another runner's command ask names its runner, says the answer goes there, runs its command there and offers no snooze", () => {
   const command = { argv: ["./deploy", "staging"], dir: "/srv/api", target: "shell", runs: ["approve"] };
-  const detail = askDetail(remote({ id: "laptop:3", runner: "laptop", options: ["approve", "reject"], command, submissions: [{ verb: "answer", text: "reject", outcome: "refused", why: "ask 3 is at revision 2" }] }), { now, armed: null });
+  const detail = askDetail(remote({ id: "laptop:3", runner: "laptop", options: ["approve", "reject"], command, submissions: [{ verb: "answer", revision: 2, text: "reject", sent: "2026-11-20T20:30:00Z", outcome: "refused", why: "ask 3 is at revision 2" }] }), { now, armed: null });
   assert.ok(detail.context.includes("laptop, last seen 40 min ago"));
   assert.equal(detail.canSnooze, false);
   assert.equal(detail.command.note, "In /srv/api (shell). Runs on laptop when answered approve. Bound to revision 2. Runs at most once.");
@@ -402,7 +402,26 @@ test("another runner's command ask names its runner, says the answer goes there,
 });
 
 test("a closed ask of another runner still says why it refused the answer sent to it", () => {
-  const refused = { verb: "answer", text: "approved", outcome: "refused", why: "ask 12 is answered" };
+  const refused = { verb: "answer", revision: 2, text: "approved", sent: "2026-11-20T20:46:00Z", outcome: "refused", why: "ask 12 is answered" };
   const detail = askDetail(remote({ state: "answered", answer: "rejected", answered_at: "2026-11-20T20:47:00Z", submissions: [refused] }), { now, armed: null });
   assert.deepEqual(detail.sent, { text: "xps13 refused approved: ask 12 is answered", refused: true });
+});
+
+test("an ask whose answer lets an irreversible step run shows the server's History line, and others none", () => {
+  const line = "History: 4 of 12 tasks through this step were judged wrong within 30 days, 1 after the merge. Too few to estimate.";
+  const gated = { ...asks[0], risk_estimate: { step: "open-pr", trials: 12, line } };
+  assert.equal(askDetail(gated, { now, armed: null }).riskLine, line);
+  assert.equal(askDetail(asks[0], { now, armed: null }).riskLine, null);
+});
+
+test("another runner's ask lists each answer sent to it in its history, newest first, with its runner, outcome and time", () => {
+  const submissions = [
+    { submission: "s1", verb: "answer", revision: 2, text: "reject", sent: "2026-11-20T20:30:00Z", outcome: "refused", why: "ask 12 is at revision 3", applied: "2026-11-20T20:31:00Z" },
+    { submission: "s2", verb: "answer", revision: 2, text: "approve", sent: "2026-11-20T20:40:00Z", outcome: null, why: null, applied: null },
+  ];
+  assert.deepEqual(askDetail(remote({ submissions }), { now, armed: null }).history, [
+    { tile: "queued", text: "Sent approve to xps13 for revision 2. Not applied yet", time: "20:40" },
+    { tile: "refused", text: "Sent reject to xps13 for revision 2. xps13 refused it: ask 12 is at revision 3", time: "20:30" },
+    { tile: "ask", text: "Asked revision 2", time: "10:00" },
+  ]);
 });

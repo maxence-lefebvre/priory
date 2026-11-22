@@ -551,6 +551,8 @@ export default class PrioryAsks extends View {
         .child(this.tile(ask.state === "open" ? "ask" : ask.state, t))
         .children(detail.context.map((word, index) => word === "Command" ? this.tag(word, t)
           : div().when(index === 0, (el) => el.font_family(this.font.mono).text_color(t["text-2"])).child(word))))
+      .when(Boolean(detail.riskLine), (el) => el.child(h_flex().gap(6).items_start().text_size(TYPE.caption[0]).text_color(t["text-2"])
+        .child(svg(ICON("lock")).size(14).flex_none().mt(1)).child(div().whitespace_normal().child(detail.riskLine ?? ""))))
       .child(div().whitespace_normal().font_family(this.font.display).font_weight(700).text_size(TYPE.question[0]).line_height(TYPE.question[1]).child(linked("question", detail.questionSpans)))
       .when(Boolean(detail.routed), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["action-text"]).child(detail.routed ?? "")))
       .when(Boolean(detail.sent) && !notice, (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(detail.sent?.refused ? t["warn-text"] : t["action-text"])

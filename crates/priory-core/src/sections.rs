@@ -392,6 +392,17 @@ pub(crate) fn pick(
             if let Err(error) = priory_intake::request::check(factory, request) {
                 return Ok(Err(format!("pick {}: {error}", pick.id)));
             }
+            // The agent was told to apply the first choice, and may still be at it.
+            if let Some(before) = &pick.chosen {
+                let text = format!(
+                    "The person changed their pick on {} in your report from {before} to {}: do not apply {before}. Priory requested {}'s task and filled the pick's applied.",
+                    pick.id, choice.option, choice.option
+                );
+                if let Err(error) = crate::tools::say(&tx, task, &text, &state, &factory.workflows)?
+                {
+                    return Ok(Err(format!("pick {}: {error}", pick.id)));
+                }
+            }
             tx.execute(
                 "INSERT INTO dispatches (pick, request) VALUES (?1, ?2)",
                 params![
@@ -435,7 +446,7 @@ pub(crate) fn pick(
     Ok(match dispatch(db, factory, Some(&choice.pick))?.pop() {
         None => Ok(recorded),
         Some(error) => Err(format!(
-            "{recorded}, but {error}; the daemon publishes it again when it starts"
+            "{recorded}, but {error}; the daemon publishes it again once the log takes it"
         )),
     })
 }
@@ -592,8 +603,8 @@ pub(crate) fn comment(
 }
 
 /// Publishes the pending dispatch of `only`, or every one, under its pick's id, so publishing one
-/// twice adds nothing. A daemon start publishes those a crash or a failed publish left. Returns
-/// why each one that failed is not published.
+/// twice adds nothing. The daemon publishes those a crash or a failed publish left at its start and
+/// after each good try on its log. Returns why each one that failed is not published.
 pub(crate) fn dispatch(
     db: &Connection,
     factory: &priory_factory::factory::Factory,

@@ -94,7 +94,9 @@ so the harness itself stays covered.
   lets through reaches Priory's permission hook, which denies it, as in a run with no
   `defaultMode`. The guard's own decision is what `allowed` and `denied` check.
 - The fake agent runs no commands. A call's `run` key runs a command in the factory copy before
-  the daemon starts, and uses what it prints as that call's arguments.
+  the daemon starts, and uses what it prints as that call's arguments. A call's `output` key puts
+  a built-in tool call and what it printed into the fake's transcript, as `priory bench capture`
+  reads it ([bench.md](daemon/bench.md)).
 - The turns form one queue, so a scenario follows one task whose agent runs at a time. A firing
   that also starts a code-step task, such as a poll, is fine; name the task to follow with
   `workflow`.

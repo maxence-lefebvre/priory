@@ -57,6 +57,7 @@ such as a revert, arrives as a second record that points at the first. Each reco
 | `grade`            | no       | For a `model` step whose outcome is `red`, `yellow` or `green`: that outcome |
 | `harness`, `model` | no       | For `model` steps                                                     |
 | `kit_hash`         | no       | For `model` steps: a hash of the factory's skills, instructions and memories the run got; absent when it got none of them. See [skills.md](daemon/skills.md) |
+| `kit_commit`       | no       | For `model` steps: the commit of the factory's `[kit]` repository the run got; absent without one. See [skills.md](daemon/skills.md#a-kit-repository) |
 | `machine`          | yes      | Where the step ran                                                    |
 | `started`          | yes      | When the step started                                                 |
 | `duration_ms`      | yes      | Wall time from start to end                                           |
@@ -428,6 +429,47 @@ holds the text typed or the grant's secret.
 | `outcome`  | keys                   | yes      | `sent`, `failed`, or `uncertain` when the daemon stopped between storing the request and its outcome, or tmux timed out |
 | `error`    | keys                   | no       | Why a `failed` or timed out request did not send |
 | `printed`  | attach_issued          | yes      | Whether attach printed the command rather than ran it |
+
+## `factory.run.scored`
+
+A scorer graded one finished run: a run whose turn ended with a result or an ask (see
+[score.md](daemon/score.md)). It shares `factory`, `factory_revision`, `workflow`, `task`, `key`,
+`generation`, `step` and `machine` with `factory.step.ended`. `step` and `generation` are the run's,
+and `time` is when the score was recorded. Scoring a run again appends another record.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-000000000009",
+  "source": "factory://example/xps13",
+  "type": "factory.run.scored",
+  "time": "2026-11-21T11:20:02Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "0196f1b0-0000-7000-8000-000000000001",
+    "run": "0196f1b0-0000-7000-8000-000000000002",
+    "key": "github:example/app#42",
+    "generation": 1,
+    "step": "implement",
+    "machine": "xps13",
+    "scorer": "gate",
+    "kind": "command",
+    "verdict": "pass",
+    "reason": "the tests pass"
+  }
+}
+```
+
+| Field     | Required | Meaning                                                              |
+| --------- | -------- | -------------------------------------------------------------------- |
+| `run`     | yes      | The run the scorer graded                                            |
+| `scorer`  | yes      | The scorer's name                                                    |
+| `kind`    | yes      | How it answers, such as `outcome`, `command` or `ask-shape`          |
+| `verdict` | yes      | `pass`, `fail`, `not applicable` or `error`                          |
+| `reason`  | yes      | One line of why                                                      |
 
 ## Spans
 

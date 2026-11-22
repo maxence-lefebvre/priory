@@ -1,17 +1,17 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, snoozeShortcut, snoozed, stillArmed, takesText, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, snoozeShortcut, snoozed, stillArmed, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
 import { around, dossier, nextPick, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
-import { KINDS, edgeStyle, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
-import { emptyDetail, eventWords, handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
+import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
+import { emptyDetail, eventWords, handled, neverOwned, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
-import { EARLIER_CAP, sayLine, screenRows, screenWatch } from "./terminal.js";
-import { actionNote, batchParts, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
-import { TASK_FACETS, TASK_VIEWS, elsewhere, filtered, olderPart, taskViews, triageWords } from "./tasks.js";
+import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
+import { actionNote, batchParts, dueParts, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
+import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskViews, triageWords } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
 
@@ -72,6 +72,7 @@ const ICONS = {
   fit: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
   eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
   keyboard: '<path d="M10 8h.01"/><path d="M12 12h.01"/><path d="M14 8h.01"/><path d="M16 12h.01"/><path d="M18 8h.01"/><path d="M6 8h.01"/><path d="M7 16h10"/><path d="M8 12h.01"/><rect width="20" height="16" x="2" y="4" rx="2"/>',
+  brain: '<path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/>',
   shield: '<path d="M20 13c0 5-3.5 7.5-7.7 9a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.2-2.7a1.2 1.2 0 0 1 1.6 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"/>',
 };
 
@@ -99,8 +100,10 @@ const STATES = {
   ask: ["wait", "ask"], answered: ["muted", "check"], withdrawn: ["muted", "minus"], prompt: ["warn", "hand"],
   refused: ["warn", "x"], moved: ["muted", "arrow-right"], todo: ["wait", "square"], batch: ["muted", "layers"],
   restarted: ["muted", "rotate-ccw"], cancelled: ["muted", "x"], exited: ["danger", "log-out"],
-  // Another runner's task shows its hold, as its owner last published it.
-  kept: ["muted", "server"], waiting: ["muted", "server"],
+  // Another runner's task: its tile has its own key, since `waiting` is also a task state.
+  elsewhere: ["muted", "server"],
+  // Memory candidates an agent wrote, which wait on a person's accept or drop.
+  memories: ["wait", "brain"],
 };
 const role = (state) => (STATES[state] || ["muted", "circle-help"])[0];
 function tile(state, size = "") {
@@ -147,12 +150,22 @@ const state = {
   // The task whose action is in flight, each task's last action note, and its unsent say text.
   taskBusy: null,
   taskNotices: new Map(),
+  // The remote task row opened in place, by its id `runner:key`.
+  remoteOpen: null,
   // The Unrouted view's groups, read when the view opens, and each resource's last subscribe note.
   unrouted: { groups: null, error: null, loading: false, busy: null, notices: new Map() },
   todoBusy: null,
   todoNotices: new Map(),
   rowBusy: null,
   rowNotices: new Map(),
+  // Memory candidates: the Accept armed by its first tap { id, at, timer }, the one in flight, each
+  // candidate's last note, and those sent, whose buttons stay off until the desk drops them.
+  memoryArmed: null,
+  memoryBusy: null,
+  memoryNotices: new Map(),
+  memorySent: new Set(),
+  // The candidates whose Current text is open, so a redraw keeps it open.
+  memoryCurrent: new Set(),
   // The task whose Move is in flight, and each task's last Move refusal.
   moveBusy: null,
   moveNotices: new Map(),
@@ -304,6 +317,8 @@ function signOut(reason) {
   // A refresh still in flight must not store what this device just dropped.
   state.refreshes++;
   watch.stop();
+  // Before the token goes: giving the keyboard back needs it.
+  keyboard.leave();
   Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, flowsError: null, all: { asks: false, tasks: false, runs: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
   render();
 }
@@ -387,6 +402,7 @@ function olderRow(listing, count, wide, columns = 6) {
 }
 
 function itemRow(item) {
+  if (item.kind === "memories") return memoriesRow(item);
   // An uncertain command, like an uncertain prompt, waits on a person to check what happened.
   const kind = ["prompt", "command"].includes(item.kind) ? "prompt" : ["blocked", "failed", "held", "batch"].includes(item.kind) ? item.kind : "queued";
   const stopped = ["blocked", "failed"].includes(item.kind);
@@ -397,6 +413,83 @@ function itemRow(item) {
     ${tile(kind)}
     <span class="l1">${key}<span>${item.step || ""}</span><span>${item.kind}</span>${item.task && item.kind !== "batch" ? prsTag({}, item.task) : ""}<span class="age">${timeTag(item.since)}</span></span>
     <span class="l2 r t-${role(kind)}">${autolinked(line, null)}</span>${next ? html`<span class="l3">${autolinked(next, null)}</span>` : ""}${stopped ? taskActs(item.task, item.kind) : rowActs(item)}</div>`;
+}
+
+// The one row of every memory candidate that waits, which opens their review list.
+function memoriesRow(item) {
+  const count = item.candidates?.length ?? 0;
+  return html`<a class="row" href="/memories">
+    ${tile("memories")}
+    <span class="l1"><span>memories</span><span>${count} ${count === 1 ? "candidate" : "candidates"}</span><span class="age">${timeTag(item.since)}</span></span>
+    <span class="l2 r">${(item.candidates || []).map((candidate) => candidate.name).join(", ")}</span>
+    <span class="l3"><span>Accept or drop each before other tasks get it</span></span>
+    <span class="chev">${icon("chevron-right", "s15")}</span></a>`;
+}
+
+// The review list (DESIGN.md, Memory candidates): each candidate's full text, then Accept and Drop.
+function memoriesPage() {
+  const back = html`<div class="top"><a class="back" href="/">${icon("chevron-left", "s22")}Desk</a></div>`;
+  const candidates = state.data.desk.items.find((item) => item.kind === "memories")?.candidates || [];
+  const n = candidates.length;
+  const intro = html`<div class="ask mhead"><h2 class="question">${n === 1 ? "1 memory candidate" : `${n} memory candidates`}</h2>
+    <p class="note">${icon("brain", "s15")}<span>An agent wrote each one. Accept gives it to every task's runs, on every runner. Drop discards it, and the task that wrote it stops getting it.</span></p></div>`;
+  const list = n ? candidates.map(memoryCandidate) : html`<p class="empty">No memory candidate waits. Agents write them with the remember and forget tools.</p>`;
+  return html`${back}<div class="scroll">${intro}${list}</div>`;
+}
+
+function memoryCandidate(candidate) {
+  const tag = memoryTag(candidate);
+  const body = candidate.forget
+    ? html`<p class="text">Forgets ${candidate.name}: runs stop getting it.</p>`
+    : html`<p class="desc">${candidate.description}</p><p class="text">${candidate.text}</p>`;
+  const current = candidate.current_text == null ? ""
+    : html`<details class="current" ${state.memoryCurrent.has(candidate.id) ? raw("open") : ""}><summary data-action="memory-current" data-id="${candidate.id}">Current text</summary><p class="text">${candidate.current_text}</p></details>`;
+  return html`<section class="sect mem" aria-label="${candidate.name}"><div class="sh">${tile("memories", "sm")}<span class="mono">${candidate.name}</span><span class="tag ${tag.warn ? "t-warn" : ""}">${tag.label}</span><span class="meta">${timeTag(candidate.written)}</span></div>
+    ${body}${current}
+    <p class="by">Written by <span class="mono">${candidate.task}</span>${candidate.runner ? ` on ${candidate.runner}` : ""}, candidate <span class="mono">${candidate.id}</span></p>
+    ${memoryActs(candidate.id)}</section>`;
+}
+
+// Accept arms on the first tap and sends on the second, as Cancel does; Drop sends at once.
+function memoryActs(id) {
+  const busy = state.memoryBusy !== null || state.memorySent.has(id) || Boolean(state.failed);
+  const armed = state.memoryArmed?.id === id;
+  const accept = armed ? html`<span><small>Tap again to accept</small>Accept</span><span class="drain" aria-hidden="true"></span>` : "Accept";
+  const button = (verb, kind, label) => html`<button id="memory-${verb}-${id}" class="btn ${kind} act ${verb === "accept" && armed ? "armed" : ""}" data-action="memory-act" data-id="${id}" data-verb="${verb}" aria-disabled="${busy ? "true" : "false"}">${label}</button>`;
+  const notice = state.memoryNotices.get(id);
+  return html`<span class="task-acts">${button("accept", "primary", accept)}${button("drop", "secondary", "Drop")}</span>${notice ? html`<p class="note acts-note" role="status">${icon("corner-down-right", "s15")}<span>${notice}</span></p>` : ""}`;
+}
+
+function disarmMemory() {
+  if (!state.memoryArmed) return;
+  clearTimeout(state.memoryArmed.timer);
+  state.memoryArmed = null;
+}
+
+async function memoryAct(target) {
+  if (target.getAttribute("aria-disabled") === "true") return;
+  const { id, verb } = target.dataset;
+  const armed = state.memoryArmed?.id === id;
+  disarmMemory();
+  if (verb === "accept" && !armed) {
+    state.memoryArmed = { id, at: Date.now(), timer: setTimeout(() => { state.memoryArmed = null; render(); }, ARM_MS) };
+    return render();
+  }
+  state.memoryBusy = id;
+  render();
+  let reply;
+  try {
+    reply = await post(`/api/memories/${encodeURIComponent(id)}/${verb}`, {});
+  } catch {
+    reply = { status: 0, body: { error: "the connection dropped" } };
+  }
+  state.memoryBusy = null;
+  const { status, body } = reply;
+  if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
+  if (status === 200) state.memorySent.add(id);
+  state.memoryNotices.set(id, memoryNote(verb, status, body));
+  render();
+  refresh();
 }
 
 // Read on a report and Release on a held task, the twins of `priory inbox read` and `priory release`.
@@ -532,7 +625,7 @@ function countLine(model) {
 function upNext(model) {
   const next = (model.upNext || []).slice(0, 3);
   const when = (run) => {
-    if (run.kind === "queued") return "now, on room";
+    if (run.kind === "queued") return onRoom(run) ? "now, on room" : "now";
     const at = new Date(run.at);
     const time = clock(run.at);
     return today(run.at) ? time : `${time} ${at.toLocaleDateString("en", { weekday: "short" })}`;
@@ -618,27 +711,53 @@ function unroutedRows() {
     queueMicrotask(loadUnrouted);
     return html`<p class="empty">Loading the unrouted events…</p>`;
   }
-  const { owned, other } = view.groups;
+  const { owned, other, unheard = [] } = view.groups;
   const rest = neverOwned(other);
   const restLine = rest ? html`<p class="meta unowned">${rest}</p>` : "";
-  if (!owned.length) return html`<p class="empty">No event of a task's resource went unrouted. An event about an ended task's pull request or issue shows here.</p>${restLine}`;
-  return [...owned.map((group) => {
+  const heard = unheard.length ? html`<div class="sec" id="unheard">Unheard<span>no agent read them</span></div>${unheard.map(unheardGroup)}<div class="sec">Unrouted<span>reached no task</span></div>` : "";
+  if (!owned.length) return html`${heard}<p class="empty">No event of a task's resource went unrouted. An event about an ended task's pull request or issue shows here.</p>${restLine}`;
+  return [heard, ...owned.map((group) => {
     const { task } = group;
-    const busy = view.busy === group.resource ? raw('aria-disabled="true"') : "";
     const notice = view.notices.get(group.resource);
-    const action = routeAction(task);
-    const route = action === "revive" ? taskActs(task.id, task.state)
-      : action === "request" ? (group.request_text
-        ? html`<button type="button" class="btn secondary" data-action="request-task" data-text="${group.request_text}" data-workflow="${task.workflow}">Request a task</button>`
-        : html`<p class="meta">No new task can take this resource from here: start one from its thread.</p>`)
-        : html`<button type="button" class="btn secondary" data-action="subscribe-task" data-resource="${group.resource}" data-task="${task.id}" ${busy}>Subscribe task ${task.id}</button>`;
     return html`<section class="ugroup" aria-label="${group.resource}"><p class="l1"><span class="mono">${group.resource}</span><span class="num">${group.events.length}</span></p>
       <p class="meta">${tile(task.state, "sm")}<a href="/tasks/${task.id}">task ${task.id}</a> ${task.state}, <span class="mono">${task.key}</span></p>
-      <ol class="hist">${group.events.slice(0, 5).map((event) => html`<li>${tile("queued", "sm")}<span><b title="${event.type}">${eventWords(event.type)}</b> ${event.subject || ""}${event.line ? html`<span class="meta">${event.line}</span>` : ""}</span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>
-      ${group.events.length > 5 ? html`<p class="meta">and ${group.events.length - 5} older</p>` : ""}
-      <div class="routeform">${route}</div>
+      ${eventRows(group.events, "queued")}
+      <div class="routeform">${routeButton(group, routeAction(task))}</div>
       ${notice ? html`<p class="note" role="status">${notice}</p>` : ""}</section>`;
   }), restLine];
+}
+
+// A group's 5 newest events as history rows, then how many are older.
+function eventRows(events, state) {
+  return html`<ol class="hist">${events.slice(0, 5).map((event) => html`<li>${tile(state, "sm")}<span><b title="${event.type}">${eventWords(event.type)}</b> ${event.subject || ""}${event.line ? html`<span class="meta">${event.line}</span>` : ""}</span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>
+    ${events.length > 5 ? html`<p class="meta">and ${events.length - 5} older</p>` : ""}`;
+}
+
+// The one button that routes a group's next event: revive, request a task or subscribe.
+function routeButton(group, action) {
+  const { task } = group;
+  if (action === "revive") return taskActs(task.id, task.state);
+  if (action === "request") return group.request_text
+    ? html`<button type="button" class="btn secondary" data-action="request-task" data-text="${group.request_text}" data-workflow="${task.workflow}">Request a task</button>`
+    : html`<p class="meta">No new task can take this resource from here: start one from its thread.</p>`;
+  const busy = state.unrouted.busy === group.resource ? raw('aria-disabled="true"') : "";
+  return html`<button type="button" class="btn secondary" data-action="subscribe-task" data-resource="${group.resource}" data-task="${task.id}" ${busy}>Subscribe task ${task.id}</button>`;
+}
+
+// One task's unheard events (DESIGN.md, Inbox), with what gets them to an agent.
+function unheardGroup(group) {
+  const { task } = group;
+  const [first, ...rest] = unheardActs(task);
+  const busy = state.taskBusy !== null || Boolean(state.failed);
+  const act = first === "say"
+    ? html`<button type="button" class="btn secondary" data-action="unheard-say" data-task="${task.id}" data-text="${group.say_text}" aria-disabled="${busy ? "true" : "false"}">Say to task ${task.id}</button>${taskActs(task.id, task.state, rest)}
+      <p class="meta">Say sends “${group.say_text}”${rest.includes("resume") ? " It reads them when it resumes." : ""}</p>`
+    : first ? routeButton({ ...group, resource: task.key }, first)
+      : html`<p class="meta">Its next run reads them.</p>`;
+  return html`<section class="ugroup" aria-label="task ${task.id}"><p class="l1"><span class="mono">${task.key}</span><span class="num">${group.events.length}</span></p>
+    <p class="meta">${tile(task.state, "sm")}<a href="/tasks/${task.id}">task ${task.id}</a> ${task.state}, ${task.workflow}</p>
+    ${eventRows(group.events, "asleep")}
+    <div class="routeform">${act}</div></section>`;
 }
 
 // The Inbox panel (DESIGN.md, Inbox): its one saved view, Unrouted, counts the events of a task's resources.
@@ -699,12 +818,16 @@ function needsMe(model, wide) {
   if (model.asleep) sections.push(html`<div class="sec"></div><a class="row one" href="/?view=asleep">${tile("asleep")}<span>${model.asleep} tasks asleep on waits</span><span class="num">${model.asleep}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
   const unrouted = unroutedNote(state.data.desk.counts?.unrouted);
   if (unrouted) sections.push(html`<a class="row one calm" href="/inbox?view=unrouted">${tile("queued")}<span>${unrouted}</span><span class="num">${state.data.desk.counts.unrouted}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
+  const unheard = unheardNote(state.data.desk.counts?.unheard);
+  if (unheard) sections.push(html`<a class="row one calm" href="/inbox?view=unrouted#unheard">${tile("asleep")}<span>${unheard}</span><span class="num">${state.data.desk.counts.unheard}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
   if (model.reports.length) sections.push(html`<div class="sec">Reports<span>${model.reports.length}</span></div>${model.reports.map(itemRow)}`);
   return sections;
 }
 
 function deskTable(model, selected) {
-  const itemLine = (item) => html`<tr>
+  const itemLine = (item) => item.kind === "memories" ? html`<tr>
+    <td>${stateWord("memories")}</td><td class="mono"></td><td></td><td class="q full"><span>${item.candidates?.length ?? 0} memory candidates: ${(item.candidates || []).map((candidate) => candidate.name).join(", ")}</span></td>
+    <td class="recw"><span class="task-acts"><a class="btn secondary act" href="/memories">Review</a></span></td><td class="r">${timeTag(item.since)}</td></tr>` : html`<tr>
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${item.kind === "batch" ? html`<a href="/batches/${item.id}">${item.key || ""}</a>` : ["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
     <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : rowActs(item)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const todoLine = (item) => html`<tr>
@@ -784,16 +907,39 @@ const reasonShown = (task) => Boolean(task.reason) && ["blocked", "held", "faile
 const ago = (iso) => (/ (min|h)$/.test(age(iso)) ? `${age(iso)} ago` : `on ${age(iso)}`);
 
 // Another runner's task (DESIGN.md, Task row and run row): its hold for a state, and no page here.
+// A tap opens its actions in place; the newest action sent to it takes a line of its own.
+const TONE = { action: "t-action", warn: "t-warn", quiet: "" };
+const toggle = (id, open, key) => html`<button type="button" id="remote-${id}" class="chev" data-action="remote-open" data-task="${id}" aria-expanded="${open ? "true" : "false"}" aria-label="${open ? "Close" : "Open"} the actions of ${key}">${icon(open ? "chevron-up" : "chevron-down", "s15")}</button>`;
+const sentOf = (task) => {
+  const sent = remoteSent(task);
+  return sent ? html`<span class="${TONE[sent.tone]}">${sent.text}</span>` : "";
+};
+function remoteActions(task) {
+  const id = remoteId(task);
+  const said = state.taskBusy === id ? raw('aria-disabled="true"') : "";
+  const say = task.hold === "kept" ? html`<form class="writeform" data-action="say" data-task="${id}"><label class="sr" for="say">Say to the agent</label>
+    <textarea id="say" name="text" rows="2" placeholder="Say to the agent">${state.sayDrafts.get(id) || ""}</textarea><button class="btn primary" ${said}>Say</button></form>` : "";
+  return html`${taskActs(id, null, remoteActs(task))}${say}<p class="note acts-note">${icon("corner-down-right", "s15")}<span>This task runs on ${task.runner}. An action goes there through the log, and ${task.runner} applies it when it reads it.</span></p>`;
+}
+
 function remoteListRow(task) {
-  return html`<div class="row">${tile(task.hold)}
+  const id = remoteId(task);
+  const open = state.remoteOpen === id;
+  const sent = sentOf(task);
+  return html`<div class="row remote" data-action="remote-open" data-task="${id}">${tile("elsewhere")}
     <span class="l1"><span class="mono">${task.key}</span><span>${task.workflow || ""}</span><span>${task.hold}</span><span class="age">${timeTag(task.since)}</span></span>
-    <span class="l2 r">${task.title || task.key}</span><span class="l3"><span>${elsewhere(task, ago)}</span></span></div>`;
+    <span class="l2 r">${task.title || task.key}</span>${sent ? html`<span class="l3">${sent}</span>` : ""}<span class="l3"><span>${elsewhere(task, ago)}</span></span>
+    ${toggle(id, open, task.key)}${open ? remoteActions(task) : ""}</div>`;
 }
 
 function remoteTableRow(task) {
-  return html`<tr><td>${stateWord(task.hold)}</td><td class="mono">${task.key}</td>
-    <td class="q full"><span>${task.title || task.key}</span><span class="why t3">${elsewhere(task, ago)}</span></td>
-    <td>${task.workflow || ""}</td><td>${task.lane || ""}</td><td>${task.band || ""}</td><td class="r">${timeTag(task.since)}</td></tr>`;
+  const id = remoteId(task);
+  const open = state.remoteOpen === id;
+  const sent = sentOf(task);
+  const row = html`<tr class="remote" data-action="remote-open" data-task="${id}"><td><span class="sti">${tile("elsewhere", "sm")}${task.hold}</span></td><td class="mono">${task.key}</td>
+    <td class="q full"><span>${task.title || task.key}</span>${sent ? html`<span class="why">${sent}</span>` : ""}<span class="why t3">${elsewhere(task, ago)}</span></td>
+    <td>${task.workflow || ""}</td><td>${task.lane || ""}</td><td>${task.band || ""}</td><td class="r">${timeTag(task.since)} ${toggle(id, open, task.key)}</td></tr>`;
+  return open ? html`${row}<tr class="remote-acts"><td></td><td></td><td colspan="5">${remoteActions(task)}</td></tr>` : row;
 }
 
 function taskListRow(task) {
@@ -812,17 +958,18 @@ function taskTableRow(task) {
 }
 
 function tasksBody(wide) {
-  const picks = facetPicks(TASK_FACETS);
-  const current = listView(TASK_VIEWS);
   const all = state.data.tasks;
-  const views = taskViews(filtered(all, picks));
+  const specs = taskFacets(all);
+  const picks = facetPicks(specs);
+  const current = listView(TASK_VIEWS);
+  const views = taskViews(filtered(all, picks, specs));
   const { counted, unloaded } = olderPart({ view: current, history: "ended", older: olderTasks(), picked: picks.size > 0 });
   const chips = savedViews([
     ["active", "Active", views.active.length, current === "active"],
     ["blocked", "Blocked", views.blocked.length, current === "blocked"],
     ["ended", "Ended", views.ended.length + counted, current === "ended"],
   ], "/tasks", facetQuery(picks));
-  const facets = html`<div class="facets" aria-label="Facets">${TASK_FACETS.map((spec) => facet(current, picks, spec, "/tasks", all))}</div>`;
+  const facets = html`<div class="facets" aria-label="Facets">${specs.map((spec) => facet(current, picks, spec, "/tasks", all))}</div>`;
   const list = views[current];
   const empty = { active: html`No active tasks. Add one with the + button, or run <code>priory add</code>.`, blocked: "No blocked tasks. A task shows here when it needs a person to go on.", ended: "No task ended in the last 7 days. A task shows here once it is done, failed or dropped." }[current];
   if (!list.length && !unloaded) return { views: html`${chips}${facets}`, rows: html`<p class="empty">${empty}</p>` };
@@ -989,6 +1136,7 @@ function askDetail(id, wide) {
       <div class="opts" role="group" aria-label="Options">${optionButtons}</div>${lockedNote}${more}${elsewhere}`;
   const top = html`<div class="ask">
     <a class="ctx" href="${ask.task && !owner ? `/tasks/${ask.task}` : "/asks"}">${wide ? "" : tile("ask", "sm")}<span class="mono">${ask.key}</span><span>${ask.step}</span><span>${ask.lane || ""}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${runnerTag(ask)}${wide ? "" : html`<span>${timeTag(ask.since)}</span><span>revision ${ask.revision}</span>`}</a>
+    ${ask.risk_estimate ? html`<p class="note">${icon("lock", "s15")}<span>${ask.risk_estimate.line}</span></p>` : ""}
     <h2 class="question">${autolinked(ask.question || ask.title, ask.repo)}</h2>${decided}</div>`;
   // A go ask reads its batch's plan first; the planning task's own plan result says the same.
   const planned = batch ? [
@@ -1015,6 +1163,7 @@ function askDetail(id, wide) {
       ...(revision.answer == null ? [] : [[revision.answered_at || revision.at, html`<li>${tile("answered", "sm")}<span>Answered <b>${revision.answer}</b>${ask.state === "answered" && revision.revision === ask.revision ? byLine(ask) : ""}</span>${timeTag(revision.answered_at, clock(revision.answered_at || revision.at))}</li>`]]),
     ]),
     ...(ask.refused || []).map((refusal) => [refusal.at, html`<li>${tile("refused", "sm")}<span class="t-warn"><b>Refused:</b> ${refusal.answer}, sent for revision ${refusal.revision} from ${refusal.by}: ${refusal.why}</span>${timeTag(refusal.at, clock(refusal.at))}</li>`]),
+    ...submitted(ask).map((sent) => [sent.at, html`<li>${tile(sent.tile, "sm")}<span class="${sent.tile === "refused" ? "t-warn" : ""}">${sent.text}</span>${timeTag(sent.at, clock(sent.at))}</li>`]),
   // Built oldest first; reversed, entries of the same second stay newest first through the stable sort.
   ].reverse().sort(([a], [b]) => b.localeCompare(a));
   const historyItems = dated.map(([, item]) => item);
@@ -1219,16 +1368,16 @@ async function editPlan(target) {
 
 // Desk actions on a task, each the twin of its CLI verb. Cancel and revive arm on the first tap and
 // send on the second, as a command ask does.
-const ACTS = { resume: "Resume", revive: "Revive", cancel: "Cancel" };
-const DONE_AS = { resume: "Resumed", revive: "Revived", cancel: "Cancelled", say: "Said" };
+const ACTS = { resume: "Resume", revive: "Revive", cancel: "Cancel", release: "Release" };
+const DONE_AS = { resume: "Resumed", revive: "Revived", cancel: "Cancelled", release: "Released", say: "Said" };
 const ARMS = ["revive", "cancel"];
 const ENDED = ["done", "failed", "dropped"];
 const actsOf = (taskState) => (taskState === "blocked" ? ["resume", "cancel"] : ["failed", "dropped"].includes(taskState) ? ["revive"] : taskState === "done" ? [] : ["cancel"]);
 
-// The action buttons of a task in `taskState`, and its last action's note.
-function taskActs(task, taskState) {
+// The action buttons of a task in `taskState`, or the `acts` given, and its last action's note.
+function taskActs(task, taskState, acts = actsOf(taskState)) {
   const busy = state.taskBusy !== null || Boolean(state.failed);
-  const buttons = actsOf(taskState).map((act) => {
+  const buttons = acts.map((act) => {
     const armed = state.taskArmed?.task === task && state.taskArmed.act === act;
     const label = armed ? html`<span><small>Tap again to ${act}</small>${ACTS[act]}</span><span class="drain" aria-hidden="true"></span>` : ACTS[act];
     return html`<button id="act-${task}-${act}" class="btn secondary act ${armed ? "armed" : ""}" data-action="task-act" data-task="${task}" data-act="${act}" aria-disabled="${busy ? "true" : "false"}">${label}</button>`;
@@ -1243,18 +1392,24 @@ function disarmTask() {
   state.taskArmed = null;
 }
 
+// A task's id from the page: its number here, or `runner:key` for another runner's task.
+const taskIdOf = (value) => (/^\d+$/.test(value) ? Number(value) : value);
+// The body an action carries: another runner's task names the generation the page drew.
+const remoteGeneration = (task) => state.data?.tasks.find((each) => each.id == null && remoteId(each) === task)?.generation;
+const remoteBody = (task, body) => (typeof task === "string" ? { ...body, generation: remoteGeneration(task) } : body);
+
 function taskAct(target) {
-  const task = Number(target.dataset.task);
+  const task = taskIdOf(target.dataset.task);
   const act = target.dataset.act;
   if (target.getAttribute("aria-disabled") === "true") return;
   const armed = state.taskArmed?.task === task && state.taskArmed.act === act;
   disarmTask();
   if (ARMS.includes(act) && !armed) {
-    state.taskArmed = { task, act, at: Date.now(), timer: setTimeout(() => { state.taskArmed = null; render(); }, ARM_MS) };
+    state.taskArmed = { task, act, generation: remoteGeneration(task), at: Date.now(), timer: setTimeout(() => { state.taskArmed = null; render(); }, ARM_MS) };
     return render();
   }
   // A cancel carries the revision the page showed, as `priory cancel --expected` does.
-  taskWrite(task, act, act === "cancel" ? { revision: state.revision } : {});
+  taskWrite(task, act, typeof task === "string" ? remoteBody(task, {}) : act === "cancel" ? { revision: state.revision } : {});
 }
 
 async function taskWrite(task, act, body) {
@@ -1270,8 +1425,13 @@ async function taskWrite(task, act, body) {
   const { status, body: answered } = reply;
   if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
   // Text typed while the say was in flight stays as the next draft.
-  if (status === 200 && act === "say" && (state.sayDrafts.get(task) || "").trim() === body.text) state.sayDrafts.delete(task);
-  state.taskNotices.set(task, status === 200 ? `${DONE_AS[act]}: ${answered.ok}.`
+  if ([200, 202].includes(status) && act === "say" && (state.sayDrafts.get(task) || "").trim() === body.text) state.sayDrafts.delete(task);
+  const remote = typeof task === "string";
+  // A sent action shows as the task's newest submission once the list reads it again.
+  if (status === 202) state.taskNotices.delete(task);
+  else state.taskNotices.set(task, status === 200 ? `${DONE_AS[act]}: ${answered.ok}.`
+    : remote && status === 409 ? `Not sent: ${answered.error}. The list reads it again: check the task, then send again.`
+    : remote && status === 503 ? `Could not send: ${answered.error}.`
     : status === 409 ? "The state changed since this page loaded. Read the task again, then tap again."
       : status === 503 ? "Could not send: no priory daemon runs beside this server. Start priory daemon, then send again."
         : status === 504 || status === 0 ? "The daemon may have applied this but did not confirm it. Check the task's state before you send again."
@@ -1284,7 +1444,7 @@ async function taskWrite(task, act, body) {
 // A task's page: its state, reason, actions, a box to say something to its agent, then its brief,
 // plan, pull request and trace.
 function taskPage(id) {
-  const back = html`<div class="top"><a class="back" href="/">${icon("chevron-left", "s22")}Desk</a></div>`;
+  const back = html`<div class="top"><a class="back" href="/tasks">${icon("chevron-left", "s22")}Tasks</a></div>`;
   const task = taskOf({ task: id });
   if (!task) {
     const failed = state.task?.error;
@@ -1355,7 +1515,20 @@ const watch = screenWatch({
 });
 // `left` is the pane's sideways scroll for run `run`, kept while a refresh redraws the task page.
 // `typing` opens the Say line, `line` holds its text, `said` its last note and whether it was said.
-const terminal = { fit: false, copied: null, run: null, left: 0, onScreen: false, typing: false, line: "", said: null, saying: false };
+// `menu` opens the header's More, and `keys` holds the text the keys bar pastes.
+const terminal = { fit: false, copied: null, run: null, left: 0, onScreen: false, typing: false, line: "", said: null, saying: false, menu: false, keys: "" };
+// This page's hold on the pane's keyboard (terminal.js). Its writes keep going while the page unloads.
+const keyboard = keyboardSession({
+  post: (path, body) => fetch(path, {
+    method: "POST",
+    keepalive: true,
+    headers: { Authorization: `Bearer ${state.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then(async (response) => ({ status: response.status, body: await response.json().catch(() => ({})) })),
+  signOut: () => signOut("The daemon refused this token. Paste the current one."),
+  changed: () => paintTerminal(document.getElementById("app"), true),
+  format: (iso) => clock(iso),
+});
 const screenText = (screen) => screenRows(screen.lines).map((parts) => parts.map((part) => part.text).join("")).join("\n").trimEnd();
 
 // The live run, else the run whose last screen this page still holds.
@@ -1384,41 +1557,97 @@ function terminalBody({ term, task, tmux, end }) {
   if (end) notes.push(["", (STATES[end] || [, "circle-help"])[1], screen ? `Run ${run} ended as ${end}. This is the last screen this page saw.` : `Run ${run} ended as ${end}.`]);
   else if (gone) notes.push(["warn", "unplug", `This server reads no screen of run ${run}. Run priory screen ${task} on the runner to see why.`]);
   else if (!screen && !stale) notes.push(["", "clock", "Reading the screen…"]);
-  // Each part's classes come from screenRows' fixed set; its text stays text.
-  const part = (part) => (part.hidden ? html`<span class="hid">${part.text}</span>` : part.cls ? html`<span class="${part.cls}">${part.text}</span>` : part.text);
+  const keys = keyboard.state();
+  const held = end ? null : keys.held;
+  const offer = !end && !held && Boolean(screen?.keyboard);
+  if (keys.ended && !held) notes.push(["", "clock", keys.ended, offer]);
   const earlier = screen?.earlier || 0;
-  const rows = screen ? screenRows(screen.lines).map((parts, at) => html`${at < earlier ? html`<span class="earlier">${parts.map(part)}</span>` : parts.map(part)}\n${at === earlier - 1 ? raw('<span class="fold" aria-hidden="true"></span>') : ""}`) : "";
   const top = end || !screen ? "" : kept.more ? html`<button class="term-more" data-action="term-earlier">${icon("chevron-up", "s15")}Load earlier${earlier ? html` <span class="dim">(${earlier} shown)</span>` : ""}</button>`
     : earlier >= EARLIER_CAP ? html`<p class="term-edge">The last ${EARLIER_CAP.toLocaleString("en")} lines are as far back as this pane reads.</p>` : "";
   const typing = terminal.typing && !end;
   const copied = (what, text) => (terminal.copied === what ? "Copied" : text);
-  return html`${notes.map(([kind, name, text]) => html`<p class="note ${kind}" role="status">${icon(name, "s15")}<span>${text}</span></p>`)}
-    <div class="term${terminal.fit ? " fit" : ""}${end ? " ended" : ""}" role="region" aria-label="Terminal of run ${run}">
-      <div class="term-head">${icon("terminal", "s15")}<span class="mono">${tmux}</span><span class="rid">run ${run}</span>${end ? tile(end, "sm") : ""}<span class="ro${typing ? " on" : ""}">${typing ? "say" : "read-only"}</span><span class="sp"></span>
-        ${end ? "" : html`<button data-action="term-type" aria-label="Type" aria-pressed="${String(typing)}">${icon("keyboard", "s15")}<span>Type</span></button>`}
+  const tag = held ? html`<span class="ro keys">keys</span>` : html`<span class="ro${typing ? " on" : ""}">${typing ? "say" : "read-only"}</span>`;
+  const menu = terminal.menu ? html`<div class="term-menu" id="term-more">
+      ${offer ? html`<button data-action="term-take-ask">${icon("keyboard", "s15")}<span>Take the keyboard<small>Send keys straight into the pane</small></span></button>` : ""}
+      ${held ? html`<button data-action="term-give-ask">${icon("keyboard", "s15")}<span>Give the keyboard back</span></button>` : ""}
+      <button data-action="term-attach" data-task="${task}">${icon("eye", "s15")}<span>${copied("attach", "Copy attach command")}</span></button></div>` : "";
+  return html`${notes.map(([kind, name, text, again]) => html`<p class="note ${kind}" role="status">${icon(name, "s15")}<span>${text}${again ? html` <button class="linkish" data-action="term-take-ask">Take it again</button>` : ""}</span></p>`)}
+    <div class="term${terminal.fit ? " fit" : ""}${end ? " ended" : ""}${held ? " held" : ""}" role="region" aria-label="Terminal of run ${run}">
+      <div class="term-head">${icon("terminal", "s15")}<span class="mono">${tmux}</span><span class="rid">run ${run}</span>${end ? tile(end, "sm") : ""}${tag}<span class="sp"></span>
+        ${end ? "" : html`<button data-action="term-type" aria-label="Type" aria-pressed="${String(typing)}">${icon("message-text", "s15")}<span>Type</span></button>`}
         <button data-action="term-copy" aria-label="Copy screen" ${screen ? "" : raw('aria-disabled="true"')}>${icon("copy", "s15")}<span>${copied("screen", "Copy screen")}</span></button>
         <button data-action="term-fit" aria-label="Fit" aria-pressed="${String(terminal.fit)}">${icon("fit", "s15")}<span>Fit</span></button>
-        <button data-action="term-attach" aria-label="Copy the attach command" data-task="${task}">${icon("eye", "s15")}<span>${copied("attach", "Attach")}</span></button></div>
-      ${top}<pre id="term-screen" tabindex="0" aria-label="Screen${screen ? `, ${screen.width} by ${screen.height}` : ""}">${rows}</pre>
+        <button data-action="term-menu" aria-label="More" aria-controls="term-more" aria-expanded="${String(terminal.menu)}">${icon("more", "s15")}</button></div>
+      ${menu}${top}<pre id="term-screen" tabindex="0" aria-label="Screen${screen ? `, ${screen.width} by ${screen.height}` : ""}"></pre>
       ${typing ? html`<div class="term-type"><form data-action="term-say" data-task="${task}"><span class="pr" aria-hidden="true">›</span><label class="sr" for="term-line">Say to the agent</label>
-        <input id="term-line" autocomplete="off" placeholder="Say to the agent" value="${terminal.line}"><button class="send" ${terminal.line.trim() && !terminal.saying ? "" : raw('aria-disabled="true"')}>Say</button></form>
-        ${terminal.said ? html`<p class="tn ${terminal.said.said ? "ok" : "no"}" role="status">${icon(terminal.said.said ? "check" : "circle-x", "s15")}<span>${terminal.said.note}</span></p>` : ""}</div>` : ""}</div>`;
+        <input id="term-line" autocomplete="off" placeholder="Say to the agent"><button class="send" ${terminal.line.trim() && !terminal.saying ? "" : raw('aria-disabled="true"')}>Say</button></form>
+        ${terminal.said ? html`<p class="tn ${terminal.said.said ? "ok" : "no"}" role="status">${icon(terminal.said.said ? "check" : "circle-x", "s15")}<span>${terminal.said.note}</span></p>` : ""}</div>` : ""}
+      ${held ? keysBar(held, keys) : ""}</div>`;
 }
 
-// Says the pane's line through the task's say verb; a refusal keeps the line, as the task page's Say does.
-async function sayFromPane(task) {
-  const [text, run] = [terminal.line, terminal.run];
-  if (terminal.saying || !text.trim()) return;
-  terminal.saying = true;
-  paintTerminal(document.getElementById("app"), true);
-  const said = await sayLine(post, task, text);
-  if (said.signOut) return signOut("The daemon refused this token. Paste the current one.");
-  // The pane moved to another run meanwhile: its line and note are not this one's.
-  if (terminal.run !== run) return;
-  terminal.saying = false;
-  // Text typed while the line was in flight stays.
-  if (said.said && terminal.line === text) terminal.line = "";
-  terminal.said = said;
+// The markup of each row of the screen. The cursor shows only on a live run's screen with no earlier rows above it.
+function terminalRows(screen, end) {
+  if (!screen) return [];
+  // Each part's classes come from screenRows' fixed set; its text stays text.
+  const inner = (part) => (part.hidden ? html`<span class="hid">${part.text}</span>` : part.cls ? html`<span class="${part.cls}">${part.text}</span>` : part.text);
+  const part = (part) => (part.cursor ? html`<span class="cur">${inner(part)}</span>` : inner(part));
+  const earlier = screen.earlier || 0;
+  return screenRows(screen.lines, earlier || end ? null : screen.cursor).map((parts, at) => html`${at < earlier ? html`<span class="earlier">${parts.map(part)}</span>` : parts.map(part)}\n${at === earlier - 1 ? raw('<span class="fold" aria-hidden="true"></span>') : ""}`.text);
+}
+
+// The bar of a held keyboard: whose and until when, a text pasted without Enter, and one button a key.
+function keysBar(held, { note, returning, pasting }) {
+  const row = KEYS.map((key) => (key ? html`<button data-action="term-key" data-key="${key[0]}" aria-label="${key[0]}"${key[2] ? raw(' class="hot"') : ""}>${key[1]}</button>` : raw('<span class="gap" aria-hidden="true"></span>')));
+  return html`<div class="keys-bar"><p class="who">${icon("keyboard", "s15")}<span><b>Your keys</b> until ${clock(held.ends)}</span><span class="sp"></span><button class="give" data-action="term-give-ask" ${returning ? raw('aria-disabled="true"') : ""}>${returning ? "Giving back…" : "Give back"}</button></p>
+    <form data-action="term-paste"><span class="pr" aria-hidden="true">›</span><label class="sr" for="term-keys">Text to paste, without Enter</label>
+      <input id="term-keys" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Text, sent without Enter"><button class="send" ${pasting || returning ? raw('aria-disabled="true"') : ""}>Send</button></form>
+    <div class="keys-row" role="group" aria-label="Keys">${row}</div>
+    ${note ? html`<p class="tn" role="status">${icon("check", "s15")}<span>${note}</span></p>` : ""}</div>`;
+}
+
+const keyboardSheet = () => document.getElementById("keyboard");
+
+// The confirm sheet before a person takes the keyboard, or gives it back (DESIGN.md, Terminal pane).
+function openKeyboardSheet(kind) {
+  const sheet = keyboardSheet();
+  const run = keyboard.state().run;
+  // The sheet acts on the run it names, never on one the pane switched to under it.
+  sheet.dataset.run = run;
+  const tail = (watch.state().screen?.lines || []).map((line) => line.replace(/\x1b\[[0-9;:]*m/g, "")).filter((line) => line.trim()).slice(-2).join("\n");
+  sheet.innerHTML = (kind === "take"
+    ? html`<div class="shead"><h2 id="keyboard-title">Take the keyboard of run ${run}?</h2><button class="iconbtn" data-action="keyboard-close" aria-label="Close">${icon("x", "s20")}</button></div>
+      <p class="warnline">${icon("shield", "s15")}<span>Your keys reach the agent and its shell directly. Priory's guard does not check them.</span></p>
+      <ul class="facts"><li>${icon("clock", "s15")}<span>For 15 minutes, or until you give it back.</span></li>
+        <li>${icon("pause", "s15")}<span>The agent's queued prompts and your Says wait until then.</span></li>
+        <li>${icon("pencil", "s15")}<span>Priory records each key and the length of each text, never the text.</span></li></ul>
+      <div class="acts"><button class="btn secondary" data-action="keyboard-close">Keep watching</button><button class="btn danger" data-action="term-take">${icon("keyboard", "s15")}Take the keyboard</button></div>`
+    : html`<div class="shead"><h2 id="keyboard-title">Give the keyboard back?</h2><button class="iconbtn" data-action="keyboard-close" aria-label="Close">${icon("x", "s20")}</button></div>
+      <p class="line">Anything you typed and did not submit stays in the agent's input box, and its next prompt joins it. Clear it with ⌃C or submit it with ⏎ first.</p>
+      ${tail ? html`<pre class="peek">${tail}</pre>` : ""}
+      <div class="acts"><button class="btn secondary" data-action="keyboard-close">Keep typing</button><button class="btn primary" data-action="term-give">Give back</button></div>`).text;
+  if (!sheet.open) sheet.showModal();
+  sheet.querySelector(".acts .btn:last-child")?.focus();
+}
+
+async function keyboardAct(action) {
+  const sheet = keyboardSheet();
+  const run = keyboard.state().run;
+  sheet.close();
+  if (String(run) !== sheet.dataset.run) return;
+  if (action === "term-take") {
+    terminal.typing = false;
+    await keyboard.take(run);
+    return document.getElementById("term-keys")?.focus();
+  }
+  await keyboard.giveBack();
+  watch.revision();
+}
+
+// Sends one input; a text leaves the field once it was sent, unless the person typed on.
+async function sendInput(input) {
+  const sent = await keyboard.send(input);
+  if (sent && input.text !== undefined && terminal.keys === input.text) terminal.keys = "";
+  if (sent) watch.revision();
   paintTerminal(document.getElementById("app"), true);
 }
 
@@ -1426,25 +1655,38 @@ async function sayFromPane(task) {
 // scroll and focus. Fit sizes the text to the pane, between 9 px and the pane's own size.
 function paintTerminal(app, rendered = false) {
   const box = app?.querySelector("[data-term]");
-  if (!box) return;
-  const { screen, stale, gone, at, more } = watch.state();
-  const key = JSON.stringify([screen?.hash, stale, gone, more, stale && Math.round((Date.now() - at) / 1000), terminal.fit, terminal.copied, terminal.typing, innerWidth]);
-  if (box.dataset.painted === key && !rendered) return;
-  if (terminal.run !== box.dataset.term) Object.assign(terminal, { run: box.dataset.term, left: 0, typing: false, line: "", said: null, saying: false });
+  // A page without the pane gives back a keyboard it held.
+  if (!box) return app && keyboard.leave();
+  const kept = watch.state();
+  // The watch may still hold the run shown before, until it polls the one in this box.
+  const screen = kept.run === Number(box.dataset.term) ? kept.screen : null;
+  // A grant this page holds on a run it no longer shows goes back, so that run's outbox resumes.
+  keyboard.at(box.dataset.end ? null : Number(box.dataset.term), `${box.dataset.task}/${box.dataset.tmux}`);
+  if (terminal.run !== box.dataset.term) Object.assign(terminal, { run: box.dataset.term, left: 0, typing: false, line: "", said: null, saying: false, menu: false, keys: "" });
+  const frame = terminalBody(box.dataset).text;
+  const key = JSON.stringify([frame, innerWidth]);
+  // A new screen in the same frame rewrites only its changed rows, so a selection elsewhere stays.
+  if (box.dataset.painted === key && !rendered) return paintRows(box.querySelector("pre"), terminalRows(screen, box.dataset.end));
   const active = document.activeElement;
-  const focused = box.contains(active) ? active.id || active.dataset.action || "pre" : null;
-  const caret = active?.id === "term-line" ? [active.selectionStart, active.selectionEnd] : null;
-  box.innerHTML = terminalBody(box.dataset).text;
+  const focused = !box.contains(active) ? null : active.dataset.key ? `[data-key="${CSS.escape(active.dataset.key)}"]` : active.id ? `#${active.id}` : active.dataset.action ? `[data-action="${active.dataset.action}"]` : "pre";
+  const caret = ["term-line", "term-keys"].includes(active?.id) ? [active.id, active.selectionStart, active.selectionEnd] : null;
+  box.innerHTML = frame;
   box.dataset.painted = key;
   const pre = box.querySelector("pre");
+  paintRows(pre, terminalRows(screen, box.dataset.end));
   const own = parseFloat(getComputedStyle(pre).fontSize);
   const fit = terminal.fit && screen;
   pre.style.fontSize = fit ? `${Math.min(own, Math.max(9, (pre.clientWidth - 24) / (screen.width * 0.6)))}px` : "";
   pre.style.lineHeight = fit ? "1.33" : "";
   pre.scrollLeft = terminal.left;
   pre.addEventListener("scroll", () => { terminal.left = pre.scrollLeft; });
-  if (focused) (focused === "pre" ? pre : box.querySelector(`#${focused}, [data-action="${focused}"]`))?.focus({ preventScroll: true });
-  if (caret) box.querySelector("#term-line")?.setSelectionRange(...caret);
+  if (focused) (focused === "pre" ? pre : box.querySelector(focused))?.focus({ preventScroll: true });
+  // Typed text stays out of the frame, so typing alone repaints nothing.
+  for (const [id, text] of [["term-line", terminal.line], ["term-keys", terminal.keys]]) {
+    const input = box.querySelector(`#${id}`);
+    if (input) input.value = text;
+  }
+  if (caret) box.querySelector(`#${caret[0]}`)?.setSelectionRange(caret[1], caret[2]);
 }
 
 // Polls while a live run's pane is on screen and the page is shown.
@@ -2275,7 +2517,15 @@ const flowLegend = () => html`<section class="sect flegend" aria-labelledby="leg
   ${["code", "model", "human", "asleep"].map((by) => html`<li><svg viewBox="0 0 48 8" width="48" height="8" aria-hidden="true" class="fedge by-${by}"><path d="M0 4H48" stroke-width="${edgeStyle(by).width}" ${edgeStyle(by).dash ? raw(`stroke-dasharray="${edgeStyle(by).dash}"`) : ""} class="fline"/></svg>${BY_WORD[by]}</li>`)}
   <li><svg viewBox="0 0 48 12" width="48" height="12" aria-hidden="true" class="fedge ungated"><path d="M0 6H48" stroke-width="8" class="halo"/></svg>no person's decision before an irreversible step</li></ul></section>`;
 
-function flowSection(workflow, paths) {
+function flowHistory(rows) {
+  if (!rows.length) return "";
+  const outcome = (label, [count, bound]) => html`<td data-label="${label}">${count}<span class="bound">${bound}</span></td>`;
+  return html`<div class="history"><p class="note">Tasks through each irreversible step in the last 180 days, judged within 30 days of it.</p>
+    <table class="ctbl rtbl"><thead><tr><th scope="col">Step</th><th scope="col" class="r">Caught</th><th scope="col">Judged wrong</th><th scope="col">Landed wrong</th></tr></thead>
+    <tbody>${rows.map((row) => html`<tr><th scope="row" class="mono">${row.step}</th><td class="r" data-label="Caught">${row.caught}</td>${outcome("Judged wrong", row.judged)}${outcome("Landed wrong", row.landed)}</tr>`)}</tbody></table></div>`;
+}
+
+function flowSection(workflow, paths, irreversible) {
   const ungated = ungatedPairs(workflow.name, paths);
   const drawing = timeline(workflow, ungated);
   const open = paths.filter((entry) => entry.workflow === workflow.name);
@@ -2284,6 +2534,7 @@ function flowSection(workflow, paths) {
     <svg class="diagram" viewBox="0 0 ${drawing.width} ${drawing.height}" role="img" aria-label="${drawing.text}">
       <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0 1L10 5L0 9z" fill="context-stroke"/></marker></defs>
       ${drawing.edges.map(flowEdge)}${drawing.nodes.map(flowNode)}</svg>
+    ${flowHistory(historyRows(irreversible ?? [], workflow.name))}
     ${open.length ? html`<div class="unattended" role="note"><p class="t-danger">${icon("lock", "s15")}Reaches an irreversible step with no person's decision:</p><ul>${open.map((entry) => html`<li class="mono">${entry.path.join(" > ")}</li>`)}</ul></div>` : ""}
     <details class="astext"><summary>Steps as text</summary><ol>${workflow.steps.map((step) => html`<li><b class="mono">${step.id}</b>, ${KIND_WORD[step.kind] ?? step.kind}, decided by ${step.decides}. ${step.edges.map((edge) => html`${edge.outcome} leads to ${edge.to} (${BY_WORD[edge.by] ?? edge.by}). `)}</li>`)}</ol></details></section>`;
 }
@@ -2293,7 +2544,7 @@ function flowsPage(compact) {
   const flows = state.data.flows;
   if (!flows && state.flowsError) return html`${head}<p class="empty" role="alert">The flows did not load: ${state.flowsError}. Run <code>priory check --explain</code> meanwhile.</p><p class="empty"><button class="btn secondary" data-action="flows-retry">Retry</button></p>`;
   if (!flows) { setTimeout(loadFlows); return html`${head}<p class="empty" role="status">Loading the flows.</p>`; }
-  const body = flows.workflows.length ? html`${flowLegend()}${flows.workflows.map((workflow) => flowSection(workflow, flows.paths))}` : html`<p class="empty">This factory has no workflows. Add one under <code>workflows/</code>.</p>`;
+  const body = flows.workflows.length ? html`${flowLegend()}${flows.workflows.map((workflow) => flowSection(workflow, flows.paths, flows.irreversible))}` : html`<p class="empty">This factory has no workflows. Add one under <code>workflows/</code>.</p>`;
   return html`${head}<div class="panel" role="region" aria-label="Flows"><div class="scroll">${body}</div></div>`;
 }
 
@@ -2590,7 +2841,7 @@ function loading() {
 }
 
 const routeKey = () => location.pathname + location.search;
-const FOCUS_ATTRIBUTES = ["id", "href", "data-option", "data-pick-mode", "data-theme-pick", "data-add-chip", "data-action"];
+const FOCUS_ATTRIBUTES = ["id", "href", "data-option", "data-pick-mode", "data-theme-pick", "data-add-chip", "data-key", "data-action"];
 function focusKey(element) {
   if (!element || element === document.body) return null;
   const name = FOCUS_ATTRIBUTES.find((attribute) => element.hasAttribute(attribute));
@@ -2619,12 +2870,15 @@ function render() {
   state.observers = [];
   // A new revision is a new question: a tap armed on the old one must not run it.
   if (state.armed && (!state.token || selectedAsk() !== String(state.armed.id) || askOnScreen()?.revision !== state.armed.revision)) disarm();
+  // Likewise a Cancel armed on another runner's task at a generation the list no longer shows.
+  if (typeof state.taskArmed?.task === "string" && remoteGeneration(state.taskArmed.task) !== state.taskArmed.generation) disarmTask();
+  if (state.memoryArmed && current() !== "memories") disarmMemory();
   app.innerHTML = page().text;
   paintTerminal(app, true);
   observeTerminal(app);
   // A render must not restart the countdown; CSP allows no inline style, so it is set here.
   app.querySelectorAll(".drain").forEach((drain) => {
-    const armed = drain.closest(".act") ? state.taskArmed : state.armed;
+    const armed = drain.closest("[data-action=memory-act]") ? state.memoryArmed : drain.closest(".act") ? state.taskArmed : state.armed;
     drain.style.animationDelay = `-${armed ? Date.now() - armed.at : 0}ms`;
   });
   state.renderedKey = routeKey();
@@ -2671,20 +2925,21 @@ function page() {
     else if (here === "more") body = morePage();
     else if (taskId) body = taskPage(taskId);
     else if (batchId) body = batchPage(batchId);
+    else if (here === "memories") body = memoriesPage();
     else if (here === "reports") body = reportsPage(true);
     else if (here === "costs") body = costsPage(true);
     else if (here === "workflow") body = flowsPage(true);
     else if (here === "settings") body = html`<div class="top"><a class="back" href="/more">${icon("chevron-left", "s22")}More</a></div>${settingsScreen()}`;
     else if (PANELS[here]) body = html`<div class="top"><h1>${PANELS[here][0]}</h1></div>${laterPanel(here)}`;
     else body = notFound();
-    const tab = selectedAsk() ? null : here === "settings" ? "more" : batchId ? "tasks" : here;
+    const tab = selectedAsk() ? null : here === "settings" ? "more" : batchId ? "tasks" : here === "memories" ? "desk" : here;
     return html`${staleStrip()}${body}${tab ? tabs(tab, "bar") : ""}`;
   }
   const list = selectedAsk() ? state.list : here;
   const top = html`<header class="wtop"><span class="fac">${state.data.views.factory}</span>${connection()}<span class="sp"></span>${addButton("addtop")}</header>`;
   const wide = size === "wide";
-  const utility = taskId ? taskPage(taskId) : batchId ? batchPage(batchId) : here === "reports" ? reportsPage(false) : here === "costs" ? costsPage(false) : here === "workflow" ? flowsPage(false) : here === "settings" ? settingsScreen() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
-  const nav = (kind) => tabs(here === "settings" && wide ? "settings" : here === "settings" ? "more" : batchId ? "tasks" : list, kind);
+  const utility = taskId ? taskPage(taskId) : batchId ? batchPage(batchId) : here === "memories" ? memoriesPage() : here === "reports" ? reportsPage(false) : here === "costs" ? costsPage(false) : here === "workflow" ? flowsPage(false) : here === "settings" ? settingsScreen() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
+  const nav = (kind) => tabs(here === "settings" && wide ? "settings" : here === "settings" ? "more" : batchId ? "tasks" : here === "memories" ? "desk" : list, kind);
   if (utility) {
     return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}<div class="list">${utility}</div></div>${wide ? "" : nav("bar")}`;
   }
@@ -2765,6 +3020,15 @@ document.addEventListener("click", (event) => {
     return terminal.typing && document.getElementById("term-line")?.focus();
   }
   if (action === "term-attach") return copyTerminal(`priory attach ${target.dataset.task} --read-only`, "attach");
+  if (action === "term-menu") return (terminal.menu = !terminal.menu), paintTerminal(document.getElementById("app"), true);
+  if (action === "term-take-ask" || action === "term-give-ask") {
+    terminal.menu = false;
+    paintTerminal(document.getElementById("app"), true);
+    return openKeyboardSheet(action === "term-take-ask" ? "take" : "give");
+  }
+  if (action === "term-take" || action === "term-give") return keyboardAct(action);
+  if (action === "keyboard-close") return keyboardSheet().close();
+  if (action === "term-key") return sendInput({ key: target.dataset.key });
   // A refresh that reaches the daemon reads the costs again.
   if (action === "costs-retry") return (state.costs.error = null), refresh();
   if (action === "add-open") return openAdd();
@@ -2785,6 +3049,10 @@ document.addEventListener("click", (event) => {
     return render();
   }
   if (action === "task-act") return taskAct(target);
+  if (action === "remote-open" && !event.target.closest("form, .task-acts")) {
+    state.remoteOpen = state.remoteOpen === target.dataset.task ? null : target.dataset.task;
+    return render();
+  }
   if (action === "entry-menu" && state.batch?.body) {
     const edit = planEditOf(state.batch.body);
     const open = edit.open === target.dataset.entry ? null : target.dataset.entry;
@@ -2794,8 +3062,19 @@ document.addEventListener("click", (event) => {
   if (action === "batch-edit") return editPlan(target);
   if (action === "todo-done") return markDone(target);
   if (action === "row-act") return rowAct(target);
+  if (action === "memory-act") return memoryAct(target);
+  if (action === "memory-current") {
+    event.preventDefault();
+    const { id } = target.dataset;
+    if (!state.memoryCurrent.delete(id)) state.memoryCurrent.add(id);
+    return render();
+  }
   if (action === "move") return moveTask(target);
   if (action === "request-task") return requestTask(target.dataset.text, target.dataset.workflow);
+  if (action === "unheard-say") {
+    if (target.getAttribute("aria-disabled") !== "true") taskWrite(Number(target.dataset.task), "say", { text: target.dataset.text });
+    return;
+  }
   if (action === "subscribe-task") {
     if (state.unrouted.busy === null) subscribeTask(target.dataset.resource, Number(target.dataset.task));
     return;
@@ -2852,7 +3131,8 @@ document.addEventListener("input", (event) => {
     render();
   }
   const form = event.target.id === "say" && event.target.closest("form");
-  if (form) state.sayDrafts.set(Number(form.dataset.task), event.target.value);
+  if (form) state.sayDrafts.set(taskIdOf(form.dataset.task), event.target.value);
+  if (event.target.id === "term-keys") terminal.keys = event.target.value;
   if (event.target.id === "term-line") {
     terminal.line = event.target.value;
     // Only the button changes; a repaint per letter would cost the caret.
@@ -2876,15 +3156,19 @@ document.addEventListener("submit", (event) => {
     event.preventDefault();
     return submitRemark();
   }
+  if (event.target.dataset.action === "term-paste") {
+    event.preventDefault();
+    return terminal.keys && sendInput({ text: terminal.keys });
+  }
   if (event.target.dataset.action === "term-say") {
     event.preventDefault();
     return sayFromPane(Number(event.target.dataset.task));
   }
   if (event.target.dataset.action === "say") {
     event.preventDefault();
-    const task = Number(event.target.dataset.task);
+    const task = taskIdOf(event.target.dataset.task);
     const text = (state.sayDrafts.get(task) || "").trim();
-    if (text && state.taskBusy === null) taskWrite(task, "say", { text });
+    if (text && state.taskBusy === null) taskWrite(task, "say", remoteBody(task, { text }));
     return;
   }
   if (event.target.dataset.action !== "sign-in") return;
@@ -2899,6 +3183,11 @@ document.addEventListener("submit", (event) => {
 
 // Desktop shortcuts: j and k move, Enter opens, Esc closes, S snoozes the selected ask for 1 h. Never inside an input.
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && terminal.menu && event.target.closest?.(".term")) {
+    terminal.menu = false;
+    paintTerminal(document.getElementById("app"), true);
+    return document.querySelector('[data-action="term-menu"]')?.focus();
+  }
   if (event.key === "Escape" && event.target.id === "term-line") {
     Object.assign(terminal, { typing: false, said: null });
     paintTerminal(document.getElementById("app"), true);
@@ -2908,7 +3197,7 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     return event.target.click();
   }
-  if (addSheet().open || answerSheet().open || event.target.closest("input, textarea, select") || event.metaKey || event.ctrlKey || event.altKey || !state.data) return;
+  if (addSheet().open || answerSheet().open || keyboardSheet().open || event.target.closest("input, textarea, select") || event.metaKey || event.ctrlKey || event.altKey || !state.data) return;
   const rows = [...document.querySelectorAll(".list [href^='/asks/'], .list tr[data-href^='/asks/']")];
   const hrefOf = (row) => row.getAttribute("href") || row.dataset.href;
   const at = rows.findIndex((row) => row.getAttribute("aria-current") === "true");
@@ -2937,6 +3226,10 @@ document.addEventListener("keydown", (event) => {
 // A tap on the scrim, outside the sheet's box, closes it; closing hands focus back to an Add button.
 addSheet().addEventListener("click", (event) => { if (event.target === addSheet()) closeAdd(); });
 answerSheet().addEventListener("click", (event) => { if (event.target === answerSheet()) answerSheet().close(); });
+// A page that goes away gives its keyboard back, so the run's outbox does not wait out the 15 minutes.
+addEventListener("pagehide", () => keyboard.leave());
+keyboardSheet().addEventListener("click", (event) => { if (event.target === keyboardSheet()) keyboardSheet().close(); });
+keyboardSheet().addEventListener("close", () => document.querySelector("#app [data-action='term-menu']")?.focus());
 addSheet().addEventListener("close", () => document.querySelector("#app [data-action='add-open']")?.focus());
 addEventListener("popstate", render);
 for (const query of ["(min-width: 600px)", "(min-width: 1024px)"]) matchMedia(query).addEventListener("change", render);

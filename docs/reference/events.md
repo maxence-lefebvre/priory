@@ -31,6 +31,8 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
   [`priory.runner.alive`](#prioryrunneralive), [`priory.ask.answered`](#prioryaskanswered),
   [`priory.ask.dismissed`](#prioryaskdismissed), [`priory.ask.posted`](#prioryaskposted),
   [`priory.ask.applied`](#prioryaskapplied)
+- Memories: [`priory.memory.written`](#priorymemorywritten),
+  [`priory.memory.accepted`](#priorymemoryaccepted), [`priory.memory.dropped`](#priorymemorydropped)
 
 ## The envelope
 
@@ -1217,8 +1219,9 @@ Schema: [`factory.intake.baseline.json`](../schemas/events/factory.intake.baseli
 ## Runners
 
 A factory with two or more runner files has its daemons publish these on `factory.intake` too.
-`priory give`, `priory answer RUNNER:ASK`, `priory dismiss RUNNER:ASK` and the answer and dismiss
-endpoints of `priory serve` publish three of them. Every runner reads them all. See
+`priory give`, `priory answer RUNNER:ASK`, `priory dismiss RUNNER:ASK`, the task actions on
+`RUNNER:KEY` and their endpoints of `priory serve` publish four of them. Every runner reads them
+all, and records one whose `runner` has no file in `runners/` as `refused`. See
 [runners.md](../daemon/runners.md).
 
 ### `priory.task.claimed`
@@ -1264,6 +1267,7 @@ key. Schema: [`priory.task.held.json`](../schemas/events/priory.task.held.json).
 | `key` | string | The task's key |
 | `runner` | string | The runner that owns it |
 | `hold` | `waiting`, `kept` or `ended` | `waiting`: no run of it started, so it moves once its runner's lease ends. `kept`: started or asleep, so it stays. `ended`: done, failed or dropped |
+| `generation` | integer, optional | The task's generation: 1, then one more at each revive or reopen. The owner publishes it again when it moves. A write from another machine names it |
 
 <!-- example: events/priory.task.held.json -->
 ```json
@@ -1275,7 +1279,8 @@ key. Schema: [`priory.task.held.json`](../schemas/events/priory.task.held.json).
   "data": {
     "key": "github:acme/widgets#42",
     "runner": "xps13",
-    "hold": "kept"
+    "hold": "kept",
+    "generation": 1
   },
   "links": []
 }
@@ -1447,6 +1452,168 @@ The owner of an ask applied or refused an answer or dismiss another machine sent
     "ask": 7,
     "submission": "0196f1c3-1b2c-7d4e-8f9a-0b1c2d3e4f5a",
     "outcome": "answered"
+  },
+  "links": []
+}
+```
+
+### `priory.task.acted`
+
+One message per resume, revive, cancel, release or say of another runner's task, from
+`priory ACT [DIR] RUNNER:KEY` or `POST /api/tasks/RUNNER:KEY/ACT`. Only that runner applies it, with
+the checks of the same local action, and only while it holds the key and the task is at
+`generation`. It says what became of it in `priory.task.applied`. Subject: `<runner>:<key>`.
+Schema: [`priory.task.acted.json`](../schemas/events/priory.task.acted.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `runner` | string | The runner it is sent to |
+| `key` | string | The task's key |
+| `generation` | integer | The task's generation the person saw |
+| `act` | `resume`, `revive`, `cancel`, `release` or `say` | The action |
+| `text` | string, optional | What `say` tells the task's agent |
+| `step` | string, optional | The step `revive` restarts at |
+| `by` | string | `cli` or `serve` |
+| `submission` | UUID string | The message's own `id`, which `priory.task.applied` names |
+
+<!-- example: events/priory.task.acted.json -->
+```json
+{
+  "id": "0196f1c5-3d4e-7f60-8b1c-2d3e4f5a6b7c",
+  "type": "priory.task.acted",
+  "subject": "xps13:github:acme/widgets#42",
+  "time": "2026-11-21T10:22:00Z",
+  "data": {
+    "runner": "xps13",
+    "key": "github:acme/widgets#42",
+    "generation": 1,
+    "act": "say",
+    "text": "Run the integration tests too.",
+    "by": "serve",
+    "submission": "0196f1c5-3d4e-7f60-8b1c-2d3e4f5a6b7c"
+  },
+  "links": []
+}
+```
+
+### `priory.task.applied`
+
+A runner applied or refused an action that another machine sent to one of its tasks. Subject:
+`<runner>:<key>`. Schema: [`priory.task.applied.json`](../schemas/events/priory.task.applied.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `runner` | string | The runner the action was sent to |
+| `key` | string | The task's key |
+| `generation` | integer | The generation the action named |
+| `submission` | UUID string | The `submission` of the action |
+| `outcome` | `applied` or `refused` | What became of it |
+| `why` | string, optional | Why it was refused: the key is held by another runner, the task moved to another generation, or the local action refused, as the local CLI would say it |
+
+<!-- example: events/priory.task.applied.json -->
+```json
+{
+  "id": "6f3c0d58-9e2b-5a47-c1d3-5b8f0e2a4c69",
+  "type": "priory.task.applied",
+  "subject": "xps13:github:acme/widgets#42",
+  "time": "2026-11-21T10:22:01Z",
+  "data": {
+    "runner": "xps13",
+    "key": "github:acme/widgets#42",
+    "generation": 1,
+    "submission": "0196f1c5-3d4e-7f60-8b1c-2d3e4f5a6b7c",
+    "outcome": "applied"
+  },
+  "links": []
+}
+```
+
+## Memories
+
+Every daemon publishes `priory.memory.written` when an agent calls `remember` or `forget`, in a
+factory of one runner too. `priory memories accept` and `priory memories drop` publish the other
+two. Every runner reads them all in log order. See [skills.md](../daemon/skills.md#memories-agents-write)
+and [memories.md](memories.md#candidates).
+
+### `priory.memory.written`
+
+One candidate: an agent saves a memory with `remember`, or removes one with `forget`. The message's
+`id` is the candidate's id. Its own task's later runs get it at once, and other tasks' runs only
+once a person accepts it. A later write of the same name is a new candidate. A runner records a
+message that breaks the rules of `remember` as `refused`, and no run gets it. Subject: the name.
+Schema: [`priory.memory.written.json`](../schemas/events/priory.memory.written.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `name` | string | The memory's name, in lowercase letters, digits and hyphens |
+| `description` | string, optional | When an agent should read the memory. Absent for a forget |
+| `text` | string, optional | The fact. Absent for a forget |
+| `forget` | boolean, optional | True for a forget: the candidate removes the memory of its name |
+| `task` | string | The key of the task whose run wrote it |
+| `runner` | string or null | The runner that wrote it, or null in a factory of one runner |
+
+<!-- example: events/priory.memory.written.json -->
+```json
+{
+  "id": "0196f1d0-4a5b-7c6d-8e9f-0a1b2c3d4e5f",
+  "type": "priory.memory.written",
+  "subject": "release-day",
+  "time": "2026-11-21T10:30:00Z",
+  "data": {
+    "name": "release-day",
+    "description": "When releases go out. Read it before you plan or merge a change near a release.",
+    "text": "Releases go out on Tuesdays. Merge nothing risky on a Monday afternoon.",
+    "task": "github:acme/widgets#42",
+    "runner": "xps13"
+  },
+  "links": []
+}
+```
+
+### `priory.memory.accepted`
+
+A person accepts a candidate. Every runner gives it to every task's later runs. Between two
+accepted candidates of one name, the later accept in log order wins. A runner records an accept of
+a candidate it never read, or one already accepted or dropped, as `refused`. Subject: the name.
+Schema: [`priory.memory.accepted.json`](../schemas/events/priory.memory.accepted.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `candidate` | UUID string | The `id` of the `priory.memory.written` message |
+
+<!-- example: events/priory.memory.accepted.json -->
+```json
+{
+  "id": "0196f1d1-5b6c-7d8e-9f0a-1b2c3d4e5f60",
+  "type": "priory.memory.accepted",
+  "subject": "release-day",
+  "time": "2026-11-21T17:00:00Z",
+  "data": {
+    "candidate": "0196f1d0-4a5b-7c6d-8e9f-0a1b2c3d4e5f"
+  },
+  "links": []
+}
+```
+
+### `priory.memory.dropped`
+
+A person drops a candidate. No run gets it, not even its own task's. A runner records a drop of a
+candidate it never read, or one already accepted or dropped, as `refused`. Subject: the name.
+Schema: [`priory.memory.dropped.json`](../schemas/events/priory.memory.dropped.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `candidate` | UUID string | The `id` of the `priory.memory.written` message |
+
+<!-- example: events/priory.memory.dropped.json -->
+```json
+{
+  "id": "0196f1d2-6c7d-7e8f-a0b1-2c3d4e5f6071",
+  "type": "priory.memory.dropped",
+  "subject": "gate-cost",
+  "time": "2026-11-21T17:00:05Z",
+  "data": {
+    "candidate": "0196f1d0-9a8b-7c6d-8e9f-0a1b2c3d4e5f"
   },
   "links": []
 }

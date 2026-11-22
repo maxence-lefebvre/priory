@@ -1,3 +1,4 @@
+pub mod case;
 pub mod draw;
 pub mod explain;
 pub mod factory;

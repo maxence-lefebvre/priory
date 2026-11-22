@@ -1,4 +1,5 @@
 pub mod batch;
+pub mod capture;
 mod command;
 pub mod daemon;
 pub mod deliver;
@@ -14,6 +15,7 @@ mod kit;
 pub mod label;
 pub mod link;
 pub mod listing;
+pub mod memories;
 pub mod memory;
 #[cfg(feature = "model")]
 mod model;
@@ -25,11 +27,13 @@ pub mod progress;
 pub mod proof;
 mod push;
 pub mod relate;
+pub mod replay;
 pub mod report;
 pub mod risk;
 mod room;
 mod route;
 pub mod runners;
+pub mod score;
 pub mod screen;
 pub mod search;
 pub mod sections;

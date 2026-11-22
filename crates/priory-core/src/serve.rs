@@ -193,7 +193,8 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
     let served = Arc::new(Served {
         views: listing::views(factory).to_string(),
         links: listing::links(factory).to_string(),
-        flows: listing::flows(factory).to_string(),
+        flows: listing::flows(factory),
+        gates: crate::risk::Gates::of(factory),
         schedules: listing::schedule_triggers(factory),
         workflows: factory.workflows.keys().cloned().collect(),
         request: serde_json::json!({
@@ -207,6 +208,8 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         terminal: config.terminal,
         secrets: screen::secrets(&factory.secret_envs()),
         snapshots: AtomicUsize::new(0),
+        kit: factory.settings.as_ref().and_then(|s| s.value.kit.clone()),
+        memories: crate::memories::Held::of(factory).factory,
     });
     let hooks: &'static [&'static str] = [
         (github.is_some(), GITHUB),
@@ -295,7 +298,9 @@ struct Remote {
 struct Served {
     views: String,
     links: String,
-    flows: String,
+    flows: serde_json::Value,
+    /// The gates of each irreversible step, for the flows' `risk_estimate`.
+    gates: crate::risk::Gates,
     schedules: Vec<(String, Trigger)>,
     workflows: Vec<String>,
     /// `GET /api/request`: what the Add control prefills and offers.
@@ -306,6 +311,10 @@ struct Served {
     secrets: Vec<String>,
     /// Screens being read now.
     snapshots: AtomicUsize,
+    /// The factory's `[kit]`, for the memories a candidate on the desk replaces.
+    kit: Option<priory_factory::factory::Kit>,
+    /// The factory's own memories, each name's text.
+    memories: BTreeMap<String, String>,
 }
 
 fn route(
@@ -345,7 +354,15 @@ fn route(
     match path {
         "/api/views" => return Reply::json(200, served.views.clone()),
         "/api/links" => return Reply::json(200, served.links.clone()),
-        "/api/flows" => return Reply::json(200, served.flows.clone()),
+        "/api/flows" => {
+            let risk = db.as_ref().ok().and_then(|db| {
+                let now = intake::now().ok()?;
+                crate::risk::recent(db, &served.gates, now).ok()
+            });
+            let mut flows = served.flows.clone();
+            listing::with_risk_estimates(&mut flows, risk.as_ref());
+            return Reply::json(200, flows.to_string());
+        }
         _ => {}
     }
     let db = match db {
@@ -375,13 +392,28 @@ fn route(
                 Err(error) => return Reply::error(500, &error),
             };
             listing::revised(db, "desk", |db| {
-                listing::desk(db, home, false, &person, now).map(Some)
+                let mut desk = listing::desk(db, home, false, &person, now)?;
+                let held = crate::memories::Held {
+                    kit: served.kit.as_ref(),
+                    factory: served.memories.clone(),
+                };
+                let item = desk["items"].as_array_mut().into_iter().flatten();
+                for item in item.filter(|item| item["kind"] == "memories") {
+                    if let Some(candidates) = item["candidates"].as_array_mut() {
+                        held.mark(db, home, candidates)?;
+                    }
+                }
+                Ok(Some(desk))
             })
         }
         "/api/inbox" => match query {
             "" => listing::revised(db, "inbox", |db| listing::inbox(db, 0).map(Some)),
             "unrouted=1" => {
-                listing::revised(db, "unrouted", |db| listing::unrouted(db, 0).map(Some))
+                let now = match intake::now() {
+                    Ok(now) => now,
+                    Err(error) => return Reply::error(500, &error),
+                };
+                listing::revised(db, "unrouted", |db| listing::unrouted(db, 0, now).map(Some))
             }
             _ => return Reply::error(400, "inbox takes one parameter: unrouted=1"),
         },
@@ -505,8 +537,16 @@ fn terminal(db: &Connection, served: &Served, run: &str, query: &str) -> Reply {
         Some(Err(_)) => return Reply::error(400, "history is a number of rows"),
     };
     match screen::read(db, &state::Attach::Run(run), &served.secrets, history) {
-        Ok(shown) => Reply::json(200, screen::reply(shown, have).to_string()),
-        Err(error) => Reply::error(404, &error),
+        Ok(mut shown) => {
+            // Outside the hash, as the setting is not the screen's: the page offers keys only then.
+            if served.terminal == Terminal::Type {
+                shown["keyboard"] = serde_json::json!(true);
+            }
+            Reply::json(200, screen::reply(shown, have).to_string())
+        }
+        Err(screen::Unread::Gone(error)) => Reply::error(404, &error),
+        // The run is live, so a later read may show it, or the daemon ends the run.
+        Err(screen::Unread::Unreadable(error)) => Reply::error(503, &error),
     }
 }
 
@@ -542,12 +582,16 @@ enum Write<'a> {
     Subscribe,
     Unsubscribe,
     Follow,
+    Unfollow,
+    Label(&'a str),
     TodoAdd,
     TodoDone(i64),
     Seen,
     Read(i64),
     BatchEdit(&'a str),
     Move(&'a str),
+    /// A person's accept (`true`) or drop of a memory candidate.
+    Memory(&'a str, bool),
 }
 
 impl<'a> Write<'a> {
@@ -563,6 +607,7 @@ impl<'a> Write<'a> {
             "/api/push/subscribe" => return Some(Write::Subscribe),
             "/api/push/unsubscribe" => return Some(Write::Unsubscribe),
             "/api/subscribe" => return Some(Write::Follow),
+            "/api/unsubscribe" => return Some(Write::Unfollow),
             "/api/todos" => return Some(Write::TodoAdd),
             "/api/seen" => return Some(Write::Seen),
             _ => {}
@@ -579,6 +624,16 @@ impl<'a> Write<'a> {
         {
             return seq.parse().ok().map(Write::Read);
         }
+        if let Some((id, verdict)) = path
+            .strip_prefix("/api/memories/")
+            .and_then(|rest| rest.split_once('/'))
+        {
+            return match verdict {
+                "accept" => Some(Write::Memory(id, true)),
+                "drop" => Some(Write::Memory(id, false)),
+                _ => None,
+            };
+        }
         if let Some(batch) = path
             .strip_prefix("/api/batches/")
             .and_then(|rest| rest.strip_suffix("/edit"))
@@ -591,9 +646,16 @@ impl<'a> Write<'a> {
         {
             return Some(Write::Move(task));
         }
+        if let Some(task) = path
+            .strip_prefix("/api/tasks/")
+            .and_then(|rest| rest.strip_suffix("/label"))
+        {
+            return Some(Write::Label(task));
+        }
+        // The last part names the action, so another runner's key may hold an encoded `/`.
         if let Some((task, act)) = path
             .strip_prefix("/api/tasks/")
-            .and_then(|rest| rest.split_once('/'))
+            .and_then(|rest| rest.rsplit_once('/'))
             .filter(|(_, act)| ["resume", "revive", "cancel", "release", "say"].contains(act))
         {
             return Some(Write::Act(task, act));
@@ -702,6 +764,26 @@ struct Unsubscribe {
     endpoint: String,
 }
 
+/// `POST /api/unsubscribe`'s body. It takes no revision, as `priory unsubscribe` takes no
+/// `--expected`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UnfollowBody {
+    task: i64,
+    resource: String,
+}
+
+/// `POST /api/tasks/{id}/label`'s body: `evidence` and an optional `happened` to mark the task
+/// wrong, or `clear: true`, as `priory label TASK wrong`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LabelBody {
+    evidence: Option<String>,
+    happened: Option<String>,
+    #[serde(default)]
+    clear: bool,
+}
+
 /// Sends a write to the daemon on its socket, as the CLI verb does; this thread never writes the
 /// state. A refusal re-reads the ask to tell a stale or closed ask (`409`) from a refused one.
 fn write(
@@ -740,6 +822,9 @@ fn write(
     };
     if let Some(reply) = remote_write(db, remote, &write, request.body) {
         return reply;
+    }
+    if let Write::Memory(id, accept) = write {
+        return decide_memory(db, remote, id, accept, request.body);
     }
     let (line, sent) = match write_line(db, &write, request.body) {
         Ok(line) => line,
@@ -805,7 +890,10 @@ impl Typing {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TakeBody {
-    revision: i64,
+    /// Sent by an older page, and not checked.
+    #[serde(default)]
+    #[allow(dead_code)]
+    revision: Option<i64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -830,13 +918,12 @@ fn type_in(db: &Connection, home: &Path, request: &Request, run: &str, typing: T
         return Reply::error(404, "no such path");
     };
     let bad = |error: serde_json::Error| Reply::error(400, &error.to_string());
-    let (mut secret, mut revision) = (None, None);
+    let mut secret = None;
     let line = match typing {
         Typing::Take => {
-            let body: TakeBody = match serde_json::from_slice(request.body) {
-                Ok(body) => body,
-                Err(error) => return bad(error),
-            };
+            if let Err(error) = serde_json::from_slice::<TakeBody>(request.body) {
+                return bad(error);
+            }
             let made = match new_secret() {
                 Ok(made) => made,
                 Err(error) => return Reply::error(500, &error),
@@ -851,12 +938,10 @@ fn type_in(db: &Connection, home: &Path, request: &Request, run: &str, typing: T
             }
             let take = keyboard::Take {
                 run,
-                revision: body.revision,
                 label: label[..end].to_owned(),
                 hash: keyboard::hash(&made),
             };
             secret = Some(made);
-            revision = Some(body.revision);
             line(&keyboard::TakeLine { keyboard: take })
         }
         Typing::Return => {
@@ -910,15 +995,10 @@ fn type_in(db: &Connection, home: &Path, request: &Request, run: &str, typing: T
             (Typing::Keys, _) => Reply::json(200, done),
             _ => Reply::json(200, serde_json::json!({ "ok": done }).to_string()),
         },
-        Ok(Err(refused)) => {
-            let live = state::live_run(db, &state::Attach::Run(run));
-            let stale = revision.is_some_and(|sent| state::revision(db).is_ok_and(|at| at != sent));
-            match (live, stale) {
-                (Err(_), _) => Reply::error(404, &refused),
-                (_, true) => Reply::error(409, &refused),
-                _ => Reply::error(403, &refused),
-            }
-        }
+        Ok(Err(refused)) => match state::live_run(db, &state::Attach::Run(run)) {
+            Err(_) => Reply::error(404, &refused),
+            Ok(_) => Reply::error(403, &refused),
+        },
         Err(error) => Reply::error(500, &format!("unreadable reply {reply:?}: {error}")),
     }
 }
@@ -937,6 +1017,9 @@ fn new_secret() -> Result<String, String> {
 /// apply: it checks the ask against its mirror, publishes the write on the log for that runner and
 /// answers `202` with the submission. `None` for a write to this machine's own ask.
 fn remote_write(db: &Connection, remote: &Remote, write: &Write, body: &[u8]) -> Option<Reply> {
+    if let Write::Act(task, act) = write {
+        return remote_act(db, remote, task, act, body);
+    }
     let (Write::Answer(ask) | Write::Dismiss(ask)) = write else {
         return None;
     };
@@ -999,6 +1082,105 @@ fn remote_write(db: &Connection, remote: &Remote, write: &Write, body: &[u8]) ->
         Ok(Reply::json(202, sent.to_string()))
     })();
     Some(reply.unwrap_or_else(|reply| reply))
+}
+
+/// What an action on another runner's task takes: the generation the page drew, and the text or
+/// step the action takes as a local one does.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoteActBody {
+    generation: i64,
+    text: Option<String>,
+    step: Option<String>,
+}
+
+/// An action on `<runner>:<key>`, another runner's task, with the key percent-encoded. It checks
+/// the key's owner and generation against this runner's claims, publishes the action on the log
+/// for that runner and answers `202` with the submission. `None` for a task of this machine, named
+/// by its number.
+fn remote_act(
+    db: &Connection,
+    remote: &Remote,
+    task: &str,
+    act: &str,
+    body: &[u8],
+) -> Option<Reply> {
+    if task.parse::<i64>().is_ok() {
+        return None;
+    }
+    let reply = (|| {
+        let named = decode(task)
+            .ok_or_else(|| Reply::error(400, "the task is not percent-encoded UTF-8"))?;
+        let Some((runner, key)) = named.split_once(':') else {
+            return Err(Reply::error(404, &format!("there is no task {named}")));
+        };
+        if !remote.runners.iter().any(|known| known == runner) {
+            let refused = format!("runner {runner} has no runner file in runners/");
+            return Err(Reply::error(404, &refused));
+        }
+        let body: RemoteActBody =
+            serde_json::from_slice(body).map_err(|error| Reply::error(400, &error.to_string()))?;
+        let takes = match act {
+            "say" => body.text.is_some() && body.step.is_none(),
+            "revive" => body.text.is_none(),
+            _ => body.text.is_none() && body.step.is_none(),
+        };
+        if !takes {
+            let fields = match act {
+                "say" => "a generation and text",
+                "revive" => "a generation and an optional step",
+                _ => "a generation",
+            };
+            return Err(Reply::error(
+                400,
+                &format!("{act} on another runner's task takes {fields}"),
+            ));
+        }
+        let generation = runners::task_generation(db, runner, key, Some(body.generation))
+            .map_err(|error| Reply::error(500, &error.to_string()))?
+            .map_err(|refused| match refused {
+                runners::Refused::Unknown(why) => Reply::error(404, &why),
+                runners::Refused::Stale(why) => Reply::error(409, &why),
+            })?;
+        let sent = runners::TaskAct {
+            act,
+            runner,
+            key,
+            generation,
+            text: body.text.as_deref(),
+            step: body.step.as_deref(),
+            by: "serve",
+        };
+        // Nothing waits on this machine: unpublished, the action is not sent at all.
+        let submission = runners::act(&remote.log, &sent)
+            .map_err(|error| Reply::error(503, &format!("{error}. Nothing was sent: try again")))?;
+        let sent = serde_json::json!({ "sent": runner, "submission": submission });
+        Ok(Reply::json(202, sent.to_string()))
+    })();
+    Some(reply.unwrap_or_else(|reply| reply))
+}
+
+/// A person's accept or drop of memory candidate `id`, which `priory memories accept|drop` does too:
+/// it publishes the verdict on the log, and every runner's daemon applies it as it reads the log.
+fn decide_memory(db: &Connection, remote: &Remote, id: &str, accept: bool, body: &[u8]) -> Reply {
+    if let Err(error) = serde_json::from_slice::<Empty>(body) {
+        return Reply::error(400, &error.to_string());
+    }
+    let Some(id) = decode(id) else {
+        return Reply::error(400, "the candidate is not percent-encoded UTF-8");
+    };
+    match crate::memories::decide(&remote.log, db, accept, &id) {
+        Ok(done) => Reply::json(200, serde_json::json!({ "ok": done }).to_string()),
+        Err(crate::memories::Refused::Unknown(why)) => Reply::error(404, &why),
+        Err(crate::memories::Refused::Stale(why)) => Reply::error(409, &why),
+        Err(crate::memories::Refused::Unsent(why)) => {
+            Reply::error(503, &format!("{why}. Nothing was sent: try again"))
+        }
+        Err(crate::memories::Refused::Unconfirmed(why)) => Reply::error(
+            504,
+            &format!("{why}. The log may hold it: read the candidates before you retry"),
+        ),
+    }
 }
 
 /// The revision a write was made on, which tells a stale write from a refused one.
@@ -1134,6 +1316,7 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
             };
             Ok((line(&act), Sent::Task(act.task, act.expected)))
         }
+        Write::Memory(..) => unreachable!("write publishes a memory verdict on the log itself"),
         Write::Move(task) => {
             let body: MoveBody = serde_json::from_slice(body).map_err(bad)?;
             let place = match (body.top, body.before, body.after) {
@@ -1173,13 +1356,7 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
         Write::Follow => {
             let body: FollowBody = serde_json::from_slice(body).map_err(bad)?;
             let Some(resource) = crate::subscribe::resource(&body.resource) else {
-                return Err(Reply::error(
-                    400,
-                    &format!(
-                        "`{}` is not a resource: name github:owner/name#7, linear:ENG-7 or slack:C0123:1763500000.000100",
-                        body.resource
-                    ),
-                ));
+                return Err(not_a_resource(&body.resource));
             };
             let request = crate::subscribe::Request {
                 task: body.task,
@@ -1188,6 +1365,40 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
             };
             let sent = Sent::Task(request.task, request.expected);
             Ok((line(&crate::subscribe::Line { subscribe: request }), sent))
+        }
+        Write::Unfollow => {
+            let body: UnfollowBody = serde_json::from_slice(body).map_err(bad)?;
+            let Some(resource) = crate::subscribe::resource(&body.resource) else {
+                return Err(not_a_resource(&body.resource));
+            };
+            let end = crate::subscribe::End {
+                task: body.task,
+                resource,
+            };
+            let sent = Sent::Task(end.task, None);
+            Ok((line(&crate::subscribe::EndLine { unsubscribe: end }), sent))
+        }
+        Write::Label(task) => {
+            let body: LabelBody = serde_json::from_slice(body).map_err(bad)?;
+            if body.clear != body.evidence.is_none() || (body.clear && body.happened.is_some()) {
+                return Err(Reply::error(
+                    400,
+                    "send evidence and an optional happened to mark, or clear: true alone",
+                ));
+            }
+            let task = task
+                .parse()
+                .map_err(|_| Reply::error(404, &format!("there is no task {task}")))?;
+            let request = crate::label::Request {
+                task,
+                evidence: body.evidence,
+                happened: body.happened,
+                clear: body.clear,
+            };
+            Ok((
+                line(&crate::label::Line { label: request }),
+                Sent::Task(task, None),
+            ))
         }
         Write::TodoAdd => {
             let add: todo::Add = serde_json::from_slice(body).map_err(bad)?;
@@ -1224,6 +1435,15 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
             Ok((line(&state::SeenLine { seen }), Sent::Nothing))
         }
     }
+}
+
+fn not_a_resource(resource: &str) -> Reply {
+    Reply::error(
+        400,
+        &format!(
+            "`{resource}` is not a resource: name github:owner/name#7, linear:ENG-7 or slack:C0123:1763500000.000100"
+        ),
+    )
 }
 
 fn line(message: &impl serde::Serialize) -> String {
@@ -1557,6 +1777,19 @@ mod tests {
                 let line: crate::state::MoveLine = serde_json::from_str(&line).unwrap();
                 prop_assert!(line.r#move.band.is_some() || line.r#move.place.is_some());
                 prop_assert_eq!(line.r#move.task, 2);
+            }
+        }
+
+        #[test]
+        fn a_label_body_becomes_one_mark_or_one_clear_or_is_refused(
+            body in r#"\{("evidence": ?"[a-z:/.]{0,12}"|"happened": ?"[0-9-]{0,10}"|"clear": ?(true|false)|"x": ?1)(, ?("evidence": ?"[a-z:/]{0,8}"|"happened": ?"[0-9-]{0,10}"|"clear": ?(true|false))){0,2}\}|.{0,40}"#
+        ) {
+            let written = DB.with(|db| write_line(db, &Write::Label("3"), body.as_bytes()));
+            if let Ok((line, _)) = written {
+                let line: crate::label::Line = serde_json::from_str(&line).unwrap();
+                prop_assert_eq!(line.label.clear, line.label.evidence.is_none());
+                prop_assert!(!line.label.clear || line.label.happened.is_none());
+                prop_assert_eq!(line.label.task, 3);
             }
         }
 

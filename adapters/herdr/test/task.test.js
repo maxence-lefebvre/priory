@@ -38,9 +38,9 @@ test("the Inbox lists the events routed to the task, newest first, with what eac
   ];
   const view = taskView({ ...task, id: 1, inbox }, { now });
   assert.deepEqual(view.inbox.map((event) => [event.id, event.tile, event.text, event.note]), [
-    [9, "queued", "github.pull_request.comment acme/board#212", "kept, still queued · 11:50"],
-    [7, "done", "github.check_run.completed acme/board#212", "woke, delivered as prompt, fired wait 2 · 11:00"],
-    [5, "ready", "github.pull_request.comment acme/board#212", "kept, fired wait 4 (routed to task 3) · Nov 19, 10:00"],
+    [9, "queued", "GitHub pull request comment acme/board#212", "kept, still queued · 11:50"],
+    [7, "done", "GitHub check run completed acme/board#212", "woke, delivered as prompt, fired wait 2 · 11:00"],
+    [5, "ready", "GitHub pull request comment acme/board#212", "kept, fired wait 4 (routed to task 3) · Nov 19, 10:00"],
   ]);
   const { handled: web } = await import("../../../crates/priory-core/web/inbox.js");
   for (const event of inbox) assert.equal(view.inbox.find((row) => row.id === event.seq).note.split(" · ")[0], web(event, 1));
@@ -84,8 +84,8 @@ test("the Priory bar opens a read-only terminal for Watch and a typing one for A
   herdr.reset();
   herdr.replies = { attach: "tmux attach" };
   const bar = new Tabs();
-  bar.init();
   const cx = context();
+  bar.init(cx);
   for (const readOnly of [true, false]) {
     herdr.shared.set("priory.attach", { task: 2, at: Date.now() + (readOnly ? 1 : 2), readOnly });
     draw(bar, cx);
@@ -99,8 +99,8 @@ test("the Priory bar opens the Task tab for a new request, and not for one left 
   herdr.reset();
   herdr.shared.set("priory.task.open", { task: 1, at: Date.now() - 60_000 });
   const bar = new Tabs();
-  bar.init();
   const cx = context();
+  bar.init(cx);
   draw(bar, cx);
   await settle();
   assert.deepEqual(herdr.runs, []);

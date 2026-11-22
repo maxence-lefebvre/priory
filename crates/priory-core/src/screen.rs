@@ -30,6 +30,11 @@ static SHAPES: LazyLock<Regex> = LazyLock::new(|| {
     .expect("the secret shapes compile")
 });
 
+/// Whether `text` holds a secret by its shape, such as a GitHub token or a PEM private key.
+pub(crate) fn holds_secret(text: &str) -> bool {
+    SHAPES.is_match(text)
+}
+
 static PEM_END: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"-----END [A-Z ]*PRIVATE KEY-----").expect("the PEM end compiles")
 });
@@ -73,18 +78,49 @@ pub fn secrets(names: &[String]) -> Vec<String> {
 /// `text` with each of the `exact` values and each secret shape replaced by `[redacted]`, and how
 /// many it replaced. A hidden span keeps its line breaks, so rows stay rows. Secrets are found in
 /// the text without its SGR colour codes, so a code cannot split one; a code inside a hidden span
-/// moves after it. A value that `[redacted]` holds cannot be hidden and is skipped. None when a
+/// moves after it. With the pane's `width`, a row exactly that wide wrapped onto the next one, so
+/// a second search leaves its line break out of the text as it does a code, and finds a secret
+/// that wraps whole. A value that `[redacted]` holds cannot be hidden and is skipped. None when a
 /// secret still shows after 8 passes.
-pub fn redact(text: &str, exact: &[String]) -> Option<(String, usize)> {
+pub fn redact(text: &str, exact: &[String], width: Option<usize>) -> Option<(String, usize)> {
+    let (mut shown, mut count) = redact_rows(text, exact, None)?;
+    if width.is_none() {
+        return Some((shown, count));
+    }
+    for _ in 0..8 {
+        let (wrapped, more) = redact_rows(&shown, exact, width)?;
+        if more == 0 {
+            return Some((shown, count));
+        }
+        // A value with a line break of its own is found only with the rows kept apart.
+        let (rows, again) = redact_rows(&wrapped, exact, None)?;
+        (shown, count) = (rows, count + more + again);
+    }
+    None
+}
+
+/// One search of `redact`, which joins the rows exactly `width` wide to the next.
+fn redact_rows(text: &str, exact: &[String], width: Option<usize>) -> Option<(String, usize)> {
     let exact: Vec<_> = exact
         .iter()
         .filter(|secret| !HIDDEN.contains(secret.as_str()))
         .collect();
+    let mut moved: Vec<Range<usize>> = SGR.find_iter(text).map(|code| code.range()).collect();
+    if let Some(width) = width.filter(|width| *width > 0) {
+        let mut start = 0;
+        for (at, _) in text.match_indices('\n') {
+            if plain(&text[start..at]).chars().count() == width {
+                moved.push(at..at + 1);
+            }
+            start = at + 1;
+        }
+        moved.sort_by_key(|code| code.start);
+    }
     let (mut plain, mut codes, mut at) = (String::new(), Vec::new(), 0);
-    for code in SGR.find_iter(text) {
-        plain.push_str(&text[at..code.start()]);
-        codes.push((plain.len(), code.as_str()));
-        at = code.end();
+    for code in moved {
+        plain.push_str(&text[at..code.start]);
+        codes.push((plain.len(), &text[code.clone()]));
+        at = code.end;
     }
     plain.push_str(&text[at..]);
     let mut count = 0;
@@ -163,6 +199,22 @@ fn hide(text: &str, spans: &[Range<usize>], codes: &mut [(usize, &str)]) -> Stri
     out
 }
 
+/// Why a run's screen was not read: its run is gone, or the live run's pane could not be read or
+/// shown this time.
+#[derive(Debug)]
+pub enum Unread {
+    Gone(String),
+    Unreadable(String),
+}
+
+impl From<Unread> for String {
+    fn from(unread: Unread) -> String {
+        match unread {
+            Unread::Gone(why) | Unread::Unreadable(why) => why,
+        }
+    }
+}
+
 /// The screen of the live run `target` names after up to `history` rows of its scrollback, with
 /// `exact` and the secret shapes hidden, its colour codes kept and its links dropped, and a hash of
 /// it; or why there is none. `cut` counts the top rows left out to keep it under 256 KiB.
@@ -171,15 +223,20 @@ pub fn read(
     target: &state::Attach,
     exact: &[String],
     history: usize,
-) -> Result<Value, String> {
-    let run = state::live_run(db, target)?;
+) -> Result<Value, Unread> {
+    let run = state::live_run(db, target).map_err(Unread::Gone)?;
     let snapshot = runtime::snapshot(&run.tmux, &run.session, history, DEADLINE)
-        .ok_or_else(|| state::no_pane(&run))?;
+        .ok_or_else(|| Unread::Unreadable(state::no_pane(&run)))?;
     let rows = LINK
         .replace_all(&snapshot.lines.join("\n"), "")
         .into_owned();
-    let (shown, redacted) = redact(&rows, exact)
-        .ok_or("a secret on this screen stays visible after redaction, so it is not shown")?;
+    let (shown, redacted) =
+        redact(&rows, exact, Some(usize::from(snapshot.width))).ok_or_else(|| {
+            Unread::Unreadable(
+                "a secret on this screen stays visible after redaction, so it is not shown"
+                    .to_owned(),
+            )
+        })?;
     let mut lines: Vec<&str> = shown.split('\n').collect();
     let mut weight: usize = lines
         .iter()
@@ -234,13 +291,17 @@ mod tests {
     #[test]
     fn a_secret_the_marker_holds_is_skipped_and_one_that_keeps_coming_back_hides_the_screen() {
         assert_eq!(
-            redact("x [redacted] y", &["[redacted]".to_owned()]),
+            redact("x [redacted] y", &["[redacted]".to_owned()], None),
             Some(("x [redacted] y".to_owned(), 0))
         );
         let returning = format!("{}[redacted]", "a".repeat(9));
-        assert_eq!(redact(&returning, &["a[redacted]".to_owned()]), None);
+        assert_eq!(redact(&returning, &["a[redacted]".to_owned()], None), None);
         assert_eq!(
-            redact("a pem\n-----BEGIN RSA PRIVATE KEY-----\nMIIE\nabc", &[]),
+            redact(
+                "a pem\n-----BEGIN RSA PRIVATE KEY-----\nMIIE\nabc",
+                &[],
+                None
+            ),
             Some(("a pem\n[redacted]\n\n".to_owned(), 1))
         );
     }
@@ -248,13 +309,18 @@ mod tests {
     #[test]
     fn a_pem_key_whose_start_is_above_the_rows_hides_every_row_down_to_its_end() {
         assert_eq!(
-            redact("MIIEpAIB\nabcd\n-----END RSA PRIVATE KEY-----\nafter", &[]),
+            redact(
+                "MIIEpAIB\nabcd\n-----END RSA PRIVATE KEY-----\nafter",
+                &[],
+                None
+            ),
             Some(("[redacted]\n\n\nafter".to_owned(), 1))
         );
         assert_eq!(
             redact(
                 "a\n-----BEGIN EC PRIVATE KEY-----\nx\n-----END EC PRIVATE KEY-----\nb",
-                &[]
+                &[],
+                None
             ),
             Some(("a\n[redacted]\n\n\nb".to_owned(), 1))
         );
@@ -264,12 +330,42 @@ mod tests {
     fn a_secret_split_by_colour_codes_is_hidden_and_the_codes_after_it_stay() {
         let token = "abcdefghij".to_owned();
         assert_eq!(
-            redact("T=\x1b[1mabc\x1b[31mdefghij\x1b[0m ok", &[token]),
+            redact("T=\x1b[1mabc\x1b[31mdefghij\x1b[0m ok", &[token], None),
             Some(("T=\x1b[1m[redacted]\x1b[31m\x1b[0m ok".to_owned(), 1))
         );
         assert_eq!(
-            redact("\x1b[32mghp_\x1b[1mabcdefghijklmnopqrstuvwxyz\x1b[0m", &[]),
+            redact(
+                "\x1b[32mghp_\x1b[1mabcdefghijklmnopqrstuvwxyz\x1b[0m",
+                &[],
+                None
+            ),
             Some(("\x1b[32m[redacted]\x1b[1m\x1b[0m".to_owned(), 1))
+        );
+    }
+
+    #[test]
+    fn a_secret_that_wraps_to_the_next_row_is_hidden_and_the_rows_stay() {
+        let token = "ghp_ABCDEFGHIJKLMNOPQRSTUV";
+        let text = format!(
+            "{} {}\n{} ok\nnext",
+            "x".repeat(9),
+            &token[..10],
+            &token[10..]
+        );
+        assert_eq!(
+            redact(&text, &[], Some(20)),
+            Some((format!("{} [redacted]\n ok\nnext", "x".repeat(9)), 1))
+        );
+        let exact = "s3cr3t-value-0123".to_owned();
+        let text = format!("{}s3cr3t\n-value-0123 ok", "y".repeat(14));
+        assert_eq!(
+            redact(&text, std::slice::from_ref(&exact), Some(20)),
+            Some((format!("{}[redacted]\n ok", "y".repeat(14)), 1))
+        );
+        assert_eq!(
+            redact("short ghp_ABCDEFGHIJ\nKLMNOPQRSTUVWXYZ", &[], Some(40)),
+            Some(("short ghp_ABCDEFGHIJ\nKLMNOPQRSTUVWXYZ".to_owned(), 0)),
+            "a row shorter than the pane ended where the application broke it"
         );
     }
 
@@ -279,6 +375,7 @@ mod tests {
             secrets in prop::collection::vec("[a-z\\]\\[ é\n-]{8,12}", 0..3),
             pieces in prop::collection::vec(".{0,12}|ghp_[a-z]{20}|\\[redacted\\]", 0..12),
             picks in prop::collection::vec(0usize..3, 0..12),
+            width in prop::option::of(0usize..16),
         ) {
             let mut text = String::new();
             for (piece, pick) in pieces.iter().zip(picks.iter().chain(std::iter::repeat(&0))) {
@@ -288,7 +385,7 @@ mod tests {
                     text.push_str(secret);
                 }
             }
-            let Some((shown, _)) = redact(&text, &secrets) else { return Ok(()) };
+            let Some((shown, _)) = redact(&text, &secrets, width) else { return Ok(()) };
             for secret in secrets.iter().filter(|secret| !HIDDEN.contains(secret.as_str())) {
                 prop_assert!(!shown.contains(secret.as_str()), "{secret:?} in {shown:?}");
             }
@@ -314,8 +411,8 @@ mod tests {
                 text.insert_str(at, code);
             }
             let plain = super::SGR.replace_all(&text, "").into_owned();
-            let Some((bare, count)) = redact(&plain, std::slice::from_ref(&secret)) else { return Ok(()) };
-            let (shown, coloured) = redact(&text, std::slice::from_ref(&secret)).expect("the plain text redacts");
+            let Some((bare, count)) = redact(&plain, std::slice::from_ref(&secret), None) else { return Ok(()) };
+            let (shown, coloured) = redact(&text, std::slice::from_ref(&secret), None).expect("the plain text redacts");
             prop_assert_eq!(super::SGR.replace_all(&shown, "").into_owned(), bare);
             prop_assert_eq!(coloured, count);
             prop_assert_eq!(super::SGR.find_iter(&shown).count(), super::SGR.find_iter(&text).count());

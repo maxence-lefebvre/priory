@@ -24,14 +24,50 @@ export function elsewhere(task, ago) {
 }
 
 /**
- * Each facet's key, label and a task's values, as the Asks list's facets. A task with no lane
- * shows under `none`. @type {[string, string, (task: any) => string[]][]}
+ * The actions another runner's task offers, by its hold, since its state stays on its runner: a
+ * kept task also takes Say. Its runner refuses what does not fit. @param {any} task @returns {string[]}
+ */
+export function remoteActs(task) {
+  if (task.id != null || !task.runner) return [];
+  return task.hold === "kept" ? ["resume", "cancel", "release"] : ["cancel"];
+}
+
+/** Another runner's task's id in `/api/tasks/{id}/{act}`: its runner and key, percent-encoded. @param {any} task */
+export const remoteId = (task) => `${task.runner}:${encodeURIComponent(task.key)}`;
+
+/**
+ * What became of the newest action sent to another runner's task: pending, refused with why, or
+ * applied, else null. @param {any} task @returns {{ text: string, tone: "action" | "warn" | "quiet" } | null}
+ */
+export function remoteSent(task) {
+  const last = task.id == null ? task.submissions?.at(-1) : null;
+  if (!last) return null;
+  const what = last.act === "say" ? `say “${last.text}”` : last.act;
+  if (last.outcome === "refused") return { text: `${task.runner} refused ${what}: ${last.why}`, tone: "warn" };
+  if (last.outcome) return { text: `${task.runner} applied ${what}`, tone: "quiet" };
+  return { text: `Sent to ${task.runner}: ${what}`, tone: "action" };
+}
+
+/**
+ * Each facet's key, label and a task's values, as the Asks list's facets. A task with no lane, or
+ * another runner's task with no workflow, shows under `none`. @type {[string, string, (task: any) => string[]][]}
  */
 export const TASK_FACETS = [
   ["state", "State", (task) => [task.state ?? "elsewhere"]],
   ["lane", "Lane", (task) => [task.lane ?? "none"]],
-  ["workflow", "Workflow", (task) => [task.workflow]],
+  ["workflow", "Workflow", (task) => [task.workflow ?? "none"]],
 ];
+
+/**
+ * The task facets, with a Runner facet in a factory of several runners, where every task names one.
+ * Like the Asks list's, it has no order and names this runner "<name> (here)". @param {any[]} tasks
+ * @returns {any[]}
+ */
+export function taskFacets(tasks) {
+  if (!tasks.some((task) => task.runner)) return TASK_FACETS;
+  const named = (name) => (tasks.some((task) => task.runner === name && task.id != null) ? `${name} (here)` : name);
+  return [...TASK_FACETS, ["runner", "Runner", (task) => [task.runner ?? "none"], null, named]];
+}
 
 /**
  * The items every picked facet value matches. @template T @param {T[]} items

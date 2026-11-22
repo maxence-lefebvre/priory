@@ -47,7 +47,7 @@ const OUTPUT: &str = "factory.intake";
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
 /// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, 66, which added the step a gate enters after the merge, 70, which added idle compactions and session definitions, and 71, which added cleared deliveries, ended snoozes and withdrawal times. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
@@ -105,6 +105,11 @@ impl Setup {
             tmux,
             log_url: None,
         };
+        // The daemon makes its kit snapshots read-only, which a user other than root cannot remove.
+        let _ = Command::new("chmod")
+            .args(["-R", "u+w"])
+            .arg(&setup.dir)
+            .status();
         let _ = fs::remove_dir_all(&setup.dir);
         let files = [
             ("factory/factory.toml", "name = \"demo\""),
@@ -549,12 +554,24 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     let runs = setup.rows("runs");
-    let [id, task, step, tmux, session, _started, ended, end, kit] = &runs[0][..] else {
+    let [
+        id,
+        task,
+        step,
+        tmux,
+        session,
+        _started,
+        ended,
+        end,
+        kit,
+        commit,
+    ] = &runs[0][..]
+    else {
         panic!("runs: {runs:?}");
     };
     assert_eq!(
-        [id, task, step, tmux, ended, end, kit].map(String::as_str),
-        ["1", "1", "implement", "priory-1", "-", "-", "-"],
+        [id, task, step, tmux, ended, end, kit, commit].map(String::as_str),
+        ["1", "1", "implement", "priory-1", "-", "-", "-", "-"],
         "a factory without skills or instructions gives its runs none"
     );
     assert!(uuid::Uuid::parse_str(session).is_ok(), "session {session}");
@@ -923,7 +940,7 @@ fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trus
     setup.publish(&requested(42));
     fs::write(
         setup.dir.join("fake/silent"),
-        "  Hooks need review\n\n  3 hooks are new or changed\n  › 1. Review hooks\n",
+        "  token ghp_abcdefghijklmnopqrstuvwxyz0123 refused\n  Hooks need review\n\n  3 hooks are new or changed\n  › 1. Review hooks\n",
     )
     .unwrap();
     setup.start();
@@ -942,12 +959,16 @@ fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trus
     assert!(reason.starts_with(&prefix), "{reason}");
     assert!(
         reason.ends_with(
-            ", accept the folder, type /hooks and trust Priory's hooks, then exit. Its pane ended with: Hooks need review | 3 hooks are new or changed | › 1. Review hooks"
+            ", accept the folder, type /hooks and trust Priory's hooks, then exit. Its pane ended with: token [redacted] refused | Hooks need review | 3 hooks are new or changed | › 1. Review hooks"
         ),
         "{reason}"
     );
     let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
     assert!(log.contains("  3 hooks are new or changed\n"), "{log}");
+    assert!(
+        !log.contains("ghp_abcdefghij"),
+        "the log shows no secret: {log}"
+    );
     let outbox = setup.rows("outbox");
     assert_eq!(
         [outbox.len(), with(&outbox, 3, "queued")],
@@ -2047,6 +2068,19 @@ fn teardown_kills_a_tmux_server_that_a_late_child_starts() {
     assert!(!listed.status.success(), "a tmux server outlived its test");
 }
 
+/// Whether process `pid` has exited. An init that reaps late, as in some containers, leaves a dead
+/// process a zombie for a while. Without `/proc`, a zombie counts as alive.
+fn exited(pid: &str) -> bool {
+    if !Path::new("/proc/self/stat").exists() {
+        let alive = Command::new("kill").args(["-0", pid]).output().unwrap();
+        return !alive.status.success();
+    }
+    fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+        stat.rsplit_once(") ")
+            .is_some_and(|(_, rest)| rest.starts_with(['Z', 'X']))
+    })
+}
+
 #[test]
 fn a_test_that_panics_after_its_run_starts_leaves_no_tmux_server() {
     let mut server = None;
@@ -2063,10 +2097,11 @@ fn a_test_that_panics_after_its_run_starts_leaves_no_tmux_server() {
 
     assert!(caught.is_err());
     let (socket, pid) = server.expect("the run never got a tmux session");
-    assert!(
-        !Path::new(&format!("/proc/{pid}")).exists(),
-        "tmux server {pid} outlived its test"
-    );
+    if Path::new("/proc/self/stat").exists() {
+        assert!(exited(&pid), "tmux server {pid} outlived its test");
+    } else {
+        eprintln!("skipped the pid check: this host has no /proc to tell whether {pid} lives");
+    }
     let listed = Command::new("tmux")
         .args(["-S", &socket, "list-sessions"])
         .output()
@@ -3473,7 +3508,8 @@ fn an_agent_ask_sleeps_the_task_and_the_answer_wakes_it_as_its_prompt() {
             "github:owner/repo#42",
             "-",
             "-",
-            "-"
+            "-",
+            "-",
         ]]
     );
 
@@ -3755,6 +3791,7 @@ fn an_agent_ask_stores_and_lists_its_title_text_what_waits_next_action_and_comma
             "stored",
             "-",
             "github:owner/repo#42",
+            "-",
             "-",
             "-",
             "-",
@@ -4306,6 +4343,7 @@ fn an_outside_ask_takes_fleets_json_shows_on_the_desk_and_a_changed_one_is_a_new
             "cache",
             "run-7",
             "cache-worker",
+            "-",
             "-",
         ]
     };
@@ -5783,6 +5821,9 @@ fn the_mcp_server_lists_its_tools() {
             "unsubscribe",
             "relate",
             "finding",
+            "remember",
+            "forget",
+            "memory",
             "compact",
             "tldr",
             "report",
@@ -5850,7 +5891,8 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+        "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation;
+         ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition;
@@ -5866,7 +5908,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          ALTER TABLE actions DROP COLUMN stdout; ALTER TABLE actions DROP COLUMN stderr;
          ALTER TABLE actions DROP COLUMN pid; ALTER TABLE actions DROP COLUMN pid_started;
          ALTER TABLE actions DROP COLUMN ended;
-         ALTER TABLE tasks DROP COLUMN progress; ALTER TABLE tasks DROP COLUMN base_sha;
+         ALTER TABLE tasks DROP COLUMN progress; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha;
          ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head;
          DROP TABLE deliveries;
          DROP TABLE reports;
@@ -6581,11 +6623,15 @@ fn a_merge_that_moves_a_said_run_to_another_agent_kills_its_session_and_starts_t
     let runs = setup.rows("runs");
     assert_eq!(runs.len(), 4, "{runs:?}");
     assert_eq!(runs[3][2], "watch");
-    let alive = Command::new("kill")
-        .args(["-0", said.trim()])
-        .status()
-        .unwrap();
-    assert!(!alive.success(), "the said run's agent {said} still runs");
+    // Killing its session hangs the agent up, and it exits once it is scheduled.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !exited(said.trim()) {
+        assert!(
+            Instant::now() < deadline,
+            "the said run's agent {said} still runs"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]
@@ -6788,6 +6834,33 @@ fn commented() -> Message {
         json!({ "actor": "ana", "body": "One more thing.", "url": "u", "github_id": 701 }),
     )
     .time(herdr_bus::Timestamp::now())
+}
+
+#[test]
+fn a_comment_on_a_pull_request_reopened_after_its_close_reopens_the_done_task() {
+    let setup = gated("reopen-after-close");
+    setup.publish(&check(1, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1100));
+    let mut close = closed().time(herdr_bus::Timestamp::now());
+    close.data["merged"] = json!(false);
+    close.data["open"] = json!(false);
+    setup.publish(&close);
+    setup.until("inbox", |rows| rows.len() == 4);
+    std::thread::sleep(Duration::from_millis(1100));
+
+    let mut comment = commented();
+    comment.data["open"] = json!(true);
+    setup.publish(&comment);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    assert!(
+        setup.typed()[2].starts_with(
+            "Feedback reopened this done task as generation 2: ana commented on github:owner/repo#7"
+        ),
+        "{:?}",
+        setup.typed()
+    );
 }
 
 #[test]
@@ -9573,6 +9646,86 @@ fn a_blockers_hold_releases_the_task_when_its_issue_has_no_open_blocker_left() {
     setup.until("tasks", |rows| rows[0][4] == "running");
 }
 
+fn left_view() -> Message {
+    let mut left = linear_7("linear.issue.left", &[]);
+    left.data["view"] = json!("My loop backlog");
+    left
+}
+
+#[test]
+fn an_issue_that_leaves_the_view_before_its_task_ran_asks_to_drop_or_keep_it() {
+    for (name, answer, state) in [
+        ("left-view-drop", "drop", "dropped"),
+        ("left-view-keep", "keep", "queued"),
+    ] {
+        let mut setup = Setup::new(name);
+        setup.memory(0);
+        let source = linear_7("linear.issue.entered", &[]);
+        let mut request = requested(42);
+        request.data["key"] = json!("linear:ENG-7");
+        request.data["source"] = json!(source.id.to_string());
+        setup.publish(&source);
+        setup.publish(&request);
+        setup.start();
+        setup.until("tasks", |rows| rows.len() == 1);
+
+        setup.publish(&left_view());
+
+        let asks = setup.until("asks", |rows| rows.len() == 1);
+        assert_eq!(
+            [&*asks[0][1], &asks[0][3], &asks[0][4]],
+            [
+                "1",
+                "ENG-7 left the view My loop backlog. Drop the task?",
+                "[\"drop\",\"keep\"]"
+            ],
+            "{name}"
+        );
+        assert_eq!(
+            held_as(&setup, "1"),
+            [
+                "held".to_owned(),
+                "held: left the view My loop backlog, until a person answers whether to keep it"
+                    .to_owned()
+            ],
+            "{name}"
+        );
+
+        person(&setup, "answer", &[&asks[0][0], answer, "--revision", "1"]);
+
+        assert_eq!(held_as(&setup, "1")[0], state, "{name}");
+        if answer == "drop" {
+            assert_eq!(
+                held_as(&setup, "1")[1],
+                "dropped by a person after its issue left the view"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_issue_that_leaves_the_view_wakes_its_asleep_task() {
+    let mut setup = Setup::new("left-view-asleep");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    setup.publish(&request.subject("linear:ENG-7"));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+
+    setup.publish(&left_view().time(herdr_bus::Timestamp::now()));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(inbox[1][4], "woke");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with("linear.issue.left ENG-7 {"),
+        "{:?}",
+        setup.typed()
+    );
+    assert!(setup.rows("asks").is_empty());
+}
+
 #[test]
 fn a_blockers_hold_stays_when_the_newest_blockers_are_unknown() {
     let mut setup = Setup::new("hold-blockers-unknown");
@@ -10020,7 +10173,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     // The state file as version 64 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+        "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
@@ -10868,6 +11021,20 @@ fn wait_since(setup: &Setup) -> herdr_bus::Timestamp {
         .unwrap()
 }
 
+/// A second after the first wait was stored, which the state keeps to the second: the earliest
+/// instant a Slack reply surely counts for it.
+fn after_wait_stored(setup: &Setup) -> herdr_bus::Timestamp {
+    let created: herdr_bus::Timestamp = rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT created FROM waits ORDER BY id LIMIT 1", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap()
+        .parse()
+        .unwrap();
+    created.checked_add(Duration::from_secs(1)).unwrap()
+}
+
 /// Slack's `ts` for `time`: seconds since the epoch, with six decimals.
 fn ts(time: herdr_bus::Timestamp) -> String {
     format!("{}.{:06}", time.as_second(), time.subsec_microsecond())
@@ -10888,7 +11055,8 @@ fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_do
 
     setup.intake();
     stays_asleep(&setup);
-    let person = stored;
+    // A reply counts once the wait is stored.
+    let person = after_wait_stored(&setup);
     setup.answer_slack(&[old, slack_message(&ts(person), "U0PERSON"), mine]);
     setup.intake();
 
@@ -10929,7 +11097,7 @@ fn a_slack_reply_names_its_author_by_display_name_asking_slack_once_per_user() {
         json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
     );
     let stored = wait_since(&setup);
-    let later = stored.checked_add(Duration::from_secs(1)).unwrap();
+    let later = after_wait_stored(&setup);
     let mut messages =
         vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
     messages.extend([
@@ -11188,9 +11356,8 @@ fn a_failing_slack_channel_still_lets_a_watched_thread_publish_its_reply() {
         "source = \"slack\"\nchannel = \"C0999\"\non = \"message.posted\"\nworkflow = \"implement\"\n",
     )
     .unwrap();
-    let stored = wait_since(&setup);
     // The fake answers no `conversations.history`, so the trigger's channel fails.
-    setup.answer_slack(&[slack_message(&ts(stored), "U0PERSON")]);
+    setup.answer_slack(&[slack_message(&ts(after_wait_stored(&setup)), "U0PERSON")]);
 
     let output = setup.poll(&[]);
 
@@ -11280,6 +11447,49 @@ fn a_rate_limited_poll_starts_with_a_different_thread_each_minute() {
         replied.contains(&THREAD.to_owned()) && replied.contains(&other.to_owned()),
         "{replied:?}"
     );
+}
+
+#[test]
+fn a_rate_limited_poll_reads_the_thread_of_an_open_wait_before_a_done_tasks_thread() {
+    let mut setup = Setup::new("slack-wait-first");
+    let waited = "1763500009.000100";
+    setup.calls(&[
+        result("passed"),
+        wait(json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": waited })),
+    ]);
+    let key = format!("slack:C0123:{THREAD}");
+    let mut request = requested(42);
+    request.data["key"] = json!(key);
+    setup.publish(&request.subject(&key));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    setup.publish(&requested(43));
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    let bin = setup.dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let auth = json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" });
+    // One read a poll: each later call is refused, and every call's thread is logged.
+    let script = format!(
+        "#!/bin/sh\ncat > /dev/null\ncase \"$*\" in\n  *auth.test*) echo '{auth}' ;;\n  *conversations.replies*)\n    \
+         thread=$(echo \"$*\" | sed 's/.*ts=\\([0-9.]*\\).*oldest.*/\\1/')\n    \
+         echo \"$thread\" >> '{dir}/threads'\n    \
+         if [ -e '{dir}/called' ]; then echo '{{\"ok\":false,\"error\":\"ratelimited\"}}'; exit 0; fi\n    \
+         touch '{dir}/called'\n    \
+         echo '{{\"ok\":true,\"has_more\":false,\"messages\":[]}}' ;;\nesac\n",
+        dir = setup.dir.display(),
+    );
+    fs::write(bin.join("curl"), script).unwrap();
+    fs::set_permissions(bin.join("curl"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    for now in ["2026-11-19T10:00:00Z", "2026-11-19T10:01:00Z"] {
+        let _ = fs::remove_file(setup.dir.join("called"));
+        let _ = fs::remove_file(setup.dir.join("threads"));
+        setup.intake_with(&[("PRIORY_NOW", now)]);
+        let threads = fs::read_to_string(setup.dir.join("threads")).unwrap();
+        assert_eq!(threads.lines().next(), Some(waited), "{now}: {threads}");
+    }
 }
 
 /// A Linear GraphQL answer holding `nodes` at `field`.
@@ -13577,7 +13787,7 @@ fn an_agreed_pick_changes_until_the_workflow_applies_it_and_wakes_the_task_with_
         shown(&setup)["sections"][0]["rows"][0]["pick"]["chosen"],
         "Later"
     );
-    // The woken agent can get other prompts, such as a nudge, around the change's line.
+    // A nudge queued before the change can share its prompt, so the line need not come first.
     let line = format!(
         "The person changed their pick on {PICK} in your report from Take to Later: apply Later instead, then write the report again with the pick's applied filled."
     );
@@ -13585,7 +13795,7 @@ fn an_agreed_pick_changes_until_the_workflow_applies_it_and_wakes_the_task_with_
     while !setup
         .typed()
         .iter()
-        .any(|typed| typed.lines().next() == Some(line.as_str()))
+        .any(|typed| typed.lines().any(|typed| typed == line))
     {
         assert!(Instant::now() < deadline, "{:?}", setup.typed());
         std::thread::sleep(Duration::from_millis(50));
@@ -13595,6 +13805,34 @@ fn an_agreed_pick_changes_until_the_workflow_applies_it_and_wakes_the_task_with_
         String::from_utf8_lossy(&same.stderr),
         format!("priory report pick: pick {PICK} is already Later\n")
     );
+}
+
+#[test]
+fn a_pick_changed_to_an_option_that_requests_a_task_tells_the_agent_not_to_apply_the_first() {
+    let requests = json!({ "Later": {
+        "workflow": "implement", "key": "fnd-2409", "text": "Fix the DWARF pause", "repo": "owner/repo"
+    } });
+    let setup = asleep_on_a_report("report-change-request", &bonjour(requests));
+    let first = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+    assert!(first.status.success(), "{first:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+
+    let changed = setup.priory(&["report", "pick", PICK, "Later", "--expected", "2"]);
+
+    assert!(changed.status.success(), "{changed:?}");
+    setup.until("tasks", |rows| rows.len() == 2);
+    let line = format!(
+        "The person changed their pick on {PICK} in your report from Take to Later: do not apply Take. Priory requested Later's task and filled the pick's applied."
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !setup
+        .typed()
+        .iter()
+        .any(|typed| typed.lines().any(|typed| typed == line))
+    {
+        assert!(Instant::now() < deadline, "{:?}", setup.typed());
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]
@@ -13781,6 +14019,26 @@ fn a_chosen_pick_whose_request_the_bus_refused_publishes_it_when_the_daemon_star
             "requested task cli:fnd-2409 in workflow implement on owner/repo, the cli trigger's intervention: Fix the DWARF pause"
         ]
     );
+}
+
+#[test]
+fn a_chosen_pick_whose_request_the_bus_refused_publishes_it_once_the_bus_takes_messages_again() {
+    let requests = json!({ "Take": {
+        "workflow": "implement", "key": "fnd-2409", "text": "Fix the DWARF pause", "repo": "owner/repo"
+    } });
+    let setup = asleep_on_a_report("report-retried", &bonjour(requests));
+    let bus = rusqlite::Connection::open(setup.dir.join("bus.db")).unwrap();
+    bus.execute_batch(
+        "CREATE TRIGGER full BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT, 'bus full'); END",
+    )
+    .unwrap();
+
+    let take = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+    bus.execute_batch("DROP TRIGGER full").unwrap();
+
+    assert!(!take.status.success(), "{take:?}");
+    let tasks = setup.until("tasks", |rows| rows.len() == 2);
+    assert_eq!(tasks[1][1], "cli:fnd-2409");
 }
 
 #[test]
@@ -14150,6 +14408,52 @@ fn unrouted_events_no_task_ever_owned_count_per_source_without_a_tasks_source_ev
 }
 
 #[test]
+fn an_event_an_asleep_task_keeps_and_no_agent_read_is_listed_and_counted_as_unheard() {
+    let mut setup = Setup::new("inbox-unheard");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    let output = setup.priory(&["unsubscribe", "1", "github:owner/repo#42"]);
+    assert!(output.status.success(), "{output:?}");
+    let written = herdr_bus::Timestamp::now() - jiff::SignedDuration::from_mins(10);
+    setup.publish(&issue_commented(902).time(written));
+    let inbox = setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(inbox[1][4], "kept");
+
+    let output = setup.priory(&["inbox", "--unrouted", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let unheard = &listed["unrouted"]["unheard"];
+    assert_eq!(unheard.as_array().map(Vec::len), Some(1), "{listed}");
+    assert_eq!(unheard[0]["task"]["id"], 1);
+    assert_eq!(unheard[0]["task"]["state"], "asleep");
+    assert_eq!(unheard[0]["events"][0]["seq"], 2);
+    assert_eq!(unheard[0]["events"][0]["line"], "Also the empty case.");
+    assert_eq!(
+        unheard[0]["follow_up"],
+        "priory say 1 'Read the events that came while you slept.'"
+    );
+
+    let output = setup.priory(&["inbox", "--unrouted"]);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.contains("task 1 asleep kept 1 event no agent read:\n  2  github.issues.comment  owner/repo#42  Also the empty case.\n  priory say 1 "),
+        "{text}"
+    );
+
+    let desk = setup.priory(&["desk", "--json"]);
+    let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+    assert_eq!(desk["counts"]["unheard"], 1, "{desk}");
+    let desk = setup.priory(&["desk"]);
+    let text = String::from_utf8(desk.stdout).unwrap();
+    assert!(
+        text.contains("1 event kept by a sleeping task reached no agent. See it with `priory inbox --unrouted`."),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_comment_on_a_subscribed_pull_request_reopens_the_done_task() {
     let mut setup = Setup::new("subscribe-done");
     setup.calls(&[json!([subscribe("subscribe"), result("passed")])]);
@@ -14339,6 +14643,29 @@ fn a_closed_pull_request_wakes_its_subscriber_and_ends_its_subscriptions() {
         setup.typed()
     );
     assert_eq!(subscriptions(&setup, "1"), ["github:owner/repo#42"]);
+}
+
+#[test]
+fn a_pull_request_reopened_after_its_close_gives_back_the_subscriptions_the_close_ended() {
+    let setup = subscribed("subscribe-reopened");
+    let mut close = off_branch(closed());
+    close.data["merged"] = json!(false);
+    setup.publish(&close);
+    setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(subscriptions(&setup, "1"), ["github:owner/repo#42"]);
+
+    let mut reopened = off_branch(on_pull(
+        "github.pull_request.synchronize",
+        json!({ "github_id": 702, "open": true }),
+    ));
+    reopened.data["head_sha"] = json!(format!("72{}", "0".repeat(38)));
+    setup.publish(&reopened);
+
+    setup.until("inbox", |rows| rows.len() == 3);
+    assert_eq!(
+        subscriptions(&setup, "1"),
+        ["github:owner/repo#42", "github:owner/repo#7"]
+    );
 }
 
 #[test]
@@ -15478,6 +15805,31 @@ fn a_comment_on_the_middle_pull_request_wakes_the_task_naming_its_place_in_the_s
             .contains("ana commented on github:owner/repo#8 (#8, 2 of 3): One more thing. u"),
         "{outbox:?}"
     );
+}
+
+#[test]
+fn a_comment_on_a_merged_pull_request_of_an_open_stack_wakes_the_task() {
+    let setup = opened_stack("stack-merged-comment");
+    setup.publish(&merged(9));
+    stays_asleep_after(&setup, 1);
+    let comment = on_stack(
+        9,
+        "github.pull_request.comment",
+        json!({ "actor": "ana", "body": "This drops the BOM, fix it in #8.", "url": "u",
+                "github_id": 901, "open": false }),
+    )
+    .time(herdr_bus::Timestamp::now());
+
+    setup.publish(&comment);
+
+    let outbox = setup.until("outbox", |rows| rows.len() == 2);
+    assert!(
+        outbox[1][4].contains(
+            "ana commented on github:owner/repo#9 (#9, 3 of 3): This drops the BOM, fix it in #8. u"
+        ),
+        "{outbox:?}"
+    );
+    setup.until("runs", |rows| rows.len() == 2);
 }
 
 #[test]
@@ -16674,12 +17026,12 @@ fn the_approve_pr_ask_shows_its_tasks_merge_risk_and_asks_filter_by_it() {
     let text = String::from_utf8(setup.priory(&["asks"]).stdout).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(
-        lines[0].split('\t').next_back(),
-        Some("merge_risk"),
+        lines[0].split('\t').rev().take(2).collect::<Vec<_>>(),
+        ["risk_estimate", "merge_risk"],
         "{text}"
     );
     assert!(
-        lines[1].ends_with("\tmedium: does what the issue asks; low: one widget; medium: a test draws the box; low: one revert; low: the widget test fails"),
+        lines[1].contains("\tmedium: does what the issue asks; low: one widget; medium: a test draws the box; low: one revert; low: the widget test fails\tHistory: 0 of 0 tasks"),
         "{text}"
     );
 }
@@ -17716,6 +18068,114 @@ fn a_malformed_answer_for_this_runner_is_refused_and_the_daemon_goes_on() {
 }
 
 #[test]
+fn a_message_from_a_runner_without_a_runner_file_is_refused_and_listed_nowhere() {
+    let mut a = runner("unknown-runner", "a", None);
+    let ask = json!({ "id": 1, "question": "Ship it?", "options": ["yes", "no"] });
+    for (kind, data) in [
+        ("priory.runner.alive", json!({ "runner": "c" })),
+        (
+            "priory.task.held",
+            json!({ "runner": "c", "key": "github:owner/repo#1", "hold": "kept" }),
+        ),
+        (
+            "priory.ask.posted",
+            json!({ "runner": "c", "ask": 1, "version": 1, "kind": "task", "listed": ask }),
+        ),
+        (
+            "priory.ask.answered",
+            json!({ "runner": "c", "ask": 1, "revision": 1, "text": "yes", "submission": "s1" }),
+        ),
+    ] {
+        a.publish(&Message::new(kind, data));
+    }
+    a.publish(&requested(1));
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+
+    let inbox = a.until("inbox", |rows| {
+        rows.iter().any(|row| row[1] == "factory.task.requested")
+    });
+    let outcomes: Vec<(&str, &str)> = inbox
+        .iter()
+        .filter(|row| row[1].starts_with("priory."))
+        .map(|row| (row[1].as_str(), row[4].as_str()))
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ("priory.runner.alive", "refused"),
+            ("priory.task.held", "refused"),
+            ("priory.ask.posted", "refused"),
+            ("priory.ask.answered", "refused"),
+        ],
+        "{inbox:?}"
+    );
+    let db = rusqlite::Connection::open(a.dir.join("priory.db")).unwrap();
+    for table in ["remote_asks", "remote_submissions", "leases"] {
+        let count: i64 = db
+            .query_row(
+                &format!("SELECT count(*) FROM {table} WHERE runner = 'c'"),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "{table}");
+    }
+}
+
+#[test]
+fn a_task_action_or_its_outcome_from_a_runner_without_a_runner_file_is_refused_and_listed_nowhere()
+{
+    let mut a = runner("unknown-runner-task", "a", None);
+    let key = "github:owner/repo#1";
+    for (kind, data) in [
+        (
+            "priory.task.acted",
+            json!({ "runner": "c", "key": key, "generation": 1, "act": "cancel", "submission": "s1" }),
+        ),
+        (
+            "priory.task.applied",
+            json!({ "runner": "c", "key": key, "generation": 1, "submission": "s1", "outcome": "applied" }),
+        ),
+    ] {
+        a.publish(&Message::new(kind, data));
+    }
+    a.publish(&requested(1));
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+
+    let inbox = a.until("inbox", |rows| {
+        rows.iter().any(|row| row[1] == "factory.task.requested")
+    });
+    let outcomes: Vec<(&str, &str)> = inbox
+        .iter()
+        .filter(|row| row[1].starts_with("priory."))
+        .map(|row| (row[1].as_str(), row[4].as_str()))
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ("priory.task.acted", "refused"),
+            ("priory.task.applied", "refused"),
+        ],
+        "{inbox:?}"
+    );
+    let db = rusqlite::Connection::open(a.dir.join("priory.db")).unwrap();
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM remote_task_submissions", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
 fn an_answer_to_the_ask_of_a_runner_without_a_runner_file_is_refused() {
     let b = runner("answer-unknown", "b", None);
     let factory = b.dir.join("factory");
@@ -17797,6 +18257,52 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     assert_eq!(task["reason"], "owned by runner b", "{task}");
     // b starts its task on its own clock, so wait for it rather than read it once.
     b.until_own_tasks(|rows| rows[0][4] == "running");
+}
+
+#[test]
+fn a_lead_task_runs_on_the_runner_of_the_ask_it_answers_without_a_claim_and_cannot_be_given() {
+    let mut a = hands_off("lead-runner", WORKFLOW);
+    for (path, content) in [
+        ("factory/runners/a.toml", "platform = { os = \"linux\" }\n"),
+        ("factory/runners/b.toml", "platform = { os = \"linux\" }\n"),
+        ("proc/sys/kernel/hostname", "a\n"),
+    ] {
+        let file = a.dir.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, content).unwrap();
+    }
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.calls(&[ask()]);
+    a.publish(&requested(42));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+
+    let lead = "priory:ask:1:1";
+    a.until_own_tasks(|rows| rows.iter().any(|row| row[1] == lead && row[4] == "running"));
+    let claims: Vec<serde_json::Value> = a
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 1000,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "priory.task.claimed")
+        .map(|stored| stored.message.data["key"].clone())
+        .collect();
+    assert_eq!(
+        claims,
+        [json!("github:owner/repo#42")],
+        "no other runner has the lead task's source, so its key stays off the log"
+    );
+
+    let factory = a.dir.join("factory");
+    let given = a.priory(&["give", factory.to_str().unwrap(), lead, "b", "--force"]);
+    assert_eq!(
+        String::from_utf8_lossy(&given.stderr),
+        "priory give: priory:ask:1:1 is a lead task, which stays on the runner of the ask it answers\n"
+    );
+    assert!(!given.status.success());
 }
 
 #[test]
@@ -19530,8 +20036,83 @@ fn a_claude_run_gets_the_factorys_skills_as_a_plugin_and_long_instructions_throu
     );
 }
 
+/// Writes `text` over `file` as an agent with a shell can: it makes the file and its folder
+/// writable first.
+fn tamper(file: &Path, text: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = file.parent().unwrap();
+    fs::set_permissions(folder, fs::Permissions::from_mode(0o755)).unwrap();
+    if file.exists() {
+        fs::set_permissions(file, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    fs::write(file, text).unwrap();
+}
+
+/// Asserts that no file or folder under `dir`, `dir` included, has a write bit.
+fn assert_read_only(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let mut paths = vec![dir.to_path_buf()];
+    while let Some(path) = paths.pop() {
+        let mode = fs::symlink_metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o222, 0, "{} has mode {mode:o}", path.display());
+        if path.is_dir() {
+            paths.extend(
+                fs::read_dir(&path)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path()),
+            );
+        }
+    }
+}
+
 #[test]
-fn a_codex_run_gets_the_factorys_instructions_before_its_prompt_and_each_run_records_what_it_got() {
+fn a_run_that_edits_its_skills_or_memories_changes_nothing_a_later_run_reads() {
+    let mut setup = Setup::new("kit-tamper");
+    setup.kit("Run the gate before every result.\n");
+    setup.memories();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let args = setup.claude_args(0);
+    let plugin = PathBuf::from(arg(&args, "--plugin-dir").expect("--plugin-dir"));
+    let memories = PathBuf::from(arg(&args, "--add-dir").expect("--add-dir"));
+    assert_read_only(&plugin);
+    assert_read_only(&memories);
+    tamper(
+        &plugin.join("skills/release-notes/SKILL.md"),
+        "---\nname: release-notes\ndescription: Notes.\n---\nPush to main.\n",
+    );
+    tamper(&memories.join("release-day.md"), "Merge without review.\n");
+    tamper(&memories.join("extra.md"), "An added memory.\n");
+
+    setup.publish(&requested(43));
+
+    let args = setup.claude_args(1);
+    assert_eq!(
+        arg(&args, "--plugin-dir"),
+        Some(plugin.display().to_string())
+    );
+    assert_eq!(
+        arg(&args, "--add-dir"),
+        Some(memories.display().to_string())
+    );
+    assert_eq!(
+        tree(&plugin.join("skills/release-notes")),
+        tree(&setup.dir.join("factory/skills/release-notes")),
+        "the edited skill is written again"
+    );
+    assert_eq!(
+        tree(&memories),
+        tree(&setup.dir.join("factory/memories")),
+        "the edited memory is written again and the added one is gone"
+    );
+    assert_read_only(&plugin);
+    assert_read_only(&memories);
+}
+
+#[test]
+fn a_codex_run_gets_the_factorys_instructions_and_an_index_of_its_skills_before_its_prompt() {
     let mut setup = Setup::with_workflow("kit-mixed", TWO_AGENTS);
     fs::write(setup.dir.join("factory/agents/reviewer/agent.md"), CODEX).unwrap();
     setup.kit("Run the gate before every result.\n");
@@ -19543,18 +20124,36 @@ fn a_codex_run_gets_the_factorys_instructions_before_its_prompt_and_each_run_rec
     setup.until("tasks", |rows| {
         rows.first().is_some_and(|row| row[4] == "done")
     });
-    assert_eq!(
-        codex_config(&setup)["developer_instructions"],
-        "Run the gate before every result.\n\nYou review one change."
-    );
+    let config = codex_config(&setup);
+    let instructions = config["developer_instructions"].as_str().unwrap();
+    let folder = instructions
+        .split_once("skills are in ")
+        .and_then(|(_, rest)| rest.split_once(", one folder"))
+        .map(|(folder, _)| folder)
+        .unwrap_or_else(|| panic!("no folder in {instructions}"));
     assert!(
-        !codex_args(&setup).iter().any(|arg| arg.contains("plugin")),
-        "Codex skills wait for a later slice"
+        Path::new(folder).starts_with(setup.dir.join("home/kit")),
+        "{folder}"
+    );
+    assert_eq!(
+        tree(&Path::new(folder).join("release-notes")),
+        tree(&setup.dir.join("factory/skills/release-notes")),
+        "byte for byte"
+    );
+    assert_eq!(
+        instructions,
+        format!(
+            "Run the gate before every result.\n\n# Skills\n\nThe factory's skills are in \
+             {folder}, one folder per skill. Read a skill's SKILL.md when its description \
+             fits your task, and follow it. Never edit these files.\n\n\
+             - release-notes/SKILL.md: Writes release notes from merged pull requests.\n\n\
+             You review one change."
+        )
     );
     let runs = setup.rows("runs");
     let (claude, codex) = (&runs[0][8], &runs[1][8]);
     assert_eq!([claude.len(), codex.len()], [32, 32], "{runs:?}");
-    assert_ne!(claude, codex, "the Codex run got no skills");
+    assert_eq!(claude, codex, "both harnesses get the skills");
     let traced: Vec<serde_json::Value> = String::from_utf8(setup.priory(&["trace"]).stdout)
         .unwrap()
         .lines()
@@ -19768,6 +20367,115 @@ fn the_predecessor_pushing_again_wakes_the_waiting_entry_to_rebase_onto_the_new_
         1,
         "{outbox:?}"
     );
+}
+
+impl Setup {
+    /// Pushes task `task`'s branch `priory/<task>` to the bare origin from its worktree.
+    fn push_task(&self, task: i64) {
+        let worktree = self.dir.join(format!("home/worktrees/owner/repo/{task}"));
+        assert!(
+            git(&worktree)
+                .env("GIT_CONFIG_COUNT", "1")
+                .env(
+                    "GIT_CONFIG_KEY_0",
+                    format!(
+                        "url.file://{}/.insteadOf",
+                        self.dir.join("origin").display()
+                    ),
+                )
+                .env("GIT_CONFIG_VALUE_0", "https://github.com/")
+                .args(["push", "-q", "origin", &format!("priory/{task}")])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    /// Returns once the daemon ran one whole tick after this call: the keyboard sweep at a tick's
+    /// end ends a grant that no factory with `terminal = "type"` keeps, so two such ends span one.
+    fn ticked(&self) {
+        let db = rusqlite::Connection::open(self.dir.join("priory.db")).unwrap();
+        for _ in 0..2 {
+            let grant: i64 = db
+                .query_row(
+                    "INSERT INTO keyboard_grants (run, hash, label, started, ends)
+                     VALUES (1, hex(randomblob(16)), 'tick', 'now', '9999') RETURNING id",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while db
+                .query_row(
+                    "SELECT ended IS NULL FROM keyboard_grants WHERE id = ?1",
+                    [grant],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+            {
+                assert!(Instant::now() < deadline, "the daemon never ticked");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
+#[test]
+fn an_entry_that_started_from_its_parents_unpushed_commit_is_told_only_of_a_push_past_it() {
+    let setup = stacked_entry_opened("batch-waiting-unpushed");
+    let pushed = setup.pushed("priory/2");
+    // The entry started from a commit its parent had not pushed yet.
+    let local = setup.commit(2, "c.txt");
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute("UPDATE tasks SET parent_head = ?1 WHERE id = 3", [&local])
+        .unwrap();
+
+    setup.ticked();
+    let head = setup.commit(2, "d.txt");
+    setup.push_task(2);
+
+    let line = format!("task 2 pushed priory/2 to {head}; rebase onto it");
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "3" && row[4].contains(&line))
+    });
+    let told: Vec<&String> = outbox
+        .iter()
+        .filter(|row| row[1] == "3" && row[4].contains("pushed priory/2"))
+        .map(|row| &row[4])
+        .collect();
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(!told[0].contains(&pushed), "{told:?}");
+}
+
+#[test]
+fn a_parents_push_reaches_an_entry_asleep_on_an_ask_once_it_wakes() {
+    let setup = stacked_entry("batch-waiting-asked");
+    let asks = setup.until("asks", |rows| rows.iter().any(|row| row[1] == "3"));
+    setup.gone("priory-3");
+
+    let head = setup.commit(2, "c.txt");
+    setup.push_task(2);
+
+    let line = format!("task 2 pushed priory/2 to {head}; rebase onto it");
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "3" && row[4].contains(&line))
+    });
+    let told = outbox
+        .iter()
+        .find(|row| row[1] == "3" && row[4].contains(&line))
+        .unwrap();
+    assert_eq!(told[3], "queued", "{told:?}");
+    let task = setup
+        .rows("tasks")
+        .into_iter()
+        .find(|row| row[0] == "3")
+        .unwrap();
+    assert_eq!(task[4], "asleep", "{task:?}");
+    let open = setup.rows("asks");
+    assert!(open.iter().any(|row| row[0] == asks[0][0]), "{open:?}");
 }
 
 #[test]
@@ -20479,6 +21187,11 @@ fn a_runs_screen_returns_its_rows_blank_ones_kept_its_size_and_a_hash_that_follo
     );
     assert_eq!(screen["cursor"], json!(null));
     assert_eq!(screen["redacted"], 0);
+    assert_eq!(
+        screen.get("keyboard"),
+        None,
+        "only \"type\" offers the keyboard"
+    );
     let hash = screen["hash"].as_str().unwrap().to_owned();
     let (status, same) = http(
         &address,
@@ -20534,7 +21247,7 @@ fn a_runs_screen_keeps_its_colour_codes_drops_links_and_hides_a_secret_a_code_sp
 }
 
 #[test]
-fn a_runs_screen_takes_earlier_rows_up_to_its_cap_and_hashes_them() {
+fn a_runs_screen_takes_earlier_rows_up_to_its_cap_and_hashes_them_and_the_cli_takes_the_same() {
     let setup = Setup::running("screen-history");
     let (mut server, address) = serving(&setup, WATCH, &[("TEST_TOKEN", SERVE_TOKEN)]);
     // A pane takes the history limit it was made with, so a new one holds more than the cap.
@@ -20599,6 +21312,19 @@ fn a_runs_screen_takes_earlier_rows_up_to_its_cap_and_hashes_them() {
     assert_eq!(capped["lines"].as_array().unwrap().len(), 2000 + height);
     let (status, _) = http(&address, "GET", "/api/runs/1/screen?history=many", "", "");
     assert_eq!(status, 400);
+    let cli = |rows: &str| {
+        let cli = setup.priory(&["screen", "1", "--history", rows, "--json"]);
+        assert!(cli.status.success(), "{cli:?}");
+        serde_json::from_slice::<serde_json::Value>(&cli.stdout).unwrap()
+    };
+    assert_eq!(cli("5")["hash"], five["hash"]);
+    assert_eq!(cli("99999")["hash"], capped["hash"]);
+    assert!(
+        !setup
+            .priory(&["screen", "1", "--history", "many"])
+            .status
+            .success()
+    );
     server.kill().unwrap();
     server.wait().unwrap();
 }
@@ -20639,10 +21365,11 @@ fn a_runs_screen_reads_its_tagged_pane_not_the_active_one_and_refuses_a_run_it_c
         .unwrap();
     let pane = agent.split(' ').next().unwrap();
     setup.tmux_out(&["set-option", "-p", "-t", pane, "@priory", "another-session"]);
+    // The run is still live, so the page keeps asking until the daemon ends it.
     let (status, body) = http(&address, "GET", "/api/runs/1/screen", "", "");
     assert_eq!(
         (status, body),
-        (404, json!({ "error": sentence }).to_string())
+        (503, json!({ "error": sentence }).to_string())
     );
     let (status, body) = http(&address, "GET", "/api/runs/9/screen", "", "");
     assert_eq!(
@@ -20669,7 +21396,7 @@ fn a_runs_screen_reads_its_tagged_pane_not_the_active_one_and_refuses_a_run_it_c
 }
 
 #[test]
-fn a_runs_screen_hides_the_factorys_secrets_and_secret_shapes_and_its_hash_ignores_them() {
+fn a_runs_screen_and_priory_screen_dir_hide_the_factorys_secrets_and_the_hash_ignores_them() {
     let setup = Setup::running("screen-secrets");
     let serve = format!(
         "{WATCH}redact_env = [\"TEST_ONE\", \"TEST_TWO\"]\n\n[webhooks.github]\nsecret_env = \"TEST_HOOK\"\n\n\
@@ -20723,6 +21450,23 @@ fn a_runs_screen_hides_the_factorys_secrets_and_secret_shapes_and_its_hash_ignor
     std::thread::sleep(Duration::from_millis(300));
     let again = screen_once(&address, |screen| screen_row(screen, 49) == "[redacted]");
     assert_eq!(again["hash"], shown["hash"]);
+    let cli = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["screen", setup.dir.join("factory").to_str().unwrap(), "1"])
+        .envs(env)
+        .output()
+        .unwrap();
+    assert!(cli.status.success(), "{cli:?}");
+    let rows: Vec<_> = std::str::from_utf8(&cli.stdout).unwrap().lines().collect();
+    assert_eq!(
+        (rows[0], rows[1], rows[2], rows[49]),
+        (
+            "token [redacted] hook [redacted]",
+            "header [redacted] tiny [redacted]",
+            "gh [redacted] and [redacted]",
+            "[redacted]"
+        )
+    );
     server.kill().unwrap();
     server.wait().unwrap();
     let log = fs::read_to_string(setup.dir.join("serve.log")).unwrap();
@@ -20755,8 +21499,9 @@ fn a_screen_gives_up_on_a_hung_tmux_at_its_deadline_and_a_third_at_once_gets_503
     let (status, body) = http(&address, "GET", "/api/runs/1/screen", "", "");
     assert_eq!(status, 503, "{body}");
     assert_eq!(http(&address, "GET", "/api/desk", "", "").0, 200);
+    // The run is live, so a read tmux did not answer in time is one to retry.
     for hung in hung {
-        assert_eq!(hung.join().unwrap().0, 404);
+        assert_eq!(hung.join().unwrap().0, 503);
     }
     assert!(
         started.elapsed() < Duration::from_secs(4),
@@ -20862,8 +21607,7 @@ fn post(address: &str, path: &str, body: serde_json::Value) -> (u16, serde_json:
     (status, serde_json::from_str(&reply).unwrap_or(json!(reply)))
 }
 
-/// Takes the keyboard of run 1 at the state's current revision, read again while a starting daemon
-/// moves it, and returns the grant's secret.
+/// Takes the keyboard of run 1 and returns the grant's secret.
 fn take_keyboard(address: &str) -> String {
     take_keyboard_as(address, "")["secret"]
         .as_str()
@@ -20873,22 +21617,9 @@ fn take_keyboard(address: &str) -> String {
 
 /// The grant `take_keyboard` gets, sent with the `extra` headers.
 fn take_keyboard_as(address: &str, extra: &str) -> serde_json::Value {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let desk = http(address, "GET", "/api/desk", "", "").1;
-        let revision =
-            serde_json::from_str::<serde_json::Value>(&desk).unwrap()["revision"].clone();
-        let body = json!({ "revision": revision }).to_string();
-        let (status, grant) = http(address, "POST", "/api/runs/1/keyboard", extra, &body);
-        if status == 200 {
-            return serde_json::from_str(&grant).unwrap();
-        }
-        assert!(
-            status == 409 && Instant::now() < deadline,
-            "{status}: {grant}"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let (status, grant) = http(address, "POST", "/api/runs/1/keyboard", extra, "{}");
+    assert_eq!(status, 200, "{grant}");
+    serde_json::from_str(&grant).unwrap()
 }
 
 /// How many times the screen of run 1 shows `text`, once it shows it `times` times.
@@ -20928,6 +21659,7 @@ fn keys_type_text_as_text_and_send_a_listed_key_as_that_key() {
 
     // `cat` echoes the line as typed, then prints it back once Enter ends it.
     assert_eq!(on_screen(&address, text, 2), 2);
+    assert_eq!(screen_once(&address, |_| true)["keyboard"], json!(true));
     server.kill().unwrap();
     server.wait().unwrap();
 }
@@ -21145,6 +21877,45 @@ fn an_expired_returned_or_replaced_grant_is_refused_and_each_end_is_recorded() {
 }
 
 #[test]
+fn a_run_carried_into_the_next_step_keeps_its_keyboard_grant_and_its_prompt_waits_for_it() {
+    let mut setup = Setup::with_workflow("keys-carried", STEPS);
+    setup.calls(&[result("ready")]);
+    setup.hold("hold-call");
+    let (mut server, address) = serving(&setup, TYPE, &[("TEST_TOKEN", SERVE_TOKEN)]);
+    setup.publish(&requested(42));
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("TEST_TOKEN", SERVE_TOKEN)],
+    );
+    setup.written("fake/submitted");
+    let secret = take_keyboard(&address);
+
+    setup.release("hold-call");
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+
+    assert_eq!(runs[0][7], "moved");
+    let grants: (i64, Option<String>) = rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT run, why FROM keyboard_grants", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(grants, (2, None));
+    assert_eq!(setup.rows("outbox")[1][3], "queued");
+    assert_eq!(setup.typed().len(), 1);
+    // A page that still draws run 1 reaches the grant on the same pane.
+    let (status, _) = post(
+        &address,
+        "/api/runs/1/keyboard/return",
+        json!({ "secret": secret }),
+    );
+    assert_eq!(status, 200);
+    setup.until("outbox", |rows| rows[1][3] == "confirmed");
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+#[test]
 fn the_outbox_types_nothing_into_a_run_whose_keyboard_a_person_holds() {
     let (setup, mut server, address) = Setup::typing("keys-outbox");
     let secret = take_keyboard(&address);
@@ -21259,12 +22030,13 @@ fn taking_the_keyboard_records_its_label_and_no_record_or_log_holds_the_secret()
     let (setup, mut server, address) = Setup::typing("keys-secret");
     let desk = http(&address, "GET", "/api/desk", "", "").1;
     let revision = serde_json::from_str::<serde_json::Value>(&desk).unwrap()["revision"].clone();
-    let stale = post(
+    // Writes elsewhere move the state's revision; a run's keyboard does not wait for them.
+    let behind = post(
         &address,
         "/api/runs/1/keyboard",
         json!({ "revision": revision.as_i64().unwrap() - 1 }),
     );
-    assert_eq!(stale.0, 409, "{}", stale.1);
+    assert_eq!(behind.0, 200, "{}", behind.1);
     let grant = take_keyboard_as(
         &address,
         &format!("User-Agent: {}\r\n", "Phone ".repeat(20)),
@@ -21291,7 +22063,10 @@ fn taking_the_keyboard_records_its_label_and_no_record_or_log_holds_the_secret()
     let taken = setup
         .trace()
         .into_iter()
-        .find(|record| record["type"] == "factory.terminal.taken")
+        .find(|record| {
+            record["type"] == "factory.terminal.taken"
+                && record["data"]["grant"] == json!(grant["grant"].to_string())
+        })
         .unwrap();
     assert_eq!(taken["data"]["label"], json!("Phone ".repeat(11)[..64]));
     assert_eq!(taken["data"]["grant"], json!(grant["grant"].to_string()));
@@ -21402,6 +22177,507 @@ fn another_runners_task_leaves_the_listing_once_it_ends() {
     until_task(&address, key, "a", |task| task.is_none());
 }
 
+/// The key of the task `asked_on_a` gives runner `a`.
+const ASKED_KEY: &str = "github:owner/repo#1";
+
+/// `/api/tasks/<runner>:<key>/<act>`, with the key percent-encoded.
+fn remote_act(runner: &str, key: &str, act: &str) -> String {
+    let key = key
+        .replace('%', "%25")
+        .replace(':', "%3A")
+        .replace('/', "%2F")
+        .replace('#', "%23");
+    format!("/api/tasks/{runner}:{key}/{act}")
+}
+
+/// The writes sent to a listed task, from any machine.
+fn submissions_of(task: &serde_json::Value) -> Vec<serde_json::Value> {
+    task["submissions"].as_array().cloned().unwrap_or_default()
+}
+
+#[test]
+fn a_cancel_sent_to_another_runners_task_is_applied_by_its_runner_and_a_revive_brings_it_back_at_its_next_generation()
+ {
+    let (a, b, _ask, address) = asked_on_a("remote-cancel");
+    let listed = until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| task["generation"] == 1)
+    })
+    .unwrap();
+    assert_eq!(listed["submissions"], json!([]), "{listed}");
+
+    let (status, sent) = runner_http(
+        &address,
+        "POST",
+        &remote_act("a", ASKED_KEY, "cancel"),
+        r#"{"generation": 1}"#,
+    );
+
+    assert_eq!(status, 202, "{sent}");
+    assert_eq!(sent["sent"], "a");
+    let submission = sent["submission"].as_str().unwrap().to_owned();
+    a.until("tasks", |rows| rows[0][4] == "dropped");
+    logged(
+        &a,
+        "priory.task.applied",
+        json!({ "submission": submission, "outcome": "applied", "key": ASKED_KEY }),
+    );
+    // A cancel that applies ends the task, so its row leaves the list.
+    until_task(&address, ASKED_KEY, "a", |task| task.is_none());
+
+    let factory = b.dir.join("factory");
+    let revived = b.priory(&[
+        "revive",
+        factory.to_str().unwrap(),
+        &format!("a:{ASKED_KEY}"),
+    ]);
+
+    assert!(
+        revived.status.success(),
+        "{}",
+        String::from_utf8_lossy(&revived.stderr)
+    );
+    let said = String::from_utf8_lossy(&revived.stdout);
+    assert!(
+        said.starts_with(&format!(
+            "revive of task a:{ASKED_KEY} sent to a as submission "
+        )),
+        "{said}"
+    );
+    let back = until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| {
+            task["generation"] == 2
+                && submissions_of(task)
+                    .iter()
+                    .all(|sent| sent["outcome"] == "applied")
+        })
+    })
+    .unwrap();
+    let sent: Vec<(String, i64)> = submissions_of(&back)
+        .iter()
+        .map(|sent| {
+            (
+                sent["act"].as_str().unwrap().to_owned(),
+                sent["generation"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        [("cancel".to_owned(), 1), ("revive".to_owned(), 1)],
+        "{back}"
+    );
+    a.until("tasks", |rows| rows[0][4] == "asleep");
+}
+
+#[test]
+fn a_say_that_another_runner_refuses_comes_back_with_its_reason_on_the_still_listed_task() {
+    let (a, b, _ask, address) = asked_on_a("remote-say");
+    until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| task["generation"] == 1)
+    });
+    let factory = b.dir.join("factory");
+
+    let sent = b.priory(&[
+        "say",
+        factory.to_str().unwrap(),
+        &format!("a:{ASKED_KEY}"),
+        "look at the tests",
+    ]);
+
+    assert!(
+        sent.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    let refused = until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| task["submissions"][0]["outcome"] == "refused")
+    })
+    .unwrap();
+    let submission = &refused["submissions"][0];
+    assert_eq!(submission["act"], "say", "{refused}");
+    assert_eq!(submission["text"], "look at the tests", "{refused}");
+    assert_eq!(
+        submission["why"], "task 1 is at step approve, which no agent runs",
+        "{refused}"
+    );
+    assert_eq!(a.rows("tasks")[0][4], "asleep");
+}
+
+#[test]
+fn a_write_to_another_runners_task_at_a_stale_generation_is_refused_here_and_nothing_is_published()
+{
+    let (a, b, _ask, address) = asked_on_a("remote-stale-task");
+    until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| task["generation"] == 1)
+    });
+    let factory = b.dir.join("factory");
+
+    let (status, refused) = runner_http(
+        &address,
+        "POST",
+        &remote_act("a", ASKED_KEY, "cancel"),
+        r#"{"generation": 2}"#,
+    );
+    let cli = b.priory(&[
+        "cancel",
+        factory.to_str().unwrap(),
+        &format!("a:{ASKED_KEY}"),
+        "--generation",
+        "2",
+    ]);
+    let (other, elsewhere) = runner_http(
+        &address,
+        "POST",
+        &remote_act("b", ASKED_KEY, "resume"),
+        r#"{"generation": 1}"#,
+    );
+
+    assert_eq!(status, 409, "{refused}");
+    assert_eq!(
+        refused["error"],
+        format!("task a:{ASKED_KEY} is at generation 1, not 2"),
+        "{refused}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&cli.stderr),
+        format!("priory cancel: task a:{ASKED_KEY} is at generation 1, not 2\n")
+    );
+    assert_eq!(other, 409, "{elsewhere}");
+    assert_eq!(
+        elsewhere["error"],
+        format!("runner a holds {ASKED_KEY}, not b"),
+        "{elsewhere}"
+    );
+    assert!(on_log(&a, "priory.task.acted").is_empty());
+}
+
+#[test]
+fn the_owner_refuses_a_write_whose_generation_moved_and_a_runner_refuses_one_for_a_key_it_does_not_hold()
+ {
+    let (a, b, _ask, address) = asked_on_a("remote-moved");
+    until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| task["generation"] == 1)
+    });
+    let acted = |runner: &str, generation: i64| {
+        Message::new(
+            "priory.task.acted",
+            json!({ "runner": runner, "key": ASKED_KEY, "generation": generation, "act": "cancel" }),
+        )
+        .subject(format!("{runner}:{ASKED_KEY}"))
+    };
+    let (moved, elsewhere) = (acted("a", 2), acted("b", 1));
+
+    b.publish(&moved);
+    b.publish(&elsewhere);
+
+    logged(
+        &a,
+        "priory.task.applied",
+        json!({
+            "submission": moved.id.to_string(), "outcome": "refused",
+            "why": format!("task {ASKED_KEY} is at generation 1, not 2"),
+        }),
+    );
+    logged(
+        &b,
+        "priory.task.applied",
+        json!({
+            "submission": elsewhere.id.to_string(), "outcome": "refused", "runner": "b",
+            "why": format!("runner a holds {ASKED_KEY}, not b"),
+        }),
+    );
+    assert_eq!(a.rows("tasks")[0][4], "asleep");
+}
+
+#[test]
+fn a_write_sent_while_the_tasks_runner_is_away_is_applied_once_when_it_starts_again() {
+    let (mut a, _b, _ask, address) = asked_on_a("remote-task-away");
+    until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| task["generation"] == 1)
+    });
+    a.crash();
+
+    let (status, sent) = runner_http(
+        &address,
+        "POST",
+        &remote_act("a", ASKED_KEY, "cancel"),
+        r#"{"generation": 1}"#,
+    );
+    assert_eq!(status, 202, "{sent}");
+    let pending = until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| !submissions_of(task).is_empty())
+    })
+    .unwrap();
+    assert!(pending["submissions"][0]["outcome"].is_null(), "{pending}");
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+
+    a.until("tasks", |rows| rows[0][4] == "dropped");
+    until_task(&address, ASKED_KEY, "a", |task| task.is_none());
+    assert_eq!(on_log(&a, "priory.task.applied").len(), 1);
+}
+
+impl Setup {
+    /// Starts `priory daemon --view-only` at `now` with the serve token, and returns the address
+    /// its server listens on.
+    fn start_viewing(&mut self, now: &str) -> String {
+        let factory = self.dir.join("factory");
+        let log = fs::File::create(self.dir.join("daemon.log")).unwrap();
+        self.daemon = Some(
+            self.command(env!("CARGO_BIN_EXE_priory"))
+                .args(["daemon", "--view-only", factory.to_str().unwrap()])
+                .env("PRIORY_NOW", now)
+                .env("PRIORY_TEST_TOKEN", SERVE_TOKEN)
+                .stderr(log)
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let log = fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default();
+            if let Some(address) = log
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("priory: serving on http://"))
+            {
+                return address.to_owned();
+            }
+            assert!(Instant::now() < deadline, "the view never served: {log}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// Runner `a` asleep on an approve ask, and `laptop`, a machine of the same factory with no runner
+/// file, serving with `--view-only` on `a`'s log: returns both, the ask's id on `a` and the view's
+/// address.
+fn asked_on_a_viewed(test: &str) -> (Setup, Setup, String, String) {
+    let mut a = runner(test, "a", None);
+    let mut laptop = runner(test, "laptop", Some(&a));
+    with_serve(&laptop);
+    let mut asked = requested(1);
+    asked.data["workflow"] = json!("approve");
+    a.publish(&asked);
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    let asks = a.until("asks", |rows| rows.len() == 1);
+    let address = laptop.start_viewing(T0);
+    (a, laptop, asks[0][0].clone(), address)
+}
+
+#[test]
+fn a_view_only_machine_lists_every_runners_asks_and_tasks_and_publishes_nothing() {
+    let (a, laptop, ask, address) = asked_on_a_viewed("view-only-lists");
+    let id = format!("a:{ask}");
+    let key = "github:owner/repo#1";
+
+    let listed = until_ask(&address, &id, |ask| ask["state"] == "open");
+    let task = until_task(&address, key, "a", |task| {
+        task.is_some_and(|task| task["hold"] == "kept")
+    })
+    .unwrap();
+
+    assert_eq!(listed["runner"], "a", "{listed}");
+    assert!(task["last_seen"].is_string(), "{task}");
+    let (_, desk) = runner_http(&address, "GET", "/api/desk", "");
+    assert!(
+        desk["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == id && item["runner"] == "a"),
+        "{desk}"
+    );
+    // The view reads the request as a runner does, and claims it for no one.
+    let inbox = laptop.rows("inbox");
+    let request = inbox
+        .iter()
+        .find(|row| row[1] == "factory.task.requested")
+        .unwrap();
+    assert_eq!(request[4], "elsewhere", "{inbox:?}");
+    let claims = on_log(&a, "priory.task.claimed");
+    assert!(
+        claims.iter().all(|claim| claim.data["runner"] == "a"),
+        "{claims:?}"
+    );
+    for kind in [
+        "priory.runner.alive",
+        "priory.task.held",
+        "priory.ask.posted",
+    ] {
+        assert!(
+            on_log(&a, kind)
+                .iter()
+                .all(|message| message.data["runner"] == "a"),
+            "{kind}"
+        );
+    }
+    assert!(laptop.own_tasks().is_empty());
+}
+
+#[test]
+fn an_answer_sent_from_a_view_only_machine_is_applied_by_its_runner() {
+    let (a, _laptop, ask, address) = asked_on_a_viewed("view-only-answer");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+
+    let (status, sent) = runner_http(
+        &address,
+        "POST",
+        &format!("/api/asks/{id}/answer"),
+        r#"{"option": "approved", "revision": 1}"#,
+    );
+
+    assert_eq!(status, 202, "{sent}");
+    let closed = until_ask(&address, &id, |ask| {
+        ask["state"] == "answered" && ask["submissions"][0]["outcome"] == "answered"
+    });
+    assert_eq!(closed["answer"], "approved", "{closed}");
+    a.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
+fn a_dismiss_from_a_view_only_machines_command_line_reaches_its_runner() {
+    let (a, laptop, ask, address) = asked_on_a_viewed("view-only-dismiss");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+    let factory = laptop.dir.join("factory");
+
+    let sent = laptop.priory(&["dismiss", "--revision", "1", factory.to_str().unwrap(), &id]);
+
+    assert!(
+        sent.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    // The approve step moves its task on by its options, so a refuses the dismiss and says why.
+    let refused = until_ask(&address, &id, |ask| {
+        ask["submissions"][0]["outcome"] == "refused"
+    });
+    assert_eq!(
+        refused["submissions"][0]["why"],
+        format!("ask {ask} moves its task on by its options: answer it instead"),
+        "{refused}"
+    );
+    assert_eq!(a.rows("asks").len(), 1);
+}
+
+#[test]
+fn a_view_only_machine_refuses_a_write_of_its_own() {
+    let (_a, laptop, ask, address) = asked_on_a_viewed("view-only-local");
+    until_ask(&address, &format!("a:{ask}"), |ask| ask["state"] == "open");
+
+    let resumed = laptop.priory(&["resume", "1"]);
+    let (status, seen) = runner_http(
+        &address,
+        "POST",
+        "/api/seen",
+        r#"{"at": "2026-11-21T10:00:00Z"}"#,
+    );
+
+    assert!(!resumed.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&resumed.stderr),
+        format!("priory resume: {VIEW_ONLY}\n")
+    );
+    // Since you looked is this machine's own, so the view records it.
+    assert_eq!(status, 200, "{seen}");
+}
+
+const VIEW_ONLY: &str = "this machine is view-only: it runs no task and changes none here. Answer \
+     or dismiss an ask as <runner>:<ask>, or act on a task as <runner>:<key>, which goes to its \
+     runner through the log";
+
+#[test]
+fn a_cancel_sent_from_a_view_only_machine_is_applied_by_its_runner() {
+    let (a, _laptop, _ask, address) = asked_on_a_viewed("view-only-cancel");
+    until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| task["generation"] == 1)
+    });
+
+    let (status, sent) = runner_http(
+        &address,
+        "POST",
+        &remote_act("a", ASKED_KEY, "cancel"),
+        r#"{"generation": 1}"#,
+    );
+
+    assert_eq!(status, 202, "{sent}");
+    let submission = sent["submission"].as_str().unwrap().to_owned();
+    a.until("tasks", |rows| rows[0][4] == "dropped");
+    logged(
+        &a,
+        "priory.task.applied",
+        json!({ "submission": submission, "outcome": "applied", "key": ASKED_KEY }),
+    );
+    until_task(&address, ASKED_KEY, "a", |task| task.is_none());
+}
+
+#[test]
+fn a_view_only_machine_records_memory_candidates_and_its_accept_reaches_every_runner() {
+    let (a, laptop, ask, address) = asked_on_a_viewed("view-only-memory");
+    until_ask(&address, &format!("a:{ask}"), |ask| ask["state"] == "open");
+    a.publish(&Message::new(
+        "priory.memory.written",
+        json!({
+            "name": "release-day", "description": "When releases go out.",
+            "text": "Releases go out on Tuesdays.", "task": "github:owner/repo#1", "runner": "a",
+        }),
+    ));
+    let written = laptop.until_candidates(|candidates| {
+        candidates
+            .iter()
+            .any(|candidate| candidate["state"] == "pending")
+    });
+    let id = candidate(
+        &written,
+        "release-day",
+        Some("Releases go out on Tuesdays."),
+    );
+
+    laptop.decide("accept", &id);
+
+    a.until_candidates(|candidates| {
+        candidates
+            .iter()
+            .any(|candidate| candidate["id"] == id && candidate["state"] == "accepted")
+    });
+    // Only the person's accept came from the laptop; it wrote no candidate.
+    assert_eq!(on_log(&a, "priory.memory.written").len(), 1);
+}
+
+#[test]
+fn view_only_refuses_a_machine_with_a_runner_file_and_a_factory_of_one_runner() {
+    let a = runner("view-only-runner", "a", None);
+    let one = Setup::new("view-only-one");
+
+    let on_a = a.priory(&[
+        "daemon",
+        "--view-only",
+        a.dir.join("factory").to_str().unwrap(),
+    ]);
+    let on_one = one.priory(&[
+        "daemon",
+        "--view-only",
+        one.dir.join("factory").to_str().unwrap(),
+    ]);
+
+    assert_eq!(
+        String::from_utf8_lossy(&on_a.stderr),
+        "priory daemon: this machine, `a`, has a runner file in runners/: run `priory daemon` \
+         without --view-only\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&on_one.stderr),
+        "priory daemon: --view-only needs a factory of several runners: with one, its daemon \
+         serves every task and posts no ask\n"
+    );
+}
+
 const RELEASE_DAY: &str = "---\nname: release-day\ndescription: When releases go out.\n---\nReleases go out on Tuesdays.\n";
 const GATE_COST: &str = "+++\nname = \"gate-cost\"\ndescription = \"How long the gate takes.\"\n+++\nThe gate takes about four minutes.\n";
 
@@ -21419,8 +22695,8 @@ impl Setup {
 fn memory_index(folder: &str) -> String {
     format!(
         "# Memories\n\nThe factory's memories are in {folder}, one fact per file. Read a memory's \
-         file when its description fits your task. Never edit these files: a memory changes only \
-         through a pull request to the factory.\n\n- gate-cost.md: How long the gate takes.\n\
+         file when its description fits your task. Never edit these files: save a fact with the \
+         remember tool, and remove a wrong one with forget.\n\n- gate-cost.md: How long the gate takes.\n\
          - release-day.md: When releases go out."
     )
 }
@@ -21548,5 +22824,1755 @@ fn each_runner_gives_its_runs_the_memories_of_its_own_factory_checkout() {
         a.rows("runs")[0][8],
         b.rows("runs")[0][8],
         "the same memories give the same hash on every runner"
+    );
+}
+
+/// Writes `scorers/<name>.toml` into the setup's factory.
+fn scorer(setup: &Setup, name: &str, toml: &str) {
+    let factory = setup.dir.join("factory");
+    fs::create_dir_all(factory.join("scorers")).unwrap();
+    fs::write(factory.join(format!("scorers/{name}.toml")), toml).unwrap();
+}
+
+const PASSED_SCORER: &str =
+    "description = \"Passed.\"\non = \"result\"\nkind = \"outcome\"\nexpect = [\"passed\"]\n";
+const SHORT_ASK_SCORER: &str =
+    "description = \"Short.\"\non = \"ask\"\nkind = \"ask-shape\"\nexpect = [\"short\"]\n";
+
+/// `priory score` on task 1, as rows of run, step, scorer, verdict and reason.
+fn scores(setup: &Setup, args: &[&str]) -> Vec<[String; 5]> {
+    let factory = setup.dir.join("factory");
+    let mut all = vec!["score", factory.to_str().unwrap(), "1", "--json"];
+    all.extend_from_slice(args);
+    let output = setup.priory(&all);
+    assert!(output.status.success(), "{output:?}");
+    let shown: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    shown["scores"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            ["run", "step", "scorer", "verdict", "reason"].map(|field| match &row[field] {
+                serde_json::Value::String(text) => text.clone(),
+                value => value.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn scored_records(setup: &Setup) -> Vec<serde_json::Value> {
+    setup
+        .trace()
+        .into_iter()
+        .filter(|record| record["type"] == "factory.run.scored")
+        .collect()
+}
+
+/// Task 1 runs `plan` to `ready`, then `implement` to `passed`.
+fn scored_task(name: &str) -> Setup {
+    let mut setup = Setup::with_workflow(name, STEPS);
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    setup
+}
+
+#[test]
+fn priory_score_waits_for_a_write_that_commits_while_it_reads() {
+    let setup = scored_task("score-locked");
+    scorer(&setup, "passed", PASSED_SCORER);
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch("BEGIN IMMEDIATE; UPDATE revision SET value = value + 1;")
+        .unwrap();
+
+    let factory = setup.dir.join("factory");
+    let score = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["score", factory.to_str().unwrap(), "1", "--json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Held while score reads, so its write comes after a commit newer than what it read.
+    std::thread::sleep(Duration::from_millis(1000));
+    db.execute_batch("COMMIT;").unwrap();
+    let output = score.wait_with_output().unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(scored_records(&setup).len(), 2);
+}
+
+#[test]
+fn priory_score_grades_the_latest_finished_run_of_each_step_and_traces_each_score() {
+    let setup = scored_task("score");
+    scorer(&setup, "passed", PASSED_SCORER);
+    scorer(&setup, "short-ask", SHORT_ASK_SCORER);
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(
+        rows,
+        [
+            ["1", "plan", "passed", "fail", "outcome ready, not passed"],
+            [
+                "1",
+                "plan",
+                "short-ask",
+                "not applicable",
+                "the run asked nothing"
+            ],
+            ["2", "implement", "passed", "pass", "outcome passed"],
+            [
+                "2",
+                "implement",
+                "short-ask",
+                "not applicable",
+                "the run asked nothing"
+            ],
+        ]
+        .map(|row| row.map(str::to_owned))
+    );
+    let records = scored_records(&setup);
+    assert_eq!(records.len(), 4);
+    let first = &records[0]["data"];
+    assert_eq!(
+        [
+            &first["task"],
+            &first["run"],
+            &first["generation"],
+            &first["step"]
+        ],
+        [&json!("1"), &json!("1"), &json!(1), &json!("plan")]
+    );
+    assert_eq!(
+        [
+            &first["scorer"],
+            &first["kind"],
+            &first["verdict"],
+            &first["reason"]
+        ],
+        [
+            &json!("passed"),
+            &json!("outcome"),
+            &json!("fail"),
+            &json!("outcome ready, not passed")
+        ]
+    );
+
+    let again = scores(&setup, &["--scorer", "passed"]);
+
+    assert_eq!(again.len(), 2);
+    let later = scored_records(&setup);
+    assert_eq!(later.len(), 6);
+    assert_eq!(later[..4], records[..]);
+    assert_eq!(later[5]["data"]["scorer"], "passed");
+}
+
+#[test]
+fn a_run_that_asked_passes_an_ask_shape_scorer_and_fails_an_outcome_scorer() {
+    let mut setup = Setup::with_workflow("score-ask", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    scorer(&setup, "passed", PASSED_SCORER);
+    scorer(&setup, "short-ask", SHORT_ASK_SCORER);
+    scorer(
+        &setup,
+        "what-waits",
+        "description = \"Says what waits.\"\non = \"ask\"\nkind = \"ask-shape\"\nexpect = [\"short\", \"whatWaits\"]\n",
+    );
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(
+        rows.iter()
+            .map(|row| [row[2].as_str(), row[3].as_str(), row[4].as_str()])
+            .collect::<Vec<_>>(),
+        [
+            ["passed", "fail", "the run asked and sent no result"],
+            ["short-ask", "pass", "1 ask(s) show short"],
+            ["what-waits", "fail", "ask 1 lacks whatWaits"],
+        ]
+    );
+}
+
+#[test]
+fn priory_score_names_a_scorer_the_factory_lacks() {
+    let setup = scored_task("score-unknown");
+    scorer(&setup, "passed", PASSED_SCORER);
+    let factory = setup.dir.join("factory");
+
+    let output = setup.priory(&["score", factory.to_str().unwrap(), "1", "--scorer", "gate"]);
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory score: no scorer gate in scorers/\n"
+    );
+}
+
+const KIT_SKILL: &str =
+    "---\nname: kit-notes\ndescription: Takes notes the kit's way.\n---\nOne line per note.\n";
+const KIT_FACT: &str =
+    "---\nname: kit-fact\ndescription: What the kit knows.\n---\nThe kit lives in git.\n";
+
+impl Setup {
+    /// A kit repository, `kit.git`, with a skill, instructions in `claude/CLAUDE.md`, a memory and a
+    /// skill named like the factory's own, and a `[kit]` that fetches it every second. Returns the
+    /// commit.
+    fn kit_repo(&self) -> String {
+        let work = self.dir.join("kit-work");
+        for (path, content) in [
+            ("skills/kit-notes/SKILL.md", KIT_SKILL),
+            (
+                "skills/release-notes/SKILL.md",
+                "---\nname: release-notes\ndescription: The kit's own notes.\n---\nKit.\n",
+            ),
+            ("claude/CLAUDE.md", "The kit says: run the gate.\n"),
+            ("memories/kit-fact.md", KIT_FACT),
+        ] {
+            let file = work.join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, content).unwrap();
+        }
+        assert!(
+            git(&work)
+                .args(["init", "-q", "-b", "main"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let commit = self.kit_commit("kit");
+        let bare = self.dir.join("kit.git");
+        assert!(
+            git(&self.dir)
+                .args(["clone", "-q", "--bare"])
+                .arg(&work)
+                .arg(&bare)
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::write(
+            self.dir.join("factory/factory.toml"),
+            format!(
+                "name = \"demo\"\n\n[kit]\nrepo = \"{}\"\nref = \"main\"\ninstructions = \"claude/CLAUDE.md\"\nevery = \"1s\"\n",
+                bare.display()
+            ),
+        )
+        .unwrap();
+        commit
+    }
+
+    /// Commits every change in the kit's work folder with `message`, and returns the commit.
+    fn kit_commit(&self, message: &str) -> String {
+        let work = self.dir.join("kit-work");
+        for args in [
+            &["add", "-A"][..],
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                message,
+            ],
+        ] {
+            assert!(git(&work).args(args).status().unwrap().success());
+        }
+        let head = git(&work).args(["rev-parse", "HEAD"]).output().unwrap();
+        String::from_utf8(head.stdout).unwrap().trim().to_owned()
+    }
+
+    /// Commits a change to the kit's instructions and pushes it to `kit.git`; returns the commit.
+    fn kit_push(&self, instructions: &str) -> String {
+        let work = self.dir.join("kit-work");
+        fs::write(work.join("claude/CLAUDE.md"), instructions).unwrap();
+        let commit = self.kit_commit("change");
+        assert!(
+            git(&work)
+                .arg("push")
+                .arg("-q")
+                .arg(self.dir.join("kit.git"))
+                .arg("main")
+                .status()
+                .unwrap()
+                .success()
+        );
+        commit
+    }
+
+    /// Waits until the daemon gives its runs the kit commit `commit`.
+    fn until_kit(&self, commit: &str) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let current: Option<String> = rusqlite::Connection::open(self.dir.join("priory.db"))
+                .and_then(|db| db.query_row("SELECT kit_commit FROM kit", [], |row| row.get(0)))
+                .ok()
+                .flatten();
+            if current.as_deref() == Some(commit) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the kit is at {current:?}, not {commit}\ndaemon: {}",
+                fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// The kit's line on the desk, if any.
+    fn kit_banner(&self) -> Option<String> {
+        let output = self.priory(&["desk"]);
+        assert!(output.status.success());
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .find(|line| line.contains("the kit"))
+            .map(str::to_owned)
+    }
+
+    /// Polls the desk until `done` holds for the kit's line, and returns it.
+    fn until_kit_banner(&self, done: impl Fn(Option<&str>) -> bool) -> Option<String> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let banner = self.kit_banner();
+            if done(banner.as_deref()) {
+                return banner;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out on the kit's banner: {banner:?}\ndaemon: {}",
+                fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+#[test]
+fn a_run_carried_into_the_next_step_records_the_kit_its_process_got() {
+    let mut setup = Setup::with_workflow("kit-carried", STEPS);
+    let commit = setup.kit_repo();
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let runs: Vec<(String, Option<String>, Option<String>)> = db
+        .prepare("SELECT ended_as, kit_hash, kit_commit FROM runs ORDER BY id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    assert_eq!(runs[0].0, "moved");
+    assert_eq!(runs[0].2.as_deref(), Some(commit.as_str()));
+    assert!(runs[0].1.is_some());
+    assert_eq!((&runs[1].1, &runs[1].2), (&runs[0].1, &runs[0].2));
+}
+
+#[test]
+fn a_run_gets_the_kits_files_before_the_factorys_and_records_the_kit_commit() {
+    let mut setup = Setup::new("kit-repo");
+    setup.kit("The factory says: write tests first.\n");
+    setup.memories();
+    let first = setup.kit_repo();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let args = setup.claude_args(0);
+    let plugin = PathBuf::from(arg(&args, "--plugin-dir").expect("--plugin-dir"));
+    assert_eq!(
+        tree(&plugin.join("skills/kit-notes")),
+        tree(&setup.dir.join(format!("home/kit/{first}/skills/kit-notes"))),
+        "the kit's skill, from the commit's checkout"
+    );
+    assert_eq!(
+        tree(&plugin.join("skills/release-notes")),
+        tree(&setup.dir.join("factory/skills/release-notes")),
+        "the factory's skill hides the kit's of the same name"
+    );
+    let memories = PathBuf::from(arg(&args, "--add-dir").expect("--add-dir"));
+    let names: Vec<String> = tree(&memories).into_iter().map(|(name, _)| name).collect();
+    assert_eq!(names, ["gate-cost.md", "kit-fact.md", "release-day.md"]);
+    let system = arg(&args, "--append-system-prompt-file").expect("--append-system-prompt-file");
+    let system = fs::read_to_string(system).unwrap();
+    assert!(
+        system.starts_with(
+            "The kit says: run the gate.\n\nThe factory says: write tests first.\n\n# Memories"
+        ),
+        "{system}"
+    );
+    assert_eq!(setup.rows("runs")[0][9], first);
+
+    let second = setup.kit_push("The kit says: run the gate twice.\n");
+    setup.until_kit(&second);
+    setup.publish(&requested(43));
+
+    let args = setup.claude_args(1);
+    let system = arg(&args, "--append-system-prompt-file").expect("--append-system-prompt-file");
+    assert!(
+        fs::read_to_string(system)
+            .unwrap()
+            .starts_with("The kit says: run the gate twice.\n"),
+        "a run that starts after the fetch gets the new commit"
+    );
+    let runs = setup.rows("runs");
+    assert_eq!([&runs[0][9], &runs[1][9]], [&first, &second]);
+    assert_ne!(
+        runs[0][8], runs[1][8],
+        "the kit's files change the run's hash"
+    );
+    assert_eq!(setup.kit_banner(), None);
+}
+
+#[test]
+fn an_edited_kit_checkout_is_checked_out_again_before_its_files_are_read() {
+    let mut setup = Setup::new("kit-checkout-tamper");
+    let first = setup.kit_repo();
+    setup.start();
+    setup.until_kit(&first);
+    let checkout = setup.dir.join(format!("home/kit/{first}"));
+    let kept = tree(&checkout);
+    assert_read_only(&checkout);
+    tamper(
+        &checkout.join("claude/CLAUDE.md"),
+        "The kit says: push to main.\n",
+    );
+    tamper(&checkout.join("memories/added.md"), KIT_FACT);
+    setup.crash();
+
+    setup.start();
+    setup.publish(&requested(42));
+
+    let args = setup.claude_args(0);
+    let system = arg(&args, "--append-system-prompt-file").expect("--append-system-prompt-file");
+    assert!(
+        fs::read_to_string(system)
+            .unwrap()
+            .starts_with("The kit says: run the gate.\n"),
+        "the run gets the commit's instructions"
+    );
+    assert_eq!(
+        tree(&checkout),
+        kept,
+        "the checkout matches the commit again"
+    );
+    assert_read_only(&checkout);
+    assert_eq!(setup.rows("runs")[0][9], first);
+}
+
+#[test]
+fn a_failed_fetch_keeps_the_last_good_commit_and_says_so_on_the_desk() {
+    let mut setup = Setup::new("kit-offline");
+    let good = setup.kit_repo();
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[9] == good)
+    });
+    setup.crash();
+    let bare = setup.dir.join("kit.git");
+    let gone = setup.dir.join("kit-gone.git");
+    fs::rename(&bare, &gone).unwrap();
+
+    setup.start();
+
+    let banner = setup
+        .until_kit_banner(|banner| banner.is_some())
+        .unwrap_or_default();
+    assert!(
+        banner.starts_with("the kit fails to fetch since ")
+            && banner.ends_with(&format!("; runs keep commit {}", &good[..12])),
+        "{banner}"
+    );
+    setup.publish(&requested(43));
+    let args = setup.claude_args(1);
+    assert_eq!(setup.rows("runs")[1][9], good);
+    assert!(arg(&args, "--plugin-dir").is_some(), "{args:?}");
+
+    fs::rename(&gone, &bare).unwrap();
+    setup.until_kit_banner(|banner| banner.is_none());
+}
+
+#[test]
+fn a_runner_with_no_good_commit_starts_runs_without_the_kit_until_a_fetch_works() {
+    let mut setup = Setup::new("kit-none");
+    let commit = setup.kit_repo();
+    let bare = setup.dir.join("kit.git");
+    let gone = setup.dir.join("kit-gone.git");
+    fs::rename(&bare, &gone).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let banner = setup
+        .until_kit_banner(|banner| banner.is_some())
+        .unwrap_or_default();
+    assert!(banner.ends_with("; runs start without the kit"), "{banner}");
+    let args = setup.claude_args(0);
+    assert_eq!(arg(&args, "--plugin-dir"), None, "{args:?}");
+    assert_eq!(setup.rows("runs")[0][9], "-");
+
+    fs::rename(&gone, &bare).unwrap();
+    setup.until_kit(&commit);
+    setup.publish(&requested(43));
+
+    setup.claude_args(1);
+    assert_eq!(setup.rows("runs")[1][9], commit);
+    assert_eq!(setup.kit_banner(), None);
+}
+
+#[test]
+fn each_runner_fetches_the_kit_on_its_own_and_records_the_same_commit() {
+    let mut a = runner("kit", "a", None);
+    let mut b = runner("kit", "b", Some(&a));
+    let commit = a.kit_repo();
+    fs::copy(
+        a.dir.join("factory/factory.toml"),
+        b.dir.join("factory/factory.toml"),
+    )
+    .unwrap();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let on_a = a.claude_args(0);
+    a.crash();
+
+    b.publish(&requested(2));
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let on_b = b.claude_args(0);
+
+    let (plugin_a, plugin_b) = (
+        PathBuf::from(arg(&on_a, "--plugin-dir").unwrap()),
+        PathBuf::from(arg(&on_b, "--plugin-dir").unwrap()),
+    );
+    assert!(plugin_a.starts_with(a.dir.join("home/kit")), "{plugin_a:?}");
+    assert!(plugin_b.starts_with(b.dir.join("home/kit")), "{plugin_b:?}");
+    assert!(b.dir.join(format!("home/kit/{commit}")).is_dir());
+    assert_eq!(tree(&plugin_a), tree(&plugin_b));
+    assert_eq!(
+        [&a.rows("runs")[0][9], &b.rows("runs")[0][9]],
+        [&commit, &commit]
+    );
+}
+
+#[test]
+fn a_kit_commit_that_check_would_refuse_is_refused_whole_and_the_trace_names_the_commit_a_run_got()
+{
+    let mut setup = Setup::with_workflow("kit-refused", TWO_AGENTS);
+    let good = setup.kit_repo();
+    setup.start();
+    setup.until_kit(&good);
+    let work = setup.dir.join("kit-work");
+    fs::write(
+        work.join("skills/kit-notes/SKILL.md"),
+        "---\nname: kit-notes\n---\nNo description.\n",
+    )
+    .unwrap();
+    let bad = setup.kit_push("The kit says: skip the gate.\n");
+
+    let banner = setup
+        .until_kit_banner(|banner| banner.is_some())
+        .unwrap_or_default();
+
+    assert!(
+        banner.contains(&format!(
+            "commit {} has 1 problem(s), the first in skills/kit-notes/SKILL.md:1:",
+            &bad[..12]
+        )) && banner.ends_with(&format!("; runs keep commit {}", &good[..12])),
+        "{banner}"
+    );
+    setup.calls(&[result("passed"), result("approved")]);
+    setup.publish(&requested(42));
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    let runs = setup.rows("runs");
+    assert_eq!([&runs[0][9], &runs[1][9]], [&good, &good]);
+    let traced: Vec<serde_json::Value> = String::from_utf8(setup.priory(&["trace"]).stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|event| event["type"] == "factory.step.ended")
+        .map(|event| event["data"]["kit_commit"].clone())
+        .collect();
+    assert_eq!(traced, [json!(good), json!(good)]);
+}
+
+/// Writes a `command` scorer `name` and its script `scripts/<name>.sh` into the setup's factory.
+fn command_scorer(setup: &Setup, name: &str, timeout: &str, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let toml = format!(
+        "description = \"{name}\"\non = \"diff\"\nkind = \"command\"\nrun = \"scripts/{name}.sh\"\ntimeout = \"{timeout}\"\n"
+    );
+    scorer(setup, name, &toml);
+    let path = setup.dir.join(format!("factory/scripts/{name}.sh"));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, script).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Task 1 runs `plan`, whose result names a commit of `a.txt`, then `implement`, whose result names
+/// none, then `b.txt` lands on its branch. Returns the setup and the plan's commit.
+fn committed_task(name: &str) -> (Setup, String) {
+    let mut setup = Setup::with_workflow(name, STEPS);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    let planned = setup.commit(1, "a.txt");
+    let ready = json!({ "name": "result", "arguments": { "outcome": "ready", "summary": "ready it", "commit": planned } });
+    setup.calls(&[ready, result("passed")]);
+    setup.release("hold-call");
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    setup.commit(1, "b.txt");
+    (setup, planned)
+}
+
+#[test]
+fn a_command_scorer_runs_on_its_results_commit_and_its_exit_code_is_the_verdict() {
+    let (setup, planned) = committed_task("score-command");
+    let seen = setup.dir.join("seen");
+    let ok = format!(
+        "#!/bin/sh\n{{ env; echo \"head $(git rev-parse HEAD)\"; ls; cat \"$PRIORY_SCORE_RESULT\"; echo; }} > {}\necho the tests pass\n",
+        seen.display()
+    );
+    command_scorer(&setup, "ok", "1m", &ok);
+    command_scorer(
+        &setup,
+        "no",
+        "1m",
+        "#!/bin/sh\necho two tests fail\nexit 1\n",
+    );
+    command_scorer(&setup, "broken", "1m", "#!/bin/sh\necho no cargo\nexit 2\n");
+    command_scorer(&setup, "slow", "1s", "#!/bin/sh\nsleep 30\n");
+    let base = setup.pushed("main");
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(
+        rows.iter()
+            .map(|row| [
+                row[0].as_str(),
+                row[2].as_str(),
+                row[3].as_str(),
+                row[4].as_str()
+            ])
+            .collect::<Vec<_>>(),
+        [
+            ["1", "broken", "error", "exit 2: no cargo"],
+            ["1", "no", "fail", "two tests fail"],
+            ["1", "ok", "pass", "the tests pass"],
+            ["1", "slow", "error", "timed out after 1s"],
+            ["2", "broken", "error", "the result names no commit"],
+            ["2", "no", "error", "the result names no commit"],
+            ["2", "ok", "error", "the result names no commit"],
+            ["2", "slow", "error", "the result names no commit"],
+        ]
+    );
+    let seen = fs::read_to_string(&seen).unwrap();
+    assert!(seen.contains(&format!("head {planned}\n")), "{seen}");
+    assert!(
+        seen.contains("\na.txt\n") && !seen.contains("b.txt"),
+        "{seen}"
+    );
+    assert!(
+        seen.contains(&format!("PRIORY_SCORE_BASE={base}\n")),
+        "{seen}"
+    );
+    assert!(
+        seen.contains(&format!("PRIORY_SCORE_HEAD={planned}\n")),
+        "{seen}"
+    );
+    assert!(seen.contains("\"outcome\":\"ready\""), "{seen}");
+    assert!(
+        !seen.contains("PRIORY_DB=") && !seen.contains("FAKE_DIR="),
+        "{seen}"
+    );
+    let scratch = setup.dir.join("home/scores");
+    assert!(scratch.read_dir().unwrap().next().is_none());
+}
+
+#[test]
+fn a_command_scorer_on_a_task_with_no_start_commit_is_an_error() {
+    let (setup, _) = committed_task("score-no-base");
+    command_scorer(&setup, "ok", "1m", "#!/bin/sh\nexit 0\n");
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute("UPDATE tasks SET base_sha = NULL", [])
+        .unwrap();
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(rows[0][3..], ["error", "no start commit"]);
+}
+
+#[test]
+fn a_command_scorer_refuses_a_result_commit_that_is_not_a_hash_before_git_reads_it() {
+    let (setup, _) = committed_task("score-bad-commit");
+    // The result tool takes only a full SHA, but a stored result is older than that rule.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "DROP TRIGGER results_are_immutable;
+         UPDATE results SET commit_sha = '--orphan=x' WHERE run = 1;",
+    )
+    .unwrap();
+    command_scorer(&setup, "ok", "1m", "#!/bin/sh\nexit 0\n");
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(
+        rows[0][3..],
+        [
+            "error",
+            "the result's commit \"--orphan=x\" is not a commit hash"
+        ]
+    );
+    let branches = git(&setup.dir.join("home/repos/owner/repo"))
+        .args(["branch", "--list", "x"])
+        .output()
+        .unwrap();
+    assert!(branches.stdout.is_empty());
+}
+
+#[test]
+fn a_command_scorer_whose_run_leads_outside_the_factory_folder_is_an_error_and_never_runs() {
+    use std::os::unix::fs::PermissionsExt;
+    let (setup, _) = committed_task("score-outside");
+    let ran = setup.dir.join("ran");
+    let outside = setup.dir.join("outside.sh");
+    fs::write(&outside, format!("#!/bin/sh\ntouch {}\n", ran.display())).unwrap();
+    fs::set_permissions(&outside, fs::Permissions::from_mode(0o755)).unwrap();
+    command_scorer(&setup, "escape", "1m", "#!/bin/sh\nexit 0\n");
+    let link = setup.dir.join("factory/scripts/escape.sh");
+    fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(
+        rows[0][3..],
+        [
+            "error",
+            "`run` names scripts/escape.sh, which leads outside the factory folder"
+        ]
+    );
+    assert!(!ran.exists());
+}
+
+#[test]
+fn bench_capture_refuses_a_task_with_no_irreversible_step_or_no_start_commit() {
+    let setup = scored_task("capture-refused");
+    let factory = setup.dir.join("factory");
+    let into = setup.dir.join("case");
+    let capture = || {
+        setup.priory(&[
+            "bench",
+            "capture",
+            factory.to_str().unwrap(),
+            "1",
+            "--into",
+            into.to_str().unwrap(),
+        ])
+    };
+
+    let unbounded = capture();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute("UPDATE tasks SET base_sha = NULL WHERE id = 1", [])
+        .unwrap();
+    let unstarted = capture();
+
+    assert!(!unbounded.status.success(), "{unbounded:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&unbounded.stderr),
+        "priory bench capture: task 1 reached no irreversible step, so a replay of it would have no end\n"
+    );
+    assert!(!unstarted.status.success(), "{unstarted:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&unstarted.stderr),
+        "priory bench capture: task 1 has no start commit: it began before Priory stored one\n"
+    );
+    assert!(!into.exists(), "a refused capture wrote {}", into.display());
+}
+
+/// A workflow whose human step leads to an irreversible code step, which a replay must never run.
+const REPLAYED: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "approve", failed = "stop" }
+
+[[steps]]
+id = "approve"
+decides = "human"
+effect = "none"
+options = ["approved", "rejected"]
+next = { approved = "publish", rejected = "stop" }
+
+[[steps]]
+id = "publish"
+decides = "code"
+action = "open-pr"
+effect = "irreversible"
+autonomous = "it only opens a pull request"
+next = { opened = "done", failed = "stop" }
+"#;
+
+/// A replayable case: the setup, its case folder and its start commit. The origin and this
+/// machine's clone of `owner/repo` hold a commit newer than the start. The case records one gh
+/// call, one answer and the tokens of its one model step, `input` of them input tokens. A `claude`
+/// first on `PATH` logs where it starts, its environment and what two gh calls print, then runs
+/// the fake.
+fn replayable(name: &str, input: u64) -> (Setup, PathBuf, String) {
+    let setup = Setup::with_workflow(name, REPLAYED);
+    fs::write(
+        setup.dir.join("factory/prices.toml"),
+        "[haiku]\ninput = 1.0\noutput = 1.0\ncache_read = 1.0\ncache_write = 1.0\n\n[claude-fake-5]\ninput = 1.0\noutput = 1.0\ncache_read = 1.0\ncache_write = 1.0\n",
+    )
+    .unwrap();
+    let work = setup.dir.join("work");
+    let start = setup.git(&work, &["rev-parse", "HEAD"]).trim().to_owned();
+    let clone = setup.dir.join("home/repos/owner/repo");
+    fs::create_dir_all(clone.parent().unwrap()).unwrap();
+    let origin = setup.dir.join("origin/owner/repo.git");
+    setup.git(
+        &setup.dir,
+        &[
+            "clone",
+            "-q",
+            "--no-checkout",
+            origin.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    );
+    fs::write(work.join("NEWER.md"), "newer\n").unwrap();
+    setup.git(&work, &["add", "NEWER.md"]);
+    setup.git(
+        &work,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "newer",
+        ],
+    );
+    setup.git(
+        &work,
+        &["push", "-q", origin.to_str().unwrap(), "HEAD:main"],
+    );
+    setup.git(&clone, &["fetch", "-q", "origin"]);
+
+    let case = setup.dir.join("case");
+    let files = [
+        (
+            "case.toml",
+            format!(
+                r#"workflow = "implement"
+key = "github:owner/repo#42"
+repo = "owner/repo"
+start = "{start}"
+ends_at = "publish"
+partial = false
+gaps = []
+
+[request]
+type = "factory.task.requested"
+subject = "github:owner/repo#42"
+
+[request.data]
+key = "github:owner/repo#42"
+source = "case"
+trigger = "agent-label"
+workflow = "implement"
+
+[reference]
+path = ["implement:passed", "approve:approved", "publish:opened"]
+labels = []
+
+[[spent]]
+step = "implement"
+model = "claude-fake-5"
+minutes = 1
+tokens = {{ input = {input}, output = 0, cache_read = 0, cache_write = 0 }}
+"#
+            ),
+        ),
+        (
+            "gh/001.toml",
+            "run = 1\nstep = \"implement\"\nargs = [\"issue\", \"view\", \"42\", \"--json\", \"title\"]\noutput = '{\"title\":\"Add a widget\"}'\n".to_owned(),
+        ),
+        (
+            "answers.toml",
+            "[[answers]]\nstep = \"approve\"\nanswer = \"approved\"\n".to_owned(),
+        ),
+    ];
+    for (path, text) in files {
+        let file = case.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, text).unwrap();
+    }
+
+    let fake = setup.dir.join("fake");
+    let logs = fake.join("replay");
+    fs::create_dir_all(&logs).unwrap();
+    let wrapper = format!(
+        "#!/bin/sh\nlog='{logs}'\n{{ git rev-parse HEAD; pwd; }} >> \"$log/where\"\nenv | cut -d= -f1 | sort > \"$log/env\"\n{{ gh issue view 42 --json title; echo \" exit $?\"; gh pr list; echo \" exit $?\"; }} > \"$log/gh\" 2>&1\nFAKE_DIR='{fake}' exec '{claude}' \"$@\"\n",
+        logs = logs.display(),
+        fake = fake.display(),
+        claude = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fake/claude")
+            .display(),
+    );
+    let bin = setup.dir.join("replay-bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(bin.join("claude"), wrapper).unwrap();
+    fs::set_permissions(bin.join("claude"), fs::Permissions::from_mode(0o755)).unwrap();
+    (setup, case, start)
+}
+
+impl Setup {
+    /// Runs `priory bench replay` on the factory and `case` with `args`, as a person with a GitHub
+    /// token would, and waits up to two minutes for it.
+    fn replay(&self, case: &Path, args: &[&str]) -> Exit {
+        // Not the shared fakes: a fake tmux or git finds the real one by dropping the first entry
+        // of `PATH`, which the replay's own `bin` takes.
+        let path = std::env::join_paths(
+            std::iter::once(self.dir.join("replay-bin"))
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let factory = self.dir.join("factory");
+        let mut child = self
+            .command(env!("CARGO_BIN_EXE_priory"))
+            .args([
+                "bench",
+                "replay",
+                factory.to_str().unwrap(),
+                case.to_str().unwrap(),
+            ])
+            .args(args)
+            .env("PATH", path)
+            .env("TMPDIR", self.tmux.path())
+            .env("GH_TOKEN", "a-person's-token")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() > deadline {
+                let scratch = fs::read_dir(self.tmux.path())
+                    .unwrap()
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .find(|path| path.to_string_lossy().contains("priory-replay-"));
+                let log = scratch
+                    .and_then(|scratch| fs::read_to_string(scratch.join("daemon.log")).ok())
+                    .unwrap_or_default();
+                let _ = child.kill();
+                panic!(
+                    "the replay ran past two minutes: {:?}\n--- its daemon's log\n{log}",
+                    child.wait_with_output()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        child.wait_with_output().unwrap()
+    }
+
+    /// What the replay's `claude` logged in `file`, one line each.
+    fn replay_log(&self, file: &str) -> Vec<String> {
+        fs::read_to_string(self.dir.join("fake/replay").join(file))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+/// The scratch folder a replay printed.
+fn scratch_of(stdout: &str) -> PathBuf {
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("scratch: "))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("no scratch line in {stdout}"))
+}
+
+#[test]
+fn bench_replay_plays_a_case_from_its_start_commit_to_its_irreversible_step_and_never_runs_it() {
+    let (setup, case, start) = replayable("replay-reached", 1);
+    setup.calls(&[result("passed")]);
+
+    let output = setup.replay(&case, &["--budget", "1"]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines[0],
+        "estimate: $0.0000 of a $1.0000 budget, plus at most $0.0000 if it ends inside a turn of 30m"
+    );
+    assert_eq!(lines[2], "answer: approve approved");
+    assert_eq!(lines[3], "ending: reached publish");
+    // The fake's first turn: 101 input, 11 output, 1001 cache read and 50+1 cache write tokens.
+    assert!(
+        lines[4].starts_with("spent: $0.0012 of $1.0000 in "),
+        "{stdout}"
+    );
+    assert_eq!(lines[5..], ["gh calls not recorded: 1", "  gh pr list"]);
+    let where_ = setup.replay_log("where");
+    let scratch = scratch_of(&stdout);
+    assert_eq!(
+        where_[0], start,
+        "the run did not start from the case's start commit"
+    );
+    assert!(
+        Path::new(&where_[1]).starts_with(&scratch),
+        "the run worked in {}, outside the scratch folder {}",
+        where_[1],
+        scratch.display()
+    );
+    assert!(!scratch.exists(), "the replay left {}", scratch.display());
+    assert_eq!(
+        setup.replay_log("gh"),
+        [
+            "{\"title\":\"Add a widget\"} exit 0",
+            "gh: not recorded in this case: pr list",
+            " exit 1"
+        ]
+    );
+    let env = setup.replay_log("env");
+    for dropped in ["GH_TOKEN", "FAKE_DIR", "PRIORY_FACTORY"] {
+        assert!(
+            !env.iter().any(|name| name == dropped),
+            "{dropped} reached the run: {env:?}"
+        );
+    }
+    assert!(
+        !setup.dir.join("home/worktrees").exists(),
+        "the replay worked in this machine's own worktrees"
+    );
+}
+
+#[test]
+fn bench_replay_cancels_the_task_once_a_turn_spends_past_the_budget() {
+    let (setup, case, _) = replayable("replay-over", 1);
+    setup.calls(&[result("passed")]);
+
+    let output = setup.replay(&case, &["--budget", "0.0005"]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines[2..4],
+        ["Incomplete", "ending: over budget"],
+        "{stdout}"
+    );
+    assert!(
+        lines[4].starts_with("spent: $0.0012 of $0.0005 in "),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("answer:"),
+        "the replay went on past its budget: {stdout}"
+    );
+    assert!(!scratch_of(&stdout).exists());
+}
+
+#[test]
+fn bench_replay_ends_incomplete_on_a_turn_whose_tokens_it_cannot_read() {
+    let (setup, case, _) = replayable("replay-unknown", 1);
+    setup.calls(&[result("passed")]);
+    fs::write(setup.dir.join("fake/no-transcript"), "").unwrap();
+
+    let output = setup.replay(&case, &["--budget", "1"]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines[2..4],
+        [
+            "Incomplete",
+            "ending: cost unknown: step implement ended with no tokens"
+        ],
+        "{stdout}"
+    );
+    assert!(!scratch_of(&stdout).exists());
+}
+
+#[test]
+fn bench_replay_ends_a_turn_past_its_turn_timeout() {
+    let (setup, case, _) = replayable("replay-timeout", 1);
+    setup.calls(&[result("passed")]);
+    setup.hold("hold-call");
+
+    let output = setup.replay(&case, &["--budget", "1", "--turn-timeout", "3s"]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    assert!(stdout.contains("\nending: timed out\n"), "{stdout}");
+    assert!(stdout.starts_with("estimate: $0.0000 of a $1.0000 budget, plus at most $0.0000 if it ends inside a turn of 3s\n"), "{stdout}");
+    assert!(!scratch_of(&stdout).exists());
+}
+
+#[test]
+fn bench_replay_refuses_an_estimate_over_its_budget_or_a_model_with_no_price() {
+    let (setup, case, _) = replayable("replay-refused", 2_000_000);
+
+    let over = setup.replay(&case, &["--budget", "1"]);
+    fs::write(setup.dir.join("factory/prices.toml"), "").unwrap();
+    let unpriced = setup.replay(&case, &["--budget", "1"]);
+    let unbudgeted = setup.replay(&case, &[]);
+
+    assert!(!over.status.success(), "{over:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&over.stdout),
+        "estimate: $2.0000 of a $1.0000 budget, plus at most $60.0000 if it ends inside a turn of 30m\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&over.stderr),
+        "priory bench replay: the estimate, $2.0000, is over the $1.0000 budget: give --budget 2.00 or more\n"
+    );
+    assert!(!unpriced.status.success(), "{unpriced:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&unpriced.stderr),
+        "priory bench replay: prices.toml has no price for haiku, the model of step implement: a cap in dollars needs every price\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&unbudgeted.stderr),
+        "priory bench replay: give --budget USD, the most the replay may spend\n"
+    );
+    assert!(
+        fs::read_dir(setup.tmux.path()).unwrap().next().is_none(),
+        "a refused replay made a scratch folder"
+    );
+}
+
+fn remember(name: &str, text: &str) -> serde_json::Value {
+    json!({ "name": "remember", "arguments": {
+        "name": name, "description": format!("What {name} says."), "text": text,
+    } })
+}
+
+fn forget(name: &str) -> serde_json::Value {
+    json!({ "name": "forget", "arguments": { "name": name } })
+}
+
+/// A `tools/call` of `params` for `Setup::mcp`.
+fn mcp_call(params: serde_json::Value) -> serde_json::Value {
+    json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params })
+}
+
+/// The memories a launch got, each file's name and its text after the frontmatter; none without
+/// `--add-dir`.
+fn remembered(args: &[String]) -> Vec<(String, String)> {
+    let Some(folder) = arg(args, "--add-dir") else {
+        return Vec::new();
+    };
+    tree(Path::new(&folder))
+        .into_iter()
+        .map(|(name, bytes)| {
+            let text = String::from_utf8(bytes).unwrap();
+            let body = text.rsplit("---\n").next().unwrap().trim().to_owned();
+            (name, body)
+        })
+        .collect()
+}
+
+impl Setup {
+    /// `priory memories --all --json`: every memory candidate this runner read.
+    fn candidates(&self) -> Vec<serde_json::Value> {
+        let output = self.priory(&["memories", "--all", "--json"]);
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["candidates"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    /// Waits until `done` holds for this runner's memory candidates, and returns them.
+    fn until_candidates(
+        &self,
+        done: impl Fn(&[serde_json::Value]) -> bool,
+    ) -> Vec<serde_json::Value> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let candidates = self.candidates();
+            if done(&candidates) {
+                return candidates;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out on the memory candidates: {candidates:?}\ndaemon: {}",
+                fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Accepts or drops candidate `id` on the factory's log, and waits until this runner read it.
+    fn decide(&self, verb: &str, id: &str) {
+        let factory = self.dir.join("factory");
+        let decided = self.priory(&["memories", verb, factory.to_str().unwrap(), id]);
+        assert!(decided.status.success(), "{decided:?}");
+        let state = if verb == "accept" {
+            "accepted"
+        } else {
+            "dropped"
+        };
+        self.until_candidates(|candidates| {
+            candidates
+                .iter()
+                .any(|candidate| candidate["id"] == id && candidate["state"] == state)
+        });
+    }
+
+    /// Answers this runner's ask 1 and returns the arguments of the launch that resumes its session.
+    fn answer_and_relaunch(&self, run: usize) -> Vec<String> {
+        let _ = fs::remove_file(self.dir.join("fake/args.log"));
+        let answered = self.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+        assert!(answered.status.success(), "{answered:?}");
+        self.claude_args(run)
+    }
+
+    /// The text of the `memory` tool's reply to the live run `run` for `name`, and whether it failed.
+    fn recall(&self, run: usize, name: &str) -> (String, bool) {
+        let session = self.rows("runs")[run][4].clone();
+        let replies = self.mcp(
+            &session,
+            &[mcp_call(
+                json!({ "name": "memory", "arguments": { "name": name } }),
+            )],
+        );
+        reply(&replies[0])
+    }
+}
+
+/// The id of the one candidate of `name` that holds `text`, or a tombstone when `text` is none.
+fn candidate(candidates: &[serde_json::Value], name: &str, text: Option<&str>) -> String {
+    let found: Vec<&serde_json::Value> = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate["name"] == name && candidate["text"].as_str().map(str::trim) == text
+        })
+        .collect();
+    assert_eq!(found.len(), 1, "{candidates:?}");
+    found[0]["id"].as_str().unwrap().to_owned()
+}
+
+#[test]
+fn a_remembered_fact_reaches_its_own_tasks_next_run_at_once_and_other_tasks_once_a_person_accepts_it()
+ {
+    let mut a = runner("remember", "a", None);
+    let mut b = runner("remember", "b", Some(&a));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    b.calls(&[
+        ask(),
+        json!([
+            remember("release-day", "Releases go out on Wednesdays."),
+            ask()
+        ]),
+    ]);
+    a.calls(&[json!([
+        remember("release-day", "Releases go out on Tuesdays."),
+        ask()
+    ])]);
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    a.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let (text, failed) = reply(&a.replies()[0]);
+    assert!(!failed, "{text}");
+    logged(
+        &a,
+        "priory.memory.written",
+        json!({ "name": "release-day", "runner": "a", "task": "github:owner/repo#1" }),
+    );
+
+    let resumed = a.answer_and_relaunch(1);
+    assert_eq!(
+        remembered(&resumed),
+        [(
+            "release-day.md".to_owned(),
+            "Releases go out on Tuesdays.".to_owned()
+        )],
+        "the task that wrote it gets it at once"
+    );
+    let (text, failed) = a.recall(1, "release-day");
+    assert!(
+        !failed && text.contains("Releases go out on Tuesdays."),
+        "{text}"
+    );
+    a.crash();
+
+    b.publish(&requested(2));
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let candidates = b.until_candidates(|candidates| candidates.len() == 1);
+    let first = candidate(
+        &candidates,
+        "release-day",
+        Some("Releases go out on Tuesdays."),
+    );
+    assert_eq!(candidates[0]["state"], "pending");
+    assert_eq!(
+        remembered(&b.claude_args(0)),
+        [],
+        "another task waits for a person"
+    );
+    let (text, failed) = b.recall(0, "release-day");
+    assert!(failed, "{text}");
+    let desk = b.priory(&["desk", "--json"]);
+    let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+    let items: Vec<&serde_json::Value> = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["kind"] == "memories")
+        .collect();
+    assert_eq!(items.len(), 1, "{desk}");
+    assert_eq!(items[0]["candidates"][0]["id"], json!(first));
+
+    b.decide("accept", &first);
+    b.publish(&requested(3));
+    b.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    assert_eq!(
+        remembered(&b.claude_args(1)),
+        [(
+            "release-day.md".to_owned(),
+            "Releases go out on Tuesdays.".to_owned()
+        )],
+        "an accepted candidate reaches every task"
+    );
+    b.until_candidates(|candidates| {
+        candidates.len() == 2
+            && candidates
+                .iter()
+                .all(|candidate| candidate["state"] != "sending")
+    });
+    let desk = b.priory(&["desk", "--json"]);
+    let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+    assert_eq!(
+        desk["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["kind"] == "memories")
+            .map(|item| item["candidates"].as_array().unwrap().len())
+            .collect::<Vec<_>>(),
+        [1],
+        "only the overwrite waits: {desk}"
+    );
+    b.crash();
+
+    a.publish(&requested(4));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let candidates = a.until_candidates(|candidates| {
+        candidates.len() == 2
+            && candidates
+                .iter()
+                .any(|candidate| candidate["state"] == "accepted")
+    });
+    let second = candidate(
+        &candidates,
+        "release-day",
+        Some("Releases go out on Wednesdays."),
+    );
+    assert_eq!(
+        remembered(&a.claude_args(2)),
+        [(
+            "release-day.md".to_owned(),
+            "Releases go out on Tuesdays.".to_owned()
+        )],
+        "accepting a candidate never accepts a later write of its name"
+    );
+
+    a.decide("accept", &second);
+    a.publish(&requested(5));
+    assert_eq!(
+        remembered(&a.claude_args(3)),
+        [(
+            "release-day.md".to_owned(),
+            "Releases go out on Wednesdays.".to_owned()
+        )],
+        "the later accept wins"
+    );
+}
+
+#[test]
+fn a_forget_of_a_kit_memory_hides_it_from_its_own_task_at_once_and_from_every_runner_once_accepted()
+{
+    let mut a = runner("forget-kit", "a", None);
+    let mut b = runner("forget-kit", "b", Some(&a));
+    a.kit_repo();
+    b.kit_repo();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.calls(&[json!([forget("kit-fact"), ask()])]);
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let first = a.claude_args(0);
+    assert_eq!(
+        remembered(&first),
+        [("kit-fact.md".to_owned(), "The kit lives in git.".to_owned())]
+    );
+    a.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    assert_eq!(
+        remembered(&a.answer_and_relaunch(1)),
+        [],
+        "the task that forgot it no longer gets it"
+    );
+    a.crash();
+
+    b.publish(&requested(2));
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let candidates = b.until_candidates(|candidates| candidates.len() == 1);
+    assert_eq!(candidates[0]["forget"], true, "{candidates:?}");
+    assert_eq!(
+        remembered(&b.claude_args(0)),
+        [("kit-fact.md".to_owned(), "The kit lives in git.".to_owned())],
+        "a forget waits for a person too"
+    );
+
+    let tombstone = candidate(&candidates, "kit-fact", None);
+    b.decide("accept", &tombstone);
+    b.publish(&requested(3));
+    assert_eq!(remembered(&b.claude_args(1)), []);
+    b.crash();
+
+    a.publish(&requested(4));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    a.until_candidates(|candidates| candidates[0]["state"] == "accepted");
+    assert_eq!(
+        remembered(&a.claude_args(2)),
+        [],
+        "every runner reads the accept"
+    );
+}
+
+#[test]
+fn remember_refuses_a_bad_name_a_long_text_and_a_credential_and_a_dropped_candidate_takes_no_accept()
+ {
+    let mut setup = Setup::with_workflow("remember-refused", STEPS);
+    setup.publish(&requested(42));
+    setup.start();
+    let session = setup.until("runs", |rows| rows.len() == 1)[0][4].clone();
+    let calls = [
+        remember("Release_Day", "Tuesdays."),
+        remember("release-day", &"x".repeat(4096)),
+        remember("token", "Use ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123 to push."),
+        remember("release-day", "Releases go out on Tuesdays."),
+    ];
+    let replies: Vec<(String, bool)> = calls
+        .into_iter()
+        .map(|call| reply(&setup.mcp(&session, &[mcp_call(call)])[0]))
+        .collect();
+
+    assert_eq!(
+        replies[..3]
+            .iter()
+            .map(|(text, failed)| (text.as_str(), *failed))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "a memory's name has lowercase letters, digits and hyphens, and starts with a letter or a digit",
+                true
+            ),
+            (
+                "a memory holds one fact in at most 4096 bytes: this one is 4161 bytes",
+                true
+            ),
+            (
+                "the text looks like it holds a credential: a memory reaches every later run, so keep secrets out of it",
+                true
+            ),
+        ]
+    );
+    assert!(!replies[3].1, "{:?}", replies[3]);
+    let candidates = setup.until_candidates(|candidates| {
+        candidates.len() == 1 && candidates[0]["state"] == "pending"
+    });
+    let id = candidates[0]["id"].as_str().unwrap().to_owned();
+    let listed = setup.rows("memories");
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(
+        listed[0][..4],
+        [id.as_str(), "release-day", "remember", "pending"]
+    );
+
+    setup.decide("drop", &id);
+    let factory = setup.dir.join("factory");
+    let accepted = setup.priory(&["memories", "accept", factory.to_str().unwrap(), &id]);
+    assert!(!accepted.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&accepted.stderr).trim(),
+        format!("priory memories: candidate {id} is dropped")
+    );
+    assert!(
+        setup.rows("memories").is_empty(),
+        "the list shows pending ones"
+    );
+    let desk = setup.priory(&["desk", "--json"]);
+    let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+    assert!(
+        desk["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["kind"] != "memories"),
+        "{desk}"
+    );
+}
+
+const MEMORIES_PR: &str = r#"
+start = "open"
+
+[[steps]]
+id = "open"
+decides = "code"
+action = "open-memories-pr"
+effect = "irreversible"
+autonomous = "a person reviews the pull request before any memory merges"
+next = { opened = "done", unchanged = "done", failed = "stop" }
+"#;
+
+const KIT_MEMORIES: &str = r#"
+source = "schedule"
+repo = "owner/repo"
+at = "06:00"
+key = "kit-memories"
+workflow = "memories"
+"#;
+
+/// A firing of the daily `kit-memories` schedule, at `scheduled`.
+fn memories_day(scheduled: &str) -> Message {
+    let key = "schedule:kit-memories";
+    Message::new(
+        "factory.task.requested",
+        json!({
+            "workflow": "memories",
+            "key": key,
+            "band": null,
+            "lane": null,
+            "trigger": "kit-memories",
+            "source": format!("source-{scheduled}"),
+            "scheduled": scheduled,
+            "prompt": null
+        }),
+    )
+    .subject(key)
+}
+
+impl Setup {
+    /// Adds the `memories` workflow and the daily schedule that starts it.
+    fn memories_pr(&self) {
+        for (path, content) in [
+            ("factory/workflows/memories.toml", MEMORIES_PR),
+            ("factory/triggers/kit-memories.toml", KIT_MEMORIES),
+        ] {
+            fs::write(self.dir.join(path), content).unwrap();
+        }
+    }
+
+    /// Runs git in the kit's bare repository and returns its stdout, or none when it fails.
+    fn kit_git(&self, args: &[&str]) -> Option<String> {
+        let output = git(&self.dir.join("kit.git")).args(args).output().unwrap();
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8(output.stdout).unwrap())
+    }
+
+    /// Waits until this runner recorded `count` actions that ended, and returns them.
+    fn until_actions(&self, count: usize) -> Vec<Vec<String>> {
+        self.until("actions", |rows| {
+            rows.len() == count && rows.iter().all(|row| row[4] != "running")
+        })
+    }
+}
+
+#[test]
+fn the_daily_pull_request_carries_each_accepted_memory_as_a_file_in_the_kit_and_never_a_pending_one()
+ {
+    let mut a = runner("memories-pr", "a", None);
+    let mut b = runner("memories-pr", "b", Some(&a));
+    a.kit_repo();
+    let main = b.kit_repo();
+    a.memories_pr();
+    b.memories_pr();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.calls(&[json!([
+        remember("release-day", "Releases go out on Tuesdays."),
+        forget("kit-fact"),
+        remember("gate-cost", "The gate takes ten minutes."),
+        ask()
+    ])]);
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    a.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    a.crash();
+
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let candidates = b.until_candidates(|candidates| {
+        candidates.len() == 3
+            && candidates
+                .iter()
+                .all(|candidate| candidate["state"] == "pending")
+    });
+    b.decide(
+        "accept",
+        &candidate(
+            &candidates,
+            "release-day",
+            Some("Releases go out on Tuesdays."),
+        ),
+    );
+    b.decide("accept", &candidate(&candidates, "kit-fact", None));
+    b.publish(&memories_day("2026-11-22T06:00:00Z"));
+
+    let actions = b.until_actions(1);
+    assert_eq!(
+        actions[0][2..5],
+        ["open", "open-memories-pr", "opened"],
+        "{actions:?}"
+    );
+    let pushed = b
+        .kit_git(&["rev-parse", "priory/memories"])
+        .expect("the branch is pushed");
+    let pushed = pushed.trim();
+    assert_eq!(
+        actions[0][6], pushed,
+        "the action records the pushed commit"
+    );
+    assert_eq!(actions[0][5], "-", "the task owns no pull request");
+    assert_eq!(
+        b.kit_git(&["rev-parse", "priory/memories^"])
+            .unwrap()
+            .trim(),
+        main,
+        "the commit sits on the kit's ref"
+    );
+    assert_eq!(
+        b.kit_git(&["show", "priory/memories:memories/release-day.md"])
+            .unwrap(),
+        "---\nname: release-day\ndescription: \"What release-day says.\"\n---\nReleases go out on Tuesdays.\n",
+        "an accepted memory is its file, as runs get it"
+    );
+    assert_eq!(
+        b.kit_git(&["show", "priory/memories:memories/kit-fact.md"]),
+        None,
+        "an accepted forget removes the file"
+    );
+    assert_eq!(
+        b.kit_git(&["show", "priory/memories:memories/gate-cost.md"]),
+        None,
+        "a pending candidate stays out"
+    );
+    assert_eq!(
+        b.kit_git(&["diff", "--name-status", "main", "priory/memories"])
+            .unwrap(),
+        "D\tmemories/kit-fact.md\nA\tmemories/release-day.md\n"
+    );
+    let gh = b.gh();
+    assert_eq!(gh.len(), 2, "{gh:?}");
+    assert_eq!(
+        gh[0],
+        [
+            "pr",
+            "list",
+            "-R",
+            "owner/repo",
+            "--head",
+            "priory/memories",
+            "--state",
+            "open",
+            "--json",
+            "number"
+        ]
+    );
+    assert_eq!(
+        gh[1][..8],
+        [
+            "pr",
+            "create",
+            "-R",
+            "owner/repo",
+            "--base",
+            "main",
+            "--head",
+            "priory/memories"
+        ]
+    );
+    let body = &gh[1][gh[1].iter().position(|arg| arg == "--body").unwrap() + 1];
+    assert!(
+        body.contains("`release-day`") && body.contains("`kit-fact`"),
+        "{body}"
+    );
+    assert!(!body.contains("gate-cost"), "{body}");
+    assert_eq!(b.rows("tasks")[0][4], "done");
+
+    fs::write(b.dir.join("fake/open-pr"), "7").unwrap();
+    b.publish(&memories_day("2026-11-23T06:00:00Z"));
+
+    let actions = b.until_actions(2);
+    assert_eq!(actions[1][4], "opened", "{actions:?}");
+    assert_eq!(
+        actions[1][6], pushed,
+        "the same memories on the same ref make the same commit"
+    );
+    let gh = b.gh();
+    assert_eq!(gh.len(), 4, "{gh:?}");
+    assert_eq!(gh[3][..5], ["pr", "edit", "7", "-R", "owner/repo"]);
+
+    assert!(
+        git(&b.dir.join("kit.git"))
+            .args(["update-ref", "refs/heads/main", pushed])
+            .status()
+            .unwrap()
+            .success()
+    );
+    b.publish(&memories_day("2026-11-24T06:00:00Z"));
+
+    let actions = b.until_actions(3);
+    assert_eq!(
+        actions[2][4], "unchanged",
+        "once the kit holds them, there is nothing to propose: {actions:?}"
+    );
+    assert_eq!(b.gh().len(), 4, "no pull request call");
+    assert_eq!(
+        b.kit_git(&["rev-parse", "priory/memories"]).unwrap().trim(),
+        pushed
     );
 }

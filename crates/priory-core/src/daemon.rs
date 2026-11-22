@@ -35,6 +35,8 @@ const SWEEP: Duration = Duration::from_secs(600);
 const AFTER: Duration = Duration::from_secs(1800);
 /// How long a sweep script may run when it sets no `timeout`.
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long the daemon waits to publish a pick's pending request again after a publish failed.
+const REDISPATCH: Duration = Duration::from_secs(10);
 /// How long a turn may run when its step sets no `timeout`.
 const TIMEOUT: Duration = Duration::from_secs(3 * 3600);
 /// How long a run goes without a hook event or a pane change before it counts as stalled.
@@ -77,6 +79,82 @@ pub fn run(factory: &Factory, once: bool) -> Result<(), String> {
     serve(factory, once).map_err(|error| error.to_string())
 }
 
+/// Why a view-only machine refuses a write on its socket.
+pub const VIEW_ONLY: &str = "this machine is view-only: it runs no task and changes none here. \
+     Answer or dismiss an ask as <runner>:<ask>, or act on a task as <runner>:<key>, which goes to \
+     its runner through the log";
+
+/// Reads the whole log into mirrors of every runner's asks and tasks, and serves them when the
+/// factory has `[serve]`. It claims, runs and publishes nothing: a person's answer, dismiss or task
+/// action goes to its runner through the log, from the server or the command line.
+pub fn view_only(factory: &Factory) -> Result<(), String> {
+    view(factory).map_err(|error| error.to_string())
+}
+
+fn view(factory: &Factory) -> Result<(), Error> {
+    let machine = room::hostname();
+    let viewer = runners::viewer(factory, machine.as_deref())?;
+    let mut db = state::open()?;
+    let bus = log::open(factory.log())?;
+    let trace = Trace {
+        factory,
+        revision: runtime::revision(&factory.dir),
+        runner: None,
+        machine,
+        usage: transcript::usage,
+    };
+    // The listings add every runner's asks and tasks once this state file names its machine.
+    runners::name(&db, Some(&viewer))?;
+    let consumer = runners::view_consumer(&viewer);
+    // The socket's lock keeps a second daemon off this state file.
+    let listening = runtime::listen(&runtime::home())?;
+    if let Some(config) = factory.serve() {
+        crate::serve::start(factory, config.listen)?;
+    }
+    let mut link = Link::default();
+    loop {
+        if link.due() {
+            let drained = view_drain(&*bus, &consumer, &mut db, &viewer, &trace);
+            link.tried(&db, drained)?;
+        }
+        match listening.lines.recv_timeout(EVERY) {
+            Ok(line) => {
+                let reply = match serde_json::from_str::<Input>(&line.text) {
+                    // Since you looked is this machine's own.
+                    Ok(Input::Seen(line)) => state::seen(&db, &line.seen.person, line.seen.at)
+                        .map_err(|error| error.to_string()),
+                    _ => Err(VIEW_ONLY.to_owned()),
+                };
+                let reply = serde_json::to_string(&reply).expect("a result serializes");
+                let _ = line.applied.send(reply);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
+        }
+    }
+}
+
+/// Reads every message past the view's cursor into its mirrors.
+fn view_drain(
+    bus: &dyn Log,
+    consumer: &str,
+    db: &mut Connection,
+    viewer: &str,
+    trace: &Trace,
+) -> Result<(), Error> {
+    loop {
+        let deliveries = bus.read(consumer, OUTPUT, 100)?;
+        if deliveries.is_empty() {
+            return Ok(());
+        }
+        for delivery in deliveries {
+            let message = runners::clocked(delivery.message.clone(), delivery.logged);
+            runners::view(db, &message, viewer, trace)?;
+            bus.ack(consumer, &delivery)?;
+        }
+    }
+}
+
 fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     runtime::bound_commands(factory.command_timeout());
     let mut db = state::open()?;
@@ -117,6 +195,11 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         }
         return Ok(());
     }
+    // The kit's fetch comes before any run, so the first runs get its commit.
+    let mut kit = crate::kit::Fetcher::new(&db, factory, &home)?;
+    if let Some(kit) = &mut kit {
+        kit.start(&db)?;
+    }
     // Without its key the daemon sends no notification, but still runs tasks.
     if let Err(error) = push::keys(&home) {
         eprintln!("priory daemon: notifications are off: {error}");
@@ -156,8 +239,14 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         runtime::kill(&tmux);
     }
     runtime::replay(&home, |line| {
-        let (_, kill) =
-            take(&mut db, line, &trace, counting.get(&home)).map_err(|error| error.to_string())?;
+        let (_, kill) = take(
+            &mut db,
+            line,
+            &trace,
+            counting.get(&home),
+            current(kit.as_ref()),
+        )
+        .map_err(|error| error.to_string())?;
         kill.inspect(|tmux| runtime::kill(tmux));
         Ok(())
     })?;
@@ -252,6 +341,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut alive = None;
     let mut aged = None;
     let mut link = Link::default();
+    let mut redispatch: Option<Instant> = None;
     loop {
         // A runner back from away reads the log, and so drops the tasks that moved, before any run
         // and before it publishes what it queued meanwhile.
@@ -263,15 +353,42 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         }
         if let Some(drained) = drained {
             let tried = drained.and_then(|()| runners::flush(&db, &*bus));
+            let reached = tried.is_ok();
             link.tried(&db, tried)?;
+            // A pick's request that a lost log refused goes out once the log answers again.
+            if reached && redispatch.is_none_or(|after| Instant::now() >= after) {
+                let failed = sections::dispatch(&db, factory, None)?;
+                for error in &failed {
+                    eprintln!("priory daemon: {error}");
+                }
+                redispatch = (!failed.is_empty()).then(|| Instant::now() + REDISPATCH);
+            }
         }
         while let Ok(line) = listening.lines.try_recv() {
-            apply(&mut db, line, &trace, counting.get(&home))?;
+            apply(
+                &mut db,
+                line,
+                &trace,
+                counting.get(&home),
+                current(kit.as_ref()),
+            )?;
         }
         start_answers(&mut db, &trace, &home, &mut commands)?;
         commands = run_commands(&mut db, &trace, &home, commands)?;
-        tend(&mut db, &trace, &share, &home, &scope, &mut commands)?;
-        compact_idle(&db, &trace, &home, &scope)?;
+        if let Some(kit) = &mut kit {
+            kit.tick(&db)?;
+        }
+        let fetched = kit.as_ref().and_then(crate::kit::Fetcher::current);
+        tend(
+            &mut db,
+            &trace,
+            &share,
+            &home,
+            &scope,
+            &mut commands,
+            fetched,
+        )?;
+        compact_idle(&db, &trace, &home, &scope, fetched)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
         let counter = counting.get(&home);
         summarize(&mut db, &trace, &summaries, &mut summarizing, counter)?;
@@ -302,7 +419,13 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             sweep::retire(&db, &home, short)?;
         }
         match listening.lines.recv_timeout(EVERY) {
-            Ok(line) => apply(&mut db, line, &trace, counting.get(&home))?,
+            Ok(line) => apply(
+                &mut db,
+                line,
+                &trace,
+                counting.get(&home),
+                current(kit.as_ref()),
+            )?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
@@ -659,13 +782,19 @@ fn log_of(home: &Path, id: i64) -> std::path::PathBuf {
 
 /// Applies a line from the socket and replies to its sender. A run its line ended is killed after
 /// the reply, so the hook that sent it is not killed first.
+/// The kit commit runs get now, if any.
+fn current(kit: Option<&crate::kit::Fetcher>) -> Option<&crate::kit::Fetched> {
+    kit.and_then(crate::kit::Fetcher::current)
+}
+
 fn apply(
     db: &mut Connection,
     line: Line,
     trace: &Trace,
     counter: Option<&embed::Counter>,
+    kit: Option<&crate::kit::Fetched>,
 ) -> Result<(), Error> {
-    let (reply, kill) = take(db, &line.text, trace, counter)?;
+    let (reply, kill) = take(db, &line.text, trace, counter, kit)?;
     let _ = line.applied.send(reply);
     kill.inspect(|tmux| runtime::kill(tmux));
     Ok(())
@@ -681,6 +810,8 @@ enum Input {
     Connector(crate::todo::ConnectorLine),
     Todo(crate::todo::Line),
     Subscribe(subscribe::Line),
+    Unsubscribe(subscribe::EndLine),
+    Label(crate::label::Line),
     Deliver(deliver::Line),
     Add(AddLine),
     Signal(Signal),
@@ -833,6 +964,7 @@ fn take(
     line: &str,
     trace: &Trace,
     counter: Option<&embed::Counter>,
+    kit: Option<&crate::kit::Fetched>,
 ) -> Result<(String, Option<String>), Error> {
     let replied = |result: Result<String, String>| {
         serde_json::to_string(&result).expect("a result serializes")
@@ -850,6 +982,18 @@ fn take(
             None,
         )),
         Ok(Input::Subscribe(line)) => Ok((replied(subscribe::apply(db, &line.subscribe)?), None)),
+        Ok(Input::Unsubscribe(line)) => {
+            let end = &line.unsubscribe;
+            Ok((
+                replied(subscribe::unsubscribe(db, end.task, &end.resource)?),
+                None,
+            ))
+        }
+        Ok(Input::Label(line)) => {
+            let labeled = intake::now()
+                .and_then(|now| crate::label::apply(db, trace.factory, &line.label, now));
+            Ok((replied(labeled), None))
+        }
         Ok(Input::BatchEdit(line)) => {
             Ok((replied(crate::batch::apply(db, &line.batch_edit)), None))
         }
@@ -881,6 +1025,13 @@ fn take(
         Ok(Input::Call(call)) if call.tool == "progress" => {
             Ok((replied(progress::tool(db, &call, trace)?), None))
         }
+        Ok(Input::Call(call)) if matches!(call.tool.as_str(), "remember" | "forget") => {
+            Ok((replied(crate::memories::write(db, &call, trace)?), None))
+        }
+        Ok(Input::Call(call)) if call.tool == "memory" => Ok((
+            replied(crate::memories::recall(db, &call, trace.factory, kit)?),
+            None,
+        )),
         Ok(Input::Call(call)) if call.tool == "finding" => Ok((
             replied(crate::findings::tool(db, &call, trace.factory)?),
             None,
@@ -960,6 +1111,7 @@ fn tend(
     home: &Path,
     scope: &[String],
     commands: &mut Vec<(i64, Script)>,
+    kit: Option<&crate::kit::Fetched>,
 ) -> Result<(), Error> {
     let factory = trace.factory;
     for run in state::live(db)? {
@@ -1025,6 +1177,7 @@ fn tend(
             home,
             scope,
             &admission,
+            kit,
         )? {
             state::block(db, trace, admission.task, "failed", &reason)?;
         }
@@ -1102,12 +1255,16 @@ fn verdict(run: &state::LiveRun, factory: &Factory) -> Option<(&'static str, Str
             state::READY_WITHIN.replace(" seconds", "s"),
             harness.trust(&exe, &clone)
         );
-        let screen = runtime::screen(&run.tmux);
+        let rows = runtime::screen(&run.tmux).join("\n");
+        let secrets = crate::screen::secrets(&factory.secret_envs());
+        // When a secret still shows after redaction, no row of the pane is kept.
+        let shown = crate::screen::redact(&rows, &secrets, None)
+            .map_or_else(|| "[redacted]".to_owned(), |(shown, _)| shown);
         eprintln!(
-            "priory daemon: run {} never started; its pane ended with:\n{}",
+            "priory daemon: run {} never started; its pane ended with:\n{shown}",
             run.id,
-            screen.join("\n")
         );
+        let screen: Vec<_> = shown.lines().collect();
         let tail: Vec<_> = screen[screen.len().saturating_sub(5)..]
             .iter()
             .map(|line| line.trim())
@@ -1199,6 +1356,12 @@ fn act(
     let done = match step.action.as_deref().unwrap_or_default() {
         "open-pr" => open_pr(db, factory, due, head.as_deref())?,
         "open-issue" => open_issue(db, factory, due)?,
+        factory::OPEN_MEMORIES_PR => crate::memories::open_pull_request(
+            db,
+            factory,
+            home,
+            repo_of(factory, &due.trigger, due.repo.as_deref()),
+        )?,
         "start-batch" => {
             start_batch(db, trace, due, step)?;
             return Ok(false);
@@ -1296,6 +1459,7 @@ fn start_batch(
             pull_request: None,
             commit: None,
             error: None,
+            stdout: None,
             stack: Vec::new(),
         },
         Err(error) => failed(error),
@@ -1537,18 +1701,20 @@ fn open_pr(
             pull_request: stack.last().map(|pull| pull.resource.clone()),
             commit: commit.map(str::to_owned),
             error: None,
+            stdout: None,
             stack,
         },
         Err(error) => failed(error),
     })
 }
 
-fn failed(error: String) -> Done {
+pub(crate) fn failed(error: String) -> Done {
     Done {
         status: "failed",
         pull_request: None,
         commit: None,
         error: Some(error),
+        stdout: None,
         stack: Vec::new(),
     }
 }
@@ -1633,6 +1799,7 @@ fn open_issue(db: &Connection, factory: &Factory, due: &state::Due) -> Result<Do
             pull_request: None,
             commit: None,
             error: None,
+            stdout: None,
             stack: Vec::new(),
         },
         Err(error) => failed(error),
@@ -1647,7 +1814,10 @@ fn start(
     home: &Path,
     scope: &[String],
     admission: &Admission,
+    kit: Option<&crate::kit::Fetched>,
 ) -> Result<Result<(), String>, Error> {
+    let candidates = crate::memories::layer(db, Some(admission.task))?;
+    let sources = crate::kit::sources(factory, kit, &candidates);
     let step = factory.workflows[&admission.workflow]
         .value
         .step(&admission.step)
@@ -1690,7 +1860,7 @@ fn start(
     } else {
         state::resumable(db, admission.task, name)?
     };
-    let definition = definition(factory, &agent.value);
+    let definition = definition(factory, &agent.value, &sources);
     let changed = match &resumed {
         Some(session) if shared => {
             state::definition(db, session)?.and_then(|stored| changed(&stored, &definition))
@@ -1729,7 +1899,8 @@ fn start(
             definition: &definition.to_string(),
             changed: changed.filter(|_| resume.is_some()).as_deref(),
             lanes: factory.lanes(),
-            kit_hash: crate::kit::hash(factory, &agent.value.harness).as_deref(),
+            kit_hash: sources.hash().as_deref(),
+            kit_commit: sources.commit,
         },
     )?;
     // The new run is the task's only live one, so a session of this name is an ended run's agent.
@@ -1758,11 +1929,23 @@ fn start(
         resume: resume.as_deref(),
         prompt: first.as_deref(),
     };
-    Ok(launch(factory, &agent.value, home, scope, &env, &started))
+    Ok(launch(
+        factory,
+        &agent.value,
+        &sources,
+        home,
+        scope,
+        &env,
+        &started,
+    ))
 }
 
 /// What a shared session starts with: digests of its agent's prompt, tools, model and flags.
-fn definition(factory: &Factory, agent: &factory::Agent) -> serde_json::Value {
+fn definition(
+    factory: &Factory,
+    agent: &factory::Agent,
+    sources: &crate::kit::Sources,
+) -> serde_json::Value {
     let digest = |part: serde_json::Value| {
         Sha256::digest(part.to_string().as_bytes())[..8]
             .iter()
@@ -1772,7 +1955,7 @@ fn definition(factory: &Factory, agent: &factory::Agent) -> serde_json::Value {
     let permissions = &agent.permissions;
     serde_json::json!({
         // Without the factory's skills or instructions, the digest is the one sessions stored before them.
-        "prompt": match crate::kit::hash(factory, &agent.harness) {
+        "prompt": match sources.hash() {
             None => digest(serde_json::json!(factory.prompt(agent))),
             Some(kit) => digest(serde_json::json!([factory.prompt(agent), kit])),
         },
@@ -1815,23 +1998,25 @@ struct Started<'a> {
 fn launch(
     factory: &Factory,
     agent: &factory::Agent,
+    sources: &crate::kit::Sources,
     home: &Path,
     scope: &[String],
     env: &[String],
     started: &Started,
 ) -> Result<(), String> {
     let permissions = serde_json::to_value(&agent.permissions).expect("permissions serialize");
-    let plugin = match agent.harness {
-        Harness::ClaudeCode => crate::kit::plugin(factory, home)?,
-        Harness::Codex => None,
-    };
-    let memories = crate::kit::memories(factory, home)?;
-    let instructions = factory.run_instructions(
+    let plugin = sources.plugin(home)?;
+    let memories = sources.memories(home)?;
+    let mut instructions = sources.run_instructions(
         &memories
             .as_deref()
             .map(|folder| folder.display().to_string())
             .unwrap_or_default(),
     );
+    if let (Harness::Codex, Some(plugin)) = (&agent.harness, &plugin) {
+        let index = sources.skill_index(&plugin.join("skills").display().to_string());
+        instructions = factory::join_instructions(&instructions, &index);
+    }
     runtime::launch(
         harness(&agent.harness),
         &Launch {
@@ -1876,7 +2061,10 @@ fn compact_idle(
     trace: &Trace,
     home: &Path,
     scope: &[String],
+    kit: Option<&crate::kit::Fetched>,
 ) -> Result<(), Error> {
+    let candidates = crate::memories::layer(db, None)?;
+    let sources = crate::kit::sources(trace.factory, kit, &candidates);
     for live in idle::live(db)? {
         let ended_as = match (live.overdue, live.late) {
             (true, _) => Some("timeout"),
@@ -1920,7 +2108,7 @@ fn compact_idle(
         } else if context.is_none_or(|context| context < limit.get()) {
             Some("small")
         } else if stored.is_some_and(|stored| {
-            changed(&stored, &definition(trace.factory, &agent.value)).is_some()
+            changed(&stored, &definition(trace.factory, &agent.value, &sources)).is_some()
         }) {
             Some("changed")
         } else {
@@ -1938,7 +2126,15 @@ fn compact_idle(
             prompt: None,
         };
         let env: Vec<String> = guard_env(trace.factory).into_iter().collect();
-        if let Err(error) = launch(trace.factory, &agent.value, home, scope, &env, &started) {
+        if let Err(error) = launch(
+            trace.factory,
+            &agent.value,
+            &sources,
+            home,
+            scope,
+            &env,
+            &started,
+        ) {
             eprintln!("priory daemon: compacting {tmux}: {error}");
             idle::end(db, id, "failed")?;
         }

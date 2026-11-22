@@ -44,6 +44,70 @@ fn the_ship_and_watch_example_watches_a_merged_change_and_announces_it_once_appr
 }
 
 #[test]
+fn bench_capture_turns_a_played_task_into_the_case_folder_byte_for_byte() {
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/groom");
+    let expected = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/capture/red-case");
+    let played = Play::run("ci", &examples, &expected.with_file_name("red.toml"));
+    played.check();
+    let into = played.dir.join("case");
+
+    let output = played.capture(&into);
+
+    assert!(output.status.success(), "{output:?}\n{}", played.report());
+    assert_eq!(
+        tree(&into),
+        tree(&expected),
+        "the case in {} differs from {}",
+        into.display(),
+        expected.display()
+    );
+    let again = played.capture(&into);
+    assert!(
+        !again.status.success(),
+        "a second capture overwrote the case"
+    );
+    assert!(
+        String::from_utf8_lossy(&again.stderr).contains("already exists"),
+        "{again:?}"
+    );
+}
+
+#[test]
+fn bench_capture_marks_a_task_whose_transcript_is_gone_as_partial() {
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/groom");
+    let played = Play::run("gone", &examples, &examples.join("e2e/green.toml"));
+    played.check();
+    fs::remove_file(played.dir.join("fake/transcript.jsonl")).unwrap();
+    let into = played.dir.join("case");
+
+    let output = played.capture(&into);
+
+    assert!(output.status.success(), "{output:?}");
+    let case: toml::Value =
+        toml::from_str(&fs::read_to_string(into.join("case.toml")).unwrap()).unwrap();
+    assert_eq!(case["partial"].as_bool(), Some(true), "{case}");
+    let gaps: Vec<&str> = case["gaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .collect();
+    assert_eq!(
+        gaps,
+        [
+            "run 1: its transcript is gone",
+            "run 2: its transcript is gone",
+            "run 3: its transcript is gone",
+            "run 4: its transcript is gone",
+        ]
+    );
+    assert!(
+        !into.join("gh").exists(),
+        "a case with no kept call has no gh/"
+    );
+}
+
+#[test]
 #[ignore = "plays the factory PRIORY_E2E_FACTORY names through the scenario PRIORY_E2E_SCENARIO names"]
 fn a_factory_plays_the_scenario_the_environment_names() {
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/groom");
@@ -374,6 +438,19 @@ impl Play {
         self.bus().publish(OUTPUT, &message).unwrap();
     }
 
+    /// Runs `priory bench capture` on the task the scenario follows, into `into`.
+    fn capture(&self, into: &Path) -> Exit {
+        let factory = self.factory();
+        self.priory(&[
+            "bench",
+            "capture",
+            factory.to_str().unwrap(),
+            &self.id(),
+            "--into",
+            into.to_str().unwrap(),
+        ])
+    }
+
     /// The task the scenario follows, once it exists: the first task, or the first of the
     /// scenario's `workflow` when a firing starts several.
     fn task(&self) -> Option<Value> {
@@ -637,6 +714,25 @@ fn scenario_name(factory: &Path, scenario: &Path) -> String {
     format!("{}-{}", name(factory), name(scenario))
 }
 
+/// Each file under `dir`, by its path from `dir`, with its bytes.
+fn tree(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut files = Vec::new();
+    let mut folders = vec![dir.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for entry in fs::read_dir(&folder).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                folders.push(path);
+            } else {
+                let bytes = fs::read(&path).unwrap();
+                files.push((path.strip_prefix(dir).unwrap().to_path_buf(), bytes));
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
 fn strings(value: Option<&Value>) -> Vec<String> {
     value
         .map(|value| serde_json::from_value(value.clone()).expect("a list of strings"))
@@ -664,7 +760,10 @@ fn git(play: &Play, dir: &Path) -> Command {
         .env("GIT_AUTHOR_NAME", "e2e")
         .env("GIT_AUTHOR_EMAIL", "e2e@example.com")
         .env("GIT_COMMITTER_NAME", "e2e")
-        .env("GIT_COMMITTER_EMAIL", "e2e@example.com");
+        .env("GIT_COMMITTER_EMAIL", "e2e@example.com")
+        // A fixed date gives the origin the same first commit on every play, so a case's start is.
+        .env("GIT_AUTHOR_DATE", "2026-01-01T00:00:00Z")
+        .env("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z");
     command
 }
 

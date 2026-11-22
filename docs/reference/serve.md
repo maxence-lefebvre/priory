@@ -39,7 +39,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/costs?since=WINDOW&by=SPLIT` | `priory costs --json --since WINDOW --by SPLIT` | an object: [Costs](#costs) |
 | `/api/grades?since=WINDOW` | `priory grades --json --since WINDOW` | an object: [Grades](#grades) |
 | `/api/attention?since=WINDOW&by=SPLIT` | `priory report attention --json --since WINDOW --by SPLIT` | an object: [Attention](#attention) |
-| `/api/runs/{id}/screen?have=HASH&history=N` | `priory screen --run ID --json` | the run's screen in colour, after up to 2,000 rows of scrollback, with secrets hidden. See [Run screen](#run-screen) |
+| `/api/runs/{id}/screen?have=HASH&history=N` | `priory screen [DIR] --run ID --history N --json` | the run's screen in colour, after up to 2,000 rows of scrollback, with secrets hidden. See [Run screen](#run-screen) |
 | `/api/events?since=REV` | `priory wait --since REV` | `{"revision": N}` once it differs from `REV`. See [below](#apievents) |
 | `/api/push/key` | | `{"key": "<base64url>"}`, the daemon's VAPID public key. See [Notifications](#notifications) |
 | `POST /api/asks/{id}/answer` | `priory answer ID TEXT --revision N` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
@@ -51,8 +51,13 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /api/tasks/{id}/cancel` | `priory cancel ID [--expected N]` | as above |
 | `POST /api/tasks/{id}/release` | `priory release ID [--expected N]` | as above |
 | `POST /api/inbox/{seq}/read` | `priory inbox read SEQ` | as above |
+| `POST /api/memories/{id}/accept` | `priory memories accept [DIR] ID` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
+| `POST /api/memories/{id}/drop` | `priory memories drop [DIR] ID` | as above |
 | `POST /api/tasks/{id}/say` | `priory say ID TEXT` | as above |
+| `POST /api/tasks/{runner}:{key}/{act}` | `priory ACT [DIR] RUNNER:KEY [--generation N]` | `202` `{"sent", "submission"}`: resume, revive, cancel, release or say on another runner's task. See [Writes](#writes) |
 | `POST /api/tasks/{id}/move` | `priory move ID --expected N [--band BAND] [--top \| --before TASK \| --after TASK]` | as above |
+| `POST /api/tasks/{id}/label` | `priory label TASK wrong (--evidence URL [--happened DATE] \| --clear)` | as above |
+| `POST /api/unsubscribe` | `priory unsubscribe TASK RESOURCE` | as above |
 | `POST /api/batches/{id}/edit` | `priory batch edit ID --expected N ...` | as above |
 | `POST /api/reports/pick` | `priory report pick PICK OPTION --expected N` | `{"ok": "<what the CLI prints>"}` |
 | `POST /api/reports/comment` | `priory report comment ROW --expected N TEXT` | as above |
@@ -79,17 +84,17 @@ or a reason, is untrusted: render it as text.
 | `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`, or a `pr` that is not a pull request such as `github:owner/repo#7`; `/api/runs` has a parameter other than `all=1`; a run screen's `history` is not a whole number; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); a keys body whose text or key the [Keyboard](#keyboard) section refuses; for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site, and that is not one of [`[serve] extension_origins`](factory.md#serve). Or a keys or keyboard return request whose secret matches no open grant of the run |
-| `404` | No such path, task, report, ask, batch or web view file; a run screen whose run ended, whose pane this server cannot find or read within 2 seconds, or that holds a secret redaction cannot hide; any run screen with `[serve] terminal = "off"`; any [keyboard](#keyboard) path, for any method, unless `[serve] terminal = "type"` |
+| `404` | No such path, task, report, ask, batch, memory candidate or web view file; a run screen whose run ended or does not exist; any run screen with `[serve] terminal = "off"`; any [keyboard](#keyboard) path, for any method, unless `[serve] terminal = "type"` |
 | `405` | `POST` on a path that reads, or `GET` on a write. The `Allow` header names the method |
 | `408` | The request sent no byte within 1 second, or took over 5 seconds in all |
-| `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report moved past its `revision`, or the pick already holds that choice or an applied one. Or a batch edit's `revision` is no longer the plan's revision. Or a keyboard take's `revision` is no longer the state's |
+| `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report moved past its `revision`, or the pick already holds that choice or an applied one. Or a batch edit's `revision` is no longer the plan's revision. Or a memory candidate is not on the log yet, or a person already decided it |
 | `411` | A `POST` has no `Content-Length`, or uses `Transfer-Encoding` |
 | `413` | A `GET` has a body; a write's body is over 16 KiB; a webhook's is over 1 MiB |
 | `415` | A write's `Content-Type` is not `application/json` |
 | `422` | The daemon refused a write for another reason, such as an option a step does not take, or a request's unknown workflow or bad `repo`, or a push subscription it does not take. A request the bus could not take gets `422` too, with the bus's error |
 | `431` | The request head is over 8 KiB or 32 headers |
 | `500` | The state could not be read, a delivery could not be published, or Priory failed while answering. The server keeps serving |
-| `503` | 4 requests already wait on `/api/events` and this one would wait too; or a write found no daemon on its socket, as under `priory serve` alone; or `/api/push/key` before a daemon made the key pair; or 2 run screens are already being read. It comes with `Retry-After: 1` |
+| `503` | 4 requests already wait on `/api/events` and this one would wait too; or a write found no daemon on its socket, as under `priory serve` alone; or `/api/push/key` before a daemon made the key pair; or 2 run screens are already being read; or a memory verdict could not be published because the log cannot be reached; or a live run's screen whose pane this server cannot find or read within 2 seconds, or that holds a secret redaction cannot hide. It comes with `Retry-After: 1` |
 | `504` | A write reached the daemon, which did not reply within 10 seconds. It may have applied it |
 
 An error's body is `{"error": "<why>"}`.
@@ -130,12 +135,15 @@ reply carries `Cache-Control: no-store`.
 | `redacted` | How many secrets the server replaced |
 | `hash` | 16 hex digits, a hash of the fields above after redaction. A hidden value never changes it |
 | `scrollback` | How many rows of scrollback tmux keeps for the pane. The hash leaves it out |
+| `keyboard` | `true` under `[serve] terminal = "type"`, when a token holder may take the run's [keyboard](#keyboard); absent otherwise. The hash leaves it out |
 
-`priory screen (TASK | --run RUN) [--json]` prints the same screen, with no scrollback, as rows of
-text or, with `--json`, as this object. Its rows keep their colours on a terminal and drop them
-when the output goes to a file or a pipe. It hides the values of the default secret variables,
-such as `PRIORY_TOKEN`, from its own environment, and the secret shapes. Like the endpoint, it
-gives tmux 2 seconds.
+`priory screen [DIR] (TASK | --run RUN) [--history N] [--json]` prints the same screen as rows of
+text or, with `--json`, as this object. `--history N` takes `N` rows of scrollback, as `history`
+does, with the same cap of 2,000; without it there is none. Its rows keep their colours on a
+terminal and drop them when the output goes to a file or a pipe. It hides the secret shapes and,
+from its own environment, the values of the secret variables of the factory in `DIR`, as `serve`
+does. Without `DIR` it hides only the default ones, such as `PRIORY_TOKEN`. A factory that fails
+to load prints its problems and exits 1. Like the endpoint, it gives tmux 2 seconds.
 
 ## Keyboard
 
@@ -146,7 +154,7 @@ it needs the token, passes the Origin rule and reaches the daemon on its socket.
 
 | Endpoint | Body | Reply |
 | -------- | ---- | ----- |
-| `POST /api/runs/{id}/keyboard` | `revision`, the state's revision the page showed | `{"grant": N, "ends": TIME, "secret": "<32 hex digits>"}`. The grant lasts 15 minutes, and ends the run's grant before it. The secret is in this reply only |
+| `POST /api/runs/{id}/keyboard` | None. A `revision` an older page sends is not checked | `{"grant": N, "ends": TIME, "secret": "<32 hex digits>"}`. The grant lasts 15 minutes, and ends the run's grant before it. The secret is in this reply only |
 | `POST /api/runs/{id}/keyboard/return` | `secret` | `{"ok": "run N's keyboard returned"}` |
 | `POST /api/runs/{id}/keys` | `secret`, `request`, an id of 1 to 64 bytes the page picks, and exactly one of `text` or `key` | `{"outcome": "sent" \| "failed" \| "uncertain"}`, with `error` when it failed and `"repeated": true` for a request id already sent under this grant |
 
@@ -157,8 +165,10 @@ it needs the token, passes the Origin rule and reaches the daemon on its socket.
 - A repeated `request` gets the first outcome and sends nothing, even once the grant ended.
   `uncertain` means the daemon stopped between storing the request and its outcome, or tmux did
   not answer within the command timeout: it may have reached the pane, and it is never sent again.
+- A grant follows a run carried into the next step on the same pane, so the earlier run's id
+  still reaches it.
 - A secret of an expired, returned or replaced grant gets `403`, naming why it ended. A run that
-  ended gets `404`, and a stale `revision` `409`.
+  ended gets `404`.
 
 ```sh
 curl -X POST http://127.0.0.1:7340/api/runs/12/keys -H "Authorization: Bearer $PRIORY_TOKEN" \
@@ -182,10 +192,14 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/tasks/{id}/cancel` | optionally `revision`, an integer: the state's revision the client showed, as `--expected`. A newer state gets `409` |
 | `POST /api/tasks/{id}/release` | optionally `revision`, an integer, as `--expected`. A newer state gets `409` |
 | `POST /api/tasks/{id}/say` | `text`, a string: what the task's agent hears |
+| `POST /api/tasks/{runner}:{key}/{act}` | `generation`, an integer: the task's `generation` the client showed. Then, as for the same action on a task here, `text` for `say` and optionally `step` for `revive`. It takes no `revision` |
 | `POST /api/tasks/{id}/move` | `revision`, an integer: the state's revision the client showed, as `--expected`. Then `band`, one of the factory's bands, a place, or both. The place is one of `"top": true`, `before` or `after`, a task's id, as `--top`, `--before` and `--after`. A body with two places, or with neither a band nor a place, gets `400`, a newer state `409`, and a band the factory lacks or a task that is not active `422` |
 | `POST /api/subscribe` | `task`, an integer, and `resource`, a string such as `github:owner/name#7`, `linear:ENG-7` or `slack:C0123:1763500000.000100`, as `priory subscribe TASK RESOURCE`. Optionally `revision`, an integer, as `--expected`: a newer state gets `409`. A resource it cannot name gets `400`, a missing task `404`, and a resource another active task owns `422`, naming that task |
+| `POST /api/unsubscribe` | `task`, an integer, and `resource`, a string, as for `POST /api/subscribe`, as `priory unsubscribe TASK RESOURCE`. It takes no `revision`, as the CLI takes no `--expected`. A resource it cannot name gets `400`, a missing task `404`, and a task that does not subscribe to the resource `422` |
+| `POST /api/tasks/{id}/label` | `evidence`, an `http://` or `https://` URL, and optionally `happened`, an RFC 3339 instant or a date such as `2026-10-02`, to mark the task wrong; or `"clear": true` alone to withdraw its marks. As `priory label TASK wrong --evidence URL [--happened DATE]` and `--clear` (see [label.md](label.md)). A body with both or neither gets `400`, a missing task `404`, and evidence that is not a URL, a date after now or a clear with no mark `422` |
 | `POST /api/batches/{id}/edit` | `revision`, the plan revision the client showed, then one edit: `drop`, an entry id, with optionally `"with_successors": true`; or `move`, an entry id, with one of `"top": true`, `before` or `after`, an entry id; or `moment`, an object of `entry`, `other` and `moment`, which sets the moment of the edge from `entry` to `other`. A body with no edit, two edits, or a field its edit does not take gets `400`, a plan whose revision moved `409`, and an edit the plan refuses `422`. See [batches.md](../daemon/batches.md#editing-a-plan) |
 | `POST /api/inbox/{seq}/read` | `{}`: marks the report read, so its row leaves the desk. A sequence number that is not a report gets `422` |
+| `POST /api/memories/{id}/accept`, `POST /api/memories/{id}/drop` | `{}`. The server publishes the verdict on the factory's log itself, as the CLI does, so it needs no daemon; every runner's daemon applies it as it reads the log, and the candidate stays on the desk until then. A candidate this runner never read gets `404`, one not on the log yet or already decided `409`, and a log that cannot be reached `503`. A publish that failed gets `504`: the log may hold the verdict, so read the candidates before you retry. See [memories.md](memories.md#candidates) |
 | `POST /api/reports/pick` | `pick`, the pick's id, `option`, one of its options, and `revision`, the report's revision the client showed |
 | `POST /api/reports/comment` | `row`, the row's id, `text`, a string, and `revision`, the report's revision the client showed. A comment verb takes `text` only with `comment` and `reply`, and `revision` only with `comment` |
 | `POST /api/reports/reply` | `comment`, an integer, and `text`, a string |
@@ -208,6 +222,15 @@ reads the log, even after time away, and the ask's `submissions` then show the o
 [runners.md](../daemon/runners.md#every-runners-asks). In `/api/tasks/{id}`, `{id}` is
 the task's number.
 
+In `/api/tasks/{runner}:{key}/{act}`, `{act}` is `resume`, `revive`, `cancel`, `release` or `say`,
+and `{key}` is the task's key, percent-encoded: `a:github%3Aowner%2Frepo%2342` for `github:owner/repo#42`
+on runner `a`. The action is not applied here either. The server checks this runner's copy of the
+key's claim: no claim gets `404`, and a claim of another runner, or at another generation than
+`generation`, gets `409`. Otherwise it publishes the action on the log for that runner and replies
+`202`. The runner applies it only while it holds the key at that generation, and the task's
+`submissions` then show the outcome. See
+[runners.md](../daemon/runners.md#acting-on-another-runners-task).
+
 ```sh
 curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer $PRIORY_TOKEN" \
   -H 'Content-Type: application/json' -d '{"option": "merge", "revision": 3}'
@@ -216,13 +239,13 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | Reply | When |
 | ----- | ---- |
 | `200` `{"ok": "ask 42 answered"}` | The daemon applied it |
-| `202` `{"sent": "xps13", "submission": "<id>"}` | For another runner's ask: the write is on the log for that runner, which applies it when it reads it. `submission` names it in the ask's `submissions` |
+| `202` `{"sent": "xps13", "submission": "<id>"}` | For another runner's ask or task: the write is on the log for that runner, which applies it when it reads it. `submission` names it in the ask's or task's `submissions` |
 | `200` `{"key": "cli:2026-11-20-1", "id": 7}` | For `/api/request`: the daemon published the request and task `id` holds `key`. `id` is `null` when no task took the key |
 | `409` `{"error", "ask"}` | The ask's revision is no longer the one sent, or it was answered, dismissed or withdrawn. `ask` is its current state |
-| `409` `{"error"}` | A cancel's or a move's `revision` is no longer the state's. Or a pick's report is at another revision than the one sent, or the pick already holds that choice or an applied one: read the report again |
+| `409` `{"error"}` | Another runner's task is held by a third runner, or is at another generation than the one sent. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report is at another revision than the one sent, or the pick already holds that choice or an applied one: read the report again |
 | `409` `{"error", "key", "id"}` | For `/api/request`: the same text already went to `key`, so nothing was added. `id` is the active task that holds `key`, or `null` |
 | `404`, `422` `{"error"}` | The ask, task or pick is gone, or the daemon refused for another reason, such as a resume of a task that is not blocked, a say to a task with no run yet, or a comment on a stale report revision. `error` is the CLI's sentence |
-| `503` `{"error"}` | No daemon listens on the socket, or the log cannot be reached for another runner's ask, so nothing was sent. Reads keep working |
+| `503` `{"error"}` | No daemon listens on the socket, or the log cannot be reached for another runner's ask or task, so nothing was sent. Reads keep working |
 | `504` `{"error"}` | The daemon took the line but did not reply within 10 seconds. It may have applied it: read the state before you retry |
 
 ## `POST /hooks/github`
@@ -287,6 +310,7 @@ event needs, gets `400`.
 | `counts.asleep` | integer | Tasks asleep on a wait |
 | `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
 | `counts.unrouted` | integer | [Unrouted](#unrouted) events from the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
+| `counts.unheard` | integer | [Unheard](#unrouted) events from the 24 hours before now (`PRIORY_NOW` when set): kept by a task that is not running, and read by no agent. See [desk.md](../daemon/desk.md#unrouted-events) |
 | `counts.outsider` | integer | The comments and reviews from outside the repository in the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
 | `items` | array | What waits on a person, then the queue, then worktrees that stay. `priory desk --all --json` keeps the snoozed items |
 | `next` | object or null | The item that ranks first, as in `ranked`; null when nothing waits on a person |
@@ -323,7 +347,7 @@ line as `line`, and, once read, when it was read as `read`. Both are null on a m
 ## Unrouted
 
 The events that reached no task and changed nothing (see
-[routing.md](../daemon/routing.md#events-that-reach-no-task)), as an object `unrouted` with two
+[routing.md](../daemon/routing.md#events-that-reach-no-task)), as an object `unrouted` with three
 arrays. `priory inbox --unrouted --since SEQ` keeps the events after sequence number `SEQ`.
 
 `owned` groups the events whose first resource a task owned or subscribed to, in any state, one
@@ -333,9 +357,23 @@ group per resource, the group with the newest event first:
 | ----- | ---- | ------- |
 | `resource` | string | The resource, such as `github:owner/name#7` |
 | `task` | object | The newest task that owned it: `id`, `key`, `state`, `workflow` |
-| `events` | array | Its events, newest first: `seq`, `type`, `subject`, `time`, and `line`, the first line of its body, text or title, or null |
+| `events` | array | Its events, newest first: `seq`, `type`, `subject`, `time`, and `line`, the first line of its body, text or title, a check run's name and conclusion such as `test (ubuntu) failure`, or null |
 | `follow_up` | string or null | The command that routes its next event, each argument shell-quoted: `priory revive ID` for a failed or dropped task, `priory add --workflow WORKFLOW 'TEXT'` with the task's workflow and `request_text` for a done one, else `priory subscribe ID RESOURCE`. Null for a done task's resource that `request_text` cannot name, such as a Slack thread |
 | `request_text` | string or null | For a GitHub or Linear resource, the text of a new task keyed by it: `Follow up on URL after event SEQ`, the issue's URL, which `priory add` turns into the resource as key, and the newest event's sequence number, so each follow-up is a new request |
+
+`unheard` groups, one group per task, the newest event first, the events that a task kept and no
+agent read: the outcome `kept`, no prompt carries it, no wait took it, and the task is not
+`running`. Only feedback, closes, Linear state changes and edits, and Slack replies count, the kinds
+a task's own key carries, and not the agent's own. An event shows once it is 5 minutes old, by the
+event's `time` against now (`PRIORY_NOW` when set), so a task about to start or wake is left out:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `task` | object | The task that kept them: `id`, `key`, `state`, `workflow` |
+| `events` | array | Its events, newest first, as in `owned` |
+| `follow_up` | string or null | `priory say ID 'Read the events that came while you slept.'` for an `asleep` or `blocked` task, whose next run carries them. For a done, failed or dropped task, the command `owned` gives for its key. Null for a task whose next run reads them anyway, such as a `queued` or `ready` one |
+| `say_text` | string or null | The text `follow_up` says to an `asleep` or `blocked` task, which the web Inbox's Say sends; null for any other task |
+| `request_text` | string or null | For a done task, the text of a new task keyed by its key, as in `owned`: null when its key is not a GitHub or Linear resource, and for any other task |
 
 `outsider`, beside `unrouted`, lists the comments and reviews from someone outside the repository,
 newest first: `seq`, `type`, `subject`, `time` and `actor`. No task takes them, so they come with
@@ -346,7 +384,8 @@ no command.
 
 Without `--json`, `priory inbox --unrouted` prints each owned group as its resource, event count
 and task, one line per event, then its follow-up, and last one line such as `No task ever owned: 2
-github events, 1 linear event.` Then it prints the outsider events as a group of their own,
+github events, 1 linear event.` Before that line, it prints each unheard group as `task ID STATE
+kept N events no agent read:`, one line per event, then its follow-up. Then it prints the outsider events as a group of their own,
 `from outside the repository: N events`, one line per event with its author.
 
 ## Asks
@@ -370,6 +409,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `id` | integer or string | The ask: its number, or the id an outside ask was given |
 | `task`, `key`, `step`, `lane`, `band`, `repo` | | The task, its key, the ask's step, and the task's lane, band and repository. An outside ask has no task, so its `lane`, `band` and `repo` are null, and its `key` is the one it sent |
 | `risk` | array of strings | What answering risks, empty for none: `irreversible` when the answer lets an irreversible step run before a person decides again, the rule `priory check --explain` uses, or when it is an agent's or a step's ask whose answer runs a [command](../daemon/tools.md#commands-an-answer-runs); then the task's [merge risk](../daemon/tools.md#merge-risk) verdict, `low`, `medium` or `high`; then the task's grooming grade, `red`, `yellow` or `green`. An outside ask has none. The daemon records its factory's irreversible approvals when it starts |
+| `risk_estimate` | object or null | Null when the trace cannot be read. Only on a step's ask whose answer lets an irreversible step run: that step's own row in [`priory report risk`](../daemon/trace.md#risk), over its default window. `workflow`, `step`, `trials`, `shown` (false under 20 trials), `judged_wrong` and `landed_wrong` (each `k`, `p05`, `median` and `p95`), and `line`, the History line the ask shows, such as `History: 17 of 53 tasks through this step were judged wrong within 30 days, 3 after the merge. 95 % posterior upper bounds: 43.4 % and 13.7 %.` A non-breaking space joins each number to its `%`. Under 20 trials, `line` ends `Too few to estimate.` It changes no value of `risk`. `/api/desk` items of kind `ask` carry it too |
 | `merge_risk` | object or null | The task's latest [merge risk](../daemon/tools.md#merge-risk): `verdict`, then the lines `ask`, `blast_radius`, `verification`, `rollback` and `detection`. Null before a risk step ends |
 | `run` | integer or null | The run that asked |
 | `state` | string | `open`, `answered` or `withdrawn` |
@@ -427,8 +467,9 @@ the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
 the first line of its request, cut to 120 characters), `batch` (the id of the batch it is an entry
 or the planning task of, or null), `stack` and `relations`. See Grades in [tools.md](../daemon/tools.md#grades).
 
-In a factory of several runners, each task also has `runner`, this runner's name, and `hold`, the
-hold this runner last published for it (`waiting`, `kept`, `ended`, or null before its first claim).
+In a factory of several runners, each task also has `runner`, this runner's name, `hold`, the
+hold this runner last published for it (`waiting`, `kept`, `ended`, or null before its first claim),
+and `submissions`, the actions other machines sent to its current generation, as below.
 The list then adds, after this runner's tasks, each task another runner holds whose hold is not
 `ended`, from that runner's claim (see [runners.md](../daemon/runners.md#every-runners-tasks)):
 
@@ -438,10 +479,12 @@ The list then adds, after this runner's tasks, each task another runner holds wh
 | `key` | string | The task's key |
 | `runner` | string | The runner that holds it |
 | `hold` | string | `waiting` or `kept`, as that runner last published it |
-| `last_seen` | string or null | When that runner was last alive, from its last alive, claim or held message |
+| `last_seen` | string or null | When that runner was last alive, from its last alive or held message |
 | `since` | string | When the claim that gave it the key was published |
 | `workflow`, `band`, `lane` | string or null | From the task's request |
 | `title` | string or null | The request's TL;DR, else its subject |
+| `generation` | integer or null | The task's generation, as that runner last published it. Null until it does |
+| `submissions` | array | Every resume, revive, cancel, release and say sent to it from any machine, oldest first: `submission`, `act`, `generation`, `text`, `step`, `sent`, then `outcome` (`applied` or `refused`), `why` and `applied`, null until its runner applied it |
 
 `priory tasks` without `--json` prints them too, with three more columns, `runner`, `hold` and
 `last_seen`. `--lane` and `--grade` keep this runner's tasks only.
@@ -567,7 +610,7 @@ of the factory in `DIR`, and `priory queue --json` lists no schedule firings.
 
 | `kind` | `at` | `why` |
 | ------ | ---- | ----- |
-| `queued` | Now: it starts once there is room | `first in the queue`, `a band above it`, or `queue position <n>` |
+| `queued` | Now: it starts once there is room | The task's own wait reason when it has one, such as `waits for its claim to reach the log`; else `first in the queue`, `a band above it`, or `queue position <n>` |
 | `held` | The end of its time hold, once time is all it still waits for | `held until <time>` |
 | `scheduled` | The trigger's [next firing](../intake/schedule.md#next-firing) | `schedule <trigger> fires` |
 
@@ -686,12 +729,12 @@ The server reads the links when it starts. `priory links [DIR]` without `--json`
 
 The same object as `priory check --explain --json` (see
 [workflows.md](workflows.md#irreversible-steps-and-their-gates)), with `workflows` added for the
-web view's Flows panel. The server reads it when it starts. `priory flows [DIR] --json` prints the
-same object, for the Herdr adapter's Flows panel.
+web view's Flows panel. The server reads the factory when it starts, and the state on each request.
+`priory flows [DIR] --json` prints the same object, for the Herdr adapter's Flows panel.
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
-| `irreversible` | array of objects | Each irreversible step: `workflow`, `step`, `approved_by` (the human steps that approve it) and `autonomous` (its reason, or `null`) |
+| `irreversible` | array of objects | Each irreversible step: `workflow`, `step`, `approved_by` (the human steps that approve it), `autonomous` (its reason, or `null`) and `risk_estimate`: the ask's [`risk_estimate`](#asks) with `caught`, the tasks a person stopped at the step's gate, or `null` when the state cannot be read |
 | `paths` | array of objects | Each path from `start` to an irreversible step that follows no `human` edge: `workflow` and `path`, an array of step ids |
 | `tools` | array of objects | Each guarded call an agent can make with no human decision: `agent`, `guard`, `workflow` and `why` |
 | `proofs` | array of objects | Each outcome the daemon verifies before it accepts it: `workflow`, `step`, `outcome` and `proof` |
@@ -715,7 +758,7 @@ Each of a step's `edges`, in outcome order, has `outcome`, `to` (a step id, `don
 
 ```json
 {
-  "irreversible": [{ "workflow": "implement", "step": "open-pr", "approved_by": ["approve-pr"], "autonomous": null }],
+  "irreversible": [{ "workflow": "implement", "step": "open-pr", "approved_by": ["approve-pr"], "autonomous": null, "risk_estimate": null }],
   "paths": [],
   "tools": [],
   "proofs": [],

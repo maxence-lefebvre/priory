@@ -1,3 +1,4 @@
+use priory_factory::case::{Answers, Case, GhAnswer};
 use priory_factory::factory::{
     Agent, MemoryFrontmatter, Runner, Scorer, Settings, Trigger, View, Workflow,
 };
@@ -48,6 +49,9 @@ fn generated() -> Vec<(String, Value)> {
         config::<View>("view"),
         config::<Scorer>("scorer"),
         config::<MemoryFrontmatter>("memory"),
+        config::<Case>("case"),
+        config::<GhAnswer>("case-gh"),
+        config::<Answers>("case-answers"),
         schema::<priory_core::sections::Report>(SchemaSettings::draft07(), "report.json"),
         event::<IssueLabeled>("github.issues.labeled"),
         event::<IssueOpened>("github.issues.opened"),
@@ -85,6 +89,11 @@ fn generated() -> Vec<(String, Value)> {
         event::<AskDismissed>("priory.ask.dismissed"),
         event::<AskPosted>("priory.ask.posted"),
         event::<AskApplied>("priory.ask.applied"),
+        event::<TaskActed>("priory.task.acted"),
+        event::<TaskApplied>("priory.task.applied"),
+        event::<MemoryWritten>("priory.memory.written"),
+        event::<MemoryAccepted>("priory.memory.accepted"),
+        event::<MemoryDropped>("priory.memory.dropped"),
     ]
 }
 

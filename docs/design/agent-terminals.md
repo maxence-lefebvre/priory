@@ -87,7 +87,8 @@ Keys need a person's explicit act, per run:
   confirms a sheet that says what it means (see [What typing bypasses](#what-typing-bypasses)).
   The sheet prevents an accident. It is no protection against a stolen token, since any token
   holder can take a grant.
-- That sends `POST /api/runs/{id}/keyboard` with the state's `revision` the page showed. The daemon
+- That sends `POST /api/runs/{id}/keyboard`. It needs no state revision: other runs' writes move it
+  every second, and the run must be live either way. The daemon
   stores a grant in the state: run, start, end 15 minutes later, and a label, the `User-Agent`'s
   first 64 bytes. The label helps a person tell their devices apart; nobody can trust it. The reply
   carries the grant's secret, 128 random bits, to that page only. The state keeps its hash, and no
@@ -175,7 +176,7 @@ phone. Four rules bound that:
 4. **Send nothing elsewhere.** No screen goes to the trace, a notification, the OTLP export or the
    server's log.
 
-Redaction is best effort. A secret split across two rows, a token in a shape not on the list, or a
+Redaction is best effort. A secret the application split across two rows, a token in a shape not on the list, or a
 password in plain words gets through. The note says so where `[serve] terminal` is documented, and
 the honest boundary stays the token: whoever holds it may read what the agent's screen shows.
 
@@ -296,8 +297,7 @@ Each tmux test takes a `TmuxDir`, as CONTRIBUTING asks.
 
 ## Later slices
 
-Slices 1, 3, 4 and 5 are built. Slice 2 is built in the server; the web view's confirm sheet and
-key row follow.
+All five slices are built.
 
 1. **Say from the pane.** "Type" sends a line to the existing `POST /api/tasks/{id}/say`. It
    needs no new endpoint, so it can ship right after the first slice, apart from keys.

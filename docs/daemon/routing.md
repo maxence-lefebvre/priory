@@ -135,12 +135,13 @@ Each inbox entry gets one of these outcomes:
 | A GitHub comment or review whose `association` is not `OWNER`, `MEMBER` or `COLLABORATOR` | `outsider` | none: it wakes, reopens, claims and reaches no task |
 | A task request whose key no runner holds, with several runners | `claiming` | none until this runner's claim wins (see [runners.md](runners.md)) |
 | A task request whose key another runner holds | `elsewhere` | none                                    |
+| Any task request, on a [view-only machine](runners.md#a-machine-that-only-views) | `elsewhere` | none: it claims nothing |
 | `priory.task.claimed` that wins its key   | `claimed` | the task this runner creates, when it is the new owner |
 | `priory.task.claimed` that loses          | `refused` | none; this runner's own losing claim drops its copy of the task, `owned by runner <name>` |
 | `priory.task.held` or `priory.runner.alive` | `noted` | none                                         |
 | `priory.ask.answered` for this runner     | `answered`, or `refused` by the revision check | the ask's task, as a local answer moves it |
 | `priory.ask.answered` for another runner  | `elsewhere` | none                                       |
-| Any other                                 | `ignored` | none                                         |
+| Any other, or any source event on a view-only machine | `ignored` | none                 |
 
 A task request can name a workflow the factory lacks. It still creates its task, `queued` with no
 step, so the daemon keeps serving the other tasks. On each tick, that task gets the reason
@@ -215,6 +216,25 @@ A comment or review from outside the repository is not unrouted: its outcome is 
 same listing shows these events as a group of their own, `outsider`, with each one's author and no
 command, since no task takes them. The Desk counts those of the last 24 hours in a line of its own.
 
+## Events no agent read
+
+A `kept` event reaches a task, but a task that is not running reads it only at its next run. An
+asleep task may sleep for hours on a wait that the event does not fire, and a task can end before
+it runs again. So `priory inbox --unrouted` lists a third group, `unheard`: per task, the events it
+kept that no prompt carries and no wait took, once they are 5 minutes old (see
+[serve.md](../reference/serve.md#unrouted)). Only what people say, edit and close counts: the
+kinds a task's own key carries, and not the agent's own comments. Checks and pushes stay with the
+checks gate.
+
+Each group names its task and a command: `priory say ID` for an asleep or blocked task, whose next
+run carries the events after the text, or what the owned group gives for an ended task. The Desk
+counts these events over the last 24 hours (see [desk.md](desk.md#unrouted-events)).
+
+The web and Herdr Inbox panels list these groups first, under Unheard. On the web, Say sends the
+group's `say_text` to an asleep or blocked task. A blocked task does not run on a say: it reads the
+events when it resumes, so its group also offers Resume. An ended task's group offers the owned
+group's Revive or Request a task. The Herdr panel has no Say: it shows an asleep task's command.
+
 ## What a kept message does
 
 What happens to a `kept` message depends on the task's state:
@@ -227,7 +247,8 @@ What happens to a `kept` message depends on the task's state:
   its next run gets the prompt.
 - If the task subscribes to a resource the message names and has no open wait on it, an asleep
   task at a model step wakes with it, and the outcome becomes `woke`. The subscription to the task's
-  own key takes only feedback, closes, Linear state changes and `linear.issue.updated` edits (see
+  own key takes only feedback, closes, Linear state changes, `linear.issue.updated` edits and
+  `linear.issue.left` (see
   [tools.md](tools.md#subscribeon-and-unsubscribeon)).
   Another active task that subscribes to
   it gets it too: a prompt of its own while it runs, or a wake while it sleeps (see
@@ -274,8 +295,10 @@ When no active task owns a resource it names, it reopens the newest done task th
   as every task does to its own key until it unsubscribes;
 - became done at or before the feedback's `time`, to the second;
 - has no `github.pull_request.closed` or `github.issues.closed` event of that pull request or issue
-  in the inbox, merged or not, and
-  the feedback's `open` is true, so a close the intake publishes after it reopens nothing;
+  in the inbox, merged or not, since the last event that read it open, and
+  the feedback's `open` is not false, so a close the intake publishes after it reopens nothing.
+  Feedback whose `open` is true was read on an open pull request, so an earlier close does not
+  count;
 - has no merged pull request, so a "Shipped, thanks" on the Linear issue or in the Slack thread a
   week later starts no new generation on a merged branch;
 - shares its key with no active task.
@@ -300,7 +323,8 @@ feedback](tools.md#review-feedback)).
 
 Limits:
 
-- A pull request closed and reopened on GitHub keeps its close in the inbox, so it reopens nothing.
+- A GitHub issue closed and reopened reopens nothing when the intake polls it, since a polled
+  issue comment carries no `open`. A webhook event carries it.
 - The intake hears a done task's Linear issue or Slack thread only while something watches it,
   such as the subscription to its key (see [watches.md](../intake/watches.md)).
 - The intake publishes no bot's comment, and only feedback after the task was done reopens it. A

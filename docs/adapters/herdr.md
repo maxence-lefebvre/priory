@@ -32,8 +32,8 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
   and the status line.
 - `adapters/herdr/lib/layout.js`: turns a view into a Herdr layout inside the frame, and finds a
   view's blocks in the layout Herdr shows. See [The layout](#the-layout).
-- `adapters/herdr/layout`: reads `priory views --json` on its standard input and prints the
-  layout for the `default` view.
+- `adapters/herdr/layout`: reads `priory views --json` on its standard input and prints every
+  view's layout as one JSON object, keyed by its file name.
 - `adapters/herdr/install`: links the mods into Herdr's folder and writes the layout. See
   [Installing](#installing).
 - `adapters/herdr/test/`: `node --test` tests for the module and the install script, run against a
@@ -75,18 +75,24 @@ priory views --json | adapters/herdr/install
 ssh xps13 priory views --json | adapters/herdr/install   # Priory on another machine
 ```
 
-`install` links each folder in `adapters/herdr/mods/` into Herdr's mods folder, and writes the
-layout for the `default` view as `layouts/priory.json` in its layouts folder. Herdr's folder is
+`install` links each folder in `adapters/herdr/mods/` into Herdr's mods folder, and writes one
+layout per view into its layouts folder: `default` as `layouts/priory.json`, and each other view as
+`layouts/priory-NAME.json`, so Herdr's layout picker offers each. `default` keeps `priory.json`, so
+its layout name and its `keys.json` bindings stay `priory`. Herdr's folder is
 `$HERDR_APP_HOME`, or `~/.config/herdr-app`. The links point into your checkout, so a `git pull`
-updates the mods, and Herdr reloads them when their files change. The layout is a file: run
-`install` again after you change a view. Its root id ends in a hash of the views `install` read, such
-as `priory-generated-00bc386a7e08`. `install` says `layout is up to date with the view files` when
+updates the mods, and Herdr reloads them when their files change. The layouts are files: after you
+change a view, run `install` again, or click the Priory bar's notice (see
+[When the views change](#when-the-views-change)). Each root id ends in a hash of the views `install`
+read, such as `priory-generated-00bc386a7e08`. `install` says `layout is up to date with the view files` when
 the layout it replaces has the same hash, and `layout was older than the view files, and is
 rewritten` when not. `priory check` warns, and still passes, when the layout in Herdr's folder on
 its machine has another hash than the factory's views. A layout on another machine is not checked.
 
-- `install --dry-run` prints each link it would make, then `write` and the layout, and changes
-  nothing.
+- `install --dry-run` prints each link it would make, then `write` and the layout for each view,
+  and changes nothing.
+- `install` removes a `layouts/priory-NAME.json` it wrote for a view that is gone: a file whose
+  root id is its own. It prints `remove` and the path, and `--dry-run` only prints. It leaves every
+  other layout alone.
 - `install --copy` copies each mod folder in place of linking it, and writes `.priory-installed`
   into the copy, holding the adapter's Git commit (`unknown` outside a checkout). Use it when
   Herdr's folder reaches another machine through Syncthing, which carries no links, such as a Herdr
@@ -102,11 +108,11 @@ its machine has another hash than the factory's views. A layout on another machi
   that holds `.priory-installed`, or a link into this adapter. It prints `remove` and the path, and
   `--dry-run` only prints. It leaves every other mod in Herdr's folder alone.
 - Any other file or link at a mod's target stops the script before it changes anything. So does a
-  `priory.json` that `install` did not write: a file whose JSON root id is not
-  `priory-generated`, alone or with 12 hex digits after a hyphen, or a link elsewhere than to this adapter. Move that file away and run it
+  layout file for a view that `install` did not write: a file whose JSON root id is not
+  `priory-generated`, alone or with 12 hex digits after a hyphen, or, for `priory.json`, a link elsewhere than to this adapter. Move that file away and run it
   again.
-- Input that is not `priory views --json`, a node or panel Priory does not ship, or a `default`
-  view with two `terminal` panels stops the script before it changes anything.
+- Input that is not `priory views --json`, a node or panel Priory does not ship, or a view with
+  two `terminal` panels stops the script before it changes anything.
 - `install` writes the layout beside its target and renames it over the target, so a failed write
   keeps the old layout.
 
@@ -146,6 +152,20 @@ layout's bindings go under `layout:` and its name, here `priory`.
 
 Herdr writes `gpui-kit.d.ts` and `jsconfig.json` into each mod folder it loads. Through the links,
 they land in your checkout, and Git ignores them.
+
+## When the views change
+
+When it starts, the Priory bar runs `priory views --json` and compares its hash with the one in the
+shown layout's root id. When they differ, it posts one notice, "The view files changed". Clicking it
+runs `priory-tabs.regenerate`, which takes the same steps as `install` for the layouts, in the
+layouts folder of the Herdr that shows the bar: it writes every view's layout and removes its own
+layout of a view that is gone. It never regenerates without that click.
+
+- It uses the installed `layouts/priory.json` as the frame, so a frame change in a newer adapter
+  still needs `install`.
+- It refuses, before writing anything, a layout file it did not write, and says which in an error
+  notice. Move that file away, then regenerate again.
+- It does not update the mods. Run `install` for those.
 
 ## Installing for a Herdr on another machine
 
@@ -222,7 +242,9 @@ Herdr Desk: the count, the next thing, the room and intake banners, the saved vi
 - **What it reads.** `desk --all --json`, `asks --all --json`, `tasks --json` and
   `queue FACTORY --json`, read together, then again after each `priory wait`, even one that ends
   with the same revision, so it also catches changes that raise no revision, such as a worktree item following the disk. `--all` keeps the
-  snoozed items for the Snoozed view; the panel leaves them out of everything else.
+  snoozed items for the Snoozed view; the panel leaves them out of everything else. While the desk
+  holds a `memories` item, it also reads `memories FACTORY --json`, whose candidates say what
+  memory each replaces.
 - **The count** counts the open asks that are not snoozed, then the oldest wait, the stopped items
   (`blocked`, `failed`, `prompt` and `delivery`) and `counts.snoozed`.
 - **The next thing** is the oldest open ask that is not snoozed, with its recommendation and
@@ -244,6 +266,9 @@ Herdr Desk: the count, the next thing, the room and intake banners, the saved vi
   uncertain prompt, and Revive runs `priory revive TASK` for a failed one. Done runs
   `priory todo done ID` for a to-do, from its row or the next thing card.
   Read runs `priory inbox read SEQ` for a report, from its row, so the row leaves the desk.
+  The `memories` row's detail lists each candidate with its full text, a Current text button that
+  shows the text it replaces, and Accept and Drop. Accept arms on the first press, for 4 seconds, and
+  runs `priory memories accept FACTORY ID` on the second. Drop runs `priory memories drop FACTORY ID`.
   Open task opens the row's task in the [Task panel](#the-task-panel), and Attach asks the Priory
   bar with `priory.attach`; the next thing card offers both. Answer… opens the ask in the Asks
   panel: it sets `priory.asks.open` and brings the first block that shows `asks` into view. When
@@ -314,7 +339,8 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   order from the listing's `bands`, and puts an ask with no band, such as an outside ask, under
   `none`. Risk lists `irreversible`, `red`, `yellow`, `green`, then `none` for an ask whose `risk`
   is empty, and counts an ask under each risk it carries. A row shows its tile, task key, step,
-  age, question, and what it recommends, its answer or why it was withdrawn.
+  age, question, and what it recommends, its answer or why it was withdrawn. An ask whose answer
+  lets an irreversible step run shows its History line under the context line in its detail.
 - **Width.** Below 720 px the selected row opens under itself: the decide part, the section chips
   and Why. A section chip opens that section with the answer bar under it, since gpui-kit has no
   sticky positioning. From 720 px the list and the detail sit side by side. The decide part stays
@@ -546,6 +572,11 @@ DESIGN.md's "Inbox" section holds its visual rules; this section says how it wor
   group's `request_text` for a done one, so the new task owns the resource. A note under the
   group says what the verb did, or why priory refused it. One verb runs at a time, and after one
   succeeds the buttons stay disabled until a read shows its result.
+- **Unheard.** Before the owned groups, under Unheard, each task that kept events no agent read
+  shows its key, its state tile and its newest events (see
+  [routing.md](../daemon/routing.md#events-no-agent-read)). An asleep task's group shows its
+  `priory say` command, since Say stays on the web page. A blocked task's group has Resume task N,
+  which runs `priory resume N`. An ended task's group routes as an owned group does.
 
 ## The Tasks panel
 
@@ -564,6 +595,13 @@ DESIGN.md's "Tasks" section holds its visual rules; this section says how it wor
 - **Rows.** Each row shows the task's tile, key, workflow, step, state and how long it has been in
   that state (a date after a day), then its title, then its lane and band, or the reason of a
   blocked, held, failed or dropped task, and its batch. Pressing a row opens it in the [Task panel](#the-task-panel).
+- **Other runners.** In a factory of several runners the panel also lists each task another runner
+  holds, with its hold for a state and "On runner a, last seen 12 min ago". Its page stays on its
+  runner, so pressing the row opens it in place: Resume, Cancel and Release for a `kept` task,
+  Cancel for a `waiting` one. Cancel acts on the second press. Each runs
+  `priory ACT --generation N RUNNER:KEY` with the generation the panel read, and a refusal shows
+  under the buttons. The newest action sent to the task shows above "On runner". A Runner chip then
+  follows Workflow and marks this runner `(here)`.
 
 ## The Runs panel
 
@@ -594,11 +632,12 @@ DESIGN.md's "Flows panel" section holds its visual rules; this section says how 
   calls, scaled to the pane. `main.js` paints them. The node tests in `test/flows.test.js` check
   both against JSON captured from a real `priory flows DIR --json`.
 - **Reading.** The panel reads `priory flows FACTORY --json` once, as the web view reads
-  `/api/flows`: the factory's workflows change only when its files do. "Read again" in the header
-  reads it again. When the read fails, the panel says why and offers Retry.
+  `/api/flows`: the factory's workflows change only when its files do. Each irreversible step's
+  history is as of that read. "Read again" in the header reads it again. When the read fails, the panel says why and offers Retry.
 - **Drawing.** The key, then each workflow: its name and step count, the drawing at most 560 px
-  wide, the paths that reach an irreversible step with no person's decision, and "Steps as text",
-  which lists every step and where each outcome leads.
+  wide, each irreversible step's history when the state was read (see
+  [serve.md's Flows](../reference/serve.md#flows)), the paths that reach an irreversible step with
+  no person's decision, and "Steps as text", which lists every step and where each outcome leads.
 
 ## The Task panel
 
@@ -663,7 +702,7 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
 - An answered ask adds `answer`, `answered_by` and `answered_at`; a withdrawn one adds `withdrawn_reason`,
   `withdrawn_why`, the reason in words that the view shows, and `withdrawn_at`.
 - The detail adds the agent's text and the run that asked, `what_waits` and `next_action`, and
-  the ask's `revisions` and `refused` for its history. `priory task ID --json` adds the task's
+  the ask's `revisions` and `refused`, and another runner's ask's `submissions`, for its history. `priory task ID --json` adds the task's
   `brief`, `plan`, `pull_request` and `runs`.
 
 ### Queue
@@ -740,6 +779,8 @@ name: it draws the sections in the order the report gives them.
 
 - `priory tasks --json`, the object `/api/tasks` serves; see
   [serve.md's Tasks](../reference/serve.md#tasks).
+- `priory (resume | cancel | release) --generation N RUNNER:KEY` for another runner's task; see
+  [runners.md](../daemon/runners.md#acting-on-another-runners-task).
 
 ### Runs
 

@@ -1257,7 +1257,29 @@ pub(crate) fn event(
             .map(|(repo, number)| route::pull_request(repo, number));
         // Each pull request of a stack has its own gate, which only its events decide.
         if daemon && on.as_deref() != Some(resource.as_str()) {
-            continue;
+            // A merged pull request's gate already fired, so a person's feedback on it fires the
+            // lowest open one, which is this one since gates are visited in id order.
+            let Some(on) = on else {
+                continue;
+            };
+            if !merged_in_stack(tx, task, &on)? {
+                continue;
+            }
+            let place = crate::stack::place(tx, task, &on)?;
+            let said = feedback(&on, place.as_deref(), &kind_of_event, &data)
+                .filter(|_| later || kind_of_event == REVIEWED || data["own"] == false)
+                .filter(|_| !settles(&kind_of_event, &data));
+            let Some(said) = said else {
+                continue;
+            };
+            fire(
+                tx,
+                wait,
+                task,
+                &format!("wait {wait} fired: {said}"),
+                Some(seq),
+            )?;
+            return Ok((true, None));
         }
         // A comment written before the wait, such as the agent's own, wakes nothing.
         let place = crate::stack::place(tx, task, &resource)?;
@@ -1302,6 +1324,16 @@ pub(crate) fn event(
         return Ok((true, None));
     }
     Ok((false, None))
+}
+
+/// Whether `resource` is a merged pull request of the stack of `task`.
+fn merged_in_stack(tx: &Transaction, task: i64, resource: &str) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pull_requests WHERE task = ?1 AND resource = ?2
+           AND state = 'merged')",
+        params![task, resource],
+        |row| row.get(0),
+    )
 }
 
 /// The events of a person's feedback on a pull request.
@@ -1805,7 +1837,8 @@ pub(crate) fn restack_stacked(
 }
 
 /// Tells the stacked `task` `text`, from the event `seq` when one brought it: the line fires its
-/// gate, reaches it while it runs, or reopens it when its checks already made it done.
+/// gate, reaches it while it runs, reopens it when its checks already made it done, or waits in its
+/// queue while it sleeps on an ask or is held, for the run that wakes it.
 pub(crate) fn tell_stacked(
     tx: &Transaction,
     trace: &Trace,
@@ -1828,12 +1861,6 @@ pub(crate) fn tell_stacked(
         .optional()?;
     match (gate, state.as_str()) {
         (Some(gate), _) => fire(tx, gate, task, text, seq)?,
-        (None, "running") => {
-            tx.execute(
-                "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
-                params![task, text],
-            )?;
-        }
         (None, "done") => {
             let stack = crate::stack::of(tx, task)?;
             let bottom = stack.first().map(|pull| pull.resource.clone());
@@ -1843,7 +1870,13 @@ pub(crate) fn tell_stacked(
             wake_on(tx, task, &text, seq)?;
             trace::reopened(tx, trace, task, &bottom, Some(&bottom))?;
         }
-        _ => {}
+        (None, "failed" | "dropped") => {}
+        (None, _) => {
+            tx.execute(
+                "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
+                params![task, text],
+            )?;
+        }
     }
     Ok(())
 }
@@ -2015,6 +2048,9 @@ pub(crate) fn enter_queued(db: &mut Connection, factory: &Factory) -> rusqlite::
             None => {
                 let reason = format!("step {at} is not in workflow {workflow}");
                 set(&tx, task, "blocked", None, Some(&reason))?;
+            }
+            Some(step) if step.effect == Effect::Irreversible && crate::state::replaying(&tx)? => {
+                enter(&tx, task, &workflow, &at, None, "", factory)?;
             }
             Some(step) if step.decides == Decider::Human && !asked => {
                 enter(&tx, task, &workflow, &at, None, "", factory)?;
@@ -2814,6 +2850,11 @@ fn step_in(
         set(tx, task, "blocked", None, Some(&reason))?;
         return finish("blocked");
     };
+    if step.effect == Effect::Irreversible && crate::state::replaying(tx)? {
+        let reason = format!("the replay ends before irreversible step {target}");
+        set(tx, task, "blocked", Some(target), Some(&reason))?;
+        return finish("blocked");
+    }
     drop_ending(tx, task)?;
     drop_nudge(tx, task)?;
     set_ending(tx, task, Some(step))?;
@@ -2828,14 +2869,22 @@ fn step_in(
             };
             end(tx, run.id, "moved")?;
             tx.execute(
-                "INSERT INTO runs (task, step, agent, tmux, session, idle, ready, transcript, read, thread)
-                 SELECT ?1, ?2, ?3, ?4, ?5, 1, 1, transcript, read, thread FROM runs WHERE id = ?6",
+                "INSERT INTO runs (task, step, agent, tmux, session, idle, ready, transcript, read, thread,
+                   kit_hash, kit_commit)
+                 SELECT ?1, ?2, ?3, ?4, ?5, 1, 1, transcript, read, thread, kit_hash, kit_commit
+                 FROM runs WHERE id = ?6",
                 params![task, target, run.agent, run.tmux, run.session, run.id],
             )?;
+            let carried = tx.last_insert_rowid();
             // Its process carries on, so an unconfirmed prompt may still sit in its input.
             tx.execute(
                 "UPDATE outbox SET run = ?2 WHERE run = ?1 AND state IN ('attempted', 'uncertain')",
-                params![run.id, tx.last_insert_rowid()],
+                params![run.id, carried],
+            )?;
+            // The pane stays the same, so a person typing in it keeps the keyboard.
+            tx.execute(
+                "UPDATE keyboard_grants SET run = ?2 WHERE run = ?1 AND ended IS NULL",
+                params![run.id, carried],
             )?;
             set(tx, task, "running", Some(target), None)?;
             Ok(None)
@@ -3349,15 +3398,25 @@ pub(crate) fn act(
     if let Err(stale) = crate::state::expect_revision(&tx, act.expected) {
         return Ok((Err(stale), None));
     }
+    let acted = act_in_tx(&tx, act, factory)?;
+    if acted.0.is_ok() {
+        tx.commit()?;
+    }
+    Ok(acted)
+}
+
+/// Applies a desk action in `tx`. A refusal may leave writes in `tx`, which the caller drops.
+pub(crate) fn act_in_tx(
+    tx: &Transaction,
+    act: &Act,
+    factory: &priory_factory::factory::Factory,
+) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
     let held = match (act.act.as_str(), &act.hold) {
-        ("hold", Some(hold)) => Some(crate::hold::hold(&tx, act.task, hold, factory)?),
-        ("release", _) => Some(crate::hold::release_task(&tx, act.task)?),
+        ("hold", Some(hold)) => Some(crate::hold::hold(tx, act.task, hold, factory)?),
+        ("release", _) => Some(crate::hold::release_task(tx, act.task)?),
         _ => None,
     };
     if let Some(reply) = held {
-        if reply.is_ok() {
-            tx.commit()?;
-        }
         return Ok((reply, None));
     }
     let Some((state, reason)) = tx
@@ -3380,8 +3439,7 @@ pub(crate) fn act(
                 |row| row.get(0),
             )?;
             if unstarted {
-                set(&tx, act.task, "queued", None, None)?;
-                tx.commit()?;
+                set(tx, act.task, "queued", None, None)?;
                 return Ok((Ok(format!("task {} is queued", act.task)), None));
             }
             // A reason from a run that never started describes the launch, not the agent's work.
@@ -3394,10 +3452,9 @@ pub(crate) fn act(
                 Some(reason) => format!("{RESUMED} after: {reason}. {CONTINUE}"),
                 None => format!("{RESUMED}. {CONTINUE}"),
             };
-            unresume(&tx, act.task)?;
-            wake(&tx, act.task, &text)?;
-            set(&tx, act.task, "ready", None, None)?;
-            tx.commit()?;
+            unresume(tx, act.task)?;
+            wake(tx, act.task, &text)?;
+            set(tx, act.task, "ready", None, None)?;
             Ok((Ok(format!("task {} is ready", act.task)), None))
         }
         "resume" => Ok((
@@ -3410,27 +3467,16 @@ pub(crate) fn act(
             };
             // A fixed first line keeps a text starting with `/` from running as a slash command.
             let text = format!("{SAYS}{text}");
-            let said = say(&tx, act.task, &text, &state, &factory.workflows)?;
-            if said.is_ok() {
-                tx.commit()?;
-            }
-            Ok((said, None))
+            Ok((say(tx, act.task, &text, &state, &factory.workflows)?, None))
         }
         "cancel" if ["done", "failed", "dropped"].contains(&state.as_str()) => {
             Ok((Err(format!("task {} is already {state}", act.task)), None))
         }
         "cancel" => {
-            let tmux = cancel(&tx, act.task, "cancelled from the desk")?;
-            tx.commit()?;
+            let tmux = cancel(tx, act.task, "cancelled from the desk")?;
             Ok((Ok(format!("task {} dropped", act.task)), tmux))
         }
-        "revive" => {
-            let revived = revive(&tx, act, factory)?;
-            if revived.is_ok() {
-                tx.commit()?;
-            }
-            Ok((revived, None))
-        }
+        "revive" => Ok((revive(tx, act, factory)?, None)),
         other => Ok((Err(format!("unknown action {other}")), None)),
     }
 }
@@ -3615,7 +3661,8 @@ fn regenerate(tx: &Transaction, task: i64, generation: i64) -> rusqlite::Result<
 
 /// The done task that feedback in `message` reopens: the newest that owns the pull request, issue,
 /// Linear issue or Slack thread it is on, done before the feedback was written, with no close of
-/// that pull request in the inbox, no merged pull request and no active task on its key.
+/// that pull request in the inbox since it was last read open, no merged pull request and no
+/// active task on its key. Feedback the intake read on an open pull request is itself that read.
 pub(crate) fn reopenable(
     tx: &Transaction,
     message: &herdr_bus::Message,
@@ -3638,15 +3685,26 @@ pub(crate) fn reopenable(
             "SELECT tasks.id FROM {owner} AS held JOIN tasks ON tasks.id = held.task
              WHERE held.resource = ?1 AND tasks.state = 'done'
              AND julianday(?2) >= julianday(tasks.changed)
-             AND NOT EXISTS (SELECT 1 FROM inbox WHERE type IN (?3, ?4) AND 'github:'
+             AND (?5 OR NOT EXISTS (SELECT 1 FROM inbox AS close WHERE type IN (?3, ?4) AND 'github:'
                || json_extract(data, '$.repo') || '#'
-               || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1)
+               || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1
+               AND NOT EXISTS (SELECT 1 FROM inbox AS open WHERE open.seq > close.seq
+                 AND open.type NOT IN (?3, ?4) AND json_extract(open.data, '$.open') = 1
+                 AND 'github:' || json_extract(open.data, '$.repo') || '#'
+                   || coalesce(json_extract(open.data, '$.pull_request'),
+                     json_extract(open.data, '$.issue')) = ?1)))
              AND NOT EXISTS (SELECT 1 FROM tasks AS other WHERE other.key = tasks.key
                AND other.state NOT IN ('done', 'failed', 'dropped'))
              AND NOT EXISTS (SELECT 1 FROM pull_requests WHERE task = tasks.id AND state = 'merged')
              ORDER BY tasks.id DESC LIMIT 1"
         ),
-        params![resource, message.time.to_string(), CLOSED, ISSUE_CLOSED],
+        params![
+            resource,
+            message.time.to_string(),
+            CLOSED,
+            ISSUE_CLOSED,
+            data["open"] == true
+        ],
         |row| row.get(0),
     )
     .optional()
@@ -4149,6 +4207,8 @@ pub(crate) struct Done {
     pub pull_request: Option<String>,
     pub commit: Option<String>,
     pub error: Option<String>,
+    /// What the action reports beyond its status, shown as its stdout.
+    pub stdout: Option<String>,
     /// The pull requests `open-pr` opened, bottom first; the last is `pull_request`.
     pub stack: Vec<Stacked>,
 }
@@ -4369,8 +4429,9 @@ pub(crate) fn performed_in(
         }
     }
     tx.execute(
-        "INSERT INTO actions (task, step, action, status, pull_request, commit_sha, error, result, inbox)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
+        "INSERT INTO actions (task, step, action, status, pull_request, commit_sha, error, stdout,
+           result, inbox)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
            (SELECT max(run) FROM results WHERE task = ?1), (SELECT max(seq) FROM inbox))",
         params![
             task,
@@ -4379,7 +4440,8 @@ pub(crate) fn performed_in(
             done.status,
             done.pull_request,
             done.commit,
-            done.error
+            done.error,
+            done.stdout
         ],
     )?;
     for pull in &done.stack {

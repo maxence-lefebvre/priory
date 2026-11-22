@@ -60,6 +60,26 @@ Each entry of `scripts`:
 | `when` | `memory`, `disk` or `cpu` | yes | | The resource whose shortage runs it | `"disk"` |
 | `timeout` | duration | no | `"5m"` | How long it may run before Priory kills it | `"1m"` |
 
+## `[kit]`
+
+A kit repository whose skills, instructions and memories every run gets, before the factory's own.
+See [skills.md](../daemon/skills.md#a-kit-repository) for when each runner fetches it.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `repo` | string | yes | | The repository, as `git fetch` takes it: a URL or a path. A relative path starts at the factory folder | `"git@github.com:owner/abbey.git"` |
+| `ref` | string | no | `"HEAD"`: the default branch | The branch, tag or commit to fetch | `"main"` |
+| `skills` | path | no | `"skills"` | The skills folder inside the repository | `"skills"` |
+| `instructions` | path | no | `"instructions.md"` | The instructions file inside the repository | `"claude/CLAUDE.md"` |
+| `memories` | path | no | `"memories"` | The memories folder inside the repository | `"memories"` |
+| `every` | duration | no | `"5m"` | How often each runner fetches the ref again | `"10m"` |
+
+A missing folder or file gives nothing. Each path is relative and stays inside the repository.
+
+An `open-memories-pr` code step writes accepted memories to the `memories` folder, on a branch based
+on `ref`, and opens a pull request onto it (see
+[skills.md](../daemon/skills.md#accepted-memories-move-into-the-kit)).
+
 ## `[search]`
 
 See [search.md](../daemon/search.md).
@@ -335,6 +355,9 @@ band = "today"                                 # its band without --band
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A duration that is not a whole number and `s`, `m` or `h` |
 | `` `factory` is also defined in factory.toml `` | Both `factory.toml` and `factory.yaml` exist |
 | `` `bands` needs at least one band, each named once `` | `bands` is empty or names a band twice |
+| `` `[kit]` `<key>` is empty `` | `[kit] repo` or `ref` is blank |
+| `` `[kit]` `<key>` is `<value>`: it cannot start with `-` `` | `repo` or `ref` starts with `-`, which git would read as an option |
+| `` `[kit]` `<key>` is `<path>`: a kit path is relative and stays inside the repository `` | `skills`, `instructions` or `memories` is empty, absolute, or holds `.` or `..` |
 | `` the sweeper agent `<name>` does not exist `` | `[sweep] agent` names no folder under `agents/` |
 | `` `[asks] deliver`: <path> is not a file in the factory folder `` | `deliver` names no file under the factory folder |
 | `` `[asks] deliver`: <path> is not executable: chmod +x it `` | The `deliver` file has no execute bit |

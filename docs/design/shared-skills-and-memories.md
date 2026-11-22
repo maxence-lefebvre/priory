@@ -21,7 +21,9 @@ slices after it, and the open questions with a recommendation for each.
   machine.
 - Each runner has its own checkout of the factory, and reads the shared log
   ([runners.md](../daemon/runners.md)). Nothing keeps those checkouts at the same commit: a person
-  pulls each one.
+  pulls each one. Each runner fetches a `[kit]` repository on its own (later slice 2), agents
+  write memories on the log (later slice 3), and a daily pull request moves accepted memories into
+  the kit (later slice 4).
 
 Max keeps his own kit, `maxence-lefebvre/abbey`, in a private repository: `claude/` (a `CLAUDE.md`
 and the docs it points to), `codex/AGENTS.md` and a `skills/` folder. It is the natural first
@@ -179,7 +181,7 @@ own prompt together.
 3. `ClaudeCode::args` adds `--plugin-dir` when the factory has skills, and passes the instructions
    and the agent's body through `--append-system-prompt-file`. `Codex::args` puts the instructions
    before the body in `developer_instructions`, and `priory check` refuses instructions over the
-   limit. Codex skills wait for the open question below.
+   limit. Codex skills waited for the open question below (later slice 5).
 4. The run records the hash of the skills and instructions it got, so two runners whose factory
    checkouts differ show it in the run's record. That hash is how a person sees that a runner needs
    a pull.
@@ -209,12 +211,36 @@ Tests:
    Codex agent's 8192-byte limit.
 2. `[kit]`: fetch at start and on the tick, the per-commit checkout, the desk banner on a failed
    fetch, and the run's recorded commit. Tests run against a local bare repository.
+   This slice is built: [skills.md](../daemon/skills.md#a-kit-repository) describes it. It differs
+   from this note in four ways: the mirror and checkouts live in Priory home, under
+   `$PRIORY_HOME/kit/`; the kit's instructions come before the factory's rather than giving way to
+   them; a kit commit that `priory check` would refuse is refused whole, as a failed fetch is; and
+   the daemon's log, not `priory check`, names a factory skill that hides a kit skill, since check
+   cannot see the kit.
 3. Memories on the log: `remember`, `forget` and `memory`, candidates and acceptance, and the
    `priory.memory.written` and `priory.memory.accepted` schemas. Tests run two runners on one
    herdr-bus file, as the runner tests do, and cover an overwrite after an accept and a forget of a
    name the kit holds.
+   This slice is built: [skills.md](../daemon/skills.md#memories-agents-write) describes it. It
+   differs from this note in four ways: a person's drop is a third message,
+   `priory.memory.dropped`, which also takes the candidate from its own task's runs; an accepted
+   candidate overrides the factory's memory of its name too, not only the kit's; the desk item
+   lists every candidate that waits, not only the day's; and the `memory` tool reads the memory as
+   the task sees it at the call, while the run's snapshot keeps what it saw at its start.
 4. The daily pull request of accepted memories to the kit repository.
-5. Codex skills, once the open question is settled.
+   This slice is built:
+   [skills.md](../daemon/skills.md#accepted-memories-move-into-the-kit) describes it. A schedule
+   trigger starts a workflow whose code step runs the `open-memories-pr` action, as open question 3
+   recommends. It differs from this note in three ways: any runner that can win the schedule's
+   claim needs push rights, since no trigger names a runner; the pull request opens on the
+   trigger's `repo`, the kit's GitHub owner/name, since a kit's `repo` can be any git URL; and a
+   runner does not yet drop a candidate once the kit commit it fetched holds the candidate's result.
+5. Codex skills, as open question 4 answers. This slice is built:
+   [skills.md](../daemon/skills.md#a-codex-run) describes it. A Codex run gets the same sealed
+   plugin folder as a Claude Code run, and an index of its skills in `developer_instructions`,
+   after the memory index: the folder, then each skill's `SKILL.md` path and description.
+   `priory check` counts the index toward the 8192-byte limit. Since both harnesses now get the
+   skills, their runs record the same `kit_hash`.
 
 ## Open questions
 
@@ -233,5 +259,11 @@ Tests:
 4. **How do Codex runs get skills?** Codex reads skills from its own home folder. Recommendation:
    check whether a `-c` override can add a skills folder. If none can, list the skill names and
    paths in `developer_instructions`, and leave `CODEX_HOME` alone, for the reason in question 1.
+   Answered for Codex 0.170.0: no override can. Codex reads skills from the config folders of its
+   user and system layers (`$CODEX_HOME/skills`, `/etc/codex/skills`), `~/.agents/skills`, the
+   repository's `.agents/skills`, installed plugins, whose store is under `CODEX_HOME`, and roots
+   that an app-server client sets. The layer that `-c` writes adds no skill folder. Writing
+   `.agents/skills` into the task's worktree would work, but the agent could commit it. So a run
+   gets the index, as recommended.
 5. **Per person or per factory?** Recommendation: per factory, as above. A person who wants their
    own kit in runs names it as the factory's kit, which is Max's case with abbey.

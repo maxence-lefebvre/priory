@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sayLine, screenWatch, screenRows } from "./terminal.js";
+import { KEYS, giveBack, keyboardSession, paintRows, sayLine, screenWatch, screenRows, sendKeys, takeKeyboard } from "./terminal.js";
 
 // A clock the test moves by hand, and a server whose replies the test releases one by one.
 function rig() {
@@ -249,6 +249,8 @@ test("any text parses: only SGR codes leave it, and classes come from the fixed 
     const lines = Array.from({ length: 1 + random(3) }, () => Array.from({ length: random(16) }, () => bits[random(bits.length)]).join(""));
     const rows = screenRows(lines);
     assert.equal(rows.length, lines.length);
+    const cursor = { x: random(20), y: random(lines.length) };
+    assert.equal(screenRows(lines, cursor).flat().filter((part) => part.cursor).length, 1, JSON.stringify([lines, cursor]));
     rows.forEach((parts, row) => {
       assert.equal(parts.map((part) => part.text).join(""), lines[row].replace(sgr, ""), JSON.stringify(lines[row]));
       for (const part of parts) {
@@ -279,4 +281,264 @@ test("a revision during a read polls again as soon as the read ends", async () =
   assert.equal(asked.length, 1);
   await answer(screen(4, "a"));
   assert.equal(asked.length, 2);
+});
+
+test("the cursor marks the cell it sits on, inside a coloured part or past the row's end", () => {
+  assert.deepEqual(screenRows(["$ \x1b[32mgo\x1b[0m!", ""], { x: 3, y: 0 })[0], [
+    { text: "$ ", cls: "", hidden: false },
+    { text: "g", cls: "f2", hidden: false },
+    { text: "o", cls: "f2", hidden: false, cursor: true },
+    { text: "!", cls: "", hidden: false },
+  ]);
+  assert.deepEqual(screenRows(["ab", "é"], { x: 3, y: 1 })[1], [
+    { text: "é", cls: "", hidden: false },
+    { text: "  ", cls: "", hidden: false },
+    { text: " ", cls: "", hidden: false, cursor: true },
+  ]);
+  assert.deepEqual(screenRows(["ab"], null), screenRows(["ab"]));
+});
+
+// A `pre` of the page: row elements whose markup the test reads, and which a repaint replaced.
+function fakePre() {
+  const pre = { children: [], written: [] };
+  const element = () => {
+    const row = { markup: "", remove: () => pre.children.splice(pre.children.indexOf(row), 1) };
+    Object.defineProperty(row, "innerHTML", { set(markup) { row.markup = markup; pre.written.push(markup); } });
+    return row;
+  };
+  pre.ownerDocument = { createElement: element };
+  pre.append = (row) => pre.children.push(row);
+  return pre;
+}
+
+test("a repaint writes only the rows whose markup changed, so a selection in the others stays", () => {
+  const pre = fakePre();
+  paintRows(pre, ["$ cargo test\n", "running 3 tests\n", "\n"]);
+  const [first, second] = pre.children;
+  pre.written = [];
+  paintRows(pre, ["$ cargo test\n", "running 3 tests\n", "test a ... ok\n", "\n"]);
+  assert.deepEqual(pre.written, ["test a ... ok\n", "\n"]);
+  assert.equal(pre.children[0], first);
+  assert.equal(pre.children[1], second);
+  paintRows(pre, ["$ cargo test\n"]);
+  assert.deepEqual(pre.children.map((row) => row.markup), ["$ cargo test\n"]);
+});
+
+// A server that answers each post with the next of `replies`, and records what it was sent.
+function server(replies) {
+  const sent = [];
+  const post = async (path, body) => {
+    sent.push([path, body]);
+    const reply = replies.shift();
+    if (reply instanceof Error) throw reply;
+    return reply;
+  };
+  return { post, sent };
+}
+
+test("taking the keyboard needs no revision and keeps the grant, or says why not", async () => {
+  const { post, sent } = server([
+    { status: 200, body: { grant: 3, ends: "2026-11-22T14:32:00Z", secret: "ab".repeat(16) } },
+    { status: 404, body: { error: "run 4 ended as done" } },
+    { status: 401, body: {} },
+    new Error("offline"),
+  ]);
+  assert.deepEqual(await takeKeyboard(post, 4), { held: { grant: 3, ends: "2026-11-22T14:32:00Z", secret: "ab".repeat(16) } });
+  assert.deepEqual(sent, [["/api/runs/4/keyboard", {}]]);
+  assert.deepEqual(await takeKeyboard(post, 4), { note: "Could not take the keyboard: run 4 ended as done." });
+  assert.deepEqual(await takeKeyboard(post, 4), { signOut: true });
+  assert.deepEqual(await takeKeyboard(post, 4), { note: "Could not take the keyboard: the connection dropped. Try again." });
+});
+
+test("a key or a text goes with the secret and a fresh request id, and an ended grant drops the keyboard", async () => {
+  const { post, sent } = server([
+    { status: 200, body: { outcome: "sent" } },
+    { status: 200, body: { outcome: "sent" } },
+    { status: 200, body: { outcome: "failed", error: "its pane is gone" } },
+    { status: 200, body: { outcome: "uncertain", repeated: true } },
+    { status: 403, body: { error: "your keyboard grant of run 4 ended (replaced): take the keyboard again" } },
+    { status: 400, body: { error: "text holds a control character" } },
+    new Error("offline"),
+  ]);
+  assert.deepEqual(await sendKeys(post, 4, "s", { key: "Escape" }), { note: null });
+  assert.deepEqual(await sendKeys(post, 4, "s", { text: "also run clippy" }), { note: "Sent 15 characters. Press ⏎ to submit them." });
+  const [first, second] = sent.map(([, body]) => body.request);
+  assert.notEqual(first, second);
+  assert.match(first, /^[0-9a-f]{32}$/);
+  assert.deepEqual(sent[0], ["/api/runs/4/keys", { secret: "s", request: first, key: "Escape" }]);
+  assert.deepEqual(await sendKeys(post, 4, "s", { key: "Enter" }), { note: "Could not send: its pane is gone." });
+  assert.deepEqual(await sendKeys(post, 4, "s", { key: "Enter" }), { note: "This may have reached the pane. Look at the screen before you send it again." });
+  assert.deepEqual(await sendKeys(post, 4, "s", { key: "Enter" }), { ended: "Your keyboard grant of run 4 ended (replaced): take the keyboard again." });
+  assert.deepEqual(await sendKeys(post, 4, "s", { text: "\t" }), { note: "Could not send: text holds a control character." });
+  assert.deepEqual(await sendKeys(post, 4, "s", { key: "Enter" }), { note: "The connection dropped, so this may have reached the pane. Look at the screen before you send it again." });
+});
+
+test("giving back ends the grant, and a grant that already ended counts as given back", async () => {
+  const { post, sent } = server([
+    { status: 200, body: { ok: "run 4's keyboard returned" } },
+    { status: 403, body: { error: "your keyboard grant of run 4 ended (expired): take the keyboard again" } },
+    { status: 503, body: { error: "no priory daemon listens" } },
+  ]);
+  assert.deepEqual(await giveBack(post, 4, "s"), { returned: true });
+  assert.deepEqual(sent, [["/api/runs/4/keyboard/return", { secret: "s" }]]);
+  assert.deepEqual(await giveBack(post, 4, "s"), { returned: true });
+  assert.deepEqual(await giveBack(post, 4, "s"), { note: "Could not give back: no priory daemon listens." });
+});
+
+test("the key row holds exactly the keys the server sends, Escape and C-c first", () => {
+  const names = KEYS.filter(Boolean).map(([name]) => name);
+  assert.deepEqual(names, ["Escape", "C-c", "Enter", "Tab", "BTab", "Up", "Down", "Left", "Right", "PageUp", "PageDown", "C-d", "y", "n", "1", "2", "3", "4", "5", "6", "7", "8", "9"]);
+  assert.deepEqual(KEYS.filter((key) => key?.[2]).map(([name]) => name), ["Escape", "C-c"]);
+});
+
+// A keyboard session whose server holds each reply until the test releases it, on a hand-moved clock.
+function desk() {
+  const asked = [];
+  const timers = [];
+  let now = Date.parse("2026-11-22T14:00:00Z"), signedOut = 0;
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  const session = keyboardSession({
+    post: (path, body) => new Promise((resolve) => asked.push({ path, body, resolve })),
+    timer: (fn, ms) => { const timer = { fn, at: now + ms }; timers.push(timer); return timer; },
+    clear: (timer) => { const i = timers.indexOf(timer); if (i >= 0) timers.splice(i, 1); },
+    now: () => now,
+    format: (iso) => iso.slice(11, 16),
+    signOut: () => signedOut++,
+  });
+  const ends = "2026-11-22T14:15:00Z";
+  async function reply(status, body = {}) {
+    const one = asked.find((each) => !each.done);
+    one.done = true;
+    one.resolve({ status, body });
+    await settle();
+  }
+  const granted = (grant = 1, secret = `s${grant}`) => reply(200, { grant, ends, secret });
+  async function tick(ms) {
+    now += ms;
+    for (const timer of timers.filter((timer) => timer.at <= now)) { timers.splice(timers.indexOf(timer), 1); timer.fn(); }
+    await settle();
+  }
+  return { session, asked, signedOut: () => signedOut, reply, granted, tick, settle };
+}
+
+test("the session holds a grant for its run, sends in order, and the secret never leaves memory", async () => {
+  const { session, asked, granted, reply, settle } = desk();
+  session.at(4);
+  session.take(4);
+  await granted();
+  assert.deepEqual(session.state().held, { grant: 1, ends: "2026-11-22T14:15:00Z" });
+  assert.equal(JSON.stringify(session.state()).includes("s1"), false);
+  const first = session.send({ key: "Down" });
+  const second = session.send({ key: "Enter" });
+  await settle();
+  assert.equal(asked.filter((one) => one.path.endsWith("/keys")).length, 1, "the second waits for the first");
+  await reply(200, { outcome: "sent" });
+  assert.equal(asked.at(-1).body.key, "Enter");
+  await reply(200, { outcome: "sent" });
+  assert.deepEqual([await first, await second], [true, true]);
+});
+
+test("a paste in flight blocks a second one, and only a sent text counts as sent", async () => {
+  const { session, granted, reply, settle } = desk();
+  session.at(4);
+  session.take(4);
+  await granted();
+  const pasted = session.send({ text: "ls" });
+  assert.equal(await session.send({ text: "ls" }), false, "Return twice queues it once");
+  await settle();
+  await reply(400, { error: "text holds a control character" });
+  assert.equal(await pasted, false);
+  assert.equal(session.state().note, "Could not send: text holds a control character.");
+});
+
+test("give back waits for the keys already sent, and refuses new ones meanwhile", async () => {
+  const { session, asked, granted, reply, settle } = desk();
+  session.at(4);
+  session.take(4);
+  await granted();
+  session.send({ text: "half a line" });
+  session.send({ key: "C-c" });
+  session.giveBack();
+  assert.equal(await session.send({ key: "y" }), false);
+  await settle();
+  await reply(200, { outcome: "sent" });
+  await reply(200, { outcome: "sent" });
+  assert.deepEqual(asked.map(({ path, body }) => [path.split("/").pop(), body.key ?? body.text ?? null]),
+    [["keyboard", null], ["keys", "half a line"], ["keys", "C-c"], ["return", null]]);
+  await reply(200, { ok: "returned" });
+  assert.equal(session.state().held, null);
+});
+
+test("leaving the run, signing out or a switch gives the grant back, and a late grant is given back at once", async () => {
+  const { session, asked, granted, reply, signedOut } = desk();
+  session.at(4);
+  session.take(4);
+  session.leave();
+  await granted(1, "late");
+  assert.equal(session.state().held, null);
+  assert.deepEqual(asked.at(-1), { ...asked.at(-1), path: "/api/runs/4/keyboard/return", body: { secret: "late" } });
+  session.at(5);
+  session.take(5);
+  await reply(200, { ok: "returned" });
+  await granted(2, "b");
+  assert.deepEqual(session.state().held, { grant: 2, ends: "2026-11-22T14:15:00Z" }, "the old return leaves the new grant");
+  session.at(6);
+  assert.deepEqual([asked.at(-1).path, asked.at(-1).body], ["/api/runs/5/keyboard/return", { secret: "b" }]);
+  session.take(6);
+  session.leave();
+  await reply(200, {});
+  await reply(401, {});
+  assert.equal(signedOut(), 0, "a stale 401 signs nobody out");
+});
+
+test("a run carried into the next step on the same pane keeps the grant, and a new pane gives it back", async () => {
+  const { session, asked, granted, reply, settle } = desk();
+  session.at(4, "1/priory-1");
+  session.take(4);
+  await granted();
+  session.at(5, "1/priory-1");
+  assert.deepEqual([session.state().run, session.state().held], [5, { grant: 1, ends: "2026-11-22T14:15:00Z" }]);
+  session.send({ key: "Enter" });
+  await settle();
+  assert.equal(asked.at(-1).path, "/api/runs/5/keys");
+  await reply(200, { outcome: "sent" });
+  session.at(6, "2/priory-2");
+  assert.deepEqual([asked.at(-1).path, asked.at(-1).body], ["/api/runs/5/keyboard/return", { secret: "s1" }]);
+  assert.equal(session.state().held, null);
+});
+
+test("a grant expires at its end, and its stuck send never blocks the next grant", async () => {
+  const { session, asked, granted, reply, tick, settle } = desk();
+  session.at(4);
+  session.take(4);
+  await granted();
+  session.send({ key: "Up" });
+  await settle();
+  await tick(15 * 60 * 1000);
+  assert.equal(session.state().ended, "Your keyboard of run 4 returned: it expired at 14:15.");
+  session.take(4);
+  await settle();
+  asked.find((one) => one.path.endsWith("/keys")).done = true;
+  await granted(2);
+  session.send({ key: "Down" });
+  await settle();
+  assert.equal(asked.at(-1).body.key, "Down");
+  await reply(200, { outcome: "sent" });
+});
+
+test("a grant another device replaced ends the bar with the server's reason", async () => {
+  const { session, granted, reply } = desk();
+  session.at(4);
+  session.take(4);
+  await granted();
+  const sent = session.send({ key: "y" });
+  await new Promise((resolve) => setImmediate(resolve));
+  await reply(403, { error: "your keyboard grant of run 4 ended (replaced): take the keyboard again" });
+  assert.equal(await sent, false);
+  assert.deepEqual([session.state().held, session.state().ended], [null, "Your keyboard grant of run 4 ended (replaced): take the keyboard again."]);
+});
+
+test("the cursor counts terminal cells: a wide character takes two, and an accent stays on its letter", () => {
+  const under = (line, x) => screenRows([line], { x, y: 0 })[0].find((part) => part.cursor).text;
+  assert.deepEqual([under("界a", 2), under("🙂a", 2), under("éx", 1), under("éx", 0)], ["a", "a", "x", "é"]);
 });

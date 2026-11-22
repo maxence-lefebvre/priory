@@ -186,12 +186,19 @@ it answers, the server replaces with `[redacted]`:
 The server looks for secrets in the text without its colour codes, so a code inside a secret does
 not split it; a code that sat inside a hidden secret moves after `[redacted]`. A replacement can
 join its neighbours into a secret again, so the server repeats until no secret shows. When one still shows after 8 passes, it sends no screen. Like every reply, a screen carries
-`Cache-Control: no-store`, and the server writes no screen to its log or the trace. Redaction is best effort: a secret split across two rows, a token in another shape or a
-password in plain words gets through. Whoever holds the token may read what the agent's screen
+`Cache-Control: no-store`, and the server writes no screen to its log or the trace.
+
+A row exactly as wide as the pane wrapped onto the next one, so the server also looks for secrets
+with that row joined to the next, and a secret that wraps is hidden whole. Rows stay rows.
+
+Redaction is best effort: a secret the application itself broke across two rows, a wrapped row
+that holds wide characters, a token in another shape or a password in plain words gets through. Whoever holds the token may read what the agent's screen
 shows. A factory that does not want that sets [`[serve] terminal = "off"`](../reference/factory.md#serve).
 
 tmux can hang. So each screen has its own 2 second deadline, and at most 2 are read at once,
-which leaves workers for other requests however tmux behaves.
+which leaves workers for other requests however tmux behaves. A live run's screen that tmux did
+not give in time, or that holds a secret redaction cannot hide, gets `503`, so the page asks again.
+Only a run that ended or does not exist gets `404`, and the page stops asking.
 
 ## A run's keyboard
 
@@ -208,6 +215,8 @@ to type.
   state see only its hash. A grant ends at its end, when its run ends, on
   `/keyboard/return`, on a new grant for the run, and once the daemon's factory no longer says
   `"type"`. Each end appends `factory.terminal.returned` with why. A grant survives a restart.
+  A run carried into the next step of the same agent keeps its pane, so its grant moves to the new
+  run. The page keeps holding it, and a request to either run's id reaches it.
 - **Keys.** `POST /api/runs/{id}/keys` sends one text or one key from a fixed list. Text is pasted
   through `load-buffer` from stdin and a bracketed `paste-buffer`, without Enter, so no part of it
   is an argument tmux could read as a key or a command. A key goes through `send-keys` by its
@@ -243,7 +252,7 @@ and icons, all built into the binary. They carry no state, so they need no token
 for the token once, keeps it in the browser's local storage, and sends it on every `/api` request;
 a `401` brings the sign-in back. A strict Content-Security-Policy lets the page load only its own
 files, and the page shows agent text as text. The view's layout comes from the factory's
-[views](../reference/views.md). Its Add control reads the defaults from `GET /api/request` and queues the task through `POST /api/request`, as `priory add` does. Its Reports panel reads `GET /api/reports/latest`, or the report its older and newer arrows reached through `GET /api/reports` and `GET /api/reports/{task}`, and picks and comments through the [report writes](../reference/serve.md#writes), as the `priory report` verbs do. Its Flows panel reads `GET /api/flows` and draws each workflow top to bottom, with each edge styled by who decides it and the paths `priory check --explain` lists marked. Its Costs panel reads `GET /api/costs` and `GET /api/attention` each time the state changes while it is open. A task's page shows the terminal of its live run under its runs: it reads [`GET /api/runs/{id}/screen`](#a-runs-screen) every second while the pane is on screen and the page is shown, every 3 seconds after 10 unchanged screens, and at once when the state changes. It keeps one read in flight, stops when the page hides, and keeps the screen in memory only. The pane's Load earlier reads 500 more rows of scrollback a tap, up to 2,000, and its Type opens a line that says to the agent through [`POST /api/tasks/{id}/say`](../reference/serve.md#writes), as `priory say` does: typed once the run is idle, never as a slash command. The Terminal panel lists the running tasks, each linking to its page. With `web = false`, every path outside `/api` gets `404`.
+[views](../reference/views.md). Its Add control reads the defaults from `GET /api/request` and queues the task through `POST /api/request`, as `priory add` does. Its Reports panel reads `GET /api/reports/latest`, or the report its older and newer arrows reached through `GET /api/reports` and `GET /api/reports/{task}`, and picks and comments through the [report writes](../reference/serve.md#writes), as the `priory report` verbs do. Its Flows panel reads `GET /api/flows` and draws each workflow top to bottom, with each edge styled by who decides it and the paths `priory check --explain` lists marked. Its Costs panel reads `GET /api/costs` and `GET /api/attention` each time the state changes while it is open. A task's page shows the terminal of its live run under its runs: it reads [`GET /api/runs/{id}/screen`](#a-runs-screen) every second while the pane is on screen and the page is shown, every 3 seconds after 10 unchanged screens, and at once when the state changes. It keeps one read in flight, stops when the page hides, and keeps the screen in memory only. The pane draws the screen's cursor, and a new screen rewrites only the rows that changed, so a person's selection in the others stays. Its Load earlier reads 500 more rows of scrollback a tap, up to 2,000, and its Type opens a line that says to the agent through [`POST /api/tasks/{id}/say`](../reference/serve.md#writes), as `priory say` does: typed once the run is idle, never as a slash command. Under `[serve] terminal = "type"`, the pane's menu offers "Take the keyboard", which confirms in a sheet, then shows a bar that pastes text without Enter and sends one key a tap through the [keyboard endpoints](../reference/serve.md#keyboard), until the person gives it back or the grant ends. The page keeps the grant's secret in memory only. The Terminal panel lists the running tasks, each linking to its page. With `web = false`, every path outside `/api` gets `404`.
 
 The view is installable as an app. `manifest.webmanifest` names it and its icons, and the service
 worker `/sw.js` keeps a copy of the page's own files, so the view starts with no connection. The

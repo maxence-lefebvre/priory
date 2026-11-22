@@ -34,6 +34,11 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     // Sends the resource's next event to the task, unless the state moved past `revision`.
     subscribe: (/** @type {Id} */ task, /** @type {string} */ resource, /** @type {number | null} */ revision = null) =>
       call(["subscribe", String(task), resource, ...expected(revision)]),
+    // Ends the task's subscription; what the task owns otherwise, such as its key, stays.
+    unsubscribe: (/** @type {Id} */ task, /** @type {string} */ resource) => call(["unsubscribe", String(task), resource]),
+    // Marks the task wrong with a URL that shows it, for the risk report, or clears every mark.
+    label: (/** @type {Id} */ task, /** @type {{ evidence?: string, happened?: string, clear?: boolean }} */ { evidence, happened, clear = false }) =>
+      call(["label", ...inFactory, String(task), "wrong", ...(clear ? ["--clear"] : ["--evidence", String(evidence), ...(happened ? ["--happened", happened] : [])])]),
     // One task with its brief, plan, pull request, runs and asks, as `/api/tasks/{id}` serves it.
     task: (/** @type {Id} */ id) => read("task", String(id)),
     queue: () => read("queue", ...inFactory),
@@ -47,6 +52,8 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     attention: () => read("report", "attention"),
     // Each workflow's steps and edges, with the irreversible steps and the paths to one with no human decision.
     flows: () => read("flows", ...inFactory),
+    // The views as text, since the Priory bar hashes exactly what `priory views --json` prints.
+    views: () => call(["views", ...inFactory, "--json"]),
     // priory wait gives up after 25 s with the same revision; Herdr's exec would stop it at 30 s.
     wait: async (/** @type {number} */ since) => Number(await call(["wait", "--since", String(since)], 60_000)),
     // `run` confirms an answer that runs the ask's command, as the person's second press does.
@@ -66,6 +73,11 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     resume: (/** @type {Id} */ task) => call(["resume", String(task)]),
     revive: (/** @type {Id} */ task) => call(["revive", String(task)]),
     todoDone: (/** @type {Id} */ todo) => call(["todo", "done", String(todo)]),
+    // The memory candidates that wait for a person, each with the memory of its name runs get now.
+    memories: () => read("memories", ...inFactory),
+    // A person's verdict on a candidate, published on the factory's log; every runner applies it.
+    acceptMemory: (/** @type {string} */ id) => call(["memories", "accept", ...inFactory, id]),
+    dropMemory: (/** @type {string} */ id) => call(["memories", "drop", ...inFactory, id]),
     // Marks a report read, so its row leaves the desk.
     read: (/** @type {Id} */ seq) => call(["inbox", "read", String(seq)]),
     // A field left out comes from the factory's [request] table; the reply is the new task's key.
@@ -76,6 +88,8 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
       call(["hold", String(task), "--reason", reason, ...(until ? ["--until", until] : []), ...expected(revision)]),
     release: (/** @type {Id} */ task, /** @type {number | null} */ revision = null) => call(["release", String(task), ...expected(revision)]),
     cancel: (/** @type {Id} */ task, /** @type {number | null} */ revision = null) => call(["cancel", String(task), ...expected(revision)]),
+    // Resume, cancel or release another runner's task, named `runner:key`, at the generation the panel read.
+    remote: (/** @type {string} */ act, /** @type {string} */ target, /** @type {number} */ generation) => call([act, "--generation", String(generation), target]),
     // Pausing stops new runs from starting; the live ones go on.
     pause: (/** @type {string} */ reason = "") => call(["pause", ...(reason ? [reason] : [])]),
     unpause: () => call(["unpause"]),
@@ -206,8 +220,30 @@ export function sentNote(ask) {
   return { text: last.verb === "dismiss" ? `Dismiss sent to ${runner}` : `Sent to ${runner}: ${last.text}`, refused: false };
 }
 
+const SUBMITTED = { answered: "answered", dismissed: "withdrawn", refused: "refused" };
+
+/** Each answer and dismiss sent to another runner's ask as an answer history row, oldest first. @param {any} ask */
+export function submitted(ask) {
+  const runner = runnerOf(ask);
+  if (!runner) return [];
+  return ask.submissions.map((/** @type {any} */ sent) => {
+    const outcome = sent.outcome === "refused" ? `${runner} refused it: ${sent.why}` : sent.outcome ? `${runner} applied it` : "Not applied yet";
+    const what = sent.verb === "dismiss" ? "the dismiss" : sent.text;
+    return { tile: SUBMITTED[sent.outcome] ?? "queued", text: `Sent ${what} to ${runner} for revision ${sent.revision}. ${outcome}`, at: sent.sent };
+  });
+}
+
 /** Who answered, as the views say it: a person, or `agent:<lead>`. Null when unrecorded. @param {string | null | undefined} by */
 export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : "a person");
+
+// Copied from crates/priory-core/web/inbox.js; a test keeps the two the same.
+const SOURCES = { github: "GitHub", linear: "Linear", slack: "Slack", factory: "" };
+
+/** An event's type in plain words: `linear.issue.updated` reads "Linear issue updated". */
+export function eventWords(type) {
+  const [source, ...rest] = type.split(".");
+  return [SOURCES[source] ?? source, ...rest].filter(Boolean).join(" ").replaceAll("_", " ");
+}
 
 /**
  * A task's `stack` for the views; one pull request keeps the single PR look. Only `latest`, the

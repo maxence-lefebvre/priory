@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 82;
+const VERSION: i64 = 87;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1492,6 +1492,88 @@ CREATE TABLE IF NOT EXISTS keyboard_keys (
 "
 );
 
+// The kit commit this runner gives its runs, why its last fetch failed, and the commit each run got.
+const SCHEMA_83: &str = "
+CREATE TABLE kit (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  kit_commit TEXT,
+  failing_since TEXT,
+  error TEXT
+);
+ALTER TABLE runs ADD COLUMN kit_commit TEXT;
+PRAGMA user_version = 83;
+";
+
+// The subscriptions a close of their resource ended, which a later event of it open again restores.
+const SCHEMA_84: &str = "
+CREATE TABLE IF NOT EXISTS closed_subscriptions (
+  task     INTEGER NOT NULL REFERENCES tasks (id),
+  resource TEXT NOT NULL,
+  created  TEXT NOT NULL,
+  chosen   INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (task, resource)
+);
+PRAGMA user_version = 84;
+";
+
+// Writes to another runner's task: each key's generation as its owner last published it, and the
+// one this runner last published for a key of its own; and the resumes, revives, cancels, releases
+// and says sent to a task of any runner, with what became of each.
+const SCHEMA_85: &str = concat!(
+    "ALTER TABLE claims ADD COLUMN generation INTEGER;
+ALTER TABLE claims ADD COLUMN published_generation INTEGER;
+CREATE TABLE IF NOT EXISTS remote_task_submissions (
+  submission TEXT PRIMARY KEY,
+  runner     TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  generation INTEGER NOT NULL,
+  act        TEXT NOT NULL CHECK (act IN ('resume', 'revive', 'cancel', 'release', 'say')),
+  text       TEXT,
+  step       TEXT,
+  sent       TEXT NOT NULL,
+  outcome    TEXT CHECK (outcome IN ('applied', 'refused')),
+  why        TEXT,
+  applied    TEXT
+);
+CREATE INDEX IF NOT EXISTS remote_task_submissions_by_key ON remote_task_submissions (runner, key);
+",
+    bumps!("remote_task_submissions"),
+    "PRAGMA user_version = 85;
+"
+);
+
+// Memory candidates that agents write and people accept, in log order (R11.1).
+const SCHEMA_86: &str = concat!(
+    "
+CREATE TABLE IF NOT EXISTS memory_candidates (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT,
+  text        TEXT,
+  key         TEXT NOT NULL,
+  runner      TEXT,
+  task        INTEGER REFERENCES tasks (id),
+  written     TEXT NOT NULL,
+  logged      INTEGER,
+  accepted    INTEGER,
+  dropped     INTEGER,
+  decided     TEXT
+);
+",
+    bumps!("memory_candidates"),
+    "PRAGMA user_version = 86;
+"
+);
+
+// A replay's scratch state: its daemon ends a task before an irreversible step, never running it.
+const SCHEMA_87: &str = "
+CREATE TABLE IF NOT EXISTS replay (
+  id      INTEGER PRIMARY KEY CHECK (id = 1),
+  started TEXT NOT NULL
+);
+PRAGMA user_version = 87;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1504,7 +1586,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
-    SCHEMA_82,
+    SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1516,6 +1598,20 @@ const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
 /// To the millisecond, so a wait's catch-up never takes an event of the prompt's second as later.
 pub(crate) const CONFIRMED: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+
+/// Marks the state as a replay's, whose daemon never runs an irreversible step.
+pub fn mark_replay(db: &Connection) -> rusqlite::Result<()> {
+    db.execute(
+        &format!("INSERT OR IGNORE INTO replay (id, started) VALUES (1, {NOW})"),
+        [],
+    )
+    .map(drop)
+}
+
+/// Whether the state is a replay's.
+pub(crate) fn replaying(db: &Connection) -> rusqlite::Result<bool> {
+    db.query_row("SELECT EXISTS (SELECT 1 FROM replay)", [], |row| row.get(0))
+}
 
 /// Stores `base` as the commit the task started from, unless it already has one.
 pub(crate) fn set_base(db: &Connection, task: i64, base: Option<&str>) -> rusqlite::Result<()> {
@@ -1551,9 +1647,13 @@ pub(crate) struct Task {
 
 /// Opens the state file `PRIORY_DB`, creating its schema on first use.
 pub fn open() -> Result<Connection, String> {
-    let path = path()?;
+    open_at(&path()?)
+}
+
+/// Opens the state file `path`, creating its schema on first use.
+pub fn open_at(path: &std::path::Path) -> Result<Connection, String> {
     let at = |error: rusqlite::Error| format!("{}: {error}", path.display());
-    let mut db = Connection::open(&path).map_err(at)?;
+    let mut db = Connection::open(path).map_err(at)?;
     db.busy_timeout(Duration::from_secs(5)).map_err(at)?;
     // Setting the mode takes a lock that a crashed daemon's WAL recovery can hold past the timeout.
     let mode: String = db
@@ -1706,6 +1806,9 @@ pub(crate) fn route_in(
         record(tx, message, None, "outsider", None)?;
         return Ok(Vec::new());
     }
+    if crate::memories::handle(tx, message)?.is_some() {
+        return Ok(Vec::new());
+    }
     if let Some(me) = trace.runner.as_deref()
         && let Some(kill) = crate::runners::handle(tx, message, me, trace, counter)?
     {
@@ -1713,10 +1816,20 @@ pub(crate) fn route_in(
     }
     let resources = route::resources(message);
     claim_pull_request(tx, message)?;
-    // The intake publishes no reopen, so a later event of an open pull request tells it.
-    if message.kind != CLOSED && message.data["open"] == true {
+    // The intake publishes no reopen, so a later event of an open pull request or issue tells it,
+    // and gives back the subscriptions its close ended.
+    if ![CLOSED, ISSUE_CLOSED].contains(&message.kind.as_str()) && message.data["open"] == true {
         tx.execute(
             "UPDATE pull_requests SET state = 'open' WHERE resource = ?1 AND state = 'closed'",
+            [resources.first()],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO subscriptions (task, resource, created, chosen)
+             SELECT task, resource, created, chosen FROM closed_subscriptions WHERE resource = ?1",
+            [resources.first()],
+        )?;
+        tx.execute(
+            "DELETE FROM closed_subscriptions WHERE resource = ?1",
             [resources.first()],
         )?;
     }
@@ -1856,6 +1969,11 @@ pub(crate) fn route_in(
         crate::post::report(tx, "linear", &refiltered(&message.data))?;
     }
     crate::hold::event(tx, &resources)?;
+    if message.kind == "linear.issue.left"
+        && let Some(resource) = resources.first()
+    {
+        crate::hold::left(tx, resource, message.data["view"].as_str())?;
+    }
     if message.kind == priory_intake::intake::PR_CLOSED && message.data["merged"] == true {
         crate::tools::restack_stacked(tx, trace, seq, &message.data)?;
     }
@@ -1928,6 +2046,11 @@ pub(crate) fn route_in(
     }
     // After the delivery above, so the close reaches its subscribers.
     if [CLOSED, ISSUE_CLOSED].contains(&message.kind.as_str()) {
+        tx.execute(
+            "INSERT OR REPLACE INTO closed_subscriptions (task, resource, created, chosen)
+             SELECT task, resource, created, chosen FROM subscriptions WHERE resource = ?1",
+            [resources.first()],
+        )?;
         tx.execute(
             "DELETE FROM subscriptions WHERE resource = ?1",
             [resources.first()],
@@ -2116,9 +2239,10 @@ fn delivered(
     Ok(None)
 }
 
-/// The events a task's subscription to its own key carries: what people say, edit and close. Checks,
+/// The events a task's subscription to its own key carries: what people say, edit, close and take
+/// out of a view. Checks,
 /// labels and pushes stay with the checks gate and waits, since each would start a run.
-const OWN_KEY: [&str; 10] = [
+pub(crate) const OWN_KEY: [&str; 11] = [
     "github.pull_request_review.submitted",
     "github.pull_request.comment",
     "github.pull_request_review_comment",
@@ -2128,6 +2252,7 @@ const OWN_KEY: [&str; 10] = [
     "linear.comment.created",
     "linear.issue.state_changed",
     "linear.issue.updated",
+    "linear.issue.left",
     "slack.thread.replied",
 ];
 
@@ -2250,22 +2375,25 @@ pub fn ended(db: &Connection, key: &str) -> rusqlite::Result<u64> {
 /// condition of an open hold, met or not, then each subscription of a task that has not failed or
 /// been dropped, and the own key of the newest task on a key that did, then the branch of each
 /// active task, or of a task done in the last 10 minutes whose branch no event named yet, so the
-/// intake sees a pull request its worker opened itself.
-pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
+/// intake sees a pull request its worker opened itself. Each comes with its rank: 0 for an open wait
+/// or hold, 1 for an active task, 2 for one that ended.
+pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String, u8)>> {
     db.prepare(
-        "SELECT resource, since FROM (
-           SELECT 0 AS source, waits.id, waits.resource, coalesce(waits.since, waits.created) AS since
+        "SELECT resource, since, rank FROM (
+           SELECT 0 AS source, waits.id, waits.resource, coalesce(waits.since, waits.created) AS since,
+             0 AS rank
            FROM waits
            JOIN tasks ON tasks.id = waits.task AND tasks.state NOT IN ('done', 'failed', 'dropped')
            WHERE waits.fired IS NULL AND waits.withdrawn IS NULL
            AND waits.kind IN ('linear_comment', 'linear_state', 'slack_reply', 'pull_request', 'checks', 'review')
            UNION ALL
-           SELECT 1, holds.id, holds.resource, holds.created FROM holds
+           SELECT 1, holds.id, holds.resource, holds.created, 0 FROM holds
            JOIN tasks ON tasks.id = holds.task AND tasks.state NOT IN ('done', 'failed', 'dropped')
            WHERE holds.kind IN ('merge', 'issue') AND holds.released IS NULL
            AND (holds.met IS NULL OR holds.kind = 'issue')
            UNION ALL
-           SELECT 2, subscriptions.rowid, subscriptions.resource, subscriptions.created
+           SELECT 2, subscriptions.rowid, subscriptions.resource, subscriptions.created,
+             CASE WHEN tasks.state IN ('done', 'failed', 'dropped') THEN 2 ELSE 1 END
            FROM subscriptions
            JOIN tasks ON tasks.id = subscriptions.task AND (tasks.state NOT IN ('failed', 'dropped')
              -- A comment on the own key of an ended task's newest generation asks for a revive.
@@ -2275,7 +2403,8 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
            WHERE NOT (tasks.state IN ('done', 'failed', 'dropped') AND subscriptions.resource = tasks.key
              AND tasks.key GLOB 'slack:*' AND julianday('now') - julianday(tasks.changed) >= 7)
            UNION ALL
-           SELECT 3, owns.rowid, owns.resource, tasks.changed FROM owns
+           SELECT 3, owns.rowid, owns.resource, tasks.changed,
+             CASE WHEN tasks.state IN ('done', 'failed', 'dropped') THEN 2 ELSE 1 END FROM owns
            JOIN tasks ON tasks.id = owns.task
            WHERE owns.resource GLOB 'github:*@*' AND (tasks.state NOT IN ('done', 'failed', 'dropped')
              OR (tasks.state = 'done' AND julianday('now') - julianday(tasks.changed) < 10.0 / 1440
@@ -2283,7 +2412,7 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
                  'github:' || json_extract(inbox.data, '$.repo') || '@' || json_extract(inbox.data, '$.head_branch'))))
          ) ORDER BY source, id",
     )?
-    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+    .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
     .collect()
 }
 
@@ -2576,14 +2705,14 @@ pub(crate) fn admissible<'r>(
         "SELECT id, workflow, step, trigger, state = 'queued', repo FROM tasks
              WHERE state IN ('queued', 'ready')
              -- With several runners, only a task whose key the log gives this one, and not one
-             -- whose `kept` it waits to read back.
-             AND (?1 IS NULL OR EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
+             -- whose `kept` it waits to read back. A lead task stays on its ask's runner.
+             AND (?1 IS NULL OR tasks.trigger = ?2 OR EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
                AND claims.runner = ?1
-               AND NOT (claims.hold = 'waiting' AND claims.published IS 'kept')))
+               AND NOT (claims.hold != 'kept' AND claims.published IS 'kept')))
              ORDER BY {START_ORDER}"
     ))?;
     let queued = statement
-        .query_map([runner], |row| {
+        .query_map(params![runner, crate::tools::LEAD_TRIGGER], |row| {
             Ok(Admission {
                 task: row.get(0)?,
                 workflow: row.get(1)?,
@@ -2951,6 +3080,8 @@ pub(crate) struct NewRun<'a> {
     pub lanes: &'a Lanes,
     /// A hash of the factory's skills and instructions the run gets, if any.
     pub kit_hash: Option<&'a str>,
+    /// The kit commit the run gets, if any.
+    pub kit_commit: Option<&'a str>,
 }
 
 /// The agent's shared session, once a run of it reached `SessionStart`, which every task resumes.
@@ -3010,8 +3141,17 @@ pub(crate) fn thread(db: &Connection, session: &str) -> rusqlite::Result<Option<
 pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
-        "INSERT INTO runs (task, step, agent, tmux, session, kit_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![run.task, run.step, run.agent, run.tmux, run.session, run.kit_hash],
+        "INSERT INTO runs (task, step, agent, tmux, session, kit_hash, kit_commit)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            run.task,
+            run.step,
+            run.agent,
+            run.tmux,
+            run.session,
+            run.kit_hash,
+            run.kit_commit
+        ],
     )?;
     let id = tx.last_insert_rowid();
     tx.execute(

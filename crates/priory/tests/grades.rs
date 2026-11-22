@@ -735,3 +735,104 @@ fn each_review_that_requests_changes_is_its_own_record_with_when_it_happened() {
         "grades counts a task once per label"
     );
 }
+
+impl Setup {
+    /// The desk as `priory desk --json` prints it.
+    fn desk(&self) -> Value {
+        let output = self.priory(&["desk", "--json"]);
+        succeeded(&output);
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+}
+
+#[test]
+fn a_red_merge_commit_and_a_revert_each_raise_one_alarm_on_the_desk() {
+    let setup = Setup::new("landed-wrong-alarm");
+    setup.task(1, "green");
+    setup.task(2, "green");
+    let failing = |id: u64| {
+        on_pull(
+            "github.check_run.completed",
+            10,
+            1,
+            "m10",
+            json!({ "conclusion": "failure", "name": format!("test {id}"), "github_id": id,
+                    "url": format!("https://github.com/owner/repo/runs/{id}"),
+                    "pending": 0, "failing": 2 }),
+        )
+    };
+    setup.handle(&[
+        merged(10, 1, "aaa", "m10"),
+        merged(20, 2, "bbb", "m20"),
+        failing(71),
+        failing(72),
+        on_pull(
+            "github.pull_request.closed",
+            40,
+            9,
+            "fff",
+            json!({ "merged": true, "merge_commit": "m40", "actor": "max",
+                    "title": "Revert \"Fix 2\"", "body": "Reverts owner/repo#20", "github_id": 940 }),
+        ),
+    ]);
+
+    let desk = setup.desk();
+    let alarms: Vec<&str> = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["kind"] == "report")
+        .map(|item| item["what"].as_str().unwrap())
+        .collect();
+    assert_eq!(desk["next"]["title"], "a merge landed wrong", "{desk}");
+    assert!(
+        desk["next"]["why"]
+            .as_str()
+            .unwrap()
+            .starts_with("an alarm"),
+        "{desk}"
+    );
+    assert_eq!(
+        alarms,
+        [
+            "priory: landed wrong: owner/repo#10 of task 1 is red on main: test 71 failure https://github.com/owner/repo/runs/71",
+            "priory: landed wrong: owner/repo#20 of task 2 was reverted by #40: https://github.com/owner/repo/pull/40",
+        ],
+        "one alarm per merge commit, however many checks fail there"
+    );
+}
+
+#[test]
+fn a_check_run_nobody_hears_shows_its_name_and_conclusion_as_its_unrouted_line() {
+    let setup = Setup::new("unrouted-check-line");
+    setup.task(1, "green");
+    setup.handle(&[merged(10, 1, "aaa", "m10")]);
+    setup
+        .db()
+        .execute_batch(
+            "UPDATE tasks SET state = 'done' WHERE id = 1;
+             INSERT INTO owns (task, resource) VALUES (1, 'github:owner/repo#10');",
+        )
+        .unwrap();
+    setup.handle(&[on_pull(
+        "github.check_run.completed",
+        10,
+        1,
+        "m10",
+        json!({ "conclusion": "failure", "name": "test (ubuntu)", "github_id": 71,
+                "url": "https://github.com/owner/repo/runs/71", "pending": 0, "failing": 1 }),
+    )]);
+
+    let output = setup.priory(&["inbox", "--unrouted", "--json"]);
+    succeeded(&output);
+    let unrouted: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let lines: Vec<&Value> = unrouted["unrouted"]["owned"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|group| group["events"].as_array().unwrap())
+        .filter(|event| event["type"] == "github.check_run.completed")
+        .map(|event| &event["line"])
+        .collect();
+    assert_eq!(lines, [&json!("test (ubuntu) failure")], "{unrouted}");
+}

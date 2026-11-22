@@ -348,7 +348,11 @@ Or until the pull request closes or a Linear blocker is Done, whichever comes fi
 
 `subscribe` makes the task own a pull request, a Linear issue or a Slack thread until the resource
 closes, the task retires (fails or is dropped), or `unsubscribe`. It takes one condition object, as
-`wait` does, and reads only the fields that name the resource:
+`wait` does, and reads only the fields that name the resource. A close sets the resource's
+subscriptions aside, and a later event that says the pull request or issue is open again (its
+`open` is true) gives them back, so a pull request closed and reopened to run CI again keeps its
+subscribers. An event of a GitHub issue that the intake polls carries no `open`, so only a webhook
+event tells a reopened issue apart:
 
 | `on.type` | Resource |
 | --------- | -------- |
@@ -392,7 +396,8 @@ event that requested the task, so a reply posted before the task existed still r
 
 The subscription to the task's own key carries only what people say, edit and close: reviews,
 comments, review thread comments, a pull request or issue closed, a Linear comment, state change or
-edit of the title, description, labels, assignee or priority, and a Slack reply. A check run, a label or a push on the task's own pull request wakes nothing, since
+edit of the title, description, labels, assignee or priority, a Linear issue that left the watched
+view (`linear.issue.left`), and a Slack reply. A check run, a label or a push on the task's own pull request wakes nothing, since
 each would start a run; the checks gate and waits take those. A subscription made with `subscribe`
 carries every event, on the task's own key too: `subscribe` to the own key turns its subscription
 into one that carries every event.
@@ -421,6 +426,9 @@ revision the caller read: once the state moved past it, the subscribe exits 1 an
 priory subscribe 7 github:owner/name#57
 priory unsubscribe 7 linear:ENG-7
 ```
+
+`POST /api/subscribe` and `POST /api/unsubscribe` are their twins on `priory serve`, and the Herdr
+library's `subscribe` and `unsubscribe` run the commands ([serve.md](../reference/serve.md#writes)).
 
 `priory task ID --json` and `/api/tasks/ID` list the live subscriptions as `subscriptions`.
 
@@ -478,6 +486,34 @@ person who wants the scan to look differently changes its prompt in a pull reque
 A finding reported in 3 runs in a row moves its fix task up one band, once, unless that task is
 done, failed, dropped or already in the first band. The tool's reply says so. The count is a
 constant, not a setting.
+
+### `remember(name, description, text)`, `forget(name)` and `memory(name)`
+
+`remember` saves one fact for later runs, as a memory. `forget` removes the memory of a name, such
+as one the kit or the factory holds. `memory` replies with the file of a memory, as the caller's
+task sees it now. None of them ends the turn.
+
+```json
+{ "name": "release-day", "description": "When releases go out.", "text": "Releases go out on Tuesdays." }
+```
+
+| Field | Meaning |
+| ----- | ------- |
+| `name` | The memory's name, in lowercase letters, digits and hyphens. Required by all three |
+| `description` | When an agent should read it, as the memory index shows it. Required by `remember` |
+| `text` | The fact, in Markdown. Required by `remember` |
+
+Each `remember` or `forget` call is a candidate. The daemon stores it, then publishes
+`priory.memory.written` on the log through its queue, as it does a claim. Its own task's later runs
+get it at once, and other tasks' runs only once a person accepts it. `remember` refuses a file over
+4096 bytes and text that looks like a credential. The reply names the candidate:
+
+```text
+remembered release-day as candidate 0196f1d0-4a5b-7c6d-8e9f-0a1b2c3d4e5f: your task's later runs see it now, and other tasks' runs once a person accepts it
+```
+
+See [skills.md](skills.md#memories-agents-write) for how a candidate reaches runs, and
+[memories.md](../reference/memories.md#candidates) for the states, the commands and every error.
 
 ### `compact(focus?)`
 
@@ -691,7 +727,7 @@ transaction then records the action run and moves the task by `next[status]` (se
 Moving on). A `run` action records itself first and runs in the background (see The `run` action).
 An action that is not built yet blocks the task with `action <name> is not built yet`.
 
-The built-in actions are `open-pr`, `open-issue`, `run` and `start-batch`. `start-batch` creates a
+The built-in actions are `open-pr`, `open-issue`, `open-memories-pr`, `run` and `start-batch`. `start-batch` creates a
 batch's tasks and records itself in one transaction; [batches.md](batches.md) describes it. `open-pr` opens one pull request per
 branch of the latest result's `branches`, bottom first, or for the task's branch alone without it.
 For each branch:
@@ -725,6 +761,16 @@ start, once the approval still holds. The push repeats and the open pull request
 someone closed that pull request meanwhile, a second one opens.
 
 `open-issue` opens an issue the same way; [sweep.md](sweep.md) describes it.
+
+`open-memories-pr` opens the daily pull request of accepted memories to the kit repository.
+[skills.md](skills.md#accepted-memories-move-into-the-kit) describes it. Its status is `opened`,
+`unchanged` when the kit already holds every accepted memory, or `failed`. It records the commit it
+pushed, and its stdout names the pull request. The task owns no pull request, so it waits for no
+checks at `done`. `priory check` refuses the action in a factory without `[kit]`:
+
+```text
+workflows/memories.toml:3: step `open`: an `open-memories-pr` action writes to the kit repository, so factory.toml needs a `[kit]`
+```
 
 ### The `run` action
 

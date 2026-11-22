@@ -177,7 +177,8 @@ cannot be. So a replay covers the task from its request to the result that would
 the irreversible step, and the scorers judge that result and its diff.
 
 A replay's ending is one of `reached <step>` (it got to the irreversible step), `stopped` (the
-workflow reached `stop`), `asked`, `waited`, `timed out`, `over budget` or `agent error`. The
+workflow reached `stop`), `asked`, `waited`, `timed out`, `over budget`, `agent error` or
+`cost unknown` (a turn whose tokens cannot be read). The
 ending is a measurement too, and the table shows it.
 
 The replay is not a sandbox. The agent runs on the person's machine with the person's model
@@ -382,14 +383,19 @@ Tests:
 
 ## Later slices
 
-1. `priory bench capture`: the case folder, from a task with a `base_sha`. Tests capture a task of
+1. Built. `priory bench capture` ([bench.md](../daemon/bench.md),
+   [cases.md](../reference/cases.md)). It writes no `merged.patch` yet, and reads only Claude
+   Code's transcripts: a Codex run is a gap. The case folder, from a task with a `base_sha`. Tests capture a task of
    the end-to-end harness and compare the folder byte for byte, refuse a task with no start commit
    or no irreversible step, and mark a task whose transcript is gone as `partial`. The transcript
    reader is a parser of outside text, so it gets a `proptest`.
-2. The replay of one case under one configuration, with the endings, `--budget` and the estimate.
-   Its tests use the fake `claude`, so they cost nothing: the real harness is one path on `PATH`.
-   They cover a budget that ends inside a turn and a turn with no tokens. One real-agent check by
-   hand, as the operator rules ask.
+2. Built. `priory bench replay` ([bench.md](../daemon/bench.md#replay)): the replay of one case
+   under one configuration, with the endings, `--budget` and the estimate. The capture now
+   records each model step's model, minutes and tokens as the case's `spent`, which the estimate
+   prices. The scratch daemon blocks a task before an irreversible step. A model step that ends
+   with no tokens ends the replay as `cost unknown`. Its tests use the fake `claude`, so they cost
+   nothing, and cover a budget that ends inside a turn and a turn with no tokens. The real-agent
+   check is by hand, as the operator rules ask.
 3. `priory bench` with `--base` and `--head`: the pairs, the table and the sign test. The
    comparison is a pure function over per-case fixtures, which also print the table above. Its
    tests cover ties, a dropped pair, a repeat, and a base that passes 2 of 3 against a head that

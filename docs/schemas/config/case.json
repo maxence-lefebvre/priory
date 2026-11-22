@@ -1,0 +1,205 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/case.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Message": {
+      "additionalProperties": false,
+      "description": "A message the inbox recorded.",
+      "properties": {
+        "data": {
+          "description": "The message's data, its null fields left out.",
+          "type": "object"
+        },
+        "subject": {
+          "description": "What the message is about, such as `github:owner/repo#42`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "description": "The message type, such as `factory.task.requested`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ],
+      "type": "object"
+    },
+    "Reference": {
+      "additionalProperties": false,
+      "description": "The task's real history.",
+      "properties": {
+        "labels": {
+          "description": "The outcome labels the task got, such as `merged-clean`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "path": {
+          "description": "The steps the task finished, in order, each as `step:outcome`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "path",
+        "labels"
+      ],
+      "type": "object"
+    },
+    "Spent": {
+      "additionalProperties": false,
+      "description": "What one model step of the task spent before the first irreversible step.",
+      "properties": {
+        "minutes": {
+          "description": "How long the step took, in whole minutes rounded up, at least 1.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "model": {
+          "description": "The model the run reported, such as `claude-sonnet-5-5`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "step": {
+          "description": "The model step.",
+          "type": "string"
+        },
+        "tokens": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Tokens"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The step's tokens. Absent when Priory could not read them."
+        }
+      },
+      "required": [
+        "step",
+        "minutes"
+      ],
+      "type": "object"
+    },
+    "Tokens": {
+      "additionalProperties": false,
+      "description": "Tokens of each kind.",
+      "properties": {
+        "cache_read": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cache_write": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "input": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input",
+        "output",
+        "cache_read",
+        "cache_write"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "`case.toml`: the task a case was captured from, what it was asked, where its replay starts and\nends, and what really happened to it.",
+  "properties": {
+    "ends_at": {
+      "description": "The first irreversible step the task reached. A replay ends there and never runs it.",
+      "type": "string"
+    },
+    "gaps": {
+      "description": "Why the case is partial, one line per gap.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "key": {
+      "description": "What the task worked on, prefixed by its source, such as `github:owner/repo#42`.",
+      "type": "string"
+    },
+    "partial": {
+      "description": "Whether the capture left a gap: a `gh` call it could not keep, or a transcript it could not\nread. A person fills each gap by hand or leaves it.",
+      "type": "boolean"
+    },
+    "reference": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Reference"
+        }
+      ],
+      "description": "What really happened to the task, for a reader and for scorers."
+    },
+    "repo": {
+      "description": "The repository the task's worktree was cloned from, as `owner/name`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "request": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Message"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The message that asked for the task, as the inbox recorded it."
+    },
+    "spent": {
+      "default": [],
+      "description": "What each model step before `ends_at` spent, in order, for a replay's estimate.",
+      "items": {
+        "$ref": "#/definitions/Spent"
+      },
+      "type": "array"
+    },
+    "start": {
+      "description": "The commit the task's worktree was created from. A replay clones the repository at it.",
+      "type": "string"
+    },
+    "workflow": {
+      "description": "The workflow the task ran.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "workflow",
+    "key",
+    "start",
+    "ends_at",
+    "partial",
+    "gaps",
+    "reference"
+  ],
+  "title": "case",
+  "type": "object"
+}
