@@ -201,6 +201,14 @@ memories and reads a file when its description fits the task. `priory check` cou
 `ok` line. To change a memory, edit the file and merge it like any other change to the factory.
 See [memories.md](docs/reference/memories.md) for the file's keys.
 
+### Share a kit across factories
+
+To keep skills, instructions and memories in their own repository, name it under `[kit]` in
+`factory.toml`, with `repo` and the `ref` to follow. Each runner fetches it at start and every five
+minutes, with git's own credentials, and every run gets its files before the factory's. A failed
+fetch keeps the last good commit and shows a banner on the desk. See
+[skills.md](docs/daemon/skills.md#a-kit-repository) for the details.
+
 ## 5. Run it
 
 Priory keeps its state in three places, each named by an environment variable:

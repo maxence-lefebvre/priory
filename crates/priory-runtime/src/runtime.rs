@@ -869,6 +869,89 @@ pub fn write_once(dir: &Path, folder: &str, files: &[(PathBuf, &[u8])]) -> Resul
     }
 }
 
+/// Runs git `args` and returns its stdout, or an error naming `what` with git's first line of
+/// complaint, short enough for a banner.
+fn kit_git(what: &str, command: &mut Command) -> Result<String, String> {
+    let output = output_within(command.env("GIT_TERMINAL_PROMPT", "0"))
+        .map_err(|error| format!("{what}: {error}"))?
+        .ok_or_else(|| format!("{what}: timed out after {}s", command_timeout().as_secs()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let line = stderr
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("failed");
+        return Err(format!("{what}: {line}"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// Fetches `reference` of `repo` into the bare mirror `mirror`, made on first use, and returns the
+/// commit it names. Git's own credentials fetch it, and a prompt for one fails instead of waiting.
+pub fn kit_fetch(mirror: &Path, repo: &str, reference: &str) -> Result<String, String> {
+    if !mirror.join("HEAD").is_file() {
+        fs::create_dir_all(mirror).map_err(|error| format!("{}: {error}", mirror.display()))?;
+        kit_git(
+            "git init",
+            Command::new("git")
+                .args(["init", "--bare", "-q"])
+                .arg(mirror),
+        )?;
+    }
+    kit_git(
+        &format!("git fetch {repo} {reference}"),
+        git(mirror).args(["fetch", "--quiet", "--no-tags", "--", repo, reference]),
+    )?;
+    kit_git(
+        "git rev-parse",
+        git(mirror).args(["rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}"]),
+    )
+}
+
+/// Checks `commit` of the bare mirror `mirror` out into `<dir>/<commit>` unless that folder
+/// exists, and returns it. It goes to a staging folder renamed into place, so a crash never leaves
+/// half a checkout, and a symbolic link becomes a file that holds its target.
+pub fn kit_checkout(mirror: &Path, dir: &Path, commit: &str) -> Result<PathBuf, String> {
+    let target = dir.join(commit);
+    if target.is_dir() {
+        return Ok(target);
+    }
+    let staging = dir.join(format!(".{commit}.{}", std::process::id()));
+    let index = dir.join(format!(".{commit}.{}.index", std::process::id()));
+    let _ = fs::remove_dir_all(&staging);
+    fs::create_dir_all(&staging).map_err(|error| format!("{}: {error}", staging.display()))?;
+    let git = |args: &[&str]| {
+        let mut command = Command::new("git");
+        command
+            .arg("--git-dir")
+            .arg(mirror)
+            .arg("--work-tree")
+            .arg(&staging)
+            .args(["-c", "core.symlinks=false"])
+            .args(args)
+            .env("GIT_INDEX_FILE", &index);
+        command
+    };
+    let written = kit_git("git read-tree", &mut git(&["read-tree", commit]))
+        .and_then(|_| {
+            kit_git(
+                "git checkout-index",
+                &mut git(&["checkout-index", "-a", "-f"]),
+            )
+        })
+        .and_then(|_| {
+            fs::rename(&staging, &target).map_err(|error| format!("{}: {error}", target.display()))
+        });
+    let _ = fs::remove_file(&index);
+    let _ = fs::remove_dir_all(&staging);
+    match written {
+        Ok(()) => Ok(target),
+        Err(_) if target.is_dir() => Ok(target),
+        Err(error) => Err(error),
+    }
+}
+
 /// The MCP server that serves Priory's tools to the run: `priory mcp --session <id>`.
 fn mcp_config(exe: &Path, launch: &Launch) -> String {
     json!({ "mcpServers": { "priory": {

@@ -1,9 +1,10 @@
 # Skills, instructions and memories
 
 A factory's `skills/` folder, `instructions.md` and `memories/` folder reach every run on every
-runner, through the factory checkout each runner already has (R11.1). This page explains how each
-harness gets them and how a run records what it got. The rest of R11.1, a kit repository and
-memories that agents write, is in [the design note](../design/shared-skills-and-memories.md).
+runner, through the factory checkout each runner already has (R11.1). A kit repository that
+`[kit]` names adds its own, which each runner fetches. This page explains how each harness gets
+them and how a run records what it got. The rest of R11.1, memories that agents write, is in
+[the design note](../design/shared-skills-and-memories.md).
 
 ## The files
 
@@ -86,6 +87,62 @@ toward a Codex agent's 8192-byte limit.
 No tool writes a memory, and the snapshot is a copy: an agent that edits it changes nothing a later
 run reads. A memory changes only through a pull request to the factory, which a person reviews.
 
+## A kit repository
+
+`[kit]` in `factory.toml` names a git repository whose skills, instructions and memories every run
+gets too (see [the reference](../reference/factory.md#kit)):
+
+```toml
+[kit]
+repo = "git@github.com:owner/abbey.git"
+ref = "main"
+instructions = "claude/CLAUDE.md"
+every = "5m"
+```
+
+### When a runner fetches it
+
+Each runner fetches on its own, with git's own credentials, such as an SSH key or a credential
+helper. Priory reads no token, and a fetch that would prompt for one fails instead.
+
+- At daemon start, the runner fetches the ref before it starts any run.
+- Every `every`, on the daemon's tick, it fetches again, off the daemon's thread. A new commit
+  applies to runs that start after the fetch. A live run keeps the files it started with. A resumed
+  session gets the newer commit, since its next run is a new launch.
+
+The fetch goes into a bare mirror under Priory home, `$PRIORY_HOME/kit/repos/<hash>.git`. The runner
+then checks the commit out once, into `$PRIORY_HOME/kit/<commit>/`, and loads its skills,
+instructions and memories as `priory check` loads a factory's. A symbolic link in the kit becomes a
+file that holds its target.
+
+### When a fetch fails
+
+Offline is normal, so a failed fetch never blocks runs:
+
+- A runner that had a good commit keeps it, even across a restart, since the state file holds it.
+- A runner with no good commit yet starts runs without the kit.
+- A commit whose files `priory check` would refuse, such as a skill without a `description`, is
+  refused whole, as a failed fetch is.
+
+Either way the desk says so, after the intake's banner (see [desk.md](desk.md#intake-banner)):
+
+```text
+the kit fails to fetch since 2026-11-21T09:00:00Z: git fetch /srv/abbey.git main: fatal: '/srv/abbey.git' does not appear to be a git repository; runs keep commit 7876b593d4a6
+```
+
+The next fetch that works removes the banner.
+
+### Which file wins
+
+The kit's files come first, then the factory's:
+
+- Skills and memories: a factory skill or memory hides the kit's of the same name. The daemon's log
+  names each one it hides.
+- Instructions: a run gets the kit's instructions, a blank line, then the factory's
+  `instructions.md`.
+
+The run's plugin folder, memory snapshot and `kit_hash` cover the merged files, as above.
+
 ## What a run records
 
 Each run records `kit_hash`, a hash of the skills, instructions and memories it got, or none when it
@@ -96,12 +153,22 @@ trace record of a model step carries it (see [the trace schema](../trace-schema.
 Two runners whose factory checkouts differ give the same agent's runs different hashes. That is how a
 person sees that a runner needs a pull.
 
+With `[kit]`, each run also records `kit_commit`, the kit commit it got, or none when the runner had
+none. `priory runs` shows it in its `commit` column, and the `factory.step.ended` trace record of a
+model step carries it. Two runners may run different commits for up to `every`, and this column
+shows it.
+
 A shared session compares its agent's prompt digest with the one it started with (see
 [sessions.md](sessions.md)). With skills, instructions or memories, that digest covers the hash too, so a
 change to any of them reads as a change to the agent's prompt.
 
 ## Known limits
 
-- Priory never removes an old plugin folder, memory snapshot or `.system.md` file. They are small.
+- Priory never removes an old plugin folder, memory snapshot, kit checkout or `.system.md` file.
+  They are small.
+- `priory check` cannot see a kit's files, so it neither warns about a factory skill that hides a
+  kit skill nor counts the kit's instructions toward a Codex agent's 8192-byte limit. A Codex run
+  whose merged instructions pass tmux's limit fails to start.
 - No test runs a real Claude Code: that a run lists and uses `priory:<name>` is checked by hand.
-- Nothing keeps the runners' factory checkouts at one commit: a person pulls each one.
+- Nothing keeps the runners' factory checkouts at one commit: a person pulls each one. The kit is
+  fetched, but the factory itself is not.

@@ -117,6 +117,11 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         }
         return Ok(());
     }
+    // The kit's fetch comes before any run, so the first runs get its commit.
+    let mut kit = crate::kit::Fetcher::new(&db, factory, &home)?;
+    if let Some(kit) = &mut kit {
+        kit.start(&db)?;
+    }
     // Without its key the daemon sends no notification, but still runs tasks.
     if let Err(error) = push::keys(&home) {
         eprintln!("priory daemon: notifications are off: {error}");
@@ -270,8 +275,20 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         }
         start_answers(&mut db, &trace, &home, &mut commands)?;
         commands = run_commands(&mut db, &trace, &home, commands)?;
-        tend(&mut db, &trace, &share, &home, &scope, &mut commands)?;
-        compact_idle(&db, &trace, &home, &scope)?;
+        if let Some(kit) = &mut kit {
+            kit.tick(&db)?;
+        }
+        let fetched = kit.as_ref().and_then(crate::kit::Fetcher::current);
+        tend(
+            &mut db,
+            &trace,
+            &share,
+            &home,
+            &scope,
+            &mut commands,
+            fetched,
+        )?;
+        compact_idle(&db, &trace, &home, &scope, fetched)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
         let counter = counting.get(&home);
         summarize(&mut db, &trace, &summaries, &mut summarizing, counter)?;
@@ -960,6 +977,7 @@ fn tend(
     home: &Path,
     scope: &[String],
     commands: &mut Vec<(i64, Script)>,
+    kit: Option<&crate::kit::Fetched>,
 ) -> Result<(), Error> {
     let factory = trace.factory;
     for run in state::live(db)? {
@@ -1025,6 +1043,7 @@ fn tend(
             home,
             scope,
             &admission,
+            kit,
         )? {
             state::block(db, trace, admission.task, "failed", &reason)?;
         }
@@ -1647,7 +1666,9 @@ fn start(
     home: &Path,
     scope: &[String],
     admission: &Admission,
+    kit: Option<&crate::kit::Fetched>,
 ) -> Result<Result<(), String>, Error> {
+    let sources = crate::kit::sources(factory, kit);
     let step = factory.workflows[&admission.workflow]
         .value
         .step(&admission.step)
@@ -1690,7 +1711,7 @@ fn start(
     } else {
         state::resumable(db, admission.task, name)?
     };
-    let definition = definition(factory, &agent.value);
+    let definition = definition(factory, &agent.value, &sources);
     let changed = match &resumed {
         Some(session) if shared => {
             state::definition(db, session)?.and_then(|stored| changed(&stored, &definition))
@@ -1729,7 +1750,8 @@ fn start(
             definition: &definition.to_string(),
             changed: changed.filter(|_| resume.is_some()).as_deref(),
             lanes: factory.lanes(),
-            kit_hash: crate::kit::hash(factory, &agent.value.harness).as_deref(),
+            kit_hash: sources.hash(&agent.value.harness).as_deref(),
+            kit_commit: sources.commit,
         },
     )?;
     // The new run is the task's only live one, so a session of this name is an ended run's agent.
@@ -1758,11 +1780,23 @@ fn start(
         resume: resume.as_deref(),
         prompt: first.as_deref(),
     };
-    Ok(launch(factory, &agent.value, home, scope, &env, &started))
+    Ok(launch(
+        factory,
+        &agent.value,
+        &sources,
+        home,
+        scope,
+        &env,
+        &started,
+    ))
 }
 
 /// What a shared session starts with: digests of its agent's prompt, tools, model and flags.
-fn definition(factory: &Factory, agent: &factory::Agent) -> serde_json::Value {
+fn definition(
+    factory: &Factory,
+    agent: &factory::Agent,
+    sources: &crate::kit::Sources,
+) -> serde_json::Value {
     let digest = |part: serde_json::Value| {
         Sha256::digest(part.to_string().as_bytes())[..8]
             .iter()
@@ -1772,7 +1806,7 @@ fn definition(factory: &Factory, agent: &factory::Agent) -> serde_json::Value {
     let permissions = &agent.permissions;
     serde_json::json!({
         // Without the factory's skills or instructions, the digest is the one sessions stored before them.
-        "prompt": match crate::kit::hash(factory, &agent.harness) {
+        "prompt": match sources.hash(&agent.harness) {
             None => digest(serde_json::json!(factory.prompt(agent))),
             Some(kit) => digest(serde_json::json!([factory.prompt(agent), kit])),
         },
@@ -1815,6 +1849,7 @@ struct Started<'a> {
 fn launch(
     factory: &Factory,
     agent: &factory::Agent,
+    sources: &crate::kit::Sources,
     home: &Path,
     scope: &[String],
     env: &[String],
@@ -1822,11 +1857,11 @@ fn launch(
 ) -> Result<(), String> {
     let permissions = serde_json::to_value(&agent.permissions).expect("permissions serialize");
     let plugin = match agent.harness {
-        Harness::ClaudeCode => crate::kit::plugin(factory, home)?,
+        Harness::ClaudeCode => sources.plugin(home)?,
         Harness::Codex => None,
     };
-    let memories = crate::kit::memories(factory, home)?;
-    let instructions = factory.run_instructions(
+    let memories = sources.memories(home)?;
+    let instructions = sources.run_instructions(
         &memories
             .as_deref()
             .map(|folder| folder.display().to_string())
@@ -1876,7 +1911,9 @@ fn compact_idle(
     trace: &Trace,
     home: &Path,
     scope: &[String],
+    kit: Option<&crate::kit::Fetched>,
 ) -> Result<(), Error> {
+    let sources = crate::kit::sources(trace.factory, kit);
     for live in idle::live(db)? {
         let ended_as = match (live.overdue, live.late) {
             (true, _) => Some("timeout"),
@@ -1920,7 +1957,7 @@ fn compact_idle(
         } else if context.is_none_or(|context| context < limit.get()) {
             Some("small")
         } else if stored.is_some_and(|stored| {
-            changed(&stored, &definition(trace.factory, &agent.value)).is_some()
+            changed(&stored, &definition(trace.factory, &agent.value, &sources)).is_some()
         }) {
             Some("changed")
         } else {
@@ -1938,7 +1975,15 @@ fn compact_idle(
             prompt: None,
         };
         let env: Vec<String> = guard_env(trace.factory).into_iter().collect();
-        if let Err(error) = launch(trace.factory, &agent.value, home, scope, &env, &started) {
+        if let Err(error) = launch(
+            trace.factory,
+            &agent.value,
+            &sources,
+            home,
+            scope,
+            &env,
+            &started,
+        ) {
             eprintln!("priory daemon: compacting {tmux}: {error}");
             idle::end(db, id, "failed")?;
         }
