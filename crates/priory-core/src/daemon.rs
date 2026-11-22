@@ -1121,12 +1121,16 @@ fn verdict(run: &state::LiveRun, factory: &Factory) -> Option<(&'static str, Str
             state::READY_WITHIN.replace(" seconds", "s"),
             harness.trust(&exe, &clone)
         );
-        let screen = runtime::screen(&run.tmux);
+        let rows = runtime::screen(&run.tmux).join("\n");
+        let secrets = crate::screen::secrets(&factory.secret_envs());
+        // When a secret still shows after redaction, no row of the pane is kept.
+        let shown = crate::screen::redact(&rows, &secrets, None)
+            .map_or_else(|| "[redacted]".to_owned(), |(shown, _)| shown);
         eprintln!(
-            "priory daemon: run {} never started; its pane ended with:\n{}",
+            "priory daemon: run {} never started; its pane ended with:\n{shown}",
             run.id,
-            screen.join("\n")
         );
+        let screen: Vec<_> = shown.lines().collect();
         let tail: Vec<_> = screen[screen.len().saturating_sub(5)..]
             .iter()
             .map(|line| line.trim())

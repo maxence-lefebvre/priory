@@ -201,6 +201,7 @@ A run that sends no `SessionStart` within 60 seconds of its start ends as `exite
 its tmux session and blocks its task with the reason `claude showed no SessionStart within 60s;
 trust the clone once: cd <clone path> && claude, accept, exit`, then `. Its pane ended with: ` and
 the last 5 non-empty lines of its pane, joined by ` | `, so a person sees the dialog or warning that
-stopped it. The daemon log gets the last 30. Its queued prompts stay queued. A prompt it was launched
+stopped it. The daemon log gets the last 30. Both hide secrets as the screen does (see
+[serve.md](serve.md#a-runs-screen)), and show `[redacted]` alone when one still shows. Its queued prompts stay queued. A prompt it was launched
 with returns to the queue, so the task's next run gets them. A Codex run blocks with the Codex
 instruction under Codex.

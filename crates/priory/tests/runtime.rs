@@ -940,7 +940,7 @@ fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trus
     setup.publish(&requested(42));
     fs::write(
         setup.dir.join("fake/silent"),
-        "  Hooks need review\n\n  3 hooks are new or changed\n  › 1. Review hooks\n",
+        "  token ghp_abcdefghijklmnopqrstuvwxyz0123 refused\n  Hooks need review\n\n  3 hooks are new or changed\n  › 1. Review hooks\n",
     )
     .unwrap();
     setup.start();
@@ -959,12 +959,16 @@ fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trus
     assert!(reason.starts_with(&prefix), "{reason}");
     assert!(
         reason.ends_with(
-            ", accept the folder, type /hooks and trust Priory's hooks, then exit. Its pane ended with: Hooks need review | 3 hooks are new or changed | › 1. Review hooks"
+            ", accept the folder, type /hooks and trust Priory's hooks, then exit. Its pane ended with: token [redacted] refused | Hooks need review | 3 hooks are new or changed | › 1. Review hooks"
         ),
         "{reason}"
     );
     let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
     assert!(log.contains("  3 hooks are new or changed\n"), "{log}");
+    assert!(
+        !log.contains("ghp_abcdefghij"),
+        "the log shows no secret: {log}"
+    );
     let outbox = setup.rows("outbox");
     assert_eq!(
         [outbox.len(), with(&outbox, 3, "queued")],
