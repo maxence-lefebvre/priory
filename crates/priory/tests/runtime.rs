@@ -26879,13 +26879,27 @@ fn a_recap_prints_the_days_results_answers_says_and_stuck_tasks_and_nothing_else
             .find(text)
             .unwrap_or_else(|| panic!("no {text:?} in {recap}"))
     };
-    let order = [
-        at("## Answer on task 1 (github:owner/repo#42)"),
-        at("A person said to task 1"),
-        at("Shipped with [redacted]."),
-        at("## task 2 (github:owner/repo#43) is blocked"),
-    ];
-    assert!(order.is_sorted(), "{order:?} in {recap}");
+    for text in [
+        "## Answer on task 1 (github:owner/repo#42)",
+        "A person said to task 1",
+        "Shipped with [redacted].",
+        "## task 2 (github:owner/repo#43) is blocked",
+    ] {
+        at(text);
+    }
+    // The state keeps whole seconds, so records of one second keep a fixed order among themselves.
+    let times: Vec<jiff::Timestamp> = recap
+        .lines()
+        .skip(1)
+        .flat_map(|line| line.split(' '))
+        .filter_map(|word| word.trim_end_matches(['.', ':']).parse().ok())
+        .collect();
+    assert!(times.len() >= 8, "{times:?} in {recap}");
+    assert!(times.is_sorted(), "{times:?} in {recap}");
+    assert!(
+        at("## Answer on task 1") < at("## task 2 (github:owner/repo#43) is blocked"),
+        "{recap}"
+    );
     at("Recommended: sqlite: one file. The answer went against it.");
     at("``` task 1 (github:owner/repo#42), by agent implementer\nWhich database?\n```");
     at("``` task 1 (github:owner/repo#42), by a person\nPrefer Postgres from now on.\n```");
