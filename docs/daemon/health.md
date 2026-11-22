@@ -49,7 +49,9 @@ moves the task, since a move resets the count. Then:
 | Over it, and the turn sent no result | Ends the run as `budget` and fails the task: `step <id> spent $<n>, over its budget of $<b>` |
 | The transcript gave no tokens, or `prices.toml` has no price for its model | Ends the run as `budget` and fails the task: `step <id> has a budget, and run <n>'s cost is unknown: price missing for <model>`, or `: its transcript gave no tokens` |
 
-A budget bounds one step and fails the task, so nothing waits on a person at night. A
+A budget bounds one step and fails the task, so nothing waits on a person at night. A checks
+gate that turns red the same way after a fix asks a person instead of waking the agent again (see
+[A fix that fails the same way](waits.md#a-fix-that-fails-the-same-way)). A
 [spend cap](spend.md) bounds a task, a trigger, a lane or the factory, and holds the task with an
 ask. Both can apply: the budget is checked at the turn end, and the caps between turns.
 

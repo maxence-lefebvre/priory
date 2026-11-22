@@ -7422,6 +7422,88 @@ fn a_red_check_at_the_result_commit_wakes_the_agent_with_the_failure() {
     setup.until("tasks", |rows| rows[0][4] == "done");
 }
 
+/// A red check named `name` at `commit`, GitHub's check run `id`.
+fn red_at(id: u64, name: &str, commit: &str) -> Message {
+    let mut red = check(id, 0);
+    red.data["name"] = json!(name);
+    red.data["conclusion"] = json!("failure");
+    red.data["failing"] = json!(1);
+    red.data["head_sha"] = json!(commit);
+    red
+}
+
+/// The open asks `priory asks --json` shows.
+fn open_asks(setup: &Setup) -> Vec<serde_json::Value> {
+    let shown = setup.priory(&["asks", "--json"]);
+    let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    shown["asks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|ask| ask["state"] == "open")
+        .cloned()
+        .collect()
+}
+
+const ABC: &str = "abc0000000000000000000000000000000000000";
+const DEF: &str = "def0000000000000000000000000000000000000";
+const FED: &str = "fed0000000000000000000000000000000000000";
+
+#[test]
+fn a_fix_that_fails_the_same_checks_as_the_commit_before_stops_the_loop_with_an_ask() {
+    let setup = gated("breaker-same");
+    setup.calls(&[passed_at(DEF), passed_at(FED)]);
+
+    // A fix that turns test green and lint red is honest work, so it wakes the agent.
+    setup.publish(&red_at(1, "test", ABC));
+    setup.until("runs", |rows| rows.len() == 3 && rows[2][7] == "asleep");
+    setup.publish(&red_at(2, "lint", DEF));
+    setup.until("runs", |rows| rows.len() == 4 && rows[3][7] == "asleep");
+    setup.publish(&red_at(3, "lint", FED));
+
+    setup.until("asks", |rows| rows.len() == 1);
+    let asks = open_asks(&setup);
+    assert_eq!(asks.len(), 1, "{asks:?}");
+    assert_eq!(asks[0]["id"], "ci-fix-exhausted-1-4");
+    assert_eq!(asks[0]["title"], "ci-fix-exhausted: lint (failure)");
+    assert_eq!(
+        asks[0]["question"],
+        "The worker's fix at fed0000 failed the same checks as def0000 before it: lint (failure). \
+         What should the worker do?"
+    );
+    assert_eq!(asks[0]["options"], json!(["try again", "stop"]));
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+    assert_eq!(setup.rows("runs").len(), 4, "the loop starts no run");
+    let gates: Vec<_> = withdrawn_reasons(&setup, "waits")
+        .into_iter()
+        .filter(|reason| !reason.is_null())
+        .collect();
+    assert_eq!(gates, ["asked"]);
+}
+
+#[test]
+fn an_answered_breaker_ask_gives_the_worker_one_more_try() {
+    let setup = gated("breaker-answered");
+    setup.calls(&[passed_at(DEF), passed_at(FED)]);
+    setup.publish(&red_at(1, "lint", ABC));
+    setup.until("runs", |rows| rows.len() == 3 && rows[2][7] == "asleep");
+    setup.publish(&red_at(2, "lint", DEF));
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let answered = setup.priory(&["answer", "1", "try again", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("runs", |rows| rows.len() == 4 && rows[3][7] == "asleep");
+    setup.publish(&red_at(3, "lint", FED));
+
+    // The same failure after the answer wakes the agent: the person reset the count.
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[4].contains("check lint at fed0000"))
+    });
+    assert!(open_asks(&setup).is_empty(), "{outbox:?}");
+    setup.until("runs", |rows| rows.len() == 5);
+}
+
 #[test]
 fn a_head_that_moved_from_the_result_commit_wakes_the_agent() {
     let setup = gated("gate-moved");

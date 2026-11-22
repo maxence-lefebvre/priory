@@ -1605,6 +1605,9 @@ fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<Fir
         _ => None,
     };
     if let Some(red) = red {
+        if let Some(stopped) = repeated(tx, wait, task, &resource, &seen, &commit)? {
+            return Ok((stopped, None));
+        }
         let url = red.data["url"]
             .as_str()
             .filter(|url| !url.is_empty())
@@ -1631,6 +1634,71 @@ fn judge(tx: &Transaction, wait: i64, factory: &Factory) -> rusqlite::Result<Fir
         return Ok((false, None));
     }
     done(tx, wait, task, check.seq, factory)
+}
+
+/// The failure's signature at `commit`: each check's newest event in `seen` up to the event
+/// `upto`, kept when red, as `name (conclusion)` sorted by name.
+fn signature(seen: &[Seen], commit: &str, upto: i64) -> Vec<String> {
+    let mut newest = BTreeMap::new();
+    for event in seen {
+        if event.kind == CHECKED && event.head == commit && event.seq <= upto {
+            let name = event.data["name"].as_str().unwrap_or("-");
+            newest.entry(name).or_insert(event);
+        }
+    }
+    newest
+        .into_iter()
+        .filter(|(_, event)| event.red())
+        .map(|(name, event)| {
+            let conclusion = event.data["conclusion"].as_str().unwrap_or("none");
+            format!("{name} ({conclusion})")
+        })
+        .collect()
+}
+
+/// Stops the fix loop of `task` when its gate `wait` turns red at `commit` with the signature of
+/// the red check that fired its previous gate on `resource`: asks a person instead of waking the
+/// agent again, and says whether it asked. An answer ends the streak, since it withdraws the gate.
+fn repeated(
+    tx: &Transaction,
+    wait: i64,
+    task: i64,
+    resource: &str,
+    seen: &[Seen],
+    commit: &str,
+) -> rusqlite::Result<Option<bool>> {
+    let before: Option<i64> = tx
+        .query_row(
+            "SELECT inbox FROM waits WHERE task = ?1 AND daemon AND resource = ?2
+               AND fired IS NOT NULL AND inbox IS NOT NULL
+               AND run = (SELECT max(run) FROM waits WHERE task = ?1 AND daemon
+                 AND run < (SELECT run FROM waits WHERE id = ?3))",
+            params![task, resource, wait],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(fired) = before.and_then(|seq| seen.iter().find(|event| event.seq == seq)) else {
+        return Ok(None);
+    };
+    if !fired.red() {
+        return Ok(None);
+    }
+    let now = signature(seen, commit, i64::MAX);
+    if now.is_empty() || now != signature(seen, &fired.head, fired.seq) {
+        return Ok(None);
+    }
+    let failed = now.join(", ");
+    let short = |sha: &str| sha.chars().take(7).collect::<String>();
+    let question = format!(
+        "The worker's fix at {} failed the same checks as {} before it: {failed}. \
+         What should the worker do?",
+        short(commit),
+        short(&fired.head)
+    );
+    let options = ["try again".to_owned(), "stop".to_owned()];
+    let name = format!("ci-fix-exhausted-{task}-{wait}");
+    let title = format!("ci-fix-exhausted: {failed}");
+    ask_person(tx, task, &name, &question, &options, Some(&title)).map(Some)
 }
 
 /// Records whether gate `wait` of `task`'s stack is green. When that makes every open gate green,
@@ -1769,18 +1837,32 @@ fn listed(items: &[String]) -> String {
     }
 }
 
-/// Puts `asked` to a person for `task`, once by its name, and ends the task's gates: the answer
-/// wakes the agent. A dismissed or withdrawn ask of that name is asked again as its next revision.
+/// Puts `asked` about a stack to a person for `task`, as `ask_person` does.
 fn ask_stack(tx: &Transaction, task: i64, asked: StackAsk) -> rusqlite::Result<bool> {
-    let options = serde_json::json!([format!("restack onto {}", asked.onto), "stop"]).to_string();
+    let options = [format!("restack onto {}", asked.onto), "stop".to_owned()];
+    ask_person(tx, task, &asked.name, &asked.question, &options, None)
+}
+
+/// Puts the daemon's ask `name` to a person for `task`, once by its name, and ends the task's
+/// gates: the answer wakes the agent. A dismissed or withdrawn ask of that name is asked again as
+/// its next revision.
+fn ask_person(
+    tx: &Transaction,
+    task: i64,
+    name: &str,
+    question: &str,
+    options: &[String],
+    title: Option<&str>,
+) -> rusqlite::Result<bool> {
+    let options = serde_json::json!(options).to_string();
     tx.execute(
-        "INSERT INTO asks (task, step, kind, name, question, options)
-         SELECT id, step, 'agent', ?2, ?3, ?4 FROM tasks WHERE id = ?1
+        "INSERT INTO asks (task, step, kind, name, question, options, title)
+         SELECT id, step, 'agent', ?2, ?3, ?4, ?5 FROM tasks WHERE id = ?1
          ON CONFLICT (name) DO UPDATE SET revision = revision + 1, withdrawn = NULL,
-           withdrawn_reason = NULL,
-           step = excluded.step, question = excluded.question, options = excluded.options
+           withdrawn_reason = NULL, step = excluded.step, question = excluded.question,
+           options = excluded.options, title = excluded.title
          WHERE withdrawn IS NOT NULL AND answer IS NULL",
-        params![task, asked.name, asked.question, options],
+        params![task, name, question, options, title],
     )?;
     tx.execute(
         "UPDATE waits SET withdrawn = 1, withdrawn_reason = 'asked' WHERE task = ?1 AND daemon
