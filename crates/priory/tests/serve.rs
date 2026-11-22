@@ -4344,7 +4344,15 @@ fn the_pick_endpoint_records_a_choice_and_tells_a_stale_one_by_409() {
         )
     };
 
-    let (stale, reply) = pick("Take", 0);
+    // The daemon serves before its loop runs, and serve gives up on a reply after 10 s. A stale
+    // pick changes nothing, so it is sent until the daemon answers.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let (stale, reply) = loop {
+        let (status, reply) = pick("Take", 0);
+        if status != 504 || Instant::now() > deadline {
+            break (status, reply);
+        }
+    };
     assert_eq!(stale, 409, "{reply}");
     let (status, reply) = pick("Later", 1);
     assert_eq!(status, 200, "{reply}");
