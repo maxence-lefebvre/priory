@@ -10,7 +10,7 @@ import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedP
 import { emptyDetail, eventWords, handled, neverOwned, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
-import { actionNote, batchParts, dueParts, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
+import { actionNote, batchParts, countWords, dueParts, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskViews, triageWords } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
@@ -617,13 +617,7 @@ function savedViews(list, base, facets = "") {
     html`<a href="${base}?view=${key}${facets}" aria-current="${on ? "true" : "false"}">${label}${count === null ? "" : html`<span class="num">${count}</span>`}</a>`)}</nav>`;
 }
 
-function countLine(model) {
-  const oldest = model.open[0];
-  const parts = [];
-  if (oldest) parts.push(`Oldest waits ${age(oldest.since)}.`);
-  if (model.stopped.length) parts.push(`${model.stopped.length} stopped.`);
-  return parts.join(" ");
-}
+const countLine = (model) => countWords({ oldest: model.open[0] ? age(model.open[0].since) : null, stopped: model.stopped.length, todos: model.todos.length, reports: model.reports.length, other: model.other.length });
 
 function upNext(model) {
   const next = (model.upNext || []).slice(0, 3);
@@ -827,14 +821,20 @@ function needsMe(model, wide) {
   return sections;
 }
 
+// The fifth column's content, again under the question: CSS shows it when that column folds. Its
+// ids take a prefix, so each stays unique and focus comes back to the copy that was used.
+const fold = (content) => (content ? html`<div class="fifth">${raw(html`${content}`.text.replaceAll(' id="', ' id="fold-'))}</div>` : "");
+const review = html`<span class="task-acts"><a class="btn secondary act" href="/memories">Review</a></span>`;
+const itemActs = (item) => (["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : rowActs(item));
+
 function deskTable(model, selected) {
   const itemLine = (item) => item.kind === "memories" ? html`<tr>
-    <td>${stateWord("memories")}</td><td class="mono"></td><td></td><td class="q full"><span>${item.candidates?.length ?? 0} memory candidates: ${(item.candidates || []).map((candidate) => candidate.name).join(", ")}</span></td>
-    <td class="recw"><span class="task-acts"><a class="btn secondary act" href="/memories">Review</a></span></td><td class="r">${timeTag(item.since)}</td></tr>` : html`<tr>
+    <td>${stateWord("memories")}</td><td class="mono"></td><td></td><td class="q full"><span>${item.candidates?.length ?? 0} memory candidates: ${(item.candidates || []).map((candidate) => candidate.name).join(", ")}</span>${fold(review)}</td>
+    <td class="recw">${review}</td><td class="r">${timeTag(item.since)}</td></tr>` : html`<tr>
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${item.kind === "batch" ? html`<a href="/batches/${item.id}">${item.key || ""}</a>` : ["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
-    <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : rowActs(item)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
+    <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span>${fold(itemActs(item))}</td><td class="recw">${itemActs(item)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const todoLine = (item) => html`<tr>
-    <td>${stateWord("todo")}</td><td class="mono"></td><td></td><td class="q full"><span>${todoText(item)}</span></td><td class="recw">${todoDone(item.id)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
+    <td>${stateWord("todo")}</td><td class="mono"></td><td></td><td class="q full"><span>${todoText(item)}</span>${fold(todoDone(item.id))}</td><td class="recw">${todoDone(item.id)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const group = (title, count) => html`<tr class="grp"><td colspan="6">${title}<span>${count}</span></td></tr>`;
   return html`<table class="tbl">
     <thead><tr><th>State</th><th>Task</th><th>Step</th><th>Waits on you</th><th>Recommends</th><th class="r">Age</th></tr></thead>
@@ -863,9 +863,11 @@ function askView() {
 function askTableRow(ask, selected) {
   const answered = ask.state === "answered";
   const when = answered && ask.answered_at ? timeTag(ask.answered_at, today(ask.answered_at) ? clock(ask.answered_at) : age(ask.answered_at)) : timeTag(ask.since);
+  const status = answered ? ask.answer + byLine(ask) : ask.state === "withdrawn" ? ask.withdrawn_why || "" : snoozed(ask, Date.now()) ? snoozedUntil(ask) : sentNote(ask) ? sentLine(ask) : null;
+  const folded = status ?? (ask.recommendation ? html`Recommends <b>${ask.recommendation}</b>` : "");
   return html`<tr data-href="/asks/${ask.id}" aria-current="${String(ask.id) === selected ? "true" : "false"}">
-    <td>${stateWord(ask.state === "open" ? "ask" : ask.state)}</td><td class="mono">${ask.key}</td><td>${ask.step}</td><td class="q"><span>${ask.title || ask.question}</span>${runnerTag(ask)}${routedTag(ask)}</td>
-    <td class="recw">${answered ? ask.answer + byLine(ask) : ask.state === "withdrawn" ? ask.withdrawn_why || "" : snoozed(ask, Date.now()) ? snoozedUntil(ask) : sentNote(ask) ? sentLine(ask) : ask.recommendation || ""}</td><td class="r">${when}</td></tr>`;
+    <td>${stateWord(ask.state === "open" ? "ask" : ask.state)}</td><td class="mono">${ask.key}</td><td>${ask.step}</td><td class="q"><span>${ask.title || ask.question}</span>${runnerTag(ask)}${routedTag(ask)}${fold(folded)}</td>
+    <td class="recw">${status ?? ask.recommendation ?? ""}</td><td class="r">${when}</td></tr>`;
 }
 
 // Each facet's key, label, an ask's values and the order the picker offers them. An ask with no

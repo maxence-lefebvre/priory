@@ -333,8 +333,14 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .cmd small { font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); }
 .list { container-type: inline-size; }
 /* The fixed columns take 498 px: below 760 px Answer goes first, so the question keeps its width. */
+.tbl .fifth { display: none; }
 @container (max-width: 760px) {
   .tbl th:nth-child(5), .tbl td:nth-child(5) { width: 0; padding: 0; font-size: 0; visibility: hidden; }
+  .tbl .fifth { display: block; margin-top: 6px; color: var(--text-2); font: 400 var(--type-small) var(--font-ui); }
+  .tbl td.q .fifth > span:not(.task-acts) { display: inline; overflow: visible; }
+  .tbl td.q .fifth .task-acts { display: flex; flex-wrap: wrap; }
+  .tbl td.q .fifth .task-acts span { display: revert; overflow: visible; }
+  .tbl td.q .tag + .fifth { margin-top: 0; }
 }
 @container (max-width: 560px) {
   .tbl th:nth-child(3), .tbl td:nth-child(3), .tbl th:nth-child(5), .tbl td:nth-child(5) { width: 0; padding: 0; font-size: 0; visibility: hidden; }
