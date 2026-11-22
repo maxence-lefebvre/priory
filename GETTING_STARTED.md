@@ -154,7 +154,8 @@ To play a task through the whole factory with fake agents before a real one runs
 [testing-a-factory.md](docs/testing-a-factory.md).
 
 To run one factory on two machines that share one event log, follow
-[adding-a-second-machine.md](docs/adding-a-second-machine.md).
+[adding-a-second-machine.md](docs/adding-a-second-machine.md). To give each machine's agents a build
+cache, such as sccache, follow [sharing-build-caches.md](docs/sharing-build-caches.md).
 
 ## 4. Pick a starter
 

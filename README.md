@@ -136,6 +136,8 @@ Priory is in early development. The milestones come from [docs/prd.md](docs/prd.
 - [docs/evaluating-a-prompt.md](docs/evaluating-a-prompt.md): measure a change to a prompt Priory
   gives agents before you ship it. One case, once, on Haiku, for under ten cents:
   `cargo run -p priory -- eval crates/priory-core/src/nudge.eval.toml --case finished --runs 1 --budget 0.10`.
+- [docs/sharing-build-caches.md](docs/sharing-build-caches.md): give each runner's agents a build
+  cache, such as sccache or a Nix cache, which the machine runs and Priory does not.
 - [DESIGN.md](DESIGN.md): the design system of the web view.
 
 ## License
