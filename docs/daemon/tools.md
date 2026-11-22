@@ -118,6 +118,9 @@ telling the agent why, when:
 The agent fixes what it must, runs `priory gate` again and sends the result again. Outcomes the
 `proof` table does not name are stored as before.
 
+A step's `gate` of scorers, and the factory's `critic` for a plan no person reads, grade a result
+after its proof holds and before the daemon stores it. See Gates in [score.md](score.md#gates).
+
 Known limits:
 
 - A proof checks that the agent ran the gate, not that it could not lie. An agent can write to the
@@ -175,7 +178,8 @@ plan: approve the plan graded green? <the result's summary>
 ```
 
 Its options are `approved` and `rejected`. `approved` moves the task to the step its grade leads
-to. `rejected` drops it. Until a person answers, an event on the task's issue, pull request or
+to. Outside `plan`, the factory's `critic` grades such a plan first, since no person reads it (see
+[score.md](score.md#gates)). `rejected` drops it. Until a person answers, an event on the task's issue, pull request or
 subscriptions is kept for its next run and wakes nothing. A grade that leads to a human step, `done` or `stop` moves on as usual:
 the human step already waits for a person.
 

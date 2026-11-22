@@ -52,6 +52,9 @@ pub struct Settings {
     pub command_timeout: Option<Duration>,
     /// The project's gate: the command `priory gate` runs with `sh -c` in a task's worktree.
     pub gate: Option<String>,
+    /// The scorer that grades a plan no person reads: a grade that leads to a model or code step
+    /// of a task without `intervention = "plan"`. It can only refuse the grade.
+    pub critic: Option<String>,
     /// A writing guide, as a path relative to the factory folder. Priory appends its text to the
     /// system prompt of every agent it starts.
     pub writing: Option<String>,
@@ -1645,6 +1648,10 @@ pub struct Step {
     /// What the daemon checks before it accepts an outcome, by outcome.
     #[serde(default)]
     pub proof: BTreeMap<String, Proof>,
+    /// The scorers that grade an outcome before the daemon accepts it, by outcome. A failing one
+    /// refuses the outcome; none can approve anything.
+    #[serde(default)]
+    pub gate: BTreeMap<String, Vec<String>>,
     /// The fields of a plan result that this model step's prompt or agent must ask for.
     #[serde(default)]
     pub plan_requires: Vec<PlanField>,
@@ -2293,6 +2300,13 @@ impl Factory {
     pub fn target(&self, name: &str) -> Option<PathBuf> {
         let folder = self.settings.as_ref()?.value.asks.targets.get(name)?;
         Some(self.dir.join(folder))
+    }
+
+    /// The scorer that grades a plan no person reads, from `factory.toml`.
+    pub fn critic(&self) -> Option<&str> {
+        self.settings
+            .as_ref()
+            .and_then(|settings| settings.value.critic.as_deref())
     }
 
     /// The command `priory gate` runs, from `factory.toml`.

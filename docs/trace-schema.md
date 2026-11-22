@@ -544,6 +544,7 @@ and `time` is when the score was recorded. Scoring a run again appends another r
 | `model`     | for a judge | The model the judge called                                        |
 | `agreement` | for a judge | The share of labeled cases its calibration got right              |
 | `cases`     | for a judge | The number of labeled cases its calibration ran                   |
+| `gate`      | for a gate  | The outcome a step's `gate` or the factory's `critic` graded before it was stored. Absent for `priory score` |
 
 ## `factory.scorer.calibrated`
 

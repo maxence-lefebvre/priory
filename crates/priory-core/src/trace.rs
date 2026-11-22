@@ -866,6 +866,7 @@ pub(crate) fn scored(
     trace: &Trace,
     task: i64,
     score: &crate::score::Score,
+    gate: Option<&str>,
 ) -> rusqlite::Result<()> {
     // A run of an earlier generation keeps the generation its step record named.
     let (workflow, key, generation, time): (String, Option<String>, i64, String) = tx.query_row(
@@ -892,6 +893,7 @@ pub(crate) fn scored(
         "kind": score.kind.name(),
         "verdict": score.verdict.name(),
         "reason": score.reason,
+        "gate": gate,
     });
     if let (Some(judged), Value::Object(fields)) = (&score.judged, &mut data) {
         fields.insert("model".to_owned(), json!(judged.model));

@@ -8,6 +8,7 @@ pub mod decision;
 pub mod deliver;
 pub mod embed;
 mod findings;
+mod gates;
 pub mod grades;
 mod guard;
 mod handler;

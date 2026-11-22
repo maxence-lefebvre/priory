@@ -429,6 +429,18 @@ Tests:
    the fake `claude`, so they cost nothing.
 6. Built. Scores in the task page and Costs panel of the web view and Herdr, and in `priory costs`
    ([score.md](../daemon/score.md#where-scores-show)).
+7. Built. Scorers as gates, and a critic before a plan no person reads
+   ([score.md](../daemon/score.md#gates)). A model step's `gate` lists scorers by outcome, and
+   `critic` in `factory.toml` names a scorer on `result` for a graded plan that leads to a model or
+   code step outside `intervention = "plan"`. A judge may now read `on = "result"`, with no diff.
+   The daemon holds the result, grades it on a thread of its own after the turn ends, and stores
+   it only when no scorer refuses it. A `fail` or an `error` refuses; a judge whose calibration
+   does not pass does not count. The first refusal in a run reaches the agent as a prompt, and a
+   second one blocks the task for a person. A gate never approves: a pass only lets the task go
+   on as it would without the gate. Tests use the fake `claude` and a `command` scorer, and cover
+   one refusal then a pass, two refusals, a scorer error, an event held while the gate grades, an
+   uncalibrated judge, a calibrated judge within its per-call budget, the critic on a green plan,
+   and no critic under `plan` or before a human step.
 
 ## Open questions
 
@@ -437,10 +449,17 @@ Tests:
    slow command or a paid judge on every run, and a score nobody reads is waste.
    Recommendation: not in M4. Score on demand and in benchmarks, then add a per-step `score = [...]`
    for `outcome` and `ask-shape` scorers only, which cost nothing.
+   Settled by slice 7, in part: a scorer runs by itself only where a step's `gate` or the
+   factory's `critic` names it, which a person chose for that outcome. No score runs only to be
+   recorded.
 2. **May a score ever decide a step's outcome?** A `proof` already lets the daemon check an outcome
    before it accepts it, with `gate-passed`. A scorer could become a proof. Recommendation: no. A
    proof is a rule the factory enforces, a score is a measurement, and an agent that is graded by
    the thing that gates it learns the grader. Keep them two concepts with two names.
+   Settled by slice 7, differently: a score may refuse an outcome, never accept one. The gate is
+   its own key, `gate`, beside `proof`. The agent reads the reason once per run, and a second
+   refusal goes to a person, so an agent cannot grind against the grader. A judge gates only while
+   its calibration against a person's labels passes.
 3. **How does a replay serve the agent's other MCP servers?** The case holds no answer of Linear,
    Slack or a web search, so a replay starts none of them, and a task that leaned on one replays
    poorly. Recommendation: accept it for M4 and show the lost servers in the table. Later, record

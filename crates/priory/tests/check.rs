@@ -2142,7 +2142,7 @@ fn a_judge_with_its_prompt_and_ten_labeled_cases_passes_and_its_cases_are_no_sco
 fn a_judge_without_a_prompt_an_evaluation_or_enough_labeled_cases_is_refused() {
     let few = labeled(8, 2);
     let bare = "description = \"Bare.\"\non = \"diff\"\nkind = \"judge\"\n";
-    let odd = "description = \"Odd.\"\non = \"result\"\nkind = \"judge\"\nmodel = \"opus\"\nprompt = \"../asked.md\"\nevaluation = \"asked.eval.toml\"\nagreement = 1.5\nexpect = [\"pass\"]\n";
+    let odd = "description = \"Odd.\"\non = \"ask\"\nkind = \"judge\"\nmodel = \"opus\"\nprompt = \"../asked.md\"\nevaluation = \"asked.eval.toml\"\nagreement = 1.5\nexpect = [\"pass\"]\n";
     let wrong = "description = \"Wrong.\"\non = \"result\"\nkind = \"outcome\"\nexpect = [\"passed\"]\nmodel = \"opus\"\n";
 
     let outcome = with_scorers(
@@ -2164,12 +2164,126 @@ fn a_judge_without_a_prompt_an_evaluation_or_enough_labeled_cases_is_refused() {
          scorers/bare.toml:3: a `judge` scorer needs `model`: the model that grades\n\
          scorers/bare.toml:3: a `judge` scorer needs `prompt`: a file beside it with the judge's whole prompt\n\
          scorers/bare.toml:3: a `judge` scorer needs `evaluation`: a file beside it with its labeled cases\n\
-         scorers/odd.toml:2: kind `judge` reads on = \"diff\", not \"result\"\n\
+         scorers/odd.toml:2: kind `judge` reads on = \"result\" or \"diff\", not \"ask\"\n\
          scorers/odd.toml:8: a `judge` scorer takes no `expect`: its answer is pass or fail\n\
          scorers/odd.toml:5: `prompt` names ../asked.md, which is not beside the scorer\n\
          scorers/odd.toml:6: `evaluation` asked.eval.toml: a judge needs at least 10 labeled cases, 3 of them pass and 3 fail: this file has 10 (8 pass, 2 fail)\n\
          scorers/odd.toml:7: `agreement` is 1.5: give a share above 0 and at most 1, such as 0.8\n\
          scorers/wrong.toml:5: `model` is for kind `judge`, not `outcome`\n"
+    );
+}
+
+const SHORT: &str =
+    "description = \"Short.\"\non = \"ask\"\nkind = \"ask-shape\"\nexpect = [\"short\"]\n";
+
+/// The valid factory's workflow, with `gate` on its model step and `human` on its human step.
+fn gated_workflow(gate: &str, human: &str) -> String {
+    WORKFLOW
+        .replace(
+            "next = { passed = \"approve-pr\", failed = \"stop\" }",
+            &format!("next = {{ passed = \"approve-pr\", failed = \"stop\" }}\ngate = {gate}"),
+        )
+        .replace(
+            "next = { open = \"open-pr\", stop = \"stop\" }",
+            &format!("next = {{ open = \"open-pr\", stop = \"stop\" }}\n{human}"),
+        )
+}
+
+#[test]
+fn a_step_gate_of_scorers_on_a_result_or_a_diff_passes() {
+    let workflow = gated_workflow(r#"{ passed = ["passed", "gate"] }"#, "");
+    let mut files = with("workflows/implement.toml", &workflow);
+    files.extend_from_slice(&[
+        ("scorers/passed.toml", PASSED),
+        ("scorers/gate.toml", GATE),
+        ("scripts/score-gate.sh", "#!/bin/sh\nexit 0\n"),
+    ]);
+    let dir = factory("gate-valid", &files);
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(
+        dir.join("scripts/score-gate.sh"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+
+    let outcome = check(&dir);
+
+    assert_eq!(outcome.stderr, "");
+    assert_eq!(outcome.code, 0);
+}
+
+#[test]
+fn a_gate_naming_an_unknown_scorer_an_ask_scorer_or_an_outcome_not_in_next_is_refused() {
+    let workflow = gated_workflow(
+        r#"{ passed = ["missing", "short"], merged = ["passed"] }"#,
+        r#"gate = { open = ["passed"] }"#,
+    );
+    let mut files = with("workflows/implement.toml", &workflow);
+    files.extend_from_slice(&[
+        ("scorers/passed.toml", PASSED),
+        ("scorers/short.toml", SHORT),
+    ]);
+
+    let outcome = check(&factory("gate-refused", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "workflows/implement.toml:4: step `implement`: `gate` has outcome `merged`, which is not in `next`\n\
+         workflows/implement.toml:4: step `implement`: `gate` of outcome `passed` names `missing`, which is no scorer in scorers/\n\
+         workflows/implement.toml:4: step `implement`: `gate` of outcome `passed` names `short`, which reads asks: a gate grades a result, so use a scorer on result or diff\n\
+         workflows/implement.toml:13: step `approve-pr`: only a model step has a `gate`\n"
+    );
+}
+
+/// A judge on `result`, with its prompt and ten labeled cases, as a plan's critic.
+fn critic_files(on: &str) -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "scorers/critic.toml",
+            format!(
+                "description = \"The plan is sound.\"\non = \"{on}\"\nkind = \"judge\"\nmodel = \"opus\"\nprompt = \"critic.md\"\nevaluation = \"critic.eval.toml\"\n"
+            ),
+        ),
+        ("scorers/critic.md", "Is the plan sound?\n".to_owned()),
+        ("scorers/critic.eval.toml", labeled(5, 5)),
+    ]
+}
+
+#[test]
+fn a_critic_names_a_scorer_on_result_such_as_a_judge_of_the_plan_alone() {
+    let critic = critic_files("result");
+    let mut files = with("factory.toml", "name = \"demo\"\ncritic = \"critic\"\n");
+    files.extend(critic.iter().map(|(path, text)| (*path, text.as_str())));
+
+    let outcome = check(&factory("critic-valid", &files));
+
+    assert_eq!(outcome.stderr, "");
+    assert_eq!(
+        outcome.stdout,
+        "ok: 1 agent, 1 trigger, 1 workflow, 1 runner, 1 scorer\n"
+    );
+}
+
+#[test]
+fn a_critic_that_is_no_scorer_or_reads_a_diff_is_refused() {
+    let missing = with("factory.toml", "name = \"demo\"\ncritic = \"nobody\"\n");
+    let critic = critic_files("diff");
+    let mut on_diff = with("factory.toml", "name = \"demo\"\ncritic = \"critic\"\n");
+    on_diff.extend(critic.iter().map(|(path, text)| (*path, text.as_str())));
+
+    let missing = check(&factory("critic-missing", &missing));
+    let on_diff = check(&factory("critic-diff", &on_diff));
+
+    assert_eq!(missing.code, 1);
+    assert_eq!(
+        missing.stderr,
+        "factory.toml:2: the critic `nobody` is no scorer in scorers/\n"
+    );
+    assert_eq!(on_diff.code, 1);
+    assert_eq!(
+        on_diff.stderr,
+        "factory.toml:2: the critic `critic` reads on = \"diff\": a critic reads a plan, which names no commit, so use one on result\n"
     );
 }
 

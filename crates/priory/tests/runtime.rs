@@ -28508,3 +28508,384 @@ fn a_spend_cap_holds_no_run_at_an_irreversible_step_and_holds_the_task_at_its_ne
     assert_eq!(capped, ["check"], "{runs:?}");
     assert_eq!(setup.open_asks().len(), 1);
 }
+
+const GATED_STEP: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "done", failed = "stop" }
+gate = { passed = ["check"] }
+"#;
+
+/// How the step `implement` of `GATED_STEP` ends, as a prompt's last line.
+const IMPLEMENT_ENDING: &str = "End this step by calling the result tool of the priory MCP server with one of these outcomes: failed, passed.";
+
+/// Task 1 at a step whose `passed` the scorer `check` gates, which runs `script`. Its agent
+/// commits `a.txt`, then sends `passed` with that commit at each of `turns` turns. Returns the
+/// setup and the commit.
+fn gated_step(name: &str, script: &str, turns: usize) -> (Setup, String) {
+    let mut setup = Setup::with_workflow(name, GATED_STEP);
+    command_scorer(&setup, "check", "1m", script);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    let commit = setup.commit(1, "a.txt");
+    let passed = json!({ "name": "result", "arguments": {
+        "outcome": "passed", "summary": "Adds a.txt.", "commit": commit
+    } });
+    setup.calls(&vec![passed; turns]);
+    setup.release("hold-call");
+    (setup, commit)
+}
+
+/// The number of stored results.
+fn results(setup: &Setup) -> i64 {
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT count(*) FROM results", [], |row| row.get(0))
+        .unwrap()
+}
+
+/// The verdict, reason and gated outcome of each `factory.run.scored` record.
+fn gate_scores(setup: &Setup) -> Vec<[serde_json::Value; 4]> {
+    scored_records(setup)
+        .iter()
+        .map(|record| {
+            let data = &record["data"];
+            [
+                data["scorer"].clone(),
+                data["verdict"].clone(),
+                data["reason"].clone(),
+                data["gate"].clone(),
+            ]
+        })
+        .collect()
+}
+
+#[test]
+fn a_failing_gate_scorer_refuses_the_outcome_and_its_reason_reaches_the_agent_once() {
+    let tried = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rt/gate-once-tried");
+    let _ = fs::remove_file(&tried);
+    let script = format!(
+        "#!/bin/sh\nif [ -e {0} ]; then echo the tests pass; exit 0; fi\ntouch {0}\necho a.txt has no test\nexit 1\n",
+        tried.display()
+    );
+    let (setup, _) = gated_step("gate-once", &script, 2);
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+
+    let replies = setup.replies();
+    assert_eq!(
+        reply(&replies[0]),
+        (
+            "result held: its gate grades outcome passed when this turn ends, and the task moves to done unless the gate refuses it".to_owned(),
+            false
+        )
+    );
+    assert_eq!(
+        setup.typed()[1],
+        format!(
+            "The gate refused outcome passed. check: a.txt has no test. Fix it, then send the result again. A second refusal in this run goes to a person.\n{IMPLEMENT_ENDING}\n"
+        )
+    );
+    assert_eq!(setup.typed().len(), 2, "{:?}", setup.typed());
+    assert_eq!(results(&setup), 1, "a refused result is never stored");
+    assert_eq!(setup.rows("runs").len(), 1, "one run took the refusal");
+    assert_eq!(
+        gate_scores(&setup),
+        [
+            [
+                json!("check"),
+                json!("fail"),
+                json!("a.txt has no test"),
+                json!("passed")
+            ],
+            [
+                json!("check"),
+                json!("pass"),
+                json!("the tests pass"),
+                json!("passed")
+            ],
+        ]
+    );
+}
+
+#[test]
+fn a_second_refusal_in_the_same_run_blocks_the_task_for_a_person() {
+    let script = "#!/bin/sh\necho a.txt has no test\nexit 1\n";
+    let (setup, _) = gated_step("gate-twice", script, 3);
+
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "blocked");
+
+    assert_eq!(
+        tasks[0][7],
+        "the gate refused outcome passed twice: check: a.txt has no test"
+    );
+    assert_eq!(results(&setup), 0);
+    assert_eq!(setup.typed().len(), 2, "{:?}", setup.typed());
+    assert_eq!(setup.rows("runs")[0][7], "refused");
+}
+
+#[test]
+fn a_gate_scorer_that_errors_refuses_the_outcome_as_a_failing_one_does() {
+    let script = "#!/bin/sh\necho no cargo\nexit 2\n";
+    let (setup, _) = gated_step("gate-error", script, 1);
+
+    setup.until("outbox", |rows| rows.len() == 2);
+
+    assert!(
+        setup
+            .priory(&["outbox"])
+            .stdout
+            .escape_ascii()
+            .to_string()
+            .contains("The gate refused outcome passed. check: exit 2: no cargo. Fix it"),
+        "{:?}",
+        setup.rows("outbox")
+    );
+    assert_eq!(results(&setup), 0);
+}
+
+#[test]
+fn an_event_that_arrives_while_the_gate_grades_waits_for_its_verdict() {
+    let hold = Path::new(env!("CARGO_TARGET_TMPDIR")).join("rt/gate-hold-file");
+    fs::write(&hold, "").unwrap();
+    let script = format!(
+        "#!/bin/sh\nwhile [ -e {0} ]; do sleep 0.05; done\necho the tests pass\n",
+        hold.display()
+    );
+    let (setup, _) = gated_step("gate-holds-events", &script, 1);
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while db
+        .query_row("SELECT count(*) FROM gates WHERE stopped = 1", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .unwrap_or(0)
+        == 0
+    {
+        assert!(Instant::now() < deadline, "the turn never ended");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let call = setup.mcp(
+        &setup.rows("runs")[0][4],
+        &[json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": result("failed") })],
+    );
+    assert_eq!(
+        reply(&call[0]),
+        (
+            "run 1 holds outcome passed while its gate grades it: end your turn, and Priory sends the verdict".to_owned(),
+            true
+        )
+    );
+    assert!(
+        setup
+            .priory(&["say", "1", "Also add b.txt."])
+            .status
+            .success()
+    );
+    setup.until("outbox", |rows| rows.len() == 2);
+
+    fs::remove_file(&hold).unwrap();
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    assert_eq!(setup.typed().len(), 1, "{:?}", setup.typed());
+    assert_ne!(setup.rows("outbox")[1][3], "confirmed");
+}
+
+#[test]
+fn a_judge_gates_only_while_its_latest_calibration_passes() {
+    let mut setup = Setup::with_workflow(
+        "gate-judge-uncalibrated",
+        &GATED_STEP.replace("check", "asked"),
+    );
+    judge_scorer(&setup, "0.8");
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    let commit = setup.commit(1, "a.txt");
+    setup.calls(&[json!({ "name": "result", "arguments": {
+        "outcome": "passed", "summary": "Adds a.txt.", "commit": commit
+    } })]);
+    setup.release("hold-call");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+
+    let scores = gate_scores(&setup);
+    assert_eq!(
+        [&scores[0][0], &scores[0][1]],
+        [&json!("asked"), &json!("error")]
+    );
+    assert!(
+        scores[0][2]
+            .as_str()
+            .unwrap()
+            .starts_with("not calibrated: "),
+        "{scores:?}"
+    );
+    assert!(!setup.dir.join("fake/handler-args.log").exists());
+}
+
+#[test]
+fn a_calibrated_judge_that_fails_refuses_the_outcome_within_its_per_call_budget() {
+    let mut setup = Setup::with_workflow("gate-judge", &GATED_STEP.replace("check", "asked"));
+    judge_scorer(&setup, "0.8");
+    let mut answers = AGREE_NINE.to_vec();
+    answers.extend(["fail\nIt adds more than asked.", "pass\nIt adds a.txt."]);
+    judge_answers(&setup, &answers);
+    assert!(calibrate(&setup, &["--budget", "1"]).status.success());
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    let commit = setup.commit(1, "a.txt");
+    let passed = json!({ "name": "result", "arguments": {
+        "outcome": "passed", "summary": "Adds a.txt.", "commit": commit
+    } });
+    setup.calls(&[passed.clone(), passed]);
+    setup.release("hold-call");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+
+    assert_eq!(
+        setup.typed()[1],
+        format!(
+            "The gate refused outcome passed. asked: It adds more than asked.. Fix it, then send the result again. A second refusal in this run goes to a person.\n{IMPLEMENT_ENDING}\n"
+        )
+    );
+    let records = scored_records(&setup);
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        [&records[0]["data"]["model"], &records[0]["data"]["cases"]],
+        [&json!("opus"), &json!(10)]
+    );
+    let prompts = judge_prompts(&setup);
+    assert!(prompts[10].contains("+++ b/a.txt"), "{}", prompts[10]);
+    let args = fs::read_to_string(setup.dir.join("fake/handler-args.log")).unwrap();
+    let call = args.rsplit("-p\n").next().unwrap();
+    assert!(call.contains("--max-budget-usd\n0.0105\n"), "{call}");
+}
+
+const CRITICIZED: &str = r#"
+start = "plan"
+
+[[steps]]
+id = "plan"
+decides = "model"
+agent = "implementer"
+prompt = "Plan the change. Grade it red, yellow or green."
+effect = "reversible"
+next = { red = "approve", yellow = "implement", green = "implement" }
+
+[[steps]]
+id = "approve"
+decides = "human"
+effect = "none"
+options = ["approved", "rejected"]
+next = { approved = "implement", rejected = "stop" }
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the plan."
+effect = "reversible"
+next = { passed = "done", failed = "stop" }
+"#;
+
+/// The judge `asked` on `result` as the factory's critic, calibrated, with `answers` queued after
+/// its calibration's.
+fn critic(setup: &Setup, answers: &[&str]) {
+    judge_scorer(setup, "0.8");
+    let file = setup.dir.join("factory/scorers/asked.toml");
+    let toml = fs::read_to_string(&file).unwrap();
+    fs::write(&file, toml.replace("on = \"diff\"", "on = \"result\"")).unwrap();
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\ncritic = \"asked\"\n",
+    )
+    .unwrap();
+    let mut queued = AGREE_NINE.to_vec();
+    queued.extend_from_slice(answers);
+    judge_answers(setup, &queued);
+    assert!(calibrate(setup, &["--budget", "1"]).status.success());
+}
+
+fn graded(outcome: &str) -> serde_json::Value {
+    json!({ "name": "result", "arguments": { "outcome": outcome, "summary": "Plan: add a flag" } })
+}
+
+#[test]
+fn a_green_plan_no_person_reads_passes_the_critic_first_and_its_refusal_reaches_the_agent() {
+    let mut setup = Setup::with_workflow("critic-green", CRITICIZED);
+    critic(
+        &setup,
+        &["fail\nThe plan names no test.", "pass\nThe plan is sound."],
+    );
+    setup.calls(&[graded("green"), graded("green"), result("passed")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    assert!(
+        setup.typed()[1].starts_with(
+            "The gate refused outcome green. asked: The plan names no test.. Fix it, then send the result again."
+        ),
+        "{:?}",
+        setup.typed()
+    );
+    let prompts = judge_prompts(&setup);
+    assert_eq!(prompts.len(), 12);
+    assert!(prompts[10].contains("Plan: add a flag"), "{}", prompts[10]);
+    assert!(!prompts[10].contains("<diff"), "{}", prompts[10]);
+    let runs = setup.rows("runs");
+    assert_eq!([&runs[0][2], &runs[1][2]], ["plan", "implement"]);
+}
+
+#[test]
+fn the_critic_grades_no_plan_a_person_reads() {
+    let mut setup = intervened("critic-plan", CRITICIZED, "plan", "");
+    critic(&setup, &["fail\nThe plan names no test."]);
+    setup.calls(&[graded("green")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(
+        asks[0][3],
+        "plan: approve the plan graded green? Plan: add a flag"
+    );
+    assert_eq!(
+        judge_prompts(&setup).len(),
+        10,
+        "only the calibration called it"
+    );
+}
+
+#[test]
+fn the_critic_grades_no_plan_whose_grade_leads_to_a_human_step() {
+    let mut setup = Setup::with_workflow("critic-human", CRITICIZED);
+    critic(&setup, &["fail\nThe plan names no test."]);
+    setup.calls(&[graded("red")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(
+        judge_prompts(&setup).len(),
+        10,
+        "only the calibration called it"
+    );
+}

@@ -3,7 +3,7 @@
 
 use crate::judge::{self, Calibration};
 use crate::trace::{self, Trace};
-use priory_factory::factory::{Factory, Loaded, ScoreKind, Scorer};
+use priory_factory::factory::{Factory, ScoreKind, Scorer};
 use priory_runtime::{eval, room, runtime, script, transcript};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{Value, json};
@@ -93,17 +93,22 @@ impl Judging {
     }
 }
 
-/// The task as a scorer reads it.
-struct Task {
-    repo: Option<String>,
-    base: Option<String>,
+/// The task as a scorer reads it: its repository, start commit and request.
+pub struct Task {
+    pub repo: Option<String>,
+    pub base: Option<String>,
+    /// The data of the message that asked for it, as JSON, which a judge reads.
+    pub request: String,
 }
 
 /// A finished run: one whose turn ended with a result or an ask.
-struct Run {
-    id: i64,
-    step: String,
-    result: Option<Value>,
+pub struct Run {
+    pub id: i64,
+    pub step: String,
+    pub result: Option<Value>,
+    /// The asks it made, as an `ask-shape` scorer reads them: each id and shape. `None` when they
+    /// were not read, as for a result a gate holds.
+    pub asks: Option<Vec<(i64, String)>>,
 }
 
 /// Scores the latest finished run of each step of `task` with every scorer, or only `only`, then
@@ -140,7 +145,7 @@ pub fn score(
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(error)?;
     for score in &scores {
-        trace::scored(&tx, &trace, task, score).map_err(error)?;
+        trace::scored(&tx, &trace, task, score, None).map_err(error)?;
     }
     tx.commit().map_err(error)?;
     Ok(scores)
@@ -157,27 +162,8 @@ pub fn grade(
     judging: &mut Judging,
 ) -> Result<Vec<Score>, String> {
     let error = |error: rusqlite::Error| error.to_string();
-    let mut scorers: Vec<(&String, &Loaded<Scorer>)> = Vec::new();
-    for name in names {
-        match factory.scorers.get_key_value(*name) {
-            Some(found) => scorers.push(found),
-            None => return Err(format!("no scorer {name} in scorers/")),
-        }
-    }
-    let found = db
-        .query_row(
-            "SELECT repo, base_sha FROM tasks WHERE id = ?1",
-            [task],
-            |row| {
-                Ok(Task {
-                    repo: row.get(0)?,
-                    base: row.get(1)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(error)?;
-    let Some(found) = found else {
+    let gauges = gauges(factory, names, &judging.calibrations)?;
+    let Some(found) = task_of(db, task).map_err(error)? else {
         return Err(format!("no task {task}"));
     };
     let runs = finished(db, task).map_err(error)?;
@@ -186,33 +172,105 @@ pub fn grade(
     }
     let mut scores = Vec::new();
     for run in &runs {
-        for (name, scorer) in &scorers {
-            let (mut cost, mut judged) = (0.0, None);
-            let (verdict, reason) = match scorer.value.kind {
-                ScoreKind::Outcome => outcome(&scorer.value, run),
-                ScoreKind::AskShape => ask_shape(db, &scorer.value, run).map_err(error)?,
-                ScoreKind::Command => command(factory, home, &found, &scorer.value, run),
-                ScoreKind::Judge => {
-                    let graded = judge(db, factory, home, &found, name, run, task, judging)
-                        .map_err(error)?;
-                    cost = graded.cost;
-                    judged = graded.judged;
-                    (graded.verdict, graded.reason)
-                }
-            };
-            scores.push(Score {
-                run: run.id,
-                step: run.step.clone(),
-                scorer: (*name).clone(),
-                kind: scorer.value.kind,
-                verdict,
-                reason,
-                cost,
-                judged,
-            });
+        for gauge in &gauges {
+            scores.push(measure(&factory.dir, home, &found, gauge, run, judging));
         }
     }
     Ok(scores)
+}
+
+/// One scorer, owned, as a grading on a thread of its own needs it.
+#[derive(Clone)]
+pub struct Gauge {
+    pub name: String,
+    pub scorer: Scorer,
+    /// For a judge: its call and the calibration its verdict rests on, or why it does not count.
+    pub judge: Option<Result<(judge::Called, Calibration), String>>,
+}
+
+/// The scorers `names` of `factory`, with each judge's call and its calibration from
+/// `calibrations`. Each name must be one of the factory's scorers.
+pub fn gauges(
+    factory: &Factory,
+    names: &[&str],
+    calibrations: &BTreeMap<String, Result<Calibration, String>>,
+) -> Result<Vec<Gauge>, String> {
+    names
+        .iter()
+        .map(|name| {
+            let Some(scorer) = factory.scorers.get(*name) else {
+                return Err(format!("no scorer {name} in scorers/"));
+            };
+            let judge = (scorer.value.kind == ScoreKind::Judge).then(|| {
+                let calibration = calibrations
+                    .get(*name)
+                    .cloned()
+                    .unwrap_or_else(|| Err("not calibrated".to_owned()))?;
+                let opened = judge::open(factory, name)?;
+                Ok((opened.called(), calibration))
+            });
+            Ok(Gauge {
+                name: (*name).to_owned(),
+                scorer: scorer.value.clone(),
+                judge,
+            })
+        })
+        .collect()
+}
+
+/// The task as a scorer reads it, from `db`.
+pub fn task_of(db: &Connection, task: i64) -> rusqlite::Result<Option<Task>> {
+    let found = db
+        .query_row(
+            "SELECT repo, base_sha FROM tasks WHERE id = ?1",
+            [task],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((repo, base)) = found else {
+        return Ok(None);
+    };
+    Ok(Some(Task {
+        repo,
+        base,
+        request: request(db, task)?,
+    }))
+}
+
+/// Grades `run` with `gauge`. `dir` is the factory folder, and `home` holds Priory's clones.
+pub fn measure(
+    dir: &Path,
+    home: &Path,
+    task: &Task,
+    gauge: &Gauge,
+    run: &Run,
+    judging: &mut Judging,
+) -> Score {
+    let (mut cost, mut judged) = (0.0, None);
+    let (verdict, reason) = match gauge.scorer.kind {
+        ScoreKind::Outcome => outcome(&gauge.scorer, run),
+        ScoreKind::AskShape => run.asks.clone().map_or_else(
+            || (Verdict::Error, "the run's asks were not read".to_owned()),
+            |asks| ask_shape(&gauge.scorer, &asks),
+        ),
+        ScoreKind::Command => command(dir, home, task, &gauge.scorer, run),
+        ScoreKind::Judge => {
+            let graded = judge(home, task, gauge, run, judging);
+            cost = graded.cost;
+            judged = graded.judged;
+            (graded.verdict, graded.reason)
+        }
+    };
+    Score {
+        run: run.id,
+        step: run.step.clone(),
+        scorer: gauge.name.clone(),
+        kind: gauge.scorer.kind,
+        verdict,
+        reason,
+        cost,
+        judged,
+    }
 }
 
 /// The latest finished run of each step of `task`, oldest first.
@@ -229,14 +287,38 @@ fn finished(db: &Connection, task: i64) -> rusqlite::Result<Vec<Run>> {
          FROM done WHERE done.id = (SELECT max(id) FROM done AS later WHERE later.step = done.step)
          ORDER BY done.id",
     )?;
-    statement
+    let runs = statement
         .query_map([task], |row| {
             let result: Option<String> = row.get(2)?;
             Ok(Run {
                 id: row.get(0)?,
                 step: row.get(1)?,
                 result: result.and_then(|text| serde_json::from_str(&text).ok()),
+                asks: None,
             })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    runs.into_iter()
+        .map(|mut run| {
+            run.asks = Some(asks_of(db, run.id)?);
+            Ok(run)
+        })
+        .collect()
+}
+
+/// The asks `run` made, each with its id and shape, as `priory eval` reads it.
+fn asks_of(db: &Connection, run: i64) -> rusqlite::Result<Vec<(i64, String)>> {
+    let mut statement = db.prepare(
+        "SELECT id, question, what_waits, next_action FROM asks WHERE run = ?1 ORDER BY id",
+    )?;
+    statement
+        .query_map([run], |row| {
+            let ask = json!({
+                "question": row.get::<_, Option<String>>(1)?,
+                "whatWaits": row.get::<_, Option<String>>(2)?,
+                "nextAction": row.get::<_, Option<String>>(3)?,
+            });
+            Ok((row.get::<_, i64>(0)?, eval::shape_of(&ask)))
         })?
         .collect()
 }
@@ -259,22 +341,9 @@ fn outcome(scorer: &Scorer, run: &Run) -> (Verdict, String) {
     }
 }
 
-fn ask_shape(db: &Connection, scorer: &Scorer, run: &Run) -> rusqlite::Result<(Verdict, String)> {
-    let mut statement = db.prepare(
-        "SELECT id, question, what_waits, next_action FROM asks WHERE run = ?1 ORDER BY id",
-    )?;
-    let asks = statement
-        .query_map([run.id], |row| {
-            let ask = json!({
-                "question": row.get::<_, Option<String>>(1)?,
-                "whatWaits": row.get::<_, Option<String>>(2)?,
-                "nextAction": row.get::<_, Option<String>>(3)?,
-            });
-            Ok((row.get::<_, i64>(0)?, eval::shape_of(&ask)))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+fn ask_shape(scorer: &Scorer, asks: &[(i64, String)]) -> (Verdict, String) {
     if asks.is_empty() {
-        return Ok((Verdict::NotApplicable, "the run asked nothing".to_owned()));
+        return (Verdict::NotApplicable, "the run asked nothing".to_owned());
     }
     let lacking: Vec<String> = asks
         .iter()
@@ -289,13 +358,13 @@ fn ask_shape(db: &Connection, scorer: &Scorer, run: &Run) -> rusqlite::Result<(V
             (!missing.is_empty()).then(|| format!("ask {id} lacks {}", missing.join(", ")))
         })
         .collect();
-    Ok(match lacking.is_empty() {
+    match lacking.is_empty() {
         true => (
             Verdict::Pass,
             format!("{} ask(s) show {}", asks.len(), scorer.expect.join(", ")),
         ),
         false => (Verdict::Fail, lacking.join("; ")),
-    })
+    }
 }
 
 /// What a `diff` scorer reads of a run: its repository, start commit, result commit and result.
@@ -335,16 +404,10 @@ fn target<'a>(task: &'a Task, run: &'a Run) -> Result<Target<'a>, (Verdict, Stri
     })
 }
 
-fn command(
-    factory: &Factory,
-    home: &Path,
-    task: &Task,
-    scorer: &Scorer,
-    run: &Run,
-) -> (Verdict, String) {
+fn command(dir: &Path, home: &Path, task: &Task, scorer: &Scorer, run: &Run) -> (Verdict, String) {
     match target(task, run) {
         Err(answer) => answer,
-        Ok(at) => on_commit(factory, home, at.repo, at.base, at.head, scorer, at.result),
+        Ok(at) => on_commit(dir, home, at.repo, at.base, at.head, scorer, at.result),
     }
 }
 
@@ -356,72 +419,66 @@ struct Graded {
     judged: Option<Judged>,
 }
 
-/// Asks the judge scorer `name` about `run`'s change, once its calibration counts and within the
-/// budget `judging` holds.
-#[allow(clippy::too_many_arguments)]
-fn judge(
-    db: &Connection,
-    factory: &Factory,
-    home: &Path,
-    task: &Task,
-    name: &str,
-    run: &Run,
-    id: i64,
-    judging: &mut Judging,
-) -> rusqlite::Result<Graded> {
+/// Asks the judge `gauge` about `run`, once its calibration counts and within the budget
+/// `judging` holds. A judge on `result` reads the result alone, and needs no commit.
+fn judge(home: &Path, task: &Task, gauge: &Gauge, run: &Run, judging: &mut Judging) -> Graded {
     let answer = |verdict, reason: String| Graded {
         verdict,
         reason,
         cost: 0.0,
         judged: None,
     };
-    let calibration = match judging.calibrations.get(name) {
-        Some(Ok(calibration)) => calibration.clone(),
-        Some(Err(why)) => return Ok(answer(Verdict::Error, why.clone())),
-        None => return Ok(answer(Verdict::Error, "not calibrated".to_owned())),
+    let (called, calibration) = match &gauge.judge {
+        Some(Ok(judge)) => judge.clone(),
+        Some(Err(why)) => return answer(Verdict::Error, why.clone()),
+        None => return answer(Verdict::Error, "not calibrated".to_owned()),
     };
-    let at = match target(task, run) {
-        Ok(at) => at,
-        Err((verdict, reason)) => return Ok(answer(verdict, reason)),
+    let (result, at) = if called.diff {
+        match target(task, run) {
+            Ok(at) => (at.result, Some(at)),
+            Err((verdict, reason)) => return answer(verdict, reason),
+        }
+    } else {
+        match &run.result {
+            Some(result) => (result, None),
+            None => return answer(Verdict::Fail, NO_RESULT.to_owned()),
+        }
     };
     let Some(budget) = judging.budget else {
-        return Ok(answer(
+        return answer(
             Verdict::Error,
             "a judge costs money: give --budget USD".to_owned(),
-        ));
+        );
     };
     if judging.spent >= budget {
-        return Ok(answer(
+        return answer(
             Verdict::Error,
             "over budget: the judges spent the budget".to_owned(),
-        ));
+        );
     }
-    let diff = match diff(home, at.repo, at.base, at.head) {
+    let diff = match at
+        .map(|at| diff(home, at.repo, at.base, at.head))
+        .transpose()
+    {
         Ok(diff) => diff,
-        Err(why) => return Ok(answer(Verdict::Error, why)),
-    };
-    let request = request(db, id)?;
-    let opened = match judge::open(factory, name) {
-        Ok(opened) => opened,
-        Err(why) => return Ok(answer(Verdict::Error, why)),
+        Err(why) => return answer(Verdict::Error, why),
     };
     let read = judge::Read {
-        request: &request,
-        result: at.result,
-        diff: &diff,
+        request: &task.request,
+        result,
+        diff: diff.as_deref(),
     };
-    let asked = judge::ask(&opened, &home.join("scores"), &read, budget - judging.spent);
+    let asked = judge::ask(&called, &home.join("scores"), &read, budget - judging.spent);
     judging.spent += asked.cost;
-    let judged = Some(Judged {
-        model: opened.model.to_owned(),
-        calibration,
-    });
-    Ok(Graded {
+    Graded {
         verdict: asked.verdict,
         reason: asked.reason,
         cost: asked.cost,
-        judged,
-    })
+        judged: Some(Judged {
+            model: called.model,
+            calibration,
+        }),
+    }
 }
 
 /// What `head` changed since `base`, from Priory's clone of `repo` under `home`.
@@ -453,10 +510,11 @@ fn request(db: &Connection, id: i64) -> rusqlite::Result<String> {
         .unwrap_or_else(|| "(the request is not in the inbox)".to_owned()))
 }
 
-/// Runs the `command` scorer `scorer` on the commit `head` of `repo`, from Priory's clone under
-/// `home`, against the start commit `base`, with `result` as the result it reads.
+/// Runs the `command` scorer `scorer` of the factory folder `dir` on the commit `head` of `repo`,
+/// from Priory's clone under `home`, against the start commit `base`, with `result` as the result
+/// it reads.
 pub fn on_commit(
-    factory: &Factory,
+    dir: &Path,
     home: &Path,
     repo: &str,
     base: &str,
@@ -468,7 +526,7 @@ pub fn on_commit(
     let Some(program) = &scorer.run else {
         return error("the scorer names no `run`".to_owned());
     };
-    let program = match inside(&factory.dir, program) {
+    let program = match inside(dir, program) {
         Ok(program) => program,
         Err(why) => return error(why),
     };

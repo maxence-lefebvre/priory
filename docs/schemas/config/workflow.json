@@ -195,6 +195,17 @@
         "effect": {
           "$ref": "#/definitions/Effect"
         },
+        "gate": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "default": {},
+          "description": "The scorers that grade an outcome before the daemon accepts it, by outcome. A failing one\nrefuses the outcome; none can approve anything.",
+          "type": "object"
+        },
         "guard": {
           "allOf": [
             {

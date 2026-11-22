@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 95;
+const VERSION: i64 = 96;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1726,6 +1726,29 @@ ALTER TABLE runs ADD COLUMN debate INTEGER REFERENCES debates (id);
 PRAGMA user_version = 95;
 ";
 
+// A result a step's gate holds until its scorers grade it: the result call's arguments, the scorers,
+// and whether the run's turn ended while they graded. A refused result is never stored.
+const SCHEMA_96: &str = "
+CREATE TABLE IF NOT EXISTS gates (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  run       INTEGER NOT NULL REFERENCES runs (id),
+  task      INTEGER NOT NULL REFERENCES tasks (id),
+  step      TEXT NOT NULL,
+  outcome   TEXT NOT NULL,
+  arguments TEXT NOT NULL,
+  result    TEXT NOT NULL,
+  scorers   TEXT NOT NULL,
+  state     TEXT NOT NULL DEFAULT 'grading'
+            CHECK (state IN ('grading', 'passed', 'refused', 'dropped')),
+  reason    TEXT,
+  stopped   INTEGER NOT NULL DEFAULT 0,
+  created   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  ended     TEXT
+);
+CREATE INDEX IF NOT EXISTS gates_grading ON gates (run) WHERE state = 'grading';
+PRAGMA user_version = 96;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1739,7 +1762,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
-    SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95,
+    SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -3823,7 +3846,10 @@ pub(crate) fn signal(
             if let Some(head) = crate::preempt::due(&tx, run, watched)? {
                 kill = crate::tools::preempt(&tx, &signal.session, trace, head)?;
             // The run settles its ask or wait once its compact is typed, so it never sleeps past it.
-            // A result carried into the next step on this process compacts there.
+            // A result carried into the next step on this process compacts there. A run whose gate
+            // grades waits, idle, for the verdict, which settles it.
+            } else if crate::gates::grading(&tx, run)?.is_some() {
+                kill = crate::tools::held_stop(&tx, &signal.session, trace)?;
             } else if !crate::tools::overflow(&tx, &signal.session, context, trace.factory)? {
                 kill = crate::tools::stop(&tx, &signal.session, trace)?;
                 crate::tools::overflow(&tx, &signal.session, context, trace.factory)?;
@@ -3902,7 +3928,9 @@ pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, S
         .query_row(
             "SELECT outbox.id, runs.id, runs.tmux, runs.session, outbox.text FROM runs
              JOIN outbox ON outbox.task = runs.task AND outbox.state = 'queued'
-             WHERE runs.ended IS NULL AND runs.idle = 1 AND NOT EXISTS (
+             WHERE runs.ended IS NULL AND runs.idle = 1
+             AND NOT EXISTS (SELECT 1 FROM gates WHERE gates.run = runs.id AND gates.state = 'grading')
+             AND NOT EXISTS (
                SELECT 1 FROM outbox AS open JOIN runs AS typed ON typed.id = open.run
                WHERE open.task = runs.task AND open.state IN ('attempted', 'uncertain')
                AND typed.ended IS NULL)

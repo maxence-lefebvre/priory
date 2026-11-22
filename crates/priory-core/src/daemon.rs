@@ -333,6 +333,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         .desktop_notifications()
         .then(notify::Desktop::default);
     let mut reads = Reads::default();
+    let mut grading = crate::gates::Grading::default();
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
     let mut alive = None;
@@ -397,6 +398,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         snooze::tick(&mut db, &trace)?;
         state::age_queue(&db, &mut aged)?;
         read_states(&mut db, &mut reads)?;
+        let head = |worktree: &Path, branch: &str| runtime::kept_head(&home, worktree, branch);
+        for tmux in crate::gates::tick(&mut db, &trace, &home, &mut grading, &head)? {
+            runtime::kill(&tmux);
+        }
         if sweep_scripts(&db, factory, &home, &mut scripts)? {
             swept = None;
         }
