@@ -2,9 +2,11 @@
   description = "Priory runs coding agents on machines you own";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+  inputs.rust-overlay.url = "github:oxalica/rust-overlay";
+  inputs.rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
 
   outputs =
-    { self, nixpkgs }:
+    { self, nixpkgs, rust-overlay }:
     let
       systems = [
         "x86_64-linux"
@@ -49,7 +51,7 @@
         default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
       });
 
-      apps =forAllSystems (pkgs: {
+      apps = forAllSystems (pkgs: {
         default = {
           type = "app";
           program = nixpkgs.lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.default;
@@ -57,13 +59,11 @@
         };
       });
 
+      # The dev shell takes Rust from rust-toolchain.toml, as CI does, so clippy matches CI's.
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           packages = with pkgs; [
-            cargo
-            rustc
-            rustfmt
-            clippy
+            ((pkgs.extend rust-overlay.overlays.default).rust-bin.fromRustupToolchainFile ./rust-toolchain.toml)
             nodejs
             tmux
             git

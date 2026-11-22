@@ -12,8 +12,8 @@ AGENTS.md](AGENTS.md#verify) and fix every failure. CI runs the same checks on e
 
 With Nix, `nix develop` opens a shell with the tools the checks need. With
 [direnv](https://direnv.net/), run `direnv allow` once and the repository's `.envrc` opens that
-shell whenever you enter the folder. The shell takes Rust from nixpkgs, which can be newer than
-`rust-toolchain.toml`: when clippy disagrees with CI, CI's toolchain wins.
+shell whenever you enter the folder. The shell's Rust is the version `rust-toolchain.toml` pins,
+the one CI uses.
 
 ## Code
 
