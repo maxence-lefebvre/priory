@@ -1805,7 +1805,8 @@ pub(crate) fn restack_stacked(
 }
 
 /// Tells the stacked `task` `text`, from the event `seq` when one brought it: the line fires its
-/// gate, reaches it while it runs, or reopens it when its checks already made it done.
+/// gate, reaches it while it runs, reopens it when its checks already made it done, or waits in its
+/// queue while it sleeps on an ask or is held, for the run that wakes it.
 pub(crate) fn tell_stacked(
     tx: &Transaction,
     trace: &Trace,
@@ -1828,12 +1829,6 @@ pub(crate) fn tell_stacked(
         .optional()?;
     match (gate, state.as_str()) {
         (Some(gate), _) => fire(tx, gate, task, text, seq)?,
-        (None, "running") => {
-            tx.execute(
-                "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
-                params![task, text],
-            )?;
-        }
         (None, "done") => {
             let stack = crate::stack::of(tx, task)?;
             let bottom = stack.first().map(|pull| pull.resource.clone());
@@ -1843,7 +1838,13 @@ pub(crate) fn tell_stacked(
             wake_on(tx, task, &text, seq)?;
             trace::reopened(tx, trace, task, &bottom, Some(&bottom))?;
         }
-        _ => {}
+        (None, "failed" | "dropped") => {}
+        (None, _) => {
+            tx.execute(
+                "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
+                params![task, text],
+            )?;
+        }
     }
     Ok(())
 }

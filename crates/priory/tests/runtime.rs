@@ -19926,6 +19926,35 @@ fn an_entry_that_started_from_its_parents_unpushed_commit_is_told_only_of_a_push
 }
 
 #[test]
+fn a_parents_push_reaches_an_entry_asleep_on_an_ask_once_it_wakes() {
+    let setup = stacked_entry("batch-waiting-asked");
+    let asks = setup.until("asks", |rows| rows.iter().any(|row| row[1] == "3"));
+    setup.gone("priory-3");
+
+    let head = setup.commit(2, "c.txt");
+    setup.push_task(2);
+
+    let line = format!("task 2 pushed priory/2 to {head}; rebase onto it");
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "3" && row[4].contains(&line))
+    });
+    let told = outbox
+        .iter()
+        .find(|row| row[1] == "3" && row[4].contains(&line))
+        .unwrap();
+    assert_eq!(told[3], "queued", "{told:?}");
+    let task = setup
+        .rows("tasks")
+        .into_iter()
+        .find(|row| row[0] == "3")
+        .unwrap();
+    assert_eq!(task[4], "asleep", "{task:?}");
+    let open = setup.rows("asks");
+    assert!(open.iter().any(|row| row[0] == asks[0][0]), "{open:?}");
+}
+
+#[test]
 fn the_predecessors_pull_request_merging_wakes_the_waiting_entry_to_rebase_onto_its_base() {
     let setup = stacked_entry_opened("batch-waiting-restack");
 

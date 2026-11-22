@@ -204,7 +204,8 @@ A `waiting` edge makes a stack across two tasks. The go records the parent as th
   the entry already started from, or of an older one, tells nothing.
 - When the parent's pull request merges, the entry gets the line a task's own stack gets: `#7 merged;
   rebase #8 onto main`. It fires the entry's gate, reaches the entry while it runs, or reopens it
-  when its checks already made it `done`. The daemon records the merged one's base as the base of
+  when its checks already made it `done`. While the entry sleeps on an ask or is held, the line
+  waits in its queue and reaches the run that wakes it. The daemon records the merged one's base as the base of
   the entry's bottom pull request, so the retarget GitHub makes asks no person. A retarget onto
   that base that arrives before the parent's close asks no person either.
 
