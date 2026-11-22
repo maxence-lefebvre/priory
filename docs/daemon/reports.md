@@ -9,7 +9,7 @@ a report line that `priory post` puts on the desk ([desk.md](desk.md)).
 
 ## Write a report
 
-An agent step calls the `report` tool ([tools.md](tools.md)). A code step or a script runs:
+An agent step calls the `report` tool ([tools.md](../reference/tools.md#reportdate-since-greeting-sections)). A code step or a script runs:
 
 ```sh
 priory report put TASK FILE

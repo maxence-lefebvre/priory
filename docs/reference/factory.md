@@ -303,7 +303,7 @@ its Slack app. With this table, `priory intake` holds a Socket Mode connection t
 ## `[asks]`
 
 See [asks.md](../daemon/asks.md) for when the daemon runs the `deliver` command and how it retries,
-and [tools.md](../daemon/tools.md#commands-an-answer-runs) for the commands an answer runs.
+and [tools.md](tools.md#commands-an-answer-runs) for the commands an answer runs.
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |

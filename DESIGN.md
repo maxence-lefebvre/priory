@@ -1364,7 +1364,7 @@ Priory's panels also ship as Herdr mods (R8.6). A mod renders natively with gpui
 beside other panes, with a fine pointer. It keeps this file's structure, tokens, state tiles, copy
 and ask rules. This section lists only what differs, and the panels the adapter ships: Desk, Asks,
 Queue, Bonjour, Costs, Flows, Task, Inbox, Tasks and Runs, and the usage line. Bonjour is also the web view's Reports panel. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
-the adapter lives, how it reads and acts, and the data each panel needs. The approved boards are in
+the adapter lives and how it reads and acts, and [`docs/reference/herdr-panels.md`](docs/reference/herdr-panels.md) lists the data each panel needs. The approved boards are in
 `~/shared/priory-round-6/` on the author's machine.
 
 ### What differs from the web view

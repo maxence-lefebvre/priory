@@ -42,7 +42,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `next` | table of strings | yes | | Each outcome and where it leads: a step id, `done` or `stop` | `{ passed = "done", failed = "stop" }` |
 | `by` | table of `code`, `model`, `human` or `asleep` | no | the step's `decides` | Who decides an outcome's edge, where it differs from the step's decider | `{ passed = "asleep" }` |
 | `proof` | table of `gate-passed` | no | none: every outcome is the agent's word | Model steps only. The proof the daemon checks before it accepts an outcome, by outcome. `gate-passed`: the factory's [`gate`](factory.md#top-level-keys) passed at the head of the task's branch. See Proofs in [tools.md](../daemon/tools.md#proofs) | `{ passed = "gate-passed" }` |
-| `plan_requires` | array of `goal`, `testing`, `verification` | no | `[]` | Model steps only. The plan result fields this step's `prompt` or its agent's instructions must ask for. `priory check` refuses the step when neither mentions a named field. See `result` in [tools.md](../daemon/tools.md) | `["goal", "testing", "verification"]` |
+| `plan_requires` | array of `goal`, `testing`, `verification` | no | `[]` | Model steps only. The plan result fields this step's `prompt` or its agent's instructions must ask for. `priory check` refuses the step when neither mentions a named field. See `result` in [tools.md](tools.md#resultoutcome-summary-evidence-commit-reason-branches-risk-goal-testing-brief-verification-feedback-batch) | `["goal", "testing", "verification"]` |
 | `after` | `merged` | no | none | What the task waits for before it enters the step. `merged`: every pull request of the task's stack merged. Until then the task sleeps on the checks of [Done and checks](../daemon/waits.md#done-and-checks), and green checks alone do not move it on. See [Steps after the merge](#steps-after-the-merge) | `"merged"` |
 | `autonomous` | string | no | | Why an irreversible step may run without a person's approval | `"it only labels issues"` |
 | `guard` | table | no | none allowed | Irreversible model steps only. `allow`: the guards whose calls the step's agent may make while the step is approved at the task's commit or `autonomous`. An `autonomous` step cannot name `gh-pr-merge` or `gh-pr-approve`, and no step can name `priory-person`, `connector-sign-in` or `unreadable`. See [guard.md](../daemon/guard.md) | `{ allow = ["gh-pr-comment"] }` |
@@ -62,12 +62,12 @@ and `priory check --explain` counts only a `human` edge as a person's decision.
 
 A model step outcome of `red`, `yellow` or `green` also grades the task: how risky or uncertain its
 work is. The task keeps the latest grade and its reason. See Grades in
-[tools.md](../daemon/tools.md#grades).
+[tools.md](tools.md#grades).
 
 A model step outcome of `low`, `medium` or `high` whose result carries `risk`, one line per risk
 dimension, is a merge risk verdict on the finished change. The task keeps the latest verdict, and its asks
 show it to the person. See Merge risk in
-[tools.md](../daemon/tools.md#merge-risk).
+[tools.md](tools.md#merge-risk).
 
 ## Example
 
@@ -141,7 +141,7 @@ next = { found = "done", ok = "stop", failed = "stop" }  # found: the script's l
 A runbook is a workflow made only of human steps, so no agent runs. Each step is an ask on the
 desk, and the task moves by the option the person picks. A human step's `command` runs once when
 the person picks an option in its `runs`, with the at-most-once and uncertain rules of an agent's
-ask command (see [tools.md](../daemon/tools.md#commands-an-answer-runs)). The task moves by that
+ask command (see [tools.md](tools.md#commands-an-answer-runs)). The task moves by that
 option once the command exits 0. A failed or uncertain command asks the step again, with the exit
 or the uncertain outcome in the question. `examples/release-checklist/` is a runbook with a
 `cargo test` step:

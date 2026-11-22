@@ -4,14 +4,14 @@ This page explains how R8.6 could work: "A second view host, such as a Herdr lay
 same view files as an adapter." It builds nothing. It holds the model, the first code slice with
 its tests, the slices after it, and the open questions with a recommendation for each.
 
-The first slice is built, with each recommendation taken: [herdr.md](../adapters/herdr.md#the-layout)
+The first slice is built, with each recommendation taken: [herdr.md](../reference/herdr-panels.md#the-layout)
 describes it. Its placement differs from the tables below: a map in `layout.js` puts narrow panels in
 asides and wide ones in center tabs, and a view's nesting only orders them. It also differs here: `adapters/herdr/layout` prints the layout, and only
 `install` writes it.
 
 The later slices are built too, each with its open question's recommendation taken:
-[herdr.md](../adapters/herdr.md#installing) describes one layout per view, and
-[When the views change](../adapters/herdr.md#when-the-views-change) the Priory bar's offer to
+[herdr.md](../installing-the-herdr-adapter.md#installing) describes one layout per view, and
+[When the views change](../installing-the-herdr-adapter.md#when-the-views-change) the Priory bar's offer to
 regenerate. They differ here: `default` keeps `priory.json`, not `priory-default.json`, so its
 layout name and `keys.json` bindings stay. The Priory bar regenerates with Herdr's file API and the
 installed `priory.json` as the frame, since a copied mod has no `install` to run.

@@ -261,6 +261,7 @@ with a key such as `github:owner/name#42`. It goes through the same steps.
 - Give every agent the same writing guide, facts and skills: [writing.md](docs/daemon/writing.md) and
   [skills.md](docs/daemon/skills.md).
 - Run one factory on two machines: [How to add a second machine](docs/adding-a-second-machine.md).
-- Work from Herdr or from GitHub's pull request page: [the Herdr adapter](docs/adapters/herdr.md) and
+- Work from Herdr or from GitHub's pull request page:
+  [How to install the Herdr adapter](docs/installing-the-herdr-adapter.md) and
   [the GitHub extension](docs/adapters/github.md).
 - Queue a Slack thread from Slack: [the message shortcut](docs/intake/slack.md#message-shortcut).

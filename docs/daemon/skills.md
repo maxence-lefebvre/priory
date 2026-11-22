@@ -173,7 +173,7 @@ it.
 ### Candidates
 
 Each `remember(name, description, text)` or `forget(name)` call is one candidate (see
-[tools.md](tools.md#remembername-description-text-forgetname-and-memoryname)). The daemon stores it
+[tools.md](../reference/tools.md#remembername-description-text-forgetname-and-memoryname)). The daemon stores it
 in its state file, then publishes it as `priory.memory.written` through its queue, as it does a
 claim, so a runner cut off from the log publishes it once the link is back. The message's id is the
 candidate's id. A later write of the same name is a new candidate, never an edit. A forget is a

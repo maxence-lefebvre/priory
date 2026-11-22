@@ -16,7 +16,9 @@ config page gives a field table, a complete example and the errors `priory check
 | [scorers.md](scorers.md) | `scorers/<name>.toml`: the questions that grade a finished run |
 | [benchmarks.md](benchmarks.md) | `benchmarks/<name>.toml`: the cases a comparison replays and its primary scorer |
 | [cases.md](cases.md) | A benchmark case folder: `case.toml`, `gh/` and `answers.toml`, and its gaps |
+| [tools.md](tools.md) | The MCP tools an agent calls: arguments, examples, replies and refusals |
 | [serve.md](serve.md) | `priory serve` and the JSON of its endpoints and of the listings' `--json` |
+| [herdr-panels.md](herdr-panels.md) | The Herdr adapter's panels: what each reads, shows and runs, and the data it needs |
 | [events.md](events.md) | Every message type on `factory.intake`, with an example payload |
 | [e2e-scenarios.md](e2e-scenarios.md) | The scenario file of the end-to-end factory test |
 | [prompt-evals.md](prompt-evals.md) | `priory eval`, its evaluation file and the fake MCP server |

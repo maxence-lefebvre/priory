@@ -1,5 +1,9 @@
 # Runs
 
+A run is one agent process working on a task, from its start to its sleep or exit. The daemon
+starts runs in queue order, and only when they fit in the room, so a factory never runs more agents
+than its machines can take.
+
 A run is one task step worked by one agent's `claude` process. A model step that leads to another
 model step with the same agent carries the process on into a new run, so each run has at most one
 result. A model step with another agent gets a new run and a new process (see Moving on). Each
@@ -253,7 +257,7 @@ releases that hold, back to the state it was held from. When the issue enters th
 again before anyone answers, the daemon answers `keep` itself and the hold's condition reads
 `ENG-7 entered the view My loop backlog again`. Entering another view answers nothing. A task that already ran gets no ask: its
 agent hears `linear.issue.left` as an event of its own key, which wakes it when it sleeps at a model
-step (see [tools.md](tools.md#subscribeon-and-unsubscribeon)). A batch entry gets the same ask.
+step (see [Subscriptions in tools.md](tools.md#subscriptions)). A batch entry gets the same ask.
 
 Events for a held task are kept for its first run, as for a queued one, and a schedule's tick for it
 is coalesced. `priory cancel` drops a held task and ends its hold.
