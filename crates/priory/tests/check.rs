@@ -2439,6 +2439,24 @@ fn a_factory_with_memories_passes_and_counts_its_memories() {
     );
 }
 
+#[test]
+fn a_memory_md_index_in_the_memories_folder_is_skipped_not_loaded_as_a_memory() {
+    let mut files = valid();
+    files.push(("memories/release-day.md", MEMORY));
+    files.push((
+        "memories/MEMORY.md",
+        "# Memory index\n\n- [release-day](release-day.md): When releases go out.\n",
+    ));
+
+    let outcome = check(&factory("memories-index-file", &files));
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+    assert_eq!(
+        outcome.stdout,
+        "ok: 1 agent, 1 trigger, 1 workflow, 1 runner, 1 memory\n"
+    );
+}
+
 /// The stderr of `priory check` on the valid factory with `files` added, which must fail.
 fn memory_problems(name: &str, added: &[(&str, &str)]) -> String {
     let mut files = valid();

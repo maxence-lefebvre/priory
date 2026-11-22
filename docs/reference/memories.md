@@ -14,7 +14,9 @@ Schema: [`config/memory.json`](../schemas/config/memory.json). Editors do not va
 against it, but `priory check` applies the same rules.
 
 `memories/` holds only memory files. A file whose name starts with `.`, such as `.gitkeep`, is
-skipped.
+skipped. So is `MEMORY.md`, the index file that Claude Code's own memory folders hold: Priory never
+loads it as a memory, and a run gets Priory's own index instead (see [The index](#the-index)). The
+same holds for the memories folder of a kit or a memories repository.
 
 ## Frontmatter keys
 

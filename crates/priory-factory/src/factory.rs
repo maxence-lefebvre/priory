@@ -1971,6 +1971,10 @@ struct SkillFrontmatter {
 /// The file whose text goes before every agent's own prompt.
 pub const INSTRUCTIONS: &str = "instructions.md";
 
+/// The index file a memories folder may hold, as Claude Code's own memory folders do, which is
+/// never loaded as a memory.
+pub const MEMORY_INDEX: &str = "MEMORY.md";
+
 /// The size past which `priory check` refuses a Codex agent's instructions and prompt, which reach
 /// Codex on its command line, under tmux's 16 KiB limit with Priory's hooks and tools.
 pub const CODEX_PROMPT_LIMIT: usize = 8192;
@@ -2611,8 +2615,10 @@ impl Loader<'_> {
     /// Each memory of the folder `folder`, by its file's name without `.md`.
     fn memories(&mut self, folder: &str, memories: &mut BTreeMap<String, Loaded<Memory>>) {
         for path in self.entries(folder).into_iter().filter(|path| {
-            // A dotfile such as .gitkeep keeps an empty folder in git.
-            !file_name(path).starts_with('.')
+            // A dotfile such as .gitkeep keeps an empty folder in git, and MEMORY.md is the index
+            // that Claude Code's own memory folders hold.
+            let name = file_name(path);
+            !name.starts_with('.') && name != MEMORY_INDEX
         }) {
             if let Some((memory, lines)) = self.memory(&path) {
                 let name = file_name(&path);

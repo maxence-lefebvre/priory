@@ -26579,6 +26579,38 @@ fn a_run_gets_the_memories_repositorys_memories_after_the_kits_and_before_the_fa
 }
 
 #[test]
+fn a_memory_md_index_in_the_kit_or_the_memories_repository_is_skipped_not_refused() {
+    let mut setup = Setup::new("scriptorium-index");
+    let index = "# Memory index\n\n- [kit-fact](kit-fact.md): What the kit knows.\n";
+    let kit_index = setup.dir.join("kit-work/memories/MEMORY.md");
+    fs::create_dir_all(kit_index.parent().unwrap()).unwrap();
+    fs::write(&kit_index, index).unwrap();
+    let kit = setup.kit_repo();
+    let scriptorium_index = setup.dir.join("scriptorium-work/memories/MEMORY.md");
+    fs::create_dir_all(scriptorium_index.parent().unwrap()).unwrap();
+    fs::write(&scriptorium_index, index).unwrap();
+    let scriptorium = setup.memories_repo();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let args = setup.claude_args(0);
+    let names: Vec<String> = remembered(&args)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(
+        names,
+        ["gate-cost.md", "kit-fact.md", "scriptorium-fact.md"],
+        "MEMORY.md is an index, never a memory"
+    );
+    let runs = setup.rows("runs");
+    assert_eq!([&runs[0][9], &runs[0][10]], [&kit, &scriptorium]);
+    assert_eq!(setup.until_memories_banner(|_| true), None);
+    assert_eq!(setup.kit_banner(), None);
+}
+
+#[test]
 fn a_failed_memories_fetch_keeps_the_last_good_commit_and_says_so_on_the_desk() {
     let mut setup = Setup::new("scriptorium-offline");
     let good = setup.memories_repo();
