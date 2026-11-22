@@ -135,7 +135,7 @@ from their withdrawal log, and left it null for older waits, which have none. Th
 | `moved-on` | ask, wait | A later run of the task called another tool |
 | `revived` | ask, wait | A person revived the task, or feedback reopened it, as its next generation |
 | `predecessor-revived` | ask | A person revived the task that a batch entry's condition waits on, so the condition waits again |
-| `asked` | wait | The daemon asked a person about the task's stack, which ends its gates |
+| `asked` | wait | The daemon asked a person about the task's stack, or about a fix that failed the same way, which ends its gates |
 
 State files before schema 58 kept the reason as a number in `withdrawn`. The upgrade names it: -1
 is `dismissed`, -2 `sibling-fired`, 0 `moved-on` and a generation `revived`. A wait withdrawn by an
@@ -221,7 +221,7 @@ wait and at each new event:
 | The newest event is `github.pull_request.closed` without `merged` true              | wakes the agent: `wait <id> fired: <pull request> closed without a merge`, or `closed, and GitHub no longer says whether it merged` when `merged` is null |
 | Else, the newest event names another head and came after the result              | wakes the agent: `wait <id> fired: the head of <pull request> moved to <sha>, away from your result's commit <commit>` |
 | Else, the newest event names another head and came before the result             | the task sleeps on, since a later event tells whether the head is the commit |
-| Else, the newest check at the commit is red, or counts `failing` and a red check at the commit was seen | wakes the agent with that red check: `wait <id> fired: check <name> at <commit> concluded <conclusion> <url>` |
+| Else, the newest check at the commit is red, or counts `failing` and a red check at the commit was seen | wakes the agent with that red check: `wait <id> fired: check <name> at <commit> concluded <conclusion> <url>`, or asks a person when the fix failed the same way (see [A fix that fails the same way](#a-fix-that-fails-the-same-way)) |
 | Else, the newest check at the commit has `pending` 0 and `failing` 0             | marks the task done and starts no run  |
 | Else, no check at the commit, and the newest `github.pull_request.check_runs` snapshot at it has `runs` 0 | marks the task done and starts no run  |
 | Otherwise                                                                           | the task sleeps on                     |
@@ -243,6 +243,40 @@ leave the task asleep, and the merge that would mark it done enters that step in
 person's `say` started a run while the task slept, the merge moves that run as a result would: it
 carries on into a model step of the same agent, and otherwise ends and its session is killed. See
 [Steps after the merge](../reference/workflows.md#steps-after-the-merge).
+
+### A fix that fails the same way
+
+A red check that would wake the agent asks a person instead when the fix failed the same way as
+the commit before it. A loop that changes nothing then stops after one wasted fix, not when a
+[spend cap](spend.md) runs out.
+
+The signature of a failure is the set of red checks at the commit, each as its name and
+conclusion, such as `lint (failure)`. The daemon compares it with the signature of the red check
+that fired the task's previous gate on the same pull request, counting only the events up to that
+firing. When both match, the daemon does not wake the agent. It ends the task's gates and puts an
+agent ask on the desk, named `ci-fix-exhausted-<task>-<wait>`, where `<wait>` is the gate that
+turned red:
+
+| Field | Value |
+| ----- | ----- |
+| `title` | `ci-fix-exhausted: lint (failure)` |
+| `question` | `The worker's fix at fed0000 failed the same checks as def0000 before it: lint (failure). What should the worker do?` |
+| `options` | `try again`, `stop` |
+
+The task sleeps with no process. The answer wakes the agent as any answer does. Its next `done`
+stores fresh gates, and a red check there wakes the agent again even with the same signature,
+since the gate before it ended on the ask and fired on nothing. So each answer buys one more fix.
+
+The rule holds for a fix at the same commit too. A result that names a commit whose checks already
+failed would otherwise wake the agent again at once.
+
+Known limits:
+
+- A check event carries no error text, so a fix that changes which test fails inside one job still
+  matches. The person answers `try again`.
+- A gate that fired on feedback or a moved head breaks the streak, as does a revive.
+- A failing `priory gate` in the agent's pane and a check that stays pending forever are not
+  bounded this way. See the [circuit breaker note](../design/circuit-breaker.md).
 
 ### A stack of pull requests
 
