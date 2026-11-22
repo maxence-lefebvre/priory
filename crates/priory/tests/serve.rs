@@ -5823,3 +5823,214 @@ fn the_subscribe_endpoint_subscribes_a_task_as_priory_subscribe_does() {
         .collect();
     assert!(resources.contains(&json!(pull)), "{resources:?}");
 }
+
+const SENTRY_HOOKS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n\n[webhooks.sentry]\nsecret_env = \"TEST_SECRET\"\n";
+
+/// Sentry's `issue` `created` example payload, trimmed, for project `python`.
+fn sentry_issue(action: &str, project: &str) -> Value {
+    json!({
+        "action": action,
+        "installation": { "uuid": "24b397fc-a86e-43ef-9297-949e21b82480" },
+        "data": {
+            "issue": {
+                "url": "https://sentry.io/api/0/organizations/example-org/issues/1234567890/",
+                "web_url": "https://example-org.sentry.io/issues/1234567890/",
+                "project_url": "https://example-org.sentry.io/issues/?project=4509877862268928",
+                "id": "1234567890",
+                "shortId": "PYTHON-Y",
+                "title": "ZeroDivisionError: division by zero",
+                "culprit": "app.views in divide",
+                "permalink": "https://example-org.sentry.io/issues/1234567890/",
+                "level": "error",
+                "status": "unresolved",
+                "substatus": "new",
+                "platform": "python",
+                "project": { "id": "112313123123134", "name": project, "slug": project, "platform": "python" },
+                "type": "default",
+                "issueType": "error",
+                "issueCategory": "error",
+                "priority": "high",
+                "count": "3",
+                "userCount": 3,
+                "firstSeen": "2026-11-17T11:59:00.679000+00:00",
+                "lastSeen": "2026-11-17T11:59:00.738000+00:00"
+            }
+        },
+        "actor": { "type": "application", "id": "sentry", "name": "Sentry" }
+    })
+}
+
+/// POSTs `body` to `/hooks/sentry` as Sentry would: `resource` in `Sentry-Hook-Resource`, and
+/// `signature`, the bare hex HMAC-SHA256 of the body, when given.
+fn deliver_sentry(
+    address: &str,
+    resource: &str,
+    request_id: &str,
+    signature: Option<&str>,
+    body: &str,
+) -> (u16, String) {
+    let signature = signature.map_or(String::new(), |signature| {
+        format!("Sentry-Hook-Signature: {signature}\r\n")
+    });
+    raw(
+        address,
+        &format!(
+            "POST /hooks/sentry HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\n\
+             Request-ID: {request_id}\r\nSentry-Hook-Resource: {resource}\r\n\
+             Sentry-Hook-Timestamp: 1794916800\r\n{signature}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+impl Setup {
+    /// A factory with `[serve]`, the Sentry webhook and a `sentry` trigger on project `python`.
+    fn sentry_hooks(name: &str) -> Self {
+        let setup = Setup::new(name, SENTRY_HOOKS);
+        fs::create_dir_all(setup.dir.join("factory/triggers")).unwrap();
+        fs::write(
+            setup.dir.join("factory/triggers/sentry-errors.toml"),
+            "source = \"sentry\"\non = \"issue.created\"\nfilter = { project = \"python\", level = \"error\" }\nrepo = \"owner/repo\"\nworkflow = \"implement\"\nkey = \"issue.id\"\n",
+        )
+        .unwrap();
+        setup
+    }
+
+    fn send_sentry(&self, address: &str, resource: &str, body: &Value) -> (u16, String) {
+        let body = body.to_string();
+        let signature = linear_signature(&self.secret, &body);
+        deliver_sentry(address, resource, "req-1", Some(&signature), &body)
+    }
+}
+
+#[test]
+fn a_signed_sentry_issue_created_delivery_publishes_the_event_and_requests_a_task() {
+    let mut setup = Setup::sentry_hooks("sentry-created");
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, reply) = setup.send_sentry(&address, "issue", &sentry_issue("created", "python"));
+
+    assert_eq!(status, 202, "{reply}");
+    assert_eq!(reply, r#"{"outcome":"published"}"#);
+    let published = setup.published();
+    let kinds: Vec<_> = published.iter().map(|m| m.kind.as_str()).collect();
+    assert_eq!(kinds, ["sentry.issue.created", "factory.task.requested"]);
+    assert_eq!(published[0].subject.as_deref(), Some("PYTHON-Y"));
+    assert_eq!(
+        published[0].data,
+        json!({
+            "issue": "1234567890",
+            "short_id": "PYTHON-Y",
+            "title": "ZeroDivisionError: division by zero",
+            "culprit": "app.views in divide",
+            "url": "https://example-org.sentry.io/issues/1234567890/",
+            "project": "python",
+            "level": "error",
+            "category": "error",
+            "actor": "Sentry",
+            "delivery": "req-1",
+            "time": "2026-11-17T11:59:00.679000+00:00",
+            "baseline": false,
+            "triggers": ["sentry-errors"]
+        })
+    );
+    assert_eq!(published[1].subject.as_deref(), Some("sentry:1234567890"));
+}
+
+#[test]
+fn a_sentry_delivery_with_a_wrong_or_missing_signature_gets_401_before_it_is_read() {
+    let mut setup = Setup::sentry_hooks("sentry-refused");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = sentry_issue("created", "python").to_string();
+    let signatures = [
+        Some(linear_signature("not-the-secret", &body)),
+        None,
+        Some("zz".to_owned()),
+        Some(sign(&setup.secret, body.as_bytes())),
+    ];
+    for signature in &signatures {
+        let (status, reply) =
+            deliver_sentry(&address, "issue", "req-1", signature.as_deref(), &body);
+
+        assert_eq!(status, 401, "{signature:?}");
+        assert_eq!(
+            reply,
+            r#"{"error":"Sentry-Hook-Signature is missing or does not match the body"}"#
+        );
+    }
+    let garbage = "not json, secret-marker";
+    let (status, _) = deliver_sentry(&address, "issue", "req-1", Some("00"), garbage);
+    assert_eq!(status, 401);
+    assert!(setup.published().is_empty());
+    let log = fs::read_to_string(setup.dir.join("server.log")).unwrap_or_default();
+    assert!(
+        !log.contains("secret-marker") && !log.contains("ZeroDivisionError"),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_replayed_sentry_delivery_publishes_nothing_even_under_a_new_request_id() {
+    let mut setup = Setup::sentry_hooks("sentry-replay");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = sentry_issue("created", "python").to_string();
+    let signature = linear_signature(&setup.secret, &body);
+    let (status, _) = deliver_sentry(&address, "issue", "req-1", Some(&signature), &body);
+    assert_eq!(status, 202);
+    let first = setup.published();
+
+    for request_id in ["req-1", "req-forged"] {
+        let (status, reply) =
+            deliver_sentry(&address, "issue", request_id, Some(&signature), &body);
+
+        assert_eq!(status, 202, "{reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    }
+    assert_eq!(setup.published(), first);
+}
+
+#[test]
+fn a_sentry_delivery_no_trigger_matches_or_priory_does_not_map_gets_202_and_publishes_nothing() {
+    let mut setup = Setup::sentry_hooks("sentry-dropped");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut warning = sentry_issue("created", "python");
+    warning["data"]["issue"]["level"] = json!("warning");
+    let deliveries = [
+        ("issue", sentry_issue("created", "other")),
+        ("issue", warning),
+        ("issue", sentry_issue("resolved", "python")),
+        ("error", sentry_issue("created", "python")),
+        ("installation", json!({ "action": "created", "data": {} })),
+    ];
+
+    for (resource, body) in deliveries {
+        let (status, reply) = setup.send_sentry(&address, resource, &body);
+
+        assert_eq!(status, 202, "{resource}: {reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    }
+    assert!(setup.published().is_empty());
+}
+
+#[test]
+fn a_sentry_issue_without_its_id_gets_400_and_a_body_over_1_mib_gets_413() {
+    let mut setup = Setup::sentry_hooks("sentry-invalid");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut nameless = sentry_issue("created", "python");
+    nameless["data"]["issue"]["id"] = Value::Null;
+
+    let (status, reply) = setup.send_sentry(&address, "issue", &nameless);
+    let (big, _) = raw(
+        &address,
+        &format!(
+            "POST /hooks/sentry HTTP/1.1\r\nHost: {address}\r\nSentry-Hook-Signature: 00\r\n\
+             Content-Length: {}\r\n\r\n",
+            1024 * 1024 + 1
+        ),
+    );
+
+    assert_eq!(status, 400);
+    assert_eq!(reply, r#"{"error":"the payload lacks the issue's `id`"}"#);
+    assert_eq!(big, 413);
+    assert!(setup.published().is_empty());
+}

@@ -268,6 +268,18 @@
       },
       "type": "object"
     },
+    "SentryWebhook": {
+      "additionalProperties": false,
+      "description": "Sentry issue webhooks, at `POST /hooks/sentry`.",
+      "properties": {
+        "secret_env": {
+          "default": "SENTRY_CLIENT_SECRET",
+          "description": "The environment variable that holds the integration's Client Secret, never the secret itself.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Serve": {
       "additionalProperties": false,
       "description": "The HTTP server over the factory's state, in the daemon and in `priory serve`.",
@@ -457,6 +469,16 @@
           "anyOf": [
             {
               "$ref": "#/definitions/LinearWebhook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sentry": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SentryWebhook"
             },
             {
               "type": "null"

@@ -2282,3 +2282,37 @@ fn the_memory_index_counts_toward_the_codex_limit() {
         outcome.stderr
     );
 }
+
+#[test]
+fn a_sentry_trigger_needs_the_sentry_webhook_and_a_supported_event_filter_and_key() {
+    let good = "source = \"sentry\"\non = \"issue.created\"\nfilter = { project = \"api\", level = \"error\" }\nrepo = \"owner/repo\"\nworkflow = \"implement\"\nkey = \"issue.id\"\n";
+    let wrong = "source = \"sentry\"\non = \"issue.resolved\"\nfilter = { team = \"x\" }\nworkflow = \"implement\"\nkey = \"issue.shortId\"\nbackfill = true\n";
+    let hooked =
+        "name = \"demo\"\n\n[serve]\n\n[webhooks.sentry]\nsecret_env = \"SENTRY_CLIENT_SECRET\"\n";
+    let mut files = with("triggers/agent-label.toml", good);
+    files.push(("triggers/wrong.toml", wrong));
+    let unhooked = check(&factory("sentry-unhooked", &files));
+    files.retain(|(path, _)| *path != "factory.toml");
+    files.push(("factory.toml", hooked));
+    let hooked = check(&factory("sentry-triggers", &files));
+    files.retain(|(path, _)| *path != "triggers/wrong.toml");
+    let ok = check(&factory("sentry-ok", &files));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(hooked.code, 1);
+    assert_eq!(
+        hooked.stderr,
+        "triggers/wrong.toml:6: only a GitHub, Linear or Slack trigger has `backfill`\n\
+         triggers/wrong.toml:2: a `sentry` trigger handles `issue.created`, not `issue.resolved`\n\
+         triggers/wrong.toml:3: a `sentry` trigger filters on `project` or `level`\n\
+         triggers/wrong.toml:5: a Sentry trigger's `key` is `issue.id`\n"
+    );
+    assert_eq!(unhooked.code, 1);
+    assert!(
+        unhooked.stderr.contains(
+            "triggers/agent-label.toml:1: a `sentry` trigger needs `[webhooks.sentry]` in factory.toml: Sentry events arrive only by webhook\n"
+        ),
+        "{}",
+        unhooked.stderr
+    );
+}

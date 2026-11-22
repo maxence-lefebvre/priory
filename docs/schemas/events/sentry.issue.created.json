@@ -1,0 +1,160 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/sentry.issue.created.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    },
+    "SentryIssueCreated": {
+      "additionalProperties": false,
+      "description": "A Sentry issue created, from a signed webhook delivery.",
+      "properties": {
+        "actor": {
+          "description": "Who created it: a user's name, an integration's, or `Sentry`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "baseline": {
+          "description": "True when the event came from the first poll of its stream.",
+          "type": "boolean"
+        },
+        "category": {
+          "description": "The issue's category, such as `error`, `outage` or `feedback`; null when Sentry names none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "culprit": {
+          "description": "Where the error happened, such as a function; null when Sentry names none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "delivery": {
+          "description": "The `Request-ID` of the delivery. Sentry does not sign it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "issue": {
+          "description": "Sentry's issue id, such as `1234567890`.",
+          "type": "string"
+        },
+        "level": {
+          "description": "The issue's level, such as `error` or `fatal`; null when Sentry names none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "description": "The slug of the issue's project.",
+          "type": "string"
+        },
+        "short_id": {
+          "description": "The issue's short id, such as `PYTHON-Y`.",
+          "type": "string"
+        },
+        "time": {
+          "description": "When the event happened, RFC 3339.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "title": {
+          "description": "The issue title.",
+          "type": "string"
+        },
+        "triggers": {
+          "description": "The triggers the event matched, so the triggers it requests tasks for; may be empty.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "url": {
+          "description": "The issue's page on Sentry.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "issue",
+        "short_id",
+        "title",
+        "culprit",
+        "url",
+        "project",
+        "level",
+        "category",
+        "actor",
+        "delivery",
+        "time",
+        "baseline",
+        "triggers"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A Sentry issue created, from a signed webhook delivery.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/SentryIssueCreated"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "sentry.issue.created",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "sentry.issue.created",
+  "type": "object"
+}
