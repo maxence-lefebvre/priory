@@ -1,7 +1,7 @@
 use crate::intake::{self, OUTPUT, TASK_REQUESTED};
 use crate::log::{self, Log};
 use herdr_bus::{Message, Timestamp};
-use priory_factory::factory::{Confidence, Factory, Hold, Intervention};
+use priory_factory::factory::{self, Confidence, Factory, Hold, Intervention};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -170,10 +170,10 @@ fn auto_answer_of(level: Option<String>) -> Option<Option<Confidence>> {
     level.map_or(Some(None), |level| Confidence::parse(&level).map(Some))
 }
 
-/// `[DIR] TEXT`, with the factory folder `.` by default.
+/// `[DIR] TEXT`, with the factory folder `factory::folder` picks by default.
 fn dir_and_text(positional: Vec<String>) -> Option<(PathBuf, String)> {
     match <[String; 1]>::try_from(positional) {
-        Ok([text]) => Some((PathBuf::from("."), text)),
+        Ok([text]) => Some((factory::folder(None), text)),
         Err(positional) => {
             let [dir, text] = <[String; 2]>::try_from(positional).ok()?;
             Some((PathBuf::from(dir), text))
@@ -342,7 +342,7 @@ pub fn parse_batch(args: Vec<String>) -> Option<(PathBuf, Batch)> {
     let mut args = args.into_iter().peekable();
     let dir = match args.peek() {
         Some(dir) if std::path::Path::new(dir).is_dir() => PathBuf::from(args.next()?),
-        _ => PathBuf::from("."),
+        _ => factory::folder(None),
     };
     while let Some(arg) = args.next() {
         let flag = match arg.as_str() {

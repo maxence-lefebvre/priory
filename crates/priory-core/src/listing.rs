@@ -1513,6 +1513,7 @@ pub fn desk(
         crate::link::banner(db)?,
         post::intake_banner(db)?,
         crate::kit::banner(db)?,
+        sweep::fetch_banner(home),
     ]
     .into_iter()
     .flatten()

@@ -35,7 +35,7 @@ fn main() -> ExitCode {
         Some("draw") => {
             let args: Vec<_> = args.collect();
             match &args[..] {
-                [workflow] => draw(Path::new("."), workflow),
+                [workflow] => draw(&factory::folder(None), workflow),
                 [dir, workflow] => draw(Path::new(dir), workflow),
                 _ => usage(),
             }
@@ -43,7 +43,7 @@ fn main() -> ExitCode {
         Some("daemon") if std::env::args_os().any(|arg| arg == "--view-only") => {
             let dirs: Vec<_> = args.filter(|arg| *arg != "--view-only").collect();
             let dir = match dirs.as_slice() {
-                [] => PathBuf::from("."),
+                [] => factory::folder(None),
                 [dir] if *dir != "--once" => PathBuf::from(dir),
                 _ => return usage(),
             };
@@ -55,7 +55,7 @@ fn main() -> ExitCode {
         Some(verb @ ("intake" | "daemon")) => {
             let (once, dirs): (Vec<_>, Vec<_>) = args.partition(|arg| arg == "--once");
             let dir = match dirs.as_slice() {
-                [] => PathBuf::from("."),
+                [] => factory::folder(None),
                 [dir] => PathBuf::from(dir),
                 _ => return usage(),
             };
@@ -193,11 +193,11 @@ fn main() -> ExitCode {
             args.retain(|arg| arg != "--force");
             let force = args.len() < before;
             let (dir, key, runner) = match &args[..] {
-                [key, runner] => (".", key, runner),
-                [dir, key, runner] => (dir.as_str(), key, runner),
+                [key, runner] => (None, key, runner),
+                [dir, key, runner] => (Some(dir.as_str()), key, runner),
                 _ => return usage(),
             };
-            let Some(factory) = load(Path::new(dir)) else {
+            let Some(factory) = load(&factory::folder(dir)) else {
                 return ExitCode::FAILURE;
             };
             reply(
@@ -350,7 +350,7 @@ fn pre_ran(trigger: &str, failure: Option<&str>) -> Result<(), String> {
 /// prints the message the intake would publish. It publishes and records nothing.
 fn intake_pre(args: Vec<String>) -> ExitCode {
     let (dir, name) = match args.as_slice() {
-        [name] => (PathBuf::from("."), name),
+        [name] => (factory::folder(None), name),
         [dir, name] => (PathBuf::from(dir), name),
         _ => return usage(),
     };
@@ -512,8 +512,8 @@ fn screen(args: Vec<String>) -> ExitCode {
     let Some(target) = target else {
         return usage();
     };
-    let factory = match dir {
-        Some(dir) => match load(Path::new(dir)) {
+    let factory = match factory::named_folder(dir.map(String::as_str)) {
+        Some(dir) => match load(&dir) {
             Some(factory) => factory,
             None => return ExitCode::FAILURE,
         },
@@ -621,24 +621,24 @@ fn score(args: Vec<String>) -> ExitCode {
     }
     if let Some(name) = calibrate {
         let dir = match &positional[..] {
-            [] => ".",
-            [dir] => dir.as_str(),
+            [] => None,
+            [dir] => Some(dir.as_str()),
             _ => return usage(),
         };
         if only.is_some() {
             return usage();
         }
-        return calibrate_judge(Path::new(dir), &name, budget, json);
+        return calibrate_judge(&factory::folder(dir), &name, budget, json);
     }
     let (dir, task) = match &positional[..] {
-        [task] => (".", task),
-        [dir, task] => (dir.as_str(), task),
+        [task] => (None, task),
+        [dir, task] => (Some(dir.as_str()), task),
         _ => return usage(),
     };
     let Ok(task) = task.parse() else {
         return usage();
     };
-    let Some(factory) = load(Path::new(dir)) else {
+    let Some(factory) = load(&factory::folder(dir)) else {
         return ExitCode::FAILURE;
     };
     let scored = state::open().and_then(|mut db| {
@@ -723,11 +723,11 @@ fn calibrate(args: Vec<String>) -> ExitCode {
         .filter(|arg| *arg != "--json")
         .collect();
     let dir = match positional[..] {
-        ["triage"] => ".",
-        ["triage", dir] if !dir.starts_with("--") => dir,
+        ["triage"] => None,
+        ["triage", dir] if !dir.starts_with("--") => Some(dir),
         _ => return usage(),
     };
-    let Some(factory) = load(Path::new(dir)) else {
+    let Some(factory) = load(&factory::folder(dir)) else {
         return ExitCode::FAILURE;
     };
     let calibrated = state::open().and_then(|mut db| {
@@ -912,15 +912,16 @@ fn replay(args: &[String]) -> ExitCode {
         }
     }
     let (dir, case) = match positional[..] {
-        [case] => (".", case),
-        [dir, case] => (dir, case),
+        [case] => (None, case),
+        [dir, case] => (Some(dir), case),
         _ => return usage(),
     };
     let Some(budget) = budget else {
         eprintln!("priory bench replay: give --budget USD, the most the replay may spend");
         return ExitCode::FAILURE;
     };
-    let Some(factory) = load(Path::new(dir)) else {
+    let dir = factory::folder(dir);
+    let Some(factory) = load(&dir) else {
         return ExitCode::FAILURE;
     };
     let replayed = priory_factory::case::load(Path::new(case)).and_then(|loaded| {
@@ -934,7 +935,7 @@ fn replay(args: &[String]) -> ExitCode {
         priory_core::replay::fits(&estimate, budget)?;
         let options = priory_core::replay::Options { budget, turn };
         let replayed = priory_core::replay::replay(
-            Path::new(dir),
+            &dir,
             &factory,
             &loaded,
             &options,
@@ -975,14 +976,14 @@ fn capture(args: &[String]) -> ExitCode {
         }
     }
     let (dir, task) = match positional[..] {
-        [task] => (".", task),
-        [dir, task] => (dir, task),
+        [task] => (None, task),
+        [dir, task] => (Some(dir), task),
         _ => return usage(),
     };
     let (Some(into), Ok(task)) = (into, task.parse()) else {
         return usage();
     };
-    let Some(factory) = load(Path::new(dir)) else {
+    let Some(factory) = load(&factory::folder(dir)) else {
         return ExitCode::FAILURE;
     };
     let captured = state::open().and_then(|db| {
@@ -1037,7 +1038,7 @@ fn costs(args: Vec<String>) -> ExitCode {
         }
     }
     let dir = match &dirs[..] {
-        [] => PathBuf::from("."),
+        [] => factory::folder(None),
         [dir] => PathBuf::from(dir),
         _ => return usage(),
     };
@@ -1153,7 +1154,7 @@ fn report_risk(args: Vec<String>) -> ExitCode {
         }
     }
     let dir = match &dirs[..] {
-        [] => PathBuf::from("."),
+        [] => factory::folder(None),
         [dir] => PathBuf::from(dir),
         _ => return usage(),
     };
@@ -1231,9 +1232,7 @@ fn report(args: Vec<String>) -> ExitCode {
             state::open().and_then(|db| report::outcomes(&db, &workflow, &since, by_lane));
         return exit("report", printed);
     }
-    let dir = dirs
-        .first()
-        .map_or_else(|| PathBuf::from("."), PathBuf::from);
+    let dir = factory::folder(dirs.first().map(String::as_str));
     let Some(factory) = load(&dir) else {
         return ExitCode::FAILURE;
     };
@@ -1546,15 +1545,19 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             Err(error) => return exit(verb, Err(error)),
         };
     }
-    if let ("queue", [dir]) = (verb, &args[..]) {
-        if dir.starts_with("--") {
-            return usage();
-        }
-        let Some(factory) = load(Path::new(dir)) else {
-            return ExitCode::FAILURE;
+    if verb == "queue" {
+        let dir = match &args[..] {
+            [] => None,
+            [dir] if !dir.starts_with("--") => Some(dir.as_str()),
+            _ => return usage(),
         };
-        schedules = listing::schedule_triggers(&factory);
-        workflows = factory.workflows.into_keys().collect();
+        if let Some(dir) = factory::named_folder(dir) {
+            let Some(factory) = load(&dir) else {
+                return ExitCode::FAILURE;
+            };
+            schedules = listing::schedule_triggers(&factory);
+            workflows = factory.workflows.into_keys().collect();
+        }
         args.clear();
     }
     let (mut lane, mut grade, mut since, mut person) = (None, None, None, None);
@@ -1838,7 +1841,7 @@ fn schedules(mut args: Vec<String>) -> ExitCode {
         .position(|arg| arg == "--json")
         .map(|at| args.remove(at));
     let dir = match &args[..] {
-        [] => PathBuf::from("."),
+        [] => factory::folder(None),
         [dir] if !dir.starts_with("--") => PathBuf::from(dir),
         _ => return usage(),
     };
@@ -1872,7 +1875,7 @@ fn links(mut args: Vec<String>) -> ExitCode {
         .position(|arg| arg == "--json")
         .map(|at| args.remove(at));
     let dir = match &args[..] {
-        [] => PathBuf::from("."),
+        [] => factory::folder(None),
         [dir] if !dir.starts_with("--") => PathBuf::from(dir),
         _ => return usage(),
     };
@@ -1895,7 +1898,7 @@ fn flows(mut args: Vec<String>) -> ExitCode {
     };
     args.remove(at);
     let dir = match &args[..] {
-        [] => PathBuf::from("."),
+        [] => factory::folder(None),
         [dir] if !dir.starts_with("--") => PathBuf::from(dir),
         _ => return usage(),
     };
@@ -1924,7 +1927,7 @@ fn views(mut args: Vec<String>) -> ExitCode {
     };
     args.remove(at);
     let dir = match &args[..] {
-        [] => PathBuf::from("."),
+        [] => factory::folder(None),
         [dir] if !dir.starts_with("--") => PathBuf::from(dir),
         _ => return usage(),
     };
@@ -1995,7 +1998,7 @@ fn serve_http(args: Vec<String>) -> ExitCode {
         }
     }
     let dir = match &dirs[..] {
-        [] => PathBuf::from("."),
+        [] => factory::folder(None),
         [dir] => PathBuf::from(dir),
         _ => return usage(),
     };
@@ -2624,12 +2627,16 @@ fn answer(mut args: Vec<String>) -> ExitCode {
         return usage();
     };
     let (dir, ask, text) = match &rest[..] {
-        [ask, text] => (".", ask, text),
-        [dir, ask, text] => (dir.as_str(), ask, text),
+        [ask, text] => (None, ask, text),
+        [dir, ask, text] => (Some(dir.as_str()), ask, text),
         _ => return usage(),
     };
     let Some(revision) = revision else {
-        return unrevised("answer", ask);
+        let run = if run.is_some() { "--run " } else { "" };
+        let rest = [dir, Some(ask.as_str()), Some(text.as_str())];
+        return unrevised("answer", ask, |revision| {
+            format!("priory answer --revision {revision} {run}{}", words(&rest))
+        });
     };
     // This machine's ask by its number or name, else another runner's, which goes through the log
     // and applies when that runner reads it.
@@ -2651,7 +2658,7 @@ fn answer(mut args: Vec<String>) -> ExitCode {
         by: "cli".to_owned(),
     };
     if let Some((runner, _)) = remote {
-        let Some(factory) = load(Path::new(dir)) else {
+        let Some(factory) = load(&factory::folder(dir)) else {
             return ExitCode::FAILURE;
         };
         let label = format!("{runner}:{}", answer.ask);
@@ -2735,11 +2742,11 @@ fn memories(args: Vec<String>) -> ExitCode {
     };
     if let Some(accept) = verdict {
         let (dir, id) = match &args[1..] {
-            [id] => (".", id),
-            [dir, id] => (dir.as_str(), id),
+            [id] => (None, id),
+            [dir, id] => (Some(dir.as_str()), id),
             _ => return usage(),
         };
-        let Some(factory) = load(Path::new(dir)) else {
+        let Some(factory) = load(&factory::folder(dir)) else {
             return ExitCode::FAILURE;
         };
         let decided = state::read_only().and_then(|db| {
@@ -2757,8 +2764,8 @@ fn memories(args: Vec<String>) -> ExitCode {
         }
     }
     // With the factory's folder, each candidate says what memory of its name runs get now.
-    let factory = match dir {
-        Some(dir) => match load(Path::new(dir)) {
+    let factory = match factory::named_folder(dir.map(String::as_str)) {
+        Some(dir) => match load(&dir) {
             Some(factory) => Some(factory),
             None => return ExitCode::FAILURE,
         },
@@ -2820,16 +2827,19 @@ fn dismiss(args: Vec<String>) -> ExitCode {
         return usage();
     };
     let (dir, ask) = match &rest[..] {
-        [ask] => (".".to_owned(), ask),
-        [dir, ask] => (dir.clone(), ask),
+        [ask] => (None, ask),
+        [dir, ask] => (Some(dir.as_str()), ask),
         _ => return usage(),
     };
     let local = ask_id(ask);
     if let Some((runner, id)) = remote_id(ask, &local) {
         let Some(revision) = revision else {
-            return unrevised("dismiss", ask);
+            let rest = [dir, Some(ask.as_str())];
+            return unrevised("dismiss", ask, |revision| {
+                format!("priory dismiss --revision {revision} {}", words(&rest))
+            });
         };
-        let Some(factory) = load(Path::new(&dir)) else {
+        let Some(factory) = load(&factory::folder(dir)) else {
             return ExitCode::FAILURE;
         };
         let sent = remote_ask(&runner, id, revision)
@@ -2851,11 +2861,56 @@ fn dismiss(args: Vec<String>) -> ExitCode {
 }
 
 /// Refuses an `answer` or `dismiss` of `ask` that lacks the ask's revision, as an argument error.
-fn unrevised(verb: &str, ask: &str) -> ExitCode {
+/// While this machine knows the ask open, it prints the command to run, from `command` given the
+/// ask's current revision.
+fn unrevised(verb: &str, ask: &str, command: impl FnOnce(i64) -> String) -> ExitCode {
+    let run = current_revision(ask)
+        .map(|revision| format!("; run: {}", command(revision)))
+        .unwrap_or_default();
     eprintln!(
-        "priory {verb}: ask {ask} needs --revision N, the revision `priory asks` prints for it"
+        "priory {verb}: ask {ask} needs --revision N, the revision `priory asks` prints for it{run}"
     );
     ExitCode::from(2)
+}
+
+/// The revision of `ask` while it is open: this machine's ask in its state, or another runner's
+/// in this machine's mirror. None when neither holds it open.
+fn current_revision(ask: &str) -> Option<i64> {
+    let db = state::read_only().ok()?;
+    let local = match ask.bytes().all(|byte| byte.is_ascii_digit()) {
+        true => ask.parse().map_err(|_| String::new()),
+        false => tools::ask_named(&db, ask),
+    };
+    if let Some((runner, id)) = remote_id(ask, &local) {
+        let mirrored = runners::mirrored(&db, &runner, id).ok()??;
+        return (mirrored["state"] == "open")
+            .then(|| mirrored["revision"].as_i64())
+            .flatten();
+    }
+    tools::open_revision(&db, local.ok()?).ok()?
+}
+
+/// `words` as one shell command line's arguments: each quoted when the shell would split or expand
+/// it, after `--` when one starts with `-`.
+fn words(words: &[Option<&str>]) -> String {
+    let words: Vec<&str> = words.iter().flatten().copied().collect();
+    let quoted = words.iter().map(|word| {
+        let plain = !word.is_empty()
+            && word
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_./:@%+=,".contains(c));
+        match plain {
+            true => (*word).to_owned(),
+            false => format!("'{}'", word.replace('\'', "'\\''")),
+        }
+    });
+    let dashes = words.iter().any(|word| word.starts_with('-'));
+    dashes
+        .then(|| "--".to_owned())
+        .into_iter()
+        .chain(quoted)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Splits `[--revision N | --expected N] [--] ARGS` into the revision and the other arguments.
@@ -3201,8 +3256,8 @@ fn label(args: Vec<String>) -> ExitCode {
         }
     }
     let (dir, task) = match &words[..] {
-        [task, kind] if kind == "wrong" => (".", task),
-        [dir, task, kind] if kind == "wrong" => (dir.as_str(), task),
+        [task, kind] if kind == "wrong" => (None, task),
+        [dir, task, kind] if kind == "wrong" => (Some(dir.as_str()), task),
         _ => return usage(),
     };
     let Ok(task) = task.parse() else {
@@ -3211,7 +3266,7 @@ fn label(args: Vec<String>) -> ExitCode {
     if clear != evidence.is_none() || (clear && happened.is_some()) {
         return usage();
     }
-    let Some(factory) = load(Path::new(dir)) else {
+    let Some(factory) = load(&factory::folder(dir)) else {
         return ExitCode::FAILURE;
     };
     let done = intake::now().and_then(|now| {
@@ -3429,8 +3484,8 @@ fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCod
         None => None,
     };
     let remote = match &args[..] {
-        [task] if task.parse::<i64>().is_err() => Some((".", task)),
-        [dir, task] => Some((dir.as_str(), task)),
+        [task] if task.parse::<i64>().is_err() => Some((None, task)),
+        [dir, task] => Some((Some(dir.as_str()), task)),
         _ => None,
     };
     if let Some((dir, task)) = remote.filter(|_| hold.is_none()) {
@@ -3445,7 +3500,7 @@ fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCod
                 )),
             );
         }
-        let Some(factory) = load(Path::new(dir)) else {
+        let Some(factory) = load(&factory::folder(dir)) else {
             return ExitCode::FAILURE;
         };
         let sent = runners::known(&factory, runner)
@@ -3524,7 +3579,7 @@ fn check(args: Vec<OsString>) -> ExitCode {
         _ => return usage(),
     };
     let dir = match &dirs[..] {
-        [] => PathBuf::from("."),
+        [] => factory::folder(None),
         [dir] => PathBuf::from(dir),
         _ => return usage(),
     };
@@ -3606,6 +3661,7 @@ fn check_repo(args: Vec<OsString>) -> ExitCode {
         eprintln!("priory check: {} is not a folder", repo.display());
         return ExitCode::FAILURE;
     }
+    let dir = dir.or_else(|| factory::named_folder(None));
     let factory = match &dir {
         Some(dir) => match load(dir) {
             Some(factory) => Some(factory),

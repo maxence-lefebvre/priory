@@ -9327,6 +9327,74 @@ fn a_sweep_keeps_a_worktree_the_task_does_not_record() {
 }
 
 #[test]
+fn a_clone_whose_remote_is_gone_is_reported_once_and_fetched_again_only_after_an_hour() {
+    let mut setup = Setup::ended("sweep-gone-remote", 1);
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[sweep]\nevery = \"1s\"\n",
+    )
+    .unwrap();
+    // A leftover repository whose remote is gone: each fetch goes through `ssh`, which counts it.
+    let ssh = setup.dir.join("fake/gone-ssh");
+    fs::write(
+        &ssh,
+        "#!/bin/sh\necho fetch >> \"$FAKE_DIR/gone-fetches\"\necho \"fatal: repository 'gone/repo' not found\" >&2\nexit 128\n",
+    )
+    .unwrap();
+    fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+    let clone = setup.dir.join("home/repos/gone/repo");
+    let worktrees = setup.dir.join("home/worktrees/gone/repo");
+    fs::create_dir_all(&clone).unwrap();
+    fs::create_dir_all(worktrees.join("9")).unwrap();
+    setup.git(&clone, &["init", "-q"]);
+    setup.git(
+        &clone,
+        &["remote", "add", "origin", "ssh://gone.invalid/repo.git"],
+    );
+    setup.git(
+        &clone,
+        &["config", "core.sshCommand", ssh.to_str().unwrap()],
+    );
+    // Task 1's pushed work keeps its worktree until it merges.
+    setup.work_on(1);
+    setup.push(1);
+
+    setup.start();
+
+    let banner = setup
+        .until_banner(|banner| banner.is_some_and(|banner| banner.contains("gone/repo")))
+        .unwrap();
+    assert!(
+        banner.starts_with("fetching gone/repo fails since "),
+        "{banner}"
+    );
+    assert!(
+        banner.ends_with(&format!(
+            ": fatal: repository 'gone/repo' not found; the sweep tries it again every hour. \
+             If its remote is gone, remove {} and {}",
+            worktrees.display(),
+            clone.display()
+        )),
+        "{banner}"
+    );
+    // git can call `ssh` more than once for one fetch.
+    let fetches = || fs::read_to_string(setup.dir.join("fake/gone-fetches")).unwrap();
+    let first = fetches();
+    // Sweeps go on: task 1's merged worktree goes at a later one.
+    setup.merge(1);
+    setup.removed(1);
+    assert_eq!(fetches(), first, "fetched again within the hour");
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.contains("gone/repo"))
+            .count(),
+        1,
+        "{log}"
+    );
+}
+
+#[test]
 fn a_sweep_keeps_a_worktree_a_process_runs_in() {
     let mut process = None;
     let (_setup, reason) = kept_by("sweep-process", |setup| {
