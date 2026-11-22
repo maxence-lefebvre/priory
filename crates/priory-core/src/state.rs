@@ -3025,6 +3025,14 @@ pub(crate) fn admissible<'r>(
             Some(reason) => Some(reason),
             None => crate::spend::waits(db, &book, admission.task)?,
         };
+        // The review limit, as a pause, holds only a task's first run.
+        let busy = match busy {
+            Some(reason) => Some(reason),
+            None if admission.fresh => {
+                crate::review::waits(db, factory.review_limit(), admission.task)?
+            }
+            None => None,
+        };
         let waits = match (busy, head) {
             (Some(reason), _) => Some(reason),
             // The sweeper frees the room the queue waits for, so it never waits for room itself.

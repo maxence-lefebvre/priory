@@ -1480,6 +1480,21 @@ fn preempt_names_bands_the_factory_has_above_its_last() {
 }
 
 #[test]
+fn review_limit_takes_a_positive_number() {
+    let good = "name = \"demo\"\n\n[queue]\nreview_limit = 5\n";
+    let ok = check(&factory("review-limit-ok", &with("factory.toml", good)));
+    let zero = good.replace("= 5", "= 0");
+    let zero = check(&factory("review-limit-zero", &with("factory.toml", &zero)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(zero.code, 1);
+    assert_eq!(
+        zero.stderr,
+        "factory.toml:4:16: invalid value: integer `0`, expected a nonzero u32\n"
+    );
+}
+
+#[test]
 fn a_sweep_table_passes_and_a_bad_one_names_its_line() {
     let good = "name = \"demo\"\n\n[sweep]\nevery = \"5m\"\nafter = \"30m\"\nagent = \"implementer\"\nrepo = \"owner/priory\"\nscripts = [{ run = \"docker system prune -f\", when = \"disk\", timeout = \"2m\" }]\n";
     let ok = check(&factory("sweep-ok", &with("factory.toml", good)));

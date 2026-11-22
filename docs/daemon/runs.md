@@ -180,6 +180,53 @@ every listing carries. When the state's revision differs from it, the verb chang
 state is at revision <current>, not <REVISION>`, so a change made on a stale read never applies.
 Without the flag, the verb applies to the state as it is.
 
+### Review limit
+
+A factory can open pull requests faster than a person reviews them. Each waiting pull request then
+costs attention, and a branch that waits long costs a rebase later. `[queue] review_limit` in
+`factory.toml` holds new starts while too many pull requests wait for a person:
+
+```toml
+[queue]
+review_limit = 5
+```
+
+A pull request waits for a person while it is open and its task is not `queued`, `ready`,
+`running`, `failed` or `dropped`. So the agent works on none of it: the task sleeps on its checks,
+on an ask or on a wait, is held or blocked, or is done with the pull request still open. A task
+that a review wakes is `ready`, so its pull request stops counting while its agent answers.
+
+Each tick, a `queued` task at a model step, whose first run has not started, counts the pull
+requests that wait for a person:
+
+1. In its batch, when it is a batch entry (see [batches.md](batches.md)): those of the batch's
+   entries.
+2. In its lane: those of the tasks in the same lane now. Tasks with no lane count together.
+
+When either count reaches the limit, the task does not start. It stays `queued` with the reason
+`waits: review limit: lane core/intake has 5 pull requests waiting for a person, at the limit of 5`,
+or `batch 4 has ...` for a batch. The batch counts first. The task holds back no other task: a task
+of another lane or batch starts as usual. It starts on the first tick after a merge, a close or a
+woken task brings the count under the limit. A batch's entries are thus spread over the days its
+person takes to review, instead of all waiting at once.
+
+The limit holds only a task's first run, as a pause does. A `ready` task, woken by an answer, a
+fired wait or a `say`, or resumed, revived or stopped for room, starts whatever the count, since it
+works on a pull request that already exists. A running task carries on.
+
+`priory desk` prints one line per lane or batch whose limit holds a task, after the spend cap lines:
+`review limit reached: lane core/intake has 5 pull requests waiting for a person, at the limit of
+5; its new runs wait`. `priory desk --json` carries the lines as `reviews`.
+
+Known limits:
+
+- The count reads the pull requests Priory knows: those a task opened or claimed. A pull request a person opened by hand does not count.
+- A pull request stays open in the count until the intake reports its merge or close. A draft
+  counts as any open pull request.
+- A workflow whose first step is a code step starts that step whatever the count.
+- With several runners, each daemon counts only the tasks of its own state file.
+- One limit applies to every lane and batch. The factory sets no limit per lane.
+
 ## Holds
 
 `priory hold <task> --reason <text>` holds a `queued` or `ready` task, so it never starts until

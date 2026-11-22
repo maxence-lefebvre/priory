@@ -37,6 +37,7 @@ mod recipe;
 pub mod relate;
 pub mod replay;
 pub mod report;
+pub mod review;
 pub mod risk;
 mod room;
 mod route;

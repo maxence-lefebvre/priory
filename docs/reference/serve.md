@@ -380,6 +380,7 @@ conversation that lacks its `id` or `created_at`, gets `400`.
 | ----- | ---- | ------- |
 | `paused` | string or null | `paused since <time>: <reason>` while admissions are paused |
 | `caps` | array of strings | One line per spend cap reached whose new runs wait, such as `spend cap reached: lane core/intake spent $12.40 of its day cap of $10.00; its new runs wait for the next day` (see [spend.md](../daemon/spend.md)) |
+| `reviews` | array of strings | One line per lane or batch whose review limit holds a queued task, such as `review limit reached: lane core/intake has 5 pull requests waiting for a person, at the limit of 5; its new runs wait` (see [runs.md](../daemon/runs.md#review-limit)) |
 | `banner` | string or null | The stall banner while the queue is stalled |
 | `intake` | string or null | The intake banner: `the intake has not polled since <time>: ...` when no source polled in the last 5 minutes, else `the intake fails to poll <source> since <time>: <error>` for each failing source, joined by `; `. Null while every source polls. See [desk.md](../daemon/desk.md#intake-banner) |
 | `counts.asleep` | integer | Tasks asleep on a wait |
