@@ -50,8 +50,8 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Undoes migrations 98, the stated confidence and the `auto_answer` level, 97, the task's
-/// `added_by`, and 93: the `pre` script's task columns and the
+/// Undoes migrations 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
     () => {
@@ -65,6 +65,7 @@ macro_rules! undo_pre {
       WHERE results.task = tasks.id), '') AS results
     FROM tasks LEFT JOIN inbox ON inbox.id = tasks.source; ALTER TABLE tasks DROP COLUMN pre_title; ALTER TABLE tasks DROP COLUMN pre_text;
   ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
+  ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons;
   "
     };
 }
@@ -1899,6 +1900,25 @@ fn a_turn_past_compact_at_is_not_compacted_until_it_ends() {
     setup.release("hold-stop");
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
     assert_eq!(setup.compactions(), 1, "{:?}", setup.typed());
+}
+
+#[test]
+fn a_codex_session_past_compact_at_gets_one_compaction_once_idle_then_the_continuation() {
+    let mut setup = Setup::new("auto-compact-codex");
+    let agent = CODEX.replace("effort = \"low\"\n", "effort = \"low\"\ncompactAt = 5000\n");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), agent).unwrap();
+    setup.contexts(&[6000]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert_eq!(typed[1], "/compact\n", "{typed:?}");
+    assert!(
+        typed[2].starts_with(CONTINUED.lines().next().unwrap()),
+        "{typed:?}"
+    );
 }
 
 #[test]
@@ -28991,6 +29011,54 @@ fn a_resumed_run_counts_the_steps_earlier_turns_toward_its_budget() {
     assert_eq!(setup.rows("runs").len(), 2);
 }
 
+/// Each turn n of the fake `codex` costs (220 + 2n) * $0.0001 at this price: Codex's cached input
+/// is apart from its input.
+const DEAR_CODEX: &str =
+    "[gpt-6-astra]\ninput = 100.0\noutput = 100.0\ncache_read = 0.0\ncache_write = 0.0\n";
+
+#[test]
+fn a_codex_turn_over_its_steps_budget_fails_the_task() {
+    let mut setup = Setup::with_workflow("budget-codex", &budgeted("0.01"));
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::write(setup.dir.join("factory/prices.toml"), DEAR_CODEX).unwrap();
+    setup.calls(&[json!(null)]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    assert_eq!(
+        setup.until_task("failed"),
+        "step implement spent $0.02, over its budget of $0.01"
+    );
+    assert_eq!(setup.rows("runs")[0][7], "budget");
+}
+
+#[test]
+fn a_codex_task_past_its_spend_cap_is_held_with_one_ask() {
+    let mut setup = Setup::new("cap-codex");
+    setup.caps("[caps]\ntask = 50.0\n");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::write(
+        setup.dir.join("factory/prices.toml"),
+        DOLLAR_A_TOKEN.replace("\"claude-fake-5\"", "\"gpt-6-astra\""),
+    )
+    .unwrap();
+    setup.calls(&[serde_json::Value::Null, result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    let held = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "held")
+    });
+
+    // Turn 1 read 301 input tokens, 100 of them from Codex's cache.
+    assert_eq!(
+        held[0][7],
+        "held: spent $201.00 of the factory's task cap of $50.00, until a person raises the cap or stops the task"
+    );
+    assert_eq!(setup.open_asks().len(), 1);
+    assert_eq!(setup.rows("runs")[0][7], "capped");
+}
+
 #[test]
 fn a_turn_that_passes_its_steps_budget_ends_before_its_turn_does() {
     // The fake writes the turn's tokens, then holds before its tool call: the turn never ends.
@@ -30327,4 +30395,219 @@ fn the_critic_grades_no_plan_whose_grade_leads_to_a_human_step() {
         10,
         "only the calibration called it"
     );
+}
+
+const LESSONED: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "approve-pr", failed = "stop" }
+
+[[steps]]
+id = "approve-pr"
+decides = "human"
+effect = "none"
+approves = ["open-pr"]
+options = ["open", "rejected"]
+next = { open = "open-pr", rejected = "implement" }
+
+[[steps]]
+id = "open-pr"
+decides = "code"
+action = "open-pr"
+effect = "irreversible"
+next = { opened = "done", failed = "stop" }
+"#;
+
+const LESSON_TESTS: &str = "---\nname: lesson-tests\ndescription: What a person rejected at approve-pr before.\nstep: implement/approve-pr\n---\nEvery pull request needs a test.\n";
+
+#[test]
+fn a_rejected_approval_with_a_note_proposes_a_lesson_scoped_to_its_step() {
+    let setup = asked_to_open("lesson-proposed", LESSONED);
+
+    let answered = setup.priory(&[
+        "answer",
+        "1",
+        "rejected: the pull request has no test",
+        "--revision",
+        "1",
+    ]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let candidates = setup.until_candidates(|candidates| {
+        candidates
+            .first()
+            .is_some_and(|candidate| candidate["state"] == "pending")
+    });
+    assert_eq!(candidates.len(), 1, "{candidates:?}");
+    let lesson = &candidates[0];
+    assert_eq!(lesson["name"], "lesson-approve-pr-1");
+    assert_eq!(lesson["step"], "implement/approve-pr");
+    assert_eq!(
+        lesson["description"],
+        "What a person rejected at step approve-pr of workflow implement, and why. Read it before you send work to that step."
+    );
+    assert_eq!(
+        lesson["text"],
+        "A person answered rejected at step approve-pr: the pull request has no test"
+    );
+}
+
+/// The judge `asked` on `result` as the factory's pre-review, calibrated, with `answers` queued
+/// after its calibration's, and `memory` as the factory's one memory.
+fn pre_review(setup: &Setup, memory: &str, answers: &[&str]) {
+    judge_scorer(setup, "0.8");
+    let file = setup.dir.join("factory/scorers/asked.toml");
+    let toml = fs::read_to_string(&file).unwrap();
+    fs::write(&file, toml.replace("on = \"diff\"", "on = \"result\"")).unwrap();
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\npre_review = \"asked\"\n",
+    )
+    .unwrap();
+    let memories = setup.dir.join("factory/memories");
+    fs::create_dir_all(&memories).unwrap();
+    let name = memory
+        .split("name: ")
+        .nth(1)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap();
+    fs::write(memories.join(format!("{name}.md")), memory).unwrap();
+    let mut queued = AGREE_NINE.to_vec();
+    queued.extend_from_slice(answers);
+    judge_answers(setup, &queued);
+    assert!(calibrate(setup, &["--budget", "1"]).status.success());
+}
+
+#[test]
+fn a_result_that_repeats_a_lesson_goes_back_to_the_agent_once_before_the_approval_ask() {
+    let mut setup = Setup::with_workflow("pre-review-refuses", LESSONED);
+    pre_review(
+        &setup,
+        LESSON_TESTS,
+        &["fail\nIt adds no test, which the lesson asks for."],
+    );
+    setup.calls(&[passed_with_evidence(), passed_with_evidence()]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(
+        setup.typed()[1],
+        format!(
+            "Before step approve-pr asks a person, the pre-review found outcome passed repeats a lesson. asked: It adds no test, which the lesson asks for.. The lessons kept for that step:\n- lesson-tests: Every pull request needs a test.\nFix it, then send the result again: it then goes to the person.\n{IMPLEMENT_ENDING}\n"
+        )
+    );
+    let prompts = judge_prompts(&setup);
+    assert_eq!(
+        prompts.len(),
+        11,
+        "the second result reaches the ask unjudged"
+    );
+    assert!(prompts[10].contains("<lessons id="), "{}", prompts[10]);
+    assert!(
+        prompts[10].contains("- lesson-tests: Every pull request needs a test."),
+        "{}",
+        prompts[10]
+    );
+    assert_eq!(results(&setup), 1, "the refused result is never stored");
+    assert_eq!(setup.rows("runs").len(), 1);
+}
+
+#[test]
+fn a_step_with_no_lesson_gets_no_pre_review() {
+    let mut setup = Setup::with_workflow("pre-review-none", LESSONED);
+    pre_review(
+        &setup,
+        RELEASE_DAY,
+        &["fail\nIt adds no test, which the lesson asks for."],
+    );
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("asks", |rows| rows.len() == 1);
+    assert_eq!(
+        judge_prompts(&setup).len(),
+        10,
+        "only the calibration called it"
+    );
+}
+
+#[test]
+fn a_rejection_becomes_a_lesson_that_the_pre_review_reads_at_the_tasks_next_result() {
+    let mut setup = Setup::with_workflow("pre-review-loop", LESSONED);
+    pre_review(&setup, RELEASE_DAY, &["fail\nIt still has no test."]);
+    setup.calls(&[
+        passed_with_evidence(),
+        passed_with_evidence(),
+        passed_with_evidence(),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let answered = setup.priory(&[
+        "answer",
+        "1",
+        "rejected: the pull request has no test",
+        "--revision",
+        "1",
+    ]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("asks", |rows| rows.first().is_some_and(|ask| ask[0] == "2"));
+    let prompts = judge_prompts(&setup);
+    assert_eq!(prompts.len(), 11, "{prompts:?}");
+    assert!(
+        prompts[10].contains(
+            "- lesson-approve-pr-1: A person answered rejected at step approve-pr: the pull request has no test"
+        ),
+        "{}",
+        prompts[10]
+    );
+    assert!(
+        setup
+            .typed()
+            .iter()
+            .any(|typed| typed.starts_with("Before step approve-pr asks a person")),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
+fn an_uncalibrated_pre_review_lets_the_result_reach_the_approval_ask_and_asks_nothing() {
+    let mut setup = Setup::with_workflow("pre-review-uncalibrated", LESSONED);
+    judge_scorer(&setup, "0.8");
+    let file = setup.dir.join("factory/scorers/asked.toml");
+    let toml = fs::read_to_string(&file).unwrap();
+    fs::write(&file, toml.replace("on = \"diff\"", "on = \"result\"")).unwrap();
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\npre_review = \"asked\"\n",
+    )
+    .unwrap();
+    let memories = setup.dir.join("factory/memories");
+    fs::create_dir_all(&memories).unwrap();
+    fs::write(memories.join("lesson-tests.md"), LESSON_TESTS).unwrap();
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    assert!(asks[0][3].starts_with("approve-pr: "), "{asks:?}");
+    let scores = gate_scores(&setup);
+    assert_eq!(scores[0][1], json!("error"), "{scores:?}");
+    assert!(!setup.dir.join("fake/handler-args.log").exists());
 }

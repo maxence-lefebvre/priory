@@ -357,3 +357,32 @@ fn a_missing_folder_is_an_error_and_explain_does_not_mix_with_repo() {
     );
     assert_eq!(repo.priory(&["check", "--repo"]).code, 2);
 }
+
+#[test]
+fn the_gate_fix_puts_the_key_before_the_first_table() {
+    let repo = Repo::new("gate-top");
+    repo.write("repo/Cargo.toml", "[package]\nname = \"demo\"\n");
+    repo.write_factory("name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:7340\"\n");
+    let report = repo.json(&["check", &repo.factory(), "--repo", &repo.repo(), "--json"]);
+    let fix = criterion(&report, "gate")["fix"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(fix.contains("gate = \"cargo test\""), "{fix}");
+    assert!(fix.contains("before its first table"), "{fix}");
+}
+
+#[test]
+fn the_gate_fix_names_no_command_when_the_repository_has_none() {
+    let repo = Repo::new("gate-none");
+    repo.write("repo/README.md", "# Demo\n");
+    repo.write_factory("name = \"demo\"\n");
+    let report = repo.json(&["check", &repo.factory(), "--repo", &repo.repo(), "--json"]);
+    assert_eq!(criterion(&report, "test-command")["status"], "missing");
+    let fix = criterion(&report, "gate")["fix"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!fix.contains("cargo test"), "{fix}");
+    assert!(fix.contains("test-command"), "{fix}");
+}

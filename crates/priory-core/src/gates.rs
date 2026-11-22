@@ -1,6 +1,8 @@
 //! Gates: a step's scorers, and the factory's critic for a plan no person reads, grade a result
 //! before the daemon stores it. A failing scorer refuses the result and its reason reaches the agent
-//! once; none can approve anything. docs/daemon/score.md describes them.
+//! once; none can approve anything. The factory's pre-review reads an approval step's lessons
+//! before that step asks a person, and sends a result back once. docs/daemon/score.md describes
+//! them.
 
 use crate::score::{self, Gauge, Judging, Run, Score, Verdict};
 use crate::trace::{self, Trace};
@@ -51,7 +53,49 @@ pub(crate) fn scorers(
     Ok(names)
 }
 
-/// Holds the result `arguments` of `run` for its gate's `scorers`, with `read` as they read it.
+/// The factory's pre-review of `outcome` at `step` of `run`, with the lessons it reads: when the
+/// outcome leads to a human step with `approves`, the task sees at least one lesson for that step,
+/// and no pre-review refused a result of this run before, since it sends a result back once.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn pre_review(
+    tx: &Transaction,
+    run: i64,
+    task: i64,
+    workflow: &str,
+    step: &Step,
+    outcome: &str,
+    factory: &Factory,
+    kit: crate::kit::Current<'_>,
+) -> rusqlite::Result<Option<(String, Vec<String>)>> {
+    let Some(name) = factory.pre_review() else {
+        return Ok(None);
+    };
+    let Some(target) = step.next.get(outcome).filter(|target| {
+        factory
+            .workflows
+            .get(workflow)
+            .and_then(|flow| flow.value.step(target))
+            .is_some_and(|target| target.decides == Decider::Human && !target.approves.is_empty())
+    }) else {
+        return Ok(None);
+    };
+    let refused: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM gates WHERE run = ?1 AND state = 'refused'
+           AND lessons IS NOT NULL)",
+        [run],
+        |row| row.get(0),
+    )?;
+    if refused {
+        return Ok(None);
+    }
+    let layer = crate::memories::layer(tx, Some(task))?;
+    let lessons =
+        crate::kit::sources(factory, kit, &layer, None).lessons(&format!("{workflow}/{target}"));
+    Ok((!lessons.is_empty()).then(|| (name.to_owned(), lessons)))
+}
+
+/// Holds the result `arguments` of `run` for its gate's `scorers`, with `read` as they read it, and
+/// the `lessons` its pre-review reads.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn hold(
     tx: &Transaction,
@@ -62,10 +106,11 @@ pub(crate) fn hold(
     arguments: &Value,
     read: &Value,
     scorers: &[String],
+    lessons: Option<&[String]>,
 ) -> rusqlite::Result<()> {
     tx.execute(
-        "INSERT INTO gates (run, task, step, outcome, arguments, result, scorers)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO gates (run, task, step, outcome, arguments, result, scorers, lessons)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             run,
             task,
@@ -73,7 +118,8 @@ pub(crate) fn hold(
             outcome,
             arguments.to_string(),
             read.to_string(),
-            serde_json::to_string(scorers).expect("names serialize")
+            serde_json::to_string(scorers).expect("names serialize"),
+            lessons.map(|lessons| serde_json::to_string(lessons).expect("lessons serialize"))
         ],
     )
     .map(drop)
@@ -133,17 +179,24 @@ pub(crate) fn tick(
         [],
     )?;
     let mut kills = Vec::new();
-    let waiting: Vec<(i64, i64, String, String)> = {
+    let waiting: Vec<(i64, i64, String, String, Option<String>)> = {
         let mut statement = db.prepare(
-            "SELECT id, task, result, scorers FROM gates WHERE state = 'grading' ORDER BY id",
+            "SELECT id, task, result, scorers, lessons FROM gates WHERE state = 'grading'
+             ORDER BY id",
         )?;
         statement
             .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
             })?
             .collect::<rusqlite::Result<_>>()?
     };
-    for (id, task, read, names) in waiting {
+    for (id, task, read, names, lessons) in waiting {
         if grading.running.contains_key(&id) {
             continue;
         }
@@ -155,7 +208,11 @@ pub(crate) fn tick(
             }
             Asked::None | Asked::Again => {}
         }
-        let job = prepare(db, trace.factory, task, &read, &names)?;
+        let mut job = prepare(db, trace.factory, task, &read, &names)?;
+        job.lessons = lessons
+            .and_then(|lessons| serde_json::from_str(&lessons).ok())
+            .unwrap_or_default();
+        job.pre_review = trace.factory.pre_review().map(str::to_owned);
         let home = home.to_path_buf();
         grading
             .running
@@ -206,6 +263,9 @@ struct Job {
     gauges: Vec<Gauge>,
     /// The scorers the gate names that the factory no longer has: each refuses.
     lost: Vec<String>,
+    /// The lessons the pre-review reads, and its name: only it reads them.
+    lessons: Vec<String>,
+    pre_review: Option<String>,
 }
 
 fn prepare(
@@ -240,16 +300,27 @@ fn prepare(
             step: result["step"].as_str().unwrap_or_default().to_owned(),
             result: Some(result),
             asks: Some(Vec::new()),
+            lessons: Vec::new(),
             latest: true,
         },
         gauges,
         lost,
+        lessons: Vec::new(),
+        pre_review: None,
     })
 }
 
 /// Grades the held result with each scorer of `job`, in order. A judge whose calibration does not
 /// pass still answers, with why, and does not count.
 fn grade(home: &Path, job: Job) -> Graded {
+    let reviewed = Run {
+        id: job.run.id,
+        step: job.run.step.clone(),
+        result: job.run.result.clone(),
+        asks: Some(Vec::new()),
+        lessons: job.lessons.clone(),
+        latest: job.run.latest,
+    };
     let mut graded: Graded = job
         .gauges
         .iter()
@@ -266,7 +337,11 @@ fn grade(home: &Path, job: Job) -> Graded {
                 budget,
                 spent: 0.0,
             };
-            let score = score::measure(&job.dir, home, &job.task, gauge, &job.run, &mut judging);
+            let run = match job.pre_review.as_deref() == Some(gauge.name.as_str()) {
+                true => &reviewed,
+                false => &job.run,
+            };
+            let score = score::measure(&job.dir, home, &job.task, gauge, run, &mut judging);
             (score, counts)
         })
         .collect();
@@ -299,21 +374,33 @@ fn apply(
     head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<Option<String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let (run, task, outcome, arguments, state, stopped): (i64, i64, String, String, String, bool) =
-        tx.query_row(
-            "SELECT run, task, outcome, arguments, state, stopped FROM gates WHERE id = ?1",
-            [id],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                ))
-            },
-        )?;
+    #[allow(clippy::type_complexity)]
+    let (run, task, step, outcome, arguments, state, stopped, lessons): (
+        i64,
+        i64,
+        String,
+        String,
+        String,
+        String,
+        bool,
+        Option<String>,
+    ) = tx.query_row(
+        "SELECT run, task, step, outcome, arguments, state, stopped, lessons FROM gates
+         WHERE id = ?1",
+        [id],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+            ))
+        },
+    )?;
     for (score, _) in graded {
         trace::scored(&tx, trace, task, score, Some(&outcome))?;
     }
@@ -328,9 +415,11 @@ fn apply(
         })
         .map(|(score, _)| format!("{}: {}", score.scorer, score.reason))
         .collect();
+    // A person reads the approval ask after a pre-review anyway, so an uncalibrated one asks nothing.
+    let reviewer = trace.factory.pre_review();
     let uncalibrated: Vec<String> = graded
         .iter()
-        .filter(|(_, counts)| !counts)
+        .filter(|(score, counts)| !counts && reviewer != Some(score.scorer.as_str()))
         .map(|(score, _)| {
             let why = score.reason.strip_prefix("not calibrated: ");
             format!(
@@ -357,6 +446,41 @@ fn apply(
         }
     }
     let reason = refusals.join("; ");
+    let lessons: Option<Vec<String>> = lessons.and_then(|text| serde_json::from_str(&text).ok());
+    // A refusal from the pre-review alone sends the result back once, and never blocks the task.
+    let mut refusers = graded.iter().filter(|(score, counts)| {
+        *counts && matches!(score.verdict, Verdict::Fail | Verdict::Error)
+    });
+    let reviewed = refusers.next().is_some_and(|(first, _)| {
+        reviewer == Some(first.scorer.as_str())
+            && refusers.all(|(score, _)| reviewer == Some(score.scorer.as_str()))
+    });
+    if let (true, Some(lessons)) = (reviewed, &lessons) {
+        let workflow: String =
+            tx.query_row("SELECT workflow FROM tasks WHERE id = ?1", [task], |row| {
+                row.get(0)
+            })?;
+        let target = trace
+            .factory
+            .workflows
+            .get(&workflow)
+            .and_then(|flow| flow.value.step(&step)?.next.get(&outcome).cloned())
+            .unwrap_or_default();
+        let kept: String = lessons
+            .iter()
+            .map(|lesson| format!("\n- {lesson}"))
+            .collect();
+        end(&tx, id, "refused", Some(&reason))?;
+        crate::tools::refused(
+            &tx,
+            task,
+            &format!(
+                "Before step {target} asks a person, the pre-review found outcome {outcome} repeats a lesson. {reason}. The lessons kept for that step:{kept}\nFix it, then send the result again: it then goes to the person."
+            ),
+        )?;
+        tx.commit()?;
+        return Ok(None);
+    }
     let earlier: i64 = tx.query_row(
         "SELECT count(*) FROM gates WHERE run = ?1 AND state = 'refused'",
         [run],

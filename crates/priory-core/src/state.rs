@@ -1857,9 +1857,13 @@ ALTER TABLE tasks ADD COLUMN noop TEXT;
 PRAGMA user_version = 102;
 ";
 
-// A stand-in for #346, which owns version 103 and replaces it when it lands; until then a state
-// file passes through it unchanged.
-const SCHEMA_103: &str = "PRAGMA user_version = 103;\n";
+// A lesson: a memory candidate scoped to the approval step a person rejected, and the lessons a
+// gate's pre-review reads, as JSON.
+const SCHEMA_103: &str = "
+ALTER TABLE memory_candidates ADD COLUMN step TEXT;
+ALTER TABLE gates ADD COLUMN lessons TEXT;
+PRAGMA user_version = 103;
+";
 
 // `[queue] age`: how many seconds a task waits in the queue for each band it moves up in start
 // order, and the rank of the highest band it can reach. No row when the factory sets no age.

@@ -1804,6 +1804,7 @@ Schema: [`priory.memory.written.json`](../schemas/events/priory.memory.written.j
 | `forget` | boolean, optional | True for a forget: the candidate removes the memory of its name |
 | `task` | string | The key of the task whose run wrote it |
 | `runner` | string or null | The runner that wrote it, or null in a factory of one runner |
+| `step` | string, optional | A lesson's approval step, as `<workflow>/<step>`. Present only on a lesson, which the daemon proposes when a person rejects an approval with a note (see [memories.md](memories.md#lessons)). A runner records a `step` that is not `<workflow>/<step>` on one line as `refused` |
 
 <!-- example: events/priory.memory.written.json -->
 ```json

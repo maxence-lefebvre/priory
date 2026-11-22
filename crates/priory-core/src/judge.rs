@@ -168,6 +168,8 @@ pub struct Read<'a> {
     pub request: &'a str,
     pub result: &'a Value,
     pub diff: Option<&'a str>,
+    /// The lessons kept for the step the result goes to, one per line, which a pre-review reads.
+    pub lessons: &'a [String],
 }
 
 /// A judge as a call needs it, owned, so a gate can call it on a thread of its own.
@@ -200,19 +202,29 @@ fn message(read: &Read, id: &str) -> String {
             text.trim_end()
         )
     };
-    let Some(diff) = read.diff else {
-        return format!(
-            "Grade this run. Its data follows between markers with the id {id}.\n\n{}\n{}\n{ANSWER}\n",
-            block("request", read.request),
-            block("result", &result),
-        );
-    };
-    format!(
-        "Grade this run. Its data follows between markers with the id {id}.\n\n{}\n{}\n{}\n{ANSWER}\n",
+    let mut text = format!(
+        "Grade this run. Its data follows between markers with the id {id}.\n\n{}\n{}\n",
         block("request", read.request),
         block("result", &result),
-        block("diff", diff),
-    )
+    );
+    if let Some(diff) = read.diff {
+        text.push_str(&block("diff", diff));
+        text.push('\n');
+    }
+    if !read.lessons.is_empty() {
+        let lessons: String = read
+            .lessons
+            .iter()
+            .map(|lesson| format!("- {lesson}\n"))
+            .collect();
+        text.push_str(&format!(
+            "The lessons kept for the step this result goes to: what a person rejected there before, and why.\n\n{}\n",
+            block("lessons", &lessons)
+        ));
+    }
+    text.push_str(ANSWER);
+    text.push('\n');
+    text
 }
 
 /// The verdict and line of why in a judge's answer, or why the answer is not one.
@@ -397,6 +409,7 @@ pub fn calibrate(
             request: &case.request,
             result: &result,
             diff: called.diff.then_some(case.diff.as_str()),
+            lessons: &case.lessons,
         };
         let asked = ask(&called, &scratch, &read, budget - calibrated.spent);
         calibrated.spent += asked.cost;
@@ -477,6 +490,7 @@ mod tests {
             request: "Add a flag.",
             result: &result,
             diff: Some("+flag"),
+            lessons: &[],
         };
 
         let text = message(&read, "a1b2c3");
@@ -495,6 +509,7 @@ mod tests {
             request: "Plan a flag.",
             result: &json!({ "outcome": "green", "summary": "Add --flag." }),
             diff: None,
+            lessons: &[],
         };
 
         let text = message(&read, "a1b2c3");
@@ -502,6 +517,26 @@ mod tests {
         assert!(text.contains("<result id=\"a1b2c3\">"), "{text}");
         assert!(!text.contains("<diff"), "{text}");
         assert!(text.ends_with(&format!("\n{ANSWER}\n")), "{text}");
+    }
+
+    #[test]
+    fn a_pre_review_reads_the_lessons_after_the_data_and_before_the_answer() {
+        let lessons = ["lesson-tests: Every pull request needs a test.".to_owned()];
+        let read = Read {
+            request: "Add a flag.",
+            result: &json!({ "outcome": "passed" }),
+            diff: Some("+flag"),
+            lessons: &lessons,
+        };
+
+        let text = message(&read, "a1b2c3");
+
+        assert!(
+            text.ends_with(&format!(
+                "</diff id=\"a1b2c3\">\n\nThe lessons kept for the step this result goes to: what a person rejected there before, and why.\n\n<lessons id=\"a1b2c3\">\n- lesson-tests: Every pull request needs a test.\n</lessons id=\"a1b2c3\">\n\n{ANSWER}\n"
+            )),
+            "{text}"
+        );
     }
 
     #[test]
@@ -526,6 +561,7 @@ mod tests {
             request: "r",
             result: &json!({}),
             diff: Some(&diff),
+            lessons: &[],
         };
         let scratch = std::env::temp_dir().join(format!("priory-judge-cut-{}", std::process::id()));
 

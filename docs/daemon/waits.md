@@ -37,7 +37,9 @@ ask are refused, since only one of their options moves the task on.
   the task moves by the option. The note reads `A person answered <option> on step <step>, with a
   note: <note>`, and goes where someone reads it. A model step gets it whole after its prompt. A
   human step's ask gets its first line after its question, and `stop` makes its first line the
-  dropped task's reason, both with tabs as spaces. An option
+  dropped task's reason, both with tabs as spaces. At a step with `approves`, a note on an option
+  that stops the task or leads to a model step also proposes a lesson for that step (see
+  [score.md](score.md#pre-review)). An option
   that leads anywhere else, such as `done` or a code step, or that runs a command, refuses a note:
   `ask 12 answered approved leads to done, which reads no note: answer approved alone`.
 - An agent's ask queues the answer as the task's next prompt, after fixed words such as

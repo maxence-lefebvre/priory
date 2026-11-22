@@ -25,6 +25,7 @@ same holds for the memories folder of a kit or a memories repository.
 | `name` | string | yes | | The memory's name, the same as its file's | `"release-day"` |
 | `description` | string | yes | | When an agent should read the memory. The index shows it on one line | `"When releases go out."` |
 | `paths` | string or list of strings | no | none | [Path globs](#path-globs): a Claude Code run that reads, edits or creates a matching file gets the memory's file in its context, once per run | `["CHANGELOG.md", "docs/**/*.md"]` |
+| `step` | string | no | none | Makes the memory a lesson for an approval step, named `<workflow>/<step>`: a human step with `approves`. The factory's [pre-review](../daemon/score.md#pre-review) reads the step's lessons before the step asks a person | `"implement/approve-pr"` |
 
 Priory ignores any other key.
 
@@ -65,6 +66,7 @@ The factory's memories are in <folder>, one fact per file. Read a memory's file 
 | `` `name` is `<name>`, but the memory's file is memories/<file>.md `` | `name` differs from the file's name |
 | `` a memory's frontmatter needs a `description`, which tells the agent when to read it `` | No `description`, or a blank one |
 | `` a codex agent takes the memory index and its own prompt on its command line, as `developer_instructions`: together they are <n> bytes, over the limit of 8192 `` | Reported on a Codex agent's `agent.md`. The count writes the index's folder as `$PRIORY_HOME/kit/<hash>/memories`. The message names `instructions.md` first when the factory has one, and the skill index after the memory index when it has skills, whose folder the count writes as `$PRIORY_HOME/kit/<hash>/plugin/skills` |
+| `` `step` is `<step>`: a lesson names `<workflow>/<step>`, a human step with `approves` `` | `step` names no workflow, no step, or a step that is not a human step with `approves`. Reported on the line of `step` |
 | `frontmatter is not closed by ---` | No closing fence. The same with `+++` |
 
 Each line starts with the file and line, such as `memories/release-day.md:2:`. The name and
@@ -117,6 +119,34 @@ description: "When releases go out."
 Releases go out on Tuesdays.
 ```
 
+A lesson's file also names its step, quoted the same way, after its description:
+
+```markdown
+---
+name: lesson-approve-pr-12
+description: "What a person rejected at step approve-pr of workflow implement, and why. Read it before you send work to that step."
+step: "implement/approve-pr"
+---
+A person answered rejected at step approve-pr: the pull request has no test
+```
+
+### Lessons
+
+The daemon proposes a lesson when a person answers the ask of a human step with `approves` with
+an option and a note, as `OPTION: NOTE`, and the option stops the task or sends it back to a model
+step. It is a candidate like any other, with these fields:
+
+| Field | Value |
+| ----- | ----- |
+| `name` | `lesson-<step>-<ask>`, or `lesson-<step>-<runner>-<ask>` in a factory of several runners, with any other character than a letter or a digit as `-` |
+| `description` | `What a person rejected at step <step> of workflow <workflow>, and why. Read it before you send work to that step.` |
+| `text` | `A person answered <option> at step <step>: <note>` |
+| `step` | `<workflow>/<step>` |
+
+A note that breaks the rules of `remember`, such as one that looks like it holds a credential or
+makes the file pass 4096 bytes, proposes no lesson. The task that was rejected sees its lesson at
+once, as it sees any candidate it wrote. Other tasks see it once a person accepts it.
+
 A run gets the kit's memories, then the factory's, then the candidates it sees, each in log order: a
 person's accept puts a candidate at the accept's place, and a candidate of the run's own task sits
 at its write. A forget removes the memory of its name. The tools are in
@@ -140,7 +170,8 @@ priory memories (accept | drop) [DIR] CANDIDATE
 The first lists the `pending` candidates this runner read, oldest first, or with `--all` every
 candidate: id, name, kind (`remember` or `forget`), state, task key, runner (`-` in a factory of one
 runner) and when it was written. `--json` prints `{ "candidates": [...] }`, each with `id`, `name`,
-`description`, `text` and `forget`, `task`, `runner`, `written`, `decided` and `state`. Given the
+`description`, `text` and `forget`, `task`, `runner`, `written`, `decided`, `state` and `step`, a
+lesson's step or null. Given the
 factory's folder `DIR`, each also carries `replaces`, whether runs get a memory of its name now, and
 `current_text`, that memory's text, or null. Those memories are the kit's at the commit runs get,
 the factory's, then the accepted candidates. `replaces` is null, unknown, for a name the factory and

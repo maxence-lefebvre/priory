@@ -48,8 +48,8 @@ priory --version
 
 ## 2. Write a factory
 
-A factory is a folder of files. Make an empty working folder outside your clone, then create
-these four files in an `example/` folder inside it.
+A factory is a folder of files. Make an empty working folder, outside your clone if you built
+Priory from one, then create these four files in an `example/` folder inside it.
 
 `factory.toml` names the factory, the workflow `priory add` starts by default, and where the web
 view listens:

@@ -548,7 +548,7 @@ and `time` is when the score was recorded. Scoring a run again appends another r
 | `model`     | for a judge | The model the judge called                                        |
 | `agreement` | for a judge | The share of labeled cases its calibration got right              |
 | `cases`     | for a judge | The number of labeled cases its calibration ran                   |
-| `gate`      | for a gate  | The outcome a step's `gate` or the factory's `critic` graded before it was stored. Absent for `priory score` |
+| `gate`      | for a gate  | The outcome a step's `gate`, the factory's `critic` or its `pre_review` graded before it was stored. Absent for `priory score` |
 | `evaluated` | for an intent scorer | Whether its decision model answered. A failed call is `false`, never an `UNKNOWN` answer |
 | `model`     | for an intent scorer that answered | The model its decision model named |
 | `answers`   | for an intent scorer that answered | Each question's answer, `YES`, `NO` or `UNKNOWN`, by name: `intent`, then `noop-1` and on |

@@ -31,6 +31,9 @@ pub struct Labeled {
     /// The change, as `git diff` prints it.
     #[serde(default)]
     pub diff: String,
+    /// The lessons kept for the step the result goes to, as a pre-review reads them.
+    #[serde(default)]
+    pub lessons: Vec<String>,
     /// The right verdict.
     pub verdict: Label,
     /// Why the person gave that verdict, for a reader.

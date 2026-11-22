@@ -1,6 +1,8 @@
 [Unit]
 Description=Priory daemon
 After=network-online.target
+# Start only once a person wrote the environment file.
+ConditionPathExists=%h/.config/priory/env
 
 [Service]
 EnvironmentFile=%h/.config/priory/env

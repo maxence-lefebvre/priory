@@ -99,6 +99,11 @@ const WEB: &[(&str, &str, &[u8])] = &[
         "design/logo/apple-touch-icon.png"
     ),
     asset!(
+        "/fonts/instrument-sans-400-700.woff2",
+        WOFF2,
+        "design/fonts/instrument-sans-400-700.woff2"
+    ),
+    asset!(
         "/fonts/mona-sans-200-900.woff2",
         WOFF2,
         "design/fonts/mona-sans-200-900.woff2"

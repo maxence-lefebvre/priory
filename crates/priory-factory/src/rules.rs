@@ -94,6 +94,23 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 problems.push(problem(settings, settings.lines.field("critic"), message));
             }
         }
+        if let Some(name) = &settings.value.pre_review {
+            let refused = match factory.scorers.get(name) {
+                None => Some(format!("the pre-review `{name}` is no scorer in scorers/")),
+                Some(scorer) if scorer.value.kind != ScoreKind::Judge => Some(format!(
+                    "the pre-review `{name}` is of kind {}: a pre-review is a judge, which reads the lessons",
+                    scorer.value.kind.name()
+                )),
+                Some(_) => None,
+            };
+            if let Some(message) = refused {
+                problems.push(problem(
+                    settings,
+                    settings.lines.field("pre_review"),
+                    message,
+                ));
+            }
+        }
         // `sh -c ""` exits 0, so a blank gate would pass every proof.
         if settings
             .value
@@ -510,7 +527,29 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
     for benchmark in factory.benchmarks.values() {
         check_benchmark(factory, benchmark, &mut problems);
     }
+    for memory in factory.memories.values() {
+        if let Some(step) = &memory.value.step
+            && !approval_step(factory, step)
+        {
+            problems.push(problem(
+                memory,
+                memory.lines.field("step"),
+                format!(
+                    "`step` is `{step}`: a lesson names `<workflow>/<step>`, a human step with `approves`"
+                ),
+            ));
+        }
+    }
     problems
+}
+
+/// Whether `scope`, as `<workflow>/<step>`, names a human step with `approves`, which a lesson
+/// is for.
+pub fn approval_step(factory: &Factory, scope: &str) -> bool {
+    scope
+        .split_once('/')
+        .and_then(|(workflow, step)| factory.workflows.get(workflow)?.value.step(step))
+        .is_some_and(|step| step.decides == Decider::Human && !step.approves.is_empty())
 }
 
 fn check_benchmark(factory: &Factory, benchmark: &Loaded<Benchmark>, problems: &mut Vec<Problem>) {
@@ -958,8 +997,9 @@ fn check_caps(factory: &Factory, problems: &mut Vec<Problem>) {
     }
 }
 
-/// The agents of model steps whose spend no cap can count: a Codex agent, or one whose model
-/// `prices.toml` does not price. Only for a factory with a cap and a price table.
+/// The agents of model steps whose spend no cap can count: one whose model `prices.toml` does not
+/// price. A Claude Code alias is let through, since Claude's transcript names the full model; Codex
+/// names the model it was given. Only for a factory with a cap and a price table.
 fn caps_warnings(factory: &Factory) -> Vec<Problem> {
     let capped = factory
         .settings
@@ -984,26 +1024,24 @@ fn caps_warnings(factory: &Factory) -> Vec<Problem> {
         let Some(agent) = factory.agents.get(name) else {
             continue;
         };
-        let (field, why) = if matches!(agent.value.harness, Harness::Codex) {
-            ("harness", "Priory reads no Codex tokens".to_owned())
-        } else if let Some(model) = agent
+        let alias = |model: &str| {
+            matches!(agent.value.harness, Harness::ClaudeCode) && CLAUDE_ALIASES.contains(&model)
+        };
+        let Some(model) = agent
             .value
             .model
             .as_deref()
-            .filter(|model| !CLAUDE_ALIASES.contains(model))
+            .filter(|model| !alias(model))
             .filter(|model| !factory.prices.contains_key(*model))
-        {
-            (
-                "model",
-                format!("prices.toml has no price for its model `{model}`"),
-            )
-        } else {
+        else {
             continue;
         };
         warnings.push(problem(
             agent,
-            agent.lines.field(field),
-            format!("the spend caps count nothing for agent `{name}`: {why}"),
+            agent.lines.field("model"),
+            format!(
+                "the spend caps count nothing for agent `{name}`: prices.toml has no price for its model `{model}`"
+            ),
         ));
     }
     warnings
@@ -1162,16 +1200,13 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
             format!("a codex agent takes {parts} on its command line, as `developer_instructions`: {they} {size} bytes, over the limit of {CODEX_PROMPT_LIMIT}"),
         ));
     }
-    for (field, set) in [
-        ("compactAt", value.compact_at.is_some()),
-        ("idleCompactAt", value.idle_compact_at.is_some()),
-    ] {
-        if set {
-            let message = format!(
-                "a codex agent cannot take `{field}`: Priory reads no Codex tokens, so it never knows the context size"
-            );
-            problems.push(problem(agent, agent.lines.field(field), message));
-        }
+    if value.idle_compact_at.is_some() {
+        let message = "a codex agent cannot take `idleCompactAt`: a resumed Codex session sends no `SessionStart` before its first prompt, so Priory never knows when to type `/compact`";
+        problems.push(problem(
+            agent,
+            agent.lines.field("idleCompactAt"),
+            message.into(),
+        ));
     }
     let line = agent.lines.field("permissions");
     let permissions = &value.permissions;
@@ -2045,17 +2080,6 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
                         report(format!(
                             "`budget` {budget:?} is not an amount of dollars above zero, such as \"1.00\""
                         ));
-                    }
-                    if step
-                        .agent
-                        .as_ref()
-                        .and_then(|agent| factory.agents.get(agent))
-                        .is_some_and(|agent| matches!(agent.value.harness, Harness::Codex))
-                    {
-                        report(
-                            "`budget` needs a Claude Code agent: Priory reads no Codex tokens"
-                                .into(),
-                        );
                     }
                     if factory.prices.is_empty() {
                         report(

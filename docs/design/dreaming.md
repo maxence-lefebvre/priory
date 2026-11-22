@@ -178,9 +178,9 @@ the task, since a move resets the step's count (`tools.rs:2685`). Then:
 
 A failed dream needs no repair: the next night starts a new task.
 
-`priory check` refuses a `budget` on a step whose agent is a Codex agent, since Priory reads no
-Codex tokens. It refuses one in a factory without `prices.toml`, and one that is not a positive
-amount. It cannot check the model's price: an agent names `sonnet`, and the transcript names the
+`priory check` refuses a `budget` in a factory without `prices.toml`, and one that is not a
+positive amount. A Codex agent's step takes a `budget` too: the daemon reads Codex's session file
+as it reads Claude's transcript. It cannot check the model's price: an agent names `sonnet`, and the transcript names the
 full model, so that check runs at the first turn end.
 
 The check runs at turn ends, so one turn can pass the budget before the daemon sees it. The
