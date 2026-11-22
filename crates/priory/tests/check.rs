@@ -2455,7 +2455,7 @@ fn an_unknown_scorer_kind_names_its_file_and_line() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "scorers/guess.toml:3:8: unknown variant `vibes`, expected one of `outcome`, `command`, `ask-shape`, `judge`\n"
+        "scorers/guess.toml:3:8: unknown variant `vibes`, expected one of `outcome`, `command`, `ask-shape`, `judge`, `held`\n"
     );
 }
 
@@ -2557,6 +2557,95 @@ fn a_benchmark_refuses_an_ask_scorer_as_primary_and_names_what_is_missing() {
          benchmarks/b.toml:4: no scorer `lost` in scorers/\n\
          benchmarks/b.toml:5: the case ../elsewhere is not inside the benchmarks folder\n\
          benchmarks/c.toml:4: a benchmark needs `cases`: folders that priory bench capture wrote\n"
+    );
+}
+
+const HELD: &str = "description = \"Held a week.\"\non = \"merge\"\nkind = \"held\"\nafter = \"merged + 7d\"\nfails = [\"reverted\", \"red-after-merge\", \"fixed\"]\n";
+
+#[test]
+fn a_held_scorer_on_merge_with_after_and_fails_passes() {
+    let outcome = with_scorers("scorer-held", &[("scorers/held.toml", HELD)]);
+
+    assert_eq!(outcome.stderr, "");
+    assert_eq!(
+        outcome.stdout,
+        "ok: 1 agent, 1 trigger, 1 workflow, 1 runner, 1 scorer\n"
+    );
+}
+
+#[test]
+fn a_held_scorer_needs_merge_after_and_known_fails_and_no_other_kind_takes_them() {
+    let bare = "description = \"Bare.\"\non = \"result\"\nkind = \"held\"\nexpect = [\"passed\"]\n";
+    let odd = "description = \"Odd.\"\non = \"merge\"\nkind = \"held\"\nafter = \"merged + 1h\"\nfails = [\"reverted\", \"sentry\"]\n";
+    let outcome_after = "description = \"Passed.\"\non = \"merge\"\nkind = \"outcome\"\nexpect = [\"passed\"]\nafter = \"merged + 7d\"\nfails = [\"reverted\"]\n";
+
+    let outcome = with_scorers(
+        "scorer-held-refused",
+        &[
+            ("scorers/bare.toml", bare),
+            ("scorers/odd.toml", odd),
+            ("scorers/passed.toml", outcome_after),
+        ],
+    );
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "scorers/bare.toml:2: kind `held` reads on = \"merge\", not \"result\"\n\
+         scorers/bare.toml:4: a `held` scorer takes no `expect`: name what fails it in `fails`\n\
+         scorers/bare.toml:3: a `held` scorer needs `after`: when to grade, such as \"merged + 7d\"\n\
+         scorers/bare.toml:3: a `held` scorer needs `fails`: some of changes-requested, red-after-merge, reverted, marked-wrong, fixed\n\
+         scorers/odd.toml:5: `sentry` is no signal a `held` scorer reads: use changes-requested, red-after-merge, reverted, marked-wrong, fixed\n\
+         scorers/passed.toml:2: kind `outcome` reads on = \"result\", not \"merge\"\n\
+         scorers/passed.toml:5: `after` is for kind `held`, not `outcome`\n\
+         scorers/passed.toml:6: `fails` is for kind `held`, not `outcome`\n"
+    );
+}
+
+#[test]
+fn a_held_scorer_s_after_must_be_a_delay_after_the_merge() {
+    for (name, after) in [
+        ("held-after-word", "merged in 7d"),
+        ("held-after-zero", "merged + 0d"),
+        ("held-after-weeks", "merged + 1w"),
+        ("held-after-anchor", "done + 7d"),
+    ] {
+        let file = HELD.replace("merged + 7d", after);
+
+        let outcome = with_scorers(name, &[("scorers/held.toml", &file)]);
+
+        assert_eq!(outcome.code, 1, "{after}");
+        assert_eq!(
+            outcome.stderr,
+            format!(
+                "scorers/held.toml:4:9: {after:?} is not a moment such as \"merged + 7d\": a delay in m, h or d after the merge\n"
+            ),
+            "{after}"
+        );
+    }
+}
+
+#[test]
+fn a_gate_or_a_benchmark_refuses_a_held_scorer() {
+    let workflow = gated_workflow(r#"{ passed = ["held"] }"#, "");
+    let mut files = with("workflows/implement.toml", &workflow);
+    files.extend_from_slice(&[
+        ("scorers/held.toml", HELD),
+        ("scorers/passed.toml", PASSED),
+        (
+            "benchmarks/a.toml",
+            "description = \"A.\"\nworkflow = \"implement\"\nprimary = \"held\"\nscorers = [\"passed\", \"held\"]\ncases = [\"cases/one\"]\n",
+        ),
+    ]);
+
+    let outcome = check(&factory("held-gate", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "workflows/implement.toml:4: step `implement`: `gate` of outcome `passed` names `held`, which reads what followed a merge: a gate grades a result, so use a scorer on result or diff\n\
+         benchmarks/a.toml:3: the scorer `held` reads what followed a merge, and a replay never merges: use one on result, diff or ask\n\
+         benchmarks/a.toml:4: the scorer `held` reads what followed a merge, and a replay never merges: use one on result, diff or ask\n"
     );
 }
 

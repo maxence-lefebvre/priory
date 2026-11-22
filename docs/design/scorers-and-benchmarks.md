@@ -443,6 +443,18 @@ Tests:
    uncalibrated judge's ask and both its answers, a calibrated judge within its per-call budget, the critic on a green plan,
    and no critic under `plan` or before a human step.
 
+8. Built. Held scorers, graded on what happened after the merge
+   ([score.md](../daemon/score.md#held-scorers), [scorers.md](../reference/scorers.md#kinds)). A
+   scorer of kind `held` on `merge` names `after = "merged + 7d"` and the signals that fail it:
+   outcome labels, and `fixed` from a later task's `fixes` relation. The daemon grades each merged
+   task once its moment came, every minute and at `--once`, and appends a `factory.step.labeled`
+   record with the label `scored`, so it needs no new table. A gate, a critic and a benchmark
+   refuse it, and `priory score` leaves it out. Its tests route merges, reverts and relations
+   through `priory daemon --once` with a fixed clock, and one starts the daemon. Left for later:
+   other moments than `merged`, such as `done`; `after` on a `command` scorer, which could ask an
+   outside service such as Sentry whether an issue came back; held scores in the web view, Herdr
+   and `priory costs`; and a failing held score as a signal of `priory report risk`.
+
 ## Open questions
 
 1. **Should a scorer run by itself when a step ends?** A workflow step could name scorers, and the

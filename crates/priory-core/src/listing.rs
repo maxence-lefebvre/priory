@@ -219,7 +219,10 @@ fn asks_query() -> String {
      CASE asks.withdrawn_reason WHEN 'sibling-fired' THEN 'a wait of its run fired first'
        WHEN 'moved-on' THEN 'a later run called another tool'
        WHEN 'revived' THEN 'its task was revived'
-       WHEN 'predecessor-revived' THEN 'the task it waits on was revived' ELSE asks.withdrawn_reason END AS withdrawn_why,
+       WHEN 'predecessor-revived' THEN 'the task it waits on was revived'
+       WHEN 'dismissed' THEN 'dismissed' || coalesce(' by session ' || CASE WHEN asks.answered_by LIKE 'session:%'
+         THEN substr(asks.answered_by, 9) END, '')
+       ELSE asks.withdrawn_reason END AS withdrawn_why,
      asks.revision, asks.question, asks.options, asks.recommendation, asks.tradeoff, asks.answer,
      asks.answered AS answered_at, asks.answered_by, asks.routed AS routed_to, asks.created AS since, asks.title, asks.text,
      asks.confidence, asks.rationale,
@@ -1276,6 +1279,11 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
                    || ' answered ' || json_quote(json_extract(event, '$.data.option')) || ' by auto ('
                    || json_extract(event, '$.data.confidence') || '): '
                    || json_extract(event, '$.data.rationale')
+                 WHEN 'factory.ask.session_answered' THEN 'ask ' || json_extract(event, '$.data.ask')
+                   || ' answered ' || json_quote(json_extract(event, '$.data.option'))
+                   || ' by session ' || json_extract(event, '$.data.session')
+                 WHEN 'factory.ask.session_dismissed' THEN 'ask ' || json_extract(event, '$.data.ask')
+                   || ' dismissed by session ' || json_extract(event, '$.data.session')
                  ELSE type || coalesce(' ' || json_extract(event, '$.data.step'), '')
                    || coalesce(': ' || json_extract(event, '$.data.outcome'), '') END AS what,
                0 AS source, seq
@@ -1497,6 +1505,10 @@ pub fn desk(
         unrouted += usize::from(owner(db, &resource)?.is_some());
     }
     let unheard = unheard_events(db, 0, Some((day.0, &day.1)), now)?.len();
+    let dropped = dropped_requests(db, 0)?
+        .iter()
+        .filter(|drop| drop["time"].as_str() >= Some(day.0))
+        .count();
     let outside = [
         crate::link::banner(db)?,
         post::intake_banner(db)?,
@@ -1516,7 +1528,7 @@ pub fn desk(
         "intake": outside,
         "counts": {
             "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted, "unheard": unheard,
-            "outsider": outsider,
+            "dropped": dropped, "outsider": outsider,
         },
         "items": items,
         "next": ranked.first(),
@@ -1608,6 +1620,17 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
                FROM trace WHERE type = 'factory.run.scored'
                  AND json_extract(event, '$.data.task') = CAST(?1 AS TEXT))
              WHERE latest = 1 ORDER BY CAST(run AS INTEGER), scorer",
+        ),
+        (
+            "held_scores",
+            "SELECT json_extract(event, '$.data.scorer') AS scorer,
+               json_extract(event, '$.data.verdict') AS verdict,
+               json_extract(event, '$.data.evidence') AS reason,
+               json_extract(event, '$.data.happened') AS happened, time
+             FROM trace WHERE type = 'factory.step.labeled'
+               AND json_extract(event, '$.data.task') = CAST(?1 AS TEXT)
+               AND json_extract(event, '$.data.label') = 'scored'
+             ORDER BY seq",
         ),
     ];
     for (name, query) in lists {

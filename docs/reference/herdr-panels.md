@@ -45,8 +45,8 @@ they land in your checkout, and Git ignores them.
 ## The Desk panel
 
 `priory-desk` opens in the aside `aside-desk`, which its Priory bar button shows or hides. It
-follows DESIGN.md's Herdr Desk: the count, the next thing, the room and intake banners, the saved
-views, then the rows.
+follows DESIGN.md's Herdr Desk: the count, the next thing, the pause, room, intake and spend cap
+banners, the saved views, then the rows.
 
 - **What it reads.** `desk --all --json`, `asks --all --json`, `tasks --json` and
   `queue FACTORY --json`, read together, then again after each `priory wait`, even one that ends
@@ -114,7 +114,8 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   of its last update, and the options stay disabled until it reconnects.
 - **Routed asks.** An open ask with `routed_to` shows "with <lead>" in its row, and its detail says
   the lead is answering and that the person can still answer first. An answered ask shows
-  `answered_by` as "by agent:<lead>" or "by a person", in its row, its decided line and the
+  `answered_by` as "by agent:<lead>", "by auto", "by session <session>" for a person's own session,
+  or "by a person", in its row, its decided line and the
   History. The Desk panel shows the same mark under a routed ask's question. The helpers
   `routedMark`, `routedNote` and `answeredBy` live in `lib/priory.js`, as in the web view's
   `asks.js`; a test keeps the two word for word.
@@ -388,6 +389,10 @@ DESIGN.md's "Inbox" section holds its visual rules; this section says how it wor
   [routing.md](../daemon/routing.md#events-no-agent-read)). An asleep task's group shows its
   `priory say` command, since Say stays on the web page. A blocked task's group has Resume task N,
   which runs `priory resume N`. An ended task's group routes as an owned group does.
+- **Dropped.** After the unheard groups and before the owned ones, under Dropped, each request a
+  trigger's `pre` script dropped shows its key, its trigger and script, its source event and why,
+  from `unrouted.dropped`. It has no button: a drop is final for its event (see
+  [pre.md](../intake/pre.md#one-decision-per-event)).
 
 ## The Tasks panel
 
@@ -501,6 +506,8 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
 - The open asks and stopped tasks above, oldest first, without the snoozed ones.
 - The room banner: what is short, by how much, since when, and the waiting task. `priory desk`
   prints it today.
+- One banner per spend cap reached, after the pause, room and intake banners, from the desk's
+  `caps`.
 - Counts: asleep tasks, reports waiting for review, snoozed items.
 - Each task's `progress` from `priory tasks --json`: its goal, acceptance criteria, latest change
   and next action, as its agent last published them.

@@ -37,7 +37,8 @@ pub struct Answer {
     /// The person confirmed that this answer runs the ask's command.
     #[serde(default)]
     pub run: bool,
-    /// Where the answer came from: `cli` or `serve`.
+    /// Where the answer came from: `cli` or `serve`, or `session:<name>` for a person's own
+    /// session through `priory mcp --outside`.
     #[serde(default)]
     pub by: String,
 }
@@ -3044,6 +3045,81 @@ pub const LEAD_TRIGGER: &str = "priory/lead";
 /// `auto_answer` level.
 pub const AUTO: &str = "auto";
 
+/// What `answered_by` starts with for an ask a person's own session answered or dismissed through
+/// `priory mcp --outside`: `session:` and the session's name.
+pub const SESSION: &str = "session:";
+
+/// Who decided, at the start of a sentence: `Session <name>` for an outside session, else
+/// `A person`.
+fn decider(by: &str) -> String {
+    match by.strip_prefix(SESSION) {
+        Some(session) => format!("Session {session}"),
+        None => "A person".to_owned(),
+    }
+}
+
+/// Why a person's own session may not answer or dismiss ask `ask`, or `None` when it may. It may
+/// decide only what a lead may: an agent's or outside ask, or a human step's, that
+/// `explain::delegable` allows, and never an outside ask it asked itself. Priory's own asks, such as a hold's, a gate's or a spend cap's, a
+/// graded plan's approval and a debate's pick stay a person's.
+pub(crate) fn outside_refusal(
+    tx: &Transaction,
+    ask: i64,
+    session: Option<&str>,
+    workflows: &Workflows,
+) -> rusqlite::Result<Option<String>> {
+    let found = tx
+        .query_row(
+            "SELECT asks.kind, asks.run IS NOT NULL, coalesce(asks.step, ''), asks.command IS NOT NULL,
+               coalesce(tasks.workflow, ''), coalesce(asks.session, '') = coalesce(?2, '')
+             FROM asks LEFT JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
+            params![ask, session],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, bool>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, bool>(5)?,
+                ))
+            },
+        )
+        .optional()?;
+    // A missing ask is refused by `open_ask`, with the same words a person gets.
+    let Some((kind, asked_by_agent, at, command, workflow, own)) = found else {
+        return Ok(None);
+    };
+    if kind == "outside" {
+        return Ok(match (command, own) {
+            (true, _) => Some("it carries a command".to_owned()),
+            // A session that put a question to the person cannot settle it for them.
+            (_, true) => Some("this session asked it".to_owned()),
+            _ => None,
+        });
+    }
+    if crate::hold::of_ask(tx, ask)?.is_some() || (kind == "agent" && !asked_by_agent) {
+        return Ok(Some("Priory asked it, not an agent".to_owned()));
+    }
+    let Some(flow) = workflows.get(&workflow) else {
+        return Ok(Some(format!(
+            "its workflow {workflow} is no longer in the factory"
+        )));
+    };
+    if kind == "step" {
+        match flow.value.step(&at) {
+            Some(step) if step.debate.is_some() => {
+                return Ok(Some("it picks a debate's answer".to_owned()));
+            }
+            Some(step) if step.decides != Decider::Human => {
+                return Ok(Some("it approves a graded plan".to_owned()));
+            }
+            _ => {}
+        }
+    }
+    Ok(explain::undelegable(&flow.value, &at, command))
+}
+
 /// The lead a new ask of `task` at step `at` goes to: a `hands-off` task's lead, unless the ask
 /// runs a command, its answer can let an irreversible step run, or its step approves one.
 fn lead_of(
@@ -3843,8 +3919,12 @@ fn answer_in(
             trace::ended(tx, trace, task, &chosen, None)?;
             crate::grades::answered(tx, trace, task, &at, &chosen, &target)?;
         }
-        let note = note
-            .map(|note| format!("A person answered {chosen} on step {at}, with a note: {note}"));
+        let note = note.map(|note| {
+            format!(
+                "{} answered {chosen} on step {at}, with a note: {note}",
+                decider(&answer.by)
+            )
+        });
         let next = step(workflows, &workflow, &target).map(|next| &next.decides);
         if let (Some(note), Some(Decider::Model)) = (&note, next) {
             queue_first(tx, task, note)?;
@@ -4044,6 +4124,15 @@ fn open_ask(
     Ok(Ok(ask))
 }
 
+/// Why ask `id` cannot be answered or dismissed at `revision`, as `priory answer` is told.
+pub(crate) fn still_open(
+    tx: &Transaction,
+    id: i64,
+    revision: i64,
+) -> rusqlite::Result<Result<(), String>> {
+    Ok(open_ask(tx, id, Some(revision))?.map(drop))
+}
+
 /// A person's `priory dismiss`: it closes an open ask with no answer, at `revision` if given.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Dismiss {
@@ -4059,18 +4148,20 @@ pub(crate) fn dismiss(
     factory: &priory_factory::factory::Factory,
 ) -> rusqlite::Result<Result<String, String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let dismissed = dismiss_in_tx(&tx, dismiss, factory)?;
+    let dismissed = dismiss_in_tx(&tx, dismiss, factory, None)?;
     if dismissed.is_ok() {
         tx.commit()?;
     }
     Ok(dismissed)
 }
 
-/// Dismisses an ask in `tx`, writing nothing when it refuses.
+/// Dismisses an ask in `tx`, writing nothing when it refuses. `by` names an outside session that
+/// dismissed it, as `answered_by` does; `None` is a person.
 pub(crate) fn dismiss_in_tx(
     tx: &Transaction,
     dismiss: &Dismiss,
     factory: &priory_factory::factory::Factory,
+    by: Option<&str>,
 ) -> rusqlite::Result<Result<String, String>> {
     let ask = match open_ask(tx, dismiss.dismiss, dismiss.revision)? {
         Ok(ask) => ask,
@@ -4083,8 +4174,8 @@ pub(crate) fn dismiss_in_tx(
         )));
     }
     tx.execute(
-        "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'dismissed' WHERE id = ?1",
-        [dismiss.dismiss],
+        "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'dismissed', answered_by = ?2 WHERE id = ?1",
+        params![dismiss.dismiss, by],
     )?;
     withdraw_waits(tx, dismiss.dismiss, "dismissed")?;
     drop_lead(tx, dismiss.dismiss, &format!("ask {label} was dismissed"))?;
@@ -4093,7 +4184,10 @@ pub(crate) fn dismiss_in_tx(
         wake(
             tx,
             task,
-            &format!("A person dismissed ask {label} without an answer. Continue your task."),
+            &format!(
+                "{} dismissed ask {label} without an answer. Continue your task.",
+                decider(by.unwrap_or_default())
+            ),
         )?;
         if ask.state == "asleep" {
             set(tx, task, "ready", None, None)?;

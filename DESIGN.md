@@ -446,7 +446,9 @@ The desk is the "Needs me" view. It lists, top to bottom:
    opens the [Inbox](#inbox) panel's Unrouted view. It never ranks and never takes an alarm color.
    Under it, when a task kept events no agent read (`counts.unheard`), one more calm row, "2 events
    kept by a sleeping task reached no agent", with the `asleep` tile and the count, that opens the
-   same view at its Unheard section.
+   same view at its Unheard section. Under that, when a pre script dropped requests
+   (`counts.dropped`), one more calm row, "1 request a pre script dropped in the last 24 hours",
+   with the `dropped` tile and the count, that opens the same view at its Dropped section.
 11. Reports waiting for review, when there are any.
 On a phone, the **Answer capsule** floats above the tab bar: a full-width `--action` button,
 `--capsule` (54 px) tall, `--capsule-gap` above the tab bar, with `--radius-full` and
@@ -515,6 +517,14 @@ workflow, then its 5 newest events with the `asleep` tile. Under them, by the ta
 group's `say_text` through the task's say verb, with "Say sends “...”" in `--text-2`; Say and the
 task page's **Resume** for a blocked one, whose line adds "It reads them when it resumes."; the
 owned group's Revive or Request a task for an ended one; "Its next run reads them." otherwise.
+
+When `unrouted.dropped` has entries, a **Dropped** section, "a script judged each once", comes
+after Unheard and before Unrouted. Each entry is a group card with no action: its key in mono with
+its event count, a caption line with the `dropped` tile, "trigger linear-view,
+scripts/has-estimate", then its source event as a history row with the `dropped` tile, then a
+`--text-2` line with why and the way back: "Dropped: no estimate yet. A new event of it that a
+trigger wants runs the script again." A script that failed reads "Dropped: the script failed:
+exit status 2."
 Events open no detail, so the Inbox has no drawer on wide screens.
 
 ### Add
@@ -1440,15 +1450,16 @@ waiting, and the daemon does nothing different.
 The calm count, then the one next thing, then the explorer list.
 
 1. **Count** in `--type-pane-count`, as the web desk's: "2 asks need you. Oldest waits 42 min. 1
-   stopped. 2 snoozed. 3 events reached no task in 24 h. 2 events no agent read." Each of the last
-   two sentences shows only when its count is above zero. The Unrouted view is the [Inbox](#inbox-1) panel.
+   stopped. 2 snoozed. 3 events reached no task in 24 h. 2 events no agent read. 1 request a script
+   dropped in 24 h." Each of the last three sentences shows only when its count is above zero. The Unrouted view is the [Inbox](#inbox-1) panel.
 2. **The next thing**: a card on `--surface` with the desk's `next`: an alarm or the ask that ranks
    first, why it ranks first, its recommendation, and the buttons Answer… (primary, for an ask),
    Open task, Attach and Snooze 1 h. Answer… opens the
    ask in the Asks panel, so a person answers in one place. Open task opens the [Task](#task)
    panel; Attach opens the live run's terminal.
 3. **Saved views**: Needs me, Running, Asleep, Snoozed and All.
-4. The room banner, Asks, Stopped, To-dos and Later, as on the web desk. The memories row's detail
+4. The pause, room, intake and spend cap banners, then Asks, Stopped, To-dos and Later, as on the
+   web desk. The memories row's detail
    lists each candidate as on the web's [memory candidates](#memory-candidates) page, with a Current
    text button instead of the disclosure, and an armed Accept that reads "Press again to accept".
    A routed ask shows the
@@ -1602,6 +1613,8 @@ The web's [Inbox](#inbox) panel, as a tab in the center stack.
   the web. An asleep task's card shows its `follow_up` command in mono `--text-2` instead of Say,
   which stays on the web. A blocked task's card has Resume task 15 and "It reads them when it
   resumes."
+- Dropped cards come after the unheard ones under a "Dropped" heading, as on the web, with no
+  button.
 - While it reads: "Loading the unrouted events…"
 
 ### Tasks

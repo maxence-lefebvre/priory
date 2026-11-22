@@ -118,6 +118,27 @@ test("a blocked task's unheard group resumes it, since it reads them when it res
   assert.match(text(panel.drawn()), /Resumed task 15\./);
 });
 
+/** A request `scripts/has-estimate` dropped, as `unrouted.dropped` lists it. */
+const drop = {
+  seq: 40, time: "2026-11-17T12:00:01Z", trigger: "linear-view", script: "scripts/has-estimate", reason: "no estimate yet",
+  failed: null, key: "linear:ENG-12",
+  event: { seq: 39, type: "linear.issue.entered", subject: "ENG-12", time: "2026-11-17T12:00:00Z", line: "Speed up the export", url: null },
+};
+
+test("lists the requests a pre script dropped between the unheard and the unrouted groups, with why", async () => {
+  const { drawn } = await inbox({ ...fixture, unrouted: { ...fixture.unrouted, dropped: [drop] } });
+
+  const shown = text(drawn());
+  assert.match(shown, /Dropped a script judged each once linear:ENG-12 1 trigger linear-view, scripts\/has-estimate Linear issue entered ENG-12 Nov 17, 12:00 Speed up the export Dropped: no estimate yet\. A new event of it that a trigger wants runs the script again\. Unrouted reached no task/);
+  assert.ok(shown.indexOf("Unheard") < shown.indexOf("Dropped a script"), shown);
+});
+
+test("with no owned and no unheard group, a dropped request still shows above the empty line", async () => {
+  const { drawn } = await inbox({ ...fixture, unrouted: { ...fixture.unrouted, owned: [], unheard: [], dropped: [drop] } });
+
+  assert.match(text(drawn()), /^Inbox Unrouted 0 Dropped a script judged each once linear:ENG-12 .* Unrouted reached no task No event of a task's resource went unrouted\./);
+});
+
 test("the view model is the web view's inbox.js, copied", () => {
   const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
   assert.equal(source("../mods/priory-inbox/view.js"), source("../../../crates/priory-core/web/inbox.js"),

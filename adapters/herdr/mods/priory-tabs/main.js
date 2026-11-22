@@ -66,7 +66,7 @@ function rootId(text) {
 
 export default class PrioryTabs extends View {
   /** @param {import("gpui-kit").Context} cx */
-  init(cx) {
+  init(_props, cx) {
     /** @type {ReturnType<typeof connect> | null} */
     this.priory = null;
     // A request left in shared state by an earlier session must not attach, or open a task, on start.
