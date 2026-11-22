@@ -1304,7 +1304,7 @@ function disarmTask() {
 // A task's id from the page: its number here, or `runner:key` for another runner's task.
 const taskIdOf = (value) => (/^\d+$/.test(value) ? Number(value) : value);
 // The body an action carries: another runner's task names the generation the page drew.
-const remoteGeneration = (task) => state.data.tasks.find((each) => each.id == null && remoteId(each) === task)?.generation;
+const remoteGeneration = (task) => state.data?.tasks.find((each) => each.id == null && remoteId(each) === task)?.generation;
 const remoteBody = (task, body) => (typeof task === "string" ? { ...body, generation: remoteGeneration(task) } : body);
 
 function taskAct(target) {
