@@ -4270,3 +4270,16 @@ fn an_intent_scorer_reads_results_with_a_decision_model_in_the_factory_folder() 
          scorers/c.toml:5: `key_env` is for kind `intent`, not `outcome`\n"
     );
 }
+
+#[test]
+fn a_factory_folder_that_does_not_exist_is_named() {
+    let dir = factory("no-such-folder", &[]).join("exampel");
+
+    let outcome = check(&dir);
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        format!("{}: missing: no such folder\n", dir.display())
+    );
+}

@@ -16,7 +16,11 @@ curl -fsSL https://raw.githubusercontent.com/maxence-lefebvre/priory/main/instal
 ```
 
 The script does not change your `PATH`. When `~/.local/bin` is not on it, the script says so: add
-it in your shell's profile to run `priory` by name.
+it in your shell's profile, such as `~/.bashrc`, to run `priory` by name, then open a new terminal:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
 
 ### What the script checks
 

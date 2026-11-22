@@ -569,6 +569,7 @@ day = 10.0                                     # dollars the lane may spend in a
 
 | Message | Cause |
 | ------- | ----- |
+| `<folder>: missing: no such folder` | The folder named on the command line does not exist, as after a typo or from the wrong working folder |
 | `missing: a factory needs factory.toml or factory.yaml` | The folder has neither file |
 | `` `writing` names <file>, which does not exist `` | `writing` points at a file that is not in the factory folder (a file that cannot be read says `cannot be read` and why) |
 | `` `gate` is empty `` | `gate` is blank, and `sh -c ""` exits 0, so it would pass every proof |
@@ -576,7 +577,7 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` the critic `<name>` reads on = "<on>": a critic reads a plan, which names no commit, so use one on result `` | `critic` names a scorer on `diff` or `ask` |
 | `` `[guard]` command `<name>` has the name of another guard `` | A `[guard]` command takes a built-in guard's name or another command's |
 | `` `[guard]` command `<name>` needs a program in `run` `` | A `[guard]` command with an empty `run` |
-| `` unknown field `<key>`, expected one of ... `` | A key the tables above do not list |
+| `` unknown field `<key>`, expected one of ... `` | A key the tables above do not list, or a top-level key such as `gate` written below a table such as `[serve]`, which makes it that table's key |
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A duration that is not a whole number and `s`, `m` or `h` |
 | `` `factory` is also defined in factory.toml `` | Both `factory.toml` and `factory.yaml` exist |
 | `` `bands` needs at least one band, each named once `` | `bands` is empty or names a band twice |

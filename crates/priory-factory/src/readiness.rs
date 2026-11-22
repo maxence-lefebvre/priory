@@ -327,10 +327,12 @@ fn ci(workflows: &[(String, String)]) -> Option<String> {
 }
 
 fn gate_criterion(gate: Gate, test: Option<&str>) -> Criterion {
-    let example = test.unwrap_or("cargo test");
-    let fix = format!(
-        "Set `gate = \"{example}\"` in factory.toml, so a step can require `gate-passed` before it ends."
-    );
+    let fix = match test {
+        Some(command) => format!(
+            "Set `gate = \"{command}\"` in factory.toml, before its first table, so a step can require `gate-passed` before it ends."
+        ),
+        None => "Give the tests one command (see test-command), then set `gate` to it in factory.toml, before its first table, so a step can require `gate-passed` before it ends.".to_owned(),
+    };
     let (status, detail) = match gate {
         Gate::Set(command) => (Status::Met, format!("gate = \"{command}\"")),
         Gate::Unset => (Status::Missing, "factory.toml sets no gate".to_owned()),
