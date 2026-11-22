@@ -75,8 +75,8 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
   `priory give`, and answering another runner's ask.
 - [agents-slice.md](agents-slice.md): the systemd slice that caps every agent's CPU and memory.
 - [memory-gate.md](memory-gate.md): `priory memory acquire`, which queues heavy commands for memory.
-- [sessions.md](sessions.md): shared agent sessions, attaching to a run's terminal, and trusting a
-  clone for Claude.
+- [sessions.md](sessions.md): shared agent sessions, attaching to a run's terminal, and trusting the
+  worktrees folder and each clone for Claude.
 - [codex.md](codex.md): how a Codex run differs from a Claude run.
 - [signals.md](signals.md): the hook signals a run sends, the nudge after a silent turn, and the
   nudge's evaluation.
