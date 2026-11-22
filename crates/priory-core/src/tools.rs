@@ -3425,6 +3425,9 @@ fn answer_in(
         Err(error) => return Ok(Err(error)),
     };
     let options: Vec<String> = serde_json::from_str(&options).expect("options are stored as JSON");
+    if let Some(applied) = crate::gates::answered(tx, answer.ask, &answer.text, &answer.by)? {
+        return Ok(applied);
+    }
     let hold = crate::hold::of_ask(tx, answer.ask)?;
     let (chosen, note) = match answer.text.split_once(':') {
         Some((option, note))

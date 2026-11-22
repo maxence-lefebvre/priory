@@ -119,11 +119,20 @@ pub(crate) fn tick(
     head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<Vec<String>> {
     db.execute(
+        "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'moved-on'
+         WHERE answer IS NULL AND withdrawn IS NULL AND EXISTS (
+           SELECT 1 FROM gates JOIN runs ON runs.id = gates.run
+           WHERE gates.state = 'grading' AND runs.ended IS NOT NULL
+           AND asks.name LIKE 'gate-' || gates.id || '-%')",
+        [],
+    )?;
+    db.execute(
         "UPDATE gates SET state = 'dropped', reason = 'its run ended before the gate graded it',
          ended = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
          WHERE state = 'grading' AND run IN (SELECT id FROM runs WHERE ended IS NOT NULL)",
         [],
     )?;
+    let mut kills = Vec::new();
     let waiting: Vec<(i64, i64, String, String)> = {
         let mut statement = db.prepare(
             "SELECT id, task, result, scorers FROM gates WHERE state = 'grading' ORDER BY id",
@@ -138,6 +147,14 @@ pub(crate) fn tick(
         if grading.running.contains_key(&id) {
             continue;
         }
+        match asked(db, id)? {
+            Asked::Open => continue,
+            Asked::Through => {
+                kills.extend(apply(db, trace, id, &Vec::new(), true, head)?);
+                continue;
+            }
+            Asked::None | Asked::Again => {}
+        }
         let job = prepare(db, trace.factory, task, &read, &names)?;
         let home = home.to_path_buf();
         grading
@@ -150,11 +167,10 @@ pub(crate) fn tick(
         .filter(|(_, thread)| thread.is_finished())
         .map(|(id, _)| *id)
         .collect();
-    let mut kills = Vec::new();
     for id in finished {
         let thread = grading.running.remove(&id).expect("listed above");
         let graded = thread.join().unwrap_or_default();
-        kills.extend(apply(db, trace, id, &graded, head)?);
+        kills.extend(apply(db, trace, id, &graded, false, head)?);
     }
     Ok(kills)
 }
@@ -250,6 +266,7 @@ fn apply(
     trace: &Trace,
     id: i64,
     graded: &Graded,
+    through: bool,
     head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<Option<String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -282,6 +299,23 @@ fn apply(
         })
         .map(|(score, _)| format!("{}: {}", score.scorer, score.reason))
         .collect();
+    let uncalibrated: Vec<String> = graded
+        .iter()
+        .filter(|(_, counts)| !counts)
+        .map(|(score, _)| {
+            let why = score.reason.strip_prefix("not calibrated: ");
+            format!(
+                "{} is not calibrated: {}",
+                score.scorer,
+                why.unwrap_or(&score.reason)
+            )
+        })
+        .collect();
+    if refusals.is_empty() && !uncalibrated.is_empty() && !through {
+        ask(&tx, id, task, &outcome, &uncalibrated)?;
+        tx.commit()?;
+        return Ok(None);
+    }
     if refusals.is_empty() {
         let arguments: Value = serde_json::from_str(&arguments).unwrap_or_default();
         match crate::tools::release(&tx, run, &arguments, stopped, trace, head)? {
@@ -322,6 +356,108 @@ fn apply(
     let blocked = format!("the gate refused outcome {outcome} twice: {reason}");
     crate::state::block(db, trace, task, "refused", &blocked)?;
     Ok(tmux)
+}
+
+/// The options of the ask a gate raises when a judge it names is not calibrated.
+pub(crate) const GRADE_AGAIN: &str = "grade again";
+pub(crate) const LET_THROUGH: &str = "let it through";
+
+/// Where a person's ask on gate `id` stands.
+enum Asked {
+    /// No ask, so the gate grades.
+    None,
+    /// An ask waits for a person, so the gate neither grades nor stores.
+    Open,
+    /// The latest ask was answered `grade again`.
+    Again,
+    /// The latest ask was answered `let it through`: the result is stored this once.
+    Through,
+}
+
+fn asked(db: &Connection, id: i64) -> rusqlite::Result<Asked> {
+    let latest: Option<(Option<String>, bool)> = db
+        .query_row(
+            "SELECT answer, withdrawn IS NOT NULL FROM asks WHERE name LIKE 'gate-' || ?1 || '-%'
+             ORDER BY id DESC LIMIT 1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    Ok(match latest {
+        None => Asked::None,
+        Some((None, false)) => Asked::Open,
+        Some((Some(answer), _)) if answer == LET_THROUGH => Asked::Through,
+        Some(_) => Asked::Again,
+    })
+}
+
+/// Asks a person about gate `id`, whose only objection is a judge that is not calibrated, since
+/// such a judge can neither pass nor refuse a plan no person reads. The result stays held.
+fn ask(
+    tx: &Transaction,
+    id: i64,
+    task: i64,
+    outcome: &str,
+    uncalibrated: &[String],
+) -> rusqlite::Result<()> {
+    let step: String = tx.query_row("SELECT step FROM gates WHERE id = ?1", [id], |row| {
+        row.get(0)
+    })?;
+    let asked: i64 = tx.query_row(
+        "SELECT count(*) FROM asks WHERE name LIKE 'gate-' || ?1 || '-%'",
+        [id],
+        |row| row.get(0),
+    )?;
+    let question = format!(
+        "The gate of step {step} holds outcome {outcome} of task {task}: {}. Calibrate it with priory score --calibrate, then answer {GRADE_AGAIN}, or answer {LET_THROUGH} to store the result this once.",
+        uncalibrated.join("; ")
+    );
+    let title = format!("gate held: {}", uncalibrated.join("; "));
+    tx.execute(
+        "INSERT INTO asks (task, step, kind, name, question, options, title)
+         VALUES (?1, ?2, 'agent', ?3, ?4, ?5, ?6)",
+        params![
+            task,
+            step,
+            format!("gate-{id}-{}", asked + 1),
+            question,
+            serde_json::json!([GRADE_AGAIN, LET_THROUGH]).to_string(),
+            title
+        ],
+    )
+    .map(drop)
+}
+
+/// Records a person's answer to `ask`, when it is a gate's: the gate acts on it at its next tick.
+/// None for another ask.
+pub(crate) fn answered(
+    tx: &Transaction,
+    ask: i64,
+    answer: &str,
+    by: &str,
+) -> rusqlite::Result<Option<Result<String, String>>> {
+    let name: Option<String> = tx
+        .query_row(
+            "SELECT name FROM asks WHERE id = ?1 AND name LIKE 'gate-%' AND kind = 'agent'",
+            [ask],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    if answer != GRADE_AGAIN && answer != LET_THROUGH {
+        return Ok(Some(Err(format!(
+            "ask {name} takes one of: {GRADE_AGAIN}, {LET_THROUGH}"
+        ))));
+    }
+    tx.execute(
+        "UPDATE asks SET answer = ?2, answered = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+           answered_by = ?3 WHERE id = ?1",
+        params![ask, answer, by],
+    )?;
+    Ok(Some(Ok(format!("ask {name} answered"))))
 }
 
 fn end(tx: &Transaction, id: i64, state: &str, reason: Option<&str>) -> rusqlite::Result<()> {
