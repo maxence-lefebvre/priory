@@ -137,6 +137,11 @@ with the rest, and its title is `memory candidates wait for a person`. A person 
 each with `priory memories accept ID` or `priory memories drop ID`, and the row leaves once none
 waits. See [skills.md](skills.md#memories-agents-write).
 
+In `/api/desk`, each candidate also carries `replaces` and `current_text`: whether runs get a memory
+of its name now, and that memory's text (see
+[the reference](../reference/memories.md#priory-memories)). `POST /api/memories/{id}/accept` and
+`/drop` decide one, as the CLI does (see [serve.md](../reference/serve.md#writes)).
+
 The web and Herdr Desks show it as a plain row with its line, without Accept or Drop buttons.
 
 ## Reports
