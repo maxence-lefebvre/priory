@@ -11,7 +11,7 @@ use priory_intake::intake::{
     REVIEWED, THREAD_COMMENTED,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -164,7 +164,6 @@ pub(crate) fn call(
     head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
     let factory = trace.factory;
-    let workflows = &factory.workflows;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(run) = run(&tx, &call.session)? else {
         return Ok((
@@ -183,6 +182,15 @@ pub(crate) fn call(
         return Ok((
             Err(format!(
                 "run {} already has a result, {outcome}; a result is final",
+                run.id
+            )),
+            None,
+        ));
+    }
+    if let Some(outcome) = crate::gates::grading(&tx, run.id)? {
+        return Ok((
+            Err(format!(
+                "run {} holds outcome {outcome} while its gate grades it: end your turn, and Priory sends the verdict",
                 run.id
             )),
             None,
@@ -243,7 +251,7 @@ pub(crate) fn call(
                 .to_owned(),
         ),
         "result" => match lead_answer(&tx, &run, &call.arguments, trace, head)? {
-            Ok(()) => result(&tx, &run, &call.arguments, workflows, head)?,
+            Ok(()) => result(&tx, &run, &call.arguments, factory, head, true)?,
             Err(refused) => Err(refused),
         },
         "ask" => ask(&tx, &run, &call.arguments, factory)?,
@@ -271,13 +279,17 @@ pub(crate) fn call(
     Ok((stored, None))
 }
 
+/// Stores the result `arguments` of `run`, or, when `hold` and a gate grades its outcome, holds it
+/// for the gate and stores nothing.
 fn result(
     tx: &Transaction,
     run: &Run,
     arguments: &Value,
-    workflows: &Workflows,
+    factory: &Factory,
     head: &dyn Fn(&Path, &str) -> Option<String>,
+    hold: bool,
 ) -> rusqlite::Result<Result<String, String>> {
+    let workflows = &factory.workflows;
     let fields = (|| {
         Ok::<_, String>((
             text(arguments, "outcome")?,
@@ -352,6 +364,21 @@ fn result(
         && let Err(refused) = crate::batch::planned(tx, run.task, &arguments["batch"], &summary)?
     {
         return Ok(Err(refused));
+    }
+    if hold {
+        let scorers = crate::gates::scorers(tx, run.task, &run.workflow, step, &outcome, factory)?;
+        if !scorers.is_empty() {
+            let read = json!({
+                "run": run.id, "step": run.step, "outcome": outcome, "summary": summary,
+                "evidence": evidence, "commit": commit, "reason": reason,
+            });
+            crate::gates::hold(
+                tx, run.id, run.task, &run.step, &outcome, arguments, &read, &scorers,
+            )?;
+            return Ok(Ok(format!(
+                "result held: its gate grades outcome {outcome} when this turn ends, and the task moves to {next} unless the gate refuses it"
+            )));
+        }
     }
     tx.execute(
         "INSERT INTO results (run, task, step, outcome, summary, evidence, commit_sha, reason, merge_risk, inbox)
@@ -2362,6 +2389,27 @@ fn over_spent(
     Ok(Some(Some(run.tmux.clone())))
 }
 
+/// After a turn that ended while a gate grades its run's held result: checks the step's budget as
+/// for a sent result, then leaves the run idle for the gate's verdict. Returns the tmux session to
+/// kill when a cost that cannot be read fails the task.
+pub(crate) fn held_stop(
+    tx: &Transaction,
+    session: &str,
+    trace: &Trace,
+) -> rusqlite::Result<Option<String>> {
+    let Some(run) = run(tx, session)? else {
+        return Ok(None);
+    };
+    // A held result was sent, so an overrun stands, as for a stored one.
+    if let Some((false, reason)) = over_budget(tx, &run, trace)? {
+        end(tx, run.id, "budget")?;
+        set(tx, run.task, "failed", None, Some(&reason))?;
+        return Ok(Some(run.tmux.clone()));
+    }
+    crate::gates::stopped(tx, run.id)?;
+    Ok(None)
+}
+
 /// What the task has spent at its current step, priced with `prices.toml`, against the step's
 /// `budget`: `None` under it or without one, else whether it is over, or its cost unknown, and why.
 fn over_budget(
@@ -2517,6 +2565,46 @@ pub(crate) fn preempt_idle(
     stop_for(&tx, trace, run.id, head)?;
     tx.commit()?;
     Ok(Some(run.tmux))
+}
+
+/// Stores the result a gate held for the live run `run`, once the gate refused none of it, and,
+/// when the run's turn already ended, moves its task as its `Stop` would have. Returns why the
+/// result cannot be stored, or the tmux session to kill.
+pub(crate) fn release(
+    tx: &Transaction,
+    run: i64,
+    arguments: &Value,
+    stopped: bool,
+    trace: &Trace,
+    head: &dyn Fn(&Path, &str) -> Option<String>,
+) -> rusqlite::Result<Result<Option<String>, String>> {
+    let live = tx
+        .query_row(
+            "SELECT session FROM runs WHERE id = ?1 AND ended IS NULL",
+            [run],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(run) = live
+        .map(|session| self::run(tx, &session))
+        .transpose()?
+        .flatten()
+    else {
+        return Ok(Err(format!("run {run} ended before its gate graded it")));
+    };
+    if let Err(refused) = result(tx, &run, arguments, trace.factory, head, false)? {
+        return Ok(Err(refused));
+    }
+    tx.execute("UPDATE runs SET nudgeable = 0 WHERE id = ?1", [run.id])?;
+    if !stopped {
+        return Ok(Ok(None));
+    }
+    Ok(Ok(settle(tx, &run, trace)?.flatten()))
+}
+
+/// Queues the reason a gate refused a result as the task's next prompt, with how to end its step.
+pub(crate) fn refused(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<()> {
+    wake(tx, task, text).map(drop)
 }
 
 /// Measure a change to it first with `nudge.eval.toml` (docs/evaluating-a-prompt.md).

@@ -81,6 +81,19 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 problems.push(problem(settings, settings.lines.field(field), message));
             }
         }
+        if let Some(critic) = &settings.value.critic {
+            let refused = match factory.scorers.get(critic) {
+                None => Some(format!("the critic `{critic}` is no scorer in scorers/")),
+                Some(scorer) if scorer.value.on != ScoreOn::Result => Some(format!(
+                    "the critic `{critic}` reads on = \"{}\": a critic reads a plan, which names no commit, so use one on result",
+                    scorer.value.on.name()
+                )),
+                Some(_) => None,
+            };
+            if let Some(message) = refused {
+                problems.push(problem(settings, settings.lines.field("critic"), message));
+            }
+        }
         // `sh -c ""` exits 0, so a blank gate would pass every proof.
         if settings
             .value
@@ -560,15 +573,23 @@ fn check_scorer(factory: &Factory, scorer: &Loaded<Scorer>, problems: &mut Vec<P
         ScoreKind::AskShape => ScoreOn::Ask,
         ScoreKind::Judge => ScoreOn::Diff,
     };
-    if value.on != reads {
+    // A judge reads the result alone, as a plan's critic does, or the result and its diff.
+    let judged = value.kind == ScoreKind::Judge && value.on == ScoreOn::Result;
+    if value.on != reads && !judged {
         problems.push(problem(
             scorer,
             scorer.lines.field("on"),
-            format!(
-                "kind `{kind}` reads on = \"{}\", not \"{}\"",
-                reads.name(),
-                value.on.name()
-            ),
+            match value.kind {
+                ScoreKind::Judge => format!(
+                    "kind `judge` reads on = \"result\" or \"diff\", not \"{}\"",
+                    value.on.name()
+                ),
+                _ => format!(
+                    "kind `{kind}` reads on = \"{}\", not \"{}\"",
+                    reads.name(),
+                    value.on.name()
+                ),
+            },
         ));
     }
     let expect = scorer.lines.field("expect");
@@ -671,6 +692,17 @@ fn check_scorer(factory: &Factory, scorer: &Loaded<Scorer>, problems: &mut Vec<P
     };
     if let Some(refused) = refused {
         problems.push(problem(scorer, scorer.lines.field("run"), refused));
+    }
+}
+
+/// Why the scorer `name` cannot be part of a step's `gate`, if it cannot.
+fn gate_refused(factory: &Factory, name: &str) -> Option<String> {
+    match factory.scorers.get(name) {
+        None => Some(format!("`{name}`, which is no scorer in scorers/")),
+        Some(scorer) if scorer.value.on == ScoreOn::Ask => Some(format!(
+            "`{name}`, which reads asks: a gate grades a result, so use a scorer on result or diff"
+        )),
+        Some(_) => None,
     }
 }
 
@@ -1800,6 +1832,21 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
         if step.proof.values().any(|proof| *proof == Proof::GatePassed) && factory.gate().is_none()
         {
             report("`proof` names `gate-passed`, and factory.toml sets no `gate`".into());
+        }
+        if !step.gate.is_empty() && step.decides != Decider::Model {
+            report("only a model step has a `gate`".into());
+        }
+        for (outcome, scorers) in &step.gate {
+            if !step.next.contains_key(outcome) {
+                report(format!(
+                    "`gate` has outcome `{outcome}`, which is not in `next`"
+                ));
+            }
+            for name in scorers {
+                if let Some(why) = gate_refused(factory, name) {
+                    report(format!("`gate` of outcome `{outcome}` names {why}"));
+                }
+            }
         }
         if !reached.contains(step.id.as_str()) {
             report("no path from start reaches it".into());

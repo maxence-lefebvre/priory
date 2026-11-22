@@ -43,6 +43,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `next` | table of strings | yes | | Each outcome and where it leads: a step id, `done` or `stop` | `{ passed = "done", failed = "stop" }` |
 | `by` | table of `code`, `model`, `human` or `asleep` | no | the step's `decides` | Who decides an outcome's edge, where it differs from the step's decider | `{ passed = "asleep" }` |
 | `proof` | table of `gate-passed` | no | none: every outcome is the agent's word | Model steps only. The proof the daemon checks before it accepts an outcome, by outcome. `gate-passed`: the factory's [`gate`](factory.md#top-level-keys) passed at the head of the task's branch. See Proofs in [tools.md](../daemon/tools.md#proofs) | `{ passed = "gate-passed" }` |
+| `gate` | table of scorer lists | no | none: no scorer grades an outcome before it is stored | Model steps only. The [scorers](scorers.md) that grade an outcome before the daemon stores it, by outcome. A scorer on `result` or `diff`, whose `fail` or `error` refuses the outcome. A gate never approves anything. See Gates in [score.md](../daemon/score.md#gates) | `{ passed = ["tests", "does-what-was-asked"] }` |
 | `plan_requires` | array of `goal`, `testing`, `verification` | no | `[]` | Model steps only. The plan result fields this step's `prompt` or its agent's instructions must ask for. `priory check` refuses the step when neither mentions a named field. See `result` in [tools.md](tools.md#resultoutcome-summary-evidence-commit-reason-branches-risk-goal-testing-brief-verification-feedback-batch) | `["goal", "testing", "verification"]` |
 | `after` | `merged` | no | none | What the task waits for before it enters the step. `merged`: every pull request of the task's stack merged. Until then the task sleeps on the checks of [Done and checks](../daemon/waits.md#done-and-checks), and green checks alone do not move it on. See [Steps after the merge](#steps-after-the-merge) | `"merged"` |
 | `autonomous` | string | no | | Why an irreversible step may run without a person's approval | `"it only labels issues"` |
@@ -375,6 +376,10 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` only a model step has a `proof` `` | `proof` on a human or code step |
 | `` `proof` has outcome `<outcome>`, which is not in `next` `` | `proof` names an outcome the step does not have |
 | `` `proof` names `gate-passed`, and factory.toml sets no `gate` `` | A step needs the gate, and the factory has none |
+| `` only a model step has a `gate` `` | `gate` on a human or code step |
+| `` `gate` has outcome `<outcome>`, which is not in `next` `` | `gate` names an outcome the step does not have |
+| `` `gate` of outcome `<outcome>` names `<name>`, which is no scorer in scorers/ `` | A gate names a scorer the factory lacks |
+| `` `gate` of outcome `<outcome>` names `<name>`, which reads asks: a gate grades a result, so use a scorer on result or diff `` | A gate names an `ask` scorer |
 | `` only a model step has `plan_requires` `` | `plan_requires` on a human or code step |
 | `` `plan_requires` names `<field>`, which neither the step's prompt nor its agent's instructions mention `` | A required plan field that no text asks the agent for |
 | `` outcome `<outcome>` leads to `<target>`, which is not a step, `done` or `stop` `` | A `next` target that does not exist |

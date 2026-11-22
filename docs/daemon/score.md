@@ -1,8 +1,10 @@
 # Scores
 
 `priory score` grades a task's finished runs with the factory's scorers, on demand. A scorer is a
-file in `scorers/` ([the scorer reference](../reference/scorers.md)). No scorer runs by itself
-after a run: a `command` scorer can take as long as the gate, and a `judge` costs money.
+file in `scorers/` ([the scorer reference](../reference/scorers.md)). A scorer runs by itself only
+where the factory names it as a gate: a step's `gate` and the factory's `critic` grade a result
+before the daemon stores it (see [Gates](#gates)). No other scorer runs after a run: a `command`
+scorer can take as long as the tests, and a `judge` costs money.
 
 ```sh
 priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]
@@ -57,11 +59,13 @@ cases, or changing the model, makes the judge not calibrated again.
 
 ### The call
 
-A judge reads what a `diff` scorer reads: it fails a run with no result, and answers `error` for a
-result with no commit or a task with no start commit, before it calls the model. Otherwise Priory
-reads the diff from the start commit to the result's commit in its clone, and the task's request
-from the inbox. A diff over 100,000 bytes is `error` (`the diff is over 100000 bytes`), with no
-call: a judge that read only part of a diff could pass what it never saw.
+A judge on `diff` reads what a `diff` scorer reads: it fails a run with no result, and answers
+`error` for a result with no commit or a task with no start commit, before it calls the model.
+Otherwise Priory reads the diff from the start commit to the result's commit in its clone, and the
+task's request from the inbox. A diff over 100,000 bytes is `error` (`the diff is over 100000
+bytes`), with no call: a judge that read only part of a diff could pass what it never saw. A judge
+on `result` reads the request and the result alone, so it needs no commit: a plan's critic is one.
+Its system prompt then names no diff, and its message holds no diff block.
 
 It calls the model as `priory eval` runs a turn, with less: a headless `claude -p` of the judge's
 `model`, with no tool (`--tools ""`), no MCP server (`--strict-mcp-config` and no config), no
@@ -119,6 +123,81 @@ priory score path/to/factory --calibrate does-what-was-asked --budget 1
 
 Read each row's reason, and fix the prompt or a label where the judge and the person disagree for
 a reason you accept.
+
+## Gates
+
+A gate grades a result before the daemon stores it. A failing scorer refuses the result, and a
+passing one only lets the task go on as it would without the gate. A gate approves nothing: an
+irreversible step still needs a person's approval, and a `plan` task's grade still waits for a
+person.
+
+Two keys name gates:
+
+- A model step's `gate` lists scorers by outcome
+  ([workflows.md](../reference/workflows.md#step-keys)), such as
+  `gate = { passed = ["tests", "does-what-was-asked"] }`.
+- `critic` in `factory.toml` names one scorer on `result`
+  ([factory.md](../reference/factory.md#top-level-keys)). It grades a plan no person reads: a
+  `red`, `yellow` or `green` outcome that leads to a model or code step, of a task whose
+  `intervention` is not `plan`. Under `plan`, and for a grade that leads to a human step, a person
+  reads the plan, so the critic does not run.
+
+### A held result
+
+When the agent sends a result whose outcome a gate grades, the daemon checks it as it checks any
+result, then holds it and stores nothing. The agent reads:
+
+```text
+result held: its gate grades outcome passed when this turn ends, and the task moves to done unless the gate refuses it
+```
+
+The scorers run on a thread of their own, so a slow `command` scorer never holds the daemon's
+loop. They read the held result as `priory score` reads a stored one. While they grade, the run
+stays live and idle, the task stays `running`, and:
+
+- no prompt is typed into the run. A person's `say` or an event waits for the verdict;
+- a `result`, `ask`, `wait` or `compact` call is refused with
+  `run <id> holds outcome <outcome> while its gate grades it: end your turn, and Priory sends the verdict`;
+- the stall handler leaves the run alone.
+
+A held result counts as sent for the step's [`budget`](health.md#budget): when the turn ends, an
+overrun stands, and a cost that cannot be read fails the task, as for a stored result.
+
+### The verdict
+
+| Scorer answers | In a gate |
+| -------------- | --------- |
+| `pass` or `not applicable` | Lets the result through |
+| `fail` | Refuses it |
+| `error` | Refuses it: a scorer that cannot grade the change cannot let it through |
+| A judge whose calibration does not pass | Does not count. Its `error: not calibrated: <why>` is recorded, and the gate goes on without it |
+
+A judge gates only while its latest calibration, for its current prompt, model and labeled cases,
+is at or above its `agreement` ([Calibration](#calibration)). One gated call may spend five times
+what one call cost on average when the judge was calibrated, at least $0.01.
+
+When no scorer refuses, the daemon stores the result, checking it again first, and the task moves
+on as its `Stop` would have moved it.
+
+When a scorer refuses, the result is never stored. The first refusal in a run reaches the agent as
+its next prompt, followed by how to end the step:
+
+```text
+The gate refused outcome passed. tests: two tests fail. Fix it, then send the result again. A second refusal in this run goes to a person.
+```
+
+The agent fixes it and sends a result again, which the gate grades again. A second refusal in the
+same run blocks the task with `the gate refused outcome <outcome> twice: <reasons>`, and ends the
+run as `refused`. The desk shows it, and a person resumes, revives or cancels the task
+([desk.md](desk.md)). A resumed task starts a new run, whose first refusal reaches the agent
+again.
+
+A run that ends while its gate grades, such as one cancelled, revived, stopped for an urgent wake or
+whose agent exited, drops the verdict: its scores are recorded, and nothing else changes. After a
+daemon restart, a gate still grading starts its scorers again.
+
+Each score of a gate appends a `factory.run.scored` record with `gate` set to the outcome it graded
+([Records](#records)).
 
 ## Records
 

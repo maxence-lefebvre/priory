@@ -566,7 +566,8 @@ Priory serves these as MCP tools.
   (rejected approval, red CI after merge, revert), estimator and assumptions are specified before it
   ships. M4
 - R10.7 Scorers grade finished runs. Benchmarks replay past tasks under another model or
-  configuration. M4
+  configuration. A step can name scorers as a gate on an outcome, and the factory a critic for a
+  plan no person reads: a failing one refuses the result, and none approves anything. M4
 
 ### R11. Sharing between machines
 

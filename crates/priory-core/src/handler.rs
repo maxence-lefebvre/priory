@@ -44,6 +44,7 @@ pub(crate) fn quiet(db: &Connection) -> rusqlite::Result<Vec<Quiet>> {
            AND asks.withdrawn IS NULL)
          AND NOT EXISTS (SELECT 1 FROM waits WHERE waits.run = runs.id AND waits.fired IS NULL
            AND waits.withdrawn IS NULL)
+         AND NOT EXISTS (SELECT 1 FROM gates WHERE gates.run = runs.id AND gates.state = 'grading')
          ORDER BY runs.id",
     )?;
     statement

@@ -781,7 +781,7 @@ pub fn compare(
             }
             let result = json!({ "commit": start });
             let (verdict, why) =
-                score::on_commit(heads, home, repo, start, start, &loaded.value, &result);
+                score::on_commit(&heads.dir, home, repo, start, start, &loaded.value, &result);
             if verdict == Verdict::Error {
                 broken.push((
                     case.name.clone(),

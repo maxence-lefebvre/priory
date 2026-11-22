@@ -959,6 +959,13 @@
       "pattern": "^0*[1-9][0-9]*[smh]$",
       "type": "string"
     },
+    "critic": {
+      "description": "The scorer that grades a plan no person reads: a grade that leads to a model or code step\nof a task without `intervention = \"plan\"`. It can only refuse the grade.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "decisions": {
       "allOf": [
         {

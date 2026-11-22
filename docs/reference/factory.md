@@ -15,6 +15,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `stalled` | duration | no | `"10m"` | How long a run goes without a hook event or a pane change before it counts as stalled | `"15m"` |
 | `command_timeout` | duration | no | `"5m"` | How long one `git`, `gh` or `tmux` command may run before Priory kills it. See [home.md](../daemon/home.md) | `"20m"` |
 | `gate` | string | no | none: no step can name the `gate-passed` proof | The project's check, such as its tests. `priory gate` runs it with `sh -c` in a task's worktree. See Proofs in [tools.md](../daemon/tools.md#proofs) | `"cargo test"` |
+| `critic` | string | no | none: a plan no person reads moves on unread | A [scorer](scorers.md) on `result` that grades a plan no person reads: a `red`, `yellow` or `green` outcome that leads to a model or code step, of a task without `intervention = "plan"`. It can only refuse the plan. See Gates in [score.md](../daemon/score.md#gates) | `"plan-is-sound"` |
 | `writing` | path | no | none: agents get only their own prompt | A file, relative to the factory folder, whose text Priory appends to the system prompt of every agent it starts. `priory check` refuses a missing file and warns past 4096 bytes. See [writing.md](../daemon/writing.md) | `"WRITING.md"` |
 | `sweep` | table | no | the built-in worktree sweep alone | How the daemon frees room. See [`[sweep]`](#sweep) | |
 | `search` | table | no | keyword search, no summarizer | How tasks are found. See [`[search]`](#search) | |
@@ -533,6 +534,8 @@ day = 10.0                                     # dollars the lane may spend in a
 | `missing: a factory needs factory.toml or factory.yaml` | The folder has neither file |
 | `` `writing` names <file>, which does not exist `` | `writing` points at a file that is not in the factory folder (a file that cannot be read says `cannot be read` and why) |
 | `` `gate` is empty `` | `gate` is blank, and `sh -c ""` exits 0, so it would pass every proof |
+| `` the critic `<name>` is no scorer in scorers/ `` | `critic` names a scorer the factory lacks |
+| `` the critic `<name>` reads on = "<on>": a critic reads a plan, which names no commit, so use one on result `` | `critic` names a scorer on `diff` or `ask` |
 | `` `[guard]` command `<name>` has the name of another guard `` | A `[guard]` command takes a built-in guard's name or another command's |
 | `` `[guard]` command `<name>` needs a program in `run` `` | A `[guard]` command with an empty `run` |
 | `` unknown field `<key>`, expected one of ... `` | A key the tables above do not list |

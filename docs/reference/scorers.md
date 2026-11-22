@@ -2,8 +2,9 @@
 
 A scorer grades one finished run: a run whose turn ended with a result or an ask. Each file
 `scorers/<name>.toml`, `.yaml` or `.yml` holds one, named by its file. A scorer answers `pass`,
-`fail`, `not applicable` or `error`. `priory score` runs them on demand, and no scorer runs by
-itself after a run (see [score.md](../daemon/score.md)).
+`fail`, `not applicable` or `error`. `priory score` runs them on demand. A step's
+[`gate`](workflows.md#step-keys) and the factory's [`critic`](factory.md#top-level-keys) run them on
+a result before the daemon stores it (see [score.md](../daemon/score.md#gates)).
 
 Schema: [`config/scorer.json`](../schemas/config/scorer.json).
 
@@ -29,7 +30,7 @@ Schema: [`config/scorer.json`](../schemas/config/scorer.json).
 | `outcome` | `result` | The result's outcome is one of `expect` |
 | `command` | `diff` | `run` exits 0 in a scratch checkout of the result's commit. Exit 1 fails, and any other ending is an error |
 | `ask-shape` | `ask` | Every ask the run made shows each part `expect` names |
-| `judge` | `diff` | `model` answers `pass` to the question in `prompt`, about the request, the result and the diff. Its verdict counts only once calibrated: see [score.md](../daemon/score.md#judges) |
+| `judge` | `diff` or `result` | `model` answers `pass` to the question in `prompt`, about the request, the result and, on `diff`, the diff. On `result` it reads no diff and needs no commit, as a plan's critic does. Its verdict counts only once calibrated: see [score.md](../daemon/score.md#judges) |
 
 An ask's shape is the one `priory eval` reads ([prompt-evals.md](prompt-evals.md)): `short` when
 its question is one line of at most 25 words, `whatWaits` and `nextAction` when it filled them.
@@ -239,6 +240,7 @@ verdict = "fail"
 | ------- | ----- |
 | `` unknown variant `<kind>`, expected one of `outcome`, `command`, `ask-shape`, `judge` `` | A kind not listed above |
 | `` kind `<kind>` reads on = "<on>", not "<other>" `` | An `on` that does not fit the kind |
+| `` kind `judge` reads on = "result" or "diff", not "ask" `` | A `judge` scorer on `ask` |
 | `` an `outcome` scorer needs `expect`: the outcomes that pass `` | An `outcome` scorer with no `expect` |
 | `` an `ask-shape` scorer needs `expect`: some of short, whatWaits, nextAction `` | An `ask-shape` scorer with no `expect` |
 | `` `<part>` is not part of an ask's shape: use short, whatWaits, nextAction `` | An `ask-shape` `expect` that names something else |
