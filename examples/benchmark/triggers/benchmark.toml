@@ -1,0 +1,8 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+# The comparison: a pull request on this factory's own repository labeled `benchmark`.
+source = "github"
+repo = "owner/factory"
+on = "pull_request.labeled"
+filter = { label = "benchmark" }
+workflow = "benchmark"
+key = "pull_request.number"

@@ -499,7 +499,8 @@ and to mark a repeat. `factory` is the head commit's factory name, and `source` 
     "runs": 3,
     "spent": 31.2,
     "budget": 40.0,
-    "machine": "xps13"
+    "machine": "xps13",
+    "pull_request": "owner/factory#12"
   }
 }
 ```
@@ -509,7 +510,7 @@ and to mark a repeat. `factory` is the head commit's factory name, and `source` 
 | `benchmark` | yes      | The benchmark file's name                                            |
 | `base`      | yes      | The base commit, in full                                             |
 | `head`      | yes      | The head commit, in full                                             |
-| `number`    | yes      | This comparison's number among those of the same commits and benchmark on this machine |
+| `number`    | yes      | This comparison's number among those of the same commits and benchmark on this machine, or with `--post` among those of the same pull request and benchmark |
 | `complete`  | yes      | Whether every pair ran                                               |
 | `repeat`    | yes      | Whether an earlier complete comparison of the same commits and benchmark gave the verdict |
 | `verdict`   | no       | `better`, `worse`, `no clear difference` or `too few cases`. Null when incomplete or a repeat |
@@ -519,6 +520,7 @@ and to mark a repeat. `factory` is the head commit's factory name, and `source` 
 | `spent`     | yes      | What the replays spent, in dollars                                   |
 | `budget`    | yes      | The budget, in dollars                                               |
 | `machine`   | no       | The machine's hostname                                               |
+| `pull_request` | no    | The pull request `--post` named, `owner/name#12`. Null without `--post` |
 
 ## Spans
 

@@ -1,0 +1,5 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/scorer.json
+description = "The implement step ended as passed."
+on = "result"
+kind = "outcome"
+expect = ["passed"]

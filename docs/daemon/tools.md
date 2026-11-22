@@ -257,7 +257,8 @@ revision is the one that runs. The first answer stands, so a second answer never
 In the transaction that stores the answer, the daemon stores the command as an `answer` action,
 with the ask, the revision, the command and the task's generation, and keeps the task `running`, so
 the sweep leaves its worktree alone. The daemon starts it at its next tick, as the `run` action
-starts its command (see The `run` action), bounded by `command_timeout`, with the same environment.
+starts its command (see The `run` action), bounded by `command_timeout`, or by its step's `timeout`
+for a human step's command, with the same environment.
 A worktree target that a retirement removed is added back first, once there is room. When it ends, the action is `done` on exit 0 and
 `failed` otherwise, with the last 2000 bytes of stdout and stderr. The task then wakes with this
 prompt, followed by the two tails:

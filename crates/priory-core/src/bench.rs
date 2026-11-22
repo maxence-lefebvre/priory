@@ -468,6 +468,8 @@ pub fn verdicts(scores: &[Score], scorers: &[(String, ScoreOn)]) -> BTreeMap<Str
 }
 
 pub struct Options {
+    /// The pull request whose comparison this is, `owner/name#12`, when `--post` names one.
+    pub post: Option<String>,
     /// The most the comparison may spend, in dollars.
     pub budget: f64,
     /// The pairs each case gets.
@@ -578,7 +580,7 @@ pub fn compare(
     head: &str,
     options: &Options,
     say: &mut dyn FnMut(&str),
-) -> Result<String, String> {
+) -> Result<Compared, String> {
     let name = file
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -613,7 +615,18 @@ pub fn compare(
         )
         .map_err(|_| format!("no commit {reference} in {}", top.display()))
     };
-    let (base, head) = (resolve(base)?, resolve(head)?);
+    let (base, head) = match &options.post {
+        None => (resolve(base)?, resolve(head)?),
+        // A pull request's commits may not be in this clone yet, and its base moves on.
+        Some(_) => {
+            let tip = fetched(&top, base)?;
+            fetched(&top, head)?;
+            let head = resolve(head)?;
+            let base = git(&top, &["merge-base", &tip, &head])
+                .map_err(|_| format!("{} and {} have no merge base", short(&tip), short(&head)))?;
+            (base, head)
+        }
+    };
 
     let scratch =
         Scratch(std::env::temp_dir().join(format!("priory-bench-{}", std::process::id())));
@@ -742,8 +755,11 @@ pub fn compare(
         true
     });
 
-    let (earlier, complete) =
+    let (mut earlier, complete) =
         trace::comparisons(db, &name, &base, &head).map_err(|error| error.to_string())?;
+    if let Some(pull) = &options.post {
+        earlier = trace::comparisons_of(db, &name, pull).map_err(|error| error.to_string())?;
+    }
     let names: Vec<&str> = scorers.iter().map(|(name, _)| name.as_str()).collect();
     let mut spent = 0.0;
     let mut incomplete: Option<String> = None;
@@ -827,7 +843,10 @@ pub fn compare(
         base: base.clone(),
         head: head.clone(),
         number: earlier + 1,
-        of: "these commits".to_owned(),
+        of: match options.post {
+            Some(_) => "this pull request".to_owned(),
+            None => "these commits".to_owned(),
+        },
         repeat: complete,
         ruler_moved,
         incomplete,
@@ -862,6 +881,7 @@ pub fn compare(
         "spent": (comparison.spent * 10_000.0).round() / 10_000.0,
         "budget": comparison.budget,
         "machine": trace.machine,
+        "pull_request": options.post,
     });
     let error = |error: rusqlite::Error| error.to_string();
     let tx = db
@@ -869,7 +889,70 @@ pub fn compare(
         .map_err(error)?;
     trace::compared(&tx, &trace, data).map_err(error)?;
     tx.commit().map_err(error)?;
-    Ok(text)
+    Ok(Compared {
+        status: status(&comparison),
+        table: text,
+        head,
+    })
+}
+
+/// What a comparison printed, and what `--post` sets on its head commit.
+pub struct Compared {
+    pub table: String,
+    /// The head commit, in full.
+    pub head: String,
+    /// The commit status `priory/benchmark` and its description, or none for a repeat.
+    pub status: Option<(&'static str, String)>,
+}
+
+/// The commit status a posted comparison sets: `success` when it is complete and its primary
+/// scorer does not read `worse`, `failure` otherwise. A repeat leaves the status as it is.
+pub fn status(comparison: &Comparison) -> Option<(&'static str, String)> {
+    if comparison.repeat {
+        return None;
+    }
+    let primary = comparison
+        .scorers
+        .first()
+        .map_or("the primary scorer", |(name, _)| name.as_str());
+    let (state, description) = match (&comparison.incomplete, verdict(comparison)) {
+        (Some(why), _) => ("failure", format!("Incomplete: {why}")),
+        (None, Some(Call::Worse)) => ("failure", format!("{primary}: worse")),
+        (None, Some(call)) => ("success", format!("{primary}: {}", call.name())),
+        (None, None) => return None,
+    };
+    // GitHub refuses a description over 140 characters.
+    Some((state, description.chars().take(140).collect()))
+}
+
+/// The commit status context `--post` sets.
+pub const CONTEXT: &str = "priory/benchmark";
+
+/// The comment `--post` writes on the pull request: the table, as the terminal shows it.
+pub fn comment(table: &str) -> String {
+    format!("Priory's benchmark comparison of this pull request:\n\n```text\n{table}```\n")
+}
+
+/// Fetches `reference` from the origin of the repository `top`, and returns the commit it named.
+fn fetched(top: &Path, reference: &str) -> Result<String, String> {
+    git(
+        top,
+        &[
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "origin",
+            "--end-of-options",
+            reference,
+        ],
+    )
+    .map_err(|error| {
+        format!(
+            "cannot fetch {reference} from the origin of {}: {error}",
+            top.display()
+        )
+    })?;
+    git(top, &["rev-parse", "FETCH_HEAD"])
 }
 
 #[cfg(test)]
@@ -1103,6 +1186,43 @@ mod tests {
             ),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_posted_comparison_passes_unless_incomplete_or_worse_and_a_repeat_leaves_the_status() {
+        let split = |base: usize, head: usize| -> Vec<CaseRuns> {
+            (0..6)
+                .map(|at| case(&format!("c{at}"), &passes(base, 3), &passes(head, 3)))
+                .collect()
+        };
+        let better = comparison(split(0, 3));
+        let worse = comparison(split(3, 0));
+        let few = comparison(split(0, 3)[..2].to_vec());
+        let mut incomplete = comparison(split(0, 3));
+        incomplete.incomplete = Some("the budget ended inside a pair".to_owned());
+        let mut repeat = comparison(split(3, 0));
+        repeat.repeat = true;
+
+        assert_eq!(
+            status(&better),
+            Some(("success", "passed: better".to_owned()))
+        );
+        assert_eq!(
+            status(&worse),
+            Some(("failure", "passed: worse".to_owned()))
+        );
+        assert_eq!(
+            status(&few),
+            Some(("success", "passed: too few cases".to_owned()))
+        );
+        assert_eq!(
+            status(&incomplete),
+            Some((
+                "failure",
+                "Incomplete: the budget ended inside a pair".to_owned()
+            ))
+        );
+        assert_eq!(status(&repeat), None);
     }
 
     /// One scorer's passes on each side of a case, out of 3.

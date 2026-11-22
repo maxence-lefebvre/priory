@@ -196,6 +196,13 @@
           "description": "What the daemon checks before it accepts an outcome, by outcome.",
           "type": "object"
         },
+        "question": {
+          "description": "What a human step's ask says, the step's id when unset. It may name fields of the task's\nevent, as `{pull_request}`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "run": {
           "description": "The command a `run` action runs with `sh -c`.",
           "type": [
@@ -205,7 +212,7 @@
         },
         "timeout": {
           "default": null,
-          "description": "How long one turn of a model step, or a `run` action's command, may run before Priory ends\nit.",
+          "description": "How long one turn of a model step, a `run` action's command, or the command a human step's\nanswer runs, may run before Priory ends it.",
           "pattern": "^0*[1-9][0-9]*[smh]$",
           "type": "string"
         }

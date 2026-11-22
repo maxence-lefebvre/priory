@@ -1,0 +1,5 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/benchmark.json
+description = "Past implement tasks of owner/repo."
+workflow = "implement"
+primary = "passed"
+cases = ["cases/first"]        # capture each one with priory bench capture, then list it here

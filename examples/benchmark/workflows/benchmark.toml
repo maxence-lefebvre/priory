@@ -1,0 +1,17 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+# One label and one answer are one comparison. A label is text a bot can add; an answer on the
+# desk is a person's, so nothing runs until a person picks `run`.
+start = "compare"
+
+# The question and the command take the pull request's number and head commit from the labeled
+# event. A fork's pull request, or one whose head repository the event does not name, is dropped:
+# its prompts and scripts would run with your sign-in.
+[[steps]]
+id = "compare"
+decides = "human"
+effect = "reversible"
+question = "Compare pull request {pull_request} at {head_sha} on the implement benchmark, for at most $40?"
+options = ["run", "skip"]
+command = { argv = ["priory", "bench", "benchmarks/implement.toml", "--base", "{base_branch}", "--head", "{head_sha}", "--budget", "40", "--post", "{repo}#{pull_request}"], target = "factory", runs = ["run"] }
+timeout = "4h"                 # bounds the comparison; command_timeout bounds only git and gh
+next = { run = "done", skip = "stop" }

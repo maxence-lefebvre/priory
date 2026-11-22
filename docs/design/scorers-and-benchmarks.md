@@ -306,13 +306,15 @@ uses a trigger and a workflow of the factory itself, and it runs only when a per
    key = "pull_request.number"
    ```
 
-3. The workflow is one human step. Its ask reads `Compare pull request 12 at 4c1e2b7 on 12 cases?
-   Estimated $31 of a $40 budget, plus at most one turn`, with the options `run` and `skip`. A
+3. The workflow is one human step. Its ask reads `Compare pull request 12 at 4c1e2b7 on the
+   implement benchmark, for at most $40?`, with the options `run` and `skip`. The estimate is the
+   command's first line, and an estimate over the budget asks the step again. A
    label is text that a bot or an agent can add, and an answer on the desk is a person's: no run
    can give one.
 4. The step carries a `command` that `run` runs once, as a runbook step does
    ([workflows.md](../reference/workflows.md#runbooks)):
-   `priory bench benchmarks/implement.toml --base <merge base> --head 4c1e2b7 --budget 40 --post`.
+   `priory bench benchmarks/implement.toml --base main --head 4c1e2b7 --budget 40 --post
+   owner/factory#12`, which compares from the merge base of `main` and the head.
    The answer is bound to that command, so what the ask shows is what runs. Open question 8 says
    why this is not an approved code step.
 5. `--post` writes the table as one comment on the pull request, and sets a commit status
@@ -403,9 +405,20 @@ Tests:
    passes 1 and then errors twice, or asks twice, which the head must lose both times. A repeat is
    found from the `factory.bench.compared` records of the machine that runs the comparison, and
    the header reads `of these commits` until `--post` names a pull request.
-4. `--post`, the `benchmark` example factory with its trigger and workflow. Tests start from a
-   fresh task with no branch, and cover a label from a bot, which still waits for the person's
-   answer, a fork, an event with no `head_repo`, and a head that moved after the answer. This slice closes M4's done-when line.
+4. Built. `--post`, the `benchmark` example factory with its trigger and workflow
+   ([bench.md](../daemon/bench.md#before-a-change-merges),
+   [workflows.md](../reference/workflows.md#fields-of-the-tasks-event)). A human step's `question`
+   and command `argv` take fields of the task's event, such as `{head_sha}`, and the step's
+   `timeout` bounds its command. With `--post`, the comparison fetches both refs from the origin and
+   runs from their merge base, so the workflow passes `--base {base_branch}`. The ask names the
+   pull request, the commit, the benchmark and the budget, but not the estimate: the estimate needs
+   the head's factory, which only the command loads, and the command refuses an estimate over the
+   budget, which asks the step again with its exit. A task with no result now skips the checks gate
+   at `done`, so the comparison task of a pull request ends `done`. A replay keeps the names of
+   `[asks.targets]`, as empty folders, so a factory whose step names one still checks. Tests start
+   from a fresh task with no branch, and cover a label from a bot, which still waits for the
+   person's answer, a fork, an event with no `head_repo`, a head that moved after the answer, and
+   a second label, which repeats. This slice closes M4's done-when line.
 5. The `judge` kind, `priory score --calibrate` and the agreement rule.
 6. Scores in the web view's task page and Costs panel, from a reviewed design.
 
@@ -449,3 +462,5 @@ Tests:
    gets the pull request's number and head commit from the task's source event. Recommendation:
    use the `command`, and extend it in that slice with what it lacks, with a test from a fresh
    task. Fall back to a code step with `autonomous` only if the command cannot be made to fit.
+   Settled by slice 4: the command fits. The step's `timeout` bounds it, and its `argv` takes the
+   event's fields.

@@ -2761,7 +2761,10 @@ fn step_in(
         set(tx, task, "blocked", None, Some(&reason))?;
         return finish("blocked");
     }
-    if (target == "done" || after.is_some())
+    // A task with no result changed nothing, as a runbook keyed by a pull request, so its done
+    // has no change for the checks to gate.
+    let gated = after.is_some() || (target == "done" && has_result(tx, task)?);
+    if gated
         && !all_merged(tx, task)?
         && let Some(resource) = owned
     {
@@ -2890,19 +2893,33 @@ fn step_in(
             Ok(None)
         }
         Decider::Human => {
+            let values = match step_values(tx, task, step)? {
+                Ok(values) => values,
+                Err(reason) => {
+                    let reason = format!("step {target}: {reason}");
+                    set(tx, task, "dropped", Some(target), Some(&reason))?;
+                    return finish("dropped");
+                }
+            };
+            let asked = step
+                .question
+                .as_deref()
+                .map(|question| one_line(&command::filled(question, &values)));
             let go = crate::batch::go_ask(tx, task)?;
             // A result's summary is no news on a go; a failed start's error is.
-            let question = match (&go, context.is_empty()) {
-                (Some((asked, _)), _) if context.is_empty() || from.is_some() => asked.clone(),
-                (Some((asked, _)), _) => format!("{context}. {asked}"),
-                (None, true) => target.to_owned(),
-                (None, false) => format!("{target}: {context}"),
+            let question = match (&go, context.is_empty(), asked) {
+                (Some((asked, _)), _, _) if context.is_empty() || from.is_some() => asked.clone(),
+                (Some((asked, _)), _, _) => format!("{context}. {asked}"),
+                (None, true, Some(asked)) => asked,
+                (None, false, Some(asked)) => format!("{asked} ({context})"),
+                (None, true, None) => target.to_owned(),
+                (None, false, None) => format!("{target}: {context}"),
             };
             let text = match go {
                 Some((_, plan)) => Some(plan),
                 None => ask_text(tx, task)?,
             };
-            let command = match step_command(tx, task, step, factory)? {
+            let command = match step_command(tx, task, step, &values, factory)? {
                 Ok(command) => command,
                 Err(error) => {
                     let reason = format!("step {target}: {error}");
@@ -2935,6 +2952,15 @@ fn step_in(
             finish("moved")
         }
     }
+}
+
+/// Whether any run of `task` ended with a result.
+fn has_result(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM results WHERE task = ?1)",
+        [task],
+        |row| row.get(0),
+    )
 }
 
 /// Applies a person's answer, or records why it was refused on the ask it names.
@@ -3214,6 +3240,7 @@ fn step_command(
     tx: &Transaction,
     task: i64,
     step: &Step,
+    values: &BTreeMap<&'static str, String>,
     factory: &Factory,
 ) -> rusqlite::Result<Result<Option<String>, String>> {
     let Some(command) = &step.command else {
@@ -3224,11 +3251,42 @@ fn step_command(
             row.get(0)
         })?;
     let options: Vec<&str> = step.options.iter().map(String::as_str).collect();
-    let asked = serde_json::to_value(command).expect("a step command serializes");
+    let mut asked = serde_json::to_value(command).expect("a step command serializes");
+    asked["argv"] = command
+        .argv
+        .iter()
+        .map(|arg| command::filled(arg, values))
+        .collect();
     Ok(
-        command::parse(&asked, &options, "", worktree.as_deref(), factory)
-            .map(|parsed| Some(serde_json::to_string(&parsed).expect("a command serializes"))),
+        command::parse(&asked, &options, "", worktree.as_deref(), factory).map(|mut parsed| {
+            parsed.timeout = step.timeout.map(|timeout| timeout.as_secs());
+            Some(serde_json::to_string(&parsed).expect("a command serializes"))
+        }),
     )
+}
+
+/// The values of the event fields that `step`'s question and command name, from the task's
+/// source event, or why the task cannot take them.
+fn step_values(
+    tx: &Transaction,
+    task: i64,
+    step: &Step,
+) -> rusqlite::Result<Result<BTreeMap<&'static str, String>, String>> {
+    let texts: Vec<&str> = step
+        .question
+        .iter()
+        .chain(step.command.iter().flat_map(|command| &command.argv))
+        .map(String::as_str)
+        .collect();
+    let data: Option<String> = tx
+        .query_row(
+            "SELECT inbox.data FROM tasks JOIN inbox ON inbox.id = tasks.source WHERE tasks.id = ?1",
+            [task],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let data = data.and_then(|data| serde_json::from_str::<Value>(&data).ok());
+    Ok(command::event_values(&texts, data.as_ref()))
 }
 
 /// An open ask, as `open_ask` finds it. An outside ask has no task, and an empty step, workflow

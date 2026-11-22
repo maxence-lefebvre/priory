@@ -1122,6 +1122,7 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
                 "`plan_requires`",
             ),
             (!step.options.is_empty(), Decider::Human, "`options`"),
+            (step.question.is_some(), Decider::Human, "a `question`"),
             (!step.approves.is_empty(), Decider::Human, "`approves`"),
             (step.command.is_some(), Decider::Human, "a `command`"),
             (step.action.is_some(), Decider::Code, "an `action`"),
@@ -1182,7 +1183,13 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
                         "`next` has outcome `{outcome}`, which is not an option"
                     ));
                 }
+                for message in unknown_fields("question", step.question.iter()) {
+                    report(message);
+                }
                 if let Some(command) = &step.command {
+                    for message in unknown_fields("command argv", command.argv.iter()) {
+                        report(message);
+                    }
                     if command.argv.first().is_none_or(String::is_empty) {
                         report("command argv must start with a program".into());
                     }
@@ -1341,6 +1348,24 @@ fn problem<T>(loaded: &Loaded<T>, line: Option<usize>, message: String) -> Probl
         at: line.map(|line| line.to_string()),
         message,
     }
+}
+
+/// A problem for each `{name}` in `texts` that is not a field of a task's event, once per name.
+fn unknown_fields<'a>(what: &str, texts: impl Iterator<Item = &'a String>) -> Vec<String> {
+    let mut unknown: Vec<&str> = Vec::new();
+    for name in texts.flat_map(|text| crate::factory::placeholders(text)) {
+        if !crate::factory::EVENT_FIELDS.contains(&name) && !unknown.contains(&name) {
+            unknown.push(name);
+        }
+    }
+    unknown
+        .into_iter()
+        .map(|name| {
+            format!(
+                "{what} names `{{{name}}}`, which is not a field of the task's event: use {{repo}}, {{pull_request}}, {{head_sha}} or {{base_branch}}"
+            )
+        })
+        .collect()
 }
 
 /// Whether a model step of `workflow` leads straight to a human step, the go a batch's plan needs.

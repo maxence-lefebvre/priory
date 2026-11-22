@@ -1229,6 +1229,9 @@ pub struct Step {
     /// The answers a person picks from at a human step.
     #[serde(default)]
     pub options: Vec<String>,
+    /// What a human step's ask says, the step's id when unset. It may name fields of the task's
+    /// event, as `{pull_request}`.
+    pub question: Option<String>,
     /// The built-in action a code step runs: `open-pr`, `open-issue`, `open-memories-pr`, `run` or
     /// `start-batch`.
     pub action: Option<String>,
@@ -1257,11 +1260,33 @@ pub struct Step {
     /// The guarded calls an irreversible step may make while it is approved or autonomous.
     #[serde(default)]
     pub guard: GuardAllow,
-    /// How long one turn of a model step, or a `run` action's command, may run before Priory ends
-    /// it.
+    /// How long one turn of a model step, a `run` action's command, or the command a human step's
+    /// answer runs, may run before Priory ends it.
     #[serde(default, deserialize_with = "duration")]
     #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub timeout: Option<Duration>,
+}
+
+/// The fields of a task's source event that a human step's `question` and command `argv` may name,
+/// as `{pull_request}`.
+pub const EVENT_FIELDS: [&str; 4] = ["repo", "pull_request", "head_sha", "base_branch"];
+
+/// Each `{name}` in `text` whose name is lowercase letters and underscores, without its braces.
+pub fn placeholders(text: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        rest = &rest[open + 1..];
+        let Some(close) = rest.find('}') else {
+            break;
+        };
+        let name = &rest[..close];
+        if !name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
+            found.push(name);
+            rest = &rest[close + 1..];
+        }
+    }
+    found
 }
 
 /// The command a human step's answer runs once: `argv` exec'd in `target`, on the options in

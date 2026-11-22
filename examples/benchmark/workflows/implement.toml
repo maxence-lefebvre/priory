@@ -1,0 +1,28 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+# The work the benchmark measures. A change to this file or to the implementer is what a pull
+# request on this factory compares.
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue, run the tests, and commit."
+effect = "reversible"
+next = { passed = "approve", failed = "stop" }
+
+[[steps]]
+id = "approve"
+decides = "human"
+effect = "none"
+options = ["approved", "rejected"]
+approves = ["publish"]
+next = { approved = "publish", rejected = "stop" }
+
+# A replay ends here and never runs it.
+[[steps]]
+id = "publish"
+decides = "code"
+action = "open-pr"
+effect = "irreversible"
+next = { opened = "done", failed = "stop" }

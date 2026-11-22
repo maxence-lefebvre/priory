@@ -419,6 +419,39 @@ pub fn pull_request_state(repo: &str, number: u64) -> Result<String, String> {
     .map(|state| state.trim().to_owned())
 }
 
+/// Writes `body` as a new comment on pull request `number` of `repo`, and returns its URL.
+pub fn comment_on_pull_request(repo: &str, number: u64, body: &str) -> Result<String, String> {
+    let number = number.to_string();
+    fed(
+        Command::new("gh").args(["pr", "comment", &number, "-R", repo, "--body-file", "-"]),
+        Some(body.as_bytes().to_vec()),
+    )
+    .map(|url| url.trim().to_owned())
+}
+
+/// Sets the commit status `context` of commit `sha` of `repo` to `state`, with `description`.
+pub fn set_commit_status(
+    repo: &str,
+    sha: &str,
+    state: &str,
+    context: &str,
+    description: &str,
+) -> Result<(), String> {
+    run(Command::new("gh").args([
+        "api",
+        &format!("repos/{repo}/statuses/{sha}"),
+        "--method",
+        "POST",
+        "-f",
+        &format!("state={state}"),
+        "-f",
+        &format!("context={context}"),
+        "-f",
+        &format!("description={description}"),
+    ]))
+    .map(drop)
+}
+
 /// Opens an issue on `repo` and returns its number. `mark`, a unique line the body ends with, finds
 /// the issue that an earlier attempt opened before a crash, in any state, so none opens twice.
 pub fn open_issue(repo: &str, title: &str, body: &str, mark: &str) -> Result<u64, String> {
