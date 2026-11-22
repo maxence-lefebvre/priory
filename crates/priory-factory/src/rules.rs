@@ -301,6 +301,12 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 factory.figma_webhook().is_some(),
                 &mut problems,
             ),
+            "cloudwatch" => check_hooked(
+                trigger,
+                &CLOUDWATCH,
+                factory.cloudwatch_webhook().is_some(),
+                &mut problems,
+            ),
             "intercom" => check_hooked(
                 trigger,
                 &INTERCOM,
@@ -319,6 +325,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             "linear",
             "linear.view",
             "sentry",
+            "cloudwatch",
             "honeycomb",
             "figma",
             "intercom",
@@ -889,6 +896,15 @@ const FIGMA: Hooked = Hooked {
     filters: &["file"],
     key: "file.key",
     events: "comments",
+};
+
+const CLOUDWATCH: Hooked = Hooked {
+    source: "cloudwatch",
+    vendor: "CloudWatch",
+    on: "alarm.state_changed",
+    filters: &["name", "state", "previous_state"],
+    key: "alarm.arn",
+    events: "alarm state changes",
 };
 
 const INTERCOM: Hooked = Hooked {

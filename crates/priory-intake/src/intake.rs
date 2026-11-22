@@ -2,6 +2,7 @@ use crate::log::{self, Log};
 use herdr_bus::{Bus, Message, Output, Timestamp, Uuid};
 use priory_factory::factory::{Factory, Trigger};
 use priory_runtime::http::Reply;
+mod cloudwatch;
 mod figma;
 mod gh;
 mod honeycomb;
@@ -17,6 +18,7 @@ mod shortcut;
 mod slack;
 mod webhook;
 
+pub use cloudwatch::CloudwatchWebhook;
 pub use figma::FigmaWebhook;
 pub use honeycomb::HoneycombWebhook;
 pub use intercom::IntercomWebhook;
@@ -115,6 +117,7 @@ pub fn output() -> Output {
             linear::COMMENTED,
             sentry::CREATED,
             figma::COMMENTED,
+            cloudwatch::CHANGED,
             honeycomb::FIRED,
             intercom::CREATED,
             slack::POSTED,
@@ -637,6 +640,9 @@ fn dispatch(bus: &dyn Log, triggers: &[(&str, &Trigger)], source: &Message) -> R
                 (Some(issue), _) if source.kind == sentry::CREATED => format!("sentry:{issue}"),
                 _ if source.kind == figma::COMMENTED => {
                     format!("figma:{}", data["file"].as_str().unwrap_or_default())
+                }
+                _ if source.kind == cloudwatch::CHANGED => {
+                    format!("cloudwatch:{}", data["alarm"].as_str().unwrap_or_default())
                 }
                 _ if source.kind == honeycomb::FIRED => {
                     format!("honeycomb:{}", data["trigger"].as_str().unwrap_or_default())

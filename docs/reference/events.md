@@ -24,6 +24,7 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
   [`linear.issue.updated`](#linearissueupdated), [`linear.issue.blockers`](#linearissueblockers),
   [`linear.comment.created`](#linearcommentcreated)
 - Sentry: [`sentry.issue.created`](#sentryissuecreated)
+- CloudWatch: [`cloudwatch.alarm.state_changed`](#cloudwatchalarmstate_changed)
 - Honeycomb: [`honeycomb.trigger.fired`](#honeycombtriggerfired)
 - Figma: [`figma.file.comment_created`](#figmafilecomment_created)
 - Intercom: [`intercom.conversation.created`](#intercomconversationcreated)
@@ -1010,6 +1011,53 @@ Schema: [`sentry.issue.created.json`](../schemas/events/sentry.issue.created.jso
     "triggers": ["sentry-errors"]
   },
   "links": [{ "label": "issue", "url": "https://acme.sentry.io/issues/1234567890/" }]
+}
+```
+
+## CloudWatch
+
+### `cloudwatch.alarm.state_changed`
+
+One message per alarm state change that an EventBridge API destination delivers and some
+`cloudwatch` trigger matches. Only a delivery to `POST /hooks/cloudwatch` publishes it: see
+[cloudwatch.md](../intake/cloudwatch.md). Subject: the alarm name.
+Schema: [`cloudwatch.alarm.state_changed.json`](../schemas/events/cloudwatch.alarm.state_changed.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `alarm` | string | The alarm's ARN, from `resources[0]`. The task key is `cloudwatch:<alarm>` |
+| `name` | string | The alarm name |
+| `description` | string or null | The alarm's description |
+| `state` | string | The new state: `OK`, `ALARM` or `INSUFFICIENT_DATA` |
+| `previous_state` | string or null | The state before |
+| `reason` | string or null | Why the state changed, in CloudWatch's words |
+| `account` | string or null | The AWS account id |
+| `region` | string or null | The AWS region |
+| `delivery` | string | The EventBridge event id, the same across EventBridge's retries |
+| `time` | string | The event's `time` |
+
+<!-- example: events/cloudwatch.alarm.state_changed.json -->
+```json
+{
+  "id": "5f0e8c1a-3b7d-5c2e-9a41-6d8b0f2e7c13",
+  "type": "cloudwatch.alarm.state_changed",
+  "subject": "ServerCpuTooHigh",
+  "time": "2026-11-17T17:04:40Z",
+  "data": {
+    "alarm": "arn:aws:cloudwatch:us-east-1:123456789012:alarm:ServerCpuTooHigh",
+    "name": "ServerCpuTooHigh",
+    "description": "Goes into alarm when server CPU utilization is too high!",
+    "state": "ALARM",
+    "previous_state": "OK",
+    "reason": "Threshold Crossed: 1 out of the last 1 datapoints [99.5] was greater than the threshold (50.0).",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "delivery": "c4c1c1c9-6542-e61b-6ef0-8c4d36933a92",
+    "time": "2026-11-17T17:04:40Z",
+    "baseline": false,
+    "triggers": ["cloudwatch-alarms"]
+  },
+  "links": []
 }
 ```
 

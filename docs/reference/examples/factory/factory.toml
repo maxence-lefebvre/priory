@@ -38,6 +38,9 @@ secret_env = "PRIORY_LINEAR_WEBHOOK_SECRET"    # the variable holding Linear's s
 [webhooks.sentry]
 secret_env = "SENTRY_CLIENT_SECRET"            # the variable holding the Sentry integration's Client Secret
 
+[webhooks.cloudwatch]
+secret_env = "CLOUDWATCH_WEBHOOK_SECRET"       # the variable holding the EventBridge connection's API key value
+
 [webhooks.honeycomb]
 secret_env = "HONEYCOMB_WEBHOOK_SECRET"        # the variable holding the Honeycomb recipient's Shared Secret
 

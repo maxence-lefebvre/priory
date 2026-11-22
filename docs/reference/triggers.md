@@ -13,6 +13,7 @@ cannot tell which keys a source refuses; `priory check` does.
 - [`linear`](#linear)
 - [`linear.view`](#linearview)
 - [`sentry`](#sentry)
+- [`cloudwatch`](#cloudwatch)
 - [`honeycomb`](#honeycomb)
 - [`figma`](#figma)
 - [`intercom`](#intercom)
@@ -26,7 +27,7 @@ cannot tell which keys a source refuses; `priory check` does.
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
-| `source` | string | yes | | `github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `intercom`, `figma`, `slack` or `schedule` | `"github"` |
+| `source` | string | yes | | `github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `intercom`, `cloudwatch`, `figma`, `slack` or `schedule` | `"github"` |
 | `workflow` | string | yes | | The workflow a matching event starts, by file name | `"implement"` |
 | `repo` | string | per source | | The repository the trigger's tasks work in, a GitHub `owner/name`. `priory check` refuses any other shape, such as `..` or a path | `"owner/name"` |
 | `key` | string | no | per source | Which events are the same work. A factory holds at most one active task per key | `"issue.number"` |
@@ -166,6 +167,32 @@ filter = { project = "api", level = "error" }   # the project's slug, and the is
 repo = "owner/name"            # where its tasks work; without it they block
 workflow = "implement"
 key = "issue.id"               # the task key is sentry:1234567890
+```
+
+## `cloudwatch`
+
+Starts a task when a CloudWatch alarm changes state. An EventBridge API destination pushes the
+change to `POST /hooks/cloudwatch`, so the trigger needs
+[`[webhooks.cloudwatch]`](factory.md#webhookscloudwatch). See
+[cloudwatch.md](../intake/cloudwatch.md).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `on` | string | yes | | `alarm.state_changed` | `"alarm.state_changed"` |
+| `filter` | table | no | | `name` (the alarm name), `state` (the new state: `OK`, `ALARM` or `INSUFFICIENT_DATA`) and `previous_state` (the state before). Every key must match | `{ state = "ALARM" }` |
+| `key` | string | no | the alarm ARN | `alarm.arn`. The task key is `cloudwatch:<alarm ARN>` | `"alarm.arn"` |
+
+A `cloudwatch` trigger takes no `backfill`: EventBridge sends only new changes.
+
+<!-- example: factory/triggers/cloudwatch-alarms.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "cloudwatch"
+on = "alarm.state_changed"
+filter = { state = "ALARM", previous_state = "OK" }   # the alarm fired after it was OK
+repo = "owner/name"            # where its tasks work; without it they block
+workflow = "implement"
+key = "alarm.arn"              # the task key is cloudwatch:<alarm ARN>
 ```
 
 ## `honeycomb`
@@ -385,12 +412,17 @@ lead = "lead"                  # agents/lead/agent.md, with session = "shared"
 | `` a Slack trigger filters on `text` only `` | Another `filter` key |
 | `` a Slack trigger names no `view` `` | `view` on a Slack trigger |
 | `` a Slack trigger's `key` is `message.ts` `` | Another `key` |
+| `` a `cloudwatch` trigger needs `[webhooks.cloudwatch]` in factory.toml: CloudWatch alarm state changes arrive only by webhook `` | A `cloudwatch` trigger in a factory without `[webhooks.cloudwatch]` |
+| `` a `cloudwatch` trigger handles `alarm.state_changed`, not `<on>` `` | A bad `on` |
+| `` a `cloudwatch` trigger filters on `name` or `state` or `previous_state` `` | Another `filter` key |
+| `` a CloudWatch trigger's `repo` is `owner/name` `` | A malformed `repo` |
+| `` a CloudWatch trigger's `key` is `alarm.arn` `` | Another `key` |
 | `` a `figma` trigger needs `[webhooks.figma]` in factory.toml: Figma comments arrive only by webhook `` | A `figma` trigger in a factory without `[webhooks.figma]` |
 | `` a `figma` trigger handles `file.comment_created`, not `<on>` `` | A bad `on` |
 | `` a `figma` trigger filters on `file` `` | Another `filter` key |
 | `` a Figma trigger's `repo` is `owner/name` `` | A malformed `repo` |
 | `` a Figma trigger's `key` is `file.key` `` | Another `key` |
-| `` only a GitHub, Linear or Slack trigger has `backfill` `` | `backfill` on a schedule, `cli`, `sentry`, `honeycomb`, `intercom` or `figma` trigger |
+| `` only a GitHub, Linear or Slack trigger has `backfill` `` | `backfill` on a schedule, `cli`, `sentry`, `honeycomb`, `intercom`, `cloudwatch` or `figma` trigger |
 | `` only a Slack trigger names a `channel` `` | `channel` on another source |
 | `` only a schedule trigger has `<key>` `` | `at`, `days`, `every`, `until`, `timezone` or `prompt` on another source |
 | `` a schedule trigger needs `at = "HH:MM"` `` | A schedule without `at` |

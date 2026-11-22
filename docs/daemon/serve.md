@@ -141,7 +141,7 @@ kept a revision from a replaced state file does not hang.
 | Limit | Value | Past it |
 | ----- | ----- | ------- |
 | Request head: request line and headers | 8 KiB, 32 headers | `431` |
-| Request body | none on a `GET`; 16 KiB on a write; 1 MiB on `POST /hooks/github`, `/hooks/linear`, `/hooks/sentry`, `/hooks/honeycomb`, `/hooks/intercom` and `/hooks/figma` | `413` |
+| Request body | none on a `GET`; 16 KiB on a write; 1 MiB on `POST /hooks/github`, `/hooks/linear`, `/hooks/sentry`, `/hooks/honeycomb`, `/hooks/intercom`, `/hooks/cloudwatch` and `/hooks/figma` | `413` |
 | Time to send the first byte of the request | 1 second | `408` |
 | Time to send the whole request, head and body | 5 seconds | `408` |
 | Time for the whole reply to go out | 5 seconds | The connection closes |
@@ -173,7 +173,7 @@ An agent can print a secret, and the screen goes to every device that holds the 
 it answers, the server replaces with `[redacted]`:
 
 - the token it loaded, and the values of the variables the factory reads secrets from, defaults
-  included: the GitHub and Linear webhook secrets, the Sentry Client Secret, the Honeycomb Shared Secret, the Intercom client secret, the Figma webhook passcode, the Slack app token, the Postgres log URL and
+  included: the GitHub and Linear webhook secrets, the Sentry Client Secret, the Honeycomb Shared Secret, the Intercom client secret, the CloudWatch API key value, the Figma webhook passcode, the Slack app token, the Postgres log URL and
   its password, and each header value of `[telemetry] headers_env`, each also percent-decoded;
   then each variable that `[serve] redact_env` lists. A value under 8 bytes is skipped, since it
   would match ordinary text.
@@ -246,11 +246,14 @@ Sentry deliveries at `POST /hooks/sentry`, with
 [`[webhooks.honeycomb]`](../reference/factory.md#webhookshoneycomb) Honeycomb alerts that carry the
 Shared Secret at `POST /hooks/honeycomb`, with
 [`[webhooks.intercom]`](../reference/factory.md#webhooksintercom) signed Intercom notifications at
-`POST /hooks/intercom`, and with [`[webhooks.figma]`](../reference/factory.md#webhooksfigma) Figma
-comments that carry the passcode at `POST /hooks/figma`, each with no token. A `HEAD` to a
-configured hook path gets `200`. [webhooks.md](../intake/webhooks.md), [sentry.md](../intake/sentry.md),
-[honeycomb.md](../intake/honeycomb.md), [intercom.md](../intake/intercom.md) and
-[figma.md](../intake/figma.md) explain them.
+`POST /hooks/intercom`, with
+[`[webhooks.cloudwatch]`](../reference/factory.md#webhookscloudwatch) CloudWatch alarm state changes
+from EventBridge at `POST /hooks/cloudwatch`, and with
+[`[webhooks.figma]`](../reference/factory.md#webhooksfigma) Figma comments that carry the passcode
+at `POST /hooks/figma`, each with no token. A `HEAD` to a configured hook path gets `200`.
+[webhooks.md](../intake/webhooks.md), [sentry.md](../intake/sentry.md),
+[honeycomb.md](../intake/honeycomb.md), [intercom.md](../intake/intercom.md),
+[cloudwatch.md](../intake/cloudwatch.md) and [figma.md](../intake/figma.md) explain them.
 
 ## The web view
 
