@@ -14,7 +14,9 @@ Schema: [`config/memory.json`](../schemas/config/memory.json). Editors do not va
 against it, but `priory check` applies the same rules.
 
 `memories/` holds only memory files. A file whose name starts with `.`, such as `.gitkeep`, is
-skipped.
+skipped. So is `MEMORY.md`, the index file that Claude Code's own memory folders hold: Priory never
+loads it as a memory, and a run gets Priory's own index instead (see [The index](#the-index)). The
+same holds for the memories folder of a kit or a memories repository.
 
 ## Frontmatter keys
 
@@ -62,7 +64,7 @@ The factory's memories are in <folder>, one fact per file. Read a memory's file 
 | `` a memory's frontmatter needs a `name` `` | No `name` |
 | `` `name` is `<name>`, but the memory's file is memories/<file>.md `` | `name` differs from the file's name |
 | `` a memory's frontmatter needs a `description`, which tells the agent when to read it `` | No `description`, or a blank one |
-| `` a codex agent takes instructions.md, the memory index and its own prompt on its command line, as `developer_instructions`: together they are <n> bytes, over the limit of 8192 `` | Reported on a Codex agent's `agent.md`. The count writes the index's folder as `$PRIORY_HOME/kit/<hash>/memories`. With skills, the message names the skill index after the memory index, and the count writes its folder as `$PRIORY_HOME/kit/<hash>/plugin/skills` |
+| `` a codex agent takes the memory index and its own prompt on its command line, as `developer_instructions`: together they are <n> bytes, over the limit of 8192 `` | Reported on a Codex agent's `agent.md`. The count writes the index's folder as `$PRIORY_HOME/kit/<hash>/memories`. The message names `instructions.md` first when the factory has one, and the skill index after the memory index when it has skills, whose folder the count writes as `$PRIORY_HOME/kit/<hash>/plugin/skills` |
 | `frontmatter is not closed by ---` | No closing fence. The same with `+++` |
 
 Each line starts with the file and line, such as `memories/release-day.md:2:`. The name and

@@ -338,6 +338,41 @@
       },
       "type": "object"
     },
+    "MemoriesRepo": {
+      "additionalProperties": false,
+      "description": "A memories repository whose memories every run gets, after the kit's and before the factory's\nown, and where the daily pull request of accepted memories goes in place of the kit. Each runner\nfetches it with git's own credentials.",
+      "properties": {
+        "every": {
+          "default": null,
+          "description": "How often a runner fetches the ref again; every 5 minutes when unset.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        },
+        "path": {
+          "description": "The memories folder inside the repository; `memories` when unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ref": {
+          "description": "The branch, tag or commit to fetch; the repository's default branch when unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo": {
+          "description": "The repository, as `git fetch` takes it: a URL, or a path, which a relative one takes from\nthe factory folder.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo"
+      ],
+      "type": "object"
+    },
     "Notify": {
       "additionalProperties": false,
       "description": "Where the daemon tells a person that the desk's next item changed, besides Web Push.",
@@ -874,6 +909,16 @@
     },
     "log": {
       "$ref": "#/definitions/EventLog"
+    },
+    "memories": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MemoriesRepo"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "name": {
       "description": "The factory's name.",

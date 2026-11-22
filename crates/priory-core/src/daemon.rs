@@ -195,11 +195,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         }
         return Ok(());
     }
-    // The kit's fetch comes before any run, so the first runs get its commit.
-    let mut kit = crate::kit::Fetcher::new(&db, factory, &home)?;
-    if let Some(kit) = &mut kit {
-        kit.start(&db)?;
-    }
+    // The kit's and the memories repository's fetches come before any run, so the first runs get
+    // their commits.
+    let mut kit = crate::kit::Fetchers::new(&db, factory, &home)?;
+    kit.start(&db)?;
     // Without its key the daemon sends no notification, but still runs tasks.
     if let Err(error) = push::keys(&home) {
         eprintln!("priory daemon: notifications are off: {error}");
@@ -239,14 +238,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         runtime::kill(&tmux);
     }
     runtime::replay(&home, |line| {
-        let (_, kill) = take(
-            &mut db,
-            line,
-            &trace,
-            counting.get(&home),
-            current(kit.as_ref()),
-        )
-        .map_err(|error| error.to_string())?;
+        let (_, kill) = take(&mut db, line, &trace, counting.get(&home), kit.current())
+            .map_err(|error| error.to_string())?;
         kill.inspect(|tmux| runtime::kill(tmux));
         Ok(())
     })?;
@@ -369,13 +362,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             }
         }
         while let Ok(line) = listening.lines.try_recv() {
-            apply(
-                &mut db,
-                line,
-                &trace,
-                counting.get(&home),
-                current(kit.as_ref()),
-            )?;
+            apply(&mut db, line, &trace, counting.get(&home), kit.current())?;
         }
         start_answers(&mut db, &trace, &home, &mut commands)?;
         commands = run_commands(&mut db, &trace, &home, commands)?;
@@ -383,10 +370,8 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if crate::recipe::tick(&mut db, &trace, &home, &mut recipes)? {
             swept = None;
         }
-        if let Some(kit) = &mut kit {
-            kit.tick(&db)?;
-        }
-        let fetched = kit.as_ref().and_then(crate::kit::Fetcher::current);
+        kit.tick(&db)?;
+        let fetched = kit.current();
         tend(
             &mut db,
             &trace,
@@ -428,13 +413,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             sweep::retire(&db, factory, &home, short)?;
         }
         match listening.lines.recv_timeout(EVERY) {
-            Ok(line) => apply(
-                &mut db,
-                line,
-                &trace,
-                counting.get(&home),
-                current(kit.as_ref()),
-            )?,
+            Ok(line) => apply(&mut db, line, &trace, counting.get(&home), kit.current())?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
@@ -791,17 +770,12 @@ fn log_of(home: &Path, id: i64) -> std::path::PathBuf {
 
 /// Applies a line from the socket and replies to its sender. A run its line ended is killed after
 /// the reply, so the hook that sent it is not killed first.
-/// The kit commit runs get now, if any.
-fn current(kit: Option<&crate::kit::Fetcher>) -> Option<&crate::kit::Fetched> {
-    kit.and_then(crate::kit::Fetcher::current)
-}
-
 fn apply(
     db: &mut Connection,
     line: Line,
     trace: &Trace,
     counter: Option<&embed::Counter>,
-    kit: Option<&crate::kit::Fetched>,
+    kit: crate::kit::Current<'_>,
 ) -> Result<(), Error> {
     let (reply, kill) = take(db, &line.text, trace, counter, kit)?;
     let _ = line.applied.send(reply);
@@ -990,7 +964,7 @@ fn take(
     line: &str,
     trace: &Trace,
     counter: Option<&embed::Counter>,
-    kit: Option<&crate::kit::Fetched>,
+    kit: crate::kit::Current<'_>,
 ) -> Result<(String, Option<String>), Error> {
     let replied = |result: Result<String, String>| {
         serde_json::to_string(&result).expect("a result serializes")
@@ -1141,7 +1115,7 @@ fn tend(
     scope: &[String],
     commands: &mut Vec<(i64, Script)>,
     recipes: &mut crate::recipe::Running,
-    kit: Option<&crate::kit::Fetched>,
+    kit: crate::kit::Current<'_>,
 ) -> Result<(), Error> {
     let factory = trace.factory;
     for run in state::live(db)? {
@@ -1880,7 +1854,7 @@ fn start(
     scope: &[String],
     admission: &Admission,
     recipes: &mut crate::recipe::Running,
-    kit: Option<&crate::kit::Fetched>,
+    kit: crate::kit::Current<'_>,
 ) -> Result<Result<(), String>, Error> {
     let candidates = crate::memories::layer(db, Some(admission.task))?;
     let sources = crate::kit::sources(factory, kit, &candidates);
@@ -1978,6 +1952,7 @@ fn start(
             lanes: factory.lanes(),
             kit_hash: sources.hash().as_deref(),
             kit_commit: sources.commit,
+            memories_commit: sources.memories_commit,
         },
     )?;
     // The new run is the task's only live one, so a session of this name is an ended run's agent.
@@ -2160,7 +2135,7 @@ fn compact_idle(
     trace: &Trace,
     home: &Path,
     scope: &[String],
-    kit: Option<&crate::kit::Fetched>,
+    kit: crate::kit::Current<'_>,
 ) -> Result<(), Error> {
     let candidates = crate::memories::layer(db, None)?;
     let sources = crate::kit::sources(trace.factory, kit, &candidates);

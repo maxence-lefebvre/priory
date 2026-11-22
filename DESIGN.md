@@ -1,9 +1,9 @@
 # DESIGN.md
 
 The design system for Priory's web view (`docs/prd.md`, R8). Follow it for every panel, view and
-component. The live reference is the
-[Priory design system artifact](https://claude.ai/artifact/3YYj2s5hmKksarCCC3VgHb): tokens, the
-main components and their states in every theme. The token files in
+component. The
+[Priory design system artifact](https://claude.ai/artifact/3YYj2s5hmKksarCCC3VgHb) is an older
+reference: tokens, the main components and their states in every theme. The token files in
 [`design/tokens/`](design/tokens/) are the source of truth for values. When the artifact, this
 file and the token files disagree, the token files win for values and this file wins for rules.
 Fix the others. The artifact still shows the older Ledger layout and four themes; redraw it for
@@ -161,7 +161,7 @@ The view sets two attributes on `<html>`:
 | ------------------------------------------- | ---------------------------------------------------------------------- |
 | `--bg`                                      | page ground                                                            |
 | `--surface`                                 | the drawer, sheets, option buttons, chips, inputs                      |
-| `--raised`                                  | pressed rows, the segmented control track, code and commands            |
+| `--raised`                                  | pressed rows, the segmented control track, skeletons, code and commands |
 | `--line`                                    | hairlines between rows and around panels; never the only edge of a control |
 | `--control-line`                            | edges of inputs, option buttons and secondary buttons, at least 3:1    |
 | `--bar`                                     | the tab bar, the rail, the answer bar and the fade behind the capsule  |
@@ -210,7 +210,8 @@ and the rubric red `--count`.
 - The default view puts the desk first, then asks, tasks and runs, then the inbox, the queue,
   reports, flows and costs. On a phone, these last five sit under "More". The queue is also a
   saved view of the desk on wide screens, and the Desk's Up next strip links to its panel.
-  Terminals sit under "More" too.
+  A view file that names the `terminal` panel adds Terminal, which lists the running tasks, each a
+  link to its task page's terminal. The default view leaves it out.
 - More lists those panels, then Appearance and Notifications, as rows with a chevron. "Sign out of
   this device" is a `.btn secondary` in its own group under them, with no chevron: it acts at
   once, and it opens no page.
@@ -222,8 +223,8 @@ and the rubric red `--count`.
 ### Frame on a phone
 
 - **Top bar**, `--top-bar` (52 px), with a hairline under it: the factory name in the display
-  role, the connection state as a dot and a word ("live", "reconnecting"), a filter button and a
-  search button. A list panel shows its title in the display role instead of the factory name.
+  role and the connection state as a dot and a word ("live", "reconnecting"). A list panel shows
+  its title in the display role instead of the factory name.
   Add lives beside the Answer capsule instead, in the thumb's reach (see [Add](#add)).
   It stays sticky below the safe-area inset.
 - **Tab bar**, `--tab-bar` (60 px plus the bottom safe area), on `--bar`: Desk, Asks, Tasks,
@@ -234,8 +235,7 @@ and the rubric red `--count`.
 
 ### Frame on a wide screen
 
-- **Top bar**: the factory name and connection state, a command bar in the middle ("Search or run
-  a command", `Ctrl K`), the runner name, and the [Add](#add) button on the right.
+- **Top bar**: the factory name and connection state, and the [Add](#add) button on the right.
 - **Rail**, `--rail` (72 px) on `--bar`: the default view's panels (Desk, Asks, Tasks, Runs,
   Inbox, Queue, Reports, Flows and Costs), each an icon over a label, then Settings at the
   bottom. The active item takes `--action-soft` and `--action-text`. The Desk item carries the
@@ -244,8 +244,8 @@ and the rubric red `--count`.
   holds no facet column and no histogram: facets are chips, and the histogram lives in Runs.
 - **Drawer**, `--drawer` (640 px) on `--surface`: the selected ask, task or run. It opens beside
   the list and never covers it.
-- **Key hint bar** at the bottom of the list, 40 px: `J` `K` move, `Enter` open, `1` to `9`
-  answer, `W` write, `N` add, `[` `]` sections, `?` all shortcuts.
+- **Key hint bar** at the bottom of the Desk, Asks and Inbox lists, 40 px: `J` `K` move, `Enter`
+  open, `Esc` close, `N` add.
 
 ## Iconography
 
@@ -351,7 +351,7 @@ Memory candidates are not a task state either. Their desk row takes the ask role
 with the `brain` icon, since they wait on a person.
 
 Another runner's task shows its hold instead of a state: `kept` or `waiting`, beside a muted tile
-with the `server` icon. A task of this runner in the `waiting` state keeps its own tile.
+with the `server` icon. `waiting` is a hold's word, never a task state of this runner.
 
 ### Explorer list
 
@@ -363,13 +363,9 @@ Every list panel (desk, asks, tasks, runs, inbox) is the same explorer over one 
    moves to the view's menu, and the row never scrolls sideways.
 2. **Facet chips**: one chip per facet the panel offers (lane, band, risk, step, runner, age, task, command),
    `--chip` tall like the views, with `--radius-sm` and a `--control-line` edge. Tapping one
-   opens a picker sheet with values and counts. A set chip takes `--action-soft` and `--action-text`, shows its value
-   and an `x` that clears it. A last "Filter" ghost chip adds a facet. On a phone the facet row
-   sits behind the top bar's filter button, except in the asks list.
-3. **Query bar**, optional: hidden by default. Search on a phone, or the "Query" button on wide
-   screens, opens it. It shows the current views and chips as text, such as `needs:me
-   lane:infra/*`, so a person who knows the syntax can edit it. Nobody needs it to filter.
-4. **Rows**, grouped by the view's sections, as described for each panel below.
+   opens a menu under it with values and counts, at every width. A set chip takes `--action-soft` and `--action-text`, shows its value
+   and an `x` that clears it. The facet row shows on a phone too.
+3. **Rows**, grouped by the view's sections, as described for each panel below.
 
 On wide screens the list is a table: one row per item, `--row-wide` (38 px) at least. A long
 question wraps to two lines instead of truncating.
@@ -551,7 +547,7 @@ request number). The whole row is the touch target.
 
 ### Asks list
 
-The Asks tab lists every ask. Saved views: Open, Answered and All, each with a count. Facet
+The Asks tab lists every ask. Saved views: Open, Snoozed, Answered and All, each with a count. Facet
 chips: Command, Lane, Band, Risk and Task, shown on a phone too, and Runner in a factory of several
 runners. Band picks the task's band, with
 its values in the factory's band order, then `none` for an ask with no band, such as an outside
@@ -561,13 +557,13 @@ answer lets an irreversible step run or runs an agent's command; the task's merg
 them. An ask can carry `irreversible`, a merge risk and a grade, and counts under each. Risk is a facet chip like Band, with the same tokens, and its values are words,
 so it adds no token. Each view shows these sections, in order, and leaves out an empty one:
 
-| Section          | Open | Answered | All | Order        | Line 3                                       |
-| ---------------- | ---- | -------- | --- | ------------ | -------------------------------------------- |
-| Open             | yes  |          | yes | oldest first | "Recommends" and the recommended option      |
-| Snoozed          |      |          | yes | oldest first | the `clock` icon and "Snoozed until 12:05"   |
-| Answered today   |      | yes      | yes | newest first | "Answered", the answer, then who answered    |
-| Answered earlier |      | yes      | yes | newest first | as above, with a date instead of a time      |
-| Withdrawn        |      |          | yes | newest first | "Withdrawn" and why, such as "task revived"  |
+| Section          | Open | Snoozed | Answered | All | Order        | Line 3                                       |
+| ---------------- | ---- | ------- | -------- | --- | ------------ | -------------------------------------------- |
+| Open             | yes  |         |          | yes | oldest first | "Recommends" and the recommended option      |
+| Snoozed          |      | yes     |          | yes | oldest first | the `clock` icon and "Snoozed until 12:05"   |
+| Answered today   |      |         | yes      | yes | newest first | "Answered", the answer, then who answered    |
+| Answered earlier |      |         | yes      | yes | newest first | as above, with a date instead of a time      |
+| Withdrawn        |      |         |          | yes | newest first | "Withdrawn" and why, such as "task revived"  |
 
 Answered and withdrawn rows take the muted tiles from the state tile section. A long section
 loads more rows as the person scrolls; its header keeps the total.
@@ -693,7 +689,7 @@ In the drawer, the decide part stays pinned at the top and the reading part scro
 The pinned part takes at most 50 % of the drawer's height and scrolls on its own past that. In
 it, the question clamps at 3 lines and the recommendation at 4, each with a "More" ghost button
 that expands it. Options sit in one row while each label fits on two lines, and wrap to a column
-otherwise. `[` and `]` move between sections.
+otherwise.
 
 - After an answer, the next ask slides in and the position updates.
 - Previous, next and a horizontal swipe move without answering. Nothing answers except a tap on
@@ -1234,7 +1230,7 @@ left, with a hairline between them.
 | State | What shows |
 | ----- | ---------- |
 | empty | Costs: "No cost in the last two weeks. Costs appear once a model step records its tokens. Price each model in `prices.toml` in the factory folder." Attention: "No attention counted this week. Your answers, dismissals and snoozes on asks count here, and each task's time once it runs." |
-| loading | "Loading costs…" |
+| loading | Nothing for 300 ms, then three skeleton blocks on `--raised` |
 | offline | The stale strip over the last costs read, which the device keeps, under "Costs as read Nov 21, 09:14." The Split by `select` is disabled |
 | error | A `--warn-text` line above the last costs read: "Could not load costs: why. Check that the daemon runs on its runner, then retry." with Retry, then "Costs as read Nov 21, 09:14." |
 
@@ -1261,9 +1257,13 @@ with no change shows its line without an icon.
 
 - **Empty**: one sentence that says what appears here and what makes it appear, plus the action
   or CLI command. "No open asks. Agents ask here when they need you."
-- **Loading**: one line of text, in the empty state's place, with the one verb "Loading": "Loading
-  task 7…", "Loading the flows…". Herdr's panels say the same. No skeleton and never a full-page
-  spinner. A list that has data keeps it while it refreshes.
+- **Loading**: until the first listing arrives, the frame shows nothing. A page then shows one
+  sentence in the empty state's place, with the one verb "Loading" and what loads: "Loading task
+  7…", "Loading the flows…". A list that loads its older rows ends with "Loading older runs…". The
+  terminal says "Loading the screen…", and Herdr's panels say the same as the web. The ask's plan
+  says "Reading the plan of revision 2 before you answer.", since it gates the answer. The Costs
+  panel alone shows nothing for 300 ms, then three skeleton blocks on `--raised`. Never a
+  full-page spinner. A list that has data keeps it while it refreshes.
 - **Error**: where it failed, why, and how to fix it, with a "Retry" button. "Could not load runs:
   the daemon refused the connection. Check that the daemon runs on its runner, then retry." Keep
   any stale data visible under the error.
@@ -1300,9 +1300,10 @@ run.
 - Focus ring: 2 px solid `--action-text` with a 2 px offset, on every focusable element, using
   `:focus-visible`.
 - Every control works by keyboard. Desktop shortcuts: `j` and `k` move, `Enter` opens, `1` to
-  `9` pick an option (twice for a command), `w` writes an answer, `n` adds a task, `[` and `]` move between
-  sections, `Esc` closes, `?` lists shortcuts. Single-key shortcuts never fire inside an input,
-  and a setting turns them off.
+  `9` pick an option of the open ask (twice for a command), `n` adds a task, `Esc` closes. `s`
+  snoozes the open ask for 1 h when it is open, not snoozed, belongs to a task on this runner, and
+  the page is online with no answer sending. Single-key shortcuts never fire inside an input or an
+  open sheet, and a setting turns them off. That setting is not built yet (see Open questions).
 - The sheet over `--scrim` is a modal `dialog`: focus moves into it, stays there, and returns to
   the answer bar when it closes. The section chips are a `nav` of in-page links.
 - Each panel is a `region` labelled by its title. The tab bar is a `nav`.
@@ -1358,7 +1359,8 @@ the adapter lives, how it reads and acts, and the data each panel needs. The app
   (52 px) with a `--pane-tile` (24 px) tile, views and chips `--pane-chip` (28 px) tall, options
   `--pane-option` (40 px) tall, the question in `--type-pane-question` (18 / 24), the desk count in
   `--type-pane-count` (40 / 1), and buttons at `--control-fine`.
-- **Width.** Every panel works at `--pane-narrow` (420 px), the default width of the view beside Herdr's terminals. Below
+- **Width.** An aside opens at 360 px and narrows to 280 px at least. Every panel should work at
+  `--pane-narrow` (420 px), which is wider than both: see the open question on Herdr asides. Below
   `--pane-split` (720 px) a selected row opens its detail in place, under the row. From
   `--pane-split`, the list and the detail sit side by side.
 - **Selection.** A selected row takes the `--action-soft` fill on its own rounded surface. It has
@@ -1599,8 +1601,15 @@ The web's [Runs panel](#runs-panel), as a tab in the center stack.
 
 - **The same ask three times.** In the full layout the oldest ask shows as the Desk's next thing,
   as the Desk's first row and in the Asks panel. Max will tweak this next week.
-- **Snooze in the web view.** Snooze is drawn for the Herdr panels. The web asks list shows
-  snoozed asks as a section of All; a Snoozed saved view may follow when its slice lands.
+- **Not built in the web view.** These were drawn and are not on `main`: the wide top bar's
+  command bar (`Ctrl K`) and runner name, the phone top bar's filter and search buttons, the query
+  bar, the shortcuts sheet (`?`), and the `w` and `[` `]` keys. Build
+  each with its rule here, or leave it out. The setting that turns single-key shortcuts off is
+  missing too; WCAG 2.2 (2.1.4, Character Key Shortcuts) needs it, so build it.
+- **Herdr asides.** An aside is a bare column, while the frame's main pane and the `cockpit-fleet`
+  panels take a card: ground, 1 px border, 10 px radius and a small shadow. Decide whether asides
+  take the same card. Asides open at 360 px with a 280 px floor, under `--pane-narrow` (420 px),
+  and `cockpit-fleet` holds three of them at 320 px: decide `--pane-narrow` at 320 or 420 px.
 
 ## Docs site
 
