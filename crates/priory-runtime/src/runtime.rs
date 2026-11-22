@@ -208,17 +208,37 @@ pub fn check_repo(repo: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// How `worktree` found or made a task's worktree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Added {
+    /// The folder was there, on its branch.
+    Kept,
+    /// The branch was there and its folder was not, as after a retirement or a sweep.
+    Restored,
+    /// A new branch, from this commit.
+    New(Option<String>),
+}
+
+impl Added {
+    /// The commit a new branch starts from; `None` when the branch already existed.
+    pub fn base(&self) -> Option<&str> {
+        match self {
+            Added::New(base) => base.as_deref(),
+            Added::Kept | Added::Restored => None,
+        }
+    }
+}
+
 /// The task's worktree folder `name` on `priory/<name>`, from the local branch `from` of Priory's
 /// own clone of `repo` (`owner/name`), else from its default branch. The clone has no checkout: a person trusts it once in Claude, and
 /// its worktrees inherit that trust. A worktree of that clone left on that branch by an interrupted
-/// start is reused. The third value is the commit a new branch starts from, and `None` when the
-/// branch already existed.
+/// start is reused. The third value says whether the folder was kept, added back, or new.
 pub fn worktree(
     home: &Path,
     repo: &str,
     name: &str,
     from: Option<&str>,
-) -> Result<(PathBuf, String, Option<String>), String> {
+) -> Result<(PathBuf, String, Added), String> {
     check_repo(repo)?;
     let clone = home.join("repos").join(repo);
     let branch = format!("priory/{name}");
@@ -251,7 +271,7 @@ pub fn worktree(
                 clone.display()
             ));
         }
-        return Ok((path, branch, None));
+        return Ok((path, branch, Added::Kept));
     }
     // A revived task whose worktree the sweep removed carries on from the branch it left.
     if head(&clone, &branch).is_some() {
@@ -261,7 +281,7 @@ pub fn worktree(
             .args(["worktree", "add", "--quiet"])
             .arg(&path)
             .arg(&branch))?;
-        return Ok((path, branch, None));
+        return Ok((path, branch, Added::Restored));
     }
     run(git(&clone).args(["fetch", "--quiet", "origin"]))?;
     run(git(&clone).args(["remote", "set-head", "origin", "--auto"]))?;
@@ -276,7 +296,7 @@ pub fn worktree(
         .arg(&path)
         .arg(start))?;
     let base = head(&path, &branch);
-    Ok((path, branch, base))
+    Ok((path, branch, Added::New(base)))
 }
 
 /// The commit `branch` points to, read from Priory's clone under `home` when `worktree` is gone, as

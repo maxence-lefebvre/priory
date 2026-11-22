@@ -1489,6 +1489,65 @@ fn a_sweep_table_passes_and_a_bad_one_names_its_line() {
 }
 
 #[test]
+fn repository_recipes_pass_and_a_bad_one_names_its_line() {
+    let good = "name = \"demo\"\n\n[repos.\"owner/repo\"]\nsetup = { argv = [\"npm\", \"ci\"], timeout = \"15m\" }\nresume = { shell = \"npm ci --prefer-offline\" }\nteardown = { shell = \"docker compose down\" }\n";
+    let ok = check(&factory("recipes-ok", &with("factory.toml", good)));
+    let bad = |name: &str, from: &str, to: &str| {
+        let text = good.replace(from, to);
+        check(&factory(name, &with("factory.toml", &text)))
+    };
+    let both = bad(
+        "recipes-both",
+        "argv = [\"npm\", \"ci\"]",
+        "argv = [\"npm\"], shell = \"npm ci\"",
+    );
+    let empty = bad("recipes-empty", "argv = [\"npm\", \"ci\"]", "argv = []");
+    let repo = bad("recipes-repo", "owner/repo", "repo");
+    let merge = bad(
+        "recipes-merge",
+        "docker compose down",
+        "gh pr merge --squash",
+    );
+    let unknown = bad("recipes-unknown", "teardown =", "cleanup =");
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (both.code, both.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[repos.\"owner/repo\"] setup` needs one of `argv` or `shell`, not both\n"
+        )
+    );
+    assert_eq!(
+        (empty.code, empty.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[repos.\"owner/repo\"] setup` needs a program in `argv`\n"
+        )
+    );
+    assert_eq!(
+        (repo.code, repo.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[repos]` key `repo` needs to be `owner/name`\n"
+        )
+    );
+    assert_eq!(
+        (merge.code, merge.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[repos.\"owner/repo\"] teardown` runs `gh pr merge --squash`, which the guard `gh-pr-merge` holds irreversible: a recipe runs with no person's approval\n"
+        )
+    );
+    assert_eq!(unknown.code, 1);
+    assert!(
+        unknown.stderr.contains("unknown field `cleanup`"),
+        "{}",
+        unknown.stderr
+    );
+}
+
+#[test]
 fn an_agent_disk_that_is_not_a_size_names_its_line() {
     let agent = AGENT.replace(
         "session = \"per-task\"\n",

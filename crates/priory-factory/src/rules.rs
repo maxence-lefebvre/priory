@@ -1,7 +1,7 @@
 use crate::factory::{
     ASK_SHAPE, Agent, Backend, Benchmark, CODEX_PROMPT_LIMIT, Decider, Effect, Factory, Harness,
-    INSTRUCTIONS, Intervention, Loaded, OPEN_MEMORIES_PR, OnChange, PermissionMode, Problem, Proof,
-    ScoreKind, ScoreOn, Scorer, Session, Step, Trigger, Until, Workflow,
+    INSTRUCTIONS, Intervention, Loaded, Moment, OPEN_MEMORIES_PR, OnChange, PermissionMode,
+    Problem, Proof, Recipe, ScoreKind, ScoreOn, Scorer, Session, Step, Trigger, Until, Workflow,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
 use crate::labels;
@@ -245,6 +245,22 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 settings.lines.field("sweep"),
                 "`[sweep] repo` needs to be `owner/name`".into(),
             ));
+        }
+        let at = settings.lines.field("repos");
+        for (repo, recipes) in &settings.value.repos {
+            if !owner_name(repo) {
+                let message = format!("`[repos]` key `{repo}` needs to be `owner/name`");
+                problems.push(problem(settings, at, message));
+                continue;
+            }
+            for moment in Moment::ALL {
+                if let Some(recipe) = recipes.recipe(moment) {
+                    let name = format!("`[repos.\"{repo}\"] {}`", moment.name());
+                    if let Some(message) = recipe_problem(&settings.value.guard, &name, recipe) {
+                        problems.push(problem(settings, at, message));
+                    }
+                }
+            }
         }
         let mut named: Vec<&str> = crate::guard::BUILT_IN.to_vec();
         for command in &settings.value.guard.commands {
@@ -950,6 +966,33 @@ fn check_review_request(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) 
             );
         }
     }
+}
+
+/// Why a repository's recipe `name` cannot run: no command, two, or one the guard holds
+/// irreversible, since a recipe runs with no person's approval.
+fn recipe_problem(guards: &crate::guard::Guards, name: &str, recipe: &Recipe) -> Option<String> {
+    match (&recipe.argv, &recipe.shell) {
+        (Some(_), Some(_)) => {
+            return Some(format!("{name} needs one of `argv` or `shell`, not both"));
+        }
+        (None, None) => return Some(format!("{name} needs one of `argv` or `shell`")),
+        (Some(argv), None) if argv.first().is_none_or(String::is_empty) => {
+            return Some(format!("{name} needs a program in `argv`"));
+        }
+        (None, Some(shell)) if shell.trim().is_empty() => {
+            return Some(format!("{name} needs a command in `shell`"));
+        }
+        _ => {}
+    }
+    let command = recipe.command();
+    let hit = guards
+        .hits("Bash", Some(&command), &|_, _| None)
+        .into_iter()
+        .next()?;
+    Some(format!(
+        "{name} runs `{}`, which the guard `{}` holds irreversible: a recipe runs with no person's approval",
+        hit.call, hit.guard
+    ))
 }
 
 fn owner_name(repo: &str) -> bool {

@@ -30,6 +30,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `batch` | table | no | `priory batch add` is refused | How `priory batch add` plans batches. See [`[batch]`](#batch) | |
 | `caps` | table | no | no cap | Spend caps in dollars for every task and each lane. See [`[caps]`](#caps) | |
 | `guard` | table | no | the built-in guards alone | Irreversible commands and MCP tools the tool guard denies on top of the built-in ones. See [`[guard]`](#guard) | |
+| `repos` | table of tables | no | no recipe runs | The setup, resume and teardown recipes of each repository. See [`[repos]`](#repos) | |
 
 A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m"` or `"2h"`.
 
@@ -60,6 +61,32 @@ Each entry of `scripts`:
 | `run` | string | yes | | A shell command, run by `sh -c` in `PRIORY_HOME` | `"cargo clean"` |
 | `when` | `memory`, `disk` or `cpu` | yes | | The resource whose shortage runs it | `"disk"` |
 | `timeout` | duration | no | `"5m"` | How long it may run before Priory kills it | `"1m"` |
+
+## `[repos]`
+
+Each key is a GitHub `owner/name`, and its table holds that repository's recipes. Every key is
+optional. See [Recipes](../daemon/runs.md#recipes) for when each runs and what a failure does.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `setup` | recipe | no | none | Runs after the daemon adds a task's new worktree, before its agent starts | `{ argv = ["npm", "ci"] }` |
+| `resume` | recipe | no | none | Runs after the daemon adds back a worktree that a retirement removed, before the agent starts | `{ argv = ["npm", "ci", "--prefer-offline"] }` |
+| `teardown` | recipe | no | none | Runs before the sweep or a retirement removes the worktree | `{ shell = "docker compose down" }` |
+
+Each recipe is a table with exactly one of `argv` and `shell`:
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `argv` | array of strings | one of the two | | The program and its arguments. Priory execs them as they are, with no shell | `["cargo", "fetch"]` |
+| `shell` | string | one of the two | | A shell command, run with `sh -c` | `"make deps && make build"` |
+| `timeout` | duration | no | `command_timeout` | How long it may run before Priory kills it with its process group | `"15m"` |
+
+```toml
+[repos."owner/name"]
+setup = { argv = ["npm", "ci"], timeout = "15m" }
+resume = { argv = ["npm", "ci", "--prefer-offline"] }
+teardown = { shell = "docker compose down --remove-orphans" }
+```
 
 ## `[kit]`
 
@@ -455,6 +482,11 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` the summarizer agent `<name>` does not exist `` | `[search] tldr` names no agent |
 | `` the summarizer agent `<name>` needs harness = "claude-code" `` | `[search] tldr` names a Codex agent |
 | `[search] names both a model and a command: keep one` | `[search]` sets `model` and `command` |
+| `` `[repos]` key `<key>` needs to be `owner/name` `` | A `[repos]` key that is not a GitHub `owner/name` |
+| `` `[repos."<repo>"] <recipe>` needs one of `argv` or `shell` `` | A recipe with neither key, or with both (`, not both`) |
+| `` `[repos."<repo>"] <recipe>` needs a program in `argv` `` | An empty `argv`, or an empty program |
+| `` `[repos."<repo>"] <recipe>` needs a command in `shell` `` | A blank `shell` |
+| `` `[repos."<repo>"] <recipe>` runs `<command>`, which the guard `<guard>` holds irreversible: a recipe runs with no person's approval `` | A recipe that runs a command the [tool guard](../daemon/guard.md) denies, such as `gh pr merge` |
 | `` `[sweep] repo` needs to be `owner/name` `` | `[sweep] repo` is not a GitHub `owner/name`, such as a path or a name of `..` |
 | `` `[serve] listen` <address> is beyond this machine: set `public = true` to serve it `` | `listen` is not a loopback address and `public` is not set |
 | `` `[webhooks]` needs a `[serve]` table to listen on `` | `[webhooks]` is set without `[serve]` |
