@@ -76,6 +76,7 @@ fn generated() -> Vec<(String, Value)> {
         event::<LinearIssueUpdated>("linear.issue.updated"),
         event::<LinearCommentCreated>("linear.comment.created"),
         event::<SentryIssueCreated>("sentry.issue.created"),
+        event::<CloudwatchAlarmStateChanged>("cloudwatch.alarm.state_changed"),
         event::<SlackPosted>("slack.message.posted"),
         event::<SlackReplied>("slack.thread.replied"),
         event::<ScheduleFired>("schedule.fired"),

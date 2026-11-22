@@ -6,7 +6,7 @@ use crate::{
 };
 use priory_factory::factory::{Factory, Price, Terminal, Trigger};
 use priory_intake::intake::{
-    self, ASK_ANSWERED, ASK_DISMISSED, Github, LinearWebhook, SentryWebhook,
+    self, ASK_ANSWERED, ASK_DISMISSED, CloudwatchWebhook, Github, LinearWebhook, SentryWebhook,
 };
 use priory_intake::log;
 use priory_runtime::http::{self, Reply, Request};
@@ -23,6 +23,7 @@ use std::time::Duration;
 const GITHUB: &str = "/hooks/github";
 const LINEAR: &str = "/hooks/linear";
 const SENTRY: &str = "/hooks/sentry";
+const CLOUDWATCH: &str = "/hooks/cloudwatch";
 const INDEX: &[u8] = include_bytes!("../web/index.html");
 /// How long `/api/events` holds a request without a change, at most and by default.
 const WAIT: u64 = 25;
@@ -183,6 +184,18 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         .map(|secret| SentryWebhook::new(secret, factory))
         .transpose()?
         .map(Arc::new);
+    let cloudwatch = factory
+        .cloudwatch_webhook()
+        .map(|hook| {
+            env(
+                &hook.secret_env,
+                "the EventBridge connection's API key value",
+            )
+        })
+        .transpose()?
+        .map(|secret| CloudwatchWebhook::new(secret, factory))
+        .transpose()?
+        .map(Arc::new);
     drop(state::read_only()?);
     let listener =
         TcpListener::bind(listen).map_err(|error| format!("listen on {listen}: {error}"))?;
@@ -215,6 +228,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         (github.is_some(), GITHUB),
         (linear.is_some(), LINEAR),
         (sentry.is_some(), SENTRY),
+        (cloudwatch.is_some(), CLOUDWATCH),
     ]
     .into_iter()
     .filter_map(|(on, path)| on.then_some(path))
@@ -253,16 +267,26 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
                 log::open(&event_log).map_err(|error| error.to_string()),
             )
         });
+        let mut cloudwatch = cloudwatch.clone().map(|cloudwatch| {
+            (
+                cloudwatch,
+                log::open(&event_log).map_err(|error| error.to_string()),
+            )
+        });
         move |request: &Request| match (
             request.method == "POST",
             request.path.split('?').next(),
             &mut github,
             &mut linear,
             &mut sentry,
+            &mut cloudwatch,
         ) {
-            (true, Some(GITHUB), Some((github, bus)), _, _) => github.receive(bus, request),
-            (true, Some(LINEAR), _, Some((linear, bus)), _) => linear.receive(bus, request),
-            (true, Some(SENTRY), _, _, Some((sentry, bus))) => sentry.receive(bus, request),
+            (true, Some(GITHUB), Some((github, bus)), _, _, _) => github.receive(bus, request),
+            (true, Some(LINEAR), _, Some((linear, bus)), _, _) => linear.receive(bus, request),
+            (true, Some(SENTRY), _, _, Some((sentry, bus)), _) => sentry.receive(bus, request),
+            (true, Some(CLOUDWATCH), _, _, _, Some((cloudwatch, bus))) => {
+                cloudwatch.receive(bus, request)
+            }
             _ if request.method == "POST" => write(&db, &home, &served, &remote, request),
             _ => route(
                 &db,

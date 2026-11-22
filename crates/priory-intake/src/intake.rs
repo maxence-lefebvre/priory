@@ -1,6 +1,8 @@
 use crate::log::{self, Log};
 use herdr_bus::{Bus, Message, Output, Timestamp, Uuid};
 use priory_factory::factory::{Factory, Trigger};
+use priory_runtime::http::Reply;
+mod cloudwatch;
 mod gh;
 mod issues;
 mod linear;
@@ -13,6 +15,7 @@ mod shortcut;
 mod slack;
 mod webhook;
 
+pub use cloudwatch::CloudwatchWebhook;
 pub use linear::state as linear_state;
 pub use linear_webhook::LinearWebhook;
 pub use sentry::SentryWebhook;
@@ -107,6 +110,7 @@ pub fn output() -> Output {
             linear::UPDATED,
             linear::COMMENTED,
             sentry::CREATED,
+            cloudwatch::CHANGED,
             slack::POSTED,
             slack::REPLIED,
             TASK_REQUESTED,
@@ -583,6 +587,30 @@ fn baseline((repo, kind): &Stream, position: u64) -> Message {
         .subject(format!("{repo} {kind}"))
 }
 
+/// Publishes a webhook's `message` and its task requests, and whether the output lacked the
+/// message: a redelivery or replay of the same body finds it there. Task request ids derive from
+/// the message id, so dispatching again publishes none twice and completes a dispatch that failed.
+fn publish_new(
+    bus: &dyn Log,
+    triggers: &[(&str, &Trigger)],
+    message: &Message,
+) -> Result<bool, String> {
+    let newest = bus
+        .messages(OUTPUT, None, 1)
+        .map_err(|error| format!("read {OUTPUT}: {error}"))?
+        .first()
+        .map(|stored| stored.seq);
+    let seq = bus
+        .publish(OUTPUT, message)
+        .map_err(|error| format!("publish on {OUTPUT}: {error}"))?;
+    dispatch(bus, triggers, message)?;
+    Ok(newest.is_none_or(|newest| seq > newest))
+}
+
+fn accepted(outcome: &str) -> Reply {
+    Reply::json(202, json!({ "outcome": outcome }).to_string())
+}
+
 /// Publishes a task request for each trigger the source names, among those still defined.
 fn dispatch(bus: &dyn Log, triggers: &[(&str, &Trigger)], source: &Message) -> Result<(), String> {
     let named = source.data["triggers"].as_array().into_iter().flatten();
@@ -593,6 +621,9 @@ fn dispatch(bus: &dyn Log, triggers: &[(&str, &Trigger)], source: &Message) -> R
             let repo = data["repo"].as_str().unwrap_or_default();
             let key = match (number.as_str(), data["channel"].as_str()) {
                 (Some(issue), _) if source.kind == sentry::CREATED => format!("sentry:{issue}"),
+                _ if source.kind == cloudwatch::CHANGED => {
+                    format!("cloudwatch:{}", data["alarm"].as_str().unwrap_or_default())
+                }
                 _ if source.kind == reviews::REQUESTED => {
                     review_key(repo, number, data["reviewer"].as_str().unwrap_or_default())
                 }

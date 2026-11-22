@@ -2318,6 +2318,39 @@ fn a_sentry_trigger_needs_the_sentry_webhook_and_a_supported_event_filter_and_ke
 }
 
 #[test]
+fn a_cloudwatch_trigger_needs_the_cloudwatch_webhook_and_a_supported_event_filter_and_key() {
+    let good = "source = \"cloudwatch\"\non = \"alarm.state_changed\"\nfilter = { name = \"ServerCpuTooHigh\", state = \"ALARM\", previous_state = \"OK\" }\nrepo = \"owner/repo\"\nworkflow = \"implement\"\nkey = \"alarm.arn\"\n";
+    let wrong = "source = \"cloudwatch\"\non = \"alarm.created\"\nfilter = { region = \"us-east-1\" }\nworkflow = \"implement\"\nkey = \"alarm.name\"\nbackfill = true\n";
+    let hooked = "name = \"demo\"\n\n[serve]\n\n[webhooks.cloudwatch]\nsecret_env = \"CLOUDWATCH_WEBHOOK_SECRET\"\n";
+    let mut files = with("triggers/alarms.toml", good);
+    files.push(("triggers/wrong.toml", wrong));
+    let unhooked = check(&factory("cloudwatch-unhooked", &files));
+    files.retain(|(path, _)| *path != "factory.toml");
+    files.push(("factory.toml", hooked));
+    let hooked = check(&factory("cloudwatch-triggers", &files));
+    files.retain(|(path, _)| *path != "triggers/wrong.toml");
+    let ok = check(&factory("cloudwatch-ok", &files));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(hooked.code, 1);
+    assert_eq!(
+        hooked.stderr,
+        "triggers/wrong.toml:6: only a GitHub, Linear or Slack trigger has `backfill`\n\
+         triggers/wrong.toml:2: a `cloudwatch` trigger handles `alarm.state_changed`, not `alarm.created`\n\
+         triggers/wrong.toml:3: a `cloudwatch` trigger filters on `name`, `state` or `previous_state`\n\
+         triggers/wrong.toml:5: a CloudWatch trigger's `key` is `alarm.arn`\n"
+    );
+    assert_eq!(unhooked.code, 1);
+    assert!(
+        unhooked.stderr.contains(
+            "triggers/alarms.toml:1: a `cloudwatch` trigger needs `[webhooks.cloudwatch]` in factory.toml: CloudWatch events arrive only through EventBridge\n"
+        ),
+        "{}",
+        unhooked.stderr
+    );
+}
+
+#[test]
 fn the_skill_index_counts_toward_the_codex_limit() {
     let description = "d".repeat(3000);
     let skills: Vec<(String, String)> = ["one", "two", "three"]

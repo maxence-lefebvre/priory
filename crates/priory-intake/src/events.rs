@@ -598,6 +598,32 @@ pub struct SentryIssueCreated {
     pub source: Source,
 }
 
+/// A CloudWatch alarm's state change, from an EventBridge API destination.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CloudwatchAlarmStateChanged {
+    /// The alarm's ARN, such as `arn:aws:cloudwatch:us-east-1:123456789012:alarm:ServerCpuTooHigh`.
+    pub alarm: String,
+    /// The alarm's name.
+    pub name: String,
+    /// The alarm's description; null when it has none.
+    pub description: Option<String>,
+    /// The new state: `ALARM`, `OK` or `INSUFFICIENT_DATA`.
+    pub state: String,
+    /// The state before; null when the event names none.
+    pub previous_state: Option<String>,
+    /// Why the state changed, in CloudWatch's words; null when the event gives none.
+    pub reason: Option<String>,
+    /// The AWS account id.
+    pub account: Option<String>,
+    /// The AWS region, such as `us-east-1`.
+    pub region: Option<String>,
+    /// The EventBridge event id, which stays the same across EventBridge's retries.
+    pub delivery: String,
+    #[serde(flatten)]
+    pub source: Source,
+}
+
 /// A message posted in a Slack trigger's channel, outside a thread.
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]

@@ -284,6 +284,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             "linear" | "linear.view" => check_linear(trigger, &mut problems),
             "slack" => check_slack(trigger, &mut problems),
             "sentry" => check_sentry(factory, trigger, &mut problems),
+            "cloudwatch" => check_cloudwatch(factory, trigger, &mut problems),
             _ if trigger.value.backfill.is_some() => problems.push(problem(
                 trigger,
                 trigger.lines.field("backfill"),
@@ -296,6 +297,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             "linear",
             "linear.view",
             "sentry",
+            "cloudwatch",
             "slack",
             "schedule",
         ];
@@ -813,6 +815,57 @@ fn check_sentry(factory: &Factory, trigger: &Loaded<Trigger>, problems: &mut Vec
     }
     if value.key.as_deref().is_some_and(|key| key != "issue.id") {
         report("key", "a Sentry trigger's `key` is `issue.id`".into());
+    }
+}
+
+/// CloudWatch events arrive only through an EventBridge API destination: a `cloudwatch` trigger
+/// takes `alarm.state_changed`, filtered on the alarm name or the states, keyed by the alarm ARN.
+fn check_cloudwatch(factory: &Factory, trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
+    let value = &trigger.value;
+    let mut report = |field: &str, message: String| {
+        let line = trigger.lines.field(field).or(trigger.lines.field("source"));
+        problems.push(problem(trigger, line, message));
+    };
+    if value.backfill.is_some() {
+        report(
+            "backfill",
+            "only a GitHub, Linear or Slack trigger has `backfill`".into(),
+        );
+    }
+    if factory.cloudwatch_webhook().is_none() {
+        report(
+            "source",
+            "a `cloudwatch` trigger needs `[webhooks.cloudwatch]` in factory.toml: CloudWatch events arrive only through EventBridge".into(),
+        );
+    }
+    if value.on != "alarm.state_changed" {
+        report(
+            "on",
+            format!(
+                "a `cloudwatch` trigger handles `alarm.state_changed`, not `{}`",
+                value.on
+            ),
+        );
+    }
+    let filters = ["name", "state", "previous_state"];
+    if value
+        .filter
+        .as_ref()
+        .is_some_and(|filter| filter.keys().any(|key| !filters.contains(&key.as_str())))
+    {
+        report(
+            "filter",
+            "a `cloudwatch` trigger filters on `name`, `state` or `previous_state`".into(),
+        );
+    }
+    if value.repo.as_deref().is_some_and(|repo| !owner_name(repo)) {
+        report(
+            "repo",
+            "a CloudWatch trigger's `repo` is `owner/name`".into(),
+        );
+    }
+    if value.key.as_deref().is_some_and(|key| key != "alarm.arn") {
+        report("key", "a CloudWatch trigger's `key` is `alarm.arn`".into());
     }
 }
 
