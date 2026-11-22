@@ -24,6 +24,13 @@ their hooks.
 mirrors every runner's asks and tasks and serves them, and runs nothing (see
 [runners.md](runners.md#a-machine-that-only-views)).
 
+## The pieces
+
+The drawing shows the intake, the log, the daemon, the agents and the views on one machine. Under
+them, it shows several machines that share one log, which [runners.md](runners.md) explains.
+
+![Priory's pieces. On one machine, the intake polls GitHub, Linear, Slack and schedules and publishes on the log, one SQLite file. The daemon reads the log, takes webhooks and starts agents, Claude Code or Codex, in tmux and a git worktree. Four views read the state and send answers: the web view, the GitHub extension, the Herdr panels and the command line. On several machines, runner a and runner b each hold a daemon, its agents and its own state file, and share one Postgres log with a view-only machine that runs nothing.](../images/diagrams/pieces.svg)
+
 ## State
 
 The daemon keeps its state in one SQLite file, which `PRIORY_DB` names. It holds the inbox, tasks,

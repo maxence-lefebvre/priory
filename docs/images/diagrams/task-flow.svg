@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 652" width="680" height="652" role="img" aria-labelledby="title desc">
+  <title id="title">How a task moves through Priory</title>
+  <desc id="desc">From top to bottom. The intake polls GitHub, Linear, Slack and schedules, a webhook is checked then published, and a request you type comes from priory add: all three land on the log. The daemon finds the task each message concerns, and a request for new work creates a task, queued at its workflow's first step. When the machine has room, a run starts a model step's agent, Claude Code or Codex, in the task's git worktree and a tmux session. The agent ends its turn with a tool call. With result, the step's outcome picks the next step, done or stop. With wait, the task sleeps until an event such as checks or a merge. With ask, the task sleeps until a person answers on the desk. An event or an answer wakes the task, and its next run resumes the agent's session. At done, a task with a pull request first waits for the pull request's checks.</desc>
+  <style>
+    svg { --surface: #FFFFFF; --raised: #ECECF2; --line: #E3E3EA; --edge: #85858F; --text: #0B0B14; --text-2: #3C3C46; --text-3: #686872; --action: #5856D6; --action-soft: #ECEBFC; --action-text: #4F4DC9; --danger: #C4161C; }
+    @media (prefers-color-scheme: dark) {
+      svg { --surface: #1C1C1E; --raised: #2C2C2E; --line: #2C2C30; --edge: #6E6E78; --text: #FFFFFF; --text-2: #D1D1D6; --text-3: #98989F; --action: #5E5CE6; --action-soft: #24234A; --action-text: #9D9BFF; --danger: #FF6961; }
+    }
+    text { font: 12px "Mona Sans", system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--text-2); }
+    .t { font-weight: 600; font-size: 14px; fill: var(--text); }
+    .id { font: 500 14px "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace; fill: var(--text); }
+    .mono { font: 12px "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    .mid { text-anchor: middle; }
+    .end-anchor { text-anchor: end; }
+    .bg { fill: var(--surface); stroke: var(--line); }
+    .box { fill: var(--surface); stroke: var(--edge); stroke-width: 1.5; }
+    .person { fill: var(--action-soft); stroke: var(--edge); stroke-width: 1.5; }
+    .end { fill: var(--raised); stroke: var(--edge); stroke-width: 1.5; }
+    .outside { fill: var(--raised); }
+    .flow { fill: none; stroke: var(--text-2); stroke-width: 1.5; stroke-linejoin: round; }
+    #tip { fill: var(--text-2); }
+  </style>
+  <defs>
+    <marker id="tip" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="679" height="651" rx="12"/>
+
+  <rect class="outside" x="40" y="24" width="250" height="52" rx="8"/>
+  <text class="t mid" x="165" y="46">GitHub, Linear, Slack</text>
+  <text class="mid" x="165" y="64">or a schedule that is due</text>
+  <rect class="outside" x="305" y="24" width="160" height="52" rx="8"/>
+  <text class="t mid" x="385" y="46">A webhook</text>
+  <text class="mid" x="385" y="64">checked, then published</text>
+  <rect class="outside" x="480" y="24" width="160" height="52" rx="8"/>
+  <text class="t mid" x="560" y="46">A request you type</text>
+  <text class="mono mid" x="560" y="64">priory add</text>
+
+  <path class="flow" marker-end="url(#tip)" d="M165,76 V103"/>
+  <rect class="box" x="75" y="104" width="180" height="48" rx="8"/>
+  <text class="t mid" x="165" y="124">The intake</text>
+  <text class="mid" x="165" y="141">polls every 60 seconds</text>
+  <path class="flow" marker-end="url(#tip)" d="M165,152 V191"/>
+  <path class="flow" marker-end="url(#tip)" d="M385,76 V191"/>
+  <path class="flow" marker-end="url(#tip)" d="M560,76 V191"/>
+
+  <rect class="box" x="80" y="192" width="520" height="52" rx="8"/>
+  <text class="t mid" x="340" y="214">The log</text>
+  <text class="mid" x="340" y="232">every message, in one order</text>
+  <path class="flow" marker-end="url(#tip)" d="M340,244 V275"/>
+
+  <rect class="box" x="80" y="276" width="520" height="52" rx="8"/>
+  <text class="t mid" x="340" y="298">The daemon finds the task a message concerns</text>
+  <text class="mid" x="340" y="316">a request for new work creates a task, queued at its workflow's first step</text>
+  <path class="flow" marker-end="url(#tip)" d="M340,328 V367"/>
+  <text x="352" y="352">when the machine has room</text>
+
+  <rect class="box" x="80" y="368" width="520" height="52" rx="8"/>
+  <text class="t mid" x="340" y="390">A run starts a model step's agent</text>
+  <text class="mid" x="340" y="408">Claude Code or Codex, in the task's git worktree and a tmux session</text>
+  <path class="flow" marker-end="url(#tip)" d="M135,420 V459"/>
+  <path class="flow" marker-end="url(#tip)" d="M340,420 V459"/>
+  <path class="flow" marker-end="url(#tip)" d="M545,420 V459"/>
+  <text x="147" y="444">its turn ends with a tool call</text>
+
+  <rect class="box" x="40" y="460" width="190" height="72" rx="8"/>
+  <text class="id mid" x="135" y="484">result</text>
+  <text class="mid" x="135" y="503">its outcome picks the next</text>
+  <text class="mid" x="135" y="519">step, done or stop</text>
+  <rect class="box" x="245" y="460" width="190" height="72" rx="8"/>
+  <text class="id mid" x="340" y="484">wait</text>
+  <text class="mid" x="340" y="503">the task sleeps until an</text>
+  <text class="mid" x="340" y="519">event: checks, a merge</text>
+  <rect class="person" x="450" y="460" width="190" height="72" rx="8"/>
+  <text class="id mid" x="545" y="484">ask</text>
+  <text class="mid" x="545" y="503">the task sleeps until a</text>
+  <text class="mid" x="545" y="519">person answers on the desk</text>
+
+  <path class="flow" marker-end="url(#tip)" d="M40,496 H28 Q20,496 20,488 V402 Q20,394 28,394 H79"/>
+  <text x="30" y="444">next step</text>
+  <path class="flow" marker-end="url(#tip)" d="M340,532 V548 Q340,556 348,556 H652 Q660,556 660,548 V402 Q660,394 652,394 H601"/>
+  <path class="flow" d="M545,532 V556"/>
+  <text class="end-anchor" x="660" y="576">an event or an answer wakes the task: its next run resumes the agent's session</text>
+
+  <path class="flow" marker-end="url(#tip)" d="M135,532 V591"/>
+  <rect class="end" x="65" y="592" width="140" height="44" rx="22"/>
+  <text class="id mid" x="135" y="619">done</text>
+  <text x="222" y="611">At done, a task with a pull request first</text>
+  <text x="222" y="627">waits for the pull request's checks.</text>
+</svg>

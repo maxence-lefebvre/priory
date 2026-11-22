@@ -134,6 +134,9 @@ prints the file, the line and what is wrong, and exits 1.
 
 `priory draw` prints the workflow as a Mermaid flowchart, with each step's decider and effect. To
 see it drawn, paste it into a Mermaid viewer, or open Flows in the web view after step 4.
+Flows draws the workflow like this:
+
+![The implement workflow. The model step implement leads to the human step approve-pr on passed, and to stop on failed. A person answers open, which leads to the code step open-pr, or stop. open-pr carries a padlock: it is irreversible and runs only after a person approved it. It leads to done on opened, and to stop on failed. A model's decisions are dashed arrows, a person's are thick solid arrows, and code's are thin dashed arrows.](docs/images/diagrams/workflow.svg)
 
 `priory check --explain example` lists the irreversible step `open-pr` and the human step
 `approve-pr` that approves it. `priory check` refuses a workflow that reaches an irreversible step

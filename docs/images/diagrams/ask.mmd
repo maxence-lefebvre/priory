@@ -1,0 +1,18 @@
+---
+title: The life of an ask
+---
+sequenceDiagram
+  participant A as The agent
+  participant D as The daemon
+  participant P as A person
+  A->>D: calls ask: a question, options, a recommendation
+  Note over A: The turn ends. The task sleeps, with no process.
+  D->>P: the desk lists the ask: in the web view, Herdr and priory desk
+  opt Or snooze it first
+    P->>D: snoozes the ask, say for an hour
+    D->>P: back on the desk when the time is up
+  end
+  P->>D: answers with an option or a text, at the ask's revision
+  Note over D: The first answer stands and waits as the next prompt.
+  D->>A: its next run resumes the session and types the answer as a prompt
+  Note over A: The agent carries on with the answer.

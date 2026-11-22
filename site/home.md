@@ -87,6 +87,18 @@ The daemon runs one agent per task in tmux and a git worktree. Its question land
 
 </section>
 
+<section class="sec">
+
+## How a task moves
+
+<p>An event becomes a task. A run starts an agent on each model step, and the task sleeps while it waits on the world or on you.</p>
+
+<figure class="diagram">
+<img src="docs/images/diagrams/task-flow.svg" width="680" height="652" alt="How a task moves, from top to bottom. GitHub, Linear, Slack and schedules reach the intake, and a webhook or a request you type goes straight to the log. The daemon finds the task each message concerns, and a request for new work creates one. A run starts a model step's agent in the task's git worktree and a tmux session. The agent ends its turn with result, wait or ask. A result picks the next step, done or stop. A wait or an ask puts the task to sleep until an event or a person's answer wakes it, and the next run resumes the agent's session.">
+</figure>
+
+</section>
+
 <section class="sec concepts">
 
 ## Concepts

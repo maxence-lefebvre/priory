@@ -1,0 +1,17 @@
+---
+title: How a task moves through Priory
+---
+flowchart TD
+  polled["GitHub, Linear, Slack, or a schedule that is due"] --> intake["The intake: polls every 60 seconds"]
+  webhook["A webhook: checked, then published"] --> log
+  request["A request you type: priory add"] --> log
+  intake --> log["The log: every message, in one order"]
+  log --> daemon["The daemon finds the task a message concerns. A request for new work creates a task, queued at its workflow's first step"]
+  daemon -- when the machine has room --> run["A run starts a model step's agent: Claude Code or Codex, in the task's git worktree and a tmux session"]
+  run -- its turn ends with a tool call --> result["result: its outcome picks the next step, done or stop"]
+  run --> wait["wait: the task sleeps until an event: checks, a merge"]
+  run --> ask["ask: the task sleeps until a person answers on the desk"]
+  result -- next step --> run
+  wait -- an event wakes the task: its next run resumes the agent's session --> run
+  ask -- an answer wakes the task: its next run resumes the agent's session --> run
+  result --> done(["done: at done, a task with a pull request first waits for the pull request's checks"])
