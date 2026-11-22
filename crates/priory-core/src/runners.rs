@@ -49,7 +49,15 @@ pub(crate) fn handle(
     counter: Option<&crate::embed::Counter>,
 ) -> Result<Option<Vec<String>>, Error> {
     let text = |field: &str| message.data[field].as_str().unwrap_or_default();
-    let outcome = match message.kind.as_str() {
+    let kind = message.kind.as_str();
+    // A runner the factory lacks owns nothing, so no machine lists or applies its messages.
+    if [ALIVE, HELD, POSTED, APPLIED, ANSWERED, DISMISSED].contains(&kind)
+        && !trace.factory.runners.contains_key(text("runner"))
+    {
+        crate::state::record(tx, message, None, "refused", None)?;
+        return Ok(Some(Vec::new()));
+    }
+    let outcome = match kind {
         ALIVE => {
             renew(tx, text("runner"), message.time)?;
             if text("runner") == me {

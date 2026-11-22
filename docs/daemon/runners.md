@@ -49,6 +49,15 @@ message published twice adds nothing, because the log keeps the first message of
 `priory answer`, `priory dismiss`, `priory give` and the answer and dismiss endpoints publish
 straight to the log.
 
+A runner refuses an alive, hold, post, applied, answer or dismiss message that names a runner with
+no file in `runners/`, and a claim for one. It records the message as `refused`, so a runner name
+the factory lacks owns no task and shows no ask on any desk.
+
+No runner checks who wrote a message. Write access to the log equals a person's approval on every
+runner: whoever can publish on it can answer any runner's ask, which runs an irreversible step or an
+ask's command, give away any task, or keep a stopped runner's lease alive. Give the log's
+credentials only to the runners and the people who may approve.
+
 ## Claims
 
 A task request whose key no runner holds creates no task at once. Each runner that reads it

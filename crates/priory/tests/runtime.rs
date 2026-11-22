@@ -17772,6 +17772,65 @@ fn a_malformed_answer_for_this_runner_is_refused_and_the_daemon_goes_on() {
 }
 
 #[test]
+fn a_message_from_a_runner_without_a_runner_file_is_refused_and_listed_nowhere() {
+    let mut a = runner("unknown-runner", "a", None);
+    let ask = json!({ "id": 1, "question": "Ship it?", "options": ["yes", "no"] });
+    for (kind, data) in [
+        ("priory.runner.alive", json!({ "runner": "c" })),
+        (
+            "priory.task.held",
+            json!({ "runner": "c", "key": "github:owner/repo#1", "hold": "kept" }),
+        ),
+        (
+            "priory.ask.posted",
+            json!({ "runner": "c", "ask": 1, "version": 1, "kind": "task", "listed": ask }),
+        ),
+        (
+            "priory.ask.answered",
+            json!({ "runner": "c", "ask": 1, "revision": 1, "text": "yes", "submission": "s1" }),
+        ),
+    ] {
+        a.publish(&Message::new(kind, data));
+    }
+    a.publish(&requested(1));
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+
+    let inbox = a.until("inbox", |rows| {
+        rows.iter().any(|row| row[1] == "factory.task.requested")
+    });
+    let outcomes: Vec<(&str, &str)> = inbox
+        .iter()
+        .filter(|row| row[1].starts_with("priory."))
+        .map(|row| (row[1].as_str(), row[4].as_str()))
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ("priory.runner.alive", "refused"),
+            ("priory.task.held", "refused"),
+            ("priory.ask.posted", "refused"),
+            ("priory.ask.answered", "refused"),
+        ],
+        "{inbox:?}"
+    );
+    let db = rusqlite::Connection::open(a.dir.join("priory.db")).unwrap();
+    for table in ["remote_asks", "remote_submissions", "leases"] {
+        let count: i64 = db
+            .query_row(
+                &format!("SELECT count(*) FROM {table} WHERE runner = 'c'"),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "{table}");
+    }
+}
+
+#[test]
 fn an_answer_to_the_ask_of_a_runner_without_a_runner_file_is_refused() {
     let b = runner("answer-unknown", "b", None);
     let factory = b.dir.join("factory");
