@@ -19,7 +19,7 @@ They come in this order.
 | `linter` | A linter's config file is at the root, `Cargo.toml` has `[lints]` or `[workspace.lints]`, `pyproject.toml` has `[tool.ruff]`, `[tool.pylint]` or `[tool.flake8]`, or a CI workflow runs a linter. See [Linters](#linters) | `pull-request` | Add a linter's config file, or run a linter in CI |
 | `setup` | A file pins the toolchain or sets up the machine. See [Setup files](#setup-files) | `pull-request` | Pin the toolchain, or add a dev container |
 | `ci` | A file under `.github/workflows/` ending in `.yml` or `.yaml` contains `pull_request` | `pull-request` | Add a workflow that runs the tests on `pull_request` |
-| `gate` | The factory in `DIR` sets [`gate`](factory.md#top-level-keys) | `factory` | Set `gate` to the test command found, such as `gate = "cargo test"` |
+| `gate` | The factory in `DIR` sets [`gate`](factory.md#top-level-keys) | `factory` | Set `gate` to the test command found, such as `gate = "cargo test"`, before the first table of `factory.toml`. With no test command found, give the tests one first |
 | `required-checks` | The default branch requires at least one check, by a branch ruleset or by classic branch protection | `person` | In the repository's settings, add a branch ruleset on the default branch that requires the CI checks |
 
 `by` says who can make the fix:
@@ -101,7 +101,7 @@ met	linter	clippy in .github/workflows/ci.yml
 met	setup	rust-toolchain.toml
 met	ci	.github/workflows/ci.yml
 missing	gate	factory.toml sets no gate
-	fix: Set `gate = "cargo test"` in factory.toml, so a step can require `gate-passed` before it ends.
+	fix: Set `gate = "cargo test"` in factory.toml, before its first table, so a step can require `gate-passed` before it ends.
 unknown	required-checks	gh could not read it: ...
 	fix: In the repository's settings, add a branch ruleset on the default branch that requires the CI checks to pass before a merge.
 ```

@@ -2942,7 +2942,13 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
     if let Some(settings) = settings.get("factory") {
         factory.name.clone_from(&settings.value.name);
     }
-    if settings.is_empty() && found.problems.is_empty() {
+    if !dir.is_dir() {
+        found.problems.push(Problem {
+            file: dir.to_path_buf(),
+            at: None,
+            message: "missing: no such folder".into(),
+        });
+    } else if settings.is_empty() && found.problems.is_empty() {
         found.problems.push(Problem {
             file: PathBuf::from("factory.toml"),
             at: None,
