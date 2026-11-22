@@ -997,8 +997,9 @@ fn check_caps(factory: &Factory, problems: &mut Vec<Problem>) {
     }
 }
 
-/// The agents of model steps whose spend no cap can count: a Codex agent, or one whose model
-/// `prices.toml` does not price. Only for a factory with a cap and a price table.
+/// The agents of model steps whose spend no cap can count: one whose model `prices.toml` does not
+/// price. A Claude Code alias is let through, since Claude's transcript names the full model; Codex
+/// names the model it was given. Only for a factory with a cap and a price table.
 fn caps_warnings(factory: &Factory) -> Vec<Problem> {
     let capped = factory
         .settings
@@ -1023,26 +1024,24 @@ fn caps_warnings(factory: &Factory) -> Vec<Problem> {
         let Some(agent) = factory.agents.get(name) else {
             continue;
         };
-        let (field, why) = if matches!(agent.value.harness, Harness::Codex) {
-            ("harness", "Priory reads no Codex tokens".to_owned())
-        } else if let Some(model) = agent
+        let alias = |model: &str| {
+            matches!(agent.value.harness, Harness::ClaudeCode) && CLAUDE_ALIASES.contains(&model)
+        };
+        let Some(model) = agent
             .value
             .model
             .as_deref()
-            .filter(|model| !CLAUDE_ALIASES.contains(model))
+            .filter(|model| !alias(model))
             .filter(|model| !factory.prices.contains_key(*model))
-        {
-            (
-                "model",
-                format!("prices.toml has no price for its model `{model}`"),
-            )
-        } else {
+        else {
             continue;
         };
         warnings.push(problem(
             agent,
-            agent.lines.field(field),
-            format!("the spend caps count nothing for agent `{name}`: {why}"),
+            agent.lines.field("model"),
+            format!(
+                "the spend caps count nothing for agent `{name}`: prices.toml has no price for its model `{model}`"
+            ),
         ));
     }
     warnings
@@ -1201,16 +1200,13 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
             format!("a codex agent takes {parts} on its command line, as `developer_instructions`: {they} {size} bytes, over the limit of {CODEX_PROMPT_LIMIT}"),
         ));
     }
-    for (field, set) in [
-        ("compactAt", value.compact_at.is_some()),
-        ("idleCompactAt", value.idle_compact_at.is_some()),
-    ] {
-        if set {
-            let message = format!(
-                "a codex agent cannot take `{field}`: Priory reads no Codex tokens, so it never knows the context size"
-            );
-            problems.push(problem(agent, agent.lines.field(field), message));
-        }
+    if value.idle_compact_at.is_some() {
+        let message = "a codex agent cannot take `idleCompactAt`: a resumed Codex session sends no `SessionStart` before its first prompt, so Priory never knows when to type `/compact`";
+        problems.push(problem(
+            agent,
+            agent.lines.field("idleCompactAt"),
+            message.into(),
+        ));
     }
     let line = agent.lines.field("permissions");
     let permissions = &value.permissions;
@@ -2084,17 +2080,6 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
                         report(format!(
                             "`budget` {budget:?} is not an amount of dollars above zero, such as \"1.00\""
                         ));
-                    }
-                    if step
-                        .agent
-                        .as_ref()
-                        .and_then(|agent| factory.agents.get(agent))
-                        .is_some_and(|agent| matches!(agent.value.harness, Harness::Codex))
-                    {
-                        report(
-                            "`budget` needs a Claude Code agent: Priory reads no Codex tokens"
-                                .into(),
-                        );
                     }
                     if factory.prices.is_empty() {
                         report(

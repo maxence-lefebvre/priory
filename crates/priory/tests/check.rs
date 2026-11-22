@@ -232,7 +232,7 @@ fn a_codex_agent_passes_and_its_claude_only_permissions_are_refused_with_their_l
 }
 
 #[test]
-fn compact_at_takes_a_positive_token_count_on_a_claude_agent_only() {
+fn compact_at_takes_a_positive_token_count_on_a_claude_or_codex_agent() {
     let agent = |harness: &str, compact_at: &str| {
         format!(
             "+++\ndescription = \"Leads.\"\nharness = \"{harness}\"\ncompactAt = {compact_at}\n+++\n"
@@ -267,11 +267,7 @@ fn compact_at_takes_a_positive_token_count_on_a_claude_agent_only() {
         "compact-at-codex",
         &with("agents/implementer/agent.md", &agent("codex", "150000")),
     ));
-    assert_eq!(outcome.code, 1);
-    assert_eq!(
-        outcome.stderr,
-        "agents/implementer/agent.md:4: a codex agent cannot take `compactAt`: Priory reads no Codex tokens, so it never knows the context size\n"
-    );
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
 }
 
 #[test]
@@ -312,7 +308,7 @@ fn idle_compact_at_and_on_change_need_a_shared_claude_agent() {
             "codex",
             "shared",
             "idleCompactAt = 60000",
-            "agents/implementer/agent.md:5: a codex agent cannot take `idleCompactAt`: Priory reads no Codex tokens, so it never knows the context size\n",
+            "agents/implementer/agent.md:5: a codex agent cannot take `idleCompactAt`: a resumed Codex session sends no `SessionStart` before its first prompt, so Priory never knows when to type `/compact`\n",
         ),
     ] {
         let outcome = check(&factory(
@@ -3534,7 +3530,7 @@ fn a_symlink_out_of_the_factory_is_refused_as_a_pre_script() {
 }
 
 #[test]
-fn a_budget_needs_a_claude_agent_a_price_table_and_an_amount_above_zero() {
+fn a_budget_needs_a_price_table_and_an_amount_above_zero_on_either_harness() {
     let budgeted = WORKFLOW.replace(
         "prompt = \"Implement the issue.\"",
         "prompt = \"Implement the issue.\"\nbudget = \"1.00\"",
@@ -3571,12 +3567,8 @@ fn a_budget_needs_a_claude_agent_a_price_table_and_an_amount_above_zero() {
     files.retain(|(path, _)| *path != "agents/implementer/agent.md");
     files.push(("agents/implementer/agent.md", codex));
     files.push(("prices.toml", prices));
-    let refused = check(&factory("budget-codex", &files));
-    assert_eq!(refused.code, 1);
-    assert_eq!(
-        refused.stderr,
-        "workflows/implement.toml:4: step `implement`: `budget` needs a Claude Code agent: Priory reads no Codex tokens\n"
-    );
+    let codex = check(&factory("budget-codex", &files));
+    assert_eq!((codex.code, codex.stderr.as_str()), (0, ""));
 }
 
 #[test]
@@ -3858,7 +3850,7 @@ fn a_spend_cap_needs_a_price_table() {
 }
 
 #[test]
-fn a_spend_cap_warns_for_an_agent_whose_model_has_no_price_or_that_runs_codex() {
+fn a_spend_cap_warns_for_an_agent_whose_model_has_no_price_on_either_harness() {
     let capped = format!("{FACTORY}\n\n[caps]\nday = 50.0\n");
     let unpriced = AGENT.replace("session = ", "model = \"claude-opus-5-5\"\nsession = ");
     let mut files = with("factory.toml", &capped);
@@ -3888,14 +3880,33 @@ fn a_spend_cap_warns_for_an_agent_whose_model_has_no_price_or_that_runs_codex() 
     files.retain(|(path, _)| *path != "agents/implementer/agent.md");
     files.push(("agents/implementer/agent.md", codex));
     files.push(("prices.toml", PRICES));
-    let warned = check(&factory("caps-codex", &files));
-    assert_eq!(
-        (warned.code, warned.stderr.as_str()),
-        (
-            0,
-            "warning: agents/implementer/agent.md:3: the spend caps count nothing for agent `implementer`: Priory reads no Codex tokens\n"
-        )
-    );
+    let quiet = check(&factory("caps-codex", &files));
+    assert_eq!((quiet.code, quiet.stderr.as_str()), (0, ""));
+
+    // Codex names the model it was given, so a Claude alias is no exception there.
+    for (name, model) in [
+        ("caps-codex-unpriced", "gpt-6-astra"),
+        ("caps-codex-alias", "sonnet"),
+    ] {
+        let agent = format!(
+            "+++\ndescription = \"Implements one task.\"\nharness = \"codex\"\nmodel = \"{model}\"\n+++\nMake the change.\n"
+        );
+        let mut files = with("factory.toml", &capped);
+        files.retain(|(path, _)| *path != "agents/implementer/agent.md");
+        files.push(("agents/implementer/agent.md", &agent));
+        files.push(("prices.toml", PRICES));
+        let warned = check(&factory(name, &files));
+        assert_eq!(
+            (warned.code, warned.stderr),
+            (
+                0,
+                format!(
+                    "warning: agents/implementer/agent.md:4: the spend caps count nothing for agent `implementer`: prices.toml has no price for its model `{model}`\n"
+                )
+            ),
+            "{name}"
+        );
+    }
 }
 
 /// `WORKFLOW` with `record = <path>` on its model step.

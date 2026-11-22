@@ -100,8 +100,7 @@ Either one:
 
 That prompt starts a new turn, so the timeout restarts.
 
-For Claude, the compaction keeps the transcript and Priory's read offset in it, so the next `Stop`
-counts tokens from where the last one stopped. Priory reads no Codex tokens yet (see
-[codex.md](codex.md)).
+The compaction keeps the transcript, Claude's or Codex's session file, and Priory's read offset in
+it, so the next `Stop` counts tokens from where the last one stopped.
 
 A compaction that Priory did not type, such as Claude's automatic one mid-turn, changes nothing.

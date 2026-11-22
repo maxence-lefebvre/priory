@@ -1902,6 +1902,25 @@ fn a_turn_past_compact_at_is_not_compacted_until_it_ends() {
 }
 
 #[test]
+fn a_codex_session_past_compact_at_gets_one_compaction_once_idle_then_the_continuation() {
+    let mut setup = Setup::new("auto-compact-codex");
+    let agent = CODEX.replace("effort = \"low\"\n", "effort = \"low\"\ncompactAt = 5000\n");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), agent).unwrap();
+    setup.contexts(&[6000]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert_eq!(typed[1], "/compact\n", "{typed:?}");
+    assert!(
+        typed[2].starts_with(CONTINUED.lines().next().unwrap()),
+        "{typed:?}"
+    );
+}
+
+#[test]
 fn a_session_is_compacted_again_only_after_its_context_reads_below_compact_at() {
     // Turns: the intro, the continuation after the compaction, its nudge.
     for (name, contexts, prompts, compactions) in [
@@ -28989,6 +29008,54 @@ fn a_resumed_run_counts_the_steps_earlier_turns_toward_its_budget() {
         "step implement spent $0.022600, over its budget of $0.02"
     );
     assert_eq!(setup.rows("runs").len(), 2);
+}
+
+/// Each turn n of the fake `codex` costs (220 + 2n) * $0.0001 at this price: Codex's cached input
+/// is apart from its input.
+const DEAR_CODEX: &str =
+    "[gpt-6-astra]\ninput = 100.0\noutput = 100.0\ncache_read = 0.0\ncache_write = 0.0\n";
+
+#[test]
+fn a_codex_turn_over_its_steps_budget_fails_the_task() {
+    let mut setup = Setup::with_workflow("budget-codex", &budgeted("0.01"));
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::write(setup.dir.join("factory/prices.toml"), DEAR_CODEX).unwrap();
+    setup.calls(&[json!(null)]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    assert_eq!(
+        setup.until_task("failed"),
+        "step implement spent $0.02, over its budget of $0.01"
+    );
+    assert_eq!(setup.rows("runs")[0][7], "budget");
+}
+
+#[test]
+fn a_codex_task_past_its_spend_cap_is_held_with_one_ask() {
+    let mut setup = Setup::new("cap-codex");
+    setup.caps("[caps]\ntask = 50.0\n");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::write(
+        setup.dir.join("factory/prices.toml"),
+        DOLLAR_A_TOKEN.replace("\"claude-fake-5\"", "\"gpt-6-astra\""),
+    )
+    .unwrap();
+    setup.calls(&[serde_json::Value::Null, result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    let held = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "held")
+    });
+
+    // Turn 1 read 301 input tokens, 100 of them from Codex's cache.
+    assert_eq!(
+        held[0][7],
+        "held: spent $201.00 of the factory's task cap of $50.00, until a person raises the cap or stops the task"
+    );
+    assert_eq!(setup.open_asks().len(), 1);
+    assert_eq!(setup.rows("runs")[0][7], "capped");
 }
 
 #[test]
