@@ -226,7 +226,8 @@ Tests:
    `priory.memory.dropped`, which also takes the candidate from its own task's runs; an accepted
    candidate overrides the factory's memory of its name too, not only the kit's; the desk item
    lists every candidate that waits, not only the day's; and the `memory` tool reads the memory as
-   the task sees it at the call, while the run's snapshot keeps what it saw at its start.
+   the task sees it at the call, while the run's snapshot keeps what it saw at its start. A
+   person's drop of an accepted candidate retires it, so a wrong accept is not kept for good.
 4. The daily pull request of accepted memories to the kit repository.
    This slice is built:
    [skills.md](../daemon/skills.md#accepted-memories-move-into-the-kit) describes it. A schedule

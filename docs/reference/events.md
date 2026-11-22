@@ -1791,13 +1791,16 @@ Schema: [`priory.memory.accepted.json`](../schemas/events/priory.memory.accepted
 
 ### `priory.memory.dropped`
 
-A person drops a candidate. No run gets it, not even its own task's. A runner records a drop of a
-candidate it never read, or one already accepted or dropped, as `refused`. Subject: the name.
+A person drops a candidate. No run gets it, not even its own task's. With `retire: true`, a person
+retires a candidate they accepted before. A runner records a drop of a candidate it never read, a
+drop without `retire` of one already accepted, or a drop of one already dropped, as `refused`.
+Subject: the name.
 Schema: [`priory.memory.dropped.json`](../schemas/events/priory.memory.dropped.json).
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `candidate` | UUID string | The `id` of the `priory.memory.written` message |
+| `retire` | boolean, absent unless true | The candidate was accepted, and this retires it |
 
 <!-- example: events/priory.memory.dropped.json -->
 ```json

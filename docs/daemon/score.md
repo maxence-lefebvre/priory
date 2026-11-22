@@ -59,8 +59,9 @@ cases, or changing the model, makes the judge not calibrated again.
 
 A judge reads what a `diff` scorer reads: it fails a run with no result, and answers `error` for a
 result with no commit or a task with no start commit, before it calls the model. Otherwise Priory
-reads the diff from the start commit to the result's commit in its clone, cut at 100,000 bytes,
-and the task's request from the inbox.
+reads the diff from the start commit to the result's commit in its clone, and the task's request
+from the inbox. A diff over 100,000 bytes is `error` (`the diff is over 100000 bytes`), with no
+call: a judge that read only part of a diff could pass what it never saw.
 
 It calls the model as `priory eval` runs a turn, with less: a headless `claude -p` of the judge's
 `model`, with no tool (`--tools ""`), no MCP server (`--strict-mcp-config` and no config), no

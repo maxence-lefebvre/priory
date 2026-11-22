@@ -196,11 +196,17 @@ pub(crate) fn handle(tx: &Transaction, message: &Message) -> rusqlite::Result<Op
         } else {
             "dropped"
         };
+        // A retire drops an accepted candidate; a plain drop that comes after an accept does not.
+        let decides = if kind == MEMORY_DROPPED && data["retire"] == true {
+            "accepted IS NOT NULL"
+        } else {
+            "accepted IS NULL"
+        };
         let seq = crate::state::record(tx, message, None, "noted", None)?;
         let decided = tx.execute(
             &format!(
                 "UPDATE memory_candidates SET {column} = ?2, decided = ?3
-                 WHERE id = ?1 AND logged IS NOT NULL AND accepted IS NULL AND dropped IS NULL"
+                 WHERE id = ?1 AND logged IS NOT NULL AND {decides} AND dropped IS NULL"
             ),
             params![text("candidate"), seq, message.time.to_string()],
         )?;
@@ -222,7 +228,7 @@ pub(crate) fn layer(
     db.prepare(
         "SELECT name, description, text FROM (
            SELECT name, description, text, accepted AS at, rowid AS written
-           FROM memory_candidates WHERE accepted IS NOT NULL
+           FROM memory_candidates WHERE accepted IS NOT NULL AND dropped IS NULL
            UNION ALL
            SELECT name, description, text, coalesce(logged, 9223372036854775807), rowid
            FROM memory_candidates WHERE task = ?1 AND dropped IS NULL)
@@ -264,8 +270,8 @@ pub(crate) fn recall(
     })
 }
 
-const STATE: &str = "CASE WHEN accepted IS NOT NULL THEN 'accepted'
-  WHEN dropped IS NOT NULL THEN 'dropped' WHEN logged IS NULL THEN 'sending' ELSE 'pending' END";
+const STATE: &str = "CASE WHEN accepted IS NOT NULL AND dropped IS NOT NULL THEN 'retired'
+  WHEN accepted IS NOT NULL THEN 'accepted' WHEN dropped IS NOT NULL THEN 'dropped' WHEN logged IS NULL THEN 'sending' ELSE 'pending' END";
 
 /// The candidates this runner read, oldest first: only those that wait for a person, or with `all`
 /// every one.
@@ -400,7 +406,8 @@ impl From<Refused> for String {
 }
 
 /// Publishes a person's accept or drop of candidate `id` on `log`, once this runner's copy shows
-/// it waiting. Every runner applies it as it reads the log.
+/// it waiting, or a drop of an accepted one, which retires it. Every runner applies it as it reads
+/// the log.
 pub fn decide(log: &EventLog, db: &Connection, accept: bool, id: &str) -> Result<String, Refused> {
     let found = db
         .query_row(
@@ -410,9 +417,10 @@ pub fn decide(log: &EventLog, db: &Connection, accept: bool, id: &str) -> Result
         )
         .optional()
         .map_err(|error| Refused::Unsent(error.to_string()))?;
-    let name = match found {
+    let (name, retire) = match found {
         None => return Err(Refused::Unknown(format!("no memory candidate {id}"))),
-        Some((name, state)) if state == "pending" => name,
+        Some((name, state)) if state == "pending" => (name, false),
+        Some((name, state)) if state == "accepted" && !accept => (name, true),
         Some((_, state)) if state == "sending" => {
             return Err(Refused::Stale(format!(
                 "candidate {id} is not on the log yet: try again once its runner reaches the log"
@@ -421,13 +429,20 @@ pub fn decide(log: &EventLog, db: &Connection, accept: bool, id: &str) -> Result
         Some((_, state)) => return Err(Refused::Stale(format!("candidate {id} is {state}"))),
     };
     crate::link::refuse_while_unreachable(db).map_err(Refused::Unsent)?;
-    let (kind, verb) = if accept {
-        (MEMORY_ACCEPTED, "accepted")
-    } else {
-        (MEMORY_DROPPED, "dropped")
+    let (kind, verb) = match (accept, retire) {
+        (true, _) => (MEMORY_ACCEPTED, "accepted"),
+        (false, false) => (MEMORY_DROPPED, "dropped"),
+        (false, true) => (MEMORY_DROPPED, "retired"),
     };
-    let message = Message::new(kind, json!({ "candidate": id })).subject(name.clone());
-    crate::runners::publish(log, &message).map_err(Refused::Unconfirmed)?;
+    let mut data = json!({ "candidate": id });
+    if retire {
+        data["retire"] = json!(true);
+    }
+    let message = Message::new(kind, data).subject(name.clone());
+    crate::runners::publish(log, &message).map_err(|unsent| match unsent {
+        crate::runners::Unsent::Nothing(why) => Refused::Unsent(why),
+        crate::runners::Unsent::Unconfirmed(why) => Refused::Unconfirmed(why),
+    })?;
     Ok(format!(
         "{name} {verb}: every runner applies it as it reads the log"
     ))
@@ -454,7 +469,7 @@ fn winners(db: &Connection) -> rusqlite::Result<(Vec<Winner>, Option<String>)> {
     let rows = db
         .prepare(
             "SELECT id, name, description, text, key, runner, decided FROM memory_candidates
-             WHERE accepted IS NOT NULL ORDER BY accepted",
+             WHERE accepted IS NOT NULL AND dropped IS NULL ORDER BY accepted",
         )?
         .query_map([], |row| {
             let name: String = row.get(1)?;

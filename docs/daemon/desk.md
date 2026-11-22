@@ -245,7 +245,8 @@ prompts.
 
 - A task that waits on a step's ask, at a human step or a plan's approval, runs no agent while a
   person decides. TEXT is added to that ask as its next revision, `While this waited: A person
-  says: TEXT`, which pushes, so the person who answers reads it. TEXT is also queued for the task's
+  says: TEXT`, which pushes, so the person who answers reads it. Past five such lines, the ask only
+  counts the rest, as [routing.md](routing.md) says. TEXT is also queued for the task's
   next agent run, after that step's prompt, and the task stays asleep. It replies `task <id> waits
   at step <step>: its ask shows it, and its next agent run reads it`.
 

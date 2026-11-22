@@ -251,7 +251,10 @@ Shared Secret at `POST /hooks/honeycomb`, with
 [`[webhooks.cloudwatch]`](../reference/factory.md#webhookscloudwatch) CloudWatch alarm state changes
 from EventBridge at `POST /hooks/cloudwatch`, and with
 [`[webhooks.figma]`](../reference/factory.md#webhooksfigma) Figma comments that carry the passcode
-at `POST /hooks/figma`, each with no token. A `HEAD` to a configured hook path gets `200`.
+at `POST /hooks/figma`, each with no token. A `HEAD` to a configured hook path gets `200` with no
+check, since Intercom asks it before it saves a webhook URL. So anyone who can reach the server can
+learn which hooks the factory configured, but not send to one: a `POST` still needs its signature,
+token or passcode.
 [webhooks.md](../intake/webhooks.md), [sentry.md](../intake/sentry.md),
 [honeycomb.md](../intake/honeycomb.md), [intercom.md](../intake/intercom.md),
 [cloudwatch.md](../intake/cloudwatch.md) and [figma.md](../intake/figma.md) explain them.
@@ -319,9 +322,10 @@ key logs it, sends no notification, and runs tasks as usual.
 The daemon records each send to a browser in the state file before `curl` starts, as the outbox
 records a prompt before it types it. So a daemon stopped mid-send never sends that notification to
 that browser again: the push service may already hold it. The next daemon still sends it to the
-browsers it never reached. A retry that waited because the push service answered `429` or a `5xx`
-goes out from the next daemon too, since that service never took the notification. A retry that
-waited because `curl` failed does not, since the request may have reached the service.
+browsers it never reached. A retry that waited because the push service answered `429` or a `5xx`,
+or because `curl` could not resolve its host or connect to it (exit 6 or 7), goes out from the next
+daemon too, since that service never took the notification. A retry that waited because `curl`
+failed in any other way does not, since the request may have reached the service.
 
 A retry after an answer that got lost can still send a notification twice. The service worker
 keeps the ids of the last 50 notifications and shows a repeated id silently, in place of the first

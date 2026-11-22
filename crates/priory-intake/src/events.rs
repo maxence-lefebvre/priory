@@ -1043,13 +1043,17 @@ pub struct MemoryAccepted {
 }
 
 /// A person drops a memory candidate with `priory memories drop`. No run gets it, not even its own
-/// task's.
+/// task's. A drop of an accepted candidate retires it.
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryDropped {
     /// The `id` of the `priory.memory.written` message.
     #[schemars(extend("format" = "uuid"))]
     pub candidate: String,
+    /// True when a person drops a candidate already accepted, which retires it. A drop without it
+    /// applies only to a candidate no one decided yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retire: Option<bool>,
 }
 
 /// Where a stream stands after a poll that moved it; a missing marker means the stream is still

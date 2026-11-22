@@ -9804,6 +9804,35 @@ fn an_issue_that_enters_the_view_again_answers_keep_for_its_task() {
 }
 
 #[test]
+fn an_issue_that_enters_another_view_leaves_the_ask_of_the_view_it_left() {
+    let mut setup = Setup::new("left-view-other");
+    setup.memory(0);
+    let source = linear_7("linear.issue.entered", &[]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    request.data["source"] = json!(source.id.to_string());
+    setup.publish(&source);
+    setup.publish(&request);
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 1);
+    setup.publish(&left_view());
+    setup.until("asks", |rows| rows.len() == 1);
+
+    for view in ["Triage", "My loop backlog"] {
+        let mut entered = linear_7("linear.issue.entered", &[]);
+        entered.data["view"] = json!(view);
+        setup.publish(&entered);
+    }
+
+    setup.until("tasks", |rows| rows[0][4] == "queued");
+    let met: String = rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT met_as FROM holds", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(met, "ENG-7 entered the view My loop backlog again");
+}
+
+#[test]
 fn an_issue_moved_to_another_team_keeps_its_task_and_events() {
     let mut setup = Setup::new("linear-team-move");
     setup.memory(0);
@@ -17033,6 +17062,41 @@ fn a_person_who_answers_a_routed_ask_first_drops_its_queued_lead_task() {
 }
 
 #[test]
+fn a_routed_step_ask_that_changes_while_it_waits_returns_to_the_person_and_drops_its_lead() {
+    let mut setup = hands_off("hands-off-told", IMPLEMENT_THEN_APPROVE);
+    // The lead fits only once more memory is free, so its task stays queued.
+    let lead = LEAD.replace(
+        "session = \"shared\"\n",
+        "session = \"shared\"\nmemory = \"8GB\"\n",
+    );
+    fs::write(setup.dir.join("factory/agents/lead/agent.md"), lead).unwrap();
+    setup.memory(12);
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 2 && rows[0][4] == "asleep");
+    assert_eq!(asks_json(&setup)["asks"][0]["routed_to"], json!("lead"));
+
+    let said = setup.priory(&["say", "1", "Use the v2 API."]);
+
+    assert!(said.status.success(), "{said:?}");
+    let ask = &asks_json(&setup)["asks"][0];
+    assert_eq!(
+        [&ask["state"], &ask["routed_to"], &ask["revision"]],
+        [&json!("open"), &json!(null), &json!(2)],
+        "{ask}"
+    );
+    let tasks = setup.rows("tasks");
+    assert_eq!(
+        [&tasks[1][4], &tasks[1][7]],
+        ["dropped", "ask 1 changed while it waited"]
+    );
+    let answered = setup.priory(&["answer", "1", "approved", "--revision", "2"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
 fn a_comment_on_its_issue_does_not_wake_a_plan_task_waiting_for_its_approval() {
     let mut setup = intervened("plan-comment", GRADED, "plan", "");
     setup.calls(&[result("green")]);
@@ -18726,6 +18790,75 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     assert_eq!(task["reason"], "owned by runner b", "{task}");
     // b starts its task on its own clock, so wait for it rather than read it once.
     b.until_own_tasks(|rows| rows[0][4] == "running");
+}
+
+/// A Linear request for `issue` keyed by its identifier.
+fn linear_requested(issue: &str, source: &str) -> Message {
+    let key = format!("linear:{issue}");
+    let mut request = requested(1);
+    request.data["key"] = json!(key);
+    request.data["source"] = json!(source);
+    request.subject(key)
+}
+
+/// `from` moved to another Linear team, where it is `to`.
+fn team_moved(from: &str, to: &str) -> Message {
+    let mut moved = Message::new(
+        "linear.issue.updated",
+        json!({ "issue": to, "linear_id": "history-1", "team": "OPS", "state": "Todo",
+                "changed": ["identifier"], "previous_issue": from }),
+    )
+    .subject(to);
+    moved.data["description"] = json!(null);
+    moved
+}
+
+#[test]
+fn a_task_moved_twice_to_other_linear_teams_keeps_its_claim_starts_and_is_not_claimed_again() {
+    let mut a = runner("team-moves", "a", None);
+    let mut b = runner("team-moves", "b", Some(&a));
+    a.publish(&linear_requested("ENG-7", "first"));
+    a.memory(0);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    logged(
+        &a,
+        "priory.task.held",
+        json!({ "key": "linear:ENG-7", "runner": "a", "hold": "waiting" }),
+    );
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    // b read the request before a's claim, so it claimed too, and lost.
+    for side in [&a, &b] {
+        side.until("inbox", |rows| {
+            rows.iter().any(|row| {
+                row[1] == "priory.task.claimed" && row[2] == "linear:ENG-7" && row[4] == "refused"
+            })
+        });
+    }
+
+    a.publish(&team_moved("ENG-7", "OPS-3"));
+    a.publish(&team_moved("OPS-3", "SUP-9"));
+    a.publish(&linear_requested("SUP-9", "later"));
+    b.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "factory.task.requested" && row[2] == "linear:SUP-9")
+    });
+    a.memory(60);
+
+    let tasks = a.until_own_tasks(|rows| rows.first().is_some_and(|row| row[4] == "running"));
+    assert_eq!(tasks[0][1], "linear:SUP-9", "{tasks:?}");
+    for side in [&a, &b] {
+        let db = rusqlite::Connection::open(side.dir.join("priory.db")).unwrap();
+        let claims: Vec<(String, String)> = db
+            .prepare("SELECT key, runner FROM claims ORDER BY key")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(claims, [("linear:SUP-9".to_owned(), "a".to_owned())]);
+    }
+    assert!(b.own_tasks().is_empty(), "{:?}", b.own_tasks());
 }
 
 #[test]
@@ -21345,6 +21478,46 @@ fn a_stale_answer_to_another_runners_ask_gets_409_and_nothing_is_published() {
         "{refused}"
     );
     assert!(on_log(&a, "priory.ask.answered").is_empty());
+}
+
+#[test]
+fn a_remote_write_whose_publish_fails_says_the_log_may_hold_it_not_that_nothing_was_sent() {
+    let (_a, b, ask, address) = asked_on_a("remote-unconfirmed");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+    until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| task["generation"] == 1)
+    });
+    let bus = rusqlite::Connection::open(&b.bus).unwrap();
+    bus.execute_batch(
+        "CREATE TRIGGER lost BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT, 'disk gone'); END",
+    )
+    .unwrap();
+
+    let answered = runner_http(
+        &address,
+        "POST",
+        &format!("/api/asks/{id}/answer"),
+        r#"{"option": "approved", "revision": 1}"#,
+    );
+    let cancelled = runner_http(
+        &address,
+        "POST",
+        &remote_act("a", ASKED_KEY, "cancel"),
+        r#"{"generation": 1}"#,
+    );
+    bus.execute_batch("DROP TRIGGER lost").unwrap();
+
+    for ((status, body), what) in [(answered, "ask"), (cancelled, "task")] {
+        assert_eq!(status, 504, "{body}");
+        let error = body["error"].as_str().unwrap_or_default();
+        assert!(
+            error.ends_with(&format!(
+                ". The log may hold it: read the {what} before you retry"
+            )),
+            "{error}"
+        );
+    }
 }
 
 #[test]
@@ -25443,6 +25616,53 @@ fn a_forget_of_a_kit_memory_hides_it_from_its_own_task_at_once_and_from_every_ru
         remembered(&a.claude_args(2)),
         [],
         "every runner reads the accept"
+    );
+}
+
+#[test]
+fn a_person_retires_an_accepted_memory_and_later_runs_get_the_kits_again() {
+    let mut a = runner("retire", "a", None);
+    a.kit_repo();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.calls(&[json!([
+        remember("kit-fact", "The kit moved to Mercurial."),
+        ask()
+    ])]);
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let candidates = a.until_candidates(|candidates| {
+        candidates.len() == 1 && candidates[0]["state"] == "pending"
+    });
+    let id = candidate(&candidates, "kit-fact", Some("The kit moved to Mercurial."));
+    a.decide("accept", &id);
+    a.publish(&requested(2));
+    assert_eq!(
+        remembered(&a.claude_args(1)),
+        [(
+            "kit-fact.md".to_owned(),
+            "The kit moved to Mercurial.".to_owned()
+        )]
+    );
+
+    let factory = a.dir.join("factory");
+    let retired = a.priory(&["memories", "drop", factory.to_str().unwrap(), &id]);
+    assert!(retired.status.success(), "{retired:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&retired.stdout),
+        "kit-fact retired: every runner applies it as it reads the log\n"
+    );
+    a.until_candidates(|candidates| candidates[0]["state"] == "retired");
+    a.publish(&requested(3));
+
+    assert_eq!(
+        remembered(&a.claude_args(2)),
+        [("kit-fact.md".to_owned(), "The kit lives in git.".to_owned())],
+        "the retired candidate no longer overrides the kit"
+    );
+    let again = a.priory(&["memories", "drop", factory.to_str().unwrap(), &id]);
+    assert_eq!(
+        String::from_utf8_lossy(&again.stderr),
+        format!("priory memories: candidate {id} is retired\n")
     );
 }
 

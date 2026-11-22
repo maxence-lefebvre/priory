@@ -7260,7 +7260,7 @@ fn a_person_accepts_or_drops_a_memory_candidate_through_its_endpoint_as_the_cli_
         );
         std::thread::sleep(Duration::from_millis(50));
     }
-    let again = post(&address, "/api/memories/c-release/drop", "", "{}");
+    let again = post(&address, "/api/memories/c-release/accept", "", "{}");
     assert_eq!(
         again,
         (

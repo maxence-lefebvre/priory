@@ -104,7 +104,7 @@ or a reason, is untrusted: render it as text.
 | `431` | The request head is over 8 KiB or 32 headers |
 | `500` | The state could not be read, a delivery could not be published, or Priory failed while answering. The server keeps serving |
 | `503` | 4 requests already wait on `/api/events` and this one would wait too; or a write found no daemon on its socket, as under `priory serve` alone; or `/api/push/key` before a daemon made the key pair; or 2 run screens are already being read; or a memory verdict could not be published because the log cannot be reached; or a live run's screen whose pane this server cannot find or read within 2 seconds, or that holds a secret redaction cannot hide. It comes with `Retry-After: 1` |
-| `504` | A write reached the daemon, which did not reply within 10 seconds. It may have applied it |
+| `504` | A write reached the daemon, which did not reply within 10 seconds. It may have applied it. Or a write for another runner's ask or task failed as it was published, and the log may hold it |
 
 An error's body is `{"error": "<why>"}`.
 
@@ -208,7 +208,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/tasks/{id}/label` | `evidence`, an `http://` or `https://` URL, and optionally `happened`, an RFC 3339 instant or a date such as `2026-10-02`, to mark the task wrong; or `"clear": true` alone to withdraw its marks. As `priory label TASK wrong --evidence URL [--happened DATE]` and `--clear` (see [label.md](label.md)). A body with both or neither gets `400`, a missing task `404`, and evidence that is not a URL, a date after now or a clear with no mark `422` |
 | `POST /api/batches/{id}/edit` | `revision`, the plan revision the client showed, then one edit: `drop`, an entry id, with optionally `"with_successors": true`; or `move`, an entry id, with one of `"top": true`, `before` or `after`, an entry id; or `moment`, an object of `entry`, `other` and `moment`, which sets the moment of the edge from `entry` to `other`. A body with no edit, two edits, or a field its edit does not take gets `400`, a plan whose revision moved `409`, and an edit the plan refuses `422`. See [batches.md](../daemon/batches.md#editing-a-plan) |
 | `POST /api/inbox/{seq}/read` | `{}`: marks the report read, so its row leaves the desk. A sequence number that is not a report gets `422` |
-| `POST /api/memories/{id}/accept`, `POST /api/memories/{id}/drop` | `{}`. The server publishes the verdict on the factory's log itself, as the CLI does, so it needs no daemon; every runner's daemon applies it as it reads the log, and the candidate stays on the desk until then. A candidate this runner never read gets `404`, one not on the log yet or already decided `409`, and a log that cannot be reached `503`. A publish that failed gets `504`: the log may hold the verdict, so read the candidates before you retry. See [memories.md](memories.md#candidates) |
+| `POST /api/memories/{id}/accept`, `POST /api/memories/{id}/drop` | `{}`. The server publishes the verdict on the factory's log itself, as the CLI does, so it needs no daemon; every runner's daemon applies it as it reads the log, and the candidate stays on the desk until then. `drop` of an accepted candidate retires it. A candidate this runner never read gets `404`, one not on the log yet or already decided `409`, and a log that cannot be reached `503`. A publish that failed gets `504`: the log may hold the verdict, so read the candidates before you retry. See [memories.md](memories.md#candidates) |
 | `POST /api/reports/pick` | `pick`, the pick's id, `option`, one of its options, and `revision`, the report's revision the client showed |
 | `POST /api/reports/comment` | `row`, the row's id, `text`, a string, and `revision`, the report's revision the client showed. A comment verb takes `text` only with `comment` and `reply`, and `revision` only with `comment` |
 | `POST /api/reports/reply` | `comment`, an integer, and `text`, a string |
@@ -255,7 +255,7 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | `409` `{"error", "key", "id"}` | For `/api/request`: the same text already went to `key`, so nothing was added. `id` is the active task that holds `key`, or `null` |
 | `404`, `422` `{"error"}` | The ask, task or pick is gone, or the daemon refused for another reason, such as a resume of a task that is not blocked, a say to a task with no run yet, or a comment on a stale report revision. `error` is the CLI's sentence |
 | `503` `{"error"}` | No daemon listens on the socket, or the log cannot be reached for another runner's ask or task, so nothing was sent. Reads keep working |
-| `504` `{"error"}` | The daemon took the line but did not reply within 10 seconds. It may have applied it: read the state before you retry |
+| `504` `{"error"}` | The daemon took the line but did not reply within 10 seconds, or the publish of a write for another runner's ask or task failed. It may have applied it: read the state before you retry. The error of the second ends `The log may hold it: read the ask before you retry`, or `the task` |
 
 ## `POST /hooks/github`
 

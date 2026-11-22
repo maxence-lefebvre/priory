@@ -86,7 +86,7 @@ does and the page that describes it.
   [desk.md](../daemon/desk.md#to-dos).
 - `priory memories [DIR] [--all] [--json]`: lists the memories agents saved that wait for a person.
   See [skills.md](../daemon/skills.md#memories-agents-write).
-- `priory memories (accept | drop) [DIR] CANDIDATE`: accepts or drops one.
+- `priory memories (accept | drop) [DIR] CANDIDATE`: accepts or drops one. `drop` of an accepted one retires it.
 - `priory wait --since REV [--timeout D]`: prints the state's revision once it differs from `REV`,
   or the same revision after the timeout, 25 seconds by default. See [serve.md](../daemon/serve.md#waiting-for-a-change).
 

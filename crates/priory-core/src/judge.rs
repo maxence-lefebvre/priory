@@ -173,16 +173,6 @@ fn system(judge: &Judge) -> String {
 
 /// The judge's user message: `read` quoted between markers whose id the agent could not know.
 fn message(read: &Read, id: &str) -> String {
-    let mut diff = read.diff;
-    let mut cut = String::new();
-    if diff.len() > DIFF_LIMIT {
-        let mut end = DIFF_LIMIT;
-        while !diff.is_char_boundary(end) {
-            end -= 1;
-        }
-        diff = &diff[..end];
-        cut = format!("\nThe diff was cut at {DIFF_LIMIT} bytes.\n");
-    }
     let result = serde_json::to_string_pretty(read.result).unwrap_or_default();
     let block = |name: &str, text: &str| {
         format!(
@@ -191,10 +181,10 @@ fn message(read: &Read, id: &str) -> String {
         )
     };
     format!(
-        "Grade this run. Its data follows between markers with the id {id}.\n\n{}\n{}\n{}{cut}\n{ANSWER}\n",
+        "Grade this run. Its data follows between markers with the id {id}.\n\n{}\n{}\n{}\n{ANSWER}\n",
         block("request", read.request),
         block("result", &result),
-        block("diff", diff),
+        block("diff", read.diff),
     )
 }
 
@@ -227,7 +217,7 @@ fn not_an_answer(text: &str) -> String {
 }
 
 /// `text` cut to 200 characters, so a reason stays one short line.
-fn short(text: &str) -> String {
+pub(crate) fn short(text: &str) -> String {
     let text = text.replace(['\n', '\r'], " ");
     match text.char_indices().nth(200) {
         Some((at, _)) => format!("{}…", &text[..at]),
@@ -250,6 +240,10 @@ pub fn ask(judge: &Judge, scratch: &Path, read: &Read, budget: f64) -> Asked {
         reason,
         cost,
     };
+    if read.diff.len() > DIFF_LIMIT {
+        // A judge that reads only part of a diff could pass what it never saw.
+        return error(format!("the diff is over {DIFF_LIMIT} bytes"), 0.0);
+    }
     let dir = scratch.join(uuid::Uuid::new_v4().simple().to_string());
     if let Err(why) = std::fs::create_dir_all(&dir) {
         return error(format!("{}: {why}", dir.display()), 0.0);
@@ -468,18 +462,36 @@ mod tests {
     }
 
     #[test]
-    fn the_message_cuts_a_long_diff_and_says_so() {
-        let diff = "é".repeat(DIFF_LIMIT);
+    fn a_diff_over_the_limit_is_an_error_and_calls_no_judge() {
+        let scorer: Scorer = serde_json::from_value(json!({
+            "description": "Does what was asked.",
+            "on": "diff",
+            "kind": "judge",
+        }))
+        .unwrap();
+        let judge = Judge {
+            name: "asked",
+            scorer: &scorer,
+            model: "opus",
+            prompt: "Is it right?".to_owned(),
+            labels: Labels { cases: Vec::new() },
+            prompt_sha256: String::new(),
+            cases_sha256: String::new(),
+        };
+        let diff = "+".repeat(DIFF_LIMIT + 1);
         let read = Read {
             request: "r",
             result: &json!({}),
             diff: &diff,
         };
+        let scratch = std::env::temp_dir().join(format!("priory-judge-cut-{}", std::process::id()));
 
-        let text = message(&read, "x");
+        let asked = ask(&judge, &scratch, &read, 1.0);
 
-        assert!(text.len() < DIFF_LIMIT + 2_000);
-        assert!(text.contains("\nThe diff was cut at 100000 bytes.\n"));
+        assert_eq!(asked.verdict.name(), "error");
+        assert_eq!(asked.reason, "the diff is over 100000 bytes");
+        assert_eq!(asked.cost, 0.0);
+        assert!(!scratch.exists());
     }
 
     proptest::proptest! {
