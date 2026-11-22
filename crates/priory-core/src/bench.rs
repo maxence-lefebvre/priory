@@ -507,9 +507,7 @@ struct Scratch(PathBuf);
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        if self.0.exists() {
-            let _ = fs::remove_dir_all(&self.0);
-        }
+        priory_runtime::runtime::remove_sealed(&self.0);
     }
 }
 
