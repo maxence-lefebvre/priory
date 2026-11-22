@@ -235,7 +235,7 @@ export default class PrioryCosts extends View {
     /** @param {string[]} cells @param {boolean} head */
     const row = (cells, head) => h_flex().min_h(head ? 28 : 36).gap(S["space-3"]).items_center().border_b(1).border_color(t.line)
       .text_size(head ? S["type-caption"][0] : S["type-small"][0]).text_color(head ? t["text-3"] : t.text)
-      .children(cells.slice(0, 2).map((cell) => div().w(120).flex_none().truncate().font_family(head ? this.font.ui : this.font.mono).child(cell)))
+      .children(cells.slice(0, 2).map((cell) => div().w(120).flex_none().whitespace_normal().font_family(head ? this.font.ui : this.font.mono).child(cell)))
       .children(cells.slice(2).map((cell, index) => div().w(index ? 56 : 72).flex_none().whitespace_normal().text_right()
         .when(!head && index === 0, (el) => el.font_weight(600)).child(cell)));
     const stacked = (/** @type {Scores["rows"][number]} */ entry) => v_flex().py(S["space-2"]).gap(2).border_b(1).border_color(t.line)
