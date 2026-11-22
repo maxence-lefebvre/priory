@@ -146,8 +146,8 @@ Known limits:
 ## Queue
 
 The queue holds the `queued` and `ready` tasks at a model step. It starts their runs in band order,
-then in the order a person set inside the band, then oldest first. Code steps still run oldest first
-(see Code steps).
+then in the order a person set inside the band, then oldest first, or in turns between lanes (see
+[Turns between lanes](#turns-between-lanes)). Code steps still run oldest first (see Code steps).
 
 Bands default to `blocker`, `now`, `today` and `later`, highest first. `factory.toml` can name
 its own, highest first:
@@ -184,6 +184,56 @@ every listing carries. When the state's revision differs from it, the verb chang
 state is at revision <current>, not <REVISION>`, so a change made on a stale read never applies.
 Without the flag, the verb applies to the state as it is.
 
+### Turns between lanes
+
+Inside a band, the queue starts the oldest task first, so 40 tasks in one lane hold every other
+lane's work of that band behind them. `[queue] fair = "lane"` in `factory.toml` makes the queue
+take turns between lanes instead:
+
+```toml
+[queue]
+fair = "lane"
+```
+
+Among the tasks of a band that no person ordered, the queue starts the oldest task of each lane
+before the second task of any lane. Among those, the lane whose last run started longest ago goes
+first, and a lane with no run yet goes before any other. A tie goes to the oldest task. So three new
+tasks in `a/x` and two in `b/y` start as `a/x`, `b/y`, `a/x`, `b/y`, `a/x`. A lane's last run is the
+latest run of any of its tasks in the same band, ended or not.
+
+A person's order still wins. The tasks a person placed with `priory move` start first, in that
+order. A move that sets a place numbers every active task of the band in the order it had, the fair
+one, and tasks that arrive later take turns behind them.
+
+The daemon records `fair` in the state file when it starts, as it does the bands, so `priory tasks`
+and `priory queue` list tasks in the order they start. Fairness changes only the order: a task that
+waits for room still holds back every task behind it, as [room.md](room.md) says.
+
+### At most so many running
+
+`max_running` on a lane or a trigger holds new starts past a count:
+
+```toml
+# lanes.toml
+[lane."core/intake"]
+max_running = 2
+```
+
+```toml
+# triggers/sentry.toml
+max_running = 3
+```
+
+A run counts from its start to its end, so an asleep task counts for nothing. Once a lane's or a
+trigger's tasks have that many live runs, each of its other `queued` or `ready` tasks waits with a
+reason such as `waits: lane core/intake has 2 running tasks, its max_running`. The tasks behind it
+start if they fit: unlike a task that waits for room, a task at its cap holds no one back. It starts
+on the daemon's tick after one of those runs ends. A woken task waits too, since its run is a new
+start, and so does a task a person ordered. A running task carries on.
+
+With several runners, each daemon counts only its own runs, so the count applies to each runner
+apart. See [`lanes.toml`](../reference/lanes.md) and [the trigger keys](../reference/triggers.md).
+
 ### Review limit
 
 A factory can open pull requests faster than a person reviews them. Each waiting pull request then
@@ -213,6 +263,9 @@ or `batch 4 has ...` for a batch. The batch counts first. The task holds back no
 of another lane or batch starts as usual. It starts on the first tick after a merge, a close or a
 woken task brings the count under the limit. A batch's entries are thus spread over the days its
 person takes to review, instead of all waiting at once.
+
+A task of the factory's first band, `blocker` unless `factory.toml` names its own `bands`, starts
+whatever the count. An incident fix does not wait for an unrelated review. Lower bands still wait.
 
 The limit holds only a task's first run, as a pause does. A `ready` task, woken by an answer, a
 fired wait or a `say`, or resumed, revived or stopped for room, starts whatever the count, since it

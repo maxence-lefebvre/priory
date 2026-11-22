@@ -4,7 +4,8 @@
 file in `scorers/` ([the scorer reference](../reference/scorers.md)). A scorer runs by itself only
 where the factory names it as a gate: a step's `gate` and the factory's `critic` grade a result
 before the daemon stores it (see [Gates](#gates)). No other scorer runs after a run: a `command`
-scorer can take as long as the tests, and a `judge` costs money.
+scorer can take as long as the tests, and a `judge` costs money. A `held` scorer grades a merged
+task a while after its merge, by itself, and never on demand (see [Held scorers](#held-scorers)).
 
 ```sh
 priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]
@@ -13,7 +14,9 @@ priory score [DIR] --calibrate SCORER --budget USD [--json]
 
 `DIR` is the factory folder, `.` by default. The command scores the latest finished run of each
 step of the task: the last run of that step whose turn ended with a result or an ask. `--scorer`
-runs one scorer instead of all of them. It prints one row per run and scorer:
+runs one scorer instead of all of them. A `held` scorer is left out, and `--scorer` refuses one
+with `<name> is a held scorer: the daemon grades a task with it at <after>`. It prints one row per
+run and scorer:
 
 ```text
 run	step	scorer	verdict	reason
@@ -222,6 +225,43 @@ daemon restart, a gate still grading starts its scorers again.
 
 Each score of a gate appends a `factory.run.scored` record with `gate` set to the outcome it graded
 ([Records](#records)).
+
+## Held scorers
+
+A judge grades a change the day it is written. Whether the change held is known later, from what
+happened after its merge: a revert, a red check on the merge commit, a later task that fixes it. A
+`held` scorer reads those signals once a delay has passed, such as `after = "merged + 7d"`
+([the scorer reference](../reference/scorers.md#kinds)). It costs nothing, so it grades every
+merged task, not a sample.
+
+A task merged when every pull request of its stack merged, or, with no stack, when a pull request
+whose head is a branch it owns merged, as for [outcome labels](trace.md#outcome-labels). Its merge
+is when the last of them merged, from the event's time. The moment `after` names is that merge plus
+the delay.
+
+The daemon looks for tasks whose moment came when it starts and once a minute after, and
+`priory daemon --once` looks once after it routes. For each such task that the scorer has not
+graded, it reads the signals the scorer's `fails` names, in one transaction:
+
+- An outcome label of the task, other than one a `--clear` withdrew, counts when its `happened`
+  is at or before the moment. A label written before `happened` existed counts by when it was
+  written.
+- `fixed`: each `fixes` relation from another task to this one counts when it was recorded at or
+  before the moment.
+
+The task fails when one signal counts, with each one in the reason, such as
+`reverted https://github.com/owner/repo/pull/101; fixed by task 12`. It passes otherwise, with a
+reason such as `no reverted or fixed by merged + 7d`.
+
+A scorer grades a task once. A signal Priory learns of after the grade, such as a revert event that
+arrives late from a machine that was away, does not change it. A scorer added to the factory
+grades the tasks that merged before it too, each as of its own moment, on the daemon's next look.
+
+Each grade appends a `factory.step.labeled` record with the label `scored`, the scorer, its kind,
+its verdict, its reason as the evidence, and the moment as `happened`
+([the trace schema](../trace-schema.md#factorysteplabeled)). `priory task ID --json` lists them in
+`held_scores`. `priory grades`, `priory report risk` and `priory bench capture` read none of them:
+a score is not an outcome label.
 
 ## Pre-review
 

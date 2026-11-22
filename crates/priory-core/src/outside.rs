@@ -1,9 +1,11 @@
 //! The tool calls of `priory mcp --outside`, from a session Priory did not start. They read the
-//! desk, the asks and a task, store an ask, or add a task, and never answer an ask.
+//! desk, the asks and a task, store an ask, add a task, and answer or dismiss an ask a lead could
+//! answer, recorded as the session's decision.
 
+use crate::trace::{self, Trace};
 use crate::{listing, tools};
 use priory_factory::factory::Factory;
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 use serde_json::{Value, json};
 
 /// The socket's line: `{"outside": {"tool": ..., "session": ..., "arguments": ...}}`.
@@ -144,4 +146,87 @@ fn ask(
         .map(|field| format!("; ignored unknown field {field}"))
         .collect::<String>();
     Ok(Ok(format!("stored as ask {id}; {reach}{ignored}")))
+}
+
+/// Answers a call of `answer` or `dismiss`: the session decides an ask a lead could answer, at the
+/// revision it read, and Priory records the session as the decider. Any other ask is refused.
+pub fn decide(
+    db: &mut Connection,
+    call: &Call,
+    trace: &Trace,
+    head: &dyn Fn(&std::path::Path, &str) -> Option<String>,
+) -> rusqlite::Result<Result<String, String>> {
+    let arguments = &call.arguments;
+    let named = match &arguments["ask"] {
+        Value::Number(number) => number.as_i64().map(|id| id.to_string()),
+        Value::String(name) if !name.is_empty() => Some(name.clone()),
+        _ => None,
+    };
+    let Some(named) = named else {
+        return Ok(Err(
+            "ask must be the ask's id or name, as asks lists it".to_owned()
+        ));
+    };
+    let Some(revision) = arguments["revision"].as_i64() else {
+        return Ok(Err(
+            "revision must be the ask's revision, as asks lists it".to_owned()
+        ));
+    };
+    let text = match (call.tool.as_str(), &arguments["answer"]) {
+        ("dismiss", _) => None,
+        (_, Value::String(text)) if !text.trim().is_empty() => Some(text.clone()),
+        _ => return Ok(Err("answer must be an option or a line of text".to_owned())),
+    };
+    let id = match named.bytes().all(|byte| byte.is_ascii_digit()) {
+        true => named
+            .parse()
+            .map_err(|_| format!("there is no ask {named}")),
+        false => tools::ask_named(db, &named),
+    };
+    let id = match id {
+        Ok(id) => id,
+        Err(error) => return Ok(Err(error)),
+    };
+    let session = call.session.as_deref().unwrap_or(ANONYMOUS);
+    let by = format!("{}{session}", tools::SESSION);
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if let Err(refused) = tools::still_open(&tx, id, revision)? {
+        return Ok(Err(refused));
+    }
+    if let Some(why) =
+        tools::outside_refusal(&tx, id, call.session.as_deref(), &trace.factory.workflows)?
+    {
+        return Ok(Err(format!(
+            "ask {named} waits for a person: {why}. A person answers it in the desk."
+        )));
+    }
+    let decided = match &text {
+        Some(text) => {
+            let answer = tools::Answer {
+                ask: id,
+                text: text.clone(),
+                revision,
+                run: false,
+                by,
+            };
+            tools::answer_in_tx(&tx, &answer, trace, head)?
+        }
+        None => {
+            let dismiss = tools::Dismiss {
+                dismiss: id,
+                revision: Some(revision),
+            };
+            tools::dismiss_in_tx(&tx, &dismiss, trace.factory, Some(&by))?
+        }
+    };
+    if decided.is_ok() {
+        trace::session_decided(&tx, trace, id, revision, session, text.as_deref())?;
+    }
+    // A refused answer keeps its refusal on the ask, as a person's does.
+    if decided.is_ok() || text.is_some() {
+        tx.commit()?;
+    }
+    Ok(decided.map(|reply| {
+        format!("{reply}; Priory records that session {session} decided it, not a person")
+    }))
 }

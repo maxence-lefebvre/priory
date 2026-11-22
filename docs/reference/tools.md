@@ -324,6 +324,32 @@ the factory names a `deliver` command, the daemon then delivers the answer or th
 The `ask` tool of `priory mcp --outside` stores the same ask from a person's own session, with the
 session named the same way (see [The outside server](../daemon/tools.md#the-outside-server)).
 
+### `answer(ask, revision, answer)` and `dismiss(ask, revision)`
+
+Tools of `priory mcp --outside` only. They answer or dismiss an ask as the person's own session,
+and only an ask a lead could answer (see
+[Answers from the session](../daemon/tools.md#answers-from-the-session)).
+
+| Argument | Type | Meaning |
+| -------- | ---- | ------- |
+| `ask` | integer or string | The ask's number, or an outside ask's name, as `asks` lists it |
+| `revision` | integer, required | The ask's revision the session read. Another revision is refused |
+| `answer` | string, `answer` only | One of the ask's options, or a line of text where the ask takes it |
+
+| Reply | When |
+| ----- | ---- |
+| `ask <ask> answered; Priory records that session <session> decided it, not a person` | the answer applied |
+| `ask <ask> dismissed; Priory records that session <session> decided it, not a person` | the dismissal applied |
+| `ask <ask> waits for a person: <reason>. A person answers it in the desk.` | error: the ask is not one a lead could answer |
+| `ask <ask> is at revision <n>, not <revision>` | error: the ask changed since the session read it |
+| `revision must be the ask's revision, as asks lists it` | error: no `revision` |
+
+The `<reason>` is one of `it runs a command`, `step <step> approves irreversible step <step>`,
+`answering it can let irreversible step <step> run before a person decides again`, `Priory asked it,
+not an agent`, `it approves a graded plan`, `it picks a debate's answer`, `it carries a command`
+and `this session asked it` (an outside ask), and `its workflow <workflow> is no longer in the factory`. Any other refusal is the
+one `priory answer` or `priory dismiss` gives, such as `ask 14 is already answered: ship`.
+
 ## `wait(on?, any?)`
 
 `wait` stores a wait on one condition, `on`, or on a list of them, `any`. A call takes one of the

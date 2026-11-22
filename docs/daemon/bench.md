@@ -29,7 +29,9 @@ issue may have changed since the task ran.
 - **The start.** The task's `base_sha`, the commit its worktree was created from.
 - **The end.** The first step the task reached whose effect is `irreversible`, from its
   `factory.step.ended` records, or the step the task sits at now when that step is irreversible.
-  Only runs and answers from before that step go into the case.
+  A `failed` or `blocked` task that reached no irreversible step ends at the step it stopped at,
+  and its whole history goes into the case, so a failure can be replayed under a fix. Only runs
+  and answers from before the end go into the case.
 - **The request.** The first message the inbox routed to the task.
 - **`gh` answers.** Each Bash call in the Claude Code transcript of each run before the end. A
   run's calls are the lines between where the previous run of the same transcript stopped reading
@@ -52,7 +54,7 @@ Claude Code's transcripts.
 | ----- | ----- |
 | `no task <id>` | The state has no such task |
 | `task <id> has no start commit: it began before Priory stored one` | The task's worktree was created before Priory stored `base_sha` |
-| `task <id> reached no irreversible step, so a replay of it would have no end` | The task never reached a step whose effect is `irreversible` |
+| `task <id> reached no irreversible step and did not stop, so a replay of it would have no end` | The task never reached a step whose effect is `irreversible`, and it is not `failed` or `blocked` |
 | `<folder> already exists: capture into a new folder` | `--into` names a file or folder that exists |
 
 ## Replay

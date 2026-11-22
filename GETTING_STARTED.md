@@ -44,7 +44,7 @@ priory --version
 
 `cargo install` builds Priory and puts `priory` in `~/.cargo/bin`, which `rustup` added to your
 `PATH`, so every terminal you open finds it. The last command prints the version, such as
-`priory 0.1.0`.
+`priory 1.0.0`.
 
 ## 2. Write a factory
 
@@ -189,6 +189,18 @@ priory intake example
 Open `http://127.0.0.1:7340` in a browser on the same machine and paste the token. The web view
 opens on the Desk, which is empty. The server listens on this machine only.
 
+### Trust the worktrees folder, once
+
+Each task's agent works in a new folder under `~/.local/state/priory-oss/worktrees/`. Claude asks
+whether it trusts a folder it has not seen, and Priory never answers that for you. Some Claude
+Code versions accept a folder because a folder above it is trusted, so trust the worktrees folder
+now, before the first run:
+
+```sh
+mkdir -p ~/.local/state/priory-oss/worktrees
+cd ~/.local/state/priory-oss/worktrees && claude   # choose "Yes, I trust this folder", then /exit
+```
+
 ## 5. Ask for a first task
 
 In a third terminal, from your working folder, with your repository in place of `owner/name`:
@@ -211,9 +223,10 @@ To watch the agent work, open the task in the web view, or run `priory attach 1 
 
 ### Trust the clone, once
 
-On the first run in a repository, Claude asks whether it trusts the folder, and Priory never
-answers that for you. After 60 seconds the task turns `blocked`, and its reason tells you what to
-do. This is expected. Trust the clone, then resume the task:
+Other Claude Code versions accept a task's folder only when you trusted its repository's clone.
+On the first run in a repository, Claude may still ask, and the task turns `blocked` within a few
+seconds. Its reason names the folder Claude asked about and the commands to run. This is expected.
+Trust the clone, then resume the task:
 
 ```sh
 cd ~/.local/state/priory-oss/repos/owner/name && claude   # accept the dialog, then /exit

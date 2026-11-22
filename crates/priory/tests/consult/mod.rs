@@ -115,6 +115,26 @@ fn hold_investigator(setup: &Setup) {
     setup.memory(60);
 }
 
+/// Waits until a restarted daemon replies to a tool call through `priory mcp`, as a run's call
+/// reaches it: a call that reaches no daemon fails and stores nothing.
+fn replying(setup: &Setup) {
+    let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "result", "arguments": {"outcome": "reported", "summary": "-"}}});
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let replies = setup.mcp("no-such-session", std::slice::from_ref(&call));
+        let (text, _) = reply(&replies[0]);
+        if text == "no live run has session no-such-session" {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never replied: {text}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// The prompts the fake `claude` received that hold `part`.
 fn typed_with(setup: &Setup, part: &str) -> Vec<String> {
     setup
@@ -652,10 +672,8 @@ fn a_restart_between_the_ask_and_the_report_starts_one_investigator_and_reports_
         rows.len() == 2 && rows[1][3] == "confirmed"
     });
     setup.crash();
-    // The held call reaches the daemon once released, so the new daemon must listen first.
-    let _ = fs::remove_file(setup.socket());
     setup.start();
-    listening(&setup);
+    replying(&setup);
     setup.release("hold-call");
 
     setup.until("tasks", |rows| with(rows, 4, "done") == 2);

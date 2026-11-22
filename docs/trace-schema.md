@@ -339,9 +339,12 @@ task's grade when it was labeled. A task no step graded has no `step_event`.
 
 | Field        | Required | Meaning                                                              |
 | ------------ | -------- | -------------------------------------------------------------------- |
-| `label`      | yes      | One of the outcome labels, or `marked-wrong` from `priory label`     |
+| `label`      | yes      | One of the outcome labels, `marked-wrong` from `priory label`, or `scored` from a `held` scorer |
 | `evidence`   | yes      | The event's URL, the human step and its answer, or a mark's URL      |
-| `happened`   | no       | When the event the label reads happened. The record's `time` is when Priory wrote it. A record written before this field has none |
+| `happened`   | no       | When the event the label reads happened. The record's `time` is when Priory wrote it. A record written before this field has none. For `scored`, the moment the scorer's `after` names |
+| `scorer`     | for `scored` | The `held` scorer that graded the task |
+| `kind`       | for `scored` | `held` |
+| `verdict`    | for `scored` | `pass` or `fail`. The `evidence` is its reason. See [Held scorers](daemon/score.md#held-scorers) |
 
 ```json
 {
@@ -724,6 +727,46 @@ met its task's `auto_answer` level (see [waits.md](daemon/waits.md#answered-by-a
 | `rationale`  | yes      | The agent's one-line reason                                      |
 | `level`      | yes      | The task's `auto_answer` level when the ask was stored           |
 
+## `factory.ask.session_answered` and `factory.ask.session_dismissed`
+
+A person's own session answered or dismissed an ask through the `answer` or `dismiss` tool of
+[`priory mcp --outside`](daemon/tools.md#answers-from-the-session). The record names the session,
+never a person. An ask of a task shares `factory`, `factory_revision`, `workflow`, `task`, `key`,
+`generation`, `step` and `machine` with `factory.step.ended`. An outside ask has no task, so its
+record has no `workflow`, `task`, `generation` or `step`.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-00000000000f",
+  "source": "factory://example/desktop",
+  "type": "factory.ask.session_answered",
+  "time": "2026-11-22T10:12:03Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "14",
+    "key": "github:example/app#42",
+    "generation": 1,
+    "step": "implement",
+    "machine": "desktop",
+    "ask": "14",
+    "revision": 1,
+    "session": "t9 8f3c2a10",
+    "option": "sqlite"
+  }
+}
+```
+
+| Field      | Required | Meaning                                                                         |
+| ---------- | -------- | ------------------------------------------------------------------------------- |
+| `ask`      | yes      | The ask: its number, or an outside ask's name                                   |
+| `revision` | yes      | The revision the session decided                                                |
+| `session`  | yes      | The session: its hc terminal, then a space and its Claude session, or `outside` |
+| `option`   | answered | The answer. A `factory.ask.session_dismissed` record has none                   |
+
 ## `factory.bench.compared`
 
 A comparison of two commits of the factory on a benchmark ended (see
@@ -834,6 +877,62 @@ or would be for a task that moved on:
 | `report_length` | yes      | The report's length, in characters; 0 with no report |
 | `tokens`, `model` | no     | What the investigator's run spent so far, since a run ended by its deadline or cap writes no `factory.step.ended` |
 | `cost_usd`      | no       | `tokens` priced with `prices.toml` |
+
+## `factory.pattern.matched`
+
+One piece of evidence of a failure pattern: a task that failed, blocked, was repaired or was marked
+wrong, which `priory patterns find` recorded (see [patterns.md](daemon/patterns.md)). A pattern is
+the records of its `pattern` id. Its `data` also holds `factory`, `factory_revision` and `machine`.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d7-0000-7000-8000-00000000000b",
+  "source": "factory://example/desktop",
+  "type": "factory.pattern.matched",
+  "time": "2026-11-22T02:45:03.120Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "pattern": "3fa2b1c0",
+    "workflow": "implement",
+    "step": "implement",
+    "signature": "cargo test failed: # tests failed in #s",
+    "text": "cargo test failed: 12 tests failed in 9s",
+    "task": "27",
+    "key": "github:example/app#42",
+    "generation": 1,
+    "kind": "failed",
+    "happened": "2026-11-21T16:20:05Z",
+    "source": "task 27 generation 1 failed at implement: cargo test failed: # tests failed in #s",
+    "machine": "desktop"
+  }
+}
+```
+
+| Field        | Required | Meaning                                                              |
+| ------------ | -------- | -------------------------------------------------------------------- |
+| `pattern`    | yes      | The pattern's id: the first 8 hex digits of the SHA-256 of its workflow, step and signature |
+| `workflow`, `step` | yes | Where the task stopped                                        |
+| `signature`  | yes      | The text's shape, which groups the pattern                           |
+| `text`       | yes      | The text's first line, with credential shapes redacted               |
+| `task`, `key`, `generation` | yes | The task                                                |
+| `kind`       | yes      | `failed`, `blocked`, `repaired` or `marked-wrong`                    |
+| `happened`   | yes      | When the task stopped, was repaired or was marked                   |
+| `source`     | yes      | What the evidence is, so `find` records it once: a stopped task's id, generation, kind, step and signature, or the id of the `factory.task.repaired` or `factory.step.labeled` record |
+
+## `factory.pattern.closed`
+
+A person ran `priory patterns close` or `priory patterns dismiss`. A closed pattern is open again
+once a match recorded after this record happened in its second or later; a dismissed one stays
+dismissed. Its `data` also holds `factory`, `factory_revision` and `machine`.
+
+| Field       | Required | Meaning                                              |
+| ----------- | -------- | ---------------------------------------------------- |
+| `pattern`   | yes      | The pattern's id                                     |
+| `workflow`, `step` | yes | The pattern's workflow and step                  |
+| `tasks`     | yes      | How many tasks the pattern held when it was closed   |
+| `dismissed` | yes      | `true` for `dismiss`, `false` for `close`            |
 
 ## Spans
 

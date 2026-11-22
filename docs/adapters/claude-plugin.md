@@ -3,7 +3,8 @@
 A person's own Claude Code session is not a run. Priory did not start it, it has no task, and the
 person sits in front of it. The plugin in `adapters/claude-plugin/` lets that session read the
 desk, ask the person a question through the desk, and add a task. This page explains what the
-plugin holds and why a model in it cannot answer an ask. To install it, follow
+plugin holds, and why a model in it answers only the asks a lead could answer, as itself. To
+install it, follow
 [How to use Priory from your own Claude Code session](../using-priory-from-your-own-session.md).
 
 ## Two actors in one terminal
@@ -11,21 +12,23 @@ plugin holds and why a model in it cannot answer an ask. To install it, follow
 A person's session holds two actors: the person types, and the model decides tool calls. An answer
 is an approval, and only a person approves (see [guard.md](../daemon/guard.md)). A model that reads
 an ask's text could be talked into answering it, and that text is an agent's. So the plugin gives
-the model the tools to read and to ask, and nothing that answers:
+the model the tools to read and to ask, and answers only within the limit a lead has, recorded as
+the session's and never as the person's:
 
 | Act | Who may do it | How |
 | --- | ------------- | --- |
 | Read the desk, the asks, a task | the model and the person | the `desk`, `asks` and `task` tools, `/priory:desk` |
 | Add a task | the model and the person | the `add` tool, `/priory:add` |
 | Ask the person a question that outlives the session | the model | the `ask` tool, `/priory:ask` |
-| Answer or dismiss an ask, or any other person verb | the person only | the desk, or a line the person runs |
+| Answer or dismiss an ask a lead could answer | the model, as the session, and the person | the `answer` and `dismiss` tools; the desk, or a line the person runs |
+| Answer or dismiss any other ask, or any other person verb | the person only | the desk, or a line the person runs |
 
 ## What the plugin holds
 
 | File | What it does |
 | ---- | ------------ |
 | `.claude-plugin/plugin.json` | The manifest. The plugin is named `priory`, so its skills and command are `/priory:...` |
-| `.mcp.json` | Starts [`priory mcp --outside`](../daemon/tools.md#the-outside-server), which serves `desk`, `asks`, `task`, `ask` and `add` |
+| `.mcp.json` | Starts [`priory mcp --outside`](../daemon/tools.md#the-outside-server), which serves `desk`, `asks`, `task`, `ask`, `add`, `answer` and `dismiss` |
 | `hooks/hooks.json` | Runs [`priory hook PreToolUse --outside`](../daemon/tools.md#the-outside-hook) before each Bash call |
 | `skills/desk/SKILL.md` | Reads the desk and says what needs the person, most urgent first |
 | `skills/ask/SKILL.md` | When the work is blocked on the person's decision, calls `ask` with a question, options, a recommendation and a trade-off, then goes on |
@@ -37,15 +40,25 @@ A skill is also a slash command, so the three skills are `/priory:desk`, `/prior
 `disable-model-invocation: true` keeps Claude from invoking it on its own. `/priory:answer` sets
 it, and grants no tool permission.
 
-## Why the answer stays the person's
+## Which answers stay the person's
 
-Three things keep an answer the person's, and each covers what the one before it does not:
+The model may answer or dismiss an ask with the `answer` and `dismiss` tools, when the person tells
+it to. The daemon accepts only an ask a [`hands-off` lead](../daemon/tools.md#hands-off) could
+answer: no command, no step that `approves`, and no irreversible step its answer lets run before a
+person decides again. Priory's own asks, such as a hold's or a spend cap's, stay the person's too.
+The ask, the trace, Since you looked, the web view and the Herdr panels name the session as the
+decider, never a person, as they name `auto` for an auto answer (see
+[tools.md](../daemon/tools.md#answers-from-the-session)).
 
-- The server serves no `answer` or `dismiss` tool. A call to one is an unknown tool.
+Three things keep every other answer the person's, and each covers what the one before it does not:
+
+- The daemon refuses an `answer` or `dismiss` call for any other ask, and the reply tells the model
+  that a person answers it in the desk.
 - `/priory:answer` only prints a line, such as `! priory answer --revision 2 14 approved`. The
   person reads it and runs it themselves. Only the person can invoke the command.
 - The hook denies a shell call the model makes to a `priory-person` verb, such as
-  `priory answer` or `env priory dismiss`, with the line the person can run instead.
+  `priory answer` or `env priory dismiss`, with the line the person can run instead. A model
+  that typed `priory answer` would be recorded as the person, so the tools are its only way.
 
 The hook ships even though the person could approve the call in a permission prompt. Many people
 run with permission prompts off, and the approval rule should not depend on a session's
@@ -58,8 +71,8 @@ passes through `PreToolUse` hooks. If it does, the hook denies the person's own 
 line too, and the person runs it in another terminal.
 
 Each result of `desk`, `asks` and `task` starts with a line that marks the rest as data, and the
-skills repeat it. That is a request to the model, not a control: the missing tools and the hook
-are the controls.
+skills repeat it. That is a request to the model, not a control: the daemon's refusal and the
+hook are the controls.
 
 ## How the answer comes back
 

@@ -20,7 +20,7 @@ cp examples/dreaming/workflows/*.toml my-factory/workflows/
 cp examples/dreaming/triggers/*.toml my-factory/triggers/
 ```
 
-Replace `owner/abbey` in both triggers with your kit's GitHub owner and name. When your factory has
+Replace `owner/abbey` in every trigger with your kit's GitHub owner and name. When your factory has
 no `[kit]` yet, add the one from the starter's `factory.toml`.
 
 ## 2. Price the dreamer's model
@@ -73,6 +73,21 @@ candidates you dropped, and `remember` refuses the same text again.
 
 At 06:00, the `memories` workflow opens a pull request on the kit with the memories you accepted.
 Merge it to keep them in git.
+
+## 6. Read the failure patterns
+
+The starter's `patterns` workflow runs `priory patterns find` at 02:45. When two or more tasks
+stopped at one step for the same reason, the desk shows a `pattern` row. Read it, then close or
+dismiss it:
+
+```sh
+priory patterns show <id>
+priory patterns close my-factory <id>      # once a fix merged
+priory patterns dismiss my-factory <id>    # when it is no pattern
+```
+
+To check a fix before it merges, capture the pattern's tasks and compare the fix on them, as
+[patterns.md](daemon/patterns.md#capturing-a-patterns-tasks) describes.
 
 ## Limits
 

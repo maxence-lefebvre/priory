@@ -33,6 +33,13 @@ test("the count line ends with a calm count of the events no agent read", () => 
   assert.match(deskModel({ ...data, desk: one }, { now }).count.line, / snoozed\. 1 event no agent read\.$/);
 });
 
+test("the count line ends with a calm count of the requests a script dropped", () => {
+  const desk = { ...data.desk, counts: { ...data.desk.counts, unrouted: 3, unheard: 2, dropped: 2 } };
+  assert.equal(deskModel({ ...data, desk }, { now }).count.line, "Oldest waits 42 min. 1 stopped. 2 snoozed. 3 events reached no task in 24 h. 2 events no agent read. 2 requests a script dropped in 24 h.");
+  const one = { ...data.desk, counts: { ...data.desk.counts, dropped: 1 } };
+  assert.match(deskModel({ ...data, desk: one }, { now }).count.line, / snoozed\. 1 request a script dropped in 24 h\.$/);
+});
+
 test("the next thing is the desk's next, so an alarm comes before every ask", () => {
   assert.deepEqual(deskModel(data, { now }).next, {
     ask: null,
@@ -147,6 +154,13 @@ test("the room and intake banners, Since you looked and Up next come from the de
     { when: "now", key: "cli:PRI-72", task: 7, why: "first in the queue" },
     { when: "Nov 21, 02:00", key: "schedule:nightly", task: null, why: "schedule nightly fires" },
   ]);
+});
+
+test("a reached spend cap is a banner after the room and intake banners, as on the web Desk", () => {
+  const cap = "spend cap: the factory spent $41.20 of its day cap of $40.00";
+  const model = deskModel({ ...data, desk: { ...data.desk, caps: [cap] } }, { now });
+  assert.equal(model.banners.length, 3);
+  assert.equal(model.banners[2], cap);
 });
 
 test("the pause and stall banners say when in the web Desk's relative words, not a raw time", () => {

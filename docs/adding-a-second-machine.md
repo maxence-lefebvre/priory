@@ -21,6 +21,11 @@ either machine.
 - A runner file named after its hostname, as `hostname` prints it, such as `runners/key-drum.toml`.
 - For real runs: the agents' harnesses signed in, such as `claude`, and `gh` signed in. The fake
   run below needs neither.
+- For real Claude runs: the second machine's worktrees folder trusted in Claude before its first
+  run, `cd ~/.local/state/priory-oss/worktrees && claude`, accept, then `/exit`. Create the folder
+  first if it is missing. Trust each clone under `repos/` once Priory made it, as
+  [Trusting the worktrees and the clone](daemon/sessions.md#trusting-the-worktrees-and-the-clone)
+  explains.
 
 Copy no token, ssh key or `.env` to it. The only secret it holds is the log's connection string.
 
