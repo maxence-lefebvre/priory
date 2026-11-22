@@ -631,6 +631,7 @@ and these arrays, oldest first unless the table says otherwise:
 | `subscriptions` | `resource`, `created`: what the task subscribes to now. Empty once it fails or is dropped |
 | `inbox` | Every event routed to the task, newest first: its source event, the events routing gave it, and those another task took that fired one of its waits or that its subscription delivered to it. Each has `seq`, `type`, `subject`, `time`, `task` (the task routing gave it, or null), `outcome` (as [routing](../daemon/routing.md#outcomes) recorded it, or for an event a subscription delivered beside another task, `woke` or `kept` for this task), `prompt` (the state of this task's prompt that carries the event: `queued`, `attempted`, `uncertain`, `confirmed`, `withdrawn`, or null when none does) and `wait` (the id of this task's wait it fired, or null). See [The task's inbox](../daemon/routing.md#the-tasks-inbox) |
 | `triage` | `item` (a feedback item's URL), `class` (`trivial`, `nothing-to-do` or `persons-call`), `run` (the run whose result sorted it), `created`: how the agent sorted each review feedback item, in the order it first did. See [Review feedback](../daemon/tools.md#review-feedback) |
+| `scores` | `run`, `step`, `scorer`, `kind`, `verdict`, `reason` and `time` of each run's latest score by each scorer, by run then scorer. See [score.md](../daemon/score.md) |
 
 And these objects:
 
@@ -705,6 +706,7 @@ one of `workflow` (the default), `agent`, `model`, `machine` and `repo`. See
 | `current`, `previous` | The two windows: `since` and `until`, `since_day`, the local date `since` falls on in the daemon's timezone, as `days` are keyed, then a [total](#cost-total) and `merges` |
 | `days` | One entry per local day of either window with a record or a merge, oldest first: `day` (`YYYY-MM-DD`), a [total](#cost-total) and `merges` |
 | `split` | One entry per value of the current window's records, sorted: the value under the dimension's name, such as `"model": "claude-opus-5-5"`, and a [total](#cost-total) |
+| `scores` | One entry per value and scorer of the current window's scores, sorted: the value under the dimension's name, `scorer`, then the count of each verdict, `pass`, `fail`, `error` and `not_applicable`. A run counts once per scorer, with its latest score in the window |
 
 ### Cost total
 

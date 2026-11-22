@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { attentionView, costTiles, dayBars, money, splitTable } from "./costs.js";
+import { attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
 
 test("money rounds half a cent up as written in decimal, groups thousands, and shows no cost as -", () => {
   // What Intl.NumberFormat("en", { style: "currency", currency: "USD" }) prints, which Herdr's engine lacks.
@@ -135,4 +135,18 @@ test("the week a day falls in follows the daemon's timezone, not the browser's",
   const day = (date) => ({ day: date, ...total(1) });
   const bars = dayBars(costs(total(1), total(1), { days: [day("2026-11-15"), day("2026-11-16")] }));
   assert.deepEqual(bars.map((bar) => [bar.day, bar.current]), [["2026-11-15", false], ["2026-11-16", true]]);
+});
+
+test("a scorer's pass rate is pass over pass and fail, with errors and not applicable counted apart", () => {
+  const scores = [
+    { workflow: "implement", scorer: "gate", pass: 11, fail: 3, error: 1, not_applicable: 1 },
+    { workflow: "plan-batch", scorer: "gate", pass: 0, fail: 0, error: 2, not_applicable: 4 },
+  ];
+  assert.deepEqual(scoreTable(costs(total(0), total(0), { scores })), {
+    dimension: "Workflow",
+    rows: [
+      { name: "implement", scorer: "gate", rate: "79%", pass: 11, fail: 3, error: 1, notApplicable: 1, line: "pass rate 79%, 11 pass, 3 fail, 1 error, 1 not applicable" },
+      { name: "plan-batch", scorer: "gate", rate: "-", pass: 0, fail: 0, error: 2, notApplicable: 4, line: "no pass rate, 2 error, 4 not applicable" },
+    ],
+  });
 });

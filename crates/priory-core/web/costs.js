@@ -75,6 +75,24 @@ export function splitTable(costs) {
   };
 }
 
+/** Each scorer's verdicts in the current window, by `costs.by`. An error means the scorer broke, so the rate leaves it out. @param {any} costs */
+export function scoreTable(costs) {
+  const { by } = costs;
+  return {
+    dimension: by[0].toUpperCase() + by.slice(1),
+    rows: (costs.scores ?? []).map((/** @type {any} */ row) => {
+      const graded = row.pass + row.fail;
+      const rate = graded ? `${Math.round((row.pass / graded) * 100)}%` : "-";
+      const counts = [[row.pass, "pass"], [row.fail, "fail"], [row.error, "error"], [row.not_applicable, "not applicable"]]
+        .filter(([count]) => count).map(([count, word]) => `${count} ${word}`);
+      return {
+        name: row[by] ?? "-", scorer: row.scorer, rate, pass: row.pass, fail: row.fail, error: row.error, notApplicable: row.not_applicable,
+        line: [graded ? `pass rate ${rate}` : "no pass rate", ...counts].join(", "),
+      };
+    }),
+  };
+}
+
 const PARTS = [
   ["working", "Working", "working_minutes"],
   ["person", "Waiting on you", "person_wait_minutes"],

@@ -46,3 +46,10 @@ exit 1 fails, with the last line of the scorer's output as the reason. Any other
 Each score appends one `factory.run.scored` record to the trace, as [the trace
 schema](../trace-schema.md#factoryrunscored) defines it. A score is a record: scoring a run again,
 with the same scorer or a changed one, appends another record and replaces none.
+
+## Where scores show
+
+`priory task ID --json` lists each run's latest score by each scorer in its `scores`, and the web
+view's task page shows them under each run. The Costs panel and `priory costs --json` count each scorer's verdicts in the window,
+by the same split as the cost. The panel's pass rate is `pass` over `pass` and `fail`: an `error`
+means the scorer broke, not the run, so it stays out, as does `not applicable`.
