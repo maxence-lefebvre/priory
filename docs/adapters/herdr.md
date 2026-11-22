@@ -22,6 +22,8 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
 - `adapters/herdr/mods/priory-bonjour/`: the Bonjour panel. See
   [The Bonjour panel](#the-bonjour-panel).
 - `adapters/herdr/mods/priory-costs/`: the Costs panel. See [The Costs panel](#the-costs-panel).
+- `adapters/herdr/mods/priory-usage/`: the usage line, docked at the bottom of the window. See
+  [The usage line](#the-usage-line).
 - `adapters/herdr/mods/priory-flows/`: the Flows panel. See [The Flows panel](#the-flows-panel).
 - `adapters/herdr/mods/priory-task/`: the Task panel. See [The Task panel](#the-task-panel).
 - `adapters/herdr/mods/priory-inbox/`: the Inbox panel. See [The Inbox panel](#the-inbox-panel).
@@ -29,7 +31,7 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
 - `adapters/herdr/mods/priory-runs/`: the Runs panel. See [The Runs panel](#the-runs-panel).
 - `adapters/herdr/layouts/frame.json`: Herdr's chrome around the view: the sidebar, the top bar
   with the Priory bar, 420 px wide, and Herdr's tab bar, the work body with Herdr's `main` block,
-  and the status line.
+  and the bottom row with Herdr's status line and the [usage line](#the-usage-line).
 - `adapters/herdr/lib/layout.js`: turns a view into a Herdr layout inside the frame, and finds a
   view's blocks in the layout Herdr shows. See [The layout](#the-layout).
 - `adapters/herdr/layout`: reads `priory views --json` on its standard input and prints every
@@ -553,6 +555,24 @@ DESIGN.md's "Costs panel" section holds its visual rules; this section says how 
   same split follow, from the `scores` of `priory costs --json`. With no cost, the scores still
   show, with the split chips beside their title.
 - **Attention.** Your minutes per merge, the ask waits and where each task's time went.
+
+## The usage line
+
+`mods/priory-usage/` is one line at the bottom of every layout, beside Herdr's status line: what the
+factory spent against its spend caps. The frame places it, so every view shows it. DESIGN.md's
+"Usage line" section holds its visual rules; this section says how it works.
+
+- **Reading.** The line reads `priory costs FACTORY --json` when it starts, then every minute. It
+  also reads Over9k's saved Claude limits, `~/.cache/over9k/usage/claude.json`, on the machine that
+  runs priory. It never writes that file, and shows nothing of Claude when the file is absent.
+- **The line.** Today's spend and this week's, each against the factory's `day` or `week` cap when
+  there is one, then how many tasks are held at a spend cap, then Claude's 7-day limit. Today's
+  spend is the factory's `day` cap's `spent_usd`, or else today's entry in `days`. This week's is
+  the `week` cap's `spent_usd`, or else the current window's cost. See
+  [spend.md](../daemon/spend.md).
+- **The detail.** A click opens a popup of the same mod: each cap of `caps` with a bar, this week's
+  `split` by workflow, each task of `held`, and Claude's 7-day limit. Pressing a held task opens it
+  in the [Task panel](#the-task-panel) and closes the popup.
 
 ## The Inbox panel
 

@@ -90,9 +90,13 @@ A lane's caps only ever hold new runs. Its `task` cap holds the task with an ask
 - A held task shows as a `held` row and an `ask` row, as any hold with an ask does.
 - `priory costs` ends with a table of every cap, its limit and what it spent. A `task` cap shows the
   most an active task under it spent, and which task. `--json` and `GET /api/costs` carry the same
-  rows as `caps` (see [the serve reference](../reference/serve.md#costs)).
+  rows as `caps`, and each task held at a cap as `held` (see
+  [the serve reference](../reference/serve.md#costs)).
+- The Herdr adapter's [usage line](../adapters/herdr.md#the-usage-line) shows today's and this
+  week's spend against the factory's caps, and how many tasks are held at a cap. A click lists
+  every cap and each held task.
 
-The web view and the Herdr views do not show caps yet.
+The web view does not show caps yet.
 
 ## Known limits
 

@@ -580,3 +580,53 @@ fn costs_show_each_spend_cap_with_what_its_window_spent() {
         ])
     );
 }
+
+#[test]
+fn costs_list_each_task_held_at_a_spend_cap() {
+    let setup = Setup::new("held");
+    let db = setup.db();
+    for (id, state) in [(1, "held"), (2, "held"), (3, "ready"), (4, "held")] {
+        db.execute(
+            "INSERT INTO tasks (id, key, workflow, step, state, trigger, source)
+             VALUES (?1, 'cli:' || ?1, 'implement', 'implement', ?2, 'cli', '-')",
+            rusqlite::params![id, state],
+        )
+        .unwrap();
+    }
+    // Task 1 at a lane's task cap; task 2 held by a person, not a cap; task 3 raised and let go;
+    // task 4 at the factory's week cap.
+    for (hold, task, cap, met) in [
+        (1, 1, Some(("lane:core/intake.task", 5.0, 5.2)), None),
+        (2, 2, None, None),
+        (
+            3,
+            3,
+            Some(("factory.task", 5.0, 6.0)),
+            Some("2026-11-17T10:00:00Z"),
+        ),
+        (4, 4, Some(("factory.week", 200.0, 203.0)), None),
+    ] {
+        db.execute(
+            "INSERT INTO holds (id, task, reason, kind, resume, met) VALUES (?1, ?2, 'why', 'person', 'ready', ?3)",
+            rusqlite::params![hold, task, met],
+        )
+        .unwrap();
+        if let Some((cap, cap_usd, spent_usd)) = cap {
+            db.execute(
+                "INSERT INTO spend_holds (hold, task, cap, cap_usd, spent_usd) VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![hold, task, cap, cap_usd, spent_usd],
+            )
+            .unwrap();
+        }
+    }
+
+    let json = setup.costs_json(&[]);
+
+    assert_eq!(
+        json["held"],
+        json!([
+            { "task": 1, "key": "cli:1", "scope": "lane core/intake", "period": "task", "cap_usd": 5.0, "spent_usd": 5.2 },
+            { "task": 4, "key": "cli:4", "scope": "factory", "period": "week", "cap_usd": 200.0, "spent_usd": 203.0 },
+        ])
+    );
+}

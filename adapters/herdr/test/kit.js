@@ -172,6 +172,10 @@ export const herdr = {
   notices: [],
   /** @type {((command: string) => void)[]} the mods waiting in nextCommand */
   listening: [],
+  /** @type {any} what props() gives the mod, as an overlay's copy gets `overlay` */
+  props: {},
+  /** @type {any[]} each overlay the mods opened and not closed, as given to openOverlay */
+  overlays: [],
   /** Delivers `command` to every mod waiting in nextCommand, as `run("<mod>.<command>")` does. @param {string} command */
   command(command) {
     const listening = this.listening;
@@ -195,6 +199,8 @@ export const herdr = {
     this.timers = [];
     this.notices = [];
     this.listening = [];
+    this.props = {};
+    this.overlays = [];
   },
 };
 
@@ -231,6 +237,9 @@ export const layout = () => herdr.layout;
 export const notify = (/** @type {unknown} */ notice) => { herdr.notices.push(notice); return "notice"; };
 export const theme = () => ({});
 export const window = () => null;
+export const props = () => herdr.props;
+export const openOverlay = (/** @type {any} */ spec) => { herdr.overlays.push(spec); return `overlay-${herdr.overlays.length}`; };
+export const closeOverlay = (/** @type {string} */ id) => { herdr.overlays = herdr.overlays.filter((_spec, at) => `overlay-${at + 1}` !== id); return null; };
 
 // The Desk reads Herdr's appearance from the engine's global `window`.
 Object.assign(globalThis, { window: { appearance: () => "light" } });
