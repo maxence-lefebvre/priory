@@ -6,11 +6,11 @@ const LISTS = [{ tag: "ul", item: /^\s*[-*+]\s+(.*)$/s }, { tag: "ol", item: /^\
 const BOX = /^\[([ xX])\]\s+(.*)$/s;
 const CHECK = `<svg class="ico s15" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`;
 const FENCE = /^\s*```/;
-// A label holds no `[`, so a line of unmatched brackets scans in linear time. Bold holds whole
-// code spans and links, so it never closes inside one.
+// A label holds no `[`, so a line of unmatched brackets scans in linear time. Each bold token is
+// atomic (lookahead and backreference): a whole code span or link when one forms, else one character.
 const URL_PART = String.raw`https:\/\/(?:[^\s()]|\([^\s()]*\))+`;
 const INLINE = new RegExp(
-  String.raw`\x60(?<code>[^\x60]+)\x60|\*\*(?<bold>(?:\x60[^\x60]+\x60|\[[^[\]]*\]\(${URL_PART}\)|[^*\x60[])+)\*\*|(?<image>!?)\[(?<label>[^[\]]*)\]\((?<url>${URL_PART})\)`,
+  String.raw`\x60(?<code>[^\x60]+)\x60|\*\*(?<bold>(?:(?=(?<token>\x60[^\x60]+\x60|\[[^[\]]*\]\(${URL_PART}\)|[^*]))\k<token>)+)\*\*|(?<image>!?)\[(?<label>[^[\]]*)\]\((?<url>${URL_PART})\)`,
   "g",
 );
 const HEADING = /^ {0,3}(#{1,6})[ \t]+(.*)$/s;

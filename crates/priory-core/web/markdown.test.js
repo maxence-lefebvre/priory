@@ -111,11 +111,16 @@ test("never closes bold inside code or a link target", () => {
   );
 });
 
+test("keeps bold around a literal bracket or a lone backtick", () => {
+  assert.equal(markdown("**array[0]** and **one ` tick**", [], null), "<p><strong>array[0]</strong> and <strong>one \x60 tick</strong></p>");
+});
+
 test("renders long runs of markup characters in linear time", () => {
   const started = performance.now();
   markdown("[".repeat(64000) + "`".repeat(64000), [], null);
   markdown(`# a${" ".repeat(64000)}z\n# ${" ".repeat(64000)}x\u2028x\n- ${" ".repeat(64000)}x\u2028x`, [], null);
   markdown("**`*`".repeat(20000), [], null);
+  markdown(`**${"`a` [b](https://c.io) [ `".repeat(8000)}`, [], null);
 
   assert.ok(performance.now() - started < 1500);
 });
