@@ -222,7 +222,8 @@ them, and `{team}` becomes `none` without a team. No branch exists yet, so a bra
 then. When the task's first run creates its branch, a lane that was derived is derived again with the
 branch, so a branch rule can then win. A lane the request set never changes, and neither does a
 derived lane once the task has a branch: editing `lanes.toml` later does not move a task already
-running. `priory tasks --lane L` lists one lane.
+running. `priory tasks --lane L` lists one lane. A `[lane."<team>/<theme>"]` table can set the
+lane's `max_running` (see [runs.md](daemon/runs.md#at-most-so-many-running)).
 
 ### Workflows
 
@@ -431,7 +432,9 @@ until its run starts.
   then oldest first. The bands default to `blocker`, `now`, `today` and `later`, and `factory.toml`
   can rename them. A trigger or workflow sets a task's default band. A higher band starts earlier
   and never skips the room check. Only a band the factory lists in `[queue] preempt` also stops a
-  run of a lower band at its turn end, when its task waits for that run's room. M1
+  run of a lower band at its turn end, when its task waits for that run's room. M1 With
+  `[queue] fair = "lane"`, the tasks of a band that no person ordered take turns between lanes. A
+  lane or a trigger can set `max_running`, past which its new runs wait. M1
   With `[queue] review_limit`, a lane's or a batch's new tasks wait to start while that many of its
   pull requests wait for a person, and the desk says so. M1
 - R4.5 A person can move a task to another band or position, from the CLI or a view. M1

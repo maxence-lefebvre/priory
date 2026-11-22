@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::BTreeMap;
 
 /// `lanes.toml`: how a task without a lane of its own gets one. Without the file, every task gets
 /// the `{team}/misc` fallback.
@@ -9,6 +10,18 @@ pub struct Lanes {
     pub fallback: Option<String>,
     #[serde(default)]
     pub rules: Vec<Rule>,
+    /// Each lane's settings, by its `<team>/<theme>` name.
+    #[serde(default)]
+    pub lane: BTreeMap<String, Lane>,
+}
+
+/// `[lane."<team>/<theme>"]`: how the queue treats one lane.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Lane {
+    /// The most of the lane's tasks that may have a live run at once; new starts past it wait.
+    #[serde(default, deserialize_with = "crate::factory::max_running")]
+    pub max_running: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]

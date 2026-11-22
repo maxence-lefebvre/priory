@@ -246,6 +246,18 @@ fn cap<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Err
     )))
 }
 
+/// A `max_running` of at least one: a count of zero would never start a task again.
+pub(crate) fn max_running<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u32>, D::Error> {
+    match u32::deserialize(deserializer)? {
+        0 => Err(D::Error::custom(
+            "`max_running` is 0: give at least 1, or hold the tasks instead",
+        )),
+        count => Ok(Some(count)),
+    }
+}
+
 /// `[repos."owner/name"]`: what the daemon runs in a worktree of the repository, so no run has to
 /// find out how to install and build it.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -958,6 +970,15 @@ pub struct Queue {
     /// wait to start; no limit when unset.
     #[serde(default)]
     pub review_limit: Option<std::num::NonZeroU32>,
+    /// `lane` makes the queue take turns between lanes inside a band; oldest first when unset.
+    pub fair: Option<Fair>,
+}
+
+/// What the queue takes turns between inside a band.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Fair {
+    Lane,
 }
 
 fn on() -> bool {
@@ -970,6 +991,7 @@ impl Default for Queue {
             overlap: true,
             preempt: Vec::new(),
             review_limit: None,
+            fair: None,
         }
     }
 }
@@ -1498,6 +1520,10 @@ pub struct Trigger {
     /// Whether its tasks are a trial: each stops before its first irreversible step, records what
     /// that step would have done, and writes nothing.
     pub staged: Option<bool>,
+    /// The most of its tasks that may have a live run at once; new starts past it wait.
+    #[serde(default, deserialize_with = "max_running")]
+    #[schemars(range(min = 1))]
+    pub max_running: Option<u32>,
     /// A script of the factory that runs on each matching event before it becomes a task request,
     /// and can drop the request or change it.
     pub pre: Option<Pre>,
@@ -2308,6 +2334,7 @@ impl Factory {
         static BUILT_IN: Lanes = Lanes {
             fallback: None,
             rules: Vec::new(),
+            lane: BTreeMap::new(),
         };
         self.lanes.as_ref().map_or(&BUILT_IN, |lanes| &lanes.value)
     }
@@ -2613,6 +2640,13 @@ impl Factory {
         self.settings
             .as_ref()
             .is_none_or(|settings| settings.value.queue.overlap)
+    }
+
+    /// Whether the queue takes turns between lanes inside a band.
+    pub fn fair(&self) -> Option<Fair> {
+        self.settings
+            .as_ref()
+            .and_then(|settings| settings.value.queue.fair)
     }
 
     /// The bands whose waiting head may stop a run of a lower band.

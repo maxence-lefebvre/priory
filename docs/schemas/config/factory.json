@@ -283,6 +283,13 @@
       },
       "type": "object"
     },
+    "Fair": {
+      "description": "What the queue takes turns between inside a band.",
+      "enum": [
+        "lane"
+      ],
+      "type": "string"
+    },
     "FigmaWebhook": {
       "additionalProperties": false,
       "description": "Figma v2 webhooks, at `POST /hooks/figma`.",
@@ -524,6 +531,17 @@
       "additionalProperties": false,
       "description": "How the queue orders tasks.",
       "properties": {
+        "fair": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Fair"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`lane` makes the queue take turns between lanes inside a band; oldest first when unset."
+        },
         "overlap": {
           "default": true,
           "description": "Whether a task waits for an earlier active task that changes the same files; true when unset.",
