@@ -606,7 +606,7 @@ an integer, is the number of ended runs left out. `priory runs --json` prints ev
 | `agent` | string or null | The agent it ran |
 | `started` | RFC 3339 | When it started |
 | `ended` | RFC 3339 or null | When it ended; null while it is live |
-| `end` | string or null | How it ended, such as `done`, `moved`, `blocked`, `lost` or `exited`. See [runs.md](../daemon/runs.md) |
+| `end` | string or null | How it ended, such as `done`, `moved`, `debated`, `blocked`, `lost` or `exited`. `debated`: a debate turn that the next speaker follows. See [runs.md](../daemon/runs.md) |
 | `outcome` | string or null | Its result's outcome, such as `passed` or `approved`, or null without a result |
 | `model` | string or null | The model its `factory.step.ended` event recorded |
 | `tokens` | object or null | That event's `input`, `output`, `cache_read` and `cache_write` token counts |

@@ -58,8 +58,11 @@ pub fn mermaid(workflow: &Workflow) -> String {
 
 fn declaration(index: usize, step: &Step) -> String {
     let irreversible = step.effect == Effect::Irreversible;
+    let debaters = step.debate.as_ref().map_or_else(String::new, |debate| {
+        format!(", debate: {}", label(&debate.agents.join(" and ")))
+    });
     let text = format!(
-        "{}<br/>{}, {}{}",
+        "{}<br/>{}, {}{}{debaters}",
         label(&step.id),
         step.decides.name(),
         step.effect.name(),

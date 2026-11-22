@@ -15,7 +15,8 @@ nothing.
 
 ## The tools
 
-Three tools end a turn: `result`, `ask` and `wait`. A run holds a result, or an open ask, an open
+Three tools end a turn: `result`, `ask` and `wait`. A debate turn ends with a fourth, `position`
+(see below). A run holds a result, or an open ask, an open
 wait or both. A `result` after an open ask or wait is refused, as is a second `ask` or a second
 `wait`. An ask and a wait side by side wake the task on the first answer or event (see An ask
 beside a wait in [waits.md](waits.md)).
@@ -534,6 +535,36 @@ the compact is typed, because a result could move the task to another agent's co
 `ask` and `wait` resume the same conversation, so the compact follows their answer or event.
 Compacting is described under Compact in [outbox.md](outbox.md).
 
+### `position(verdict, argument, concedes?)`
+
+`position` ends a debate turn: one agent's verdict on a debate step's question (see
+[debates.md](debates.md)). The MCP server lists it only for a debate turn's run, which starts it as
+`priory mcp --session <id> --debate`. Outside a debate turn, the daemon answers `unknown tool
+position`.
+
+```json
+{
+  "verdict": "process",
+  "argument": "A crash in the cache must not take the daemon down. The socket cost is one hop.",
+  "concedes": "The daemon option needs no new service file."
+}
+```
+
+`verdict` must be a key of the step's `next`. `argument` holds at most 4000 characters. `concedes`,
+optional, is what the other side got right. A turn takes one position. The refusals read:
+
+```text
+verdict "maybe" is not one of step debate-design's outcomes: daemon, process, undecided
+argument is 4001 characters; a position's argument is at most 4000
+position needs a verdict
+position needs an argument
+this turn already has a position: end your turn
+```
+
+During a debate turn, `result`, `ask` and `wait` are refused with `a debate turn ends with
+position`. A debater that lacks what it needs says so in its argument and picks the verdict the
+workflow keeps for that, such as `undecided`.
+
 ### `tldr(text)` and `search(query, states?, limit?)`
 
 `tldr` replaces the task's TL;DR, for when the work drifted from the request. `search` finds tasks.
@@ -622,6 +653,7 @@ When the run's turn ends, its `Stop` moves the task by its result to `next[outco
 | ---------- | ---------------------------------------------------- | ------------------------- |
 | model step, same agent | at that step, `running`, with its prompt queued | `moved`, into a new run |
 | model step, other agent or irreversible | at that step, `ready`, with its prompt queued | `moved` |
+| debate step | at that step, `ready`: each turn's run types its own prompt, see [debates.md](debates.md) | `moved` |
 | human step | at that step, `asleep`, with an ask of its `options` | `asleep`                  |
 | code step  | at that step, `ready`: see Code steps                | `moved`                   |
 | `done`     | `done`, or `asleep` on its checks: see Done and checks | `done`, or `asleep`       |
