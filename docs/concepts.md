@@ -10,9 +10,8 @@ frontmatter. Changing the factory is a pull request. Every key is in
 [docs/reference/](reference/README.md).
 
 **Trigger.** One event source, a filter and the workflow its events start. The intake polls the
-sources `github`, `linear`, `linear.view`, `slack` and `schedule`. Signed webhooks deliver `sentry`,
-`honeycomb`, `intercom`, `cloudwatch` and `figma` events, and GitHub and Linear events sooner than
-a poll. A trigger's `key` says which events are the same
+sources `github`, `linear`, `linear.view`, `slack` and `schedule`. Webhooks, each checked by a signature or a shared secret, deliver `sentry`, `honeycomb`,
+`intercom`, `cloudwatch` and `figma` events, and GitHub and Linear events sooner than a poll. A trigger's `key` says which events are the same
 work, and a factory holds at most one active task per key. See
 [docs/intake/README.md](intake/README.md).
 

@@ -7,7 +7,7 @@
 
 Priory runs coding agents, such as Claude Code and Codex, on machines you own. It turns events
 into tasks: a labelled GitHub issue, a Linear issue that enters a view, a Slack message, a Sentry
-issue or another signed webhook, a schedule, or a request you type. It then carries each task
+issue or another webhook, a schedule, or a request you type. It then carries each task
 through a workflow you wrote, usually to a pull request that a person reviews and merges.
 
 Priory is a Rust program with two long-running processes. The intake polls GitHub, Linear, Slack

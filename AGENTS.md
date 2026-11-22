@@ -20,9 +20,9 @@ Read it before you change behaviour or name a concept, and use its Concepts tabl
 - `docs/daemon/`: how the daemon runs tasks, one file per topic. Its `README.md` says which file to read.
 - `docs/intake/`: the intake's message contract, one file per source. Its `README.md` says which file to read.
 - `docs/reference/`: lookup pages: every command in `cli.md`, every key of the factory's files, every endpoint and event.
-- `docs/*.md`: how-to guides, one task per file, and `concepts.md`, which explains the terms.
-- `docs/design/`: the design note written before each feature, one file per topic. Its "Later slices" list marks what is built.
-- `site/`: the docs website's builder. `GROUPS` in `site/build.py` places each page in a navigation group.
+- `docs/*.md`: how-to guides, one task per file. Three files there are other types: `concepts.md` explains the terms, `prd.md` holds the requirements, and `trace-schema.md` is reference.
+- `docs/design/`: one design note per feature. Check its "Later slices" list to see which slices are on `main`.
+- `site/`: the docs website's builder. Add a new file directly under `docs/` to `GROUPS` in `site/build.py`.
 - `docs/adr/`: one file per hard-to-reverse decision, `NNNN-<decision-as-a-sentence>.md`.
 - `docs/images/`: the web view's screenshots, each PNG under 400 KB.
 - `GETTING_STARTED.md`: the tutorial, from a build to a first answered ask.

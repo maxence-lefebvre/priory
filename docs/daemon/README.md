@@ -12,7 +12,7 @@ priory daemon [DIR] [--once]
 does, and refuses to start while it has problems.
 
 It reads the output `factory.intake` of the event log, herdr-bus by default or Postgres with
-[`[log]`](../reference/factory.md#log), as the consumer `priory`, or `priory.<runner>` in a
+[`[log] backend = "postgres"`](../reference/factory.md#log), as the consumer `priory`, or `priory.<runner>` in a
 factory of several runners (see [runners.md](runners.md)). It records each message in
 the inbox and routes it to a task (see [routing.md](routing.md)). Without `--once`, the daemon looks
 for new messages every second and runs agents, as [runs.md](runs.md) describes.

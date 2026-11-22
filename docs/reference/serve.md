@@ -57,7 +57,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /api/tasks/{runner}:{key}/{act}` | `priory ACT [DIR] RUNNER:KEY [--generation N]` | `202` `{"sent", "submission"}`: resume, revive, cancel, release or say on another runner's task. See [Writes](#writes) |
 | `POST /api/tasks/{id}/move` | `priory move ID --expected N [--band BAND] [--top \| --before TASK \| --after TASK]` | as above |
 | `POST /api/tasks/{id}/label` | `priory label TASK wrong (--evidence URL [--happened DATE] \| --clear)` | as above |
-| `POST /api/subscribe` | `priory subscribe TASK RESOURCE [--expected N]` | as above |
+| `POST /api/subscribe` | `priory subscribe TASK RESOURCE [--expected N]` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
 | `POST /api/unsubscribe` | `priory unsubscribe TASK RESOURCE` | as above |
 | `POST /api/todos` | `priory todo add TEXT [--band B] [--due TIME]` | See [Writes](#writes) |
 | `POST /api/todos/{id}/done` | `priory todo done ID` | See [Writes](#writes) |
