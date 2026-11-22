@@ -100,7 +100,7 @@ on a secure origin: `https://`, or `localhost` on the machine itself. On a tailn
 `tailscale serve` is such a proxy. It gives the machine an `https://<machine>.<tailnet>.ts.net`
 address with a certificate, accepts connections from the tailnet only, and forwards them to
 `127.0.0.1`. The daemon keeps listening on loopback, with no `public = true`.
-[How to use the web view from a phone](../using-the-web-view.md) has the steps. The server
+[How to use the web view](../using-the-web-view.md) has the steps. The server
 compares `Origin` with `Host` and not the scheme, so the proxy, which keeps `Host`, passes the
 Origin rule.
 

@@ -254,7 +254,7 @@ task with a key such as `github:owner/name#42`, and it goes through the same ste
 ## Next steps
 
 - Start from a ready-made factory: [How to start from a starter factory](docs/starting-from-a-starter.md).
-- Answer asks from a phone, with notifications: [How to use the web view from a phone](docs/using-the-web-view.md).
+- Answer asks from a phone, with notifications: [How to use the web view](docs/using-the-web-view.md).
 - Keep both processes running: [How to run Priory as services](docs/running-as-services.md).
 - Try a factory with fake agents before a real one runs: [How to test a factory end to end](docs/testing-a-factory.md).
 - Look up a command: [the command reference](docs/reference/cli.md). The ones you need most are below.
