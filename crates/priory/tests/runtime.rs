@@ -14678,6 +14678,33 @@ fn an_event_an_asleep_task_keeps_and_no_agent_read_is_listed_and_counted_as_unhe
 }
 
 #[test]
+fn a_quick_add_a_task_kept_before_its_first_run_is_listed_as_unheard() {
+    let mut setup = Setup::new("inbox-unheard-add");
+    // No room, so the task never runs and nothing reads the request.
+    setup.memory(1);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "queued");
+    let written = herdr_bus::Timestamp::now() - jiff::SignedDuration::from_mins(10);
+    let (source, _) = cli_request("github:owner/repo#42", "Also rename the flag");
+
+    setup.publish(&source.time(written));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(inbox[1][4], "kept");
+    let output = setup.priory(&["inbox", "--unrouted", "--json"]);
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let unheard = &listed["unrouted"]["unheard"];
+    assert_eq!(unheard.as_array().map(Vec::len), Some(1), "{listed}");
+    assert_eq!(unheard[0]["task"]["state"], "queued", "{listed}");
+    assert_eq!(unheard[0]["events"][0]["seq"], 2, "{listed}");
+    assert_eq!(unheard[0]["events"][0]["line"], "Also rename the flag");
+    let desk = setup.priory(&["desk", "--json"]);
+    let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+    assert_eq!(desk["counts"]["unheard"], 1, "{desk}");
+}
+
+#[test]
 fn a_comment_on_a_subscribed_pull_request_reopens_the_done_task() {
     let mut setup = Setup::new("subscribe-done");
     setup.calls(&[json!([subscribe("subscribe"), result("passed")])]);

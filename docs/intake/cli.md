@@ -84,8 +84,11 @@ A GitHub URL counts when it names an issue or pull request, such as
 `https://github.com/owner/name/issues/42`. A Linear URL counts when it names an issue, such as
 `https://linear.app/acme/issue/ENG-7/title`. An issue key joins the task that already has it, if
 one is active. That task hears the text as [`priory say`](../daemon/tools.md) sends it: an asleep
-task at a model step wakes, and a running one reads it after its turn. A task whose agent has not
-started yet, or that waits at a human step, reads it in its next prompt.
+task at a model step wakes, and a running one reads it after its turn. A task that waits on a
+step's ask shows the text on that ask, and its next agent run reads it. A task whose agent has not
+started yet keeps the text, and reads it in its first prompt. The joined task keeps its own
+workflow, band and lane: `--workflow`, `--band` and `--lane` apply only to a new task.
+`POST /api/request` says which of these happened in its reply's `outcome`.
 
 The date is today's in the machine's time zone, and `n` is the first number no other `priory add`
 took that day. Two adds that run at once get different keys: the key alone names the source event,

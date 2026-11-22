@@ -367,7 +367,11 @@ fn unheard_events(
     window: Option<(&str, &str)>,
     now: Timestamp,
 ) -> rusqlite::Result<Vec<(Value, bool, Value)>> {
-    let kinds = serde_json::to_string(&state::OWN_KEY).expect("kinds serialize");
+    let kinds = state::OWN_KEY
+        .iter()
+        .chain([&priory_intake::request::REQUESTED])
+        .collect::<Vec<_>>();
+    let kinds = serde_json::to_string(&kinds).expect("kinds serialize");
     let before = (now - UNHEARD_AFTER).to_string();
     let (from, to) = window.unzip();
     let mut statement = db.prepare(

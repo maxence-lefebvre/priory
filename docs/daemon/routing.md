@@ -126,7 +126,8 @@ Each inbox entry gets one of these outcomes:
 | A schedule's or review request's `factory.task.requested`, with a task asleep at a model step owning its key | `woke` | that task, now `ready` |
 | A schedule's or review request's `factory.task.requested`, with a task in another active state owning its key | `coalesced` | that task, unchanged |
 | A review, comment or review thread comment, with no active task owning a resource it names, and a done task it reopens | `reopened` | that task, now `ready` at its reopen step |
-| `priory.task.requested.cli`, with an active task owning its key, at a model step whose agent started | `said` | that task, which hears the text as `priory say` sends it |
+| `priory.task.requested.cli`, with an active task owning its key, at a model step whose agent started or waiting on a step's ask | `said` | that task, which hears the text as `priory say` sends it |
+| `priory.task.requested.cli`, with an active task owning its key whose agent has not started | `kept` | that task, which reads the text in its first prompt |
 | `github.pull_request.review_request_removed` with `reviewed: false`, with an active task whose key is its review key | `withdrew` | that task, now `dropped`, its live run ended |
 | Any other, with an active task asleep at a model step subscribing to a resource it names, that fires no wait | `woke` | that task, now `ready` (see [tools.md](tools.md#subscribeon-and-unsubscribeon)) |
 | Any other, with an active task owning a resource it names | `kept` | that task                   |
@@ -224,7 +225,8 @@ asleep task may sleep for hours on a wait that the event does not fire, and a ta
 it runs again. So `priory inbox --unrouted` lists a third group, `unheard`: per task, the events it
 kept, itself or through a subscription, that no prompt carries and no wait took, once they are 5 minutes old (see
 [serve.md](../reference/serve.md#unrouted)). Only what people say, edit and close counts: the
-kinds a task's own key carries, and not the agent's own comments. Checks and pushes stay with the
+kinds a task's own key carries, and a `priory add` that joined the task, and not the agent's own
+comments. Checks and pushes stay with the
 checks gate.
 
 Each group names its task and a command: `priory say ID` for an asleep or blocked task, whose next
