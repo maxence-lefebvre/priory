@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 4dbe8344773ec0918b620b04993586b5a2cfe053ec0ffd9c4c9c75121801e2cc # shrinks to secret = "aaaaaaaa", pieces = ["ghp_aaaaaaaaaaaaaaaaaaaa", "¡ࠀ\u{e000}", "ghp_aaaaaaaaaaaaaaaaaaaa"], codes = []
+cc 50356e2d35164c9c3e2421e40b8181814daaa75c06dd30fa33ca5422e90c4cb8 # shrinks to secrets = [" aa-a-a[\n", "aaa\n\n[a\n"], pieces = ["", "", "", "", "", "0¡"], picks = [0, 0, 0, 0, 0, 0], width = Some(14)
