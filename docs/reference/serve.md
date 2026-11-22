@@ -81,7 +81,7 @@ or a reason, is untrusted: render it as text.
 | `404` | No such path, task, report, ask, batch or web view file; a run screen whose run ended or does not exist; any run screen with `[serve] terminal = "off"`; any [keyboard](#keyboard) path, for any method, unless `[serve] terminal = "type"` |
 | `405` | `POST` on a path that reads, or `GET` on a write. The `Allow` header names the method |
 | `408` | The request sent no byte within 1 second, or took over 5 seconds in all |
-| `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report moved past its `revision`, or the pick already holds that choice or an applied one. Or a batch edit's `revision` is no longer the plan's revision. Or a keyboard take's `revision` is no longer the state's |
+| `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report moved past its `revision`, or the pick already holds that choice or an applied one. Or a batch edit's `revision` is no longer the plan's revision |
 | `411` | A `POST` has no `Content-Length`, or uses `Transfer-Encoding` |
 | `413` | A `GET` has a body; a write's body is over 16 KiB; a webhook's is over 1 MiB |
 | `415` | A write's `Content-Type` is not `application/json` |
@@ -148,7 +148,7 @@ it needs the token, passes the Origin rule and reaches the daemon on its socket.
 
 | Endpoint | Body | Reply |
 | -------- | ---- | ----- |
-| `POST /api/runs/{id}/keyboard` | `revision`, the state's revision the page showed | `{"grant": N, "ends": TIME, "secret": "<32 hex digits>"}`. The grant lasts 15 minutes, and ends the run's grant before it. The secret is in this reply only |
+| `POST /api/runs/{id}/keyboard` | None. A `revision` an older page sends is not checked | `{"grant": N, "ends": TIME, "secret": "<32 hex digits>"}`. The grant lasts 15 minutes, and ends the run's grant before it. The secret is in this reply only |
 | `POST /api/runs/{id}/keyboard/return` | `secret` | `{"ok": "run N's keyboard returned"}` |
 | `POST /api/runs/{id}/keys` | `secret`, `request`, an id of 1 to 64 bytes the page picks, and exactly one of `text` or `key` | `{"outcome": "sent" \| "failed" \| "uncertain"}`, with `error` when it failed and `"repeated": true` for a request id already sent under this grant |
 
@@ -162,7 +162,7 @@ it needs the token, passes the Origin rule and reaches the daemon on its socket.
 - A grant follows a run carried into the next step on the same pane, so the earlier run's id
   still reaches it.
 - A secret of an expired, returned or replaced grant gets `403`, naming why it ended. A run that
-  ended gets `404`, and a stale `revision` `409`.
+  ended gets `404`.
 
 ```sh
 curl -X POST http://127.0.0.1:7340/api/runs/12/keys -H "Authorization: Bearer $PRIORY_TOKEN" \

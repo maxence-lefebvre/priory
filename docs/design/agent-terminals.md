@@ -87,7 +87,8 @@ Keys need a person's explicit act, per run:
   confirms a sheet that says what it means (see [What typing bypasses](#what-typing-bypasses)).
   The sheet prevents an accident. It is no protection against a stolen token, since any token
   holder can take a grant.
-- That sends `POST /api/runs/{id}/keyboard` with the state's `revision` the page showed. The daemon
+- That sends `POST /api/runs/{id}/keyboard`. It needs no state revision: other runs' writes move it
+  every second, and the run must be live either way. The daemon
   stores a grant in the state: run, start, end 15 minutes later, and a label, the `User-Agent`'s
   first 64 bytes. The label helps a person tell their devices apart; nobody can trust it. The reply
   carries the grant's secret, 128 random bits, to that page only. The state keeps its hash, and no

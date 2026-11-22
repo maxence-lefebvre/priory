@@ -336,20 +336,18 @@ function server(replies) {
   return { post, sent };
 }
 
-test("taking the keyboard sends the revision the page drew and keeps the grant, or says why not", async () => {
+test("taking the keyboard needs no revision and keeps the grant, or says why not", async () => {
   const { post, sent } = server([
     { status: 200, body: { grant: 3, ends: "2026-11-22T14:32:00Z", secret: "ab".repeat(16) } },
-    { status: 409, body: { error: "the state is at revision 9, not 8" } },
     { status: 404, body: { error: "run 4 ended as done" } },
     { status: 401, body: {} },
     new Error("offline"),
   ]);
-  assert.deepEqual(await takeKeyboard(post, 4, 8), { held: { grant: 3, ends: "2026-11-22T14:32:00Z", secret: "ab".repeat(16) } });
-  assert.deepEqual(sent, [["/api/runs/4/keyboard", { revision: 8 }]]);
-  assert.deepEqual(await takeKeyboard(post, 4, 8), { note: "Could not take the keyboard: the page was behind. Try again." });
-  assert.deepEqual(await takeKeyboard(post, 4, 8), { note: "Could not take the keyboard: run 4 ended as done." });
-  assert.deepEqual(await takeKeyboard(post, 4, 8), { signOut: true });
-  assert.deepEqual(await takeKeyboard(post, 4, 8), { note: "Could not take the keyboard: the connection dropped. Try again." });
+  assert.deepEqual(await takeKeyboard(post, 4), { held: { grant: 3, ends: "2026-11-22T14:32:00Z", secret: "ab".repeat(16) } });
+  assert.deepEqual(sent, [["/api/runs/4/keyboard", {}]]);
+  assert.deepEqual(await takeKeyboard(post, 4), { note: "Could not take the keyboard: run 4 ended as done." });
+  assert.deepEqual(await takeKeyboard(post, 4), { signOut: true });
+  assert.deepEqual(await takeKeyboard(post, 4), { note: "Could not take the keyboard: the connection dropped. Try again." });
 });
 
 test("a key or a text goes with the secret and a fresh request id, and an ended grant drops the keyboard", async () => {
@@ -426,7 +424,7 @@ function desk() {
 test("the session holds a grant for its run, sends in order, and the secret never leaves memory", async () => {
   const { session, asked, granted, reply, settle } = desk();
   session.at(4);
-  session.take(4, 8);
+  session.take(4);
   await granted();
   assert.deepEqual(session.state().held, { grant: 1, ends: "2026-11-22T14:15:00Z" });
   assert.equal(JSON.stringify(session.state()).includes("s1"), false);
@@ -443,7 +441,7 @@ test("the session holds a grant for its run, sends in order, and the secret neve
 test("a paste in flight blocks a second one, and only a sent text counts as sent", async () => {
   const { session, granted, reply, settle } = desk();
   session.at(4);
-  session.take(4, 8);
+  session.take(4);
   await granted();
   const pasted = session.send({ text: "ls" });
   assert.equal(await session.send({ text: "ls" }), false, "Return twice queues it once");
@@ -456,7 +454,7 @@ test("a paste in flight blocks a second one, and only a sent text counts as sent
 test("give back waits for the keys already sent, and refuses new ones meanwhile", async () => {
   const { session, asked, granted, reply, settle } = desk();
   session.at(4);
-  session.take(4, 8);
+  session.take(4);
   await granted();
   session.send({ text: "half a line" });
   session.send({ key: "C-c" });
@@ -474,19 +472,19 @@ test("give back waits for the keys already sent, and refuses new ones meanwhile"
 test("leaving the run, signing out or a switch gives the grant back, and a late grant is given back at once", async () => {
   const { session, asked, granted, reply, signedOut } = desk();
   session.at(4);
-  session.take(4, 8);
+  session.take(4);
   session.leave();
   await granted(1, "late");
   assert.equal(session.state().held, null);
   assert.deepEqual(asked.at(-1), { ...asked.at(-1), path: "/api/runs/4/keyboard/return", body: { secret: "late" } });
   session.at(5);
-  session.take(5, 9);
+  session.take(5);
   await reply(200, { ok: "returned" });
   await granted(2, "b");
   assert.deepEqual(session.state().held, { grant: 2, ends: "2026-11-22T14:15:00Z" }, "the old return leaves the new grant");
   session.at(6);
   assert.deepEqual([asked.at(-1).path, asked.at(-1).body], ["/api/runs/5/keyboard/return", { secret: "b" }]);
-  session.take(6, 10);
+  session.take(6);
   session.leave();
   await reply(200, {});
   await reply(401, {});
@@ -496,7 +494,7 @@ test("leaving the run, signing out or a switch gives the grant back, and a late 
 test("a run carried into the next step on the same pane keeps the grant, and a new pane gives it back", async () => {
   const { session, asked, granted, reply, settle } = desk();
   session.at(4, "1/priory-1");
-  session.take(4, 8);
+  session.take(4);
   await granted();
   session.at(5, "1/priory-1");
   assert.deepEqual([session.state().run, session.state().held], [5, { grant: 1, ends: "2026-11-22T14:15:00Z" }]);
@@ -512,13 +510,13 @@ test("a run carried into the next step on the same pane keeps the grant, and a n
 test("a grant expires at its end, and its stuck send never blocks the next grant", async () => {
   const { session, asked, granted, reply, tick, settle } = desk();
   session.at(4);
-  session.take(4, 8);
+  session.take(4);
   await granted();
   session.send({ key: "Up" });
   await settle();
   await tick(15 * 60 * 1000);
   assert.equal(session.state().ended, "Your keyboard of run 4 returned: it expired at 14:15.");
-  session.take(4, 9);
+  session.take(4);
   await settle();
   asked.find((one) => one.path.endsWith("/keys")).done = true;
   await granted(2);
@@ -531,7 +529,7 @@ test("a grant expires at its end, and its stuck send never blocks the next grant
 test("a grant another device replaced ends the bar with the server's reason", async () => {
   const { session, granted, reply } = desk();
   session.at(4);
-  session.take(4, 8);
+  session.take(4);
   await granted();
   const sent = session.send({ key: "y" });
   await new Promise((resolve) => setImmediate(resolve));

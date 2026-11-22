@@ -21083,8 +21083,7 @@ fn post(address: &str, path: &str, body: serde_json::Value) -> (u16, serde_json:
     (status, serde_json::from_str(&reply).unwrap_or(json!(reply)))
 }
 
-/// Takes the keyboard of run 1 at the state's current revision, read again while a starting daemon
-/// moves it, and returns the grant's secret.
+/// Takes the keyboard of run 1 and returns the grant's secret.
 fn take_keyboard(address: &str) -> String {
     take_keyboard_as(address, "")["secret"]
         .as_str()
@@ -21094,22 +21093,9 @@ fn take_keyboard(address: &str) -> String {
 
 /// The grant `take_keyboard` gets, sent with the `extra` headers.
 fn take_keyboard_as(address: &str, extra: &str) -> serde_json::Value {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let desk = http(address, "GET", "/api/desk", "", "").1;
-        let revision =
-            serde_json::from_str::<serde_json::Value>(&desk).unwrap()["revision"].clone();
-        let body = json!({ "revision": revision }).to_string();
-        let (status, grant) = http(address, "POST", "/api/runs/1/keyboard", extra, &body);
-        if status == 200 {
-            return serde_json::from_str(&grant).unwrap();
-        }
-        assert!(
-            status == 409 && Instant::now() < deadline,
-            "{status}: {grant}"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let (status, grant) = http(address, "POST", "/api/runs/1/keyboard", extra, "{}");
+    assert_eq!(status, 200, "{grant}");
+    serde_json::from_str(&grant).unwrap()
 }
 
 /// How many times the screen of run 1 shows `text`, once it shows it `times` times.
@@ -21520,12 +21506,13 @@ fn taking_the_keyboard_records_its_label_and_no_record_or_log_holds_the_secret()
     let (setup, mut server, address) = Setup::typing("keys-secret");
     let desk = http(&address, "GET", "/api/desk", "", "").1;
     let revision = serde_json::from_str::<serde_json::Value>(&desk).unwrap()["revision"].clone();
-    let stale = post(
+    // Writes elsewhere move the state's revision; a run's keyboard does not wait for them.
+    let behind = post(
         &address,
         "/api/runs/1/keyboard",
         json!({ "revision": revision.as_i64().unwrap() - 1 }),
     );
-    assert_eq!(stale.0, 409, "{}", stale.1);
+    assert_eq!(behind.0, 200, "{}", behind.1);
     let grant = take_keyboard_as(
         &address,
         &format!("User-Agent: {}\r\n", "Phone ".repeat(20)),
@@ -21552,7 +21539,10 @@ fn taking_the_keyboard_records_its_label_and_no_record_or_log_holds_the_secret()
     let taken = setup
         .trace()
         .into_iter()
-        .find(|record| record["type"] == "factory.terminal.taken")
+        .find(|record| {
+            record["type"] == "factory.terminal.taken"
+                && record["data"]["grant"] == json!(grant["grant"].to_string())
+        })
         .unwrap();
     assert_eq!(taken["data"]["label"], json!("Phone ".repeat(11)[..64]));
     assert_eq!(taken["data"]["grant"], json!(grant["grant"].to_string()));

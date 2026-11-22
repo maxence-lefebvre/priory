@@ -76,7 +76,7 @@ pub fn hash(secret: &str) -> String {
         .collect()
 }
 
-/// `POST /api/runs/{id}/keyboard`'s line: take run's keyboard on the state the page showed.
+/// `POST /api/runs/{id}/keyboard`'s line: take run's keyboard.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TakeLine {
@@ -87,7 +87,6 @@ pub struct TakeLine {
 #[serde(deny_unknown_fields)]
 pub struct Take {
     pub run: i64,
-    pub revision: i64,
     pub label: String,
     pub hash: String,
 }
@@ -141,9 +140,8 @@ pub(crate) fn take(
         return Ok(Err(refused));
     }
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    if let Err(refused) = state::expect_revision(&tx, Some(take.revision))
-        .and_then(|()| state::live_run(&tx, &state::Attach::Run(take.run)).map(drop))
-    {
+    // The live run is all a take needs: writes elsewhere move the state's revision every second.
+    if let Err(refused) = state::live_run(&tx, &state::Attach::Run(take.run)) {
         return Ok(Err(refused));
     }
     let open: Option<i64> = tx

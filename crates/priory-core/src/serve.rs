@@ -805,7 +805,10 @@ impl Typing {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TakeBody {
-    revision: i64,
+    /// Sent by an older page, and not checked.
+    #[serde(default)]
+    #[allow(dead_code)]
+    revision: Option<i64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -830,13 +833,12 @@ fn type_in(db: &Connection, home: &Path, request: &Request, run: &str, typing: T
         return Reply::error(404, "no such path");
     };
     let bad = |error: serde_json::Error| Reply::error(400, &error.to_string());
-    let (mut secret, mut revision) = (None, None);
+    let mut secret = None;
     let line = match typing {
         Typing::Take => {
-            let body: TakeBody = match serde_json::from_slice(request.body) {
-                Ok(body) => body,
-                Err(error) => return bad(error),
-            };
+            if let Err(error) = serde_json::from_slice::<TakeBody>(request.body) {
+                return bad(error);
+            }
             let made = match new_secret() {
                 Ok(made) => made,
                 Err(error) => return Reply::error(500, &error),
@@ -851,12 +853,10 @@ fn type_in(db: &Connection, home: &Path, request: &Request, run: &str, typing: T
             }
             let take = keyboard::Take {
                 run,
-                revision: body.revision,
                 label: label[..end].to_owned(),
                 hash: keyboard::hash(&made),
             };
             secret = Some(made);
-            revision = Some(body.revision);
             line(&keyboard::TakeLine { keyboard: take })
         }
         Typing::Return => {
@@ -910,15 +910,10 @@ fn type_in(db: &Connection, home: &Path, request: &Request, run: &str, typing: T
             (Typing::Keys, _) => Reply::json(200, done),
             _ => Reply::json(200, serde_json::json!({ "ok": done }).to_string()),
         },
-        Ok(Err(refused)) => {
-            let live = state::live_run(db, &state::Attach::Run(run));
-            let stale = revision.is_some_and(|sent| state::revision(db).is_ok_and(|at| at != sent));
-            match (live, stale) {
-                (Err(_), _) => Reply::error(404, &refused),
-                (_, true) => Reply::error(409, &refused),
-                _ => Reply::error(403, &refused),
-            }
-        }
+        Ok(Err(refused)) => match state::live_run(db, &state::Attach::Run(run)) {
+            Err(_) => Reply::error(404, &refused),
+            Ok(_) => Reply::error(403, &refused),
+        },
         Err(error) => Reply::error(500, &format!("unreadable reply {reply:?}: {error}")),
     }
 }

@@ -165,15 +165,15 @@ async function sent(post, path, body) {
 }
 
 /**
- * Takes run `run`'s keyboard on the state's `revision` the page drew (docs/reference/serve.md#keyboard).
+ * Takes run `run`'s keyboard (docs/reference/serve.md#keyboard).
  * The grant's secret stays in the page's memory only.
  * @param {(path: string, body: object) => Promise<{ status: number, body: any }>} post
  */
-export async function takeKeyboard(post, run, revision) {
-  const { status, body } = await sent(post, `/api/runs/${run}/keyboard`, { revision });
+export async function takeKeyboard(post, run) {
+  const { status, body } = await sent(post, `/api/runs/${run}/keyboard`, {});
   if (status === 401) return { signOut: true };
   if (status === 200) return { held: { grant: body.grant, ends: body.ends, secret: body.secret } };
-  const why = status === 409 ? "the page was behind. Try again." : status === 0 ? "the connection dropped. Try again." : sentence(status, body);
+  const why = status === 0 ? "the connection dropped. Try again." : sentence(status, body);
   return { note: `Could not take the keyboard: ${why}` };
 }
 
@@ -244,10 +244,10 @@ export function keyboardSession({ post, signOut = () => {}, changed = () => {}, 
       [run, held, returning, pasting, note, ended] = [null, null, false, false, null, null];
       changed();
     },
-    async take(target, revision) {
+    async take(target) {
       if (target !== run || held) return;
       const asked = generation;
-      const taken = await takeKeyboard(post, target, revision);
+      const taken = await takeKeyboard(post, target);
       if (asked !== generation) return void (taken.held && giveBack(post, target, taken.held.secret));
       if (taken.signOut) return signOut();
       if (!taken.held) return void ((ended = taken.note), changed());

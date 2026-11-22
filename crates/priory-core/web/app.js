@@ -1481,7 +1481,7 @@ async function keyboardAct(action) {
   if (String(run) !== sheet.dataset.run) return;
   if (action === "term-take") {
     terminal.typing = false;
-    await keyboard.take(run, state.revision);
+    await keyboard.take(run);
     return document.getElementById("term-keys")?.focus();
   }
   await keyboard.giveBack();
