@@ -48,8 +48,8 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Undoes migrations 98, the stated confidence and the `auto_answer` level, 97, the task's
-/// `added_by`, and 93: the `pre` script's task columns and the
+/// Undoes migrations 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
     () => {
@@ -63,6 +63,7 @@ macro_rules! undo_pre {
       WHERE results.task = tasks.id), '') AS results
     FROM tasks LEFT JOIN inbox ON inbox.id = tasks.source; ALTER TABLE tasks DROP COLUMN pre_title; ALTER TABLE tasks DROP COLUMN pre_text;
   ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
+  ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons;
   "
     };
 }
