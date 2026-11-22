@@ -719,6 +719,11 @@ A **command ask** (R6.8) binds one option to a command. Its answer runs the comm
 
 Ask text, briefs and plans render as sanitized Markdown, never as HTML (principle 9).
 
+- The web view parses a subset itself: paragraphs, headings, bullet, numbered and check lists,
+  bold, inline code, fenced code blocks, links and images. Anything else, raw HTML included, shows
+  as escaped text. A link or image whose target is not `https:` shows as its source text.
+- A check list's open item shows an empty box in `--text-3`.
+
 - Body in `--type-read`, at most `--measure` wide. Headings: h1 in `--type-read-h1`, h2 and h3 in
   `--type-read-h2`. Lists indent 22 px with markers in `--text-3`.
 - Inline code in mono 13 px on `--raised` with `--radius-sm`. Code blocks in `--type-mono` on
