@@ -9467,6 +9467,30 @@ fn a_sweep_keeps_a_worktree_a_process_runs_in() {
 }
 
 #[test]
+fn a_sweep_removes_a_merged_worktree_while_the_desk_checks_it() {
+    let mut setup = Setup::ended("sweep-desk", 1);
+    setup.work_on(1);
+    setup.push(1);
+    setup.merge(1);
+    let hold = setup.dir.join("fake/desk-hold");
+    fs::write(&hold, "").unwrap();
+    let mut desk = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .arg("desk")
+        .env("FAKE_GIT_HOLD", &hold)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    setup.written("fake/desk-hold.held");
+
+    setup.start();
+
+    setup.removed(1);
+    fs::remove_file(&hold).unwrap();
+    desk.wait().unwrap();
+}
+
+#[test]
 fn a_sweep_leaves_the_worktree_of_a_running_or_asleep_task() {
     let mut setup = Setup::new("sweep-active");
     let silent = serde_json::Value::Null;
