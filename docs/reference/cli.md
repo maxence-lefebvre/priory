@@ -1,13 +1,20 @@
 # `priory` commands
 
 Every command of the `priory` binary, as `priory` with no arguments prints them, with what each
-does and the page that describes it. `DIR` is the factory folder, `.` by default. A command whose
-arguments it cannot read prints this usage and exits 2.
+does and the page that describes it.
 
-Commands that read or change tasks need `PRIORY_DB`, the daemon's state file (see
-[the daemon](../daemon/README.md#state)). `--expected N` refuses the change once the state's revision
-differs from `N`. On `answer` and `dismiss`, `--revision N` and `--expected N` are the same flag
-and name the ask's revision: an answer to another revision is refused.
+- `DIR` is the factory folder. Most commands read `.` without it. `screen`, `queue` and `memories`
+  load no factory without it: `screen` then hides only the default secrets, and `queue` lists no
+  schedule firing.
+- When `priory` cannot read a command's arguments, it prints this usage and exits 2. A value it
+  cannot parse, such as a time, prints its own error and exits 1.
+- Most commands read `PRIORY_DB`, the daemon's state file (see
+  [the daemon](../daemon/README.md#state)). A command that acts on a task, such as `priory resume 1`,
+  sends the daemon a line on its socket instead.
+- `--expected N` refuses the change once a revision differs from `N`. It is the state's revision
+  for the task commands, the ask's revision for `answer` and `dismiss`, where `--revision N` is the
+  same flag, the plan's revision for `batch edit`, and the report's revision for `report pick` and
+  `report comment`.
 
 ## The factory
 
@@ -58,7 +65,8 @@ and name the ask's revision: an answer to another revision is refused.
 - `priory seen [--person NAME] [--at TIME]`: records a person's visit to the desk, for Since you
   looked. See [desk.md](../daemon/desk.md#since-you-looked).
 - `priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]`:
-  prints the open asks. See [waits.md](../daemon/waits.md#asks-and-answers).
+  prints the open asks, and with `--json` the closed ones too. See
+  [waits.md](../daemon/waits.md#asks-and-answers).
 - `priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT`:
   answers an ask. `--run` confirms an answer that runs the ask's command. `RUNNER:ASK` answers
   another runner's ask. See [waits.md](../daemon/waits.md#asks-and-answers),
@@ -77,16 +85,16 @@ and name the ask's revision: an answer to another revision is refused.
 - `priory memories [DIR] [--all] [--json]`: lists the memories agents saved that wait for a person.
   See [skills.md](../daemon/skills.md#memories-agents-write).
 - `priory memories (accept | drop) [DIR] CANDIDATE`: accepts or drops one.
-- `priory wait --since REV [--timeout D]`: waits until the state's revision passes `REV`, then
-  prints it. See [serve.md](../daemon/serve.md#waiting-for-a-change).
+- `priory wait --since REV [--timeout D]`: prints the state's revision once it differs from `REV`,
+  or the same revision after the timeout, 25 seconds by default. See [serve.md](../daemon/serve.md#waiting-for-a-change).
 
 ## Tasks
 
 - `priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]`: lists tasks in start order.
 - `priory tasks --graph [TASK] [--mermaid]`: draws how tasks relate, as a tree or a Mermaid
   flowchart. See [relations.md](../daemon/relations.md).
-- `priory task TASK [--json]`: prints one task with its brief, plan, pull request, runs, asks and
-  the events routed to it. See [routing.md](../daemon/routing.md#the-tasks-inbox).
+- `priory task TASK [--json]`: prints one task with the events routed to it. `--json` adds its
+  brief, plan, pull request, runs and asks. See [routing.md](../daemon/routing.md#the-tasks-inbox).
 - `priory queue [DIR] [--json]`: prints the waiting tasks in start order, then the held ones. See
   [runs.md](../daemon/runs.md#queue).
 - `priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]`:
@@ -127,8 +135,8 @@ and name the ask's revision: an answer to another revision is refused.
 
 ## Listings of the state
 
-Each prints one row per item, tab-separated after a header line, with `-` for an empty cell. See
-[Columns](#columns).
+The tables print one row per item, tab-separated after a header line, with `-` for an empty cell.
+See [Columns](#columns).
 
 - `priory inbox [--unrouted] [--since SEQ] [--json]`: prints the inbox, or the events that reached
   no task. See [routing.md](../daemon/routing.md#events-that-reach-no-task).
@@ -196,11 +204,12 @@ An agent's settings and its shell call these. A person rarely does.
 
 ## Columns
 
-`priory inbox` prints each entry, oldest first: seq, type, subject, task and outcome.
+`priory inbox` prints each entry, oldest first: seq, type, subject, task, outcome and line.
 
 `priory tasks` prints each task in start order: id, key, workflow, step, state, band, lane, reason,
-position, generation, and the retirement time of a retired task (see
-[sweep.md](../daemon/sweep.md#retiring-asleep-tasks)). The position is the task's queue place, from
+position, generation, the retirement time of a retired task (see
+[sweep.md](../daemon/sweep.md#retiring-asleep-tasks)), grade and the grade's reason. In a factory of
+several runners, three more follow: runner, hold and when that runner was last alive. The position is the task's queue place, from
 1, when it is `queued` or `ready`. `--lane L` prints only the tasks in lane `L`.
 
 `priory runs` prints each run: id, task, step, tmux session, harness session (a Codex run's
@@ -221,4 +230,6 @@ includes schedule firings.
 workflow.
 
 `priory desk`, `inbox`, `asks`, `tasks` and `queue` take `--json`, and then print on one line the
-JSON that the HTTP server returns for the same listing. [serve.md](serve.md) lists its fields.
+fields that the HTTP server returns for the same listing. [serve.md](serve.md) lists them.
+`priory tasks --json` prints every task, where `/api/tasks` leaves out the tasks that ended more
+than a week ago.
