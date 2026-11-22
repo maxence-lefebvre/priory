@@ -678,7 +678,7 @@ mod tests {
     /// notifications queued for that task.
     fn setup(name: &str, rows: usize) -> (PathBuf, Connection) {
         let home = std::env::temp_dir().join(format!("priory-push-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&home);
+        priory_runtime::runtime::remove_sealed(&home);
         keys(&home).unwrap();
         let db = crate::state::memory();
         let to = SecretKey::generate().public_key();
@@ -794,7 +794,7 @@ mod tests {
             &service,
         );
         assert!(queued(&db).is_empty());
-        let _ = fs::remove_dir_all(&home);
+        priory_runtime::runtime::remove_sealed(&home);
     }
 
     #[test]
@@ -822,7 +822,7 @@ mod tests {
         }
         assert_eq!(*service.posts.borrow(), 1);
         assert!(queued(&db).is_empty());
-        let _ = fs::remove_dir_all(&home);
+        priory_runtime::runtime::remove_sealed(&home);
     }
 
     #[test]
@@ -844,7 +844,7 @@ mod tests {
         );
         assert_eq!(*service.posts.borrow(), 1);
         assert!(queued(&db).is_empty());
-        let _ = fs::remove_dir_all(&home);
+        priory_runtime::runtime::remove_sealed(&home);
     }
 
     /// A push service on 127.0.0.1 that answers each post with the next code, or holds the
@@ -957,7 +957,7 @@ mod tests {
         endpoint.settle(&db, &home, &mut sending, Instant::now());
         assert_eq!(endpoint.posts(), 1);
         assert!(queued(&db).is_empty());
-        let _ = fs::remove_dir_all(&home);
+        priory_runtime::runtime::remove_sealed(&home);
     }
 
     #[test]
@@ -973,7 +973,7 @@ mod tests {
         endpoint.settle(&db, &home, &mut sending, Instant::now());
         assert_eq!(endpoint.posts(), 2);
         assert!(queued(&db).is_empty());
-        let _ = fs::remove_dir_all(&home);
+        priory_runtime::runtime::remove_sealed(&home);
     }
 
     #[test]
@@ -987,7 +987,7 @@ mod tests {
         assert_eq!(one["title"], "task cli:a blocked");
         assert!(one["id"].as_str().unwrap().ends_with("/1"));
         assert_ne!(one["id"], two["id"]);
-        let _ = fs::remove_dir_all(&home);
+        priory_runtime::runtime::remove_sealed(&home);
     }
 
     #[test]

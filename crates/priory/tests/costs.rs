@@ -46,7 +46,7 @@ impl Setup {
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
             .join("costs")
             .join(name);
-        let _ = fs::remove_dir_all(&dir);
+        priory_runtime::runtime::remove_sealed(&dir);
         let files = [
             ("factory/factory.toml", SERVE),
             ("factory/prices.toml", PRICES),

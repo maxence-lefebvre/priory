@@ -918,8 +918,10 @@ fn seal(dir: &Path) -> std::io::Result<()> {
     fs::set_permissions(dir, fs::Permissions::from_mode(0o555))
 }
 
-/// Removes `dir` and everything under it, a sealed folder included.
-fn remove_sealed(dir: &Path) {
+/// Removes `dir` and everything under it, a sealed folder included. Use it for any folder that
+/// can hold a `PRIORY_HOME`: a user other than root cannot remove a sealed kit, plugin or memory
+/// folder with `fs::remove_dir_all` alone.
+pub fn remove_sealed(dir: &Path) {
     let mut folders = vec![dir.to_path_buf()];
     while let Some(folder) = folders.pop() {
         if !fs::symlink_metadata(&folder).is_ok_and(|meta| meta.is_dir()) {
@@ -1800,6 +1802,25 @@ pub fn send(home: &Path, line: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn remove_sealed_removes_a_home_holding_a_sealed_snapshot() {
+        let home = std::env::temp_dir().join(format!("priory-sealed-{}", std::process::id()));
+        remove_sealed(&home);
+        let files = [(PathBuf::from("skills/a/SKILL.md"), b"text".as_slice())];
+        let plugin = write_once(&home.join("kit/abc"), "plugin", &files).unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&plugin.join("skills/a")), 0o555);
+        assert_eq!(mode(&plugin.join("skills/a/SKILL.md")), 0o444);
+
+        remove_sealed(&home);
+
+        assert!(
+            fs::symlink_metadata(&home).is_err(),
+            "{} is left",
+            home.display()
+        );
+    }
 
     #[test]
     fn the_tagged_pane_is_the_live_one_with_the_session_and_its_cursor_shows_only_when_on() {

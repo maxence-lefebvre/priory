@@ -29,7 +29,7 @@ impl Setup {
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
             .join("attention")
             .join(name);
-        let _ = fs::remove_dir_all(&dir);
+        priory_runtime::runtime::remove_sealed(&dir);
         fs::create_dir_all(dir.join("factory")).unwrap();
         fs::write(dir.join("factory/factory.toml"), SERVE).unwrap();
         let setup = Setup {

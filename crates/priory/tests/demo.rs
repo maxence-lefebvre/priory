@@ -7,15 +7,7 @@ use std::process::Command;
 fn the_demo_sends_answers_to_both_other_runners_asks() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("demo");
-    if dir.exists() {
-        Command::new("chmod")
-            .arg("-R")
-            .arg("u+w")
-            .arg(&dir)
-            .status()
-            .unwrap();
-        fs::remove_dir_all(&dir).unwrap();
-    }
+    priory_runtime::runtime::remove_sealed(&dir);
     fs::create_dir_all(&dir).unwrap();
     // serve.sh ends by serving for 15 minutes, which this stand-in for its binary skips.
     let bin = dir.join("priory");

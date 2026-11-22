@@ -89,7 +89,7 @@ impl Load {
     fn new() -> Self {
         let dir =
             Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("load-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
+        priory_runtime::runtime::remove_sealed(&dir);
         let files = [
             ("factory/factory.toml", FACTORY),
             ("factory/prices.toml", PRICES),

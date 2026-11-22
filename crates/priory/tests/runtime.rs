@@ -105,12 +105,7 @@ impl Setup {
             tmux,
             log_url: None,
         };
-        // The daemon makes its kit snapshots read-only, which a user other than root cannot remove.
-        let _ = Command::new("chmod")
-            .args(["-R", "u+w"])
-            .arg(&setup.dir)
-            .status();
-        let _ = fs::remove_dir_all(&setup.dir);
+        priory_runtime::runtime::remove_sealed(&setup.dir);
         let files = [
             ("factory/factory.toml", "name = \"demo\""),
             ("factory/agents/implementer/agent.md", AGENT),
@@ -15514,7 +15509,7 @@ fn guard_hook(home: &Path, command: &str) -> (String, Duration) {
 #[test]
 fn a_read_passes_the_tool_guard_with_no_daemon_to_ask() {
     let home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guard-no-daemon");
-    let _ = fs::remove_dir_all(&home);
+    priory_runtime::runtime::remove_sealed(&home);
     fs::create_dir_all(&home).unwrap();
 
     let (printed, _) = guard_hook(&home, "gh pr view 12");
@@ -15525,7 +15520,7 @@ fn a_read_passes_the_tool_guard_with_no_daemon_to_ask() {
 #[test]
 fn a_daemon_that_does_not_answer_gets_a_guarded_call_denied() {
     let home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guard-silent");
-    let _ = fs::remove_dir_all(&home);
+    priory_runtime::runtime::remove_sealed(&home);
     fs::create_dir_all(&home).unwrap();
     let socket = priory_runtime::runtime::socket_in(Some(&home), &home);
     fs::create_dir_all(socket.parent().unwrap()).unwrap();
