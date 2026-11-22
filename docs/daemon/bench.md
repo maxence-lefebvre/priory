@@ -134,14 +134,17 @@ the turn in progress. On `timed out`, `over budget`, `cost unknown`, `asked` and
 cancels the task. Then it stops the daemon and the tmux server, and removes the task's worktree and
 the scratch folder, each by its exact path.
 
-When you stop the replay with a signal, it cleans up nothing: stop its daemon and the scratch
-tmux server, then remove the scratch folder it named.
+The scratch folder is `priory-replay-<pid>-<random>` in the temporary folder. When you stop the
+replay with a signal, such as Ctrl-C, it cleans up nothing at once, and the agent may go on with its
+turn. The next replay, `priory score`, a judge's calibration or the daemon's sweep cleans up
+instead: for each such folder whose pid no longer runs, it kills the scratch tmux server through
+that folder's own socket, then removes the folder.
 
 It prints, for example:
 
 ```text
 estimate: $0.4100 of a $5.0000 budget, plus at most $0.9000 if it ends inside a turn of 30m
-scratch: /tmp/priory-replay-41022
+scratch: /tmp/priory-replay-41022-9f2c4e1a7b3d4c5e8a6b0d1f2e3c4b5a
 answer: approve-plan approved
 ending: reached open-pr
 spent: $0.4700 of $5.0000 in 612s

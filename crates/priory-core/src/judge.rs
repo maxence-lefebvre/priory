@@ -244,7 +244,7 @@ pub fn ask(judge: &Judge, scratch: &Path, read: &Read, budget: f64) -> Asked {
         // A judge that reads only part of a diff could pass what it never saw.
         return error(format!("the diff is over {DIFF_LIMIT} bytes"), 0.0);
     }
-    let dir = scratch.join(uuid::Uuid::new_v4().simple().to_string());
+    let dir = scratch.join(crate::sweep::scratch_name());
     if let Err(why) = std::fs::create_dir_all(&dir) {
         return error(format!("{}: {why}", dir.display()), 0.0);
     }
@@ -350,6 +350,7 @@ pub fn calibrate(
     budget: f64,
 ) -> Result<Calibrated, String> {
     let judge = open(factory, name)?;
+    crate::sweep::leftovers(home, &std::env::temp_dir());
     let scratch = home.join("scores");
     let mut calibrated = Calibrated {
         rows: Vec::new(),

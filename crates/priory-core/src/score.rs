@@ -124,6 +124,7 @@ pub fn score(
     if names.is_empty() {
         return Err("the factory has no scorers: add one to scorers/".to_owned());
     }
+    crate::sweep::leftovers(home, &std::env::temp_dir());
     let mut judging = Judging::new(db, factory, budget);
     let scores = grade(db, factory, home, task, &names, &mut judging)?;
     let error = |error: rusqlite::Error| error.to_string();
@@ -476,7 +477,7 @@ pub fn on_commit(
     if !clone.is_dir() {
         return error(format!("no clone at {}", clone.display()));
     }
-    let scratch = home.join("scores").join(uuid::Uuid::new_v4().to_string());
+    let scratch = home.join("scores").join(crate::sweep::scratch_name());
     let added = git(&clone)
         .args(["worktree", "add", "--quiet", "--detach"])
         .arg(&scratch)

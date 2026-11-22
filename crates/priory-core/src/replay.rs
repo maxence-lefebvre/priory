@@ -639,7 +639,13 @@ pub fn replay(
         .as_deref()
         .ok_or("the case names no repository: set repo in case.toml")?;
     let began = Instant::now();
-    let path = std::env::temp_dir().join(format!("priory-replay-{}", std::process::id()));
+    let tmp = std::env::temp_dir();
+    crate::sweep::leftovers(&priory_runtime::runtime::home(), &tmp);
+    let path = tmp.join(format!(
+        "{}{}",
+        crate::sweep::REPLAY,
+        crate::sweep::scratch_name()
+    ));
     fs::create_dir(&path).map_err(io(&path))?;
     let mut scratch = Scratch {
         dir: path.clone(),

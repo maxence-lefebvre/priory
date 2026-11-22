@@ -34,8 +34,11 @@ what the judges spent on stderr.
 
 A `command` scorer never reads the task's worktree, since a later run may be editing it. The
 command adds a detached worktree of the result's `commit` from Priory's clone, under
-`$PRIORY_HOME/scores/`, runs the scorer there and removes it. So a scorer of an earlier run sees
-that run's commit, whatever the branch holds now. The commit must still be in the clone.
+`$PRIORY_HOME/scores/<pid>-<random>`, runs the scorer there and removes it. So a scorer of an
+earlier run sees that run's commit, whatever the branch holds now. The commit must still be in the
+clone. A `priory score` stopped before it removed its checkout leaves it. The next `priory score`,
+calibration, replay or daemon sweep removes each folder there whose pid no longer runs, then runs
+`git worktree prune` in each clone.
 
 The agent writes a result's `commit`, so the command checks it before git reads it: a value that
 is not 7 to 64 hexadecimal characters answers `error: the result's commit "<value>" is not a

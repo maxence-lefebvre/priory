@@ -28,6 +28,12 @@ reason: `no task <id>`, `task <id> still <state>`, `not a worktree of <clone>`,
 `untracked files`, `a process runs in it`, `unpushed commits` or `not merged`. It reads the refs of
 the last fetch.
 
+The timed sweep also removes what an interrupted `priory bench` replay or `priory score` left: each
+replay folder `priory-replay-<pid>-<random>` in the temporary folder, and each folder under
+`scores/`, whose pid no longer runs. It first kills a replay's tmux server through that folder's
+own socket, then runs `git worktree prune` in each clone. See [bench.md](bench.md) and
+[score.md](score.md).
+
 ## Retiring asleep tasks
 
 After each sweep, while free disk is at or under the room's disk floor (see Room), the daemon

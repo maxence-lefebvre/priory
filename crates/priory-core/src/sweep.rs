@@ -89,6 +89,106 @@ pub fn run(db: &Connection, home: &Path) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// What starts the name of a replay's scratch folder in the temporary folder, before its pid.
+pub(crate) const REPLAY: &str = "priory-replay-";
+
+/// The name of a scratch folder that dies with this process: its pid, then a random part.
+pub(crate) fn scratch_name() -> String {
+    format!("{}-{}", std::process::id(), uuid::Uuid::new_v4().simple())
+}
+
+/// Removes what an interrupted `priory bench`, `priory score` or judge left: each folder under
+/// `PRIORY_HOME/scores` and each replay folder under `tmp` whose process is gone, after it kills
+/// the replay's own tmux server through that folder's socket. A process killed with Ctrl-C runs no
+/// cleanup, so the next one does it.
+pub fn leftovers(home: &Path, tmp: &Path) {
+    let mut scored = false;
+    for dir in dead(&home.join("scores"), "") {
+        priory_runtime::runtime::remove_sealed(&dir);
+        scored = true;
+    }
+    if scored {
+        prune(&home.join("repos"));
+    }
+    for dir in dead(tmp, REPLAY) {
+        let sockets = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("tmux-"))
+            .flat_map(|entry| {
+                std::fs::read_dir(entry.path())
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+            });
+        for socket in sockets {
+            let _ = std::process::Command::new("tmux")
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .arg("-S")
+                .arg(socket.path())
+                .arg("kill-server")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+        priory_runtime::runtime::remove_sealed(&dir);
+    }
+}
+
+/// The folders in `parent` named `<prefix><pid>-...` whose process `pid` no longer runs.
+fn dead(parent: &Path, prefix: &str) -> Vec<std::path::PathBuf> {
+    std::fs::read_dir(parent)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let pid = name
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.split('-').next())
+                .and_then(|pid| pid.parse::<u32>().ok());
+            pid.is_some_and(|pid| pid != std::process::id() && !runs(pid))
+        })
+        .map(|entry| entry.path())
+        .collect()
+}
+
+/// Whether process `pid` runs, as `kill -0` tells.
+fn runs(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Forgets, in each clone under `repos`, the worktrees whose folder is gone.
+fn prune(repos: &Path) {
+    let clones = std::fs::read_dir(repos)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .flat_map(|owner| {
+            std::fs::read_dir(owner.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+        });
+    for clone in clones {
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(clone.path())
+            .args(["worktree", "prune"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
 /// Retires asleep tasks, longest asleep first, while `short` says the disk is short: removes each
 /// clean worktree and keeps its branch and sessions. A task that cannot retire gets the reason once.
 pub(crate) fn retire(
@@ -157,4 +257,62 @@ pub fn stays(db: &Connection, home: &Path) -> rusqlite::Result<Vec<(String, Opti
             Some((entry.found.path.display().to_string(), task, reason))
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    /// A pid that no process has: a child that already ended.
+    fn ended() -> u32 {
+        let mut child = Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        pid
+    }
+
+    #[test]
+    fn leftovers_of_an_ended_process_go_with_their_tmux_server_and_a_live_ones_stay() {
+        let root = std::env::temp_dir().join(format!("priory-leftovers-{}", std::process::id()));
+        priory_runtime::runtime::remove_sealed(&root);
+        let (home, tmp) = (root.join("home"), root.join("tmp"));
+        let gone = ended();
+        let live = std::process::id();
+        let scores = [
+            home.join(format!("scores/{gone}-a")),
+            home.join(format!("scores/{live}-b")),
+        ];
+        let replays = [
+            tmp.join(format!("{REPLAY}{gone}-c")),
+            tmp.join(format!("{REPLAY}{live}-d")),
+        ];
+        for dir in scores.iter().chain(&replays) {
+            std::fs::create_dir_all(dir.join("x")).unwrap();
+        }
+        let socket = replays[0].join("tmux-0/default");
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let tmux = |args: &[&str]| {
+            Command::new("tmux")
+                .arg("-S")
+                .arg(&socket)
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+        assert!(tmux(&["new-session", "-d", "sleep", "600"]));
+
+        leftovers(&home, &tmp);
+
+        let alive = tmux(&["has-session"]);
+        if alive {
+            tmux(&["kill-server"]);
+        }
+        assert!(!alive, "the ended replay's tmux server still runs");
+        assert!(!scores[0].exists() && !replays[0].exists());
+        assert!(scores[1].exists() && replays[1].exists());
+        priory_runtime::runtime::remove_sealed(&root);
+    }
 }
