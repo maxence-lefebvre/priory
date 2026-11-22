@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, takesText, openAsksOf, writeNote } from "./asks.js";
+import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, takesText, openAsksOf, writeNote, shrunkHead } from "./asks.js";
 
 const now = Date.parse("2026-11-20T12:00:00Z");
 const ask = (id, fields) => ({ id, state: "open", snoozed_until: null, ...fields });
@@ -163,4 +163,9 @@ test("a task page lists its task's open asks, snoozed ones too, oldest first", (
   ];
   assert.deepEqual(openAsksOf(asks, 7).map((ask) => ask.id), [3, 4]);
   assert.deepEqual(openAsksOf(asks, 9), []);
+});
+
+test("the shrunk header names the question over the task key, step and revision", () => {
+  assert.deepEqual(shrunkHead({ key: "linear:ENG-212", step: "approve-pr", revision: 2, title: "Open the pull request", question: "Open the pull request for ENG-212?" }), { question: "Open the pull request for ENG-212?", place: "ENG-212, approve-pr, revision 2" });
+  assert.deepEqual(shrunkHead({ key: null, step: "deploy", revision: 1, title: "Deploy", question: null }), { question: "Deploy", place: "deploy, revision 1" });
 });

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, countWords, memoryNote, memoryTag, countHead } from "./desk.js";
+import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, countWords, memoryNote, memoryTag, capsuleWords, countHead } from "./desk.js";
 
 const why = "work stopped and waits on a person";
 
@@ -157,4 +157,10 @@ test("the count shows a number only when an ask needs you, so an empty desk stay
   assert.deepEqual(countHead(0), { n: null, words: "No asks need you" });
   assert.deepEqual(countHead(1), { n: 1, words: "ask needs you" });
   assert.deepEqual(countHead(7), { n: 7, words: "asks need you" });
+});
+
+test("the capsule answers while live, and only reads the asks while offline", () => {
+  assert.deepEqual(capsuleWords(7, false), { text: "Answer 7 asks", icon: "ask", off: false });
+  assert.deepEqual(capsuleWords(1, false), { text: "Answer 1 ask", icon: "ask", off: false });
+  assert.deepEqual(capsuleWords(7, true), { text: "Read 7 asks, offline", icon: "unplug", off: true });
 });

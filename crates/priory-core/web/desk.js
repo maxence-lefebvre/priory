@@ -143,3 +143,9 @@ export function countWords({ oldest, stopped, todos, reports, other }) {
 
 /** The Desk's count: the number of open asks and its words, or no number when none is open, since stopped work can still wait. @param {number} n */
 export const countHead = (n) => (n ? { n, words: n === 1 ? "ask needs you" : "asks need you" } : { n: null, words: "No asks need you" });
+
+/** The Answer capsule's words for `n` open asks: offline it leaves the primary look and only opens the asks to read. */
+export function capsuleWords(n, offline) {
+  const asks = `${n} ${n === 1 ? "ask" : "asks"}`;
+  return offline ? { text: `Read ${asks}, offline`, icon: "unplug", off: true } : { text: `Answer ${asks}`, icon: "ask", off: false };
+}

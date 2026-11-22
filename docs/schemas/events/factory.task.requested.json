@@ -37,6 +37,73 @@
       ],
       "type": "object"
     },
+    "FromTo": {
+      "additionalProperties": false,
+      "description": "A value before and after a `pre` script.",
+      "properties": {
+        "from": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "to": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "FromTo2": {
+      "additionalProperties": false,
+      "description": "A value before and after a `pre` script.",
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "FromTo3": {
+      "additionalProperties": false,
+      "description": "A value before and after a `pre` script.",
+      "properties": {
+        "from": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "to": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
     "Hold": {
       "additionalProperties": false,
       "description": "Why a task is held, and the conditions that release it once all of them hold. With none, a\nperson does.",
@@ -152,6 +219,111 @@
       ],
       "description": "One value, or a list of them; null reads as none, as the single values it replaced did."
     },
+    "PreRan": {
+      "additionalProperties": false,
+      "description": "What a trigger's `pre` script did to a request: its name alone when it changed nothing.",
+      "properties": {
+        "band": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FromTo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The band before and after."
+        },
+        "changed": {
+          "description": "The fields it changed: `title`, `text`, `context`, `band`, `lane` or `key`.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "context": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FromTo3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The context's length in characters before and after; null for none."
+        },
+        "failed": {
+          "description": "How it failed, such as `exit 2: <stderr tail>`. The request is the one the trigger built.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FromTo2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The key before and after."
+        },
+        "lane": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FromTo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The lane before and after."
+        },
+        "script": {
+          "description": "The script, `argv[0]` of the trigger's `[pre]`.",
+          "type": "string"
+        },
+        "seconds": {
+          "description": "How long it ran. With `changed` or `failed` only.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "text": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FromTo3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The request text's length in characters before and after; null for none."
+        },
+        "title": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FromTo3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The title's length in characters before and after; null for none."
+        }
+      },
+      "required": [
+        "script"
+      ],
+      "type": "object"
+    },
     "Relation": {
       "additionalProperties": false,
       "description": "A relation a request asks its new task to have: `--relates KIND:TASK`.",
@@ -194,6 +366,13 @@
           ],
           "description": "The batch a planning task plans, from `priory batch add`."
         },
+        "context": {
+          "description": "Text the trigger's `pre` script adds after the request.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "hold": {
           "anyOf": [
             {
@@ -226,6 +405,17 @@
             "string",
             "null"
           ]
+        },
+        "pre": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PreRan"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the trigger's `pre` script did. Triggers with one only."
         },
         "project": {
           "description": "The Linear issue's project name, or null without one. Linear sources only.",
@@ -273,6 +463,21 @@
         },
         "team": {
           "description": "The Linear issue's team key. Linear sources only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "description": "The task's request text, in place of the source event's, from the trigger's `pre` script.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "The task's title, in place of the source event's, from the trigger's `pre` script.",
+          "maxLength": 200,
           "type": [
             "string",
             "null"

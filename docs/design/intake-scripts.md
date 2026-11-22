@@ -274,6 +274,21 @@ its own record. `priory inbox` shows a dropped request beside its source event, 
 
 ## The first slice: `pre`
 
+This slice is built, with every open question's recommendation taken, which Max approved on
+2026-11-22. [pre.md](../intake/pre.md) describes it, and
+[How to filter and enrich events with a script](../filtering-and-enriching-events.md) shows how to
+write one. It differs from this note in these ways:
+
+- The script's environment also holds `PRIORY_FACTORY` and `PRIORY_TRIGGER`, both Priory's own
+  values.
+- A schedule trigger runs its script for a new firing, and for the latest firing at the intake's
+  start, so a firing the log already holds runs no script on each poll.
+- The server stores waiting requests in the state's `pending_requests` table, and a task keeps the
+  script's title, text and context in `pre_title`, `pre_text`, `pre_context` and `pre_script`.
+- `priory intake pre` prints `{ "outcome", "failed", "message" }`.
+- `priory check` reports a `[pre]` problem at the line of the `[pre]` table.
+
+
 1. `[pre]` on a trigger, in the schema and the JSON Schemas, with the check rules: `argv` inside
    the factory folder and executable, `timeout` at most 60 seconds, `on_error` of `pass` or
    `drop`, and `env` names that are valid variable names.
@@ -378,6 +393,8 @@ Tests, through the CLI:
 5. Scripts that run beside the poll, so one slow script does not delay other triggers.
 
 ## Open questions
+
+Max approved every recommendation below on 2026-11-22.
 
 1. **Does every non-zero exit drop the request?** The request for this note says a non-zero exit
    drops it. A

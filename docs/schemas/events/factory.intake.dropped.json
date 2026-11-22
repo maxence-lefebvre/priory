@@ -1,0 +1,127 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/factory.intake.dropped.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "IntakeDropped": {
+      "additionalProperties": false,
+      "description": "A trigger's `pre` script dropped a request: it exited 1, or failed with `on_error = \"drop\"`.\nIt takes the id the request would have had, so one decision stands per event and trigger.\nThe source event is still published.",
+      "properties": {
+        "exit": {
+          "description": "Its exit code; null when it was killed, timed out or could not start.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "failed": {
+          "description": "How it failed, when `on_error = \"drop\"` dropped the request.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "description": "The key the request had.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "The first line it printed on stdout when it exited 1, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "script": {
+          "description": "The script, `argv[0]` of the trigger's `[pre]`.",
+          "type": "string"
+        },
+        "seconds": {
+          "description": "How long it ran.",
+          "format": "double",
+          "type": "number"
+        },
+        "source": {
+          "description": "The `id` of the source event's message.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "trigger": {
+          "description": "The trigger's name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trigger",
+        "source",
+        "key",
+        "script",
+        "exit",
+        "reason",
+        "seconds"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A trigger's `pre` script dropped a request: it exited 1, or failed with `on_error = \"drop\"`.\nIt takes the id the request would have had, so one decision stands per event and trigger.\nThe source event is still published.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/IntakeDropped"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "factory.intake.dropped",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "factory.intake.dropped",
+  "type": "object"
+}

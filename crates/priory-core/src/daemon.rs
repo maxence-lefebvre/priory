@@ -1856,8 +1856,6 @@ fn start(
     recipes: &mut crate::recipe::Running,
     kit: crate::kit::Current<'_>,
 ) -> Result<Result<(), String>, Error> {
-    let candidates = crate::memories::layer(db, Some(admission.task))?;
-    let sources = crate::kit::sources(factory, kit, &candidates);
     let step = factory.workflows[&admission.workflow]
         .value
         .step(&admission.step)
@@ -1869,6 +1867,18 @@ fn start(
     else {
         return Ok(Err(format!("step {} names no known agent", step.id)));
     };
+    let candidates = crate::memories::layer(db, Some(admission.task))?;
+    let sources = crate::kit::sources(factory, kit, &candidates, Some(&agent.value));
+    for skill in &sources.missing {
+        let held = match sources.commit {
+            Some(commit) => format!(
+                "which neither the factory nor kit commit {} holds",
+                &commit[..commit.len().min(12)]
+            ),
+            None => "which the factory does not hold, and this runner has no kit commit yet".into(),
+        };
+        eprintln!("priory daemon: agent {name} names skill {skill}, {held}");
+    }
     let Some(repo) = repo_of(factory, &admission.trigger, admission.repo.as_deref()) else {
         return Ok(Err(format!("task {} names no repo", admission.task)));
     };
@@ -2138,7 +2148,6 @@ fn compact_idle(
     kit: crate::kit::Current<'_>,
 ) -> Result<(), Error> {
     let candidates = crate::memories::layer(db, None)?;
-    let sources = crate::kit::sources(trace.factory, kit, &candidates);
     for live in idle::live(db)? {
         let ended_as = match (live.overdue, live.late) {
             (true, _) => Some("timeout"),
@@ -2171,6 +2180,7 @@ fn compact_idle(
         let Some(due) = idle::due(db, name)? else {
             continue;
         };
+        let sources = crate::kit::sources(trace.factory, kit, &candidates, Some(&agent.value));
         let tmux = format!("priory-idle-{name}");
         let id = idle::begin(db, name, &due.session, &tmux)?;
         let dir = Path::new(&due.worktree);

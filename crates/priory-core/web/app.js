@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, snoozeShortcut, snoozed, stillArmed, submitted, takesText, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, stillArmed, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
@@ -11,8 +11,8 @@ import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedP
 import { emptyDetail, eventWords, handled, neverOwned, sinceWords, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
-import { actionNote, batchParts, countHead, countWords, dueParts, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
-import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskLabel, taskViews, triageWords } from "./tasks.js";
+import { actionNote, batchParts, capsuleWords, countHead, countWords, dueParts, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
+import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskLabel, taskViews, triageWords, workStep } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { PANELS, backTo, pageTitle } from "./pages.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
@@ -579,7 +579,7 @@ function asleepRow(task) {
   const waits = (task.waits || []).map((wait) => `${wait.kind} ${wait.on}, ${age(wait.since)}`).join("; ");
   return html`<a class="row" href="/tasks/${task.id}">
     ${tile("asleep")}
-    <span class="l1"><span class="mono">${taskLabel(task.key)}</span><span>${task.workflow} ${task.step}</span><span>asleep</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
+    <span class="l1"><span class="mono">${taskLabel(task.key)}</span><span>${workStep(task)}</span><span>asleep</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
     <span class="l2 r">${task.title || task.lane || ""}</span>
     <span class="l3"><span>${waits ? `Waits on ${waits}` : "Waits on an ask"}</span></span>
     <span class="chev">${icon("chevron-right", "s15")}</span></a>`;
@@ -595,7 +595,7 @@ const prsTag = (task, id) => {
 function taskRow(task) {
   return html`<div class="row">
     ${tile(task.state)}
-    <span class="l1"><span class="mono">${taskLabel(task.key)}</span><span>${task.workflow} ${task.step}</span><span>${task.state}</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
+    <span class="l1"><span class="mono">${taskLabel(task.key)}</span><span>${workStep(task)}</span><span>${task.state}</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
     <span class="l2 r ${task.reason ? `t-${role(task.state)}` : ""}">${autolinked(task.reason || task.tldr || task.title || task.lane || "", task.repo)}</span></div>`;
 }
 
@@ -858,7 +858,8 @@ const addButton = (kind) => html`<button class="${kind}" data-action="add-open" 
 // On a phone the Add button sits beside the capsule, or alone where the capsule hides.
 function capsule(model) {
   const n = model.open.length;
-  const answer = n && deskView() === "needs" ? html`<a class="capsule" href="/asks/${model.first.id}">${icon("ask", "s20")}Answer ${n} ${n === 1 ? "ask" : "asks"}</a>` : "";
+  const words = capsuleWords(n, Boolean(state.failed));
+  const answer = n && deskView() === "needs" ? html`<a class="capsule ${words.off ? "off" : ""}" href="/asks/${model.first.id}">${icon(words.icon, "s20")}${words.text}</a>` : "";
   return html`<div class="fade"></div><div class="dock">${answer}${addButton("fab")}</div>`;
 }
 
@@ -968,7 +969,7 @@ function taskListRow(task) {
   if (elsewhere(task, ago)) return remoteListRow(task);
   const line3 = reasonShown(task) ? html`<span class="t-${role(task.state)}">${task.reason}</span>${batchTag(task)}` : html`<span>${task.lane || ""}</span><span>${task.band || ""}</span>${batchTag(task)}`;
   return html`<div class="row" data-href="/tasks/${task.id}">${tile(task.state)}
-    <span class="l1"><a class="mono" href="/tasks/${task.id}" title="task ${task.id}">${taskLabel(task.key)}</a><span>${task.workflow} ${task.step}</span><span>${task.state}</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
+    <span class="l1"><a class="mono" href="/tasks/${task.id}" title="task ${task.id}">${taskLabel(task.key)}</a><span>${workStep(task)}</span><span>${task.state}</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
     <span class="l2 r">${task.title || task.tldr || ""}</span><span class="l3">${line3}</span><span class="chev">${icon("chevron-right", "s15")}</span></div>`;
 }
 
@@ -1114,8 +1115,9 @@ function askDetail(id, wide) {
   const nav = (to, label, name) => (to
     ? html`<a class="iconbtn" href="/asks/${to.id}" aria-label="${label}">${icon(name, "s20")}</a>`
     : html`<span class="iconbtn" aria-disabled="true" aria-label="${label}">${icon(name, "s20")}</span>`);
+  const shrunk = shrunkHead(ask);
   const header = html`<div class="ahead">
-    ${wide ? html`<span class="ctx">${tile("ask", "sm")}<span>ask <span class="mono">#${ask.id}</span></span><span>revision ${ask.revision}</span><span>${timeTag(ask.since)}</span></span>` : html`<a class="back" href="${back[0]}">${icon("chevron-left", "s22")}${back[1]}</a>`}
+    ${wide ? html`<span class="ctx">${tile("ask", "sm")}<span>ask <span class="mono">#${ask.id}</span></span><span>revision ${ask.revision}</span><span>${timeTag(ask.since)}</span></span>` : html`<a class="back" href="${back[0]}" aria-label="${back[1]}">${icon("chevron-left", "s22")}<span>${back[1]}</span></a><span class="aq" aria-hidden="true"><b>${shrunk.question}</b><small>${shrunk.place}</small></span>`}
     ${at >= 0 ? html`<span class="pos num">${at + 1}<span>/${open.length}</span></span>` : html`<span class="sp"></span>`}
     ${nav(open[at - 1], "Previous ask", "chevron-up")}${nav(open[at + 1], "Next ask", "chevron-down")}
     ${wide ? html`<a class="iconbtn" href="${back[0]}" aria-label="Close">${icon("x", "s20")}</a>` : ""}</div>`;
@@ -1481,7 +1483,7 @@ function taskPage(id) {
     <textarea id="say" name="text" rows="2" placeholder="Say to the agent">${state.sayDrafts.get(task.id) || ""}</textarea><button class="btn primary" ${said}>Say</button></form>`;
   const sections = taskSections(task).map(([, , section]) => section);
   return html`${back}<div class="scroll"><div class="ask task">
-    <p class="ctx">${tile(task.state, "sm")}<span class="mono">${taskLabel(task.key)}</span><span>${task.state}</span><span>${task.workflow} ${task.step}</span><span>${task.lane || ""}</span><span>${task.band || ""}</span>${task.batch == null ? "" : html`<a href="/batches/${task.batch}">batch ${task.batch}</a>`}</p>
+    <p class="ctx">${tile(task.state, "sm")}<span class="mono">${taskLabel(task.key)}</span><span>${task.state}</span><span>${workStep(task)}</span><span>${task.lane || ""}</span><span>${task.band || ""}</span>${task.batch == null ? "" : html`<a href="/batches/${task.batch}">batch ${task.batch}</a>`}</p>
     <h1 class="question">${autolinked(task.tldr || task.brief?.title || task.brief?.request?.split("\n")[0] || taskLabel(task.key), task.repo)}</h1>
     ${task.reason ? html`<p class="text t-${role(task.state)}">${autolinked(task.reason, task.repo)}</p>` : ""}
     ${taskAsks(task)}${taskActs(task.id, task.state)}${say}</div>${sections}${terminalSection(task)}</div>`;
@@ -2392,7 +2394,7 @@ function addedTask() {
   return html`<div class="added" role="status">
     <p class="line">Added. The task waits in the queue for its turn.</p>
     <div class="row">${tile(task.state)}
-      <span class="l1"><span class="mono">${taskLabel(task.key)}</span><span>${[task.workflow, task.step !== task.workflow && task.step].filter(Boolean).join(", ")}</span><span class="age">${task.state}</span></span>
+      <span class="l1"><span class="mono">${taskLabel(task.key)}</span><span>${workStep(task)}</span><span class="age">${task.state}</span></span>
       <span class="l2">${task.brief?.request || task.brief?.title || (id === null ? "No task took this key yet. It shows on the Desk once one does." : "")}</span>
       <span class="l3">${[task.band, task.lane].filter(Boolean).join(", ")}</span></div>
     <div class="acts"><button class="btn secondary" data-action="add-another">Add another</button><button class="btn primary" data-action="add-done">Close</button></div></div>`;
@@ -3042,8 +3044,13 @@ function watchSections(app) {
     }
     const options = scroller.querySelector(".opts");
     const bar = app.querySelector(".abar");
-    if (!options || !bar) continue;
-    track(new IntersectionObserver(([entry]) => { bar.hidden = entry.isIntersecting; }, { root: scroller })).observe(options);
+    const head = app.querySelector(".ahead:has(.aq)");
+    if (!options || !(bar || head)) continue;
+    track(new IntersectionObserver(([entry]) => {
+      if (bar) bar.hidden = entry.isIntersecting;
+      // Only options scrolled past shrink the header; options still below the fold leave it whole.
+      head?.classList.toggle("shrunk", !entry.isIntersecting && entry.boundingClientRect.bottom <= (entry.rootBounds?.top ?? 0));
+    }, { root: scroller })).observe(options);
   }
 }
 

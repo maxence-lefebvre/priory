@@ -42,7 +42,7 @@ Open and waits in Snoozed. On a phone, once the options scroll out of view, the 
 A batch's go ask shows the plan as a lane graph, and each entry's menu moves or drops it before you
 answer. The desk's batch row opens the batch page, with each entry's state and when it starts.
 
-![The same ask scrolled to its pull request, checks and inbox events in dark mode, with the answer bar fixed at the bottom: "2 options" and "open, Recommended".](../images/web-view-answer-bar-390-dark.png)
+![The same ask scrolled to its pull request, checks and inbox events in dark mode. The header has shrunk to the question over "ENG-212, approve-pr, revision 1", and the answer bar is fixed at the bottom: "2 options" and "open, Recommended".](../images/web-view-answer-bar-390-dark.png)
 
 The web view's Tasks panel lists every task, with the saved views Active, Blocked and Ended and
 filters by state, lane and workflow; each row opens the task's page, and a batch's entries link to

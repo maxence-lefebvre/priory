@@ -181,6 +181,16 @@
     },
     "session": {
       "$ref": "#/definitions/Session"
+    },
+    "skills": {
+      "description": "The skills the run gets, by name, from the factory or the kit. Unset, it gets every skill;\nempty, none.",
+      "items": {
+        "type": "string"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
     }
   },
   "required": [
