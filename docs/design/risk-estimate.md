@@ -296,7 +296,9 @@ Tests, through the CLI as `crates/priory/tests/grades.rs` does:
 2. The ask's `risk_estimate` and its line in the web view, the Herdr adapter and `priory asks`.
    The web view part starts from a reviewed design, as `AGENTS.md` asks.
 3. The columns of `priory check --explain`, `priory flows` and the Flows panels.
-4. `--by lane`, and partial pooling if open question 2 says so.
+4. Built. `--by lane`, with no partial pooling, as open question 2 recommends. Each lane's block
+   has its own counts and rows on the flat prior. A test covers two lanes of one workflow, each with
+   its own trials and adverse outcomes. [trace.md](../daemon/trace.md#risk) describes it.
 
 ## Open questions
 

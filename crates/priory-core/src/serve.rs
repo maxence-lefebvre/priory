@@ -1711,7 +1711,7 @@ fn grades(db: &Connection, query: &str) -> Reply {
         Ok(since) => since,
         Err(refusal) => return Reply::error(400, &refusal),
     };
-    match grades::grades(db, since) {
+    match grades::grades(db, since, false) {
         Ok(grades) => Reply::json(200, grades.json().to_string()),
         Err(error) => Reply::error(500, &error),
     }

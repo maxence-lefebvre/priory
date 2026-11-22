@@ -836,3 +836,61 @@ fn a_check_run_nobody_hears_shows_its_name_and_conclusion_as_its_unrouted_line()
         .collect();
     assert_eq!(lines, [&json!("test (ubuntu) failure")], "{unrouted}");
 }
+
+#[test]
+fn by_lane_splits_each_grade_by_the_tasks_lane() {
+    let setup = Setup::new("by-lane");
+    setup.task(1, "green");
+    setup.task(2, "green");
+    setup.task(3, "green");
+    setup
+        .db()
+        .execute("UPDATE tasks SET lane = 'web' WHERE id IN (1, 2)", [])
+        .unwrap();
+    setup.handle(&[
+        merged(10, 1, "aaa", "m10"),
+        review(20, 2, "bbb", "changes_requested", 2),
+        merged(30, 3, "ccc", "m30"),
+    ]);
+
+    let grades: Value = serde_json::from_str(&setup.grades(&["--by", "lane", "--json"])).unwrap();
+    assert_eq!(grades["by"], "lane");
+    let green = |lane: &str| {
+        grades["grades"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["grade"] == "green" && row["lane"] == lane)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(green("web")["tasks"], 2);
+    assert_eq!(green("web")["labels"]["changes-requested"]["count"], 1);
+    assert_eq!(green("none/misc")["tasks"], 1);
+    assert_eq!(green("none/misc")["labels"]["approved-clean"]["count"], 1);
+    assert_eq!(
+        grades["one_shot"],
+        json!({ "rate": 2.0 / 3.0, "clean": 2, "outcomes": 3, "target": 0.9 })
+    );
+
+    let text = setup.grades(&["--by", "lane"]);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "green one-shot: 66.7% (2 of 3), target 90%");
+    assert!(
+        lines[2].starts_with("lane\tgrade\ttasks\toutcomes\t"),
+        "{text}"
+    );
+    assert!(
+        lines.contains(
+            &"web\tgreen\t2\t2\t1 (50.0%)\t1 (50.0%)\t0 (0.0%)\t0 (0.0%)\t0 (0.0%)\t0 (0.0%)"
+        ),
+        "{text}"
+    );
+    assert!(
+        lines.contains(
+            &"none/misc\tgreen\t1\t1\t1 (100.0%)\t0 (0.0%)\t0 (0.0%)\t0 (0.0%)\t0 (0.0%)\t0 (0.0%)"
+        ),
+        "{text}"
+    );
+    assert_eq!(setup.grades_json()["by"], Value::Null);
+}

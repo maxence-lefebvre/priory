@@ -309,13 +309,16 @@ fn mentions(text: &str, reference: &str) -> bool {
     })
 }
 
-/// Each grade's tasks and their outcome labels.
+/// Each grade's tasks and their outcome labels, and each lane's with `--by lane`.
 pub struct Grades {
     since: Option<String>,
+    by_lane: bool,
     rows: Vec<Row>,
 }
 
 struct Row {
+    /// The lane its tasks have now, with `--by lane`; `-` for a task with none.
+    lane: Option<String>,
     grade: &'static str,
     tasks: i64,
     outcomes: i64,
@@ -329,31 +332,46 @@ impl Row {
 }
 
 /// The tasks created since the instant `since`, or all of them, with a grade and their labels.
-pub fn grades(db: &Connection, since: Option<String>) -> Result<Grades, String> {
+/// With `by_lane`, each grade splits into one row per lane its tasks have now.
+pub fn grades(db: &Connection, since: Option<String>, by_lane: bool) -> Result<Grades, String> {
     let error = |error: rusqlite::Error| error.to_string();
     let mut statement = db
         .prepare(
-            "SELECT tasks.grade, group_concat(json_extract(trace.event, '$.data.label'), ' ')
+            "SELECT coalesce(tasks.lane, '-'), tasks.grade,
+               group_concat(json_extract(trace.event, '$.data.label'), ' ')
              FROM tasks LEFT JOIN trace ON trace.type = 'factory.step.labeled'
                AND json_extract(trace.event, '$.data.task') = CAST(tasks.id AS TEXT)
              WHERE tasks.grade IS NOT NULL AND (?1 IS NULL OR tasks.created >= ?1)
              GROUP BY tasks.id",
         )
         .map_err(error)?;
-    let tasks: Vec<(String, Option<String>)> = statement
-        .query_map([&since], |row| Ok((row.get(0)?, row.get(1)?)))
+    let tasks: Vec<(String, String, Option<String>)> = statement
+        .query_map([&since], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
         .and_then(Iterator::collect)
         .map_err(error)?;
-    let rows = crate::tools::GRADES
-        .into_iter()
-        .map(|grade| {
+    let lanes: Vec<Option<&str>> = match by_lane {
+        true => tasks
+            .iter()
+            .map(|(lane, ..)| lane.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(Some)
+            .collect(),
+        false => vec![None],
+    };
+    let mut rows = Vec::new();
+    for lane in lanes {
+        for grade in crate::tools::GRADES {
             let mut row = Row {
+                lane: lane.map(str::to_owned),
                 grade,
                 tasks: 0,
                 outcomes: 0,
                 labels: [0; LABELS.len()],
             };
-            for (_, labels) in tasks.iter().filter(|(graded, _)| graded == grade) {
+            for (_, _, labels) in tasks.iter().filter(|(task_lane, graded, _)| {
+                graded == grade && lane.is_none_or(|lane| lane == task_lane)
+            }) {
                 let mut labels: Vec<&str> =
                     labels.as_deref().unwrap_or_default().split(' ').collect();
                 // A review that arrived after the merge still requested a change.
@@ -366,38 +384,61 @@ pub fn grades(db: &Connection, since: Option<String>) -> Result<Grades, String> 
                     *count += i64::from(labels.contains(&label));
                 }
             }
-            row
-        })
-        .collect();
-    Ok(Grades { since, rows })
+            rows.push(row);
+        }
+    }
+    Ok(Grades {
+        since,
+        by_lane,
+        rows,
+    })
 }
 
 impl Grades {
-    fn green(&self) -> &Row {
-        self.rows
-            .iter()
-            .find(|row| row.grade == "green")
-            .expect("green is a grade")
+    /// Green's tasks over every lane.
+    fn green(&self) -> Row {
+        let mut green = Row {
+            lane: None,
+            grade: "green",
+            tasks: 0,
+            outcomes: 0,
+            labels: [0; LABELS.len()],
+        };
+        for row in self.rows.iter().filter(|row| row.grade == "green") {
+            green.tasks += row.tasks;
+            green.outcomes += row.outcomes;
+            for (sum, count) in green.labels.iter_mut().zip(row.labels) {
+                *sum += count;
+            }
+        }
+        green
     }
 
     pub fn json(&self) -> Value {
         let green = self.green();
         json!({
             "since": self.since,
+            "by": self.by_lane.then_some("lane"),
             "one_shot": {
                 "rate": green.share(green.labels[0]),
                 "clean": green.labels[0],
                 "outcomes": green.outcomes,
                 "target": TARGET,
             },
-            "grades": self.rows.iter().map(|row| json!({
-                "grade": row.grade,
-                "tasks": row.tasks,
-                "outcomes": row.outcomes,
-                "labels": LABELS.iter().zip(row.labels).map(|(label, count)| {
-                    (label.to_string(), json!({ "count": count, "share": row.share(count) }))
-                }).collect::<serde_json::Map<_, _>>(),
-            })).collect::<Vec<_>>(),
+            "grades": self.rows.iter().map(|row| {
+                let mut value = json!({
+                    "grade": row.grade,
+                    "tasks": row.tasks,
+                    "outcomes": row.outcomes,
+                    "labels": LABELS.iter().zip(row.labels).map(|(label, count)| {
+                        (label.to_string(), json!({ "count": count, "share": row.share(count) }))
+                    }).collect::<serde_json::Map<_, _>>(),
+                });
+                if let Some(lane) = &row.lane {
+                    value["lane"] = json!(lane);
+                }
+                value
+            }).collect::<Vec<_>>(),
         })
     }
 
@@ -414,7 +455,16 @@ impl Grades {
             TARGET * 100.0
         ));
         crate::state::emit("");
-        crate::state::emit(&format!("grade\ttasks\toutcomes\t{}", LABELS.join("\t")));
+        let lane = |row: &Row| {
+            row.lane
+                .as_ref()
+                .map_or_else(String::new, |lane| format!("{lane}\t"))
+        };
+        crate::state::emit(&format!(
+            "{}grade\ttasks\toutcomes\t{}",
+            if self.by_lane { "lane\t" } else { "" },
+            LABELS.join("\t")
+        ));
         for row in &self.rows {
             let cells: Vec<String> = row
                 .labels
@@ -422,7 +472,8 @@ impl Grades {
                 .map(|&count| format!("{count} ({})", percent(row.share(count))))
                 .collect();
             crate::state::emit(&format!(
-                "{}\t{}\t{}\t{}",
+                "{}{}\t{}\t{}\t{}",
+                lane(row),
                 row.grade,
                 row.tasks,
                 row.outcomes,
