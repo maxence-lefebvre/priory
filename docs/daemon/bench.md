@@ -2,9 +2,11 @@
 
 `priory bench capture` turns a past task into a benchmark case: a folder that a replay plays
 again under another configuration. `priory bench replay` plays one case under one configuration.
-[The case reference](../reference/cases.md) lists a case's files and keys.
-[scorers-and-benchmarks.md](../design/scorers-and-benchmarks.md) explains the benchmark it
-belongs to. The comparison of two configurations is not built yet.
+`priory bench FILE --base REF --head REF` compares two commits of the factory on a benchmark's
+cases. [The case reference](../reference/cases.md) lists a case's files and keys, and
+[the benchmark reference](../reference/benchmarks.md) a benchmark file's.
+[scorers-and-benchmarks.md](../design/scorers-and-benchmarks.md) explains why the comparison works
+as it does.
 
 ## Capture
 
@@ -165,7 +167,7 @@ stopped short, so its spending and its ending do not measure the configuration.
 | `no clone of <repo> in <path>: run one task in <repo> on this machine first` | Priory has not cloned the repository on this machine |
 | `the clone <path> lacks the case's start commit <sha>: fetch it there` | The clone does not hold the start commit |
 
-### Check it with a real agent
+### Check a replay with a real agent
 
 The tests replay with a fake `claude`, so they cost nothing. To check a replay with a real agent,
 capture a small finished task and replay it with a low budget:
@@ -176,3 +178,128 @@ priory bench replay path/to/factory /tmp/case-12 --budget 2 --turn-timeout 10m
 ```
 
 Read the ending, the spending against the estimate, and the `gh` calls not recorded.
+
+## Compare
+
+```sh
+priory bench FILE --base REF --head REF --budget USD [--runs N] [--case NAME] [--turn-timeout DURATION]
+```
+
+`FILE` is a benchmark file, `benchmarks/<name>.toml` in a factory folder inside a Git repository.
+`--base` and `--head` name two commits of that repository, such as `main` and a branch. `--budget`
+is required: the most the comparison may spend, in dollars. `--runs` is the number of pairs each
+case gets, 3 by default. `--case` runs only the case whose folder has that name. `--turn-timeout`
+is as for a replay.
+
+The only thing that differs between the two sides is the factory's files at each commit. The
+benchmark file, its cases and its scorers come from `--head` for both sides.
+
+### What it does
+
+1. It writes the files of each commit into a scratch folder in `$TMPDIR`, and refuses a commit
+   whose factory fails `priory check`.
+2. It prints an estimate: each case's recorded steps priced for each side's models, times
+   `--runs`. It refuses to start when the estimate is over the budget, and names the `--runs` that
+   would fit.
+3. Each `command` scorer of the benchmark runs once on each case's untouched start commit, from
+   Priory's clone on this machine. A case where one errors is dropped for both sides, and the
+   table names it. So an `error` during the comparison points at the change.
+4. It replays each case in pairs: one replay of the base, one of the head, as
+   [Replay](#replay) describes. The side that goes first alternates from one pair to the next, so
+   a warm cache or a drifting model service favors neither side. It prints one line per replay,
+   such as `eng-412 pair 1: head reached open-pr, $0.4100`.
+5. Once a replay ends, and before its scratch folder goes, the benchmark's scorers grade it. A
+   `result` or `diff` scorer takes its verdict on the replay's last finished run. An `ask` scorer
+   takes the worst of its verdicts on the runs that asked: an error, then a fail, then a pass.
+6. It prints the table, and appends a `factory.bench.compared` record to this machine's trace
+   ([the trace schema](../trace-schema.md#factorybenchcompared)).
+
+Before each pair, the comparison checks what it spent. Once the budget is spent, no later pair
+starts. A pair whose replay ends `over budget` or `cost unknown` is dropped whole, and no later
+pair starts. Either way the comparison is incomplete.
+
+### The table
+
+```text
+benchmark implement-november, base 999daf0, head 4c1e2b7, comparison 1 of these commits
+12 cases, 3 pairs each, 0 pairs dropped, $31.20 of $40
+
+scorer        base   errors  head   errors  mean diff  won  tied  lost  verdict
+gate          26/36  1       33/36  0       +19.4      6    6     0     better
+passed        30/36  0       33/36  0       +8.3       3    8     1
+merged-tests  19/36  0       24/36  0       +13.9      5    5     2
+short-ask     1/2    0       2/2    0       +50.0      1    1     0
+
+side  reached open-pr  stopped  asked  timed out  median cost  median time
+base  30               3        2      1          $0.41        11 min
+head  33               1        2      0          $0.47        12 min
+```
+
+The first scorer is the benchmark's `primary`. For each scorer, each side shows its passes over
+the replays that count, and its errors:
+
+- For a `result` or `diff` scorer, every replay counts. A `fail` and an `error` are both not
+  passed. A replay that ended with no result, such as `asked`, `waited` or `timed out`, is not
+  passed either, so a change cannot raise its share by asking more.
+- For an `ask` scorer, only the replays that asked count.
+
+Each case gives one difference per scorer: the share of the head's replays that passed, less the
+base's. `mean diff` is the mean of those differences, in points. `won`, `tied` and `lost` count
+the cases where the difference is above, at or below zero. A case where a side has no replay that
+counts is left out of all four.
+
+The second table counts each side's [endings](#endings), and shows the median cost and the median
+time of a replay.
+
+### The verdict
+
+Only the primary scorer gets a verdict, from an exact sign test on the cases it did not tie:
+
+| Verdict | When |
+| ------- | ---- |
+| `better` | The two-sided probability of a split at least as uneven is under 0.05, and the head won more cases |
+| `worse` | The same, and the head lost more cases |
+| `no clear difference` | The probability is 0.05 or more |
+| `too few cases` | Fewer than 6 cases did not tie: no split of 5 or fewer can reach 0.05 |
+
+A tie carries no information for the sign test, so a change that helps a little on every case can
+read `no clear difference`. The mean difference is there for that.
+
+The table gives no verdict in two cases:
+
+- **Incomplete.** A pair was dropped, so the first line starts with `Incomplete` and says why.
+- **A repeat.** An earlier complete comparison of the same two commits and benchmark on this
+  machine gave the verdict. The header says `a repeat`, and the verdict column reads `repeat`.
+  Running again until a `better` shows up would find one by chance.
+
+The header also says when the diff between the two commits touches `scorers/` or `benchmarks/`,
+since the change then moved the ruler too, and it names the cases whose capture left gaps.
+
+### Compare errors
+
+| Error | Cause |
+| ----- | ----- |
+| `give --budget USD, the most the comparison may spend` | `--budget` is missing |
+| `<file> is not in a factory's benchmarks/ folder` | `FILE` is not `benchmarks/<name>.toml` |
+| `<dir> is not in a Git repository` | The factory folder is not in a Git repository |
+| `no commit <ref> in <repository>` | `--base` or `--head` names no commit |
+| `the base commit <sha> fails priory check: <problem>` | The factory at a commit has a problem. The first is named |
+| `the head commit <sha> has no benchmark <name>` | The head commit lacks `FILE` |
+| `the benchmark <name> has no case <case>` | `--case` names no case of the benchmark |
+| `the case <path>: <why>` | A case folder is missing or does not load |
+| `the estimate, $<x>, is over the $<y> budget: give --runs <n>, or --budget <z> or more` | The estimate is over the budget, and fewer runs would fit |
+
+The [replay errors](#replay-errors) apply to each replay, and stop the comparison.
+
+### Check a comparison with a real agent
+
+The tests compare with a fake `claude`, so they cost nothing. To check a comparison with a real
+agent, make a benchmark of one small case, change one agent's prompt on a branch, and compare with
+one run and a low budget:
+
+```sh
+priory bench path/to/factory/benchmarks/smoke.toml --base main --head my-branch \
+  --budget 4 --runs 1 --turn-timeout 10m
+```
+
+Read the estimate against what was spent, each replay's ending, and the table.

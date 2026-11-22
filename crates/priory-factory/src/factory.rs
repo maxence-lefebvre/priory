@@ -915,6 +915,25 @@ impl ScoreKind {
     }
 }
 
+/// `benchmarks/<name>.toml` or `.yaml`: the cases a comparison replays and the scorers that grade
+/// them. The file name is the benchmark's name.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(title = "benchmark")]
+pub struct Benchmark {
+    /// What the cases are, in one line.
+    pub description: String,
+    /// The workflow the cases ran.
+    pub workflow: String,
+    /// The scorer whose verdict the comparison gives: one that reads `result` or `diff`.
+    pub primary: String,
+    /// Other scorers, shown beside the primary one with no verdict.
+    #[serde(default)]
+    pub scorers: Vec<String>,
+    /// The case folders, each relative to the benchmark file's folder.
+    pub cases: Vec<PathBuf>,
+}
+
 /// The parts of an ask's shape an `ask-shape` scorer can expect.
 pub const ASK_SHAPE: [&str; 3] = ["short", "whatWaits", "nextAction"];
 
@@ -1561,6 +1580,8 @@ pub struct Factory {
     pub runners: BTreeMap<String, Loaded<Runner>>,
     pub views: BTreeMap<String, Loaded<View>>,
     pub scorers: BTreeMap<String, Loaded<Scorer>>,
+    /// `benchmarks/<name>.toml`: each benchmark, by its file's name.
+    pub benchmarks: BTreeMap<String, Loaded<Benchmark>>,
     /// `prices.toml`: each model's price.
     pub prices: BTreeMap<String, Price>,
     pub lanes: Option<Loaded<Lanes>>,
@@ -2109,6 +2130,11 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
             found.define(&mut factory.scorers, stem(&file), &file, value, lines);
         }
     }
+    for file in found.config_files("benchmarks") {
+        if let Some((value, lines)) = found.parse::<Benchmark>(&file) {
+            found.define(&mut factory.benchmarks, stem(&file), &file, value, lines);
+        }
+    }
     for file in found.config_files("runners") {
         if let Some((value, lines)) = found.parse::<Runner>(&file) {
             found.define(&mut factory.runners, stem(&file), &file, value, lines);
@@ -2588,13 +2614,24 @@ mod tests {
     const SCORER: &str =
         "description = \"Passed.\"\non = \"result\"\nkind = \"outcome\"\nexpect = [\"passed\"]\n";
 
+    const BENCHMARK: &str = "description = \"Cases.\"\nworkflow = \"implement\"\nprimary = \"passed\"\nscorers = [\"gate\"]\ncases = [\"cases/one\"]\n";
+
     fn load_scorer(text: &[u8], case: usize) {
+        load_file("scorers", text, case);
+    }
+
+    fn load_benchmark(text: &[u8], case: usize) {
+        load_file("benchmarks", text, case);
+    }
+
+    /// Loads and checks a factory whose `folder` holds one file, `text`.
+    fn load_file(folder: &str, text: &[u8], case: usize) {
         let dir = std::env::temp_dir()
-            .join(format!("priory-scorer-{}", std::process::id()))
+            .join(format!("priory-{folder}-{}", std::process::id()))
             .join(case.to_string());
-        fs::create_dir_all(dir.join("scorers")).unwrap();
+        fs::create_dir_all(dir.join(folder)).unwrap();
         fs::write(dir.join("factory.toml"), "name = \"demo\"").unwrap();
-        fs::write(dir.join("scorers/any.toml"), text).unwrap();
+        fs::write(dir.join(folder).join("any.toml"), text).unwrap();
         let (factory, _) = load(&dir);
         crate::rules::check(&factory);
         let _ = fs::remove_dir_all(&dir);
@@ -2616,6 +2653,21 @@ mod tests {
             load_scorer(&mutated, 1);
             load_scorer(&SCORER.as_bytes()[..cut], 2);
             load_scorer(format!("{SCORER}{text}").as_bytes(), 3);
+        }
+
+        #[test]
+        fn a_benchmark_file_of_any_shape_loads_or_is_refused_without_panicking(
+            text in proptest::string::string_regex("[a-z_\\- =\"'\\[\\]{}.,/0-9\\n#]{0,200}").unwrap(),
+            at in 0..BENCHMARK.len(),
+            byte in any::<u8>(),
+            cut in 0..BENCHMARK.len(),
+        ) {
+            load_benchmark(text.as_bytes(), 0);
+            let mut mutated = BENCHMARK.as_bytes().to_vec();
+            mutated[at] = byte;
+            load_benchmark(&mutated, 1);
+            load_benchmark(&BENCHMARK.as_bytes()[..cut], 2);
+            load_benchmark(format!("{BENCHMARK}{text}").as_bytes(), 3);
         }
     }
 }

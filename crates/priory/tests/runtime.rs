@@ -23760,6 +23760,15 @@ impl Setup {
     /// Runs `priory bench replay` on the factory and `case` with `args`, as a person with a GitHub
     /// token would, and waits up to two minutes for it.
     fn replay(&self, case: &Path, args: &[&str]) -> Exit {
+        let factory = self.dir.join("factory");
+        let mut all = vec!["replay", factory.to_str().unwrap(), case.to_str().unwrap()];
+        all.extend_from_slice(args);
+        self.bench(&all, Duration::from_secs(120))
+    }
+
+    /// Runs `priory bench` with `args`, as a person with a GitHub token would, with the replay's
+    /// `claude` first on `PATH`, and waits up to `limit` for it.
+    fn bench(&self, args: &[&str], limit: Duration) -> Exit {
         // Not the shared fakes: a fake tmux or git finds the real one by dropping the first entry
         // of `PATH`, which the replay's own `bin` takes.
         let path = std::env::join_paths(
@@ -23767,15 +23776,9 @@ impl Setup {
                 .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
         )
         .unwrap();
-        let factory = self.dir.join("factory");
         let mut child = self
             .command(env!("CARGO_BIN_EXE_priory"))
-            .args([
-                "bench",
-                "replay",
-                factory.to_str().unwrap(),
-                case.to_str().unwrap(),
-            ])
+            .arg("bench")
             .args(args)
             .env("PATH", path)
             .env("TMPDIR", self.tmux.path())
@@ -23784,7 +23787,7 @@ impl Setup {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(120);
+        let deadline = Instant::now() + limit;
         while child.try_wait().unwrap().is_none() {
             if Instant::now() > deadline {
                 let scratch = fs::read_dir(self.tmux.path())
@@ -23797,7 +23800,7 @@ impl Setup {
                     .unwrap_or_default();
                 let _ = child.kill();
                 panic!(
-                    "the replay ran past two minutes: {:?}\n--- its daemon's log\n{log}",
+                    "priory bench ran past {limit:?}: {:?}\n--- its daemon's log\n{log}",
                     child.wait_with_output()
                 );
             }
@@ -23974,6 +23977,226 @@ fn bench_replay_refuses_an_estimate_over_its_budget_or_a_model_with_no_price() {
     assert!(
         fs::read_dir(setup.tmux.path()).unwrap().next().is_none(),
         "a refused replay made a scratch folder"
+    );
+}
+
+/// A replayable case inside a factory that is a Git repository: its first commit holds an
+/// `outcome` scorer and a benchmark of the case, and its second changes the workflow's prompt.
+/// Returns the setup, the benchmark file and the two commits.
+fn benchmarked(name: &str) -> (Setup, PathBuf, String, String) {
+    let (setup, case, _) = replayable(name, 1);
+    let factory = setup.dir.join("factory");
+    let cases = factory.join("benchmarks/cases/one");
+    fs::create_dir_all(cases.join("gh")).unwrap();
+    for file in ["case.toml", "answers.toml", "gh/001.toml"] {
+        fs::copy(case.join(file), cases.join(file)).unwrap();
+    }
+    fs::create_dir_all(factory.join("scorers")).unwrap();
+    fs::write(
+        factory.join("scorers/passed.toml"),
+        "description = \"Passed.\"\non = \"result\"\nkind = \"outcome\"\nexpect = [\"passed\"]\n",
+    )
+    .unwrap();
+    let file = factory.join("benchmarks/smoke.toml");
+    fs::write(
+        &file,
+        "description = \"One case.\"\nworkflow = \"implement\"\nprimary = \"passed\"\ncases = [\"cases/one\"]\n",
+    )
+    .unwrap();
+    let commit = |message: &str| {
+        setup.git(&factory, &["add", "-A"]);
+        setup.git(
+            &factory,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                message,
+            ],
+        );
+        setup
+            .git(&factory, &["rev-parse", "HEAD"])
+            .trim()
+            .to_owned()
+    };
+    setup.git(&factory, &["init", "-q", "-b", "main"]);
+    let base = commit("base");
+    let workflow = factory.join("workflows/implement.toml");
+    let changed = fs::read_to_string(&workflow).unwrap().replace(
+        "Implement the issue.",
+        "Implement the issue, then run the tests.",
+    );
+    fs::write(&workflow, changed).unwrap();
+    let head = commit("head");
+    (setup, file, base, head)
+}
+
+/// The `factory.bench.compared` records of the setup's state, oldest first.
+fn compared(setup: &Setup) -> Vec<serde_json::Value> {
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let mut statement = db
+        .prepare("SELECT event FROM trace WHERE type = 'factory.bench.compared' ORDER BY seq")
+        .unwrap();
+    statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|event| serde_json::from_str(&event.unwrap()).unwrap())
+        .collect()
+}
+
+#[test]
+fn bench_compares_two_commits_in_pairs_and_marks_a_second_comparison_a_repeat() {
+    let (setup, file, base, head) = benchmarked("bench-compare");
+    // Each comparison's one pair runs the base first: it fails, and the head passes.
+    setup.calls(&[
+        result("failed"),
+        result("passed"),
+        result("failed"),
+        result("passed"),
+    ]);
+    let args = [
+        file.to_str().unwrap(),
+        "--base",
+        &base,
+        "--head",
+        &head,
+        "--budget",
+        "1",
+        "--runs",
+        "1",
+    ];
+
+    let first = setup.bench(&args, Duration::from_secs(240));
+    let second = setup.bench(&args, Duration::from_secs(240));
+
+    let (first, second) = (
+        String::from_utf8_lossy(&first.stdout).into_owned(),
+        String::from_utf8_lossy(&second.stdout).into_owned(),
+    );
+    let lines: Vec<&str> = first.lines().collect();
+    assert_eq!(
+        lines[..4],
+        [
+            "estimate: $0.0000 of a $1.0000 budget, plus at most $0.0000 if it ends inside a turn of 30m",
+            "one pair 1: base stopped, $0.0012",
+            "one pair 1: head reached publish, $0.0012",
+            "",
+        ],
+        "{first}"
+    );
+    let (short_base, short_head) = (&base[..7], &head[..7]);
+    assert_eq!(
+        lines[4..9],
+        [
+            format!(
+                "benchmark smoke, base {short_base}, head {short_head}, comparison 1 of these commits"
+            )
+            .as_str(),
+            "1 case, 1 pair each, 0 pairs dropped, $0.00 of $1",
+            "",
+            "scorer  base  errors  head  errors  mean diff  won  tied  lost  verdict",
+            "passed  0/1   0       1/1   0       +100.0     1    0     0     too few cases",
+        ],
+        "{first}"
+    );
+    assert_eq!(
+        lines[10],
+        "side  reached publish  stopped  median cost  median time"
+    );
+    assert!(
+        lines[11].starts_with("base  0                1        $0.00"),
+        "{first}"
+    );
+    assert!(
+        lines[12].starts_with("head  1                0        $0.00"),
+        "{first}"
+    );
+    assert!(
+        second.contains(
+            "comparison 2 of these commits, a repeat: the first complete comparison gave the verdict\n"
+        ),
+        "{second}"
+    );
+    assert!(
+        second
+            .contains("\npassed  0/1   0       1/1   0       +100.0     1    0     0     repeat\n"),
+        "{second}"
+    );
+    let records = compared(&setup);
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["data"]["base"], base);
+    assert_eq!(records[0]["data"]["head"], head);
+    assert_eq!(records[0]["data"]["complete"], true);
+    assert_eq!(records[0]["data"]["verdict"], "too few cases");
+    assert_eq!(records[1]["data"]["repeat"], true);
+    assert_eq!(records[1]["data"]["verdict"], serde_json::Value::Null);
+    let left: Vec<PathBuf> = fs::read_dir(setup.tmux.path())
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.to_string_lossy().contains("priory-"))
+        .collect();
+    assert!(left.is_empty(), "the comparison left {left:?}");
+}
+
+#[test]
+fn bench_refuses_an_estimate_over_its_budget_and_names_the_runs_that_fit() {
+    let (setup, file, base, head) = benchmarked("bench-refused");
+    fs::write(
+        setup.dir.join("factory/benchmarks/cases/one/case.toml"),
+        fs::read_to_string(setup.dir.join("factory/benchmarks/cases/one/case.toml"))
+            .unwrap()
+            .replace("input = 1,", "input = 1000000,"),
+    )
+    .unwrap();
+    setup.git(&setup.dir.join("factory"), &["add", "-A"]);
+    setup.git(
+        &setup.dir.join("factory"),
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "dear",
+        ],
+    );
+    let dear = setup.git(&setup.dir.join("factory"), &["rev-parse", "HEAD"]);
+
+    let over = setup.bench(
+        &[
+            file.to_str().unwrap(),
+            "--base",
+            &base,
+            "--head",
+            dear.trim(),
+            "--budget",
+            "5",
+        ],
+        Duration::from_secs(60),
+    );
+    let unbudgeted = setup.bench(
+        &[file.to_str().unwrap(), "--base", &base, "--head", &head],
+        Duration::from_secs(60),
+    );
+
+    assert!(!over.status.success(), "{over:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&over.stderr),
+        "priory bench: the estimate, $6.0000, is over the $5.0000 budget: give --runs 2, or --budget 6.00 or more\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&unbudgeted.stderr),
+        "priory bench: give --budget USD, the most the comparison may spend\n"
+    );
+    assert!(compared(&setup).is_empty());
+    assert!(
+        fs::read_dir(setup.tmux.path()).unwrap().next().is_none(),
+        "a refused comparison left a scratch folder"
     );
 }
 
