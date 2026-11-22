@@ -432,6 +432,8 @@ until its run starts.
   can rename them. A trigger or workflow sets a task's default band. A higher band starts earlier
   and never skips the room check. Only a band the factory lists in `[queue] preempt` also stops a
   run of a lower band at its turn end, when its task waits for that run's room. M1
+  With `[queue] age`, a task that waits moves up one band in start order for each `age`, up to the
+  highest band not in `[queue] preempt`, and never stops a run. M1
   With `[queue] review_limit`, a lane's or a batch's new tasks wait to start while that many of its
   pull requests wait for a person, and the desk says so. M1
 - R4.5 A person can move a task to another band or position, from the CLI or a view. M1

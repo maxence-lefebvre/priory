@@ -524,6 +524,12 @@
       "additionalProperties": false,
       "description": "How the queue orders tasks.",
       "properties": {
+        "age": {
+          "default": null,
+          "description": "How long a task waits in the queue for each band it moves up in start order, up to the\nhighest band not in `preempt`; no task moves when unset.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        },
         "overlap": {
           "default": true,
           "description": "Whether a task waits for an earlier active task that changes the same files; true when unset.",

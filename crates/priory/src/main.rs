@@ -1758,6 +1758,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                         "step",
                         "state",
                         "band",
+                        "aged",
                         "lane",
                         "reason",
                     ],

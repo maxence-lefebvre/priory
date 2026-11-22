@@ -160,7 +160,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut db = state::open()?;
     tools::backfill_endings(&mut db, &factory.workflows)?;
     let bus = log::open(factory.log())?;
-    state::bands(&mut db, &factory.bands())?;
+    state::bands(&mut db, &factory.bands(), factory.age())?;
     state::irreversible_asks(&mut db, &factory.workflows)?;
     for error in sections::dispatch(&db, factory, None)? {
         eprintln!("priory daemon: {error}");
