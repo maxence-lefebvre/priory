@@ -1,7 +1,7 @@
 # Lanes
 
 A lane is a `<team>/<theme>` label, such as `core/intake`, that groups tasks in the listings, the
-reports and the spend caps. The file `lanes.toml`, `.yaml` or `.yml`, beside `factory.toml`, gives a
+reports, the spend caps and the queue's turns. The file `lanes.toml`, `.yaml` or `.yml`, beside `factory.toml`, gives a
 lane to each task whose trigger or request names none. Without the file, every such task gets
 `<team>/misc`.
 
@@ -13,6 +13,7 @@ Schema: [`config/lanes.json`](../schemas/config/lanes.json).
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `fallback` | string | no | `"{team}/misc"` | The lane of a task that no rule matches. `{team}` stands for the task's team, or `none` for a task with no team | `"{team}/misc"` |
 | `rules` | array of tables | no | `[]` | The rules, in the order they are tried. The first rule that matches gives the lane | see below |
+| `lane` | table of tables | no | | Each lane's settings, by its `<team>/<theme>` name. See [Lane keys](#lane-keys) | see below |
 
 ## Rule keys
 
@@ -26,6 +27,14 @@ matches only a task that fits all of them.
 | `team` | string | no | The team of the task's source event, exactly. Linear events carry one | `"ENG"` |
 | `project` | string | no | The project of the task's source event, exactly | `"Desktop"` |
 | `branch` | string | no | A pattern for the task's branch, in which `*` matches any run of characters | `"*desktop*"` |
+
+## Lane keys
+
+A `[lane."<team>/<theme>"]` table sets how the queue treats one lane.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `max_running` | integer | no | no cap | The most of the lane's tasks that may have a live run at once, 1 or more. New starts past it wait. See [runs.md](../daemon/runs.md#at-most-so-many-running) | `2` |
 
 ## When a lane is set
 
@@ -56,6 +65,9 @@ lane = "core/desktop"
 [[rules]]
 branch = "*desktop*"           # a glob on the task's branch; `*` matches any run of characters
 lane = "core/desktop"
+
+[lane."core/intake"]
+max_running = 2                # at most two of the lane's tasks run at once; the others wait
 ```
 
 ## Errors from `priory check`
@@ -64,5 +76,7 @@ lane = "core/desktop"
 | ------- | ----- |
 | `` lane `<lane>` is not `<team>/<theme>` `` | `fallback` or a rule's `lane` is not two parts around one `/`, or a part is empty or holds a space |
 | `` a rule needs `key`, `team`, `project` or `branch` `` | A rule that names only a `lane` |
+| `` `[lane]` `<name>` is not a lane such as `team/theme` `` | A `[lane]` table whose name is not `<team>/<theme>` |
+| `` `max_running` is 0: give at least 1, or hold the tasks instead `` | `max_running = 0` |
 | `` unknown field `<key>`, expected one of ... `` | A key the tables above do not list |
 | `` `lanes` is also defined in lanes.toml `` | Two of `lanes.toml`, `lanes.yaml` and `lanes.yml` exist |

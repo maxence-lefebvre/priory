@@ -30,6 +30,13 @@ would let an agent approve its own step. Nothing grants it: `priory check` refus
 `guard.allow`, so the guard denies it in every run. Those verbs also refuse to run in a shell that
 has `PRIORY_SESSION`, which every run's pane sets.
 
+A person's own session is not a run. Its MCP server, `priory mcp --outside`, serves `answer` and
+`dismiss` tools that decide only an ask a lead could answer, and Priory records the session, never
+a person, as the decider (see [tools.md](tools.md#answers-from-the-session)). The server refuses to
+start where `PRIORY_SESSION` is set, so a run cannot reach those tools, and the session's
+[outside hook](tools.md#the-outside-hook) still denies `priory answer` and every other person verb
+the model types.
+
 A call that runs several guarded commands, such as `gh pr merge 12 && git push --force`, needs a yes
 for each one. A call that also moves the branch's commit, such as `git commit -am fix && gh pr
 merge 12`, cannot rely on an approval bound to the commit before it: the guard denies it and tells

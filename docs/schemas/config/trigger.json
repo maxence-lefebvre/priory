@@ -340,6 +340,16 @@
         "null"
       ]
     },
+    "max_running": {
+      "default": null,
+      "description": "The most of its tasks that may have a live run at once; new starts past it wait.",
+      "format": "uint32",
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "on": {
       "default": "",
       "description": "The event that starts a task, such as `issues.labeled`; depends on `source`.",

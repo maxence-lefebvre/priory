@@ -10,6 +10,27 @@ use rusqlite::{Connection, OptionalExtension, Params, params};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
+/// An ask's id in every listing, on the desk, in `/api/asks` and on its web view page: its name
+/// when it has one, as an outside ask or a daemon's ask does, else its row.
+macro_rules! ask_id {
+    () => {
+        "coalesce(asks.name, asks.id)"
+    };
+}
+
+/// [`ask_id!`] as a constant, for `format!`.
+pub(crate) const ASK_ID: &str = ask_id!();
+
+/// The web view's page of the ask whose [`ASK_ID`] is `id`, which a notification opens.
+pub(crate) fn ask_page(id: &str) -> String {
+    format!("/asks/{id}")
+}
+
+/// The web view's page of task `task`, which a notification or a report's link opens.
+pub(crate) fn task_page(task: i64) -> String {
+    format!("/tasks/{task}")
+}
+
 /// Each queued or ready task's place in the start order, overall and in its band, from 1.
 /// The conditions of a task's open hold as a JSON array, null when it has none.
 const CONDITIONS: &str = "(SELECT json_group_array(json_object('kind', kind, 'until', until,
@@ -77,7 +98,7 @@ fn urgency() -> String {
                WHEN tasks.key GLOB '*:review:*' THEN 'review'
                WHEN asks.kind = 'step' THEN 'plan' ELSE 'ask' END
              FROM asks LEFT JOIN tasks ON tasks.id = asks.task
-             WHERE coalesce(asks.name, asks.id) = desk.id
+             WHERE {ASK_ID} = desk.id
                AND asks.answer IS NULL AND asks.withdrawn IS NULL)
            WHEN desk.kind = 'todo' THEN 'todo'
            ELSE 'rest' END AS urgency"
@@ -87,12 +108,16 @@ fn urgency() -> String {
 /// An item's title as a notification carries it: an ask's title, or its task and step when it
 /// has none, since a question can hold a result's summary; a task's key and kind; a report's
 /// source, never its line, which can quote an error.
-const DESK_TITLE: &str = "CASE WHEN desk.kind = 'ask' THEN (SELECT coalesce(asks.title,
+const DESK_TITLE: &str = concat!(
+    "CASE WHEN desk.kind = 'ask' THEN (SELECT coalesce(asks.title,
              'task ' || tasks.key || ' asks at ' || asks.step, 'ask ' || asks.name)
            FROM asks LEFT JOIN tasks ON tasks.id = asks.task
-           WHERE coalesce(asks.name, asks.id) = desk.id
+           WHERE ",
+    ask_id!(),
+    " = desk.id
              AND asks.answer IS NULL AND asks.withdrawn IS NULL)
          WHEN desk.kind = 'memories' THEN 'memory candidates wait for a person'
+         WHEN desk.kind = 'pattern' THEN 'tasks stopped for one reason'
          WHEN desk.task IS NOT NULL THEN 'task '
            || (SELECT key FROM tasks WHERE tasks.id = desk.task) || ' ' || desk.kind
          WHEN desk.kind = 'report' AND desk.what LIKE 'intake: %' THEN 'the intake fails to poll '
@@ -101,7 +126,8 @@ const DESK_TITLE: &str = "CASE WHEN desk.kind = 'ask' THEN (SELECT coalesce(asks
            THEN 'a merge landed wrong'
          WHEN desk.kind = 'report' THEN 'a report from '
            || substr(desk.what, 1, instr(desk.what, ':') - 1)
-         ELSE desk.kind || ' ' || desk.id END AS title";
+         ELSE desk.kind || ' ' || desk.id END AS title"
+);
 
 /// Asks, blocked tasks and uncertain prompts oldest first, then the queue in start order, each with
 /// its snooze, its group in the ranking and its title.
@@ -122,8 +148,11 @@ fn desk_items() -> String {
     )
 }
 
-const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
-                 coalesce(asks.name, asks.id) AS id, asks.task AS task, tasks.lane AS lane,
+const DESK: &str = concat!(
+    "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
+                 ",
+    ask_id!(),
+    " AS id, asks.task AS task, tasks.lane AS lane,
                  coalesce('routed to ' || asks.routed || ': ', '') || asks.question || ' '
                    || asks.options AS what
                FROM asks LEFT JOIN tasks ON tasks.id = asks.task
@@ -204,14 +233,41 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                    || group_concat(name, ', ') || '; see them with `priory memories`'
                FROM memory_candidates
                WHERE logged IS NOT NULL AND accepted IS NULL AND dropped IS NULL
-               HAVING count(*) > 0               UNION ALL
+               HAVING count(*) > 0
+               UNION ALL
+               SELECT 0, last, 'pattern', pattern, NULL, NULL,
+                 workflow || '/' || step || ': ' || tasks || ' tasks stopped for one reason: ' || text
+                   || '; see it with `priory patterns show ' || pattern || '`'
+               FROM (SELECT json_extract(event, '$.data.pattern') AS pattern,
+                   max(julianday(json_extract(event, '$.data.happened'))),
+                   json_extract(event, '$.data.happened') AS last,
+                   json_extract(event, '$.data.workflow') AS workflow,
+                   json_extract(event, '$.data.step') AS step,
+                   json_extract(event, '$.data.text') AS text,
+                   count(DISTINCT json_extract(event, '$.data.task')) AS tasks
+                 FROM trace WHERE type = 'factory.pattern.matched' GROUP BY 1) AS patterns
+               WHERE tasks >= 2 AND NOT EXISTS (SELECT 1 FROM trace AS closed
+                 WHERE closed.type = 'factory.pattern.closed'
+                   AND json_extract(closed.event, '$.data.pattern') = patterns.pattern
+                   AND (json_extract(closed.event, '$.data.dismissed')
+                     OR closed.seq = (SELECT max(seq) FROM trace AS latest
+                       WHERE latest.type = 'factory.pattern.closed'
+                         AND json_extract(latest.event, '$.data.pattern') = patterns.pattern)
+                       AND NOT EXISTS (SELECT 1 FROM trace AS later
+                         WHERE later.type = 'factory.pattern.matched'
+                           AND json_extract(later.event, '$.data.pattern') = patterns.pattern
+                           AND later.seq > closed.seq
+                           AND unixepoch(json_extract(later.event, '$.data.happened'))
+                             >= unixepoch(closed.time))))
+               UNION ALL
                SELECT 1, tasks.changed, 'queue', queue.place, tasks.id, tasks.lane,
                  coalesce(tasks.band, '-') || coalesce(': ' || tasks.reason, '')
-               FROM tasks JOIN queue USING (id)";
+               FROM tasks JOIN queue USING (id)"
+);
 
 fn asks_query() -> String {
     format!(
-        "SELECT coalesce(asks.name, asks.id) AS id, asks.task,
+        "SELECT {ASK_ID} AS id, asks.task,
      coalesce(tasks.key, asks.key) AS key, asks.step, tasks.lane, tasks.band, tasks.repo, asks.run,
      CASE WHEN asks.withdrawn IS NOT NULL THEN 'withdrawn'
        WHEN asks.answer IS NOT NULL THEN 'answered' ELSE 'open' END AS state,
@@ -219,7 +275,10 @@ fn asks_query() -> String {
      CASE asks.withdrawn_reason WHEN 'sibling-fired' THEN 'a wait of its run fired first'
        WHEN 'moved-on' THEN 'a later run called another tool'
        WHEN 'revived' THEN 'its task was revived'
-       WHEN 'predecessor-revived' THEN 'the task it waits on was revived' ELSE asks.withdrawn_reason END AS withdrawn_why,
+       WHEN 'predecessor-revived' THEN 'the task it waits on was revived'
+       WHEN 'dismissed' THEN 'dismissed' || coalesce(' by session ' || CASE WHEN asks.answered_by LIKE 'session:%'
+         THEN substr(asks.answered_by, 9) END, '')
+       ELSE asks.withdrawn_reason END AS withdrawn_why,
      asks.revision, asks.question, asks.options, asks.recommendation, asks.tradeoff, asks.answer,
      asks.answered AS answered_at, asks.answered_by, asks.routed AS routed_to, asks.created AS since, asks.title, asks.text,
      asks.confidence, asks.rationale,
@@ -1279,6 +1338,11 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
                    || ' answered ' || json_quote(json_extract(event, '$.data.option')) || ' by auto ('
                    || json_extract(event, '$.data.confidence') || '): '
                    || json_extract(event, '$.data.rationale')
+                 WHEN 'factory.ask.session_answered' THEN 'ask ' || json_extract(event, '$.data.ask')
+                   || ' answered ' || json_quote(json_extract(event, '$.data.option'))
+                   || ' by session ' || json_extract(event, '$.data.session')
+                 WHEN 'factory.ask.session_dismissed' THEN 'ask ' || json_extract(event, '$.data.ask')
+                   || ' dismissed by session ' || json_extract(event, '$.data.session')
                  ELSE type || coalesce(' ' || json_extract(event, '$.data.step'), '')
                    || coalesce(': ' || json_extract(event, '$.data.outcome'), '') END AS what,
                0 AS source, seq
@@ -1500,10 +1564,15 @@ pub fn desk(
         unrouted += usize::from(owner(db, &resource)?.is_some());
     }
     let unheard = unheard_events(db, 0, Some((day.0, &day.1)), now)?.len();
+    let dropped = dropped_requests(db, 0)?
+        .iter()
+        .filter(|drop| drop["time"].as_str() >= Some(day.0))
+        .count();
     let outside = [
         crate::link::banner(db)?,
         post::intake_banner(db)?,
         crate::kit::banner(db)?,
+        sweep::fetch_banner(home),
     ]
     .into_iter()
     .flatten()
@@ -1519,7 +1588,7 @@ pub fn desk(
         "intake": outside,
         "counts": {
             "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted, "unheard": unheard,
-            "outsider": outsider,
+            "dropped": dropped, "outsider": outsider,
         },
         "items": items,
         "next": ranked.first(),
@@ -1611,6 +1680,17 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
                FROM trace WHERE type = 'factory.run.scored'
                  AND json_extract(event, '$.data.task') = CAST(?1 AS TEXT))
              WHERE latest = 1 ORDER BY CAST(run AS INTEGER), scorer",
+        ),
+        (
+            "held_scores",
+            "SELECT json_extract(event, '$.data.scorer') AS scorer,
+               json_extract(event, '$.data.verdict') AS verdict,
+               json_extract(event, '$.data.evidence') AS reason,
+               json_extract(event, '$.data.happened') AS happened, time
+             FROM trace WHERE type = 'factory.step.labeled'
+               AND json_extract(event, '$.data.task') = CAST(?1 AS TEXT)
+               AND json_extract(event, '$.data.label') = 'scored'
+             ORDER BY seq",
         ),
     ];
     for (name, query) in lists {

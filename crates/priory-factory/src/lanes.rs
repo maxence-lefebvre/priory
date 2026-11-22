@@ -1,5 +1,6 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 
 /// `lanes.toml`: how a task without a lane of its own gets one. Without the file, every task gets
 /// the `{team}/misc` fallback.
@@ -12,6 +13,19 @@ pub struct Lanes {
     /// The rules, tried in order: the first that matches gives the lane.
     #[serde(default)]
     pub rules: Vec<Rule>,
+    /// Each lane's settings, by its `<team>/<theme>` name.
+    #[serde(default)]
+    pub lane: BTreeMap<String, Lane>,
+}
+
+/// `[lane."<team>/<theme>"]`: how the queue treats one lane.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Lane {
+    /// The most of the lane's tasks that may have a live run at once; new starts past it wait.
+    #[serde(default, deserialize_with = "crate::factory::max_running")]
+    #[schemars(range(min = 1))]
+    pub max_running: Option<u32>,
 }
 
 /// A rule sets at least one of `key`, `team`, `project` and `branch`, and matches a task that fits

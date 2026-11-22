@@ -33,6 +33,8 @@ const EVERY: Duration = Duration::from_secs(1);
 const SWEEP: Duration = Duration::from_secs(600);
 /// How long the queue stays stalled after its scripts before the sweeper starts, unless `after` says.
 const AFTER: Duration = Duration::from_secs(1800);
+/// How often the daemon looks for merged tasks a `held` scorer is due to grade.
+const HELD: Duration = Duration::from_secs(60);
 /// How long a sweep script may run when it sets no `timeout`.
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long the daemon waits to publish a pick's pending request again after a publish failed.
@@ -161,6 +163,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     tools::backfill_endings(&mut db, &factory.workflows)?;
     let bus = log::open(factory.log())?;
     state::bands(&mut db, &factory.bands(), factory.age())?;
+    state::fairness(&db, factory.fair())?;
     state::irreversible_asks(&mut db, &factory.workflows)?;
     for error in sections::dispatch(&db, factory, None)? {
         eprintln!("priory daemon: {error}");
@@ -186,6 +189,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     if once {
         drain(&*bus, &consumer, &mut db, &trace, counting.get(&home))?;
         runners::flush(&db, &*bus)?;
+        crate::held::tick(&mut db, &trace, intake::now()?)?;
         match state::waiting(&db)? {
             0 => {}
             1 => println!("1 task waits: --once only routes; a running daemon starts it"),
@@ -338,6 +342,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut grading = crate::gates::Grading::default();
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
+    let mut held: Option<Instant> = None;
     let mut alive = None;
     let mut aged = None;
     let mut link = Link::default();
@@ -417,6 +422,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             let after = sweep.after.unwrap_or(AFTER);
             let band = factory.bands().first().copied();
             stall::call_sweeper(&mut db, after, band, &workflow.value.start, &home)?;
+        }
+        if held.is_none_or(|at| at.elapsed() >= HELD) {
+            held = Some(Instant::now());
+            crate::held::tick(&mut db, &trace, intake::now()?)?;
         }
         if swept.is_none_or(|at| at.elapsed() >= every) {
             swept = Some(Instant::now());
@@ -1054,6 +1063,11 @@ fn take(
                     Ok(request) => add(db, &request, trace, counter)?,
                     Err(refused) => Err(refused),
                 },
+                "answer" | "dismiss" => {
+                    crate::outside::decide(db, call, trace, &|worktree, branch| {
+                        runtime::kept_head(&runtime::home(), worktree, branch)
+                    })?
+                }
                 _ => crate::outside::apply(db, call, trace.factory, &runtime::home())?,
             };
             Ok((replied(reply), None))
@@ -1187,7 +1201,7 @@ fn tend(
                 Some(diagnose(db, factory, share, home, &run.agent)?)
             };
             tools::fail(db, trace, run.task, run.id, &reason, repair.as_ref())?;
-        } else if let Some((ended_as, reason)) = verdict(&run, factory) {
+        } else if let Some((ended_as, reason)) = verdict(&run, factory, home) {
             // A debate turn past its timeout goes to the person, as a debate that did not converge.
             if ended_as == "timeout"
                 && let Some(tmux) = crate::debate::timed_out(db, trace, &run.session, &reason)?
@@ -1318,25 +1332,44 @@ fn diagnose(
     }
 }
 
-/// Why a live run must end: no `SessionStart`, a permission prompt, or a turn past its step's timeout.
-fn verdict(run: &state::LiveRun, factory: &Factory) -> Option<(&'static str, String)> {
-    if run.late {
-        // Claude and Codex ask whether to trust a folder, and Codex its hooks, before any hook; Priory
-        // never answers.
+/// Why a live run must end: its harness's trust dialog, no `SessionStart`, a permission prompt, or
+/// a turn past its step's timeout.
+fn verdict(run: &state::LiveRun, factory: &Factory, home: &Path) -> Option<(&'static str, String)> {
+    // Claude and Codex ask whether to trust a folder, and Codex its hooks, before any hook; Priory
+    // never answers.
+    let harness = harness_of(factory, &run.agent);
+    let trust = || {
         let clone = run
             .worktree
             .as_deref()
             .and_then(|worktree| runtime::clone_of(Path::new(worktree)))
             .map_or_else(|| "<clone>".to_owned(), |clone| clone.display().to_string());
-        let harness = harness_of(factory, &run.agent);
         let exe = runtime::exe().unwrap_or_else(|_| "priory".into());
+        let worktrees = home.join("worktrees").display().to_string();
+        harness.trust(&exe, &clone, &worktrees)
+    };
+    let rows = (!run.ready).then(|| runtime::screen(&run.tmux).join("\n"));
+    if let Some(rows) = &rows
+        && harness.asks_trust(rows)
+    {
+        let trust = trust();
+        let reason = format!(
+            "{} asked whether to trust {}; Priory never answers it. {}{}",
+            harness.program(),
+            run.worktree.as_deref().unwrap_or("its folder"),
+            trust[..1].to_uppercase(),
+            &trust[1..]
+        );
+        return Some(("exited", reason));
+    }
+    if run.late {
         let mut reason = format!(
             "{} showed no SessionStart within {}; {}",
             harness.program(),
             state::READY_WITHIN.replace(" seconds", "s"),
-            harness.trust(&exe, &clone)
+            trust()
         );
-        let rows = runtime::screen(&run.tmux).join("\n");
+        let rows = rows.unwrap_or_default();
         let secrets = crate::screen::secrets(&factory.secret_envs());
         // When a secret still shows after redaction, no row of the pane is kept.
         let shown = crate::screen::redact(&rows, &secrets, None)

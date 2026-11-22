@@ -390,7 +390,9 @@ Tests:
    Code's transcripts: a Codex run is a gap. The case folder, from a task with a `base_sha`. Tests capture a task of
    the end-to-end harness and compare the folder byte for byte, refuse a task with no start commit
    or no irreversible step, and mark a task whose transcript is gone as `partial`. The transcript
-   reader is a parser of outside text, so it gets a `proptest`.
+   reader is a parser of outside text, so it gets a `proptest`. A `failed` or `blocked` task that reached no irreversible
+   step is now captured up to the step it stopped at, for failure patterns
+   ([failure-patterns.md](failure-patterns.md)).
 2. Built. `priory bench replay` ([bench.md](../daemon/bench.md#replay)): the replay of one case
    under one configuration, with the endings, `--budget` and the estimate. The capture now
    records each model step's model, minutes and tokens as the case's `spent`, which the estimate
@@ -442,6 +444,18 @@ Tests:
    one refusal then a pass, two refusals, a scorer error, an event held while the gate grades, an
    uncalibrated judge's ask and both its answers, a calibrated judge within its per-call budget, the critic on a green plan,
    and no critic under `plan` or before a human step.
+
+8. Built. Held scorers, graded on what happened after the merge
+   ([score.md](../daemon/score.md#held-scorers), [scorers.md](../reference/scorers.md#kinds)). A
+   scorer of kind `held` on `merge` names `after = "merged + 7d"` and the signals that fail it:
+   outcome labels, and `fixed` from a later task's `fixes` relation. The daemon grades each merged
+   task once its moment came, every minute and at `--once`, and appends a `factory.step.labeled`
+   record with the label `scored`, so it needs no new table. A gate, a critic and a benchmark
+   refuse it, and `priory score` leaves it out. Its tests route merges, reverts and relations
+   through `priory daemon --once` with a fixed clock, and one starts the daemon. Left for later:
+   other moments than `merged`, such as `done`; `after` on a `command` scorer, which could ask an
+   outside service such as Sentry whether an issue came back; held scores in the web view, Herdr
+   and `priory costs`; and a failing held score as a signal of `priory report risk`.
 
 ## Open questions
 

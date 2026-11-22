@@ -4,6 +4,7 @@ mod conform;
 mod consult;
 mod debate;
 mod evidence;
+mod outside_answer;
 #[cfg(feature = "postgres")]
 mod partition;
 mod preempt;
@@ -2959,6 +2960,119 @@ fn a_renamed_band_set_orders_the_queue_and_moves() {
     );
 }
 
+fn requested_lane(issue: u64, lane: &str) -> Message {
+    let mut message = requested(issue);
+    message.data["lane"] = json!(lane);
+    message
+}
+
+/// A factory whose queue takes turns between lanes, with three tasks in lane a/x, then two in b/y.
+fn fair(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    let settings = "name = \"demo\"\n\n[queue]\nfair = \"lane\"\n";
+    fs::write(setup.dir.join("factory/factory.toml"), settings).unwrap();
+    for (issue, lane) in [
+        (42, "a/x"),
+        (43, "a/x"),
+        (44, "a/x"),
+        (45, "b/y"),
+        (46, "b/y"),
+    ] {
+        setup.publish(&requested_lane(issue, lane));
+    }
+    setup
+}
+
+#[test]
+fn a_fair_queue_takes_turns_between_lanes_inside_a_band() {
+    let mut setup = fair("fair-lanes");
+    // Room for one run, so the runs start one after another.
+    setup.memory(12);
+    route(&setup);
+    let places: Vec<_> = queue(&setup)
+        .into_iter()
+        .map(|[id, _, _, place]| format!("{id} {place}"))
+        .collect();
+    assert_eq!(places, ["1 1", "4 2", "2 3", "5 4", "3 5"]);
+    setup.calls(&vec![result("passed"); 5]);
+
+    setup.start();
+
+    setup.until("tasks", |rows| with(rows, 4, "done") == 5);
+    let started: Vec<_> = setup
+        .rows("runs")
+        .into_iter()
+        .map(|row| row[1].clone())
+        .collect();
+    assert_eq!(started, ["1", "4", "2", "5", "3"]);
+}
+
+#[test]
+fn a_person_order_beats_a_fair_queue() {
+    let setup = fair("fair-person");
+    route(&setup);
+
+    moved(&setup, &["3", "--top"]);
+    setup.publish(&requested_lane(47, "a/x"));
+    setup.publish(&requested_lane(48, "b/y"));
+    route(&setup);
+
+    let places: Vec<_> = queue(&setup)
+        .into_iter()
+        .map(|[id, _, _, place]| format!("{id} {place}"))
+        .collect();
+    // The move numbers the band in its fair order; later tasks take turns behind it.
+    assert_eq!(places, ["3 1", "1 2", "4 3", "2 4", "5 5", "6 6", "7 7"]);
+}
+
+#[test]
+fn a_lane_max_running_holds_its_new_starts_while_other_lanes_start() {
+    let mut setup = Setup::new("lane-max-running");
+    fs::write(
+        setup.dir.join("factory/lanes.toml"),
+        "[lane.\"a/x\"]\nmax_running = 1\n",
+    )
+    .unwrap();
+    setup.hold("hold-stop");
+    setup.calls(&vec![result("passed"); 3]);
+    setup.publish(&requested_lane(42, "a/x"));
+    setup.publish(&requested_lane(43, "a/x"));
+    setup.publish(&requested_lane(44, "b/y"));
+
+    setup.start();
+
+    let reason = "waits: lane a/x has 1 running task, its max_running";
+    let tasks = setup.until("tasks", |rows| {
+        with(rows, 4, "running") == 2 && rows.iter().any(|row| row[7] == reason)
+    });
+    let states: Vec<_> = tasks
+        .iter()
+        .map(|row| format!("{} {} {}", row[0], row[4], row[6]))
+        .collect();
+    assert_eq!(states, ["1 running a/x", "2 queued a/x", "3 running b/y"]);
+    setup.release("hold-stop");
+    setup.until("tasks", |rows| with(rows, 4, "done") == 3);
+}
+
+#[test]
+fn a_trigger_max_running_holds_its_new_starts() {
+    let mut setup = Setup::new("trigger-max-running");
+    let trigger = format!("{TRIGGER}max_running = 1\n");
+    fs::write(setup.dir.join("factory/triggers/agent-label.toml"), trigger).unwrap();
+    setup.hold("hold-stop");
+    setup.calls(&vec![result("passed"); 2]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+
+    setup.start();
+
+    let reason = "waits: trigger agent-label has 1 running task, its max_running";
+    let tasks = setup.until("tasks", |rows| rows.iter().any(|row| row[7] == reason));
+    assert_eq!(with(&tasks, 4, "running"), 1, "{tasks:?}");
+    setup.release("hold-stop");
+    setup.until("tasks", |rows| with(rows, 4, "done") == 2);
+}
+
 /// The state revision once the daemon has left it unchanged for over a tick.
 fn settled(setup: &Setup) -> i64 {
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -3229,7 +3343,7 @@ fn a_prompt_reaches_the_agent_pane_when_a_person_opened_another_pane() {
 }
 
 #[test]
-fn a_run_with_no_session_start_within_60_seconds_ends_and_names_the_clone_to_trust() {
+fn a_run_with_no_session_start_within_60_seconds_ends_and_names_the_folders_to_trust() {
     let mut setup = Setup::new("untrusted");
     setup.publish(&requested(42));
     setup.hold("silent");
@@ -3248,10 +3362,64 @@ fn a_run_with_no_session_start_within_60_seconds_ends_and_names_the_clone_to_tru
     assert_eq!(
         tasks[0][7],
         format!(
-            "claude showed no SessionStart within 60s; trust the clone once: cd {} && claude, accept, exit",
+            "claude showed no SessionStart within 60s; trust the worktrees folder and the clone once: cd {} && claude, accept, exit, then cd {} && claude, accept, exit",
+            setup.dir.join("home/worktrees").display(),
             clone.display()
         )
     );
+    let outbox = setup.rows("outbox");
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(outbox[0][3], "queued");
+}
+
+/// Claude Code 2.1.330's folder trust dialog, as a run in a new worktree shows it.
+const TRUST_DIALOG: &str = "────────────────────────────────────────
+ Accessing workspace:
+
+ WORKTREE
+
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source
+ project, or work from your team). If not, take a moment to review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel
+";
+
+#[test]
+fn a_run_on_claudes_trust_dialog_blocks_at_once_and_names_the_folders_to_trust() {
+    let mut setup = Setup::new("trust-dialog");
+    setup.publish(&requested(42));
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::write(
+        setup.dir.join("fake/silent"),
+        TRUST_DIALOG.replace("WORKTREE", &worktree.display().to_string()),
+    )
+    .unwrap();
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+
+    // Well before the 60 seconds a run without SessionStart gets.
+    let tasks = setup.within(20, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+
+    assert_eq!(
+        tasks[0][7],
+        format!(
+            "claude asked whether to trust {}; Priory never answers it. Trust the worktrees folder and the clone once: cd {} && claude, accept, exit, then cd {} && claude, accept, exit",
+            worktree.display(),
+            setup.dir.join("home/worktrees").display(),
+            setup.dir.join("home/repos/owner/repo").display()
+        )
+    );
+    assert_eq!(setup.rows("runs")[0][7], "exited");
+    setup.gone("priory-1");
     let outbox = setup.rows("outbox");
     assert_eq!(outbox.len(), 1);
     assert_eq!(outbox[0][3], "queued");
@@ -5321,7 +5489,7 @@ fn the_outside_server_lists_its_tools_only_and_a_person_verb_is_an_unknown_tool(
     setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
 
     let mut lines = vec![json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})];
-    for tool in ["answer", "dismiss", "result", "wait"] {
+    for tool in ["result", "wait", "resume", "cancel"] {
         lines.push(outside_call(
             tool,
             json!({"ask": "cache.ship", "answer": "ship", "outcome": "passed", "summary": "x"}),
@@ -5336,10 +5504,13 @@ fn the_outside_server_lists_its_tools_only_and_a_person_verb_is_an_unknown_tool(
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["desk", "asks", "task", "ask", "add"]);
+    assert_eq!(
+        names,
+        ["desk", "asks", "task", "ask", "add", "answer", "dismiss"]
+    );
     for (reply, tool) in replies[1..]
         .iter()
-        .zip(["answer", "dismiss", "result", "wait"])
+        .zip(["result", "wait", "resume", "cancel"])
     {
         assert_eq!(reply["error"]["code"], -32602, "{reply}");
         assert_eq!(reply["error"]["message"], format!("unknown tool {tool}"));
@@ -5600,6 +5771,8 @@ fn with_no_daemon_each_outside_tool_fails_with_the_reason_and_stores_nothing() {
             "add",
             json!({"text": "Fix the typo.", "workflow": "implement", "repo": "owner/repo"}),
         ),
+        ("answer", json!({"ask": 1, "revision": 1, "answer": "ship"})),
+        ("dismiss", json!({"ask": 1, "revision": 1})),
     ] {
         let (text, failed) = setup.outside_call(&[], tool, arguments);
 
@@ -5669,6 +5842,9 @@ fn the_outside_tools_take_any_arguments_without_panicking() {
             Just("all".to_owned()),
             Just("workflow".to_owned()),
             Just("session".to_owned()),
+            Just("ask".to_owned()),
+            Just("revision".to_owned()),
+            Just("answer".to_owned()),
             "[a-z_]{1,10}",
         ];
         prop_oneof![
@@ -5684,6 +5860,7 @@ fn the_outside_tools_take_any_arguments_without_panicking() {
         Just("ask"),
         Just("add"),
         Just("answer"),
+        Just("dismiss"),
     ];
     let calls = proptest::collection::vec((tool, value), 1..12);
     let mut runner = TestRunner::new(Config::with_cases(16));
@@ -9315,6 +9492,74 @@ fn a_sweep_keeps_a_worktree_the_task_does_not_record() {
     let desk = setup.rows("desk");
     assert_eq!(desk[0][2], other.display().to_string());
     assert_eq!(desk[0][5], "not recorded as the worktree of task 1");
+}
+
+#[test]
+fn a_clone_whose_remote_is_gone_is_reported_once_and_fetched_again_only_after_an_hour() {
+    let mut setup = Setup::ended("sweep-gone-remote", 1);
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[sweep]\nevery = \"1s\"\n",
+    )
+    .unwrap();
+    // A leftover repository whose remote is gone: each fetch goes through `ssh`, which counts it.
+    let ssh = setup.dir.join("fake/gone-ssh");
+    fs::write(
+        &ssh,
+        "#!/bin/sh\necho fetch >> \"$FAKE_DIR/gone-fetches\"\necho \"fatal: repository 'gone/repo' not found\" >&2\nexit 128\n",
+    )
+    .unwrap();
+    fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+    let clone = setup.dir.join("home/repos/gone/repo");
+    let worktrees = setup.dir.join("home/worktrees/gone/repo");
+    fs::create_dir_all(&clone).unwrap();
+    fs::create_dir_all(worktrees.join("9")).unwrap();
+    setup.git(&clone, &["init", "-q"]);
+    setup.git(
+        &clone,
+        &["remote", "add", "origin", "ssh://gone.invalid/repo.git"],
+    );
+    setup.git(
+        &clone,
+        &["config", "core.sshCommand", ssh.to_str().unwrap()],
+    );
+    // Task 1's pushed work keeps its worktree until it merges.
+    setup.work_on(1);
+    setup.push(1);
+
+    setup.start();
+
+    let banner = setup
+        .until_banner(|banner| banner.is_some_and(|banner| banner.contains("gone/repo")))
+        .unwrap();
+    assert!(
+        banner.starts_with("fetching gone/repo fails since "),
+        "{banner}"
+    );
+    assert!(
+        banner.ends_with(&format!(
+            ": fatal: repository 'gone/repo' not found; the sweep tries it again every hour. \
+             If its remote is gone, remove {} and {}",
+            worktrees.display(),
+            clone.display()
+        )),
+        "{banner}"
+    );
+    // git can call `ssh` more than once for one fetch.
+    let fetches = || fs::read_to_string(setup.dir.join("fake/gone-fetches")).unwrap();
+    let first = fetches();
+    // Sweeps go on: task 1's merged worktree goes at a later one.
+    setup.merge(1);
+    setup.removed(1);
+    assert_eq!(fetches(), first, "fetched again within the hour");
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert_eq!(
+        log.lines()
+            .filter(|line| line.contains("gone/repo"))
+            .count(),
+        1,
+        "{log}"
+    );
 }
 
 #[test]
@@ -26083,7 +26328,7 @@ fn bench_capture_refuses_a_task_with_no_irreversible_step_or_no_start_commit() {
     assert!(!unbounded.status.success(), "{unbounded:?}");
     assert_eq!(
         String::from_utf8_lossy(&unbounded.stderr),
-        "priory bench capture: task 1 reached no irreversible step, so a replay of it would have no end\n"
+        "priory bench capture: task 1 reached no irreversible step and did not stop, so a replay of it would have no end\n"
     );
     assert!(!unstarted.status.success(), "{unstarted:?}");
     assert_eq!(
@@ -26091,6 +26336,87 @@ fn bench_capture_refuses_a_task_with_no_irreversible_step_or_no_start_commit() {
         "priory bench capture: task 1 has no start commit: it began before Priory stored one\n"
     );
     assert!(!into.exists(), "a refused capture wrote {}", into.display());
+}
+
+#[test]
+fn bench_capture_takes_a_failed_task_up_to_the_step_it_stopped_at() {
+    let setup = scored_task("capture-failed");
+    let factory = setup.dir.join("factory");
+    let into = setup.dir.join("case");
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "UPDATE tasks SET state = 'failed', step = 'implement', reason = 'cargo test failed' WHERE id = 1",
+        [],
+    )
+    .unwrap();
+
+    let output = setup.priory(&[
+        "bench",
+        "capture",
+        factory.to_str().unwrap(),
+        "1",
+        "--into",
+        into.to_str().unwrap(),
+    ]);
+
+    assert!(output.status.success(), "{output:?}");
+    let case = fs::read_to_string(into.join("case.toml")).unwrap();
+    assert!(case.contains("\nends_at = \"implement\"\n"), "{case}");
+    assert!(
+        case.contains("path = [\"plan:ready\", \"implement:passed\"]"),
+        "{case}"
+    );
+}
+
+#[test]
+fn patterns_capture_turns_each_task_of_a_pattern_into_a_case() {
+    let setup = scored_task("capture-pattern");
+    let factory = setup.dir.join("factory");
+    let into = setup.dir.join("cases");
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "UPDATE tasks SET state = 'failed', step = 'implement', reason = 'cargo test failed' WHERE id = 1",
+        [],
+    )
+    .unwrap();
+    let found = setup.priory(&["patterns", "find", factory.to_str().unwrap()]);
+    assert!(found.status.success(), "{found:?}");
+    let listed = setup.priory(&["patterns", "--all", "--json"]);
+    let listed: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    let id = listed[0]["id"].as_str().unwrap().to_owned();
+    let capture = || {
+        setup.priory(&[
+            "patterns",
+            "capture",
+            factory.to_str().unwrap(),
+            &id,
+            "--into",
+            into.to_str().unwrap(),
+        ])
+    };
+
+    let first = capture();
+    let again = capture();
+
+    assert!(first.status.success(), "{first:?}");
+    let folder = into.join("task-1");
+    assert_eq!(
+        String::from_utf8_lossy(&first.stdout),
+        format!(
+            "captured task 1 into {}: 0 gh answer(s), 0 answer(s), complete\n",
+            folder.display()
+        )
+    );
+    assert!(folder.join("case.toml").exists());
+    assert!(!again.status.success(), "{again:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&again.stdout),
+        format!("skipped task 1: {} already exists\n", folder.display())
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&again.stderr),
+        format!("priory patterns capture: no task of pattern {id} could be captured\n")
+    );
 }
 
 /// A workflow whose human step leads to an irreversible code step, which a replay must never run.

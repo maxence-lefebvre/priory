@@ -35,7 +35,7 @@ fn main() -> ExitCode {
         Some("draw") => {
             let args: Vec<_> = args.collect();
             match &args[..] {
-                [workflow] => draw(Path::new("."), workflow),
+                [workflow] => draw(&factory::folder(None), workflow),
                 [dir, workflow] => draw(Path::new(dir), workflow),
                 _ => usage(),
             }
@@ -43,7 +43,7 @@ fn main() -> ExitCode {
         Some("daemon") if std::env::args_os().any(|arg| arg == "--view-only") => {
             let dirs: Vec<_> = args.filter(|arg| *arg != "--view-only").collect();
             let dir = match dirs.as_slice() {
-                [] => PathBuf::from("."),
+                [] => factory::folder(None),
                 [dir] if *dir != "--once" => PathBuf::from(dir),
                 _ => return usage(),
             };
@@ -55,7 +55,7 @@ fn main() -> ExitCode {
         Some(verb @ ("intake" | "daemon")) => {
             let (once, dirs): (Vec<_>, Vec<_>) = args.partition(|arg| arg == "--once");
             let dir = match dirs.as_slice() {
-                [] => PathBuf::from("."),
+                [] => factory::folder(None),
                 [dir] => PathBuf::from(dir),
                 _ => return usage(),
             };
@@ -170,6 +170,7 @@ fn main() -> ExitCode {
             }
         }
         Some("label") => label(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("patterns") => patterns(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("relate") => relate(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("tldr") => match (args.next(), args.next(), args.next()) {
             (Some(task), Some(text), None) => tldr(&task.to_string_lossy(), &text.to_string_lossy()),
@@ -193,11 +194,11 @@ fn main() -> ExitCode {
             args.retain(|arg| arg != "--force");
             let force = args.len() < before;
             let (dir, key, runner) = match &args[..] {
-                [key, runner] => (".", key, runner),
-                [dir, key, runner] => (dir.as_str(), key, runner),
+                [key, runner] => (None, key, runner),
+                [dir, key, runner] => (Some(dir.as_str()), key, runner),
                 _ => return usage(),
             };
-            let Some(factory) = load(Path::new(dir)) else {
+            let Some(factory) = load(&factory::folder(dir)) else {
                 return ExitCode::FAILURE;
             };
             reply(
@@ -260,7 +261,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory check [DIR] --repo PATH [--json]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory intake pre [DIR] TRIGGER < EVENT.json    runs the trigger's pre script on one event, publishes nothing\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory daemon --view-only [DIR]    mirrors every runner's asks and tasks and serves them, runs nothing\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen [DIR] (TASK | --run RUN) [--history N] [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory recap [--since <instant-or-duration>] [--max-bytes N]\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--by lane] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo|lane] [--json]\n       priory grades [--since <instant-or-duration>] [--by lane] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]\n       priory score [DIR] --calibrate SCORER --budget USD [--json]\n       priory calibrate triage [DIR] [--json]\n       priory bench capture [DIR] TASK --into FOLDER\n       priory bench replay [DIR] CASE --budget USD [--turn-timeout DURATION]\n       priory bench FILE --base REF --head REF --budget USD [--runs N] [--case NAME] [--turn-timeout DURATION] [--post OWNER/NAME#N]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY\n       priory say [--generation N] [DIR] RUNNER:KEY TEXT\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory evidence add FILE --caption TEXT\n       priory evidence TASK [--json]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory memories [DIR] [--all] [--json]\n       priory memories (accept | drop) [DIR] CANDIDATE\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID [--debate] [--consult | --investigator]\n       priory mcp --outside\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT\n       priory hook PreToolUse --outside"
+        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory check [DIR] --repo PATH [--json]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory intake pre [DIR] TRIGGER < EVENT.json    runs the trigger's pre script on one event, publishes nothing\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory daemon --view-only [DIR]    mirrors every runner's asks and tasks and serves them, runs nothing\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen [DIR] (TASK | --run RUN) [--history N] [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory recap [--since <instant-or-duration>] [--max-bytes N]\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--by lane] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo|lane] [--json]\n       priory grades [--since <instant-or-duration>] [--by lane] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]\n       priory score [DIR] --calibrate SCORER --budget USD [--json]\n       priory calibrate triage [DIR] [--json]\n       priory bench capture [DIR] TASK --into FOLDER\n       priory bench replay [DIR] CASE --budget USD [--turn-timeout DURATION]\n       priory bench FILE --base REF --head REF --budget USD [--runs N] [--case NAME] [--turn-timeout DURATION] [--post OWNER/NAME#N]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY\n       priory say [--generation N] [DIR] RUNNER:KEY TEXT\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory patterns [--all] [--json]\n       priory patterns find [DIR] [--since <instant-or-duration>]\n       priory patterns show ID [--json]\n       priory patterns (close | dismiss) [DIR] ID\n       priory patterns capture [DIR] ID --into FOLDER\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory evidence add FILE --caption TEXT\n       priory evidence TASK [--json]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory memories [DIR] [--all] [--json]\n       priory memories (accept | drop) [DIR] CANDIDATE\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID [--debate] [--consult | --investigator]\n       priory mcp --outside\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT\n       priory hook PreToolUse --outside"
     );
     ExitCode::from(2)
 }
@@ -350,7 +351,7 @@ fn pre_ran(trigger: &str, failure: Option<&str>) -> Result<(), String> {
 /// prints the message the intake would publish. It publishes and records nothing.
 fn intake_pre(args: Vec<String>) -> ExitCode {
     let (dir, name) = match args.as_slice() {
-        [name] => (PathBuf::from("."), name),
+        [name] => (factory::folder(None), name),
         [dir, name] => (PathBuf::from(dir), name),
         _ => return usage(),
     };
@@ -512,8 +513,8 @@ fn screen(args: Vec<String>) -> ExitCode {
     let Some(target) = target else {
         return usage();
     };
-    let factory = match dir {
-        Some(dir) => match load(Path::new(dir)) {
+    let factory = match factory::named_folder(dir.map(String::as_str)) {
+        Some(dir) => match load(&dir) {
             Some(factory) => factory,
             None => return ExitCode::FAILURE,
         },
@@ -621,24 +622,24 @@ fn score(args: Vec<String>) -> ExitCode {
     }
     if let Some(name) = calibrate {
         let dir = match &positional[..] {
-            [] => ".",
-            [dir] => dir.as_str(),
+            [] => None,
+            [dir] => Some(dir.as_str()),
             _ => return usage(),
         };
         if only.is_some() {
             return usage();
         }
-        return calibrate_judge(Path::new(dir), &name, budget, json);
+        return calibrate_judge(&factory::folder(dir), &name, budget, json);
     }
     let (dir, task) = match &positional[..] {
-        [task] => (".", task),
-        [dir, task] => (dir.as_str(), task),
+        [task] => (None, task),
+        [dir, task] => (Some(dir.as_str()), task),
         _ => return usage(),
     };
     let Ok(task) = task.parse() else {
         return usage();
     };
-    let Some(factory) = load(Path::new(dir)) else {
+    let Some(factory) = load(&factory::folder(dir)) else {
         return ExitCode::FAILURE;
     };
     let scored = state::open().and_then(|mut db| {
@@ -723,11 +724,11 @@ fn calibrate(args: Vec<String>) -> ExitCode {
         .filter(|arg| *arg != "--json")
         .collect();
     let dir = match positional[..] {
-        ["triage"] => ".",
-        ["triage", dir] if !dir.starts_with("--") => dir,
+        ["triage"] => None,
+        ["triage", dir] if !dir.starts_with("--") => Some(dir),
         _ => return usage(),
     };
-    let Some(factory) = load(Path::new(dir)) else {
+    let Some(factory) = load(&factory::folder(dir)) else {
         return ExitCode::FAILURE;
     };
     let calibrated = state::open().and_then(|mut db| {
@@ -912,15 +913,16 @@ fn replay(args: &[String]) -> ExitCode {
         }
     }
     let (dir, case) = match positional[..] {
-        [case] => (".", case),
-        [dir, case] => (dir, case),
+        [case] => (None, case),
+        [dir, case] => (Some(dir), case),
         _ => return usage(),
     };
     let Some(budget) = budget else {
         eprintln!("priory bench replay: give --budget USD, the most the replay may spend");
         return ExitCode::FAILURE;
     };
-    let Some(factory) = load(Path::new(dir)) else {
+    let dir = factory::folder(dir);
+    let Some(factory) = load(&dir) else {
         return ExitCode::FAILURE;
     };
     let replayed = priory_factory::case::load(Path::new(case)).and_then(|loaded| {
@@ -934,7 +936,7 @@ fn replay(args: &[String]) -> ExitCode {
         priory_core::replay::fits(&estimate, budget)?;
         let options = priory_core::replay::Options { budget, turn };
         let replayed = priory_core::replay::replay(
-            Path::new(dir),
+            &dir,
             &factory,
             &loaded,
             &options,
@@ -975,14 +977,14 @@ fn capture(args: &[String]) -> ExitCode {
         }
     }
     let (dir, task) = match positional[..] {
-        [task] => (".", task),
-        [dir, task] => (dir, task),
+        [task] => (None, task),
+        [dir, task] => (Some(dir), task),
         _ => return usage(),
     };
     let (Some(into), Ok(task)) = (into, task.parse()) else {
         return usage();
     };
-    let Some(factory) = load(Path::new(dir)) else {
+    let Some(factory) = load(&factory::folder(dir)) else {
         return ExitCode::FAILURE;
     };
     let captured = state::open().and_then(|db| {
@@ -992,30 +994,220 @@ fn capture(args: &[String]) -> ExitCode {
                 into.display()
             ));
         }
-        let read = |path: &str| std::fs::read(path);
-        let case = priory_core::capture::capture(&db, &factory, task, &read)?;
-        for (path, text) in &case.files {
-            let file = into.join(path);
-            let written = file
-                .parent()
-                .map_or(Ok(()), std::fs::create_dir_all)
-                .and_then(|()| std::fs::write(&file, text));
-            written.map_err(|error| format!("{}: {error}", file.display()))?;
-        }
-        let state = match case.gaps {
-            0 => "complete".to_owned(),
-            1 => "partial, 1 gap".to_owned(),
-            gaps => format!("partial, {gaps} gaps"),
-        };
         println!(
-            "captured task {task} into {}: {} gh answer(s), {} answer(s), {state}",
-            into.display(),
-            case.gh,
-            case.answers
+            "{}",
+            priory_core::capture::capture_into(&db, &factory, task, &into)?
         );
         Ok(())
     });
     exit("bench capture", captured)
+}
+
+/// The trace of a person's command on the factory, on this machine.
+fn person_trace(factory: &factory::Factory) -> priory_core::trace::Trace<'_> {
+    priory_core::trace::Trace {
+        factory,
+        revision: runtime::revision(&factory.dir),
+        machine: priory_runtime::room::hostname(),
+        runner: None,
+        usage: priory_runtime::transcript::usage,
+    }
+}
+
+/// `priory patterns`: lists failure patterns, finds new ones in a window, shows, closes, dismisses
+/// or captures one.
+fn patterns(args: Vec<String>) -> ExitCode {
+    let (mut all, mut json, mut since, mut into) = (false, false, None, None);
+    let mut words = Vec::new();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--all" => all = true,
+            "--json" => json = true,
+            "--since" => match args.next() {
+                Some(window) => since = Some(window),
+                None => return usage(),
+            },
+            "--into" => match args.next() {
+                Some(folder) => into = Some(PathBuf::from(folder)),
+                None => return usage(),
+            },
+            _ if arg.starts_with("--") => return usage(),
+            _ => words.push(arg),
+        }
+    }
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    let flags = |allowed: &[bool]| allowed.iter().all(|flag| !flag);
+    match words[..] {
+        [] if since.is_none() && into.is_none() => {
+            let listed = state::open().and_then(|db| {
+                let patterns = priory_core::patterns::patterns(&db)
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .filter(|pattern| all || priory_core::patterns::shown(pattern))
+                    .collect::<Vec<_>>();
+                if json {
+                    let listed: Vec<Value> = patterns
+                        .iter()
+                        .map(|pattern| {
+                            let mut value = json!(pattern);
+                            value.as_object_mut().map(|fields| fields.remove("matches"));
+                            value
+                        })
+                        .collect();
+                    println!("{}", Value::Array(listed));
+                    return Ok(());
+                }
+                println!("id\tstate\tworkflow\tstep\ttasks\tlast\ttext");
+                for pattern in &patterns {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        pattern.id,
+                        pattern.state,
+                        pattern.workflow,
+                        pattern.step,
+                        pattern.tasks.len(),
+                        pattern.last,
+                        pattern.text
+                    );
+                }
+                Ok(())
+            });
+            exit("patterns", listed)
+        }
+        ["find", ref rest @ ..] if rest.len() <= 1 && flags(&[all, json, into.is_some()]) => {
+            let Some(factory) = load(Path::new(rest.first().copied().unwrap_or("."))) else {
+                return ExitCode::FAILURE;
+            };
+            let since = since.unwrap_or_else(|| priory_core::patterns::SINCE.to_owned());
+            let found = intake::now().and_then(|now| {
+                let now = now.to_string();
+                let mut db = state::open()?;
+                let start = report::start(&db, &since, &now)?;
+                let found =
+                    priory_core::patterns::find(&mut db, &person_trace(&factory), &start, &now)?;
+                let patterns =
+                    priory_core::patterns::patterns(&db).map_err(|error| error.to_string())?;
+                let new: usize = found.matched.values().sum();
+                println!(
+                    "{new} new {} from {start} to {now}",
+                    if new == 1 { "match" } else { "matches" }
+                );
+                for pattern in patterns
+                    .iter()
+                    .filter(|pattern| found.matched.contains_key(&pattern.id))
+                {
+                    println!(
+                        "{}\t{}\t{}/{}\t+{}, {} {}\t{}",
+                        pattern.id,
+                        pattern.state,
+                        pattern.workflow,
+                        pattern.step,
+                        found.matched[&pattern.id],
+                        pattern.tasks.len(),
+                        if pattern.tasks.len() == 1 {
+                            "task"
+                        } else {
+                            "tasks"
+                        },
+                        pattern.text
+                    );
+                }
+                Ok(())
+            });
+            exit("patterns find", found)
+        }
+        ["show", id] if flags(&[all, since.is_some(), into.is_some()]) => {
+            let shown = state::open().and_then(|db| {
+                let pattern = priory_core::patterns::pattern(&db, id)?;
+                if json {
+                    println!("{}", json!(pattern));
+                    return Ok(());
+                }
+                println!(
+                    "pattern {}: {}, {}/{}, {} tasks, last {}\n{}\n",
+                    pattern.id,
+                    pattern.state,
+                    pattern.workflow,
+                    pattern.step,
+                    pattern.tasks.len(),
+                    pattern.last,
+                    pattern.text
+                );
+                println!("task\tkey\tkind\thappened\ttext");
+                for found in &pattern.matches {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}",
+                        found.task, found.key, found.kind, found.happened, found.text
+                    );
+                }
+                Ok(())
+            });
+            exit("patterns show", shown)
+        }
+        [verb @ ("close" | "dismiss"), ref rest @ ..]
+            if !rest.is_empty()
+                && rest.len() <= 2
+                && flags(&[all, json, since.is_some(), into.is_some()]) =>
+        {
+            let (dir, id) = match rest {
+                [id] => (".", *id),
+                [dir, id] => (*dir, *id),
+                _ => return usage(),
+            };
+            let Some(factory) = load(Path::new(dir)) else {
+                return ExitCode::FAILURE;
+            };
+            let closed = state::open().and_then(|mut db| {
+                let text = priory_core::patterns::close(
+                    &mut db,
+                    &person_trace(&factory),
+                    id,
+                    verb == "dismiss",
+                )?;
+                println!("{text}");
+                Ok(())
+            });
+            exit(&format!("patterns {verb}"), closed)
+        }
+        ["capture", ref rest @ ..] if flags(&[all, json, since.is_some()]) => {
+            let (dir, id) = match rest {
+                [id] => (".", *id),
+                [dir, id] => (*dir, *id),
+                _ => return usage(),
+            };
+            let Some(into) = into else {
+                return usage();
+            };
+            let Some(factory) = load(Path::new(dir)) else {
+                return ExitCode::FAILURE;
+            };
+            let captured = state::open().and_then(|db| {
+                let pattern = priory_core::patterns::pattern(&db, id)?;
+                let mut kept = 0;
+                for task in priory_core::patterns::tasks(&pattern) {
+                    let folder = into.join(format!("task-{task}"));
+                    if folder.exists() {
+                        println!("skipped task {task}: {} already exists", folder.display());
+                        continue;
+                    }
+                    match priory_core::capture::capture_into(&db, &factory, task, &folder) {
+                        Ok(line) => {
+                            kept += 1;
+                            println!("{line}");
+                        }
+                        Err(error) => println!("skipped task {task}: {error}"),
+                    }
+                }
+                if kept == 0 {
+                    return Err(format!("no task of pattern {id} could be captured"));
+                }
+                Ok(())
+            });
+            exit("patterns capture", captured)
+        }
+        _ => usage(),
+    }
 }
 
 fn costs(args: Vec<String>) -> ExitCode {
@@ -1037,7 +1229,7 @@ fn costs(args: Vec<String>) -> ExitCode {
         }
     }
     let dir = match &dirs[..] {
-        [] => PathBuf::from("."),
+        [] => factory::folder(None),
         [dir] => PathBuf::from(dir),
         _ => return usage(),
     };
@@ -1153,7 +1345,7 @@ fn report_risk(args: Vec<String>) -> ExitCode {
         }
     }
     let dir = match &dirs[..] {
-        [] => PathBuf::from("."),
+        [] => factory::folder(None),
         [dir] => PathBuf::from(dir),
         _ => return usage(),
     };
@@ -1231,9 +1423,7 @@ fn report(args: Vec<String>) -> ExitCode {
             state::open().and_then(|db| report::outcomes(&db, &workflow, &since, by_lane));
         return exit("report", printed);
     }
-    let dir = dirs
-        .first()
-        .map_or_else(|| PathBuf::from("."), PathBuf::from);
+    let dir = factory::folder(dirs.first().map(String::as_str));
     let Some(factory) = load(&dir) else {
         return ExitCode::FAILURE;
     };
@@ -1546,15 +1736,19 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             Err(error) => return exit(verb, Err(error)),
         };
     }
-    if let ("queue", [dir]) = (verb, &args[..]) {
-        if dir.starts_with("--") {
-            return usage();
-        }
-        let Some(factory) = load(Path::new(dir)) else {
-            return ExitCode::FAILURE;
+    if verb == "queue" {
+        let dir = match &args[..] {
+            [] => None,
+            [dir] if !dir.starts_with("--") => Some(dir.as_str()),
+            _ => return usage(),
         };
-        schedules = listing::schedule_triggers(&factory);
-        workflows = factory.workflows.into_keys().collect();
+        if let Some(dir) = factory::named_folder(dir) {
+            let Some(factory) = load(&dir) else {
+                return ExitCode::FAILURE;
+            };
+            schedules = listing::schedule_triggers(&factory);
+            workflows = factory.workflows.into_keys().collect();
+        }
         args.clear();
     }
     let (mut lane, mut grade, mut since, mut person) = (None, None, None, None);
@@ -1711,6 +1905,16 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                         "{unrouted} {events} reached no task in the last 24 hours. See them with `priory inbox --unrouted`."
                     ));
                 }
+                if let Some(dropped) = value["counts"]["dropped"].as_u64().filter(|n| *n > 0) {
+                    let (requests, it) = if dropped == 1 {
+                        ("request", "it")
+                    } else {
+                        ("requests", "them")
+                    };
+                    state::emit(&format!(
+                        "{dropped} {requests} a pre script dropped in the last 24 hours. See {it} with `priory inbox --unrouted`."
+                    ));
+                }
                 if let Some(unheard) = value["counts"]["unheard"].as_u64().filter(|n| *n > 0) {
                     let (events, it) = if unheard == 1 {
                         ("event", "it")
@@ -1829,7 +2033,7 @@ fn schedules(mut args: Vec<String>) -> ExitCode {
         .position(|arg| arg == "--json")
         .map(|at| args.remove(at));
     let dir = match &args[..] {
-        [] => PathBuf::from("."),
+        [] => factory::folder(None),
         [dir] if !dir.starts_with("--") => PathBuf::from(dir),
         _ => return usage(),
     };
@@ -1863,7 +2067,7 @@ fn links(mut args: Vec<String>) -> ExitCode {
         .position(|arg| arg == "--json")
         .map(|at| args.remove(at));
     let dir = match &args[..] {
-        [] => PathBuf::from("."),
+        [] => factory::folder(None),
         [dir] if !dir.starts_with("--") => PathBuf::from(dir),
         _ => return usage(),
     };
@@ -1886,7 +2090,7 @@ fn flows(mut args: Vec<String>) -> ExitCode {
     };
     args.remove(at);
     let dir = match &args[..] {
-        [] => PathBuf::from("."),
+        [] => factory::folder(None),
         [dir] if !dir.starts_with("--") => PathBuf::from(dir),
         _ => return usage(),
     };
@@ -1915,7 +2119,7 @@ fn views(mut args: Vec<String>) -> ExitCode {
     };
     args.remove(at);
     let dir = match &args[..] {
-        [] => PathBuf::from("."),
+        [] => factory::folder(None),
         [dir] if !dir.starts_with("--") => PathBuf::from(dir),
         _ => return usage(),
     };
@@ -1986,7 +2190,7 @@ fn serve_http(args: Vec<String>) -> ExitCode {
         }
     }
     let dir = match &dirs[..] {
-        [] => PathBuf::from("."),
+        [] => factory::folder(None),
         [dir] => PathBuf::from(dir),
         _ => return usage(),
     };
@@ -2615,12 +2819,16 @@ fn answer(mut args: Vec<String>) -> ExitCode {
         return usage();
     };
     let (dir, ask, text) = match &rest[..] {
-        [ask, text] => (".", ask, text),
-        [dir, ask, text] => (dir.as_str(), ask, text),
+        [ask, text] => (None, ask, text),
+        [dir, ask, text] => (Some(dir.as_str()), ask, text),
         _ => return usage(),
     };
     let Some(revision) = revision else {
-        return unrevised("answer", ask);
+        let run = if run.is_some() { "--run " } else { "" };
+        let rest = [dir, Some(ask.as_str()), Some(text.as_str())];
+        return unrevised("answer", ask, |revision| {
+            format!("priory answer --revision {revision} {run}{}", words(&rest))
+        });
     };
     // This machine's ask by its number or name, else another runner's, which goes through the log
     // and applies when that runner reads it.
@@ -2642,7 +2850,7 @@ fn answer(mut args: Vec<String>) -> ExitCode {
         by: "cli".to_owned(),
     };
     if let Some((runner, _)) = remote {
-        let Some(factory) = load(Path::new(dir)) else {
+        let Some(factory) = load(&factory::folder(dir)) else {
             return ExitCode::FAILURE;
         };
         let label = format!("{runner}:{}", answer.ask);
@@ -2726,11 +2934,11 @@ fn memories(args: Vec<String>) -> ExitCode {
     };
     if let Some(accept) = verdict {
         let (dir, id) = match &args[1..] {
-            [id] => (".", id),
-            [dir, id] => (dir.as_str(), id),
+            [id] => (None, id),
+            [dir, id] => (Some(dir.as_str()), id),
             _ => return usage(),
         };
-        let Some(factory) = load(Path::new(dir)) else {
+        let Some(factory) = load(&factory::folder(dir)) else {
             return ExitCode::FAILURE;
         };
         let decided = state::read_only().and_then(|db| {
@@ -2748,8 +2956,8 @@ fn memories(args: Vec<String>) -> ExitCode {
         }
     }
     // With the factory's folder, each candidate says what memory of its name runs get now.
-    let factory = match dir {
-        Some(dir) => match load(Path::new(dir)) {
+    let factory = match factory::named_folder(dir.map(String::as_str)) {
+        Some(dir) => match load(&dir) {
             Some(factory) => Some(factory),
             None => return ExitCode::FAILURE,
         },
@@ -2811,16 +3019,19 @@ fn dismiss(args: Vec<String>) -> ExitCode {
         return usage();
     };
     let (dir, ask) = match &rest[..] {
-        [ask] => (".".to_owned(), ask),
-        [dir, ask] => (dir.clone(), ask),
+        [ask] => (None, ask),
+        [dir, ask] => (Some(dir.as_str()), ask),
         _ => return usage(),
     };
     let local = ask_id(ask);
     if let Some((runner, id)) = remote_id(ask, &local) {
         let Some(revision) = revision else {
-            return unrevised("dismiss", ask);
+            let rest = [dir, Some(ask.as_str())];
+            return unrevised("dismiss", ask, |revision| {
+                format!("priory dismiss --revision {revision} {}", words(&rest))
+            });
         };
-        let Some(factory) = load(Path::new(&dir)) else {
+        let Some(factory) = load(&factory::folder(dir)) else {
             return ExitCode::FAILURE;
         };
         let sent = remote_ask(&runner, id, revision)
@@ -2842,11 +3053,56 @@ fn dismiss(args: Vec<String>) -> ExitCode {
 }
 
 /// Refuses an `answer` or `dismiss` of `ask` that lacks the ask's revision, as an argument error.
-fn unrevised(verb: &str, ask: &str) -> ExitCode {
+/// While this machine knows the ask open, it prints the command to run, from `command` given the
+/// ask's current revision.
+fn unrevised(verb: &str, ask: &str, command: impl FnOnce(i64) -> String) -> ExitCode {
+    let run = current_revision(ask)
+        .map(|revision| format!("; run: {}", command(revision)))
+        .unwrap_or_default();
     eprintln!(
-        "priory {verb}: ask {ask} needs --revision N, the revision `priory asks` prints for it"
+        "priory {verb}: ask {ask} needs --revision N, the revision `priory asks` prints for it{run}"
     );
     ExitCode::from(2)
+}
+
+/// The revision of `ask` while it is open: this machine's ask in its state, or another runner's
+/// in this machine's mirror. None when neither holds it open.
+fn current_revision(ask: &str) -> Option<i64> {
+    let db = state::read_only().ok()?;
+    let local = match ask.bytes().all(|byte| byte.is_ascii_digit()) {
+        true => ask.parse().map_err(|_| String::new()),
+        false => tools::ask_named(&db, ask),
+    };
+    if let Some((runner, id)) = remote_id(ask, &local) {
+        let mirrored = runners::mirrored(&db, &runner, id).ok()??;
+        return (mirrored["state"] == "open")
+            .then(|| mirrored["revision"].as_i64())
+            .flatten();
+    }
+    tools::open_revision(&db, local.ok()?).ok()?
+}
+
+/// `words` as one shell command line's arguments: each quoted when the shell would split or expand
+/// it, after `--` when one starts with `-`.
+fn words(words: &[Option<&str>]) -> String {
+    let words: Vec<&str> = words.iter().flatten().copied().collect();
+    let quoted = words.iter().map(|word| {
+        let plain = !word.is_empty()
+            && word
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_./:@%+=,".contains(c));
+        match plain {
+            true => (*word).to_owned(),
+            false => format!("'{}'", word.replace('\'', "'\\''")),
+        }
+    });
+    let dashes = words.iter().any(|word| word.starts_with('-'));
+    dashes
+        .then(|| "--".to_owned())
+        .into_iter()
+        .chain(quoted)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Splits `[--revision N | --expected N] [--] ARGS` into the revision and the other arguments.
@@ -3192,8 +3448,8 @@ fn label(args: Vec<String>) -> ExitCode {
         }
     }
     let (dir, task) = match &words[..] {
-        [task, kind] if kind == "wrong" => (".", task),
-        [dir, task, kind] if kind == "wrong" => (dir.as_str(), task),
+        [task, kind] if kind == "wrong" => (None, task),
+        [dir, task, kind] if kind == "wrong" => (Some(dir.as_str()), task),
         _ => return usage(),
     };
     let Ok(task) = task.parse() else {
@@ -3202,7 +3458,7 @@ fn label(args: Vec<String>) -> ExitCode {
     if clear != evidence.is_none() || (clear && happened.is_some()) {
         return usage();
     }
-    let Some(factory) = load(Path::new(dir)) else {
+    let Some(factory) = load(&factory::folder(dir)) else {
         return ExitCode::FAILURE;
     };
     let done = intake::now().and_then(|now| {
@@ -3420,8 +3676,8 @@ fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCod
         None => None,
     };
     let remote = match &args[..] {
-        [task] if task.parse::<i64>().is_err() => Some((".", task)),
-        [dir, task] => Some((dir.as_str(), task)),
+        [task] if task.parse::<i64>().is_err() => Some((None, task)),
+        [dir, task] => Some((Some(dir.as_str()), task)),
         _ => None,
     };
     if let Some((dir, task)) = remote.filter(|_| hold.is_none()) {
@@ -3436,7 +3692,7 @@ fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCod
                 )),
             );
         }
-        let Some(factory) = load(Path::new(dir)) else {
+        let Some(factory) = load(&factory::folder(dir)) else {
             return ExitCode::FAILURE;
         };
         let sent = runners::known(&factory, runner)
@@ -3515,7 +3771,7 @@ fn check(args: Vec<OsString>) -> ExitCode {
         _ => return usage(),
     };
     let dir = match &dirs[..] {
-        [] => PathBuf::from("."),
+        [] => factory::folder(None),
         [dir] => PathBuf::from(dir),
         _ => return usage(),
     };
@@ -3597,6 +3853,7 @@ fn check_repo(args: Vec<OsString>) -> ExitCode {
         eprintln!("priory check: {} is not a folder", repo.display());
         return ExitCode::FAILURE;
     }
+    let dir = dir.or_else(|| factory::named_folder(None));
     let factory = match &dir {
         Some(dir) => match load(dir) {
             Some(factory) => Some(factory),

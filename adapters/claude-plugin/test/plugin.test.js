@@ -78,7 +78,7 @@ test("no skill or command tells the model to run a verb only a person runs", () 
 });
 
 test("each skill calls only the tools the outside server serves", () => {
-  const served = ["desk", "asks", "task", "ask", "add"];
+  const served = ["desk", "asks", "task", "ask", "add", "answer", "dismiss"];
   for (const path of [...skills, ...commands]) {
     for (const match of read(path).matchAll(/the `([a-z]+)` tool/g)) {
       assert.ok(served.includes(match[1]), `${path} names the \`${match[1]}\` tool`);

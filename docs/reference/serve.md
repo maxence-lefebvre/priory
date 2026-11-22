@@ -388,6 +388,7 @@ conversation that lacks its `id` or `created_at`, gets `400`.
 | `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
 | `counts.unrouted` | integer | [Unrouted](#unrouted) events from the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
 | `counts.unheard` | integer | [Unheard](#unrouted) events from the 24 hours before now (`PRIORY_NOW` when set): kept by a task that is not running, and read by no agent. See [desk.md](../daemon/desk.md#unrouted-events) |
+| `counts.dropped` | integer | Requests a trigger's `pre` script dropped in the 24 hours before now (`PRIORY_NOW` when set), as [`dropped`](#unrouted) lists them. See [desk.md](../daemon/desk.md#unrouted-events) |
 | `counts.outsider` | integer | The comments and reviews from outside the repository in the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
 | `items` | array | What waits on a person, then the queue, then worktrees that stay. `priory desk --all --json` keeps the snoozed items |
 | `next` | object or null | The item that ranks first, as in `ranked`; null when nothing waits on a person |
@@ -511,7 +512,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `state` | string | `open`, `answered` or `withdrawn` |
 | `withdrawn_reason` | string or null | Why a withdrawn ask closed, one of the [withdrawal reasons](../daemon/waits.md#why-an-ask-or-wait-was-withdrawn): `dismissed`, `sibling-fired`, `moved-on`, `revived` or `predecessor-revived` |
 | `withdrawn_at` | string or null | When the ask was withdrawn, in UTC. Null for an ask withdrawn before Priory kept the time, with no withdrawal on record |
-| `withdrawn_why` | string or null | `withdrawn_reason` in words: `dismissed`, `a wait of its run fired first`, `a later run called another tool`, `its task was revived` or `the task it waits on was revived` |
+| `withdrawn_why` | string or null | `withdrawn_reason` in words: `dismissed`, `dismissed by session <session>` when a person's own session dismissed it, `a wait of its run fired first`, `a later run called another tool`, `its task was revived` or `the task it waits on was revived` |
 | `revision` | integer | The question's revision. `priory answer` and `priory dismiss` take it |
 | `question` | string | The question |
 | `options` | array of strings | The options |
@@ -523,7 +524,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `ran` | object or null | The command its answer ran: `status` (`running`, `done`, `failed` or `uncertain`), `revision`, `error`, `stdout` and `stderr`. Null when no answer ran it |
 | `coordinator`, `run_id`, `session` | string or null | Who asked from outside Priory: its coordinator, its run id and its session |
 | `answer`, `answered_at` | string or null | The answer and when it came |
-| `answered_by` | string or null | Who answered: `cli`, `serve`, `agent:<lead>` for a lead's answer, or `auto` for the daemon's answer at the task's [`auto_answer`](triggers.md#auto_answer) level. Null when unanswered, or answered before Priory recorded it |
+| `answered_by` | string or null | Who answered: `cli`, `serve`, `agent:<lead>` for a lead's answer, `auto` for the daemon's answer at the task's [`auto_answer`](triggers.md#auto_answer) level, or `session:<session>` for a person's own session through [`priory mcp --outside`](../daemon/tools.md#answers-from-the-session), which a dismissed ask keeps too. Null when unanswered, or answered before Priory recorded it |
 | `confidence`, `rationale` | string or null | How sure the agent was of its recommendation, `high`, `medium` or `low`, and why. Null when it stated none. See [tools.md](tools.md#confidence) |
 | `routed_to` | string or null | The lead the ask is routed to, which answers it in the person's place, or null for a person. See [tools.md](../daemon/tools.md#hands-off) |
 | `delivery` | object or null | The latest delivery of an outside ask's answer or dismissal to its session: `state` (`queued`, `running`, `delivered` or `failed`), `revision`, `tries`, `error`, `since` and `cleared`, when a person cleared a failed one from the desk with `priory deliver --clear`. Null when nothing was delivered. See [asks.md](../daemon/asks.md) |
@@ -678,6 +679,7 @@ and these arrays, oldest first unless the table says otherwise:
 | `inbox` | Every event routed to the task, newest first: its source event, the events routing gave it, and those another task took that fired one of its waits or that its subscription delivered to it. Each has `seq`, `type`, `subject`, `time`, `task` (the task routing gave it, or null), `outcome` (as [routing](../daemon/routing.md#outcomes) recorded it, or for an event a subscription delivered beside another task, `woke` or `kept` for this task), `prompt` (the state of this task's prompt that carries the event: `queued`, `attempted`, `uncertain`, `confirmed`, `withdrawn`, or null when none does) and `wait` (the id of this task's wait it fired, or null). See [The task's inbox](../daemon/routing.md#the-tasks-inbox) |
 | `triage` | `item` (a feedback item's URL), `class` (`trivial`, `nothing-to-do` or `persons-call`), `run` (the run whose result sorted it), `created`: how the agent sorted each review feedback item, in the order it first did. See [Review feedback](tools.md#review-feedback) |
 | `scores` | `run`, `step`, `scorer`, `kind`, `verdict`, `reason` and `time` of each run's latest score by each scorer, by run then scorer. See [score.md](../daemon/score.md) |
+| `held_scores` | `scorer`, `verdict`, `reason`, `happened` (the moment its `after` names) and `time` (when it graded) of each grade of a `held` scorer, oldest first. See [score.md](../daemon/score.md#held-scorers) |
 
 And these objects:
 
@@ -942,12 +944,13 @@ when none had it. Both reply `{"ok": "subscribed"}` or `{"ok": "unsubscribed"}`.
 
 Each notification is a Web Push message encrypted as RFC 8291 says (`Content-Encoding:
 aes128gcm`), signed with VAPID (RFC 8292), with `TTL: 86400` and `Urgency: high`. Its plaintext is
-JSON with two fields and nothing else:
+JSON with three fields and nothing else:
 
 | Field | For a new ask | For an alarm |
 | ----- | ------------- | ------------ |
+| `id` | `<queued>/<row>`: when the daemon queued the notification and its row, so a service worker drops a copy | as for an ask |
 | `title` | the ask's title, cut to 120 characters; without one, `task <key> asks at <step>`, or `ask <name>` for an outside ask | `task <key> <state>`, such as `task gh:o/r#42 blocked`; for a spend cap reached, the desk's line for it, cut to 120 characters |
-| `url` | `/asks/<id>` | `/tasks/<id>`, or `/` for a spend cap or an intake report |
+| `url` | `/asks/<id>`, with the ask's `id` as `/api/asks` lists it: an outside ask's or the daemon's ask's name, else its number | `/tasks/<id>`, with the task's `id` as `/api/tasks` lists it, or `/` for a spend cap or an intake report |
 
 ## Report
 

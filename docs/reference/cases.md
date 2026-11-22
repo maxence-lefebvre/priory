@@ -21,7 +21,7 @@ Each file starts with a `#:schema` line, so an editor validates it as you fill a
 | `key` | string | yes | What the task worked on, prefixed by its source | `"github:owner/repo#42"` |
 | `repo` | string | no | The repository of the task's worktree, as `owner/name` | `"owner/repo"` |
 | `start` | string | yes | The commit the task's worktree was created from, its `base_sha` | `"280754dd..."` |
-| `ends_at` | string | yes | The first irreversible step the task reached. A replay ends there and never runs it | `"open-pr"` |
+| `ends_at` | string | yes | The first irreversible step the task reached. A replay ends there and never runs it. For a `failed` or `blocked` task that reached none, the step it stopped at | `"open-pr"` |
 | `partial` | boolean | yes | Whether `gaps` names anything | `true` |
 | `gaps` | array of strings | yes | What the capture could not keep, one line each | `["run 2: its transcript is gone"]` |
 | `request` | table | no | The first message the inbox routed to the task: `type`, `subject` and `data`, with its null fields left out | |

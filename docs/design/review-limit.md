@@ -16,8 +16,8 @@ Built. See [runs.md](../daemon/runs.md#review-limit).
    not `queued`, `ready`, `running`, `failed` or `dropped`. Code decides this from the state file,
    with no model.
 3. A queued task whose first run has not started waits while its batch, then its lane, has that many
-   such pull requests. A woken or resumed task starts whatever the count. The waiting task holds
-   back no other task.
+   such pull requests. A woken or resumed task starts whatever the count, and so does a task of the
+   first band. The waiting task holds back no other task.
 4. The task's reason and one desk line per lane or batch say why, and `priory desk --json` carries
    the lines as `reviews`. No schema change: the lines come from the reasons the daemon writes.
 

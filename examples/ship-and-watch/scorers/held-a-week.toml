@@ -1,0 +1,6 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/scorer.json
+description = "The change held for a week after its merge: no revert and no later task that fixes it."
+on = "merge"
+kind = "held"
+after = "merged + 7d"
+fails = ["reverted", "red-after-merge", "fixed"]

@@ -18,6 +18,7 @@ reading each task.
 | `batch` | the batch | its title and counts, then which entries start next: `Invoice exports: 1 merged, 3 started, 2 planned. Next: ENG-41 and ENG-42 start when ENG-40 merges.`, each task named by its key without the source. One row per going batch, in place of the `held` rows of its entries (see Batches) | the go |
 | `memory` | the memory grant | `waits for <N> GB: <command>` | it was requested |
 | `memories` | `memories` | `` <n> memory candidates wait for a person: <name>, <name>; see them with `priory memories` ``. One row while any candidate waits (see Memory candidates) | the oldest candidate was written |
+| `pattern` | the failure pattern's id | `` <workflow>/<step>: <n> tasks stopped for one reason: <text>; see it with `priory patterns show <id>` ``, for an open pattern of at least 2 tasks (see [patterns.md](patterns.md)) | its latest task stopped |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
 | `sweep` | the script's run | its command, then `running`, or its status and output, for the open stall | it started |
 | `report` | the report's inbox sequence number | `<source>: <line>`, for an unread report | it was posted |
@@ -67,6 +68,19 @@ task's next run. When such events came in the last 24 hours and are at least 5 m
 as a calm row under the unrouted one, and the Herdr Desk's count line ends with "2 events no agent
 read." See [routing.md](routing.md#events-no-agent-read).
 
+A request a trigger's `pre` script dropped made no task, and its issue stays in its view with none.
+When a script dropped requests in the last 24 hours, and no task has their key since, `priory desk`
+prints one more line:
+
+```text
+1 request a pre script dropped in the last 24 hours. See it with `priory inbox --unrouted`.
+```
+
+`priory desk --json` carries it as `counts.dropped`, 0 when there are none. The web Desk shows it
+as a calm row under the unheard one, which opens the Inbox at its Dropped section, and the Herdr
+Desk's count line ends with "1 request a script dropped in 24 h." See
+[pre.md](../intake/pre.md#one-decision-per-event).
+
 A comment or review from someone outside the repository is not unrouted: its outcome is
 `outsider`. When some came in the last 24 hours, `priory desk` prints one more line:
 
@@ -89,7 +103,7 @@ waits. `priory desk` without `--json` prints neither. The ranking has six groups
 | Plans | another ask at a human step, such as `approve-plan` | `it approves a plan` |
 | Other asks | every other ask, such as an agent's or an outside one | `it waits on a person` |
 | To-dos | each open to-do | `a to-do of yours` |
-| The rest | every other item: deliveries, holds, sweeps, memory waits, reports and retired tasks | `it waits on a person` |
+| The rest | every other item: deliveries, holds, sweeps, memory waits, failure patterns, reports and retired tasks | `it waits on a person` |
 
 Each group lists its items oldest first. The queue and the worktrees that stay never rank. A snoozed
 item never ranks, even with `--all`. Each ranked item is the desk item with two more fields: `why`,
@@ -210,6 +224,12 @@ intake's own by `; `. See [runners.md](runners.md#a-runner-cut-off-from-the-log)
 While the last fetch of the factory's kit failed, the banner ends with `the kit fails to fetch since
 <time>: <error>; runs keep commit <commit>`, or `; runs start without the kit` when the runner has
 no good commit yet. See [skills.md](skills.md#a-kit-repository).
+
+While the sweep cannot fetch a repository that still has worktrees, the banner ends with
+`fetching <owner>/<name> fails since <time>: <error>; the sweep tries it again every hour. If its
+remote is gone, remove <home>/worktrees/<owner>/<name> and <home>/repos/<owner>/<name>`. The
+daemon reads it from Priory home, not the state, so a client sees it at its next read. See
+[sweep.md](sweep.md#a-clone-that-fails-to-fetch).
 
 The banner is `intake` in `priory desk --json` and `/api/desk`. A source that starts failing, or
 recovers, moves the state's revision, so a client that waits on `/api/events` redraws the banner at
@@ -381,7 +401,9 @@ message's type, subject and outcome, or a report's `<source>: <line>`. A task re
 outside session added ends with `, added by session <session>` (see
 [tools.md](tools.md#the-outside-server)). An ask the daemon answered
 at the task's `auto_answer` level reads `ask <id> answered "<option>" by auto (<confidence>):
-<rationale>` (see [waits.md](waits.md#answered-by-auto)). `priory desk` without
+<rationale>` (see [waits.md](waits.md#answered-by-auto)). An ask a person's own session decided
+reads `ask <id> answered "<option>" by session <session>` or `ask <id> dismissed by session
+<session>` (see [tools.md](tools.md#answers-from-the-session)). `priory desk` without
 `--json` lists the events after its items, under a `since you looked` header with the columns
 `time`, `task` and `what`, newest first. It prints no `last_visit` and, with no events, no list.
 

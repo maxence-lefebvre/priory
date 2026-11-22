@@ -4,7 +4,8 @@ The daemon removes worktrees of ended tasks. It sweeps when it starts, when a st
 starts, and every 10 minutes after, or every `[sweep] every`, not on every tick. A sweep fetches
 `origin` into each clone with a worktree, refreshes `origin/HEAD`, then checks each folder
 `worktrees/<owner>/<name>/<id>`, or `<runner>-<id>` with several runners. A clone whose fetch
-failed is skipped until the next sweep.
+failed keeps its worktrees, and the sweep fetches it again an hour later (see A clone that fails to
+fetch).
 
 It removes a folder and its branch `priory/<id>` only when all checks hold:
 
@@ -75,6 +76,19 @@ A wake clears it.
 
 Retiring runs only at a sweep: when the daemon starts, when a disk stall starts, and every `[sweep]
 every`. A disk that runs short with nothing waiting for room waits for the next sweep.
+
+## A clone that fails to fetch
+
+A repository whose remote is gone, such as a test repository left in Priory home, fails every
+fetch. On its first failure, the daemon logs `fetching <owner>/<name>: <error>` once, and records
+the failure in `fetches/<owner>/<name>.json` under Priory home. The sweep then skips that clone,
+and keeps its worktrees, until an hour has passed since its last try. A fetch that works again
+removes the record and logs `fetching <owner>/<name> works again`.
+
+While the repository still has worktrees, the desk's banner names it, since when it fails, git's
+error, and the two folders to remove when its remote is gone for good (see
+[desk.md](desk.md#intake-banner)). A repository with no worktree left is no longer fetched, and the
+sweep forgets its record.
 
 ## Sweep scripts and the sweeper
 

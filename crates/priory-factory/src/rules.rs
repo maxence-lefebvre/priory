@@ -1,8 +1,8 @@
 use crate::factory::{
     ASK_SHAPE, Agent, Backend, Benchmark, CODEX_PROMPT_LIMIT, Confidence, Debate, Decider, Effect,
-    Factory, Harness, INSTRUCTIONS, Intervention, Loaded, Moment, OPEN_MEMORIES_PR, OnChange,
-    PermissionMode, Problem, Proof, Recipe, ScoreKind, ScoreOn, Scorer, Session, Step, Trigger,
-    Until, Workflow, join_instructions,
+    Factory, HELD_SIGNALS, Harness, INSTRUCTIONS, Intervention, Loaded, Moment, OPEN_MEMORIES_PR,
+    OnChange, PermissionMode, Problem, Proof, Recipe, ScoreKind, ScoreOn, Scorer, Session, Step,
+    Trigger, Until, Workflow, join_instructions,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
 use crate::labels;
@@ -537,6 +537,22 @@ fn check_benchmark(factory: &Factory, benchmark: &Loaded<Benchmark>, problems: &
         )),
         Some(_) => {}
     }
+    // A replay ends before its first irreversible step, so it never merges.
+    let named = std::iter::once(("primary", &value.primary))
+        .chain(value.scorers.iter().map(|name| ("scorers", name)));
+    for (field, name) in named {
+        if factory
+            .scorers
+            .get(name)
+            .is_some_and(|scorer| scorer.value.on == ScoreOn::Merge)
+        {
+            problems.push(problem(
+                benchmark,
+                benchmark.lines.field(field),
+                format!("the scorer `{name}` reads what followed a merge, and a replay never merges: use one on result, diff or ask"),
+            ));
+        }
+    }
     for name in value
         .scorers
         .iter()
@@ -577,6 +593,7 @@ fn check_scorer(factory: &Factory, scorer: &Loaded<Scorer>, problems: &mut Vec<P
         ScoreKind::Command => ScoreOn::Diff,
         ScoreKind::AskShape => ScoreOn::Ask,
         ScoreKind::Judge => ScoreOn::Diff,
+        ScoreKind::Held => ScoreOn::Merge,
     };
     // A judge reads the result alone, as a plan's critic does, or the result and its diff.
     let judged = value.kind == ScoreKind::Judge && value.on == ScoreOn::Result;
@@ -638,8 +655,14 @@ fn check_scorer(factory: &Factory, scorer: &Loaded<Scorer>, problems: &mut Vec<P
             expect,
             "a `judge` scorer takes no `expect`: its answer is pass or fail".to_owned(),
         )),
+        ScoreKind::Held if !value.expect.is_empty() => problems.push(problem(
+            scorer,
+            expect,
+            "a `held` scorer takes no `expect`: name what fails it in `fails`".to_owned(),
+        )),
         _ => {}
     }
+    check_held(scorer, problems);
     if value.kind == ScoreKind::Judge {
         check_judge(factory, scorer, problems);
     } else {
@@ -700,12 +723,61 @@ fn check_scorer(factory: &Factory, scorer: &Loaded<Scorer>, problems: &mut Vec<P
     }
 }
 
+/// A `held` scorer needs `after` and `fails`, each signal one it can read; no other kind takes them.
+fn check_held(scorer: &Loaded<Scorer>, problems: &mut Vec<Problem>) {
+    let value = &scorer.value;
+    if value.kind != ScoreKind::Held {
+        for (field, set) in [
+            ("after", value.after.is_some()),
+            ("fails", !value.fails.is_empty()),
+        ] {
+            if set {
+                problems.push(problem(
+                    scorer,
+                    scorer.lines.field(field),
+                    format!("`{field}` is for kind `held`, not `{}`", value.kind.name()),
+                ));
+            }
+        }
+        return;
+    }
+    if value.after.is_none() {
+        problems.push(problem(
+            scorer,
+            scorer.lines.field("kind"),
+            "a `held` scorer needs `after`: when to grade, such as \"merged + 7d\"".to_owned(),
+        ));
+    }
+    let signals = HELD_SIGNALS.join(", ");
+    if value.fails.is_empty() {
+        problems.push(problem(
+            scorer,
+            scorer.lines.field("kind"),
+            format!("a `held` scorer needs `fails`: some of {signals}"),
+        ));
+    }
+    for signal in value
+        .fails
+        .iter()
+        .filter(|signal| !HELD_SIGNALS.contains(&signal.as_str()))
+    {
+        problems.push(problem(
+            scorer,
+            scorer.lines.field("fails"),
+            format!("`{signal}` is no signal a `held` scorer reads: use {signals}"),
+        ));
+    }
+}
+
 /// Why the scorer `name` cannot be part of a step's `gate`, if it cannot.
 fn gate_refused(factory: &Factory, name: &str) -> Option<String> {
     match factory.scorers.get(name) {
         None => Some(format!("`{name}`, which is no scorer in scorers/")),
         Some(scorer) if scorer.value.on == ScoreOn::Ask => Some(format!(
             "`{name}`, which reads asks: a gate grades a result, so use a scorer on result or diff"
+        )),
+        Some(scorer) if scorer.value.on == ScoreOn::Merge => Some(format!(
+            "`{name}`, which reads what followed a merge: a gate grades a result, so use a scorer on result or diff"
         )),
         Some(_) => None,
     }
@@ -940,6 +1012,18 @@ fn check_lanes(lanes: &Loaded<Lanes>, problems: &mut Vec<Problem>) {
         if !lanes::well_formed(&rule.lane) {
             problems.push(problem(lanes, at, not_a_lane(&rule.lane)));
         }
+    }
+    for name in lanes
+        .value
+        .lane
+        .keys()
+        .filter(|name| !lanes::well_formed(name))
+    {
+        problems.push(problem(
+            lanes,
+            lanes.lines.field("lane"),
+            format!("`[lane]` `{name}` is not a lane such as `team/theme`"),
+        ));
     }
 }
 

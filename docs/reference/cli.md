@@ -3,9 +3,10 @@
 Every command of the `priory` binary, as `priory` with no arguments prints them, with what each
 does and the page that describes it.
 
-- `DIR` is the factory folder. Most commands read `.` without it. `screen`, `queue` and `memories`
-  load no factory without it: `screen` then hides only the default secrets, and `queue` lists no
-  schedule firing.
+- `DIR` is the factory folder. Every command that takes `DIR` reads, in this order: `DIR`, then the
+  folder `PRIORY_FACTORY` names when it is set and not empty, then the current folder. `screen`,
+  `queue`, `memories` and `check --repo` skip the current folder and load no factory without the
+  first two: `screen` then hides only the default secrets, and `queue` lists no schedule firing.
 - When `priory` cannot read a command's arguments, it prints this usage and exits 2. A value it
   cannot parse, such as a time, prints its own error and exits 1.
 - Most commands read `PRIORY_DB`, the daemon's state file (see
@@ -45,7 +46,7 @@ does and the page that describes it.
   publish. It publishes nothing and posts no report. It fails for a trigger without `[pre]`. See
   [pre.md](../intake/pre.md).
 - `priory daemon [DIR] [--once]`: routes events to tasks and runs agents. `--once` routes what is
-  pending, starts no run and exits. See [the daemon](../daemon/README.md).
+  pending, grades the tasks a `held` scorer is due to grade, starts no run and exits. See [the daemon](../daemon/README.md).
 - `priory daemon --view-only [DIR]`: on a machine with no runner file, mirrors every runner's asks
   and tasks, serves them and runs nothing. See
   [runners.md](../daemon/runners.md#a-machine-that-only-views).
@@ -80,11 +81,14 @@ does and the page that describes it.
 - `priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT`:
   answers an ask. `--run` confirms an answer that runs the ask's command. `RUNNER:ASK` answers
   another runner's ask. Without a revision (`--revision N` or `--expected N`), it says the ask
-  needs the one `priory asks` prints, and exits 2. See [waits.md](../daemon/waits.md#asks-and-answers),
+  needs the one `priory asks` prints, and exits 2. While this machine holds the ask open, the
+  error ends with the command to run, the current revision filled in:
+  `; run: priory answer --revision 1 smoke.1 ok`. See [waits.md](../daemon/waits.md#asks-and-answers),
   [tools.md](tools.md#commands-an-answer-runs) and
   [runners.md](../daemon/runners.md#answering-another-runners-ask).
 - `priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK`: closes an ask with no answer.
-  `RUNNER:ASK` needs a revision too, and exits 2 without it, as `answer` does.
+  `RUNNER:ASK` needs a revision too, and exits 2 without it, as `answer` does, with the command to
+  run when this machine's mirror holds the ask open.
 - `priory deliver ASK (--retry | --clear)`: sends a failed answer delivery again, or clears it from
   the desk. See [asks.md](../daemon/asks.md).
 - `priory ask ID JSON`: stores an ask from a session Priory did not start. See
@@ -194,6 +198,13 @@ See [Columns](#columns).
   tasks turned out. See [trace.md](../daemon/trace.md#grades).
 - `priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)`: marks a task's work
   wrong for the risk report, or withdraws the mark. See [label.md](label.md).
+- `priory patterns [--all] [--json]`, `priory patterns find [DIR] [--since <instant-or-duration>]`,
+  `priory patterns show ID [--json]`: lists the failure patterns on the desk, or every one, groups
+  the window's failed, blocked, repaired and marked-wrong tasks into patterns, or shows one pattern
+  with its tasks. See [patterns.md](../daemon/patterns.md).
+- `priory patterns (close | dismiss) [DIR] ID`, `priory patterns capture [DIR] ID --into FOLDER`:
+  closes a pattern as fixed or dismisses it as no pattern, or captures each of its tasks as a
+  benchmark case.
 - `priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]`: grades a task's finished runs
   with the factory's scorers. See [score.md](../daemon/score.md).
 - `priory score [DIR] --calibrate SCORER --budget USD [--json]`: measures a judge scorer against a
@@ -221,7 +232,8 @@ An agent's settings and its shell call these. A person rarely does.
 - `priory hook EVENT`: sends one of the harness's hook signals to the daemon. See
   [signals.md](../daemon/signals.md).
 - `priory mcp --outside`: the MCP server of a person's own session, which Priory did not start, on
-  stdio. It serves `desk`, `asks`, `task`, `ask` and `add`, and no tool that answers. It exits 2
+  stdio. It serves `desk`, `asks`, `task`, `ask`, `add`, `answer` and `dismiss`. `answer` and
+  `dismiss` decide only an ask a lead could answer, recorded as the session's decision. It exits 2
   when `PRIORY_SESSION` is set, or when `PRIORY_HOME` or `PRIORY_DB` is unset. See
   [tools.md](../daemon/tools.md#the-outside-server).
 - `priory hook PreToolUse --outside`: the `PreToolUse` hook of a person's own session. It denies a

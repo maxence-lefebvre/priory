@@ -1,6 +1,7 @@
 //! Web Push: the VAPID key pair, the subscriptions, and the notifications the daemon sends for a new
 //! ask or an alarm, encrypted as RFC 8291 asks.
 
+use crate::listing::{ASK_ID, ask_page, task_page};
 use aes_gcm::Aes128Gcm;
 use aes_gcm::aead::{Aead, KeyInit};
 use base64ct::{Base64UrlUnpadded, Encoding};
@@ -532,7 +533,7 @@ fn notice(db: &Connection, row: i64) -> rusqlite::Result<Option<String>> {
             &format!(
                 // A question can hold a result's summary, so an untitled ask names its task and step.
                 "SELECT coalesce(asks.title, 'task ' || tasks.key || ' asks at ' || asks.step,
-                   'ask ' || asks.name) FROM asks
+                   'ask ' || asks.name), CAST({ASK_ID} AS TEXT) FROM asks
                  LEFT JOIN tasks ON tasks.id = asks.task
                  WHERE asks.id = ?1 AND asks.revision IS ?2
                  AND asks.answer IS NULL AND asks.withdrawn IS NULL
@@ -541,10 +542,14 @@ fn notice(db: &Connection, row: i64) -> rusqlite::Result<Option<String>> {
                 snoozed("ask", "asks.id")
             ),
             params![item, revision],
-            |row| row.get::<_, String>(0),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    ask_page(&row.get::<_, String>(1)?),
+                ))
+            },
         )
         .optional()?
-        .map(|title| (title, format!("/asks/{item}")))
     } else if state.as_deref() == Some("cap") {
         // Gone once the cap's window ended or its spend fell back under it.
         db.query_row(
@@ -556,7 +561,7 @@ fn notice(db: &Connection, row: i64) -> rusqlite::Result<Option<String>> {
         .map(|line| (line, "/".to_owned()))
     } else if let Some(kind @ ("report" | "prompt" | "command")) = state.as_deref() {
         crate::listing::alarm(db, kind, item)?.map(|(title, task)| {
-            let url = task.map_or_else(|| "/".to_owned(), |task| format!("/tasks/{task}"));
+            let url = task.map_or_else(|| "/".to_owned(), task_page);
             (title, url)
         })
     } else {
@@ -570,7 +575,7 @@ fn notice(db: &Connection, row: i64) -> rusqlite::Result<Option<String>> {
             |row| row.get::<_, String>(0),
         )
         .optional()?
-        .map(|title| (title, format!("/tasks/{item}")))
+        .map(|title| (title, task_page(item)))
     };
     Ok(notice.map(|(title, url)| {
         let title: String = title.chars().take(TITLE).collect();
@@ -1022,6 +1027,94 @@ mod tests {
         assert_eq!(one["title"], "task cli:a blocked");
         assert!(one["id"].as_str().unwrap().ends_with("/1"));
         assert_ne!(one["id"], two["id"]);
+        priory_runtime::runtime::remove_sealed(&home);
+    }
+
+    /// Row `row`'s notification as JSON.
+    fn read(db: &Connection, row: i64) -> serde_json::Value {
+        serde_json::from_str(&notice(db, row).unwrap().unwrap()).unwrap()
+    }
+
+    /// The link the web view's Asks list gives the ask whose question is `question`.
+    fn listed(db: &Connection, question: &str) -> String {
+        let asks = crate::listing::asks(db, &[], &[]).unwrap();
+        let ask = asks["asks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|ask| ask["question"] == question)
+            .unwrap();
+        match &ask["id"] {
+            serde_json::Value::String(id) => format!("/asks/{id}"),
+            id => format!("/asks/{id}"),
+        }
+    }
+
+    #[test]
+    fn an_outside_ask_opens_its_page_by_its_name() {
+        let (home, mut db) = setup("outside", 0);
+        for _ in 0..5 {
+            db.execute(
+                "INSERT INTO asks (task, step, kind, question, options) VALUES (1, 'code', 'agent', 'filler', '[]')",
+                [],
+            )
+            .unwrap();
+        }
+        crate::tools::ask_outside(
+            &mut db,
+            "notify.test",
+            &serde_json::json!({"question": "ship it?"}),
+        )
+        .unwrap()
+        .unwrap();
+        let row: i64 = db
+            .query_row(
+                "SELECT max(id) FROM push_queue WHERE kind = 'ask'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let url = read(&db, row)["url"].clone();
+        assert_eq!(url, "/asks/notify.test");
+        assert_eq!(url, listed(&db, "ship it?"));
+        priory_runtime::runtime::remove_sealed(&home);
+    }
+
+    #[test]
+    fn a_task_ask_opens_the_page_the_asks_list_links() {
+        let (home, db) = setup("task-ask", 0);
+        db.execute(
+            "INSERT INTO asks (task, step, kind, question, options) VALUES (1, 'code', 'agent', 'which way?', '[]')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO asks (task, step, kind, name, question, options)
+             VALUES (1, 'code', 'agent', 'gate-1-1', 'grade again?', '[]')",
+            [],
+        )
+        .unwrap();
+        let rows: Vec<i64> = db
+            .prepare("SELECT id FROM push_queue WHERE kind = 'ask' ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        assert_eq!(read(&db, rows[0])["url"], listed(&db, "which way?"));
+        assert_eq!(read(&db, rows[1])["url"], "/asks/gate-1-1");
+        assert_eq!(read(&db, rows[1])["url"], listed(&db, "grade again?"));
+        priory_runtime::runtime::remove_sealed(&home);
+    }
+
+    #[test]
+    fn an_alarm_opens_the_page_the_tasks_list_links() {
+        let (home, db) = setup("alarm-url", 1);
+        let tasks = crate::listing::tasks(&db, None, None).unwrap();
+        let id = &tasks.as_array().unwrap()[0]["id"];
+        assert_eq!(read(&db, 1)["url"], format!("/tasks/{id}"));
         priory_runtime::runtime::remove_sealed(&home);
     }
 
