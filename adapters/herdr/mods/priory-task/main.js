@@ -1,6 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, TextView } from "gpui-base";
-import { appHome, exec, home as herdrHome, readTextFile, setShared, shared } from "herdr";
+import { appHome, exec, focused, home as herdrHome, layout as shown, panes, readTextFile, run, setShared, shared } from "herdr";
+import { showAsks } from "./layout.js";
 import { follow, priory, spansHtml } from "./priory.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { taskView } from "./view.js";
@@ -132,6 +133,18 @@ export default class PrioryTask extends View {
       .on_click(() => setShared("priory.attach", { task, at: Date.now(), readOnly })).child(label);
   }
 
+  // The Asks panel is the one place to answer, as the Desk's Answer… opens it.
+  /** @param {number | string} ask @param {Palette} t */
+  answerButton(ask, t) {
+    return Button.new(`answer-ask:${ask}`).h(S["control-fine"] - 4).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-card"])
+      .border(1).border_color(t.action).bg(t.action).text_color(t["on-action"]).text_size(S["type-small"][0]).font_weight(600)
+      .hover((s) => s.opacity(0.88)).focus((s) => s.border_color(t["on-action"]))
+      .on_click(() => {
+        setShared("priory.asks.open", { ask, at: Date.now() });
+        showAsks(shown(), panes() ?? [], focused()?.space).forEach(([command, args]) => run(command, args));
+      }).child("Answer…");
+  }
+
   /** @param {Palette} t */
   offline(t) {
     const minutes = Math.round((Date.now() - this.updated) / 60_000);
@@ -169,7 +182,8 @@ export default class PrioryTask extends View {
         .when(Boolean(task.reason), (el) => el.child(div().whitespace_normal().text_size(S["type-small"][0])
           .text_color(t[ROLE[task.state] ?? "text-2"]).child(task.reason ?? ""))))
       .when(task.asks.length > 0, (el) => el.child(v_flex().gap(S["space-1"]).child(heading("Asks", task.asks.length))
-        .children(task.asks.map((ask) => line(`ask-${ask.id}`, ask.tile, ask.text, ask.note)))))
+        .children(task.asks.map((ask) => line(`ask-${ask.id}`, ask.tile, ask.text, ask.note)
+          .when(ask.tile === "ask", (el) => el.child(this.answerButton(ask.id, t)))))))
       .when(Boolean(pr) || task.stack.length > 0, (el) => el.child(v_flex().gap(S["space-1"]).child(heading("Pull request", Math.max(1, task.stack.length)))
         .when(Boolean(pr), (el) => el.child(v_flex().gap(2).py(S["space-1"]).border_t(1).border_color(t.line)
           .child(div().whitespace_normal().text_size(S["type-small"][0]).font_weight(600)

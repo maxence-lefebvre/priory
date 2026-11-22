@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Popover } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
-import { follow, priory } from "./priory.js";
+import { age, follow, priory } from "./priory.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { filtered } from "./tasks.js";
 import { duration, RUN_FACETS, RUN_VIEWS, runState, runViews, tokenText } from "./view.js";
@@ -48,14 +48,6 @@ async function connect() {
 }
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
-
-/** How long ago a run started, as the web's age(): "10 min", "4 h", then a date. @param {string} started @param {number} now */
-function ago(started, now) {
-  const minutes = Math.max(0, Math.round((now - Date.parse(started)) / 60000));
-  if (minutes < 60) return `${minutes} min`;
-  if (minutes < 1440) return `${Math.floor(minutes / 60)} h`;
-  return new Date(started).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-}
 
 export default class PrioryRuns extends View {
   /** @param {unknown} _props @param {import("gpui-kit").AsyncContext} cx */
@@ -180,7 +172,7 @@ export default class PrioryRuns extends View {
           .child(div().font_family(this.font.mono).text_color(t.text).child(run.key))
           .child(run.step)
           .child(div().text_color(t[ROLE[state] ?? "text-2"]).child(state))
-          .child(div().flex_1()).child(div().text_color(t["text-3"]).child(ago(run.started, now))))
+          .child(div().flex_1()).child(div().text_color(t["text-3"]).child(age(run.started, now))))
         .child(div().min_w_0().truncate().text_size(S["type-small"][0]).child([run.agent, run.model].filter(Boolean).join(", ") || "no agent"))
         .child(div().min_w_0().truncate().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(facts)));
   }

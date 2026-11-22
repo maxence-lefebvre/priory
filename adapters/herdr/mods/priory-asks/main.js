@@ -16,6 +16,8 @@ const RETRY_MS = 3000;
 // A request to open an ask counts this long before the panel starts, as the Desk may show the panel to open one.
 const OPEN_FRESH_MS = 30_000;
 const ICON = (/** @type {string} */ name) => `mods/priory-asks/icons/${name}.svg`;
+// A check's icon and color by `checkState`, as the web's check, cross, live and muted tiles.
+const CHECK_ICONS = /** @type {Record<string, [string, string]>} */ ({ passed: ["check", "ok-text"], failed: ["x", "danger-text"], running: ["clock", "text-3"], skipped: ["minus", "text-3"] });
 
 /** @typedef {Record<string, import("gpui-kit").Color>} Palette */
 /** @typedef {typeof FONTS.indigo} Fonts */
@@ -752,7 +754,7 @@ export default class PrioryAsks extends View {
       return v_flex().gap(8).child(head("terminal", detail.pr.title, detail.pr.review ?? ""))
         .when(Boolean(detail.pr.line), (el) => el.child(caption(String(detail.pr.line))))
         .children(detail.pr.checks.map((check) => h_flex().gap(6).items_center().text_size(TYPE.small[0])
-          .child(svg(ICON(check.ok ? "check" : "x")).size(14).text_color(check.ok ? t["ok-text"] : t["danger-text"]))
+          .child(svg(ICON(CHECK_ICONS[check.state][0])).size(14).text_color(t[CHECK_ICONS[check.state][1]]))
           .child(div().flex_1().child(check.name)).child(div().text_color(t["text-3"]).child(check.text))))
         .when(Boolean(detail.pr.stack), (el) => el.child(div().text_size(TYPE.caption[0]).text_color(t["text-2"]).child(`Stack, bottom first: ${detail.pr.prs}`))
           .children((detail.pr.stack ?? []).map((pull) => h_flex().gap(8).items_center().text_size(TYPE.small[0])
