@@ -2048,11 +2048,12 @@ pub(crate) fn route_in(
         None => false,
     };
     let outbox = if let Some(task) = task.filter(|_| running && outcome == "kept") {
-        let text = line(
+        let text = kept_line(
+            tx,
             &message.kind,
             message.subject.as_deref(),
             &message.data.to_string(),
-        );
+        )?;
         let mut text = placed(tx, task, &resources, &text)?;
         if crate::triage::item(&message.kind, &message.data).is_some() {
             text = format!("{text}\n{}", crate::triage::RULE);
@@ -2816,6 +2817,41 @@ pub(crate) fn line(kind: &str, subject: Option<&str>, data: &str) -> String {
     format!("{kind} {} {data}", subject.unwrap_or("-"))
 }
 
+/// The line a kept message gives its task. A task request for a key that already has a task, such
+/// as one from a second Figma comment on a file, gives the event that caused it, which no task took:
+/// the request itself names that event only by id.
+fn kept_line(
+    tx: &Transaction,
+    kind: &str,
+    subject: Option<&str>,
+    data: &str,
+) -> rusqlite::Result<String> {
+    let source = (kind == route::TASK_REQUESTED)
+        .then(|| serde_json::from_str::<serde_json::Value>(data).ok())
+        .flatten()
+        .and_then(|data| data["source"].as_str().map(str::to_owned));
+    let caused = match source {
+        Some(source) => tx
+            .query_row(
+                "SELECT type, subject, data FROM inbox WHERE id = ?1 AND task IS NULL",
+                [source],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?,
+        None => None,
+    };
+    Ok(match caused {
+        Some((kind, subject, data)) => line(&kind, subject.as_deref(), &data),
+        None => line(kind, subject, data),
+    })
+}
+
 /// A queued task the daemon may start a run for.
 pub(crate) struct Admission {
     pub task: i64,
@@ -3369,11 +3405,12 @@ pub(crate) fn unread(
         events.push((
             row.get(0)?,
             row.get(1)?,
-            line(
+            kept_line(
+                tx,
                 &row.get::<_, String>(2)?,
                 row.get::<_, Option<String>>(3)?.as_deref(),
                 &row.get::<_, String>(4)?,
-            ),
+            )?,
         ));
     }
     Ok(events)

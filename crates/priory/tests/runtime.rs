@@ -541,6 +541,42 @@ fn with(rows: &[Vec<String>], column: usize, value: &str) -> usize {
 }
 
 #[test]
+fn a_later_request_for_a_tasks_key_brings_the_event_that_caused_it_to_the_task() {
+    let mut setup = Setup::new("request-payload");
+    setup.memory(0);
+    let mut first = requested(42);
+    first.data["key"] = json!("figma:file-1");
+    setup.publish(&first.subject("figma:file-1"));
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 1);
+    let comment = Message::new(
+        "figma.file.comment_created",
+        json!({ "file": "file-1", "comment": "c-2", "text": "Also make the button blue." }),
+    );
+    let mut again = requested(42);
+    again.data["key"] = json!("figma:file-1");
+    again.data["source"] = json!(comment.id.to_string());
+    setup.publish(&comment);
+    setup.publish(&again.subject("figma:file-1"));
+    setup.until("inbox", |rows| {
+        rows.iter()
+            .filter(|row| row[1] == "factory.task.requested")
+            .count()
+            == 2
+    });
+
+    setup.memory(60);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let typed = setup.typed();
+    assert!(
+        typed[0].contains("figma.file.comment_created")
+            && typed[0].contains("Also make the button blue."),
+        "{typed:?}"
+    );
+}
+
+#[test]
 fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
     let mut setup = Setup::new("start");
     setup.publish(&requested(42));

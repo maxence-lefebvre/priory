@@ -262,6 +262,12 @@ group's Revive or Request a task. The Herdr panel has no Say: it shows an asleep
 
 ## What a kept message does
 
+A task request kept for a task that already holds its key, such as one from a second Figma comment
+on the same file or a repeat Honeycomb or CloudWatch alert, names the event that caused it only by
+id. That event reaches no task by itself, since no task's resource names it. So wherever the task
+reads the request, in an outbox prompt or in its next run's first prompt, it reads that event's
+line instead, with the event's whole payload.
+
 What happens to a `kept` message depends on the task's state:
 
 - For a `running` task, the daemon also queues an outbox prompt with the message, so the agent reads
