@@ -639,7 +639,7 @@ function upNext(model) {
   };
   const what = (run) => html`<span class="mono">${run.key ? taskLabel(run.key) : run.trigger}</span> ${run.why}`;
   const body = next.length
-    ? html`<ol>${next.map((run) => html`<li>${timeTag(run.at, when(run))}${run.task ? html`<a href="/tasks/${run.task}">${what(run)}</a>` : html`<span>${what(run)}</span>`}</li>`)}</ol>`
+    ? html`<ol>${next.map((run) => html`<li>${timeTag(run.at, when(run))}${run.task ? html`<a href="/tasks/${run.task}" title="task ${run.task}">${what(run)}</a>` : html`<span>${what(run)}</span>`}</li>`)}</ol>`
     : html`<p>Nothing is queued or scheduled to run next.</p>`;
   return html`<div class="sec">Up next<span>next 3 runs</span></div><div class="strip">${body}</div>`;
 }
@@ -1151,7 +1151,7 @@ function askDetail(id, wide) {
         ${ask.next_action ? html`<span class="then">${icon("corner-down-right", "s15")}<span>${ask.next_action}</span></span>` : ""}</div>` : ""}
       <div class="opts" role="group" aria-label="Options">${optionButtons}</div>${lockedNote}${more}${elsewhere}`;
   const top = html`<div class="ask">
-    <a class="ctx" href="${ask.task && !owner ? `/tasks/${ask.task}` : "/asks"}">${wide ? "" : tile("ask", "sm")}<span class="mono">${taskLabel(ask.key)}</span><span>${ask.step}</span><span>${ask.lane || ""}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${runnerTag(ask)}${wide ? "" : html`<span>${timeTag(ask.since)}</span><span>revision ${ask.revision}</span>`}</a>
+    <a class="ctx" href="${ask.task && !owner ? `/tasks/${ask.task}` : "/asks"}" title="${ask.task && !owner ? `task ${ask.task}` : ""}">${wide ? "" : tile("ask", "sm")}<span class="mono">${taskLabel(ask.key)}</span><span>${ask.step}</span><span>${ask.lane || ""}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${runnerTag(ask)}${wide ? "" : html`<span>${timeTag(ask.since)}</span><span>revision ${ask.revision}</span>`}</a>
     ${ask.risk_estimate ? html`<p class="note">${icon("lock", "s15")}<span>${ask.risk_estimate.line}</span></p>` : ""}
     <h2 class="question">${autolinked(ask.question || ask.title, ask.repo)}</h2>${decided}</div>`;
   // A go ask reads its batch's plan first; the planning task's own plan result says the same.
@@ -1740,7 +1740,7 @@ function copyTerminal(text, what) {
 function terminalsPanel() {
   const running = (state.data?.tasks || []).filter((task) => task.state === "running");
   if (!running.length) return html`<p class="empty">No agent runs now. A running task's terminal shows here.</p>`;
-  return html`<ol class="hist" aria-label="Running tasks">${running.map((task) => html`<li>${tile("running", "sm")}<a href="/tasks/${task.id}#terminal"><span class="mono">${taskLabel(task.key)}</span> ${task.title || ""}</a></li>`)}</ol>`;
+  return html`<ol class="hist" aria-label="Running tasks">${running.map((task) => html`<li>${tile("running", "sm")}<a href="/tasks/${task.id}#terminal" title="task ${task.id}"><span class="mono">${taskLabel(task.key)}</span> ${task.title || ""}</a></li>`)}</ol>`;
 }
 
 const INBOX_SHOWN = 20;
