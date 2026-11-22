@@ -245,8 +245,9 @@ pub fn inbox(db: &Connection, since: i64) -> rusqlite::Result<Value> {
 /// groups them by the resource each names first, newest first, when a task owned or subscribed to
 /// it: with that task and the command that routes the next event. `other` counts the rest per
 /// source, since no task ever owned them.
+/// `unheard` groups by task what a task kept and no agent read: see `unheard_events`.
 /// `outsider` lists the comments and reviews from outside the repository, newest first.
-pub fn unrouted(db: &Connection, since: i64) -> rusqlite::Result<Value> {
+pub fn unrouted(db: &Connection, since: i64, now: Timestamp) -> rusqlite::Result<Value> {
     let mut owned: Vec<(String, Value, Vec<Value>)> = Vec::new();
     let mut other: Vec<(String, usize)> = Vec::new();
     for (resource, event) in unrouted_events(db, since, None)? {
@@ -280,10 +281,96 @@ pub fn unrouted(db: &Connection, since: i64) -> rusqlite::Result<Value> {
         .into_iter()
         .map(|(source, events)| json!({ "source": source, "events": events }))
         .collect();
+    let mut unheard: Vec<(Value, Vec<Value>)> = Vec::new();
+    for (task, event) in unheard_events(db, since, None, now)? {
+        match unheard
+            .iter_mut()
+            .find(|(named, _)| named["id"] == task["id"])
+        {
+            Some((_, events)) => events.push(event),
+            None => unheard.push((task, vec![event])),
+        }
+    }
+    let unheard: Vec<Value> = unheard
+        .into_iter()
+        .map(|(task, events)| {
+            let follow_up = unheard_follow_up(&task, &events);
+            json!({ "task": task, "events": events, "follow_up": follow_up })
+        })
+        .collect();
     Ok(json!({
-        "unrouted": { "owned": owned, "other": other },
+        "unrouted": { "owned": owned, "other": other, "unheard": unheard },
         "outsider": outsider_events(db, since, None)?,
     }))
+}
+
+/// How long a kept event waits for an agent before `unheard_events` lists it: a few polls, so a
+/// task about to start or wake is not listed.
+const UNHEARD_AFTER: jiff::SignedDuration = jiff::SignedDuration::from_mins(5);
+
+/// Each event after `since`, and within `window` (from, to) when given, newest first, that a task
+/// that is not running kept, that no prompt carries and no wait took, written more than
+/// `UNHEARD_AFTER` before `now` by someone other than the agent, with its task. Only what people
+/// say, edit and close counts: checks and pushes stay with the checks gate.
+fn unheard_events(
+    db: &Connection,
+    since: i64,
+    window: Option<(&str, &str)>,
+    now: Timestamp,
+) -> rusqlite::Result<Vec<(Value, Value)>> {
+    let kinds = serde_json::to_string(&state::OWN_KEY).expect("kinds serialize");
+    let before = (now - UNHEARD_AFTER).to_string();
+    let (from, to) = window.unzip();
+    let mut statement = db.prepare(
+        "SELECT inbox.seq, inbox.type, inbox.subject, inbox.time, inbox.data,
+           tasks.id, tasks.key, tasks.state, tasks.workflow
+         FROM inbox JOIN tasks ON tasks.id = inbox.task
+         WHERE inbox.outcome = 'kept' AND inbox.outbox IS NULL AND tasks.state != 'running'
+           AND inbox.seq > ?1
+           AND (?2 IS NULL OR julianday(inbox.time) BETWEEN julianday(?2) AND julianday(?3))
+           AND inbox.type IN (SELECT value FROM json_each(?4))
+           AND julianday(inbox.time) <= julianday(?5)
+           AND coalesce(json_extract(inbox.data, '$.own'), 0) != 1
+           AND inbox.seq NOT IN (SELECT inbox FROM waits WHERE task = inbox.task
+             AND inbox IS NOT NULL)
+         ORDER BY inbox.seq DESC",
+    )?;
+    let mut rows = statement.query(params![since, from, to, kinds, before])?;
+    let mut events = Vec::new();
+    while let Some(row) = rows.next()? {
+        let (_, event) = event_json(
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            &row.get::<_, String>(4)?,
+        );
+        let task = json!({
+            "id": row.get::<_, i64>(5)?, "key": row.get::<_, String>(6)?,
+            "state": row.get::<_, String>(7)?, "workflow": row.get::<_, String>(8)?,
+        });
+        events.push((task, event));
+    }
+    Ok(events)
+}
+
+/// The command that gets a task's unheard `events` to an agent: `say` wakes an asleep or blocked
+/// task, whose next run carries them; an ended task gets what an unrouted event of it would. None
+/// for a task whose next run reads them anyway.
+fn unheard_follow_up(task: &Value, events: &[Value]) -> Option<String> {
+    let id = &task["id"];
+    match task["state"].as_str().unwrap_or_default() {
+        "asleep" | "blocked" => Some(format!(
+            "priory say {id} {}",
+            quoted("Read the events that came while you slept.")
+        )),
+        "done" | "failed" | "dropped" => {
+            let resource = task["key"].as_str().unwrap_or_default();
+            let request_text = request_text(resource, events);
+            follow_up(task, resource, request_text.as_deref())
+        }
+        _ => None,
+    }
 }
 
 /// Each comment or review after `since`, and within `window` (from, to) when given, from someone
@@ -391,27 +478,40 @@ fn unrouted_events(
     let mut rows = statement.query(params![since, from, to])?;
     let mut events = Vec::new();
     while let Some(row) = rows.next()? {
-        let (kind, subject): (String, Option<String>) = (row.get(1)?, row.get(2)?);
         let data: String = row.get(4)?;
-        let mut message = herdr_bus::Message::new(
-            kind.as_str(),
-            serde_json::from_str(&data).unwrap_or(Value::Null),
-        );
-        message.subject = subject.clone();
-        let Some(resource) = crate::route::resources(&message).into_iter().next() else {
+        let (resource, event) =
+            event_json(row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, &data);
+        let Some(resource) = resource else {
             continue;
         };
-        let said = ["body", "text", "title"]
-            .iter()
-            .find_map(|field| message.data[field].as_str())
-            .and_then(|text| text.lines().find(|line| !line.trim().is_empty()));
-        let event = json!({
-            "seq": row.get::<_, i64>(0)?, "type": kind, "subject": subject,
-            "time": row.get::<_, String>(3)?, "line": said, "url": message.data["url"].as_str(),
-        });
         events.push((resource, event));
     }
     Ok(events)
+}
+
+/// An inbox entry as the unrouted listing shows it, with the first resource it names.
+fn event_json(
+    seq: i64,
+    kind: String,
+    subject: Option<String>,
+    time: String,
+    data: &str,
+) -> (Option<String>, Value) {
+    let mut message = herdr_bus::Message::new(
+        kind.as_str(),
+        serde_json::from_str(data).unwrap_or(Value::Null),
+    );
+    message.subject = subject.clone();
+    let resource = crate::route::resources(&message).into_iter().next();
+    let said = ["body", "text", "title"]
+        .iter()
+        .find_map(|field| message.data[field].as_str())
+        .and_then(|text| text.lines().find(|line| !line.trim().is_empty()));
+    let event = json!({
+        "seq": seq, "type": kind, "subject": subject,
+        "time": time, "line": said, "url": message.data["url"].as_str(),
+    });
+    (resource, event)
 }
 
 /// Every task in start order, or the tasks of one lane, of one grade, or both.
@@ -1247,6 +1347,7 @@ pub fn desk(
     for (resource, _) in unrouted_events(db, 0, Some((day.0, &day.1)))? {
         unrouted += usize::from(owner(db, &resource)?.is_some());
     }
+    let unheard = unheard_events(db, 0, Some((day.0, &day.1)), now)?.len();
     let outside = [crate::link::banner(db)?, post::intake_banner(db)?]
         .into_iter()
         .flatten()
@@ -1259,7 +1360,8 @@ pub fn desk(
         "banner": stall::banner(db)?,
         "intake": outside,
         "counts": {
-            "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted, "outsider": outsider,
+            "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted, "unheard": unheard,
+            "outsider": outsider,
         },
         "items": items,
         "next": ranked.first(),

@@ -215,6 +215,20 @@ A comment or review from outside the repository is not unrouted: its outcome is 
 same listing shows these events as a group of their own, `outsider`, with each one's author and no
 command, since no task takes them. The Desk counts those of the last 24 hours in a line of its own.
 
+## Events no agent read
+
+A `kept` event reaches a task, but a task that is not running reads it only at its next run. An
+asleep task may sleep for hours on a wait that the event does not fire, and a task can end before
+it runs again. So `priory inbox --unrouted` lists a third group, `unheard`: per task, the events it
+kept that no prompt carries and no wait took, once they are 5 minutes old (see
+[serve.md](../reference/serve.md#unrouted)). Only what people say, edit and close counts: the
+kinds a task's own key carries, and not the agent's own comments. Checks and pushes stay with the
+checks gate.
+
+Each group names its task and a command: `priory say ID` for an asleep or blocked task, whose next
+run carries the events after the text, or what the owned group gives for an ended task. The Desk
+counts these events over the last 24 hours (see [desk.md](desk.md#unrouted-events)).
+
 ## What a kept message does
 
 What happens to a `kept` message depends on the task's state:

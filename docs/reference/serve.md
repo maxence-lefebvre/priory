@@ -269,6 +269,7 @@ gets `400`.
 | `counts.asleep` | integer | Tasks asleep on a wait |
 | `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
 | `counts.unrouted` | integer | [Unrouted](#unrouted) events from the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
+| `counts.unheard` | integer | [Unheard](#unrouted) events from the 24 hours before now (`PRIORY_NOW` when set): kept by a task that is not running, and read by no agent. See [desk.md](../daemon/desk.md#unrouted-events) |
 | `counts.outsider` | integer | The comments and reviews from outside the repository in the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
 | `items` | array | What waits on a person, then the queue, then worktrees that stay. `priory desk --all --json` keeps the snoozed items |
 | `next` | object or null | The item that ranks first, as in `ranked`; null when nothing waits on a person |
@@ -305,7 +306,7 @@ line as `line`, and, once read, when it was read as `read`. Both are null on a m
 ## Unrouted
 
 The events that reached no task and changed nothing (see
-[routing.md](../daemon/routing.md#events-that-reach-no-task)), as an object `unrouted` with two
+[routing.md](../daemon/routing.md#events-that-reach-no-task)), as an object `unrouted` with three
 arrays. `priory inbox --unrouted --since SEQ` keeps the events after sequence number `SEQ`.
 
 `owned` groups the events whose first resource a task owned or subscribed to, in any state, one
@@ -319,6 +320,18 @@ group per resource, the group with the newest event first:
 | `follow_up` | string or null | The command that routes its next event, each argument shell-quoted: `priory revive ID` for a failed or dropped task, `priory add --workflow WORKFLOW 'TEXT'` with the task's workflow and `request_text` for a done one, else `priory subscribe ID RESOURCE`. Null for a done task's resource that `request_text` cannot name, such as a Slack thread |
 | `request_text` | string or null | For a GitHub or Linear resource, the text of a new task keyed by it: `Follow up on URL after event SEQ`, the issue's URL, which `priory add` turns into the resource as key, and the newest event's sequence number, so each follow-up is a new request |
 
+`unheard` groups, one group per task, the newest event first, the events that a task kept and no
+agent read: the outcome `kept`, no prompt carries it, no wait took it, and the task is not
+`running`. Only feedback, closes, Linear state changes and edits, and Slack replies count, the kinds
+a task's own key carries, and not the agent's own. An event shows once it is 5 minutes old, by the
+event's `time` against now (`PRIORY_NOW` when set), so a task about to start or wake is left out:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `task` | object | The task that kept them: `id`, `key`, `state`, `workflow` |
+| `events` | array | Its events, newest first, as in `owned` |
+| `follow_up` | string or null | `priory say ID 'Read the events that came while you slept.'` for an `asleep` or `blocked` task, whose next run carries them. For a done, failed or dropped task, the command `owned` gives for its key. Null for a task whose next run reads them anyway, such as a `queued` or `ready` one |
+
 `outsider`, beside `unrouted`, lists the comments and reviews from someone outside the repository,
 newest first: `seq`, `type`, `subject`, `time` and `actor`. No task takes them, so they come with
 no command.
@@ -328,7 +341,8 @@ no command.
 
 Without `--json`, `priory inbox --unrouted` prints each owned group as its resource, event count
 and task, one line per event, then its follow-up, and last one line such as `No task ever owned: 2
-github events, 1 linear event.` Then it prints the outsider events as a group of their own,
+github events, 1 linear event.` Before that line, it prints each unheard group as `task ID STATE
+kept N events no agent read:`, one line per event, then its follow-up. Then it prints the outsider events as a group of their own,
 `from outside the repository: N events`, one line per event with its author.
 
 ## Asks

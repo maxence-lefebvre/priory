@@ -941,7 +941,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             .is_some();
     // Without the factory folder, the queue knows no schedules or workflows, so up next lists none.
     let (mut schedules, mut workflows, mut now) = (Vec::new(), Vec::new(), jiff::Timestamp::now());
-    if ["queue", "desk"].contains(&verb) {
+    if ["queue", "desk"].contains(&verb) || unrouted {
         now = match intake::now() {
             Ok(now) => now,
             Err(error) => return exit(verb, Err(error)),
@@ -997,7 +997,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
         let name = if unrouted { "unrouted" } else { verb };
         let value = listing::revised(&db, name, |db| {
             match verb {
-                "inbox" if unrouted => listing::unrouted(db, since.unwrap_or(0)),
+                "inbox" if unrouted => listing::unrouted(db, since.unwrap_or(0), now),
                 "inbox" => listing::inbox(db, since.unwrap_or(0)),
                 "tasks" => listing::tasks(db, lane, grade),
                 "asks" => listing::asks(db, &bands, &risks),
@@ -1100,6 +1100,16 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                     let events = if unrouted == 1 { "event" } else { "events" };
                     state::emit(&format!(
                         "{unrouted} {events} reached no task in the last 24 hours. See them with `priory inbox --unrouted`."
+                    ));
+                }
+                if let Some(unheard) = value["counts"]["unheard"].as_u64().filter(|n| *n > 0) {
+                    let (events, it) = if unheard == 1 {
+                        ("event", "it")
+                    } else {
+                        ("events", "them")
+                    };
+                    state::emit(&format!(
+                        "{unheard} {events} kept by a sleeping task reached no agent. See {it} with `priory inbox --unrouted`."
                     ));
                 }
                 if let Some(outsider) = value["counts"]["outsider"].as_u64().filter(|n| *n > 0) {
@@ -2114,7 +2124,8 @@ fn asking_session() -> Option<String> {
 /// Sets a task's TL;DR by hand.
 /// Prints `priory task TASK --json`: the body `/api/tasks/TASK` returns.
 /// Prints `priory inbox --unrouted`: each group of a resource a task owned, with that task, its
-/// events and the command that routes the next one, then one count per source for the rest.
+/// events and the command that routes the next one, then each task that kept events no agent read,
+/// then one count per source for the rest.
 fn print_unrouted(unrouted: &serde_json::Value) {
     let events = |count: u64, what: &str| {
         format!("{count} {what}event{}", if count == 1 { "" } else { "s" })
@@ -2142,6 +2153,30 @@ fn print_unrouted(unrouted: &serde_json::Value) {
             group["follow_up"]
                 .as_str()
                 .unwrap_or("no command can key a new task by it: start one from its thread")
+        );
+    }
+    for group in unrouted["unheard"].as_array().into_iter().flatten() {
+        let task = &group["task"];
+        println!(
+            "task {} {} kept {} no agent read:",
+            task["id"],
+            task["state"].as_str().unwrap_or_default(),
+            events(group["events"].as_array().map_or(0, Vec::len) as u64, ""),
+        );
+        for event in group["events"].as_array().into_iter().flatten() {
+            println!(
+                "  {}  {}  {}  {}",
+                event["seq"],
+                event["type"].as_str().unwrap_or_default(),
+                event["subject"].as_str().unwrap_or("-"),
+                event["line"].as_str().unwrap_or("")
+            );
+        }
+        println!(
+            "  {}",
+            group["follow_up"]
+                .as_str()
+                .unwrap_or("its next run reads them")
         );
     }
     let other: Vec<String> = unrouted["other"]

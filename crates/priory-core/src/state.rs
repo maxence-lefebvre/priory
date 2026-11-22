@@ -2118,7 +2118,7 @@ fn delivered(
 
 /// The events a task's subscription to its own key carries: what people say, edit and close. Checks,
 /// labels and pushes stay with the checks gate and waits, since each would start a run.
-const OWN_KEY: [&str; 10] = [
+pub(crate) const OWN_KEY: [&str; 10] = [
     "github.pull_request_review.submitted",
     "github.pull_request.comment",
     "github.pull_request_review_comment",

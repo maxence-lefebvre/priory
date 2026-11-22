@@ -14150,6 +14150,52 @@ fn unrouted_events_no_task_ever_owned_count_per_source_without_a_tasks_source_ev
 }
 
 #[test]
+fn an_event_an_asleep_task_keeps_and_no_agent_read_is_listed_and_counted_as_unheard() {
+    let mut setup = Setup::new("inbox-unheard");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    let output = setup.priory(&["unsubscribe", "1", "github:owner/repo#42"]);
+    assert!(output.status.success(), "{output:?}");
+    let written = herdr_bus::Timestamp::now() - jiff::SignedDuration::from_mins(10);
+    setup.publish(&issue_commented(902).time(written));
+    let inbox = setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(inbox[1][4], "kept");
+
+    let output = setup.priory(&["inbox", "--unrouted", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let unheard = &listed["unrouted"]["unheard"];
+    assert_eq!(unheard.as_array().map(Vec::len), Some(1), "{listed}");
+    assert_eq!(unheard[0]["task"]["id"], 1);
+    assert_eq!(unheard[0]["task"]["state"], "asleep");
+    assert_eq!(unheard[0]["events"][0]["seq"], 2);
+    assert_eq!(unheard[0]["events"][0]["line"], "Also the empty case.");
+    assert_eq!(
+        unheard[0]["follow_up"],
+        "priory say 1 'Read the events that came while you slept.'"
+    );
+
+    let output = setup.priory(&["inbox", "--unrouted"]);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.contains("task 1 asleep kept 1 event no agent read:\n  2  github.issues.comment  owner/repo#42  Also the empty case.\n  priory say 1 "),
+        "{text}"
+    );
+
+    let desk = setup.priory(&["desk", "--json"]);
+    let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+    assert_eq!(desk["counts"]["unheard"], 1, "{desk}");
+    let desk = setup.priory(&["desk"]);
+    let text = String::from_utf8(desk.stdout).unwrap();
+    assert!(
+        text.contains("1 event kept by a sleeping task reached no agent. See it with `priory inbox --unrouted`."),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_comment_on_a_subscribed_pull_request_reopens_the_done_task() {
     let mut setup = Setup::new("subscribe-done");
     setup.calls(&[json!([subscribe("subscribe"), result("passed")])]);
