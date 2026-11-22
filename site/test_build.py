@@ -96,3 +96,11 @@ class Chapters(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Intro(unittest.TestCase):
+    def test_the_home_intro_leaves_out_the_readme_tagline(self):
+        intro = build.section("README.md", "intro")
+        self.assertNotIn("<!-- tagline", intro)
+        self.assertNotIn("Build your own agent factory", intro)
+        self.assertTrue(intro.startswith("Priory runs coding agents"), intro[:80])

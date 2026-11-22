@@ -148,6 +148,12 @@ def section(path, heading):
     lines = (ROOT / path).read_text(encoding="utf-8").splitlines()
     if heading == "intro":
         start = next(i for i, l in enumerate(lines) if l.startswith("</h1>")) + 1
+        # The README's tagline is the site's hero already: skip its paragraph.
+        while start < len(lines) and not lines[start].strip():
+            start += 1
+        if start < len(lines) and lines[start].startswith("<!-- tagline"):
+            while start < len(lines) and lines[start].strip():
+                start += 1
     else:
         start = lines.index(f"## {heading}") + 1
     end = next((i for i in range(start, len(lines)) if lines[i].startswith("## ")), len(lines))

@@ -5,6 +5,9 @@
   </picture>
 </h1>
 
+<!-- tagline: the site shows it as its hero, so its intro skips this paragraph -->
+**Build your own agent factory.** Agentic workflows as files in git, run by a daemon on machines you own, with a person on every irreversible step.
+
 Priory runs coding agents, such as Claude Code and Codex, on machines you own. It turns events
 into tasks: a labelled GitHub issue, a Linear issue that enters a view, a Slack message, a Sentry
 issue or another webhook, a schedule, or a request you type. It then carries each task

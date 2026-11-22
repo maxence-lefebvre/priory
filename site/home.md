@@ -2,7 +2,9 @@
 <section class="hero">
 <div>
 
-# Keep coding agents moving while nobody watches.
+# Build your own agent factory.
+
+Agentic workflows as files in git, run by a daemon on machines you own, with a person on every irreversible step.
 
 <!-- include README.md "intro" -->
 
