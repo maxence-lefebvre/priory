@@ -23,7 +23,7 @@ Schema: [`config/scorer.json`](../schemas/config/scorer.json).
 | `kind` | `on` | Passes when |
 | ------ | ---- | ----------- |
 | `outcome` | `result` | The result's outcome is one of `expect` |
-| `command` | `diff` | `run` exits 0 in a scratch checkout of the result's commit. Exit 1 fails, and any other ending is an error |
+| `command` | `diff` | Not run yet: every run scores `error` (see [score.md](../daemon/score.md#a-command-scorer)). Once built, `run` exits 0 in a scratch checkout of the result's commit. Exit 1 fails, and any other ending is an error |
 | `ask-shape` | `ask` | Every ask the run made shows each part `expect` names |
 
 An ask's shape is the one `priory eval` reads ([prompt-evals.md](prompt-evals.md)): `short` when
@@ -32,7 +32,8 @@ its question is one line of at most 25 words, `whatWaits` and `nextAction` when 
 A `result` or `diff` scorer fails a run that ended with an ask: asking is not finishing. An `ask`
 scorer answers `not applicable` on a run that asked nothing.
 
-A `command` scorer runs with a cleared environment and these variables:
+`command` scorers do not run yet. Once built, a `command` scorer runs with a cleared environment
+and these variables:
 
 | Variable | Holds |
 | -------- | ----- |
