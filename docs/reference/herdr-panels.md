@@ -44,8 +44,9 @@ they land in your checkout, and Git ignores them.
 
 ## The Desk panel
 
-`priory-desk` opens as a tab in the center stack, from the Priory bar. It follows DESIGN.md's
-Herdr Desk: the count, the next thing, the room and intake banners, the saved views, then the rows.
+`priory-desk` opens in the aside `aside-desk`, which its Priory bar button shows or hides. It
+follows DESIGN.md's Herdr Desk: the count, the next thing, the room and intake banners, the saved
+views, then the rows.
 
 - **What it reads.** `desk --all --json`, `asks --all --json`, `tasks --json` and
   `queue FACTORY --json`, read together, then again after each `priory wait`, even one that ends

@@ -180,14 +180,29 @@ test("a wide Desk opens its oldest ask on arrival, and stays empty once that dra
 test("the desk's banners say why runs wait: the pause first, then room, intake and each cap reached", () => {
   const cap = "spend cap reached: factory spent $50.10 of its day cap of $50.00; its new runs wait for the next day";
   const lane = "spend cap reached: lane core/intake spent $12.40 of its day cap of $10.00; its new runs wait for the next day";
-  assert.deepEqual(deskBanners({ paused: "paused since 2026-11-22T21:40:00Z: freeze", banner: "waits for room", intake: "the intake fails", caps: [cap, lane] }), [
-    { text: "paused since 2026-11-22T21:40:00Z: freeze", icon: "pause", intake: false },
+  const ago = () => "1 h ago";
+  assert.deepEqual(deskBanners({ paused: "paused since 2026-11-22T21:40:00Z: freeze", banner: "waits for room", intake: "the intake fails", caps: [cap, lane] }, ago), [
+    { text: "paused 1 h ago: freeze", icon: "pause", intake: false },
     { text: "waits for room", icon: "hard-drive", intake: false },
     { text: "the intake fails", icon: "unplug", intake: true },
     { text: cap, icon: "hourglass", intake: false },
     { text: lane, icon: "hourglass", intake: false },
   ]);
-  assert.deepEqual(deskBanners({ paused: null, banner: null, intake: null, caps: [] }), []);
+  assert.deepEqual(deskBanners({ paused: null, banner: null, intake: null, caps: [] }, ago), []);
   // A desk cached before the fields existed has neither.
-  assert.deepEqual(deskBanners({ banner: "waits for room" }), [{ text: "waits for room", icon: "hard-drive", intake: false }]);
+  assert.deepEqual(deskBanners({ banner: "waits for room" }, ago), [{ text: "waits for room", icon: "hard-drive", intake: false }]);
+});
+
+test("the stall and pause banners say when in the page's relative words, not a raw time", () => {
+  const ago = (/** @type {string} */ iso) => ({ "2026-11-22T14:34:03Z": "12 min ago", "2026-11-20T08:00:00Z": "on Nov 20, 08:00" })[iso];
+  const desk = {
+    paused: "paused since 2026-11-20T08:00:00Z: freeze since 2026-11-19T00:00:00Z",
+    banner: "stalled since 2026-11-22T14:34:03Z: short of memory by 2 GB; task 4 waits for room",
+  };
+  assert.deepEqual(deskBanners(desk, ago).map((banner) => banner.text), [
+    "paused on Nov 20, 08:00: freeze since 2026-11-19T00:00:00Z",
+    "stalled 12 min ago: short of memory by 2 GB; task 4 waits for room",
+  ]);
+  // A pause without a reason ends at its time.
+  assert.equal(deskBanners({ paused: "paused since 2026-11-22T14:34:03Z" }, ago)[0].text, "paused 12 min ago");
 });
