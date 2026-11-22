@@ -407,6 +407,10 @@ fn serve(
     let Some(factory) = load(dir) else {
         return ExitCode::FAILURE;
     };
+    if let Err(error) = metrics(&factory, verb, once) {
+        eprintln!("priory {verb}: {error}");
+        return ExitCode::FAILURE;
+    }
     match run(&factory, once) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -414,6 +418,16 @@ fn serve(
             ExitCode::FAILURE
         }
     }
+}
+
+/// Starts sending this process's metrics as `service`, unless `once`. Refuses a `PRIORY_METRICS`
+/// that names an unknown group, even with `once`.
+fn metrics(factory: &factory::Factory, service: &str, once: bool) -> Result<(), String> {
+    let groups = priory_core::metrics::groups(factory)?;
+    if once {
+        return Ok(());
+    }
+    priory_core::metrics::start(factory, service, groups)
 }
 
 /// Attaches this terminal to the tmux session of a task's live run, or of one run, or prints the
@@ -2202,6 +2216,9 @@ fn serve_http(args: Vec<String>) -> ExitCode {
             Err("factory.toml has no [serve] table, so nothing listens".to_owned()),
         );
     };
+    if let Err(error) = metrics(&factory, "serve", false) {
+        return exit("serve", Err(error));
+    }
     match serve::start(&factory, listen.unwrap_or(config.listen)) {
         Ok(workers) => {
             for worker in workers {

@@ -53,6 +53,10 @@ does and the page that describes it.
 - `priory serve [DIR] [--listen ADDR]`: runs the HTTP server on its own, without a daemon. See
   [serve.md](../daemon/serve.md#where-it-runs).
 
+Each of these processes, without `--once`, sends its own metrics when `[telemetry] metrics` names
+a group. `PRIORY_METRICS` replaces that list for one process, such as `process` or `none`. See
+[metrics.md](../daemon/metrics.md).
+
 ## Asking for work
 
 - `priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... <text>`:

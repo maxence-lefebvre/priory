@@ -7,8 +7,17 @@
 # A call to Linear's API reads its config from stdin and prints FAKE_DIR/linear. A Web Push call,
 # which is HTTPS only and sends its headers as `--header @file`, appends
 # {url, args, headers, body} to FAKE_DIR/push.jsonl, the body in base64, and prints the status in
-# FAKE_DIR/push-status, 201 without it.
+# FAKE_DIR/push-status, 201 without it. A call to an OTLP `/v1/metrics` goes to the real curl, the
+# first one on PATH after this folder, so a test's collector on 127.0.0.1 receives it.
 set -u
+for arg in "$@"; do
+  case "$arg" in
+    http://*/v1/metrics)
+      real=$(PATH=${PATH#*:} command -v curl)
+      exec "$real" "$@"
+      ;;
+  esac
+done
 url=''
 body=''
 headers=''

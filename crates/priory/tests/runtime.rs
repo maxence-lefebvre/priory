@@ -3,6 +3,7 @@ mod conform;
 mod consult;
 mod debate;
 mod evidence;
+mod metrics;
 mod outside_answer;
 #[cfg(feature = "postgres")]
 mod partition;

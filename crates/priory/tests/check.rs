@@ -2002,6 +2002,29 @@ fn telemetry_headers_env_names_a_variable_and_never_holds_the_headers() {
 }
 
 #[test]
+fn check_refuses_an_unknown_metrics_group_a_short_interval_and_a_zero_cap_naming_each_value() {
+    let telemetry = "name = \"demo\"\n\n[telemetry]\notlp = \"http://127.0.0.1:4318\"\n";
+    let ok =
+        format!("{telemetry}metrics = [\"process\"]\nmetrics_every = \"10s\"\nmetrics_cap = 1\n");
+    let refused = format!(
+        "{telemetry}metrics = [\"process\", \"nope\"]\nmetrics_every = \"9s\"\nmetrics_cap = 0\n"
+    );
+
+    let ok = check(&factory("metrics-ok", &with("factory.toml", &ok)));
+    let refused = check(&factory("metrics-refused", &with("factory.toml", &refused)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(refused.code, 1);
+    assert_eq!(
+        refused.stderr,
+        "factory.toml:3: `metrics` names `nope`, which is not a metrics group: the groups are \
+         process\n\
+         factory.toml:3: `metrics_every` is 9s: it needs to be 10s or more\n\
+         factory.toml:3: `metrics_cap` is 0: it needs to be 1 or more\n"
+    );
+}
+
+#[test]
 fn a_postgres_log_needs_a_build_with_the_postgres_feature() {
     let herdr = "name = \"demo\"\n[log]\nbackend = \"herdr-bus\"\n";
     let postgres = "name = \"demo\"\n[log]\nbackend = \"postgres\"\nurl_env = \"PRIORY_LOG_URL\"\n";

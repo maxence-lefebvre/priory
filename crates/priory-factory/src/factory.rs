@@ -848,7 +848,24 @@ pub struct Telemetry {
     /// The environment variable that holds the headers each request carries, such as an API key,
     /// as `key1=value1,key2=value2` with URL-encoded values. Never the headers themselves.
     pub headers_env: Option<String>,
+    /// The metric groups each process sends to the endpoint's `/v1/metrics`; none sends no metric.
+    #[serde(default)]
+    #[schemars(extend("items" = { "enum": ["process"] }))]
+    pub metrics: Vec<String>,
+    /// How often a process samples its groups and sends one request, at least 10s; 60s when unset.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub metrics_every: Option<Duration>,
+    /// The data points a process sends per minute at most, over a rolling minute; 1000 when unset.
+    #[schemars(range(min = 1))]
+    pub metrics_cap: Option<u64>,
 }
+
+/// The metric groups a process can send, by name.
+pub const METRIC_GROUPS: &[&str] = &["process"];
+
+/// The least `metrics_every`.
+pub const METRICS_EVERY_LEAST: Duration = Duration::from_secs(10);
 
 /// Where the daemon tells a person that the desk's next item changed, besides Web Push.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -2508,6 +2525,11 @@ impl Factory {
     pub fn otlp(&self) -> Option<&str> {
         let telemetry = self.settings.as_ref()?.value.telemetry.as_ref()?;
         Some(telemetry.otlp.as_str())
+    }
+
+    /// The `[telemetry]` table, if the factory exports anything.
+    pub fn telemetry(&self) -> Option<&Telemetry> {
+        self.settings.as_ref()?.value.telemetry.as_ref()
     }
 
     /// The decision model that sorts feedback, if the factory names one.

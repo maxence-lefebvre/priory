@@ -208,7 +208,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         eprintln!("priory daemon: notifications are off: {error}");
     }
     let listening = runtime::listen(&home)?;
-    let headers = otlp_headers(factory, &home)?;
+    let headers = otlp::header_file(factory, &home, "otlp-headers")?;
     if let Some(config) = factory.serve() {
         crate::serve::start(factory, config.listen)?;
     }
@@ -348,6 +348,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut link = Link::default();
     let mut redispatch: Option<Instant> = None;
     loop {
+        let tick = Instant::now();
         // A runner back from away reads the log, and so drops the tasks that moved, before any run
         // and before it publishes what it queued meanwhile.
         let drained = link
@@ -433,6 +434,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
             sweep::retire(&db, factory, &home, short)?;
         }
+        priory_runtime::ticks::record(tick.elapsed());
         match listening.lines.recv_timeout(EVERY) {
             Ok(line) => apply(&mut db, line, &trace, counting.get(&home), kit.current())?,
             Err(RecvTimeoutError::Timeout) => {}
@@ -719,29 +721,6 @@ fn send_spans(
         }
     }
     Ok(())
-}
-
-/// Writes the OTLP headers from `[telemetry] headers_env` to a file only this user reads, and
-/// returns its path. Refuses an unset, empty or malformed variable, as a start error.
-fn otlp_headers(factory: &Factory, home: &Path) -> Result<Option<std::path::PathBuf>, String> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let Some(name) = factory.otlp_headers_env() else {
-        return Ok(None);
-    };
-    let text = crate::serve::env(name, "the OTLP headers, as key1=value1,key2=value2")?;
-    let lines = otlp::header_lines(&text).map_err(|error| format!("{name}: {error}"))?;
-    let file = home.join("otlp-headers");
-    // A file left by an older daemon keeps its mode, so it is replaced rather than truncated.
-    let _ = std::fs::remove_file(&file);
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&file)
-        .and_then(|mut out| out.write_all(lines.as_bytes()))
-        .map_err(|error| format!("{}: {error}", file.display()))?;
-    Ok(Some(file))
 }
 
 /// Records the sweep scripts that ended, then starts the scripts of a stall that just opened, for

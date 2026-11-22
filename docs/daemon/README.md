@@ -112,6 +112,8 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
   report, outcome labels, `priory grades`, `priory report risk` and the OpenTelemetry export. To send
   the export to a backend, follow
   [How to send traces to an OpenTelemetry backend](../sending-traces-to-opentelemetry.md).
+- [metrics.md](metrics.md): the metrics each process sends over OTLP, `PRIORY_METRICS`, the
+  per-minute cap and what a failed send loses.
 - [spend.md](spend.md): spend caps per task, day and week on the factory, a trigger or a lane,
   the ask to raise a cap or stop a task, and the new runs a reached cap holds.
 - [score.md](score.md): `priory score`, which grades a task's finished runs with the factory's

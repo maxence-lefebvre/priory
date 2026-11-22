@@ -107,7 +107,10 @@ where
                         let Ok(job) = job else {
                             return;
                         };
-                        let _ = job.reply.send(work(&job, &mut handle));
+                        let started = std::time::Instant::now();
+                        let reply = work(&job, &mut handle);
+                        crate::ticks::record(started.elapsed());
+                        let _ = job.reply.send(reply);
                     }
                 })
         })
