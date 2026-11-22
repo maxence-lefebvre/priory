@@ -683,7 +683,7 @@ And these objects:
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
-| `brief` | object | `title` and `request`, the request's title and text, each null when it has none, and `result`, the latest result of a step named `groom`, or null |
+| `brief` | object | `title` and `request`, the request's title and text, each null when it has none, `result`, the latest result of a step named `groom`, or null, `intent`, its trigger's [`intent`](triggers.md#intent-and-noop) or null, and `noop`, its trigger's no-op cases, `[]` with none |
 | `plan` | object or null | The latest result of a step named `plan`. A result has `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha` and `created`. When it is null, `progress` holds the plan the agent published |
 | `pull_request` | object or null | The latest pull request the task owns that has stored GitHub events: `repo`, `number`, `title`, `url`, `branch`, `base`, `head_sha` (each from the newest event that carries it), `state` (`open`, `closed` or `merged`; a reopened pull request stays `closed`, since the intake publishes no reopen event), `review` (the latest review's state, or null) and `checks`, the latest conclusion of each check run on the head: `name`, `conclusion` and `at` |
 
@@ -816,6 +816,7 @@ a wait and away time. Minutes are numbers, not rounded.
 | `waits` | The [waits](#waits) of the asks asked in the window |
 | `split` | One entry per value of the acts and waits, sorted: the value under the dimension's name, such as `"lane": "lane-a"`, then `acts`, `person_minutes` and `waits` |
 | `tasks` | One entry per task, in id order: `id`, `key`, `workflow`, `lane`, `state`, `since` (its creation), `until` (its end, or null while active), then `wall_minutes` split into `working_minutes`, `person_wait_minutes`, `world_wait_minutes` and `queued_minutes` |
+| `noop` | One entry per trigger of the tasks that ended in the window, sorted: `trigger`, `ended`, `noop` (those that ended with no ask and no write), `share` (`noop` over `ended`), `should_have` (those that asked or wrote although an intent scorer found a no-op case) and `should_have_person_minutes` (the attention their acts cost). See [trace.md](../daemon/trace.md#no-op-tasks) |
 
 ### Waits
 

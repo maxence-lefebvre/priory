@@ -48,6 +48,11 @@ the answer from stdout, both as JSON in the shape of Jev's System One API:
  "usage": {"input_tokens": 212}}
 ```
 
+When the task that holds the item has a trigger with an
+[`intent` or `noop`](../reference/triggers.md#intent-and-noop), the state also carries them, as
+`intent` and `noop`, so the model can weigh the item against what the task is for. Calibration
+sends no task, so its cases carry neither.
+
 An answer counts when it names a `model`, picks one of the options, and gives that option a
 probability from 0 to 1. The command runs with a cleared environment: `PATH`, `HOME`, and the
 variable `key_env` names, read when the call starts. An item whose state is over 16 KB is not sent.

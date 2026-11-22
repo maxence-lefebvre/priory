@@ -185,8 +185,8 @@ See [Columns](#columns).
   prints, for each irreversible step, the share of tasks through it that were judged wrong. See
   [trace.md](../daemon/trace.md#risk).
 - `priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]`:
-  prints the person-minutes per merged pull request and how long asks waited. See
-  [trace.md](../daemon/trace.md#attention).
+  prints the person-minutes per merged pull request, how long asks waited, and the share of
+  ended tasks per trigger that were no-ops. See [trace.md](../daemon/trace.md#attention).
 - `priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo|lane] [--json]`:
   prints the cost per day and split by one dimension, then each spend cap with what it spent. See
   [trace.md](../daemon/trace.md#costs) and [spend.md](../daemon/spend.md).

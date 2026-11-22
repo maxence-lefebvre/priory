@@ -471,6 +471,25 @@ ends at its last state change.
 [the serve reference](../reference/serve.md#attention)). The web view's Costs panel draws it
 beside the costs.
 
+### No-op tasks
+
+The report ends with one row per trigger of the tasks that ended in the window, when any did:
+
+```
+trigger	ended	no-op	share	should have	person minutes
+agent-label	3	1	33%	1	5.0
+```
+
+- `ended` counts the tasks whose current generation is done, failed or dropped.
+- `no-op` counts those that ended with no ask and no write: no result that names a commit and no
+  pull request. Code decides this from the state, with no model.
+- `share` is `no-op` over `ended`.
+- `should have` counts the ended tasks that asked or wrote, although the latest evaluated score of
+  an [intent scorer](score.md#an-intent-scorer) found one of their trigger's no-op cases. A task
+  nobody scored counts in neither.
+- `person minutes` is the attention the person's acts on those tasks cost in the window, counted as
+  above. It is the attention a well-written `noop` would have saved.
+
 Known limits:
 
 - Every act counts as one person's, however many people use the factory.

@@ -1083,6 +1083,7 @@ mod tests {
             reason: String::new(),
             cost: 0.0,
             judged: None,
+            intent: None,
         }
     }
 

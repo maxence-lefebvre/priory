@@ -14,10 +14,11 @@ Schema: [`config/scorer.json`](../schemas/config/scorer.json).
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `description` | string | yes | | What the scorer checks, in one line | `"The step ended as passed."` |
 | `on` | `result`, `diff` or `ask` | yes | | What the scorer reads. Each kind reads one: see below | `"result"` |
-| `kind` | `outcome`, `command`, `ask-shape` or `judge` | yes | | How the scorer answers | `"outcome"` |
+| `kind` | `outcome`, `command`, `ask-shape`, `judge` or `intent` | yes | | How the scorer answers | `"outcome"` |
 | `expect` | list of strings | for `outcome` and `ask-shape` | | The outcomes that pass, or the parts of an ask's shape every ask must show | `["passed"]` |
-| `run` | path | for `command` | | An executable in the factory folder | `"scripts/score-gate.sh"` |
-| `timeout` | duration | no | `"20m"` | For `command`: how long it may run before Priory kills it | `"5m"` |
+| `run` | path | for `command` and `intent` | | An executable in the factory folder: the check for `command`, the decision model for `intent` | `"scripts/score-gate.sh"` |
+| `timeout` | duration | no | `"20m"` for `command`, `"30s"` for `intent` | For `command` and `intent`: how long it may run before Priory kills it | `"5m"` |
+| `key_env` | string | no | | For `intent`: the environment variable that holds the decision model's key, never the key itself. `run` sees it, `PATH` and `HOME`, and no other variable | `"TYPESAFE_API_KEY"` |
 | `model` | string | for `judge` | | The model that grades, as `claude --model` takes it | `"opus"` |
 | `prompt` | path | for `judge` | | A file beside the scorer that holds the judge's question | `"does-what-was-asked.md"` |
 | `evaluation` | path | for `judge` | | A file beside the scorer that holds its labeled cases, named `*.eval.toml` | `"does-what-was-asked.eval.toml"` |
@@ -31,6 +32,7 @@ Schema: [`config/scorer.json`](../schemas/config/scorer.json).
 | `command` | `diff` | `run` exits 0 in a scratch checkout of the result's commit. Exit 1 fails, and any other ending is an error |
 | `ask-shape` | `ask` | Every ask the run made shows each part `expect` names |
 | `judge` | `diff` or `result` | `model` answers `pass` to the question in `prompt`, about the request, the result and, on `diff`, the diff. On `result` it reads no diff and needs no commit, as a plan's critic does. Its verdict counts only once calibrated: see [score.md](../daemon/score.md#judges) |
+| `intent` | `result` | The decision model `run` finds the task served its trigger's [`intent`](triggers.md#intent-and-noop), or finds a `noop` case and the task asked and wrote nothing: see [score.md](../daemon/score.md#an-intent-scorer) |
 
 An ask's shape is the one `priory eval` reads ([prompt-evals.md](prompt-evals.md)): `short` when
 its question is one line of at most 25 words, `whatWaits` and `nextAction` when it filled them.
@@ -106,6 +108,25 @@ description = "Each ask is short and says what waits."
 on = "ask"
 kind = "ask-shape"
 expect = ["short", "whatWaits", "nextAction"]
+```
+
+<!-- example: factory/scorers/intent.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/scorer.json
+description = "The task served its trigger's intent, or ended quietly in a no-op case."
+on = "result"
+kind = "intent"
+run = "scripts/decide"           # a decision model in the factory folder
+key_env = "TYPESAFE_API_KEY"     # the variable that holds its key
+timeout = "30s"
+```
+
+<!-- example: factory/scripts/decide -->
+```sh
+#!/bin/sh
+# Reads Priory's questions as JSON on stdin and prints the answers as JSON, in the shape of Jev's
+# System One API. Copy examples/decisions/jev.py from Priory's repository beside this script.
+exec python3 "$(dirname "$0")/jev.py"
 ```
 
 <!-- example: factory/scorers/does-what-was-asked.toml -->
@@ -238,7 +259,7 @@ verdict = "fail"
 
 | Message | Cause |
 | ------- | ----- |
-| `` unknown variant `<kind>`, expected one of `outcome`, `command`, `ask-shape`, `judge` `` | A kind not listed above |
+| `` unknown variant `<kind>`, expected one of `outcome`, `command`, `ask-shape`, `judge`, `intent` `` | A kind not listed above |
 | `` kind `<kind>` reads on = "<on>", not "<other>" `` | An `on` that does not fit the kind |
 | `` kind `judge` reads on = "result" or "diff", not "ask" `` | A `judge` scorer on `ask` |
 | `` an `outcome` scorer needs `expect`: the outcomes that pass `` | An `outcome` scorer with no `expect` |
@@ -249,7 +270,11 @@ verdict = "fail"
 | `` `run` names <path>, which is missing from the factory folder `` | `run` names no file |
 | `` `run` names <path>, which is not executable: chmod +x it `` | `run` names a file without its execute bit |
 | `` `run` names <path>, which is not in the factory folder `` | `run` is absolute or climbs out with `..` |
-| `` `<key>` is for kind `command`, not `<kind>` `` | `run` or `timeout` on another kind |
+| `` `<key>` is for kind `command` or `intent`, not `<kind>` `` | `run` or `timeout` on another kind |
+| `` an `intent` scorer needs `run`: a decision model in the factory folder `` | An `intent` scorer with no `run` |
+| `` an `intent` scorer takes no `expect`: its questions come from the trigger `` | An `intent` scorer with `expect` |
+| `` `key_env` is for kind `intent`, not `<kind>` `` | `key_env` on another kind |
+| `` `key_env` names the environment variable that holds the model's key, such as TYPESAFE_API_KEY, never the key itself `` | `key_env` is not a variable name, such as a pasted key |
 | `` `<key>` is for kind `judge`, not `<kind>` `` | `model`, `prompt`, `evaluation` or `agreement` on another kind |
 | `` a `judge` scorer takes no `expect`: its answer is pass or fail `` | A `judge` scorer with `expect` |
 | `` a `judge` scorer needs `model`: the model that grades `` | A `judge` scorer with no `model` |

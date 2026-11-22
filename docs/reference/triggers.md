@@ -23,6 +23,7 @@ cannot tell which keys a source refuses; `priory check` does.
 - [`intervention` and `lead`](#intervention-and-lead)
 - [`auto_answer`](#auto_answer)
 - [`pre`](#pre)
+- [`intent` and `noop`](#intent-and-noop)
 - [Errors from `priory check`](#errors-from-priory-check)
 
 ## Keys every trigger takes
@@ -42,6 +43,8 @@ cannot tell which keys a source refuses; `priory check` does.
 | `caps` | table | no | no cap | Spend caps in dollars for its tasks: `task`, `day` and `week`, each above zero. See [spend.md](../daemon/spend.md) | `{ task = 2.0, day = 10.0 }` |
 | `pre` | table | no | | A script that runs on each matching event before its task request, and can drop or change it. See [`pre`](#pre) | `{ argv = ["scripts/sentry-pre"] }` |
 | `staged` | boolean | no | `false` | Whether its tasks are a trial: model steps run, and each task blocks before its first irreversible step with what that step would have done. See [Staged tasks](../daemon/tools.md#staged-tasks) | `true` |
+| `intent` | string | no | | One sentence, on one line, on the outcome the trigger exists for. See [`intent` and `noop`](#intent-and-noop) | `"Fix each labeled bug with a reviewed pull request."` |
+| `noop` | list of strings | no | `[]` | The cases that must create no ask and no write. See [`intent` and `noop`](#intent-and-noop) | `["The issue is a question, not a bug."]` |
 
 Without a `repo`, a Linear, Sentry, Honeycomb, Intercom or Slack trigger's tasks block before their first run.
 
@@ -445,6 +448,36 @@ timeout = "10s"
 env = ["AMPLITUDE_READ_TOKEN"]
 ```
 
+## `intent` and `noop`
+
+`intent` says what the trigger's tasks are for, in terms that stay true if the trigger's filter or
+workflow changes. `noop` lists the requests the trigger matches that must end with no ask and no
+write. A filter or a `pre` script decides on an event's fields; these two describe its meaning, for
+a model to read.
+
+A task keeps both as its trigger had them when it was created. They reach:
+
+- the task's first prompt, after its source event (see [routing.md](../daemon/routing.md#the-first-prompt));
+- the task's `brief` in `priory task ID --json` and `GET /api/tasks/{id}` (see
+  [serve.md](serve.md#task-in-detail));
+- the decision model at triage, as `intent` and `noop` in the state it reads (see
+  [decisions.md](../daemon/decisions.md#what-priory-sends-and-reads));
+- an `intent` scorer, which asks a decision model about them (see
+  [score.md](../daemon/score.md#an-intent-scorer)).
+
+```toml
+source = "github"
+repo = "owner/name"
+on = "issues.labeled"
+filter = { label = "agent" }
+workflow = "implement"
+intent = "Fix each labeled bug with a reviewed pull request."
+noop = [
+  "The issue is a question, not a bug.",
+  "A pull request already fixes it.",
+]
+```
+
 ## Errors from `priory check`
 
 | Message | Cause |
@@ -509,3 +542,6 @@ env = ["AMPLITUDE_READ_TOKEN"]
 | `` `[pre] timeout` is <n>s: a pre script runs at most 60s `` | A `timeout` over `60s` |
 | `` `[pre] env`: `<name>` is not a variable name `` | An `env` entry that is not letters, digits and `_`, starting with a letter or `_` |
 | `` unknown variant `<value>`, expected `pass` or `drop` `` | Another `on_error` |
+| `` `intent` is empty: say in one sentence the outcome the trigger exists for `` | An `intent` of only spaces |
+| `` `intent` is one sentence on one line, not <n> lines `` | An `intent` that spans lines |
+| `` `noop` case <n> is empty: say which case must create no ask and no write `` | An empty entry in `noop` |

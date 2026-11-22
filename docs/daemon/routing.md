@@ -201,6 +201,21 @@ line per event: its sequence number, time, type, subject and what it did, such a
 A prompt is `attempted` while the agent is being typed to, and `uncertain` when a daemon restart cut
 that short (see [outbox.md](outbox.md)).
 
+## The first prompt
+
+A task's first run reads, in order: the step's prompt and how to end it, the task's source event,
+then every event the task kept that no prompt carried yet. The source event shows the title and
+text a [`pre` script](../intake/pre.md) gave in place of the event's, then the context it added.
+
+When the task's trigger names an [`intent` or `noop`](../reference/triggers.md#intent-and-noop),
+the lines after the source event carry them, as the trigger had them when the task was created:
+
+```text
+The trigger's intent: Fix each labeled bug with a reviewed pull request.
+If one of these cases holds, raise no ask and write nothing: end the step with a result that names the case.
+- The issue is a question, not a bug.
+```
+
 ## Events that reach no task
 
 An event is unrouted when its outcome is `ignored`, no task took it, and it is not the source event

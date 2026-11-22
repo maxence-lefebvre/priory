@@ -1,0 +1,7 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/scorer.json
+description = "The task served its trigger's intent, or ended quietly in a no-op case."
+on = "result"
+kind = "intent"
+run = "scripts/decide"           # a decision model in the factory folder
+key_env = "TYPESAFE_API_KEY"     # the variable that holds its key
+timeout = "30s"

@@ -959,6 +959,9 @@ pub(crate) fn scored(
         );
         fields.insert("cases".to_owned(), json!(judged.calibration.cases));
     }
+    if let (Some(Value::Object(intent)), Value::Object(fields)) = (&score.intent, &mut data) {
+        fields.extend(intent.clone());
+    }
     if let Value::Object(fields) = &mut data {
         fields.retain(|_, value| !value.is_null());
     }

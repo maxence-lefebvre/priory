@@ -308,6 +308,14 @@
       ],
       "description": "Files each task held, so it waits for a person or a condition before it starts."
     },
+    "intent": {
+      "description": "One sentence on the outcome the trigger exists for. Its tasks' brief and the decision\nmodel at triage read it.",
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "intervention": {
       "anyOf": [
         {
@@ -339,6 +347,14 @@
         "string",
         "null"
       ]
+    },
+    "noop": {
+      "default": [],
+      "description": "The cases that must create no ask and no write, each one line. Its tasks' brief and the\ndecision model at triage read them.",
+      "items": {
+        "minLength": 1
+      },
+      "type": "array"
     },
     "on": {
       "default": "",

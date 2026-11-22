@@ -16,6 +16,7 @@ mod guard;
 mod handler;
 mod hold;
 mod idle;
+mod intent;
 pub mod judge;
 pub mod keyboard;
 mod kit;
