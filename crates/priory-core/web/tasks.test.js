@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TASK_FACETS, TASK_VIEWS, elsewhere, filtered, olderPart, taskViews, triageWords } from "./tasks.js";
+import { TASK_FACETS, TASK_VIEWS, elsewhere, filtered, olderPart, taskFacets, taskViews, triageWords } from "./tasks.js";
 
 // `/api/tasks` as the server sends it: in start order, ended tasks in it too.
 const tasks = [
@@ -25,6 +25,7 @@ test("the facets filter by state, lane and workflow, and a task with no lane cou
   assert.deepEqual(TASK_FACETS.map(([key, label]) => [key, label]), [["state", "State"], ["lane", "Lane"], ["workflow", "Workflow"]]);
   assert.deepEqual(ids(filtered(tasks, new Map([["lane", "payments"]]))), [12, 5, 6, 7]);
   assert.deepEqual(ids(filtered(tasks, new Map([["lane", "none"]]))), [10]);
+  assert.deepEqual(filtered([{ id: null, workflow: null }], new Map([["workflow", "none"]])).length, 1, "another runner's task may have no workflow");
   assert.deepEqual(ids(filtered(tasks, new Map([["workflow", "implement"], ["state", "done"]]))), [5]);
   assert.deepEqual(ids(filtered(tasks, new Map())), ids(tasks));
 });
@@ -50,4 +51,18 @@ test("a feedback item's class reads in plain words", () => {
   assert.equal(triageWords("trivial"), "trivial");
   assert.equal(triageWords("nothing-to-do"), "nothing to do");
   assert.equal(triageWords("persons-call"), "your call");
+});
+
+test("in a factory of several runners a Runner facet filters by runner and marks this runner (here)", () => {
+  assert.deepEqual(taskFacets(tasks), TASK_FACETS, "one runner: no Runner facet");
+  const here = tasks.map((task) => ({ ...task, runner: "b", hold: "kept" }));
+  const remote = { id: null, key: "ENG-250", workflow: "implement", step: null, state: null, lane: null, band: "now", since: "2026-11-21T08:00:00Z", runner: "a", hold: "kept", last_seen: null };
+  const all = [...here, remote];
+  const facets = taskFacets(all);
+  assert.deepEqual(facets.map(([key, label]) => [key, label]), [["state", "State"], ["lane", "Lane"], ["workflow", "Workflow"], ["runner", "Runner"]]);
+  const [, , , , named] = facets[3];
+  assert.equal(named("b"), "b (here)");
+  assert.equal(named("a"), "a");
+  assert.deepEqual(filtered(all, new Map([["runner", "a"]]), facets), [remote]);
+  assert.equal(filtered(all, new Map([["runner", "b"]]), facets).length, tasks.length);
 });

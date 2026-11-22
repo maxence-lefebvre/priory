@@ -81,8 +81,9 @@ fn main() -> ExitCode {
         Some("serve") => serve_http(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("runs") => match (args.next(), args.next()) {
             (None, _) => list(
-                "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend\tkit",
-                "SELECT id, task, step, tmux, coalesce(thread, session), started, ended, ended_as, kit_hash
+                "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend\tkit\tcommit",
+                "SELECT id, task, step, tmux, coalesce(thread, session), started, ended, ended_as, kit_hash,
+                   kit_commit
                  FROM runs ORDER BY id",
             ),
             (Some(flag), None) if flag == "--json" => runs_json(),
@@ -619,7 +620,8 @@ fn report_risk(args: Vec<String>) -> ExitCode {
     let printed = intake::now().and_then(|now| {
         let db = state::open()?;
         let start = report::start(&db, &since, &now.to_string())?;
-        let risk = risk::risk(&db, &factory, workflow.as_deref(), &since, &start, now)?;
+        let gates = risk::Gates::of(&factory);
+        let risk = risk::risk(&db, &gates, workflow.as_deref(), &since, &start, now)?;
         match json {
             true => state::emit(&risk.json().to_string()),
             false => risk.print(),
@@ -1102,6 +1104,9 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                             });
                             ask["merge_risk"] = lines.join("; ").into();
                         }
+                        if let Some(estimate) = ask.get_mut("risk_estimate") {
+                            *estimate = estimate["line"].clone();
+                        }
                         ask
                     })
                     .collect();
@@ -1124,6 +1129,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                         "run_id",
                         "session",
                         "merge_risk",
+                        "risk_estimate",
                     ],
                     &serde_json::Value::Array(open),
                 );
@@ -1315,8 +1321,19 @@ fn flows(mut args: Vec<String>) -> ExitCode {
     let Some(factory) = load(&dir) else {
         return ExitCode::FAILURE;
     };
-    println!("{}", listing::flows(&factory));
+    let mut flows = listing::flows(&factory);
+    listing::with_risk_estimates(&mut flows, history(&factory).as_ref());
+    println!("{flows}");
     ExitCode::SUCCESS
+}
+
+/// Each irreversible step's trials, when `PRIORY_DB` names a state file this priory reads.
+fn history(factory: &factory::Factory) -> Option<risk::Risk> {
+    let db = state::read_only().ok()?;
+    intake::now()
+        .and_then(|now| risk::recent(&db, &risk::Gates::of(factory), now))
+        .inspect_err(|error| eprintln!("warning: no history from the state: {error}"))
+        .ok()
 }
 
 /// Prints the resolved views as `GET /api/views` serves them: `priory views [DIR] --json`.
@@ -2729,8 +2746,10 @@ fn warn_of_stale_herdr_layout(factory: &factory::Factory, dir: &Path) {
 /// the guarded calls each agent can make and the outcomes the daemon verifies, as four tables or
 /// as JSON.
 fn print_explanation(factory: &factory::Factory, json: bool) {
+    let risk = history(factory);
     if json {
         let mut flows = listing::flows(factory);
+        listing::with_risk_estimates(&mut flows, risk.as_ref());
         if let Some(flows) = flows.as_object_mut() {
             flows.remove("workflows");
         }
@@ -2761,23 +2780,52 @@ fn print_explanation(factory: &factory::Factory, json: bool) {
             .replace('\r', "\\r")
             .replace('\n', "\\n")
     };
-    state::emit("workflow\tstep\tgate");
+    let history = |workflow: &str, step: &str| {
+        let Some(risk) = &risk else {
+            return "-\t-\t-".to_owned();
+        };
+        let history = risk.step_history(workflow, step);
+        let share = |outcome: &str| {
+            let (k, n) = (&history[outcome]["k"], &history["trials"]);
+            match history["shown"].as_bool() {
+                Some(true) => format!(
+                    "{k} of {n}, 95% bound {:.1}%",
+                    history[outcome]["p95"].as_f64().unwrap_or_default() * 100.0
+                ),
+                _ => format!("{k} of {n}, needs {}", risk::FLOOR),
+            }
+        };
+        format!(
+            "{}\t{}\t{}",
+            history["caught"],
+            share("judged_wrong"),
+            share("landed_wrong")
+        )
+    };
+    state::emit("workflow\tstep\tgate\tcaught\tjudged wrong\tlanded wrong");
     for (name, gate) in &gates {
         let shown = match &gate.autonomous {
             Some(reason) => format!("autonomous: {reason}"),
             None => gate.approved_by.join(", "),
         };
         state::emit(&format!(
-            "{}\t{}\t{}",
+            "{}\t{}\t{}\t{}",
             cell(name),
             cell(&gate.step),
-            cell(&shown)
+            cell(&shown),
+            history(name, &gate.step)
         ));
     }
     state::emit("");
-    state::emit("workflow\tpath with no human decision");
+    state::emit("workflow\tpath with no human decision\tcaught\tjudged wrong\tlanded wrong");
     for (name, path) in &paths {
-        state::emit(&format!("{}\t{}", cell(name), cell(&path.join(" -> "))));
+        let step = path.last().map_or("", String::as_str);
+        state::emit(&format!(
+            "{}\t{}\t{}",
+            cell(name),
+            cell(&path.join(" -> ")),
+            history(name, step)
+        ));
     }
     state::emit("");
     state::emit("agent\tguard\tworkflow\twhy");

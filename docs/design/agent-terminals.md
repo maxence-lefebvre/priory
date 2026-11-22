@@ -296,8 +296,7 @@ Each tmux test takes a `TmuxDir`, as CONTRIBUTING asks.
 
 ## Later slices
 
-Slices 1, 3, 4 and 5 are built. Slice 2 is built in the server; the web view's confirm sheet and
-key row follow.
+All five slices are built.
 
 1. **Say from the pane.** "Type" sends a line to the existing `POST /api/tasks/{id}/say`. It
    needs no new endpoint, so it can ship right after the first slice, apart from keys.

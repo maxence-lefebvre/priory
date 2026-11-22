@@ -102,3 +102,12 @@ INSERT INTO remote_asks (runner,ask,version,data) VALUES
 INSERT INTO remote_submissions (submission,runner,ask,revision,verb,text,sent,outcome,why,applied) VALUES
 ('0193f0a2-demo-0001','xps13',12,1,'answer','approved',strftime('%Y-%m-%dT%H:%M:%SZ','now','-5 minutes'),NULL,NULL,NULL),
 ('0193f0a2-demo-0002','laptop',4,1,'answer','keep one',strftime('%Y-%m-%dT%H:%M:%SZ','now','-9 minutes'),'refused','ask 4 is at revision 2',strftime('%Y-%m-%dT%H:%M:%SZ','now','-8 minutes'));
+-- two tasks the other runners hold, from their claims: laptop keeps one, xps13 waits on one
+INSERT INTO inbox (id,type,subject,time,data,links,outcome) VALUES
+('r-262','priory.task.requested','ENG-262',strftime('%Y-%m-%dT%H:%M:%SZ','now','-50 minutes'),'{"key":"ENG-262","workflow":"implement","band":"now","lane":"payments","tldr":"Deploy the rate limiter to staging"}','[]','ignored'),
+('r-264','priory.task.requested','ENG-264',strftime('%Y-%m-%dT%H:%M:%SZ','now','-30 minutes'),'{"key":"ENG-264","workflow":"implement","band":"today","lane":"search","tldr":"Reindex the product catalog"}','[]','ignored'),
+('c-262','priory.task.claimed','ENG-262',strftime('%Y-%m-%dT%H:%M:%SZ','now','-48 minutes'),'{"key":"ENG-262","runner":"laptop"}','[]','ignored'),
+('c-264','priory.task.claimed','ENG-264',strftime('%Y-%m-%dT%H:%M:%SZ','now','-28 minutes'),'{"key":"ENG-264","runner":"xps13"}','[]','ignored');
+INSERT INTO claims (key,runner,request,hold,won) VALUES
+('ENG-262','laptop','r-262','kept',(SELECT seq FROM inbox WHERE id='c-262')),
+('ENG-264','xps13','r-264','waiting',(SELECT seq FROM inbox WHERE id='c-264'));

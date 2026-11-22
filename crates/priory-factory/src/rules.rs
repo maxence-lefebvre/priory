@@ -34,6 +34,12 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 format!("the sweeper agent `{agent}` does not exist"),
             ));
         }
+        if let Some(kit) = &settings.value.kit {
+            let at = settings.lines.field("kit");
+            for message in kit_problems(kit) {
+                problems.push(problem(settings, at, message));
+            }
+        }
         let one_shots = [
             ("handler", "handler", settings.value.handler.as_ref()),
             ("search", "summarizer", settings.value.search.tldr.as_ref()),
@@ -1166,4 +1172,34 @@ fn has_go(workflow: &Workflow) -> bool {
                 .step(next)
                 .is_some_and(|step| step.decides == Decider::Human)
         })
+}
+
+/// What `priory check` refuses in `[kit]`: an empty repository or ref, one git would read as an
+/// option, and a path that leaves the repository.
+fn kit_problems(kit: &crate::factory::Kit) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (key, value) in [
+        ("repo", Some(kit.repo.as_str())),
+        ("ref", kit.reference.as_deref()),
+    ] {
+        match value.map(str::trim) {
+            Some("") => problems.push(format!("`[kit]` `{key}` is empty")),
+            Some(value) if value.starts_with('-') => problems.push(format!(
+                "`[kit]` `{key}` is `{value}`: it cannot start with `-`"
+            )),
+            _ => {}
+        }
+    }
+    for (key, path) in kit.paths() {
+        let inside = !path.is_empty()
+            && std::path::Path::new(path)
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_)));
+        if !inside {
+            problems.push(format!(
+                "`[kit]` `{key}` is `{path}`: a kit path is relative and stays inside the repository"
+            ));
+        }
+    }
+    problems
 }

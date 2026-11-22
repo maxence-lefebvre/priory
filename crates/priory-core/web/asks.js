@@ -56,6 +56,19 @@ export function sentNote(ask) {
   return { text: last.verb === "dismiss" ? `Dismiss sent to ${runner}` : `Sent to ${runner}: ${last.text}`, refused: false };
 }
 
+const SUBMITTED = { answered: "answered", dismissed: "withdrawn", refused: "refused" };
+
+/** Each answer and dismiss sent to another runner's ask as an answer history row, oldest first. @param {any} ask */
+export function submitted(ask) {
+  const runner = runnerOf(ask);
+  if (!runner) return [];
+  return ask.submissions.map((/** @type {any} */ sent) => {
+    const outcome = sent.outcome === "refused" ? `${runner} refused it: ${sent.why}` : sent.outcome ? `${runner} applied it` : "Not applied yet";
+    const what = sent.verb === "dismiss" ? "the dismiss" : sent.text;
+    return { tile: SUBMITTED[sent.outcome] ?? "queued", text: `Sent ${what} to ${runner} for revision ${sent.revision}. ${outcome}`, at: sent.sent };
+  });
+}
+
 /** Who answered, as the views say it: a person, or `agent:<lead>`. Null when unrecorded. @param {string | null | undefined} by */
 export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : "a person");
 

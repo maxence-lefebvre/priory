@@ -133,7 +133,9 @@ workflow as a Mermaid flowchart, with each step's decider and effect, and each a
 who decides it.
 
 `priory check --explain example` lists the irreversible step `open-pr` and the human step
-`approve-pr` that approves it. See [workflows.md](docs/reference/workflows.md#irreversible-steps-and-their-gates).
+`approve-pr` that approves it. Once tasks ran it, the row adds its history: how many tasks a person
+stopped at the gate, and how many were judged wrong within 30 days. With no state file it shows `-`.
+See [workflows.md](docs/reference/workflows.md#irreversible-steps-and-their-gates).
 The web view's Flows panel, under More, draws each workflow as a timeline, with the paths that
 reach an irreversible step with no person's decision highlighted. `priory flows example --json`
 prints what it draws, and the [Herdr](docs/adapters/herdr.md) Flows panel draws the same.
@@ -198,6 +200,14 @@ A fact every run should know, such as the day releases go out, goes in its own f
 memories and reads a file when its description fits the task. `priory check` counts them in its
 `ok` line. To change a memory, edit the file and merge it like any other change to the factory.
 See [memories.md](docs/reference/memories.md) for the file's keys.
+
+### Share a kit across factories
+
+To keep skills, instructions and memories in their own repository, name it under `[kit]` in
+`factory.toml`, with `repo` and the `ref` to follow. Each runner fetches it at start and every five
+minutes, with git's own credentials, and every run gets its files before the factory's. A failed
+fetch keeps the last good commit and shows a banner on the desk. See
+[skills.md](docs/daemon/skills.md#a-kit-repository) for the details.
 
 ## 5. Run it
 
@@ -304,8 +314,10 @@ Run `priory` with no arguments to print its usage.
 
 If you work in [Herdr](docs/adapters/herdr.md), its Desk panel shows the same desk, and its Asks
 panel lists the same asks and answers them through these verbs. `priory views --json |
-adapters/herdr/install` links them into Herdr and writes a layout from your `default` view: narrow panels as asides you toggle, wide ones as center tabs, and Herdr's own Files and Changes panels. `priory check`
-warns when that layout was built from other view files. On a Herdr that reads its folder through
+adapters/herdr/install` links them into Herdr and writes a layout from each view, `priory` for
+your `default` view and `priory-NAME` for each other: narrow panels as asides you toggle, wide ones
+as center tabs, and Herdr's own Files and Changes panels. `priory check` warns when those layouts
+were built from other view files, and the Priory bar offers to regenerate them. On a Herdr that reads its folder through
 Syncthing, which carries no links, use `install --copy`.
 
 If you review on GitHub, the [GitHub extension](adapters/github/README.md) shows the task that holds
@@ -328,7 +340,9 @@ The web view's Tasks panel lists every task, with the saved views Active, Blocke
 filters by state, lane and workflow; each row opens the task's page, and a batch's entries link to
 the batch. The Runs panel lists the runs of the last 7 days with their agent, model, outcome,
 duration and tokens, filtered by outcome, agent or step. `priory tasks` and `priory runs` print the
-same tasks and runs, and the Herdr Tasks and Runs panels show them too.
+same tasks and runs, and the Herdr Tasks and Runs panels show them too. In a factory of several
+runners, both Tasks panels also list the tasks the other runners hold and filter by runner. Such a
+task's row opens nothing here: its page stays on its runner.
 
 The Queue panel, under More on a phone, shows Up next, then each band's waiting tasks in the order
 they start, with why each one waits. Its Move menu moves a task to the top of its band, up or down
