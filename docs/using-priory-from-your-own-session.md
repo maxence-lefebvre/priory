@@ -1,10 +1,11 @@
 # How to use Priory from your own Claude Code session
 
 This guide shows how to load the Priory plugin into your own Claude Code session, so it can read
-your desk, ask you a question through the desk, and add a task. It assumes a daemon runs on this
+your desk, ask you a question through the desk, answer the asks you hand it, and add a task. It
+assumes a daemon runs on this
 machine, and that `priory` and `claude` are on your `PATH`.
-[The Claude Code plugin](adapters/claude-plugin.md) explains what the plugin does and why the model
-cannot answer an ask.
+[The Claude Code plugin](adapters/claude-plugin.md) explains what the plugin does and which asks the
+model may answer.
 
 1. Export the daemon's home and state in the shell you start Claude Code from. Use the same values
    the daemon runs with:
@@ -43,6 +44,11 @@ cannot answer an ask.
    The model shows the ask and prints the line that answers it, such as
    `! priory answer --revision 1 cache.ship ship`. Check the line, then type it yourself. The model
    cannot run it: the plugin's hook denies it.
+
+   To have the session answer for you instead, tell it, such as `answer cache.ship with ship`. The
+   model calls the `answer` tool, and Priory records that your session decided, not you. Priory
+   refuses an ask that runs a command, approves an irreversible step, or can let one run; the model
+   then tells you to answer it in the desk.
 
 6. Hand a follow-up to the factory:
 

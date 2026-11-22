@@ -955,7 +955,7 @@ pub struct Queue {
     #[serde(default)]
     pub preempt: Vec<String>,
     /// How many pull requests of a lane, or of a batch, may wait for a person before its new tasks
-    /// wait to start; no limit when unset.
+    /// wait to start; no limit when unset. A task of the first band never waits.
     #[serde(default)]
     pub review_limit: Option<std::num::NonZeroU32>,
 }
@@ -1302,17 +1302,17 @@ impl Confidence {
     }
 }
 
-/// `scorers/<name>.toml` or `.yaml`: a question that grades one finished run with `pass` or
-/// `fail`. The file name is the scorer's name.
+/// `scorers/<name>.toml` or `.yaml`: a question that grades one finished run, or for `held` a merged
+/// task, with `pass` or `fail`. The file name is the scorer's name.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(title = "scorer")]
 pub struct Scorer {
     /// What the scorer checks, in one line.
     pub description: String,
-    /// What it reads: `result`, `diff` or `ask`.
+    /// What it reads: `result`, `diff`, `ask` or `merge`.
     pub on: ScoreOn,
-    /// How it answers: `outcome`, `command`, `ask-shape` or `judge`.
+    /// How it answers: `outcome`, `command`, `ask-shape`, `judge` or `held`.
     pub kind: ScoreKind,
     /// For `outcome`, the outcomes that pass. For `ask-shape`, what every ask must show: `short`,
     /// `whatWaits` and `nextAction`.
@@ -1335,6 +1335,69 @@ pub struct Scorer {
     /// 0.8 when unset.
     #[schemars(range(min = 0.0, max = 1.0))]
     pub agreement: Option<f64>,
+    /// For `held`, when the daemon grades the task: `merged + <n>` with a unit of `m`, `h` or
+    /// `d`, such as `merged + 7d`.
+    #[serde(default, deserialize_with = "held_after")]
+    #[schemars(
+        with = "Option<String>",
+        regex(pattern = r"^merged *\+ *0*[1-9][0-9]*[mhd]$")
+    )]
+    pub after: Option<HeldAfter>,
+    /// For `held`, the signals that fail it when they happened by the moment `after` names:
+    /// `changes-requested`, `red-after-merge`, `reverted`, `marked-wrong` or `fixed`.
+    #[serde(default)]
+    pub fails: Vec<String>,
+}
+
+/// What a `held` scorer may name in `fails`: the outcome labels that can follow a merge, and
+/// `fixed`, a later task's `fixes` relation to the task.
+pub const HELD_SIGNALS: [&str; 5] = [
+    "changes-requested",
+    "red-after-merge",
+    "reverted",
+    "marked-wrong",
+    "fixed",
+];
+
+/// When a `held` scorer grades a task: a delay after the task's merge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldAfter {
+    /// How long after the merge.
+    pub delay: Duration,
+    /// The key as the file wrote it, such as `merged + 7d`.
+    pub text: String,
+}
+
+fn held_after<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<HeldAfter>, D::Error> {
+    let text = String::deserialize(input)?;
+    parse_after(&text).map(Some).ok_or_else(|| {
+        serde::de::Error::custom(format!(
+            "{text:?} is not a moment such as \"merged + 7d\": a delay in m, h or d after the merge"
+        ))
+    })
+}
+
+/// `merged + <n><unit>`, with `m`, `h` or `d` as the unit and a delay of at least one unit.
+pub fn parse_after(text: &str) -> Option<HeldAfter> {
+    let delay = text
+        .strip_prefix("merged")?
+        .trim_start()
+        .strip_prefix('+')?
+        .trim_start();
+    let seconds = [("m", 60), ("h", 3600), ("d", 86_400)]
+        .into_iter()
+        .find_map(|(unit, scale)| {
+            delay
+                .strip_suffix(unit)?
+                .parse::<u64>()
+                .ok()?
+                .checked_mul(scale)
+        })
+        .filter(|seconds| (1..=i64::MAX as u64).contains(seconds))?;
+    Some(HeldAfter {
+        delay: Duration::from_secs(seconds),
+        text: text.to_owned(),
+    })
 }
 
 /// The share of labeled cases a judge must get right when its file names no `agreement`.
@@ -1360,6 +1423,8 @@ pub enum ScoreOn {
     Diff,
     /// The asks the run made.
     Ask,
+    /// What followed the task's merge.
+    Merge,
 }
 
 impl ScoreOn {
@@ -1368,6 +1433,7 @@ impl ScoreOn {
             ScoreOn::Result => "result",
             ScoreOn::Diff => "diff",
             ScoreOn::Ask => "ask",
+            ScoreOn::Merge => "merge",
         }
     }
 }
@@ -1384,6 +1450,8 @@ pub enum ScoreKind {
     AskShape,
     /// Asks `model` to grade the change, once its calibration agrees with a person's labels.
     Judge,
+    /// Grades a merged task when `after` comes: fails when a signal of `fails` happened by then.
+    Held,
 }
 
 impl ScoreKind {
@@ -1393,6 +1461,7 @@ impl ScoreKind {
             ScoreKind::Command => "command",
             ScoreKind::AskShape => "ask-shape",
             ScoreKind::Judge => "judge",
+            ScoreKind::Held => "held",
         }
     }
 }
@@ -3420,6 +3489,26 @@ mod tests {
     const SCORER: &str =
         "description = \"Passed.\"\non = \"result\"\nkind = \"outcome\"\nexpect = [\"passed\"]\n";
 
+    const HELD: &str = "description = \"Held.\"\non = \"merge\"\nkind = \"held\"\nafter = \"merged + 7d\"\nfails = [\"reverted\"]\n";
+
+    #[test]
+    fn after_reads_a_delay_in_minutes_hours_or_days_after_the_merge() {
+        let delay = |text: &str| parse_after(text).map(|after| after.delay.as_secs());
+        assert_eq!(delay("merged + 7d"), Some(7 * 86_400));
+        assert_eq!(delay("merged+90m"), Some(5400));
+        assert_eq!(delay("merged + 2h"), Some(7200));
+        for refused in [
+            "merged + 0d",
+            "merged + 7",
+            "merged - 7d",
+            "done + 7d",
+            "merged + 1w",
+            "",
+        ] {
+            assert_eq!(delay(refused), None, "{refused}");
+        }
+    }
+
     const BENCHMARK: &str = "description = \"Cases.\"\nworkflow = \"implement\"\nprimary = \"passed\"\nscorers = [\"gate\"]\ncases = [\"cases/one\"]\n";
 
     fn load_scorer(text: &[u8], case: usize) {
@@ -3459,6 +3548,21 @@ mod tests {
             load_scorer(&mutated, 1);
             load_scorer(&SCORER.as_bytes()[..cut], 2);
             load_scorer(format!("{SCORER}{text}").as_bytes(), 3);
+        }
+
+        #[test]
+        fn a_held_scorer_file_of_any_shape_loads_or_is_refused_without_panicking(
+            after in proptest::string::string_regex("[a-z +\\-0-9]{0,30}").unwrap(),
+            at in 0..HELD.len(),
+            byte in any::<u8>(),
+        ) {
+            // Cases of their own: the other scorer test loads into 0 to 3 at the same time.
+            load_scorer(HELD.replace("merged + 7d", &after).as_bytes(), 10);
+            let mut mutated = HELD.as_bytes().to_vec();
+            mutated[at] = byte;
+            load_scorer(&mutated, 11);
+            let parsed = parse_after(&after);
+            prop_assert!(parsed.is_none_or(|parsed| parsed.delay.as_secs() >= 60));
         }
 
         #[test]

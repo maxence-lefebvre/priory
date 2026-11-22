@@ -218,10 +218,28 @@ fn unattended_targets(step: &Step) -> BTreeSet<&str> {
 /// `hands-off`, or the daemon under `auto_answer`. Never an ask that runs a command, an ask at a
 /// step that `approves`, or an ask whose answer can let an irreversible step run.
 pub fn delegable(workflow: &Workflow, at: &str, command: bool) -> bool {
-    let approves = workflow
-        .step(at)
-        .is_some_and(|step| !step.approves.is_empty());
-    !command && !approves && !answer_lets_irreversible_run(workflow, at)
+    undelegable(workflow, at, command).is_none()
+}
+
+/// Why `delegable` refuses an ask made at step `at`, in a clause such as `it runs a command`, or
+/// `None` when anyone but a person may answer it.
+pub fn undelegable(workflow: &Workflow, at: &str, command: bool) -> Option<String> {
+    if command {
+        return Some("it runs a command".to_owned());
+    }
+    if let Some(step) = workflow.step(at).filter(|step| !step.approves.is_empty()) {
+        return Some(format!(
+            "step {at} approves {}",
+            step.approves
+                .iter()
+                .map(|approved| format!("irreversible step {approved}"))
+                .collect::<Vec<_>>()
+                .join(" and ")
+        ));
+    }
+    irreversible_step_after(workflow, at).map(|step| {
+        format!("answering it can let irreversible step {step} run before a person decides again")
+    })
 }
 
 /// Whether the daemon answers an agent's ask at step `at`, stated at `confidence`, with its
@@ -333,6 +351,30 @@ next = { opened = "done", failed = "stop" }
         let workflow: Workflow = toml::from_str(IMPLEMENT).unwrap();
 
         assert!(answer_lets_irreversible_run(&workflow, "approve-pr"));
+    }
+
+    #[test]
+    fn undelegable_names_why_a_person_answers() {
+        let workflow: Workflow = toml::from_str(IMPLEMENT).unwrap();
+        let autonomous: Workflow =
+            toml::from_str(&IMPLEMENT.replace("passed = \"approve-pr\"", "passed = \"open-pr\""))
+                .unwrap();
+
+        assert_eq!(
+            undelegable(&workflow, "approve-plan", true).as_deref(),
+            Some("it runs a command")
+        );
+        assert_eq!(
+            undelegable(&workflow, "approve-pr", false).as_deref(),
+            Some("step approve-pr approves irreversible step open-pr")
+        );
+        assert_eq!(
+            undelegable(&autonomous, "approve-plan", false).as_deref(),
+            Some(
+                "answering it can let irreversible step open-pr run before a person decides again"
+            )
+        );
+        assert_eq!(undelegable(&workflow, "approve-plan", false), None);
     }
 
     #[test]

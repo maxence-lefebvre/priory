@@ -436,6 +436,40 @@ fn inbox_unrouted_lists_a_drop_with_its_trigger_script_reason_and_issue_and_coun
 }
 
 #[test]
+fn the_desk_counts_a_drop_of_the_last_24_hours_and_says_where_to_see_it() {
+    let setup = Setup::polled("drop-desk", PRE, &[labeled(101, 42, "agent")]);
+    setup.script("#!/bin/sh\ncat >/dev/null\necho 'no estimate yet'\nexit 1\n");
+    succeeded(&setup.intake());
+    setup.route();
+    let dated = |hours: i64| {
+        let time = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(hours);
+        setup
+            .db()
+            .execute(
+                "UPDATE inbox SET time = ?1 WHERE type = 'factory.intake.dropped'",
+                [time.to_string()],
+            )
+            .unwrap();
+    };
+    dated(1);
+
+    let desk: Value = serde_json::from_str(&setup.priory(&["desk", "--json"])).unwrap();
+
+    assert_eq!(desk["counts"]["dropped"], 1, "{desk}");
+    assert_eq!(desk["counts"]["unrouted"], 0, "{desk}");
+    let text = setup.priory(&["desk"]);
+    assert!(
+        text.contains(
+            "1 request a pre script dropped in the last 24 hours. See it with `priory inbox --unrouted`."
+        ),
+        "{text}"
+    );
+    dated(25);
+    let desk: Value = serde_json::from_str(&setup.priory(&["desk", "--json"])).unwrap();
+    assert_eq!(desk["counts"]["dropped"], 0, "{desk}");
+}
+
+#[test]
 fn a_script_that_prints_five_fields_creates_a_task_with_each() {
     let setup = Setup::polled("five", PRE, &[labeled(101, 42, "agent")]);
     setup.script(

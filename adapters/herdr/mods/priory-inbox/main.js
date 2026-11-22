@@ -4,7 +4,7 @@ import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr
 import { follow, priory } from "./priory.js";
 import { selectable } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
-import { eventWords, neverOwned, routeAction, unheardActs } from "./view.js";
+import { droppedWhy, eventWords, neverOwned, routeAction, unheardActs } from "./view.js";
 
 const RETRY_MS = 3000;
 // The events a group shows, newest first, as the web view's Inbox does.
@@ -21,6 +21,7 @@ const TILES = {
 /** @typedef {Record<string, import("gpui-kit").Color>} Palette */
 /** @typedef {{ resource: string, task: { id: number, key: string, state: string, workflow: string }, events: any[], request_text: string | null }} Group */
 /** @typedef {{ task: Group["task"], events: any[], follow_up: string | null, request_text: string | null }} Unheard */
+/** @typedef {{ seq: number, trigger: string, script: string, reason: string | null, failed: string | null, key: string | null, event: any }} Drop */
 
 // settings.json's "priory" object: { binary, machine, factory, theme }, each optional. Mirrors priory-costs.
 async function connect() {
@@ -49,7 +50,7 @@ export default class PrioryInbox extends View {
   init(_props, cx) {
     /** @type {Awaited<ReturnType<typeof connect>> | null} */
     this.priory = null;
-    /** @type {{ owned: Group[], other: { source: string, events: number }[], unheard?: Unheard[] } | null} */
+    /** @type {{ owned: Group[], other: { source: string, events: number }[], unheard?: Unheard[], dropped?: Drop[] } | null} */
     this.groups = null;
     /** @type {string | null} */
     this.error = null;
@@ -133,11 +134,42 @@ export default class PrioryInbox extends View {
     const rest = neverOwned(this.groups.other);
     const restLine = rest ? [div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-3"]).child(selectable("never-owned", rest))] : [];
     const unheard = this.groups.unheard ?? [];
-    const heard = unheard.length ? [this.heading("Unheard", "no agent read them", t), ...unheard.map((group) => this.unheard(group, t)), this.heading("Unrouted", "reached no task", t)] : [];
+    const dropped = this.groups.dropped ?? [];
+    const heard = [
+      ...(unheard.length ? [this.heading("Unheard", "no agent read them", t), ...unheard.map((group) => this.unheard(group, t))] : []),
+      ...(dropped.length ? [this.heading("Dropped", "a script judged each once", t), ...dropped.map((drop, at) => this.dropped(drop, `dropped-${at}`, t))] : []),
+    ];
+    if (heard.length) heard.push(this.heading("Unrouted", "reached no task", t));
     if (!this.groups.owned.length) {
       return [...heard, div().whitespace_normal().text_color(t["text-2"]).child("No event of a task's resource went unrouted. An event about an ended task's pull request or issue shows here."), ...restLine];
     }
     return [...heard, ...this.groups.owned.map((group) => this.card(group.resource, group, this.route(group, t), t)), ...restLine];
+  }
+
+  /**
+   * A request a pre script dropped: its key and count, its trigger and script, its source event,
+   * then why; no action, since a drop is final for its event. @param {Drop} drop @param {Palette} t
+   */
+  dropped(drop, key, t) {
+    const events = drop.event ? [drop.event] : [];
+    return v_flex().gap(S["space-2"]).p(S["space-3"]).rounded(S["radius-md"]).border(1).border_color(t.line).bg(t.surface)
+      .child(h_flex().gap(S["space-2"]).items_baseline()
+        .child(div().flex_1().min_w_0().font_family(this.font.mono).text_size(S["type-small"][0]).child(selectable(`${key}-key`, drop.key ?? "-")))
+        .child(div().text_size(S["type-small"][0]).text_color(t["text-2"]).child(String(events.length))))
+      .child(h_flex().gap(S["space-2"]).items_center().text_size(S["type-small"][0]).text_color(t["text-2"])
+        .child(this.tile("dropped", t)).child(div().min_w_0().whitespace_normal().child(selectable(`${key}-trigger`, `trigger ${drop.trigger}, ${drop.script}`))))
+      .children(events.map((event, index) => this.event(event, `${key}-${index}`, t)))
+      .child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-2"]).child(selectable(`${key}-why`, droppedWhy(drop))));
+  }
+
+  /** One event: its type, subject and time on one line, its first line under them; `key` names its text. @param {any} event @param {string} key @param {Palette} t */
+  event(event, key, t) {
+    return v_flex().gap(S["space-1"]).text_size(S["type-small"][0])
+      .child(h_flex().gap(S["space-2"]).items_baseline()
+        .child(div().font_weight(600).child(eventWords(event.type)))
+        .child(div().flex_1().min_w_0().child(selectable(`subject-${key}`, event.subject ?? "")))
+        .child(div().flex_none().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(when(event.time))))
+      .when(Boolean(event.line), (el) => el.child(div().whitespace_normal().text_color(t["text-2"]).child(selectable(`line-${key}`, event.line))));
   }
 
   /** A section's title and its note. @param {string} title @param {string} note @param {Palette} t */
@@ -183,12 +215,7 @@ export default class PrioryInbox extends View {
         .on_click(() => setShared("priory.task.open", { task: task.id, at: Date.now() }))
         .child(this.tile(task.state, t)).child(`task ${task.id}`).child(task.state)
         .child(div().min_w_0().truncate().font_family(this.font.mono).child(task.key)))
-      .children(group.events.slice(0, SHOWN).map((event, index) => v_flex().gap(S["space-1"]).text_size(S["type-small"][0])
-        .child(h_flex().gap(S["space-2"]).items_baseline()
-          .child(div().font_weight(600).child(eventWords(event.type)))
-          .child(div().flex_1().min_w_0().child(selectable(`subject-${key}-${index}`, event.subject ?? "")))
-          .child(div().flex_none().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(when(event.time))))
-        .when(Boolean(event.line), (el) => el.child(div().whitespace_normal().text_color(t["text-2"]).child(selectable(`line-${key}-${index}`, event.line))))))
+      .children(group.events.slice(0, SHOWN).map((event, index) => this.event(event, `${key}-${index}`, t)))
       .when(group.events.length > SHOWN, (el) => el.child(div().text_size(S["type-small"][0]).text_color(t["text-3"]).child(`and ${group.events.length - SHOWN} older`)))
       .child(action)
       .when(Boolean(notice), (el) => el.child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-2"]).accessibility_label(notice ?? "").child(selectable(`notice-${key}`, notice ?? ""))));

@@ -121,10 +121,26 @@ pub fn score(
     only: Option<&str>,
     budget: Option<f64>,
 ) -> Result<Vec<Score>, String> {
-    let names: Vec<&str> = match only {
-        Some(name) if factory.scorers.contains_key(name) => vec![name],
-        Some(name) => return Err(format!("no scorer {name} in scorers/")),
-        None => factory.scorers.keys().map(String::as_str).collect(),
+    let names: Vec<&str> = match (only, only.and_then(|name| factory.scorers.get(name))) {
+        (Some(name), Some(scorer)) if scorer.value.kind == ScoreKind::Held => {
+            return Err(format!(
+                "{name} is a held scorer: the daemon grades a task with it at {}",
+                scorer
+                    .value
+                    .after
+                    .as_ref()
+                    .map_or("its after", |after| &after.text)
+            ));
+        }
+        (Some(name), Some(_)) => vec![name],
+        (Some(name), None) => return Err(format!("no scorer {name} in scorers/")),
+        // A held scorer grades a task once its moment comes, never on demand.
+        (None, _) => factory
+            .scorers
+            .iter()
+            .filter(|(_, scorer)| scorer.value.kind != ScoreKind::Held)
+            .map(|(name, _)| name.as_str())
+            .collect(),
     };
     if names.is_empty() {
         return Err("the factory has no scorers: add one to scorers/".to_owned());
@@ -254,6 +270,7 @@ pub fn measure(
             |asks| ask_shape(&gauge.scorer, &asks),
         ),
         ScoreKind::Command => command(dir, home, task, &gauge.scorer, run),
+        ScoreKind::Held => (Verdict::Error, HELD_ON_A_RUN.to_owned()),
         ScoreKind::Judge => {
             let graded = judge(home, task, gauge, run, judging);
             cost = graded.cost;
@@ -324,6 +341,8 @@ fn asks_of(db: &Connection, run: i64) -> rusqlite::Result<Vec<(i64, String)>> {
 }
 
 const NO_RESULT: &str = "the run asked and sent no result";
+
+const HELD_ON_A_RUN: &str = "a held scorer grades a merged task, not a run";
 
 fn outcome(scorer: &Scorer, run: &Run) -> (Verdict, String) {
     let Some(outcome) = run

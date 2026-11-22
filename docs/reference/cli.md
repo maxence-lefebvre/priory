@@ -45,7 +45,7 @@ does and the page that describes it.
   publish. It publishes nothing and posts no report. It fails for a trigger without `[pre]`. See
   [pre.md](../intake/pre.md).
 - `priory daemon [DIR] [--once]`: routes events to tasks and runs agents. `--once` routes what is
-  pending, starts no run and exits. See [the daemon](../daemon/README.md).
+  pending, grades the tasks a `held` scorer is due to grade, starts no run and exits. See [the daemon](../daemon/README.md).
 - `priory daemon --view-only [DIR]`: on a machine with no runner file, mirrors every runner's asks
   and tasks, serves them and runs nothing. See
   [runners.md](../daemon/runners.md#a-machine-that-only-views).
@@ -221,7 +221,8 @@ An agent's settings and its shell call these. A person rarely does.
 - `priory hook EVENT`: sends one of the harness's hook signals to the daemon. See
   [signals.md](../daemon/signals.md).
 - `priory mcp --outside`: the MCP server of a person's own session, which Priory did not start, on
-  stdio. It serves `desk`, `asks`, `task`, `ask` and `add`, and no tool that answers. It exits 2
+  stdio. It serves `desk`, `asks`, `task`, `ask`, `add`, `answer` and `dismiss`. `answer` and
+  `dismiss` decide only an ask a lead could answer, recorded as the session's decision. It exits 2
   when `PRIORY_SESSION` is set, or when `PRIORY_HOME` or `PRIORY_DB` is unset. See
   [tools.md](../daemon/tools.md#the-outside-server).
 - `priory hook PreToolUse --outside`: the `PreToolUse` hook of a person's own session. It denies a
