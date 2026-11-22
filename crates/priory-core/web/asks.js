@@ -23,9 +23,9 @@ export function askGroups(asks, now) {
   };
 }
 
-/** The open asks of task `task`, snoozed ones too, oldest first. @param {any[]} asks @param {number} task */
+/** The open asks of this runner's task `task`, snoozed ones too, oldest first. @param {any[]} asks @param {number} task */
 export const openAsksOf = (asks, task) =>
-  asks.filter((ask) => ask.task === task && ask.state === "open").sort((a, b) => Date.parse(a.since) - Date.parse(b.since));
+  asks.filter((ask) => ask.task === task && !runnerOf(ask) && ask.state === "open").sort((a, b) => Date.parse(a.since) - Date.parse(b.since));
 
 /** "with <lead>" for an open ask or desk item routed to a lead, else null. @param {any} ask */
 export const routedMark = (ask) => (ask?.routed_to && (ask.state ?? "open") === "open" ? `with ${ask.routed_to}` : null);
