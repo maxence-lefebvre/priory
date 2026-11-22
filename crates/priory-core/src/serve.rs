@@ -225,6 +225,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         .transpose()?
         .map(Arc::new);
     drop(state::read_only()?);
+    crate::pending::start(factory);
     let listener =
         TcpListener::bind(listen).map_err(|error| format!("listen on {listen}: {error}"))?;
     let bound = listener

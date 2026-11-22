@@ -11,6 +11,8 @@ Its fields and an example are in
 The intake publishes one task request per source event and matching trigger. A source event lists
 the triggers it matched in its `triggers` field, and the intake publishes one request for each,
 after the source event. So a consumer has already seen the source when it reads the request.
+A trigger with a `pre` script can change the request or drop it, and a dropped request leaves a
+`factory.intake.dropped` in its place (see [pre.md](pre.md)).
 
 | Source | Matches as described in |
 | ------ | ----------------------- |
@@ -95,6 +97,7 @@ source event's id.
 | `hold` | the trigger's `hold`, or `priory request --hold` |
 | `tldr` | `priory request --tldr`. The summarizer then skips the task (see [search.md](../daemon/search.md)) |
 | `relates` | `priory request` or `priory add --relates`. The daemon records each relation when it creates the task (see [relations.md](../daemon/relations.md)) |
+| `title`, `text`, `context`, `pre` | the trigger's `pre` script (see [pre.md](pre.md)) |
 
 ## `hold`
 

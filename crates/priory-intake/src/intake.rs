@@ -123,6 +123,7 @@ pub fn output() -> Output {
             slack::POSTED,
             slack::REPLIED,
             TASK_REQUESTED,
+            crate::pre::DROPPED,
             BASELINE,
             TASK_CLAIMED,
             TASK_HELD,
@@ -175,6 +176,7 @@ pub type Ended = fn(&str) -> Result<u64, String>;
 /// commits' check runs.
 /// `health` records each poll's outcomes at the poll's time.
 /// `ended` lets the Slack shortcut queue a thread again once its task ended.
+/// `report` records each `pre` script's failure, or none to mark the trigger's last one read.
 pub fn run(
     factory: &Factory,
     once: bool,
@@ -182,8 +184,19 @@ pub fn run(
     merged: fn(&str) -> Result<Vec<Merge>, String>,
     health: fn(&Outcomes, Timestamp) -> Result<(), String>,
     ended: Ended,
+    report: fn(&str, Option<&str>) -> Result<(), String>,
 ) -> Result<(), String> {
     priory_runtime::runtime::bound_commands(factory.command_timeout());
+    crate::pre::configure(crate::pre::Context {
+        dir: factory.dir.clone(),
+        bands: factory.bands().into_iter().map(str::to_owned).collect(),
+        report: Box::new(move |trigger, failure| {
+            if let Err(error) = report(trigger, failure) {
+                eprintln!("{error}");
+            }
+        }),
+        store: None,
+    });
     let from = |source: &str| -> Vec<(&str, &Trigger)> {
         factory
             .triggers
@@ -254,6 +267,7 @@ pub fn run(
     let mut published = HashSet::new();
     // Merge commits that have no check runs past the grace period, so they are not read again.
     let mut unchecked = HashSet::new();
+    let mut first = true;
     loop {
         let watching = match watched() {
             Ok(watching) => watching,
@@ -283,7 +297,8 @@ pub fn run(
                 Err(error) => failed.entry("slack").or_default().push(error),
             }
         }
-        schedule::fire(bus, &schedules, now()?)?;
+        schedule::fire(bus, &schedules, now()?, first)?;
+        first = false;
         let waited = watching.iter().filter_map(pull_request_repo);
         let polled: BTreeSet<&str> = repos.iter().copied().chain(waited).collect();
         let merges = match merged(&since(now()?)) {
@@ -628,43 +643,55 @@ fn accepted(outcome: &str) -> Reply {
     Reply::json(202, json!({ "outcome": outcome }).to_string())
 }
 
-/// Publishes a task request for each trigger the source names, among those still defined.
+/// Publishes a task request for each trigger the source names, among those still defined, or what
+/// its `pre` script decided instead.
 fn dispatch(bus: &dyn Log, triggers: &[(&str, &Trigger)], source: &Message) -> Result<(), String> {
     let named = source.data["triggers"].as_array().into_iter().flatten();
     for name in named.filter_map(|name| name.as_str()) {
         if let Some((name, trigger)) = triggers.iter().find(|(other, _)| *other == name) {
-            let data = &source.data;
-            let number = data.get("issue").unwrap_or(&data["pull_request"]);
-            let repo = data["repo"].as_str().unwrap_or_default();
-            let key = match (number.as_str(), data["channel"].as_str()) {
-                (Some(issue), _) if source.kind == sentry::CREATED => format!("sentry:{issue}"),
-                _ if source.kind == figma::COMMENTED => {
-                    format!("figma:{}", data["file"].as_str().unwrap_or_default())
-                }
-                _ if source.kind == cloudwatch::CHANGED => {
-                    format!("cloudwatch:{}", data["alarm"].as_str().unwrap_or_default())
-                }
-                _ if source.kind == honeycomb::FIRED => {
-                    format!("honeycomb:{}", data["trigger"].as_str().unwrap_or_default())
-                }
-                _ if source.kind == intercom::CREATED => format!(
-                    "intercom:{}",
-                    data["conversation"].as_str().unwrap_or_default()
-                ),
-                _ if source.kind == reviews::REQUESTED => {
-                    review_key(repo, number, data["reviewer"].as_str().unwrap_or_default())
-                }
-                (_, Some(channel)) => format!(
-                    "slack:{channel}:{}",
-                    data["ts"].as_str().unwrap_or_default()
-                ),
-                (Some(identifier), _) => format!("linear:{identifier}"),
-                (None, None) => format!("github:{repo}#{number}"),
-            };
-            publish(bus, &task_requested(name, trigger, source, key))?;
+            let request = request_for(name, trigger, source);
+            if let Some(decided) = crate::pre::apply(name, trigger, source, request)? {
+                publish(bus, &decided)?;
+            }
         }
     }
     Ok(())
+}
+
+/// The task request trigger `name` builds from `source`, before its `pre` script.
+pub fn request_for(name: &str, trigger: &Trigger, source: &Message) -> Message {
+    let data = &source.data;
+    let number = data.get("issue").unwrap_or(&data["pull_request"]);
+    let repo = data["repo"].as_str().unwrap_or_default();
+    let key = match (number.as_str(), data["channel"].as_str()) {
+        (Some(issue), _) if source.kind == sentry::CREATED => format!("sentry:{issue}"),
+        _ if source.kind == figma::COMMENTED => {
+            format!("figma:{}", data["file"].as_str().unwrap_or_default())
+        }
+        _ if source.kind == cloudwatch::CHANGED => {
+            format!("cloudwatch:{}", data["alarm"].as_str().unwrap_or_default())
+        }
+        _ if source.kind == honeycomb::FIRED => {
+            format!("honeycomb:{}", data["trigger"].as_str().unwrap_or_default())
+        }
+        _ if source.kind == intercom::CREATED => format!(
+            "intercom:{}",
+            data["conversation"].as_str().unwrap_or_default()
+        ),
+        _ if source.kind == reviews::REQUESTED => {
+            review_key(repo, number, data["reviewer"].as_str().unwrap_or_default())
+        }
+        _ if source.kind == schedule::FIRED => {
+            return schedule::request(name, trigger, source);
+        }
+        (_, Some(channel)) => format!(
+            "slack:{channel}:{}",
+            data["ts"].as_str().unwrap_or_default()
+        ),
+        (Some(identifier), _) => format!("linear:{identifier}"),
+        (None, None) => format!("github:{repo}#{number}"),
+    };
+    task_requested(name, trigger, source, key)
 }
 
 /// Marks a GitHub comment or review `own` when the login `gh` runs as wrote it, the login a

@@ -123,12 +123,6 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         {
             problems.push(problem(settings, settings.lines.field("serve"), message));
         }
-        let variable = |name: &str| {
-            name.starts_with(|first: char| first.is_ascii_alphabetic() || first == '_')
-                && name
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        };
         if factory
             .otlp_headers_env()
             .is_some_and(|name| !variable(name))
@@ -315,6 +309,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             ));
         }
         check_lead(factory, trigger, &mut problems);
+        check_pre(factory, trigger, &mut problems);
         match trigger.value.source.as_str() {
             "github" => check_github(trigger, &mut problems),
             "linear" | "linear.view" => check_linear(trigger, &mut problems),
@@ -425,6 +420,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
     for agent in factory.agents.values() {
         check_codex(factory, agent, &mut problems);
         check_shared(agent, &mut problems);
+        check_skills(factory, agent, &mut problems);
     }
     for workflow in factory.workflows.values() {
         check_band(
@@ -791,6 +787,40 @@ fn check_band<T>(
     }
 }
 
+/// Refuses an empty or repeated name in an agent's `skills`, and, without a kit, a name that is no
+/// skill of the factory.
+fn check_skills(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
+    let Some(skills) = &agent.value.skills else {
+        return;
+    };
+    let line = agent.lines.field("skills");
+    let kit = factory
+        .settings
+        .as_ref()
+        .is_some_and(|settings| settings.value.kit.is_some());
+    let mut seen = BTreeSet::new();
+    for name in skills {
+        let message = if name.is_empty() {
+            "`skills` holds an empty name".to_owned()
+        } else if !seen.insert(name) {
+            format!("`skills` names `{name}` twice")
+        } else if !kit && !factory.skills.contains_key(name) {
+            let known: Vec<&str> = factory.skills.keys().map(String::as_str).collect();
+            format!(
+                "`skills` names `{name}`, which is not a skill of this factory: {}",
+                if known.is_empty() {
+                    "it has none".to_owned()
+                } else {
+                    known.join(", ")
+                }
+            )
+        } else {
+            continue;
+        };
+        problems.push(problem(agent, line, message));
+    }
+}
+
 /// Refuses the keys that only a shared session reads.
 fn check_shared(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
     let value = &agent.value;
@@ -817,7 +847,7 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
         return;
     }
     // What a Codex run gets as `developer_instructions`, as the daemon joins it.
-    let size = join_instructions(&factory.codex_instructions(), &factory.prompt(value)).len();
+    let size = join_instructions(&factory.codex_instructions(value), &factory.prompt(value)).len();
     if size > CODEX_PROMPT_LIMIT {
         let mut parts = Vec::new();
         if !factory.instructions().is_empty() {
@@ -826,7 +856,7 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
         if !factory.memories.is_empty() {
             parts.push("the memory index");
         }
-        if !factory.skills.is_empty() {
+        if factory.skills.keys().any(|name| value.gets_skill(name)) {
             parts.push("the skill index");
         }
         let (parts, they) = if parts.is_empty() {
@@ -1259,6 +1289,68 @@ fn check_linear(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
             "a Linear trigger's `key` is `issue.identifier`".into(),
         );
     }
+}
+
+/// A `[pre]` script is an executable file inside the factory folder, with a timeout of at most 60
+/// seconds and `env` names that are variable names.
+fn check_pre(factory: &Factory, trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
+    let Some(pre) = &trigger.value.pre else {
+        return;
+    };
+    let mut report = |message: String| {
+        problems.push(problem(trigger, trigger.lines.field("pre"), message));
+    };
+    match pre.argv.first() {
+        None => report("`[pre] argv` needs a program".into()),
+        Some(program) => {
+            if let Some(refused) = inside(&factory.dir, program) {
+                report(format!("`[pre] argv`: {refused}"));
+            }
+        }
+    }
+    if pre.timeout() > crate::factory::Pre::MAX_TIMEOUT {
+        report(format!(
+            "`[pre] timeout` is {}s: a pre script runs at most 60s",
+            pre.timeout().as_secs()
+        ));
+    }
+    for name in pre.env.iter().filter(|name| !variable(name)) {
+        report(format!("`[pre] env`: `{name}` is not a variable name"));
+    }
+}
+
+/// Why `program` is not an executable file inside `dir`, if it is not.
+fn inside(dir: &Path, program: &str) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = Path::new(program);
+    let leaves = path.is_absolute()
+        || path
+            .components()
+            .any(|part| part == std::path::Component::ParentDir);
+    let resolved = dir.join(path).canonicalize();
+    let folder = dir.canonicalize();
+    match (resolved, folder) {
+        _ if leaves => Some(format!("{program} leaves the factory folder")),
+        (Ok(resolved), Ok(folder)) if !resolved.starts_with(&folder) => {
+            Some(format!("{program} leaves the factory folder"))
+        }
+        (Ok(resolved), _) => match std::fs::metadata(&resolved) {
+            Ok(file) if file.is_file() && file.permissions().mode() & 0o111 == 0 => {
+                Some(format!("{program} is not executable: chmod +x it"))
+            }
+            Ok(file) if file.is_file() => None,
+            _ => Some(format!("{program} is not a file in the factory folder")),
+        },
+        (Err(_), _) => Some(format!("{program} is not a file in the factory folder")),
+    }
+}
+
+/// Whether `name` can name an environment variable.
+fn variable(name: &str) -> bool {
+    name.starts_with(|first: char| first.is_ascii_alphabetic() || first == '_')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 fn check_slack(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {

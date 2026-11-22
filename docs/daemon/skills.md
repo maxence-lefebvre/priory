@@ -83,7 +83,8 @@ The factory's skills are in /home/max/.local/state/priory/kit/3f2a…/plugin/ski
 
 Codex's sandbox reads any file, so the run reads a skill's files where they are. Codex does not
 list these skills in its own skill picker: the agent finds them through the index only.
-`priory check` counts the index toward the 8192-byte limit.
+`priory check` counts the index toward the 8192-byte limit, with only the skills the agent gets
+(see [Skills per agent](#skills-per-agent)).
 
 ## Memories
 
@@ -408,6 +409,64 @@ goes to this repository, onto its `ref`, in place of the kit (see
 
 Without `[memories]`, runs get the kit's memories and the pull request goes to the kit, as above.
 
+## Skills per agent
+
+An agent can name the skills its runs get, with `skills` in its frontmatter (see
+[the reference](../reference/agents.md#frontmatter-keys)):
+
+```markdown
++++
+description = "Reviews one pull request."
+harness = "claude-code"
+skills = ["review-comments", "writing-tests"]
++++
+```
+
+Every skill costs every run something, whether the run uses it or not. Claude Code puts each
+skill's name and description in the session's context. A Codex run's index shares 8192 bytes with
+its instructions and prompt. And a skill is an instruction: a reviewer that sees a `release-notes`
+skill may follow it.
+
+| `skills` | The run gets |
+| -------- | ------------ |
+| Unset | Every skill of the factory and the kit |
+| A list | Only the skills it names |
+| `[]` | No skill: no plugin folder and no `# Skills` index |
+
+The list filters the merged skills. A name stands for the skill a run would get under it without
+the list: the factory's when the factory has it, else the kit's. The list holds exact names, with
+no pattern and no exclusion, so a new kit skill reaches no agent that names its skills until a pull
+request adds its name.
+
+The plugin folder and its hash cover only the skills the run gets. So agents whose lists give the
+same skills share one folder and record one `kit_hash`, and a reordered list changes nothing. Two
+lists that give different skills give two folders and two hashes. A shared session reads that as a
+change to its agent's prompt, so `onChange` applies (see
+[sessions.md](sessions.md#when-the-agent-changes)). The daemon filters the same way when it compacts
+an idle shared session, so that launch gets the same folder as the session's runs.
+
+`priory check` refuses an empty name and a name that appears twice. In a factory without `[kit]`,
+it refuses a name that is no skill of the factory:
+
+```text
+agents/reviewer/agent.md:4: `skills` names `review-coments`, which is not a skill of this factory: review-comments, writing-tests
+```
+
+With `[kit]`, a name the factory lacks may be the kit's, so `priory check` accepts it. At a run's
+start, a name that neither the factory nor the runner's kit commit holds gives no skill, and the
+run starts without it. The daemon's log names it once per run start:
+
+```text
+priory daemon: agent reviewer names skill review-coments, which neither the factory nor kit commit 7876b593d4a6 holds
+```
+
+The task is not blocked, since a failed kit fetch never blocks runs either.
+
+The list narrows only what Priory adds. A run still reads the person's own `~/.claude` or
+`~/.codex`, and the skills of the repository it works in. Every run still gets the instructions
+and the memory index. The list is not a permission: a run with a shell can read any plugin folder
+under Priory home.
+
 ## What a run records
 
 Each run records `kit_hash`, a hash of the skills, instructions and memories it got, or none when it
@@ -436,7 +495,8 @@ change to any of them reads as a change to the agent's prompt.
   or `.system.md` file. They are small. Since they are read-only, run
   `chmod -R u+w $PRIORY_HOME/kit` before you remove them yourself.
 - `priory check` cannot see a kit's files, so it neither warns about a factory skill that hides a
-  kit skill nor counts the kit's instructions or skills toward a Codex agent's 8192-byte limit. A Codex run
+  kit skill nor counts the kit's instructions or skills toward a Codex agent's 8192-byte limit. It
+  accepts any name in an agent's `skills` when the factory has `[kit]`. A Codex run
   whose merged instructions pass tmux's limit fails to start.
 - No test runs a real Claude Code or Codex: that a Claude run lists and uses `priory:<name>`, and
   that a Codex run reads a skill through its index, is checked by hand.

@@ -97,6 +97,42 @@ pub fn polled(
     tx.commit().map_err(|error| error.to_string())
 }
 
+/// Records a run of trigger `trigger`'s `pre` script. A failure posts one report from `intake`,
+/// unless the trigger's unread report already says the same; a run that exits 0 or 1 marks it read.
+pub fn pre_ran(db: &mut Connection, trigger: &str, failure: Option<&str>) -> Result<(), String> {
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let prefix = format!("pre of trigger {trigger}: ");
+    let unread: Option<(i64, String)> = tx
+        .query_row(
+            "SELECT seq, json_extract(data, '$.line') FROM inbox
+             WHERE type = ?1 AND subject = ?2 AND read IS NULL
+               AND substr(json_extract(data, '$.line'), 1, length(?3)) = ?3
+             ORDER BY seq DESC LIMIT 1",
+            params![REPORT, INTAKE, prefix],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let line = failure.map(|failure| failure.chars().take(LINE_MAX).collect::<String>());
+    let line = line.map(|line| line.replace(['\n', '\r'], " "));
+    if unread.as_ref().map(|(_, said)| said) == line.as_ref() {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE inbox SET read = coalesce(read, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+         WHERE type = ?1 AND subject = ?2 AND read IS NULL
+           AND substr(json_extract(data, '$.line'), 1, length(?3)) = ?3",
+        params![REPORT, INTAKE, prefix],
+    )
+    .map_err(|error| error.to_string())?;
+    if let Some(line) = &line {
+        report(&tx, INTAKE, line)?;
+    }
+    tx.commit().map_err(|error| error.to_string())
+}
+
 /// The intake's banner: when no source polled in the last 5 minutes, or else which fail and why.
 pub fn intake_banner(db: &Connection) -> rusqlite::Result<Option<String>> {
     db.query_row(

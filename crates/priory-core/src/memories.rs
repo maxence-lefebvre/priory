@@ -173,7 +173,7 @@ fn repeat(
     text: &str,
 ) -> rusqlite::Result<Option<String>> {
     let layer = layer(tx, Some(task))?;
-    let sources = crate::kit::sources(factory, kit, &layer);
+    let sources = crate::kit::sources(factory, kit, &layer, None);
     if sources.memory(name).is_some_and(|memory| {
         memory.description.trim() == description && memory.text().trim() == text
     }) {
@@ -317,7 +317,7 @@ pub(crate) fn recall(
         return Ok(Err(format!("no run has session {}", call.session)));
     };
     let layer = layer(db, Some(task))?;
-    let sources = crate::kit::sources(factory, kit, &layer);
+    let sources = crate::kit::sources(factory, kit, &layer, None);
     Ok(match sources.memory(name) {
         Some(memory) => Ok(String::from_utf8_lossy(&memory.bytes).into_owned()),
         None => Err(format!(

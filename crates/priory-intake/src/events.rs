@@ -829,6 +829,88 @@ pub struct TaskRequested {
     /// The trigger's `prompt`, or null without one. Schedule sources only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<Option<String>>,
+    /// The task's title, in place of the source event's, from the trigger's `pre` script.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 200))]
+    pub title: Option<String>,
+    /// The task's request text, in place of the source event's, from the trigger's `pre` script.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Text the trigger's `pre` script adds after the request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// What the trigger's `pre` script did. Triggers with one only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pre: Option<PreRan>,
+}
+
+/// What a trigger's `pre` script did to a request: its name alone when it changed nothing.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PreRan {
+    /// The script, `argv[0]` of the trigger's `[pre]`.
+    pub script: String,
+    /// The fields it changed: `title`, `text`, `context`, `band`, `lane` or `key`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed: Option<Vec<String>>,
+    /// The band before and after.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub band: Option<FromTo<Option<String>>>,
+    /// The lane before and after.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lane: Option<FromTo<Option<String>>>,
+    /// The key before and after.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<FromTo<String>>,
+    /// The title's length in characters before and after; null for none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<FromTo<Option<u64>>>,
+    /// The request text's length in characters before and after; null for none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<FromTo<Option<u64>>>,
+    /// The context's length in characters before and after; null for none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<FromTo<Option<u64>>>,
+    /// How long it ran. With `changed` or `failed` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<f64>,
+    /// How it failed, such as `exit 2: <stderr tail>`. The request is the one the trigger built.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed: Option<String>,
+}
+
+/// A value before and after a `pre` script.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FromTo<T> {
+    pub from: T,
+    pub to: T,
+}
+
+/// A trigger's `pre` script dropped a request: it exited 1, or failed with `on_error = "drop"`.
+/// It takes the id the request would have had, so one decision stands per event and trigger.
+/// The source event is still published.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IntakeDropped {
+    /// The trigger's name.
+    pub trigger: String,
+    /// The `id` of the source event's message.
+    #[schemars(extend("format" = "uuid"))]
+    pub source: String,
+    /// The key the request had.
+    pub key: String,
+    /// The script, `argv[0]` of the trigger's `[pre]`.
+    pub script: String,
+    /// Its exit code; null when it was killed, timed out or could not start.
+    pub exit: Option<i32>,
+    /// The first line it printed on stdout when it exited 1, if any.
+    pub reason: Option<String>,
+    /// How long it ran.
+    pub seconds: f64,
+    /// How it failed, when `on_error = "drop"` dropped the request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed: Option<String>,
 }
 
 /// A runner claims a task's key: for a request no runner holds, to take over a waiting task of a

@@ -106,6 +106,7 @@ fn start(
 pub fn kill(pid: u32) {
     let _ = Command::new("kill")
         .args(["-KILL", "--", &format!("-{pid}")])
+        .stderr(Stdio::null())
         .status();
 }
 
@@ -155,4 +156,173 @@ pub fn collect(log: &Path) -> String {
     }
     let _ = fs::remove_file(log);
     String::from_utf8_lossy(&kept).trim().to_owned()
+}
+
+/// How a script that [`run_bounded`] ran ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ended {
+    /// It exited with this code.
+    Exit(i32),
+    /// A signal it did not send itself killed it.
+    Signal,
+    /// It ran past its timeout, and was killed with its process group.
+    TimedOut,
+    /// It printed more than the cap on `stdout` or `stderr`, and was killed with its process group.
+    TooMuch(&'static str),
+    /// It could not start.
+    CannotStart(String),
+}
+
+impl std::fmt::Display for Ended {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Ended::Exit(code) => write!(formatter, "exit {code}"),
+            Ended::Signal => write!(formatter, "killed by a signal"),
+            Ended::TimedOut => write!(formatter, "timed out"),
+            Ended::TooMuch(stream) => write!(formatter, "printed too much on {stream}"),
+            Ended::CannotStart(error) => write!(formatter, "cannot start: {error}"),
+        }
+    }
+}
+
+/// What [`run_bounded`] kept of one run.
+#[derive(Debug, Clone)]
+pub struct Bounded {
+    pub ended: Ended,
+    /// At most the cap of its stdout.
+    pub stdout: Vec<u8>,
+    /// The last `KEPT` bytes of the at most cap bytes of stderr it read.
+    pub stderr: String,
+    pub seconds: f64,
+}
+
+/// Execs `argv` in `dir` in its own process group, with only `env` in its environment, writes
+/// `input` to its stdin then closes it, and reads both streams as they come. It kills the group
+/// once the script ends, at `timeout` counted from the start, or once a stream passes `cap` bytes.
+pub fn run_bounded(
+    argv: &[String],
+    env: &[(String, std::ffi::OsString)],
+    dir: &Path,
+    input: &[u8],
+    timeout: Duration,
+    cap: usize,
+) -> Bounded {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let started = Instant::now();
+    let failed = |error: String| Bounded {
+        ended: Ended::CannotStart(error),
+        stdout: Vec::new(),
+        stderr: String::new(),
+        seconds: started.elapsed().as_secs_f64(),
+    };
+    let Some((program, args)) = argv.split_first() else {
+        return failed("no program".to_owned());
+    };
+    let spawned = Command::new(program)
+        .args(args)
+        .env_clear()
+        .envs(env.iter().map(|(name, value)| (name, value)))
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => return failed(format!("{program}: {error}")),
+    };
+    let over = Arc::new(AtomicBool::new(false));
+    let mut readers = Vec::new();
+    for (name, stream) in [
+        (
+            "stdout",
+            child
+                .stdout
+                .take()
+                .map(|s| Box::new(s) as Box<dyn Read + Send>),
+        ),
+        (
+            "stderr",
+            child
+                .stderr
+                .take()
+                .map(|s| Box::new(s) as Box<dyn Read + Send>),
+        ),
+    ] {
+        let kept = Arc::new(Mutex::new(Vec::new()));
+        let (done, finished) = std::sync::mpsc::channel::<bool>();
+        if let Some(mut stream) = stream {
+            let (kept, over) = (Arc::clone(&kept), Arc::clone(&over));
+            std::thread::spawn(move || {
+                let mut buffer = [0u8; 8192];
+                let mut passed = false;
+                loop {
+                    match stream.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => {
+                            let mut kept = kept.lock().unwrap_or_else(|e| e.into_inner());
+                            if kept.len() + read > cap {
+                                passed = true;
+                                over.store(true, Ordering::SeqCst);
+                                break;
+                            }
+                            kept.extend_from_slice(&buffer[..read]);
+                        }
+                    }
+                }
+                let _ = done.send(passed);
+            });
+        }
+        readers.push((name, kept, finished));
+    }
+    if let Some(mut stdin) = child.stdin.take() {
+        let input = input.to_vec();
+        // A script that never reads its input holds this thread until it is killed.
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        });
+    }
+    let pid = child.id();
+    let ended = loop {
+        if over.load(Ordering::SeqCst) {
+            break None;
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status.code().map_or(Ended::Signal, Ended::Exit)),
+            Ok(None) if started.elapsed() >= timeout => break Some(Ended::TimedOut),
+            Ok(None) => std::thread::sleep(Duration::from_millis(5)),
+            Err(error) => break Some(Ended::CannotStart(format!("cannot wait for it: {error}"))),
+        }
+    };
+    // Children it left in the background end with it, so its pipes close.
+    kill(pid);
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut passed = None;
+    let mut streams = Vec::new();
+    for (name, kept, finished) in readers {
+        if finished.recv_timeout(Duration::from_secs(1)) == Ok(true) {
+            passed = passed.or(Some(name));
+        }
+        let kept = std::mem::take(&mut *kept.lock().unwrap_or_else(|e| e.into_inner()));
+        streams.push(kept);
+    }
+    let ended = match (ended, passed) {
+        (Some(Ended::Exit(code)), None) => Ended::Exit(code),
+        (_, Some(stream)) => Ended::TooMuch(stream),
+        (Some(ended), None) => ended,
+        (None, None) => Ended::TooMuch("stdout"),
+    };
+    let stderr = streams.pop().unwrap_or_default();
+    let stdout = streams.pop().unwrap_or_default();
+    let tail = &stderr[stderr.len().saturating_sub(KEPT)..];
+    Bounded {
+        ended,
+        stdout,
+        stderr: String::from_utf8_lossy(tail).trim().to_owned(),
+        seconds: started.elapsed().as_secs_f64(),
+    }
 }
