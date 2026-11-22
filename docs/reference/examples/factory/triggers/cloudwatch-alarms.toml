@@ -1,0 +1,7 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "cloudwatch"
+on = "alarm.state_changed"
+filter = { state = "ALARM", previous_state = "OK" }   # the alarm fired after it was OK
+repo = "owner/name"            # where its tasks work; without it they block
+workflow = "implement"
+key = "alarm.arn"              # the task key is cloudwatch:<alarm ARN>

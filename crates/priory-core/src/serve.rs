@@ -6,8 +6,8 @@ use crate::{
 };
 use priory_factory::factory::{Factory, Price, Terminal, Trigger};
 use priory_intake::intake::{
-    self, ASK_ANSWERED, ASK_DISMISSED, Github, HoneycombWebhook, IntercomWebhook, LinearWebhook,
-    SentryWebhook,
+    self, ASK_ANSWERED, ASK_DISMISSED, CloudwatchWebhook, Github, HoneycombWebhook,
+    IntercomWebhook, LinearWebhook, SentryWebhook,
 };
 use priory_intake::log;
 use priory_runtime::http::{self, Reply, Request};
@@ -24,6 +24,7 @@ use std::time::Duration;
 const GITHUB: &str = "/hooks/github";
 const LINEAR: &str = "/hooks/linear";
 const SENTRY: &str = "/hooks/sentry";
+const CLOUDWATCH: &str = "/hooks/cloudwatch";
 const HONEYCOMB: &str = "/hooks/honeycomb";
 const INTERCOM: &str = "/hooks/intercom";
 const INDEX: &[u8] = include_bytes!("../web/index.html");
@@ -186,6 +187,18 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         .map(|secret| SentryWebhook::new(secret, factory))
         .transpose()?
         .map(Arc::new);
+    let cloudwatch = factory
+        .cloudwatch_webhook()
+        .map(|hook| {
+            env(
+                &hook.secret_env,
+                "the EventBridge connection's API key value",
+            )
+        })
+        .transpose()?
+        .map(|secret| CloudwatchWebhook::new(secret, factory))
+        .transpose()?
+        .map(Arc::new);
     let honeycomb = factory
         .honeycomb_webhook()
         .map(|hook| env(&hook.secret_env, "the Honeycomb webhook's Shared Secret"))
@@ -233,6 +246,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         (github.is_some(), GITHUB),
         (linear.is_some(), LINEAR),
         (sentry.is_some(), SENTRY),
+        (cloudwatch.is_some(), CLOUDWATCH),
         (honeycomb.is_some(), HONEYCOMB),
         (intercom.is_some(), INTERCOM),
     ]
@@ -273,6 +287,12 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
                 log::open(&event_log).map_err(|error| error.to_string()),
             )
         });
+        let mut cloudwatch = cloudwatch.clone().map(|cloudwatch| {
+            (
+                cloudwatch,
+                log::open(&event_log).map_err(|error| error.to_string()),
+            )
+        });
         let mut honeycomb = honeycomb.clone().map(|honeycomb| {
             (
                 honeycomb,
@@ -291,16 +311,26 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
             &mut github,
             &mut linear,
             &mut sentry,
+            &mut cloudwatch,
             &mut honeycomb,
             &mut intercom,
         ) {
-            (true, Some(GITHUB), Some((github, bus)), _, _, _, _) => github.receive(bus, request),
-            (true, Some(LINEAR), _, Some((linear, bus)), _, _, _) => linear.receive(bus, request),
-            (true, Some(SENTRY), _, _, Some((sentry, bus)), _, _) => sentry.receive(bus, request),
-            (true, Some(HONEYCOMB), _, _, _, Some((honeycomb, bus)), _) => {
+            (true, Some(GITHUB), Some((github, bus)), _, _, _, _, _) => {
+                github.receive(bus, request)
+            }
+            (true, Some(LINEAR), _, Some((linear, bus)), _, _, _, _) => {
+                linear.receive(bus, request)
+            }
+            (true, Some(SENTRY), _, _, Some((sentry, bus)), _, _, _) => {
+                sentry.receive(bus, request)
+            }
+            (true, Some(CLOUDWATCH), _, _, _, Some((cloudwatch, bus)), _, _) => {
+                cloudwatch.receive(bus, request)
+            }
+            (true, Some(HONEYCOMB), _, _, _, _, Some((honeycomb, bus)), _) => {
                 honeycomb.receive(bus, request)
             }
-            (true, Some(INTERCOM), _, _, _, _, Some((intercom, bus))) => {
+            (true, Some(INTERCOM), _, _, _, _, _, Some((intercom, bus))) => {
                 intercom.receive(bus, request)
             }
             _ if request.method == "POST" => write(&db, &home, &served, &remote, request),

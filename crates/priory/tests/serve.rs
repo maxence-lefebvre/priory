@@ -5032,7 +5032,8 @@ fn use_factory(setup: &Setup, from: &Path) {
         )
         .replace("SENTRY_CLIENT_SECRET", "TEST_SECRET")
         .replace("HONEYCOMB_WEBHOOK_SECRET", "TEST_SECRET")
-        .replace("INTERCOM_CLIENT_SECRET", "TEST_SECRET");
+        .replace("INTERCOM_CLIENT_SECRET", "TEST_SECRET")
+        .replace("CLOUDWATCH_WEBHOOK_SECRET", "TEST_SECRET");
     if !text.contains("[serve]") {
         text.push_str("\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n");
     }
@@ -6150,6 +6151,212 @@ fn a_sentry_issue_without_its_id_gets_400_and_a_body_over_1_mib_gets_413() {
 
     assert_eq!(status, 400);
     assert_eq!(reply, r#"{"error":"the payload lacks the issue's `id`"}"#);
+    assert_eq!(big, 413);
+    assert!(setup.published().is_empty());
+}
+
+const CLOUDWATCH_HOOKS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n\n[webhooks.cloudwatch]\nsecret_env = \"TEST_SECRET\"\n";
+
+/// CloudWatch's single metric alarm state change example, trimmed, as EventBridge delivers it.
+fn alarm_changed(id: &str, previous: &str, state: &str) -> Value {
+    json!({
+        "version": "0",
+        "id": id,
+        "detail-type": "CloudWatch Alarm State Change",
+        "source": "aws.cloudwatch",
+        "account": "123456789012",
+        "time": "2026-11-17T17:04:40Z",
+        "region": "us-east-1",
+        "resources": ["arn:aws:cloudwatch:us-east-1:123456789012:alarm:ServerCpuTooHigh"],
+        "detail": {
+            "alarmName": "ServerCpuTooHigh",
+            "configuration": {
+                "description": "Goes into alarm when server CPU utilization is too high!",
+                "metrics": []
+            },
+            "previousState": {
+                "reason": "Threshold Crossed: 1 out of the last 1 datapoints was not greater than the threshold (50.0).",
+                "timestamp": "2026-11-17T13:56:40.987+0000",
+                "value": previous
+            },
+            "state": {
+                "reason": "Threshold Crossed: 1 out of the last 1 datapoints [99.5] was greater than the threshold (50.0).",
+                "timestamp": "2026-11-17T17:04:40.989+0000",
+                "value": state
+            }
+        }
+    })
+}
+
+/// POSTs `body` to `/hooks/cloudwatch` as an EventBridge API destination would, with `token` in
+/// the connection's API key header when given.
+fn deliver_cloudwatch(address: &str, token: Option<&str>, body: &str) -> (u16, String) {
+    let token = token.map_or(String::new(), |token| {
+        format!("X-Priory-Webhook-Token: {token}\r\n")
+    });
+    raw(
+        address,
+        &format!(
+            "POST /hooks/cloudwatch HTTP/1.1\r\nHost: {address}\r\nUser-Agent: Amazon/EventBridge/ApiDestinations\r\n\
+             Content-Type: application/json; charset=utf-8\r\nRange: bytes=0-1048575\r\n\
+             {token}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+impl Setup {
+    /// A factory with `[serve]`, the CloudWatch webhook and a `cloudwatch` trigger on `ALARM`.
+    fn cloudwatch_hooks(name: &str) -> Self {
+        let setup = Setup::new(name, CLOUDWATCH_HOOKS);
+        fs::create_dir_all(setup.dir.join("factory/triggers")).unwrap();
+        fs::write(
+            setup.dir.join("factory/triggers/cloudwatch-alarms.toml"),
+            "source = \"cloudwatch\"\non = \"alarm.state_changed\"\nfilter = { state = \"ALARM\" }\nrepo = \"owner/repo\"\nworkflow = \"implement\"\nkey = \"alarm.arn\"\n",
+        )
+        .unwrap();
+        setup
+    }
+
+    fn send_cloudwatch(&self, address: &str, body: &Value) -> (u16, String) {
+        deliver_cloudwatch(address, Some(&self.secret), &body.to_string())
+    }
+}
+
+#[test]
+fn a_cloudwatch_alarm_state_change_with_the_token_publishes_the_event_and_requests_a_task() {
+    let mut setup = Setup::cloudwatch_hooks("cloudwatch-changed");
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, reply) = setup.send_cloudwatch(
+        &address,
+        &alarm_changed("c4c1c1c9-6542-e61b-6ef0-8c4d36933a92", "OK", "ALARM"),
+    );
+
+    assert_eq!(status, 202, "{reply}");
+    assert_eq!(reply, r#"{"outcome":"published"}"#);
+    let published = setup.published();
+    let kinds: Vec<_> = published.iter().map(|m| m.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        ["cloudwatch.alarm.state_changed", "factory.task.requested"]
+    );
+    assert_eq!(published[0].subject.as_deref(), Some("ServerCpuTooHigh"));
+    assert_eq!(
+        published[0].data,
+        json!({
+            "alarm": "arn:aws:cloudwatch:us-east-1:123456789012:alarm:ServerCpuTooHigh",
+            "name": "ServerCpuTooHigh",
+            "description": "Goes into alarm when server CPU utilization is too high!",
+            "state": "ALARM",
+            "previous_state": "OK",
+            "reason": "Threshold Crossed: 1 out of the last 1 datapoints [99.5] was greater than the threshold (50.0).",
+            "account": "123456789012",
+            "region": "us-east-1",
+            "delivery": "c4c1c1c9-6542-e61b-6ef0-8c4d36933a92",
+            "time": "2026-11-17T17:04:40Z",
+            "baseline": false,
+            "triggers": ["cloudwatch-alarms"]
+        })
+    );
+    assert_eq!(
+        published[1].subject.as_deref(),
+        Some("cloudwatch:arn:aws:cloudwatch:us-east-1:123456789012:alarm:ServerCpuTooHigh")
+    );
+}
+
+#[test]
+fn a_cloudwatch_delivery_with_a_wrong_or_missing_token_gets_401_before_it_is_read() {
+    let mut setup = Setup::cloudwatch_hooks("cloudwatch-refused");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = alarm_changed("e1", "OK", "ALARM").to_string();
+    let wrong = format!("{}x", setup.secret);
+    for token in [Some("not-the-secret"), None, Some(""), Some(&wrong[..])] {
+        let (status, reply) = deliver_cloudwatch(&address, token, &body);
+
+        assert_eq!(status, 401, "{token:?}");
+        assert_eq!(
+            reply,
+            r#"{"error":"X-Priory-Webhook-Token is missing or is not the connection's API key"}"#
+        );
+    }
+    let (status, _) = deliver_cloudwatch(&address, Some("x"), "not json, secret-marker");
+    assert_eq!(status, 401);
+    assert!(setup.published().is_empty());
+    let log = fs::read_to_string(setup.dir.join("server.log")).unwrap_or_default();
+    assert!(
+        !log.contains("secret-marker") && !log.contains("ServerCpuTooHigh"),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_redelivered_cloudwatch_event_publishes_nothing() {
+    let mut setup = Setup::cloudwatch_hooks("cloudwatch-replay");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let event = alarm_changed("e1", "OK", "ALARM");
+    let (status, _) = setup.send_cloudwatch(&address, &event);
+    assert_eq!(status, 202);
+    let first = setup.published();
+    let mut retried = event.clone();
+    retried["detail"]["state"]["reason"] = json!("a retry that EventBridge reserialized");
+
+    for body in [event, retried] {
+        let (status, reply) = setup.send_cloudwatch(&address, &body);
+
+        assert_eq!(status, 202, "{reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    }
+    assert_eq!(setup.published(), first);
+}
+
+#[test]
+fn a_cloudwatch_event_no_trigger_matches_or_priory_does_not_map_gets_202_and_publishes_nothing() {
+    let mut setup = Setup::cloudwatch_hooks("cloudwatch-dropped");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut configuration = alarm_changed("e2", "OK", "ALARM");
+    configuration["detail-type"] = json!("CloudWatch Alarm Configuration Change");
+    let mut contributor = alarm_changed("e3", "OK", "ALARM");
+    contributor["detail-type"] = json!("CloudWatch Alarm Contributor State Change");
+    let mut other = alarm_changed("e4", "OK", "ALARM");
+    other["source"] = json!("aws.ec2");
+    let deliveries = [
+        alarm_changed("e1", "ALARM", "OK"),
+        configuration,
+        contributor,
+        other,
+        json!({ "id": "e5" }),
+    ];
+
+    for body in deliveries {
+        let (status, reply) = setup.send_cloudwatch(&address, &body);
+
+        assert_eq!(status, 202, "{body}: {reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    }
+    assert!(setup.published().is_empty());
+}
+
+#[test]
+fn a_cloudwatch_event_without_its_alarm_gets_400_and_a_body_over_1_mib_gets_413() {
+    let mut setup = Setup::cloudwatch_hooks("cloudwatch-invalid");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut nameless = alarm_changed("e1", "OK", "ALARM");
+    nameless["resources"] = json!([]);
+
+    let (status, reply) = setup.send_cloudwatch(&address, &nameless);
+    let (big, _) = raw(
+        &address,
+        &format!(
+            "POST /hooks/cloudwatch HTTP/1.1\r\nHost: {address}\r\nX-Priory-Webhook-Token: {}\r\n\
+             Content-Length: {}\r\n\r\n",
+            setup.secret,
+            1024 * 1024 + 1
+        ),
+    );
+
+    assert_eq!(status, 400);
+    assert_eq!(reply, r#"{"error":"the event lacks `resources[0]`"}"#);
     assert_eq!(big, 413);
     assert!(setup.published().is_empty());
 }

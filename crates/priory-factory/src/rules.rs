@@ -295,6 +295,12 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 factory.honeycomb_webhook().is_some(),
                 &mut problems,
             ),
+            "cloudwatch" => check_hooked(
+                trigger,
+                &CLOUDWATCH,
+                factory.cloudwatch_webhook().is_some(),
+                &mut problems,
+            ),
             "intercom" => check_hooked(
                 trigger,
                 &INTERCOM,
@@ -313,6 +319,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             "linear",
             "linear.view",
             "sentry",
+            "cloudwatch",
             "honeycomb",
             "intercom",
             "slack",
@@ -873,6 +880,15 @@ const HONEYCOMB: Hooked = Hooked {
     filters: &["environment", "trigger"],
     key: "trigger.id",
     events: "alerts",
+};
+
+const CLOUDWATCH: Hooked = Hooked {
+    source: "cloudwatch",
+    vendor: "CloudWatch",
+    on: "alarm.state_changed",
+    filters: &["name", "state", "previous_state"],
+    key: "alarm.arn",
+    events: "alarm state changes",
 };
 
 const INTERCOM: Hooked = Hooked {

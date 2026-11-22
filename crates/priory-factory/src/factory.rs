@@ -367,6 +367,7 @@ pub struct Webhooks {
     pub github: Option<GithubWebhook>,
     pub linear: Option<LinearWebhook>,
     pub sentry: Option<SentryWebhook>,
+    pub cloudwatch: Option<CloudwatchWebhook>,
     pub honeycomb: Option<HoneycombWebhook>,
     pub intercom: Option<IntercomWebhook>,
 }
@@ -395,6 +396,16 @@ pub struct LinearWebhook {
 pub struct SentryWebhook {
     /// The environment variable that holds the integration's Client Secret, never the secret itself.
     #[serde(default = "sentry_secret_env")]
+    pub secret_env: String,
+}
+
+/// CloudWatch alarm state changes, from an EventBridge API destination at `POST /hooks/cloudwatch`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CloudwatchWebhook {
+    /// The environment variable that holds the API key value of the EventBridge connection, never
+    /// the value itself.
+    #[serde(default = "cloudwatch_secret_env")]
     pub secret_env: String,
 }
 
@@ -441,6 +452,10 @@ pub struct SlackShortcut {
 
 fn app_token_env() -> String {
     "SLACK_APP_TOKEN".to_owned()
+}
+
+fn cloudwatch_secret_env() -> String {
+    "CLOUDWATCH_WEBHOOK_SECRET".to_owned()
 }
 
 fn intercom_secret_env() -> String {
@@ -966,7 +981,7 @@ struct KindOf {
 #[serde(deny_unknown_fields)]
 #[schemars(title = "trigger")]
 pub struct Trigger {
-    /// `github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `intercom`, `slack` or `schedule`.
+    /// `github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `intercom`, `cloudwatch`, `slack` or `schedule`.
     pub source: String,
     /// The repository the trigger's tasks work in, a GitHub `owner/name` with no `.` or `..` name;
     /// the polled one for `github`.
@@ -1867,6 +1882,17 @@ impl Factory {
             .as_ref()
     }
 
+    /// The CloudWatch webhook's settings; none takes no CloudWatch alarm events.
+    pub fn cloudwatch_webhook(&self) -> Option<&CloudwatchWebhook> {
+        self.settings
+            .as_ref()?
+            .value
+            .webhooks
+            .as_ref()?
+            .cloudwatch
+            .as_ref()
+    }
+
     /// The Honeycomb webhook's settings; none takes no Honeycomb webhook.
     pub fn honeycomb_webhook(&self) -> Option<&HoneycombWebhook> {
         self.settings
@@ -1901,6 +1927,8 @@ impl Factory {
                 .map_or_else(linear_secret_env, |hook| hook.secret_env.clone()),
             self.sentry_webhook()
                 .map_or_else(sentry_secret_env, |hook| hook.secret_env.clone()),
+            self.cloudwatch_webhook()
+                .map_or_else(cloudwatch_secret_env, |hook| hook.secret_env.clone()),
             self.honeycomb_webhook()
                 .map_or_else(honeycomb_secret_env, |hook| hook.secret_env.clone()),
             self.intercom_webhook()

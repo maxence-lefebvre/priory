@@ -3,7 +3,7 @@
 The HTTP server's endpoints and the JSON they return. [serve.md](../daemon/serve.md) explains where
 the server runs, its token and its limits.
 
-Every endpoint takes `GET`, except the [writes](#writes), `POST /hooks/github`, `POST /hooks/linear`, `POST /hooks/sentry`, `POST /hooks/honeycomb` and `POST /hooks/intercom`, which take
+Every endpoint takes `GET`, except the [writes](#writes), `POST /hooks/github`, `POST /hooks/linear`, `POST /hooks/sentry`, `POST /hooks/honeycomb`, `POST /hooks/intercom` and `POST /hooks/cloudwatch`, which take
 `POST`. Each one under `/api` needs `Authorization: Bearer <token>`; the web view's files do not.
 Each listing returns the same JSON as
 the CLI command with `--json`, with the state's `revision`, an integer, read in the same
@@ -70,6 +70,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /hooks/github` | | `202` for a signed GitHub delivery, with `[webhooks.github]`. See [below](#post-hooksgithub) |
 | `POST /hooks/linear` | | `200` for a signed Linear delivery, with `[webhooks.linear]`. See [below](#post-hookslinear) |
 | `POST /hooks/sentry` | | `202` for a signed Sentry delivery, with `[webhooks.sentry]`. See [below](#post-hookssentry) |
+| `POST /hooks/cloudwatch` | | `202` for an EventBridge delivery with the API key, with `[webhooks.cloudwatch]`. See [below](#post-hookscloudwatch) |
 | `POST /hooks/honeycomb` | | `202` for a Honeycomb delivery with the Shared Secret, with `[webhooks.honeycomb]`. See [below](#post-hookshoneycomb) |
 | `POST /hooks/intercom` | | `202` for a signed Intercom notification, with `[webhooks.intercom]`. `HEAD` gets `200`. See [below](#post-hooksintercom) |
 | any other path | | the web view, with `web = true`: see [Web view files](#web-view-files) |
@@ -301,6 +302,22 @@ publishes.
 The reply is `202` with `{"outcome": "published"}`, or `{"outcome": "dropped"}` for a delivery
 Priory does not take or already holds. A body that is not JSON, or an issue that lacks a field its
 event needs, gets `400`.
+
+## `POST /hooks/cloudwatch`
+
+Served only with [`[webhooks.cloudwatch]`](factory.md#webhookscloudwatch). It takes no token: the
+API key header is its authentication. [cloudwatch.md](../intake/cloudwatch.md) explains what a
+delivery publishes and how to set up the EventBridge rule, API destination and connection.
+
+| Header | Meaning |
+| ------ | ------- |
+| `X-Priory-Webhook-Token` | The value of the variable that `secret_env` names, sent by the connection's API key authorization. Missing or wrong: `401`, and the body is never parsed |
+| `Content-Length` | Required, at most 1 MiB. Over it: `413` before the body is read |
+
+The body is the EventBridge event, with no input transformer. The reply is `202` with
+`{"outcome": "published"}`, or `{"outcome": "dropped"}` for an event Priory does not take or
+already holds. A body that is not JSON, or an alarm state change that lacks a field its event
+needs, gets `400`.
 
 ## `POST /hooks/honeycomb`
 

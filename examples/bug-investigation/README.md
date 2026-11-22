@@ -1,8 +1,9 @@
 # Bug investigation
 
 When someone adds the label `bug` to an issue of `owner/repo`, Sentry reports a new error issue
-in `my-project`, a Honeycomb Trigger fires in `production`, or a customer starts an Intercom
-conversation, an agent reproduces the bug, finds its root cause, fixes it with a test, and asks
+in `my-project`, a Honeycomb Trigger fires in `production`, a customer starts an Intercom
+conversation, or a CloudWatch alarm goes into `ALARM`, an agent reproduces the bug, finds its root
+cause, fixes it with a test, and asks
 you before it opens the fix pull request.
 
 ## What it needs
@@ -18,6 +19,12 @@ with the Issue webhook pointed at `<url>/hooks/sentry`. Put the integration's Cl
 `triggers/sentry-issue.toml` with your project's slug, or delete the file and the `[serve]` and
 `[webhooks.sentry]` tables to use GitHub alone. See
 [docs/intake/sentry.md](../../docs/intake/sentry.md).
+
+The CloudWatch trigger needs the same server, reachable from AWS, and an EventBridge rule whose
+API destination posts to `<url>/hooks/cloudwatch`. Put the connection's API key value in
+`CLOUDWATCH_WEBHOOK_SECRET`. Delete `triggers/cloudwatch-alarm.toml` and the
+`[webhooks.cloudwatch]` table if you do not use CloudWatch. See
+[docs/intake/cloudwatch.md](../../docs/intake/cloudwatch.md).
 
 The Honeycomb trigger needs the same server, reachable from Honeycomb, and a Honeycomb webhook
 recipient pointed at `<url>/hooks/honeycomb` with Priory's payload template. Put the recipient's

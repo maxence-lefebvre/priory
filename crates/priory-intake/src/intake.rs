@@ -2,6 +2,7 @@ use crate::log::{self, Log};
 use herdr_bus::{Bus, Message, Output, Timestamp, Uuid};
 use priory_factory::factory::{Factory, Trigger};
 use priory_runtime::http::Reply;
+mod cloudwatch;
 mod gh;
 mod honeycomb;
 mod intercom;
@@ -16,6 +17,7 @@ mod shortcut;
 mod slack;
 mod webhook;
 
+pub use cloudwatch::CloudwatchWebhook;
 pub use honeycomb::HoneycombWebhook;
 pub use intercom::IntercomWebhook;
 pub use linear::state as linear_state;
@@ -112,6 +114,7 @@ pub fn output() -> Output {
             linear::UPDATED,
             linear::COMMENTED,
             sentry::CREATED,
+            cloudwatch::CHANGED,
             honeycomb::FIRED,
             intercom::CREATED,
             slack::POSTED,
@@ -632,6 +635,9 @@ fn dispatch(bus: &dyn Log, triggers: &[(&str, &Trigger)], source: &Message) -> R
             let repo = data["repo"].as_str().unwrap_or_default();
             let key = match (number.as_str(), data["channel"].as_str()) {
                 (Some(issue), _) if source.kind == sentry::CREATED => format!("sentry:{issue}"),
+                _ if source.kind == cloudwatch::CHANGED => {
+                    format!("cloudwatch:{}", data["alarm"].as_str().unwrap_or_default())
+                }
                 _ if source.kind == honeycomb::FIRED => {
                     format!("honeycomb:{}", data["trigger"].as_str().unwrap_or_default())
                 }

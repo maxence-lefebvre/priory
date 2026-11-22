@@ -22,7 +22,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `telemetry` | table | no | no export | Where trace records go. See [`[telemetry]`](#telemetry) | |
 | `notify` | table | no | no desktop notification | Notifications besides Web Push. See [`[notify]`](#notify) | |
 | `serve` | table | no | nothing listens | The HTTP server over the factory's state. See [`[serve]`](#serve) | |
-| `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub), [`[webhooks.linear]`](#webhookslinear), [`[webhooks.sentry]`](#webhookssentry), [`[webhooks.honeycomb]`](#webhookshoneycomb) and [`[webhooks.intercom]`](#webhooksintercom) | |
+| `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub), [`[webhooks.linear]`](#webhookslinear), [`[webhooks.sentry]`](#webhookssentry), [`[webhooks.honeycomb]`](#webhookshoneycomb), [`[webhooks.intercom]`](#webhooksintercom) and [`[webhooks.cloudwatch]`](#webhookscloudwatch) | |
 | `slack` | table | no | no Slack shortcut | The Slack message shortcut. See [`[slack.shortcut]`](#slackshortcut) | |
 | `asks` | table | no | answers are only stored | What happens to the answer of an ask from outside Priory. See [`[asks]`](#asks) | |
 | `links` | table of strings | no | the built-in `#n` link | Autolinks, each a regex and a URL template. See [`[links]`](#links) | |
@@ -182,6 +182,19 @@ deliveries at `POST /hooks/sentry`. A [`sentry` trigger](triggers.md#sentry) nee
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `secret_env` | string | no | `"SENTRY_CLIENT_SECRET"` | The environment variable that holds the Sentry integration's Client Secret. Never the secret itself | `"PRIORY_SENTRY_SECRET"` |
+
+`priory serve` and `priory daemon` refuse to start while that variable is unset or empty.
+
+## `[webhooks.cloudwatch]`
+
+See [cloudwatch.md](../intake/cloudwatch.md) for what a delivery publishes and how to set up
+EventBridge, and [serve.md](serve.md#post-hookscloudwatch) for the endpoint. With this table, the
+server takes CloudWatch alarm state changes from an EventBridge API destination at
+`POST /hooks/cloudwatch`. A [`cloudwatch` trigger](triggers.md#cloudwatch) needs it.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `secret_env` | string | no | `"CLOUDWATCH_WEBHOOK_SECRET"` | The environment variable that holds the value of the EventBridge connection's API key, `X-Priory-Webhook-Token`. Never the value itself | `"PRIORY_CLOUDWATCH_SECRET"` |
 
 `priory serve` and `priory daemon` refuse to start while that variable is unset or empty.
 
@@ -359,6 +372,9 @@ secret_env = "PRIORY_LINEAR_WEBHOOK_SECRET"    # the variable holding Linear's s
 
 [webhooks.sentry]
 secret_env = "SENTRY_CLIENT_SECRET"            # the variable holding the Sentry integration's Client Secret
+
+[webhooks.cloudwatch]
+secret_env = "CLOUDWATCH_WEBHOOK_SECRET"       # the variable holding the EventBridge connection's API key value
 
 [webhooks.honeycomb]
 secret_env = "HONEYCOMB_WEBHOOK_SECRET"        # the variable holding the Honeycomb recipient's Shared Secret

@@ -53,6 +53,18 @@
       ],
       "type": "object"
     },
+    "CloudwatchWebhook": {
+      "additionalProperties": false,
+      "description": "CloudWatch alarm state changes, from an EventBridge API destination at `POST /hooks/cloudwatch`.",
+      "properties": {
+        "secret_env": {
+          "default": "CLOUDWATCH_WEBHOOK_SECRET",
+          "description": "The environment variable that holds the API key value of the EventBridge connection, never\nthe value itself.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "CommandGuard": {
       "additionalProperties": false,
       "description": "A shell command that is irreversible: its program, then the first words after its options.",
@@ -535,6 +547,16 @@
       "additionalProperties": false,
       "description": "The signed webhooks the HTTP server accepts, by source.",
       "properties": {
+        "cloudwatch": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CloudwatchWebhook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "github": {
           "anyOf": [
             {
