@@ -57,6 +57,7 @@ such as a revert, arrives as a second record that points at the first. Each reco
 | `grade`            | no       | For a `model` step whose outcome is `red`, `yellow` or `green`: that outcome |
 | `harness`, `model` | no       | For `model` steps                                                     |
 | `kit_hash`         | no       | For `model` steps: a hash of the factory's skills, instructions and memories the run got; absent when it got none of them. See [skills.md](daemon/skills.md) |
+| `kit_commit`       | no       | For `model` steps: the commit of the factory's `[kit]` repository the run got; absent without one. See [skills.md](daemon/skills.md#a-kit-repository) |
 | `machine`          | yes      | Where the step ran                                                    |
 | `started`          | yes      | When the step started                                                 |
 | `duration_ms`      | yes      | Wall time from start to end                                           |

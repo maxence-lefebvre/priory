@@ -1,7 +1,7 @@
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { context, draw, herdr, press, settle, text } from "./kit.js";
+import { context, draw, find, herdr, press, settle, text } from "./kit.js";
 
 process.env.TZ = "UTC";
 mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-17T12:00:00Z") });
@@ -70,15 +70,46 @@ test("the view model is the web view's tasks.js, copied", () => {
     "cp crates/priory-core/web/tasks.js adapters/herdr/mods/priory-tasks/view.js");
 });
 
-test("another runner's task, which has no page here, stays out of the panel", async () => {
+test("another runner's task shows in Active with its hold and runner, and opens nothing", async () => {
   herdr.reset();
-  herdr.replies.tasks = { ...fixture, tasks: [...fixture.tasks, { id: null, key: "ENG-300", workflow: "implement", step: null, state: null, lane: null, band: "now", since: "2026-11-17T11:00:00Z", runner: "a", hold: "kept", last_seen: "2026-11-17T11:50:00Z", title: "Move the queue" }] };
+  herdr.replies.tasks = { ...fixture, tasks: [...fixture.tasks, { id: null, key: "ENG-300", workflow: "implement", step: null, state: null, lane: null, band: "now", since: "2026-11-17T11:00:00Z", runner: "a", hold: "kept", last_seen: "2026-11-17T11:48:00Z", title: "Move the queue" }] };
+  const view = new Tasks();
+  const cx = context();
+  view.init({}, cx);
+  await settle();
+
+  const drawn = draw(view, cx);
+  const shown = text(drawn);
+  assert.match(shown, /Active 4 Blocked 1 Ended 2/);
+  assert.match(shown, /ENG-300 implement kept 1 h Move the queue On runner a, last seen 12 min ago$/);
+  assert.equal(find(drawn, "task-null"), null, "its page stays on its runner");
+  assert.match(text(drawn), /State blocked 1 done 1 elsewhere 1/);
+  assert.match(text(drawn), /Runner a 1 none 5 /, "this runner's tasks name no runner in this fixture");
+});
+
+test("in a factory of several runners a Runner facet marks this runner (here)", async () => {
+  herdr.reset();
+  const here = fixture.tasks.map((/** @type {any} */ task) => ({ ...task, runner: "b", hold: "kept" }));
+  herdr.replies.tasks = { ...fixture, tasks: [...here, { id: null, key: "ENG-300", workflow: "implement", step: null, state: null, lane: null, band: "now", since: "2026-11-17T11:00:00Z", runner: "a", hold: "kept", last_seen: null }] };
+  const view = new Tasks();
+  const cx = context();
+  view.init({}, cx);
+  await settle();
+
+  assert.match(text(draw(view, cx)), /Runner a 1 b \(here\) 5 /);
+  press(draw(view, cx), "pick-runner-a");
+  assert.match(text(draw(view, cx)), /Active 1 Blocked 0 Ended 0/);
+});
+
+test("another runner's task with no workflow, last seen days ago, still draws, under the workflow none", async () => {
+  herdr.reset();
+  herdr.replies.tasks = { ...fixture, tasks: [...fixture.tasks, { id: null, key: "ENG-301", workflow: null, step: null, state: null, lane: null, band: null, since: "2026-11-15T12:00:00Z", runner: "a", hold: "waiting", last_seen: "2026-11-15T12:00:00Z", title: null }] };
   const view = new Tasks();
   const cx = context();
   view.init({}, cx);
   await settle();
 
   const shown = text(draw(view, cx));
-  assert.match(shown, /Active 3 Blocked 1 Ended 2/);
-  assert.doesNotMatch(shown, /ENG-300|elsewhere/);
+  assert.match(shown, /Workflow groom 1 implement 4 none 1 /);
+  assert.match(shown, /ENG-301 waiting Nov 15, 12:00 ENG-301 On runner a, last seen on Nov 15, 12:00$/);
 });

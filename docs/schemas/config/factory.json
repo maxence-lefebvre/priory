@@ -141,6 +141,55 @@
       },
       "type": "object"
     },
+    "Kit": {
+      "additionalProperties": false,
+      "description": "A kit repository whose skills, instructions and memories every run gets, before the factory's\nown. Each runner fetches it with git's own credentials.",
+      "properties": {
+        "every": {
+          "default": null,
+          "description": "How often a runner fetches the ref again; every 5 minutes when unset.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        },
+        "instructions": {
+          "description": "The instructions file inside the repository; `instructions.md` when unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "memories": {
+          "description": "The memories folder inside the repository; `memories` when unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ref": {
+          "description": "The branch, tag or commit to fetch; the repository's default branch when unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo": {
+          "description": "The repository, as `git fetch` takes it: a URL, or a path, which a relative one takes from\nthe factory folder.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "skills": {
+          "description": "The skills folder inside the repository; `skills` when unset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "repo"
+      ],
+      "type": "object"
+    },
     "LinearWebhook": {
       "additionalProperties": false,
       "description": "Linear webhooks, at `POST /hooks/linear`.",
@@ -522,6 +571,16 @@
       "type": [
         "string",
         "null"
+      ]
+    },
+    "kit": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Kit"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "links": {

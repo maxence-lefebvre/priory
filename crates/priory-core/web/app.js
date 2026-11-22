@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, snoozeShortcut, snoozed, stillArmed, takesText, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, snoozeShortcut, snoozed, stillArmed, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
@@ -10,8 +10,8 @@ import { KINDS, edgeStyle, lockBadge, nodeShape, timeline, ungatedPairs } from "
 import { emptyDetail, eventWords, handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, sayLine, screenRows, screenWatch } from "./terminal.js";
-import { actionNote, batchParts, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
-import { TASK_FACETS, TASK_VIEWS, elsewhere, filtered, olderPart, taskViews, triageWords } from "./tasks.js";
+import { actionNote, batchParts, dueParts, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
+import { TASK_VIEWS, elsewhere, filtered, olderPart, taskFacets, taskViews, triageWords } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
 
@@ -99,8 +99,8 @@ const STATES = {
   ask: ["wait", "ask"], answered: ["muted", "check"], withdrawn: ["muted", "minus"], prompt: ["warn", "hand"],
   refused: ["warn", "x"], moved: ["muted", "arrow-right"], todo: ["wait", "square"], batch: ["muted", "layers"],
   restarted: ["muted", "rotate-ccw"], cancelled: ["muted", "x"], exited: ["danger", "log-out"],
-  // Another runner's task shows its hold, as its owner last published it.
-  kept: ["muted", "server"], waiting: ["muted", "server"],
+  // Another runner's task: its tile has its own key, since `waiting` is also a task state.
+  elsewhere: ["muted", "server"],
 };
 const role = (state) => (STATES[state] || ["muted", "circle-help"])[0];
 function tile(state, size = "") {
@@ -534,7 +534,7 @@ function countLine(model) {
 function upNext(model) {
   const next = (model.upNext || []).slice(0, 3);
   const when = (run) => {
-    if (run.kind === "queued") return "now, on room";
+    if (run.kind === "queued") return onRoom(run) ? "now, on room" : "now";
     const at = new Date(run.at);
     const time = clock(run.at);
     return today(run.at) ? time : `${time} ${at.toLocaleDateString("en", { weekday: "short" })}`;
@@ -787,13 +787,13 @@ const ago = (iso) => (/ (min|h)$/.test(age(iso)) ? `${age(iso)} ago` : `on ${age
 
 // Another runner's task (DESIGN.md, Task row and run row): its hold for a state, and no page here.
 function remoteListRow(task) {
-  return html`<div class="row">${tile(task.hold)}
+  return html`<div class="row">${tile("elsewhere")}
     <span class="l1"><span class="mono">${task.key}</span><span>${task.workflow || ""}</span><span>${task.hold}</span><span class="age">${timeTag(task.since)}</span></span>
     <span class="l2 r">${task.title || task.key}</span><span class="l3"><span>${elsewhere(task, ago)}</span></span></div>`;
 }
 
 function remoteTableRow(task) {
-  return html`<tr><td>${stateWord(task.hold)}</td><td class="mono">${task.key}</td>
+  return html`<tr><td>${tile("elsewhere", "sm")} ${task.hold}</td><td class="mono">${task.key}</td>
     <td class="q full"><span>${task.title || task.key}</span><span class="why t3">${elsewhere(task, ago)}</span></td>
     <td>${task.workflow || ""}</td><td>${task.lane || ""}</td><td>${task.band || ""}</td><td class="r">${timeTag(task.since)}</td></tr>`;
 }
@@ -814,17 +814,18 @@ function taskTableRow(task) {
 }
 
 function tasksBody(wide) {
-  const picks = facetPicks(TASK_FACETS);
-  const current = listView(TASK_VIEWS);
   const all = state.data.tasks;
-  const views = taskViews(filtered(all, picks));
+  const specs = taskFacets(all);
+  const picks = facetPicks(specs);
+  const current = listView(TASK_VIEWS);
+  const views = taskViews(filtered(all, picks, specs));
   const { counted, unloaded } = olderPart({ view: current, history: "ended", older: olderTasks(), picked: picks.size > 0 });
   const chips = savedViews([
     ["active", "Active", views.active.length, current === "active"],
     ["blocked", "Blocked", views.blocked.length, current === "blocked"],
     ["ended", "Ended", views.ended.length + counted, current === "ended"],
   ], "/tasks", facetQuery(picks));
-  const facets = html`<div class="facets" aria-label="Facets">${TASK_FACETS.map((spec) => facet(current, picks, spec, "/tasks", all))}</div>`;
+  const facets = html`<div class="facets" aria-label="Facets">${specs.map((spec) => facet(current, picks, spec, "/tasks", all))}</div>`;
   const list = views[current];
   const empty = { active: html`No active tasks. Add one with the + button, or run <code>priory add</code>.`, blocked: "No blocked tasks. A task shows here when it needs a person to go on.", ended: "No task ended in the last 7 days. A task shows here once it is done, failed or dropped." }[current];
   if (!list.length && !unloaded) return { views: html`${chips}${facets}`, rows: html`<p class="empty">${empty}</p>` };
@@ -1017,6 +1018,7 @@ function askDetail(id, wide) {
       ...(revision.answer == null ? [] : [[revision.answered_at || revision.at, html`<li>${tile("answered", "sm")}<span>Answered <b>${revision.answer}</b>${ask.state === "answered" && revision.revision === ask.revision ? byLine(ask) : ""}</span>${timeTag(revision.answered_at, clock(revision.answered_at || revision.at))}</li>`]]),
     ]),
     ...(ask.refused || []).map((refusal) => [refusal.at, html`<li>${tile("refused", "sm")}<span class="t-warn"><b>Refused:</b> ${refusal.answer}, sent for revision ${refusal.revision} from ${refusal.by}: ${refusal.why}</span>${timeTag(refusal.at, clock(refusal.at))}</li>`]),
+    ...submitted(ask).map((sent) => [sent.at, html`<li>${tile(sent.tile, "sm")}<span class="${sent.tile === "refused" ? "t-warn" : ""}">${sent.text}</span>${timeTag(sent.at, clock(sent.at))}</li>`]),
   // Built oldest first; reversed, entries of the same second stay newest first through the stable sort.
   ].reverse().sort(([a], [b]) => b.localeCompare(a));
   const historyItems = dated.map(([, item]) => item);
