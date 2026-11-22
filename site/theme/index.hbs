@@ -8,7 +8,9 @@
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="{{ path_to_root }}assets/favicon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="{{ path_to_root }}assets/apple-touch-icon.png">
-<link rel="preload" href="{{ path_to_root }}assets/fonts/mona-sans-200-900.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="{{ path_to_root }}assets/fonts/instrument-sans-400-700.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="{{ path_to_root }}assets/tokens/structure.css">
+<link rel="stylesheet" href="{{ path_to_root }}assets/tokens/themes.css">
 {{#each additional_css}}
 <link rel="stylesheet" href="{{ resource this }}">
 {{/each}}
@@ -106,8 +108,6 @@ try {
   <span>Priory is MIT licensed. These pages are built from the Markdown in the repository.</span>
   <a href="{{ git_repository_url }}">Priory on GitHub</a>
 </footer>
-
-<template id="ribbon"><svg class="rib" viewBox="18 20 4 11" aria-hidden="true"><path d="M18 20h4v11l-2-2.5L18 31Z"></path></svg></template>
 
 {{#if search_js}}
 <script src="{{ resource "elasticlunr.min.js" }}"></script>

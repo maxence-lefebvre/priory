@@ -2,11 +2,11 @@
   <title id="title">How a task moves through Priory</title>
   <desc id="desc">From top to bottom. The intake polls GitHub, Linear, Slack and schedules, a webhook is checked then published, and a request you type comes from priory add: all three land on the log. The daemon finds the task each message concerns, and a task request creates a task, queued at its workflow's first step, or joins the active task of its key. When the machine has room, a run starts a model step's agent, Claude Code or Codex, in the task's git worktree and a tmux session. The agent ends its turn with a tool call. With result, the step's outcome picks the next step, done or stop, and a next model step starts a run again. With wait, the task sleeps until an event such as checks or a merge. With ask, the task sleeps until a person answers on the desk. An event or an answer wakes the task, and its next run resumes the agent's session. At done, a task with a pull request first waits for the pull request's checks.</desc>
   <style>
-    svg { --surface: #FFFFFF; --raised: #ECECF2; --line: #E3E3EA; --edge: #85858F; --text: #0B0B14; --text-2: #3C3C46; --text-3: #686872; --action: #5856D6; --action-soft: #ECEBFC; --action-text: #4F4DC9; --danger: #C4161C; }
+    svg { --surface: #FFFFFF; --raised: #F1F1F1; --line: #E7E7E7; --edge: #878787; --text: #161616; --text-2: #4A4A4A; --text-3: #6E6E6E; --action: #161616; --action-soft: #F1F1F1; --wait: #A84D06; --danger: #C0262D; }
     @media (prefers-color-scheme: dark) {
-      svg { --surface: #1C1C1E; --raised: #2C2C2E; --line: #2C2C30; --edge: #6E6E78; --text: #FFFFFF; --text-2: #D1D1D6; --text-3: #98989F; --action: #5E5CE6; --action-soft: #24234A; --action-text: #9D9BFF; --danger: #FF6961; }
+      svg { --surface: #141414; --raised: #1D1D1D; --line: #262626; --edge: #6B6B6B; --text: #EDEDED; --text-2: #B5B5B5; --text-3: #8A8A8A; --action: #EDEDED; --action-soft: #1D1D1D; --wait: #F0A04B; --danger: #F2777A; }
     }
-    text { font: 12px "Mona Sans", system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--text-2); }
+    text { font: 12px "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--text-2); }
     .t { font-weight: 600; font-size: 14px; fill: var(--text); }
     .id { font: 500 14px "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace; fill: var(--text); }
     .mono { font: 12px "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
@@ -14,7 +14,7 @@
     .end-anchor { text-anchor: end; }
     .bg { fill: var(--surface); stroke: var(--line); }
     .box { fill: var(--surface); stroke: var(--edge); stroke-width: 1.5; }
-    .person { fill: var(--action-soft); stroke: var(--edge); stroke-width: 1.5; }
+    .person { fill: var(--surface); stroke: var(--wait); stroke-width: 1.5; }
     .end { fill: var(--raised); stroke: var(--edge); stroke-width: 1.5; }
     .outside { fill: var(--raised); }
     .flow { fill: none; stroke: var(--text-2); stroke-width: 1.5; stroke-linejoin: round; }

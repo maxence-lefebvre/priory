@@ -129,25 +129,23 @@ function mdbook_something_else_has_focus(e) {
   // On this page: the h2 and h3 headings, on the right from 1200 px and folded under the title below.
   const headings = [...document.querySelectorAll(".prose h2[id], .prose h3[id]")];
   if (headings.length < 2) return;
-  const ribbon = document.getElementById("ribbon").content;
-  const entry = (h, withRibbon) => {
+  const entry = (h) => {
     const li = document.createElement("li");
     if (h.tagName === "H3") li.className = "sub";
     const a = document.createElement("a");
     a.href = `#${h.id}`;
-    if (withRibbon) a.append(ribbon.cloneNode(true));
     a.append(h.textContent.trim());
     li.append(a);
     return li;
   };
   const list = document.getElementById("toc-list");
-  headings.forEach((h) => list.append(entry(h, true)));
+  headings.forEach((h) => list.append(entry(h)));
   list.closest(".toc").hidden = false;
 
   const inline = document.createElement("details");
   inline.className = "toc-inline";
   inline.innerHTML = '<summary><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h.01M3 18h.01M3 6h.01M8 12h13M8 18h13M8 6h13"></path></svg>On this page</summary><ul></ul>';
-  headings.filter((h) => h.tagName === "H2").forEach((h) => inline.querySelector("ul").append(entry(h, false)));
+  headings.filter((h) => h.tagName === "H2").forEach((h) => inline.querySelector("ul").append(entry(h)));
   const title = document.querySelector(".prose h1");
   if (title) title.after(inline);
   else document.querySelector(".prose").prepend(inline);

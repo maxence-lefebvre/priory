@@ -67,6 +67,16 @@ class Staging(unittest.TestCase):
             target.rmdir()
 
 
+class Tokens(unittest.TestCase):
+    def test_the_site_links_the_shared_token_files_and_copies_no_color(self):
+        page = (build.SITE / "theme" / "index.hbs").read_text(encoding="utf-8")
+        for name in ("structure.css", "themes.css"):
+            self.assertIn(f'href="{{{{ path_to_root }}}}assets/tokens/{name}"', page)
+            self.assertTrue((build.ROOT / "design" / "tokens" / name).exists())
+        css = (build.SITE / "theme" / "site.css").read_text(encoding="utf-8")
+        self.assertNotRegex(css, r"#[0-9A-Fa-f]{3,8}\b|light-dark\(|rgba?\(")
+
+
 class Chapters(unittest.TestCase):
     def test_every_doc_page_is_listed_once(self):
         listed = [p for _, ps in build.chapters() for p in ps]

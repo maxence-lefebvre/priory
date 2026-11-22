@@ -2,11 +2,11 @@
   <title id="title">Two runners sharing one log</title>
   <desc id="desc">A sequence between runner a, the log and runner b, in four parts from top to bottom. Claiming a task: a task request lands, both runners read it and each claims the key, and the first claim in the log wins, so runner a owns the task. Holding it: runner a publishes an alive message once a minute, the hold waiting while no run started, and the hold kept before the first run, which starts once runner a reads kept back from the log. Runner a is cut off: its kept tasks go on and its waiting tasks stay unstarted, its lease ends 30 minutes after its last alive message, then runner b claims its waiting tasks, takes them over and runs them, while kept tasks stay with runner a. Runner a is back: it reads the log before any run and drops each task that moved to runner b.</desc>
   <style>
-    svg { --surface: #FFFFFF; --raised: #ECECF2; --line: #E3E3EA; --edge: #85858F; --text: #0B0B14; --text-2: #3C3C46; --text-3: #686872; --action: #5856D6; --action-soft: #ECEBFC; --action-text: #4F4DC9; --danger: #C4161C; }
+    svg { --surface: #FFFFFF; --raised: #F1F1F1; --line: #E7E7E7; --edge: #878787; --text: #161616; --text-2: #4A4A4A; --text-3: #6E6E6E; --action: #161616; --action-soft: #F1F1F1; --wait: #A84D06; --danger: #C0262D; }
     @media (prefers-color-scheme: dark) {
-      svg { --surface: #1C1C1E; --raised: #2C2C2E; --line: #2C2C30; --edge: #6E6E78; --text: #FFFFFF; --text-2: #D1D1D6; --text-3: #98989F; --action: #5E5CE6; --action-soft: #24234A; --action-text: #9D9BFF; --danger: #FF6961; }
+      svg { --surface: #141414; --raised: #1D1D1D; --line: #262626; --edge: #6B6B6B; --text: #EDEDED; --text-2: #B5B5B5; --text-3: #8A8A8A; --action: #EDEDED; --action-soft: #1D1D1D; --wait: #F0A04B; --danger: #F2777A; }
     }
-    text { font: 12px "Mona Sans", system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--text-2); }
+    text { font: 12px "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--text-2); }
     .t { font-weight: 600; font-size: 14px; fill: var(--text); }
     .cap { font-weight: 600; font-size: 13px; fill: var(--text); paint-order: stroke; stroke: var(--surface); stroke-width: 6px; }
     .mid { text-anchor: middle; }
