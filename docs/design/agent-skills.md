@@ -155,10 +155,9 @@ match and its session would never compact.
 ## The first slice: `skills` on an agent
 
 This slice is built, with each open question's recommendation taken:
-[skills.md](../daemon/skills.md#skills-per-agent) describes it. It differs from this section in two
-details. Without a kit commit yet, the daemon's log says the runner has none rather than naming a
-commit. And the size message of a Codex agent names `instructions.md` only when the factory has it,
-and reads "it is N bytes" when the agent's own prompt alone passes the limit.
+[skills.md](../daemon/skills.md#skills-per-agent) describes it. It differs from this section in one
+detail: without a kit commit yet, the daemon's log says the runner has none rather than naming a
+commit.
 
 1. `Agent` gains `skills: Option<Vec<String>>`, in the JSON Schema and in
    [agents.md](../reference/agents.md).
