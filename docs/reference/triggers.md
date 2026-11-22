@@ -21,6 +21,7 @@ cannot tell which keys a source refuses; `priory check` does.
 - [`schedule`](#schedule)
 - [Task requests: `triggers/cli.toml` and `hold`](#task-requests-triggersclitoml-and-hold)
 - [`intervention` and `lead`](#intervention-and-lead)
+- [`auto_answer`](#auto_answer)
 - [`pre`](#pre)
 - [Errors from `priory check`](#errors-from-priory-check)
 
@@ -37,6 +38,7 @@ cannot tell which keys a source refuses; `priory check` does.
 | `hold` | table | no | | Files each task held. See [`hold`](#hold) | `{ reason = "triage first" }` |
 | `intervention` | `plan` or `hands-off` | no | a person answers every ask | Who answers its tasks' asks. See [`intervention` and `lead`](#intervention-and-lead) | `"plan"` |
 | `lead` | string | with `hands-off` | | The agent that answers asks of a `hands-off` task | `"lead"` |
+| `auto_answer` | `high` or `medium` | no | no ask is answered this way | The lowest confidence at which the daemon answers its tasks' asks with their recommendation. See [`auto_answer`](#auto_answer) | `"high"` |
 | `caps` | table | no | no cap | Spend caps in dollars for its tasks: `task`, `day` and `week`, each above zero. See [spend.md](../daemon/spend.md) | `{ task = 2.0, day = 10.0 }` |
 | `pre` | table | no | | A script that runs on each matching event before its task request, and can drop or change it. See [`pre`](#pre) | `{ argv = ["scripts/sentry-pre"] }` |
 | `staged` | boolean | no | `false` | Whether its tasks are a trial: model steps run, and each task blocks before its first irreversible step with what that step would have done. See [Staged tasks](../daemon/tools.md#staged-tasks) | `true` |
@@ -388,6 +390,32 @@ intervention = "hands-off"
 lead = "lead"                  # agents/lead/agent.md, with session = "shared"
 ```
 
+## `auto_answer`
+
+`auto_answer` is the lowest confidence an agent's ask must state for the daemon to answer it with
+its recommendation. `priory request --auto-answer` and `priory add --auto-answer` set it for one
+task, and otherwise a CLI request takes the one in `triggers/cli.toml`. A task keeps the level its
+trigger had when it was created. [waits.md](../daemon/waits.md#answered-by-auto) describes which
+asks qualify.
+
+| Value | Effect |
+| ----- | ------ |
+| unset | No ask is answered this way |
+| `high` | An eligible ask stated at `high` is answered by `auto` |
+| `medium` | An eligible ask stated at `high` or `medium` is answered by `auto` |
+
+`low` is refused: a level that accepts every ask is `hands-off` with no reader. A task can have
+both `auto_answer` and `intervention = "hands-off"`: the daemon answers first when the ask is
+eligible, and the lead gets the rest, except a `low` ask, which goes to the person.
+
+```toml
+source = "github"
+repo = "owner/name"
+on = "issues.labeled"
+workflow = "implement"
+auto_answer = "high"
+```
+
 ## `pre`
 
 `[pre]` names a script of the factory that runs on each event the trigger matches, before the
@@ -470,6 +498,7 @@ env = ["AMPLITUDE_READ_TOKEN"]
 | `"<text>" is not a time of day such as "18:00" or a duration such as 8h` | A bad `until` |
 | `"<text>" is not a time zone such as "Europe/Paris"` | A `timezone` that is not an IANA name |
 | `` `intervention = "hands-off"` needs a `lead`: the agent that answers asks in the person's place `` | `hands-off` without `lead` |
+| `` `auto_answer = "low"` would answer every ask an agent makes: use `high` or `medium`, or leave it unset `` | `auto_answer = "low"` |
 | `` lead `<agent>` does not exist `` | `lead` names no file under `agents/` |
 | `` lead `<agent>` needs harness = "claude-code" and session = "shared" `` | A `lead` that is a Codex agent or has a `per-task` session |
 | `` `[pre]` runs on every source except `triggers/cli.toml`: priory add and priory request never run it `` | A `[pre]` table on the `cli` trigger |

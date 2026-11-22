@@ -1178,6 +1178,38 @@ impl Intervention {
     }
 }
 
+/// How sure an agent is that its recommendation is what the person would pick, and the lowest
+/// such confidence a task's `auto_answer` lets the daemon act on.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Confidence {
+    Low,
+    Medium,
+    High,
+}
+
+impl Confidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Confidence::Low => "low",
+            Confidence::Medium => "medium",
+            Confidence::High => "high",
+        }
+    }
+
+    /// The confidence a word names, or `None` for any other word.
+    pub fn parse(word: &str) -> Option<Self> {
+        match word {
+            "low" => Some(Confidence::Low),
+            "medium" => Some(Confidence::Medium),
+            "high" => Some(Confidence::High),
+            _ => None,
+        }
+    }
+}
+
 /// `scorers/<name>.toml` or `.yaml`: a question that grades one finished run with `pass` or
 /// `fail`. The file name is the scorer's name.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -1366,6 +1398,9 @@ pub struct Trigger {
     /// The agent that answers asks of a `hands-off` task: a `claude-code` agent with a `shared`
     /// session.
     pub lead: Option<String>,
+    /// The lowest confidence at which the daemon answers an agent's ask with its own
+    /// recommendation: `high` or `medium`; no ask is answered this way when unset.
+    pub auto_answer: Option<Confidence>,
     /// Spend caps in dollars for the trigger's tasks.
     pub caps: Option<Limits>,
     /// Whether its tasks are a trial: each stops before its first irreversible step, records what

@@ -42,6 +42,8 @@ pub(crate) struct NewTask {
     #[serde(skip)]
     pub lead: Option<String>,
     #[serde(default)]
+    pub auto_answer: Option<priory_factory::factory::Confidence>,
+    #[serde(default)]
     pub batch: Option<priory_intake::events::BatchRequest>,
     /// From the trigger's `pre` script: the title and text in place of the source event's, and
     /// text added after the request.
@@ -174,7 +176,8 @@ pub(crate) fn tick(message: &Message, factory: &Factory) -> bool {
 /// workflow the factory lacks creates its task with no step, which waits until the workflow is back.
 /// A request with no lane gets the one `lanes.toml` derives; no branch exists yet to match.
 /// A new task's band is its request's, else its trigger's, else its workflow's, else the last one.
-/// Its intervention is its request's, else its trigger's, and its lead its trigger's.
+/// Its intervention and `auto_answer` level are its request's, else its trigger's, and its lead its
+/// trigger's.
 pub(crate) fn route(message: &Message, owner: Option<&Task>, factory: &Factory) -> Decision {
     if let Some(task) = owner {
         return Decision::Keep(task.id);
@@ -205,6 +208,11 @@ pub(crate) fn route(message: &Message, owner: Option<&Task>, factory: &Factory) 
         .intervention
         .or_else(|| trigger.and_then(|trigger| trigger.value.intervention));
     task.lead = trigger.and_then(|trigger| trigger.value.lead.clone());
+    // `low` would answer every ask; `priory check` and the CLI refuse it, and a message never sets it.
+    task.auto_answer = task
+        .auto_answer
+        .or_else(|| trigger.and_then(|trigger| trigger.value.auto_answer))
+        .filter(|level| *level != priory_factory::factory::Confidence::Low);
     if task.lane.is_none() {
         task.lane = Some(factory.lanes().lane(&Subject {
             key: &task.key,

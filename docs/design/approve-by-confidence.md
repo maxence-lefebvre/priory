@@ -5,6 +5,14 @@ recommendation, when the agent states a confidence and a person set the level th
 builds nothing. It holds the model, the first code slice with its tests, the slices after it, and
 the open questions with a recommendation for each.
 
+The first slice is built, with every open question's recommendation taken:
+[waits.md](../daemon/waits.md#answered-by-auto) describes it. It differs from this note in four
+ways. A desk item of an ask carries `confidence` and `rationale` too, so the desk can show them
+beside the recommendation. `priory asks` prints no new columns: the JSON carries the fields. A
+batch's entries take their planning task's level, as they take its `intervention`. The daemon
+drops the push its insert of an auto-answered ask queued, in the same transaction. The later slices
+are not built.
+
 The name is the scout report's. The feature answers a question. It never grants an approval.
 
 The idea comes from a read of other agent factories on 2026-11-22. GitHub Copilot rates each issue
@@ -21,7 +29,7 @@ a person approved that step, unless the factory marks it autonomous with a reaso
 
 - The `ask` tool takes `question`, `options`, `recommendation` and `tradeoff`
   (`crates/priory-core/src/tools.rs:636`, `:657`, `:670`). It has no confidence and no reason for
-  the recommendation beyond the trade-off ([tools.md](../reference/tools.md#askquestion-options-recommendation-tradeoff-title-text-whatwaits-nextaction-command)).
+  the recommendation beyond the trade-off ([tools.md](../reference/tools.md#askquestion-options-recommendation-tradeoff-confidence-rationale-title-text-whatwaits-nextaction-command)).
 - A trigger's `intervention` has two values, `plan` and `hands-off`
   (`crates/priory-factory/src/factory.rs:872`, `:1074`). Unset, every ask goes to a person
   ([triggers.md](../reference/triggers.md#intervention-and-lead)).
@@ -124,6 +132,8 @@ The confidence never reaches a place that widens it: it is not a grade, not a me
 input to queue order or routing.
 
 ## The first slice: fields, level and the auto-answer
+
+This slice is built. See the top of this page for how it differs.
 
 1. `ask` takes and stores `confidence` and `rationale`, and the listings and the task page's API
    carry them.

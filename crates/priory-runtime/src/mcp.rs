@@ -359,6 +359,11 @@ pub(crate) fn tools() -> Value {
                     "options": { "type": "array", "items": { "type": "string" }, "description": "The answers you expect." },
                     "recommendation": text("The option you recommend, and why."),
                     "tradeoff": text("What each option costs."),
+                    "confidence": {
+                        "enum": ["high", "medium", "low"],
+                        "description": "How sure you are that the person would pick your recommendation. With it, recommendation is exactly one of options, and rationale says why. Leave it out when you cannot say.",
+                    },
+                    "rationale": text("With confidence: why, in one line of at most 200 characters a person can check later."),
                     "title": text("The question in one line, for the desk."),
                     "text": text("The ask's body in Markdown, one idea per paragraph."),
                     "whatWaits": text("What waits on the answer."),

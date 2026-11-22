@@ -819,6 +819,11 @@ pub struct TaskRequested {
     /// trigger's when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intervention: Option<priory_factory::factory::Intervention>,
+    /// The lowest confidence at which the daemon answers the task's asks with their
+    /// recommendation, from `priory request` or `priory add --auto-answer`: `high` or `medium`;
+    /// the trigger's when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_answer: Option<priory_factory::factory::Confidence>,
     /// The batch a planning task plans, from `priory batch add`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch: Option<BatchRequest>,

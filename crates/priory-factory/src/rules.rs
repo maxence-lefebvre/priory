@@ -1,6 +1,6 @@
 use crate::factory::{
-    ASK_SHAPE, Agent, Backend, Benchmark, CODEX_PROMPT_LIMIT, Debate, Decider, Effect, Factory,
-    Harness, INSTRUCTIONS, Intervention, Loaded, Moment, OPEN_MEMORIES_PR, OnChange,
+    ASK_SHAPE, Agent, Backend, Benchmark, CODEX_PROMPT_LIMIT, Confidence, Debate, Decider, Effect,
+    Factory, Harness, INSTRUCTIONS, Intervention, Loaded, Moment, OPEN_MEMORIES_PR, OnChange,
     PermissionMode, Problem, Proof, Recipe, ScoreKind, ScoreOn, Scorer, Session, Step, Trigger,
     Until, Workflow, join_instructions,
 };
@@ -373,6 +373,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             ));
         }
         check_lead(factory, trigger, &mut problems);
+        check_auto_answer(trigger, &mut problems);
         check_pre(factory, trigger, &mut problems);
         match trigger.value.source.as_str() {
             "github" => check_github(trigger, &mut problems),
@@ -1064,6 +1065,17 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
                 format!("a codex agent cannot take `permissions.{field}`: Codex has no per-tool rules, so its sandbox and approvals follow `defaultMode` alone"),
             ));
         }
+    }
+}
+
+/// `auto_answer = "low"` would accept every ask an agent makes, which is `hands-off` with no reader.
+fn check_auto_answer(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
+    if trigger.value.auto_answer == Some(Confidence::Low) {
+        problems.push(problem(
+            trigger,
+            trigger.lines.field("auto_answer"),
+            "`auto_answer = \"low\"` would answer every ask an agent makes: use `high` or `medium`, or leave it unset".into(),
+        ));
     }
 }
 

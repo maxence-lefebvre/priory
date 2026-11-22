@@ -186,6 +186,6 @@ The core serves every field that
   and `cancel`; see [serve.md](../reference/serve.md#queue) and [runs.md](../daemon/runs.md#queue).
 - Reports, picks and comments on rows: [reports.md](../daemon/reports.md).
 - Ask fields: `what_waits`, `next_action`, `title` and a Markdown `text`, in
-  [tools.md](../reference/tools.md#askquestion-options-recommendation-tradeoff-title-text-whatwaits-nextaction-command).
+  [tools.md](../reference/tools.md#askquestion-options-recommendation-tradeoff-confidence-rationale-title-text-whatwaits-nextaction-command).
 - Ask history: each ask's `revisions` and `refused` answers, in `priory asks --json`.
 - Task detail: `priory task ID --json` prints a task's `brief`, `plan`, `pull_request` and runs.

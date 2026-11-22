@@ -15,6 +15,15 @@
       ],
       "description": "What a hold's `after` waits for: another task to end, or a Linear issue to close."
     },
+    "Confidence": {
+      "description": "How sure an agent is that its recommendation is what the person would pick, and the lowest\nsuch confidence a task's `auto_answer` lets the daemon act on.",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "type": "string"
+    },
     "Hold": {
       "additionalProperties": false,
       "description": "Why a task is held, and the conditions that release it once all of them hold. With none, a\nperson does.",
@@ -212,6 +221,17 @@
       "description": "The local time of day a schedule fires, `HH:MM`.",
       "pattern": "^([01]?[0-9]|2[0-3]):[0-5][0-9]$",
       "type": "string"
+    },
+    "auto_answer": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Confidence"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The lowest confidence at which the daemon answers an agent's ask with its own\nrecommendation: `high` or `medium`; no ask is answered this way when unset."
     },
     "backfill": {
       "description": "Whether the events of the first poll start tasks too.",

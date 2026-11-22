@@ -177,7 +177,7 @@ low` lists the asks of tasks graded low. `priory asks` prints the five lines in 
 `merge_risk`. A human step's ask also takes the verdict and the five lines as its `text`, which the
 web view and a routed ask's lead read.
 
-## `ask(question, options, recommendation, tradeoff, title?, text?, whatWaits?, nextAction?, command?)`
+## `ask(question, options, recommendation, tradeoff, confidence?, rationale?, title?, text?, whatWaits?, nextAction?, command?)`
 
 `ask` puts a question on the desk and stores it as an ask at revision 1. The agent then ends its
 turn and sleeps with no process. The person's answer arrives as its next prompt (see
@@ -201,9 +201,25 @@ turn and sleeps with no process. The person's answer arrives as its next prompt 
 | `whatWaits`  | What waits on the answer                                             |
 | `nextAction` | What the agent does once it has the answer                           |
 | `command`    | An object: a command that an answer runs (see Commands an answer runs) |
+| `confidence` | `high`, `medium` or `low`: how sure the agent is that its recommendation is what the person would pick (see Confidence) |
+| `rationale`  | Why, in one line of at most 200 characters a person can check later |
 
 `priory asks` and `priory asks --json` show them, the JSON as `title`, `text`, `what_waits`,
-`next_action` and `command`.
+`next_action` and `command`. `priory asks --all --json`, `/api/asks` and the task page's API carry
+`confidence`, `rationale` and `answered_by`.
+
+### Confidence
+
+The tool refuses a `confidence` with no `rationale`, a rationale with a line break or over 200
+characters, a confidence other than `high`, `medium` or `low`, and a confidence on an ask whose
+`recommendation` is not one of its `options`. Each refusal names its reason, such as `a confidence
+needs a rationale: one line on why`. An ask without a confidence behaves as one did before.
+
+When the task has an [`auto_answer`](triggers.md#auto_answer) level, the daemon may answer the ask
+with its recommendation in the transaction that stores it (see
+[waits.md](../daemon/waits.md#answered-by-auto)). The tool's reply is the same either way, and the
+agent is never told its task's level. A `low` ask of a `hands-off` task skips the lead and goes to
+the person: the agent said it does not know, and a lead's guess is not a person's answer.
 
 ### Commands an answer runs
 

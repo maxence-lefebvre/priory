@@ -375,7 +375,9 @@ message routed to no task, `ignored`, is left out, so a busy repository does not
 its `time`, its `task` and the task's `key`, and `what`: the record's type, step and outcome, the
 message's type, subject and outcome, or a report's `<source>: <line>`. A task request that an
 outside session added ends with `, added by session <session>` (see
-[tools.md](tools.md#the-outside-server)). `priory desk` without
+[tools.md](tools.md#the-outside-server)). An ask the daemon answered
+at the task's `auto_answer` level reads `ask <id> answered "<option>" by auto (<confidence>):
+<rationale>` (see [waits.md](waits.md#answered-by-auto)). `priory desk` without
 `--json` lists the events after its items, under a `since you looked` header with the columns
 `time`, `task` and `what`, newest first. It prints no `last_visit` and, with no events, no list.
 
