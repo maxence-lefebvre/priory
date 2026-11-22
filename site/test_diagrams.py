@@ -38,6 +38,13 @@ class Diagrams(unittest.TestCase):
                 self.assertGreater(len(root[1].text.strip()), 80)
                 self.assertIn("@media (prefers-color-scheme: dark)", text)
 
+    def test_each_diagram_draws_the_graphite_colors_of_the_token_files(self):
+        for name in PLACES:
+            with self.subTest(name):
+                text = (FOLDER / f"{name}.svg").read_text(encoding="utf-8")
+                self.assertEqual(len(build.PALETTE.findall(text)), 2)
+                self.assertEqual(text, build.diagram_palette(text), "run python3 site/build.py diagrams")
+
     def test_each_diagram_keeps_its_text_source_beside_it(self):
         for name in PLACES:
             with self.subTest(name):

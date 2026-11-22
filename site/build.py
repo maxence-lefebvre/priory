@@ -3,7 +3,7 @@
 
 Copies GETTING_STARTED.md and docs/ into site/build/src, writes SUMMARY.md from the docs folders
 and their README files, builds the home page from site/home.md, and points links to files outside
-the book at GitHub.
+the book at GitHub. Run `build.py diagrams` to copy the Graphite colours into docs/images/diagrams.
 """
 
 import os
@@ -58,6 +58,16 @@ FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 INDENTED = re.compile(r"^(    |\t)(?![-*+] |\d+\. )")
 CODE_SPAN = re.compile(r"`+[^`]*`+")
 INCLUDE = re.compile(r"<!-- include (\S+) \"([^\"]+)\" -->")
+
+# A diagram is an <img>, so it cannot read the page's tokens: each SVG keeps a copy of these Graphite
+# colours, as `--diagram-name: light` and the same names for dark. `build.py diagrams` rewrites them.
+DIAGRAMS = ROOT / "docs" / "images" / "diagrams"
+DIAGRAM_TOKENS = {
+    "surface": "surface", "raised": "raised", "line": "line", "edge": "control-line",
+    "text": "text", "text-2": "text-2", "text-3": "text-3", "action": "action",
+    "action-soft": "action-soft", "wait": "wait", "danger": "danger-text",
+}
+PALETTE = re.compile(r"svg \{ --surface:[^}]*\}")
 
 
 def title_of(path):
@@ -170,6 +180,33 @@ def home(pages):
     return INCLUDE.sub(lambda m: rewrite_links(section(m[1], m[2]), m[1], pages), template)
 
 
+def graphite_colors():
+    """Return {token: (light, dark)} from the Graphite block of design/tokens/themes.css."""
+    css = (ROOT / "design" / "tokens" / "themes.css").read_text(encoding="utf-8")
+    block = css[css.index('[data-theme="graphite"] {'):]
+    block = block[:block.index("}")]
+    return {name: (light, dark) for name, light, dark in re.findall(r"--([\w-]+): light-dark\((#\w+), (#\w+)\)", block)}
+
+
+def diagram_palette(text):
+    """Return an SVG diagram's text with its light, then dark, palette copied from Graphite."""
+    colors = graphite_colors()
+    rules = iter(
+        "svg { " + " ".join(f"--{name}: {colors[token][mode]};" for name, token in DIAGRAM_TOKENS.items()) + " }"
+        for mode in (0, 1)
+    )
+    text, found = PALETTE.subn(lambda m: next(rules), text, count=2)
+    if found != 2:
+        raise ValueError("a diagram needs a light and a dark `svg { --surface: ... }` palette line")
+    return text
+
+
+def sync_diagrams():
+    for svg in sorted(DIAGRAMS.glob("*.svg")):
+        svg.write_text(diagram_palette(svg.read_text(encoding="utf-8")), encoding="utf-8")
+        print(f"synced {svg.relative_to(ROOT)}")
+
+
 def main():
     out = SITE / "build" / "src"
     if any(p.is_symlink() for p in (SITE / "build", out)):
@@ -189,10 +226,11 @@ def main():
     (out / "index.md").write_text(home(pages), encoding="utf-8")
     assets = out / "assets"
     shutil.copytree(ROOT / "design" / "fonts", assets / "fonts", ignore=shutil.ignore_patterns("*.md"))
+    shutil.copytree(ROOT / "design" / "tokens", assets / "tokens")
     for name in ("lockup.svg", "lockup-dark.svg", "favicon.svg", "apple-touch-icon.png"):
         shutil.copy(ROOT / "design" / "logo" / name, assets / name)
     print(f"staged {len(pages) + 1} pages in {out.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":
-    main()
+    sync_diagrams() if sys.argv[1:] == ["diagrams"] else main()

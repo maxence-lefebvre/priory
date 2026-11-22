@@ -1695,21 +1695,30 @@ The web's [Runs panel](#runs-panel), as a tab in the center stack.
 
 ## Docs site
 
-The documentation website, built by mdBook from `site/`, uses the Indigo theme, light and dark,
-and this file's type, spacing, radii and copy rules. Its board is the
-[Priory docs site artifact](https://claude.ai/artifact/F15DQy4zmNiRvSPBfJotVM). It reads on its
-own, so it differs from the view:
+The documentation website, built by mdBook from `site/`, uses the Graphite theme, light and dark,
+and this file's type, spacing, radii and copy rules. Its board is the docs home and how-to page on
+the [Graphite board](https://claude.ai/artifact/PJWYYqCiEBRFnpVBE3HYRY). It reads on its own, so
+it differs from the view:
 
+- **Tokens.** `site/build.py` stages `design/tokens/` beside the pages, and the theme links both
+  files. `site/theme/site.css` adds only the docs' own sizes and copies no color.
+- **Type.** Body text is 16 / 26 within `--measure`, except beside a wide table. On wide screens,
+  the title is 36 / 42 and h2 22 / 28, at `--display-weight` and normal width; h3 is 17 / 24 at
+  600. The paragraph under the title is the lede, 17 / 27 in `--text-2`.
 - **Layout.** A 52 px top bar with the lockup, search and a light or dark toggle. From 1200 px, a
   264 px navigation on the left, the page at most `--measure` wide, and a 216 px "On this page"
   list on the right. From 900 px, the list folds under the title. Below 900 px, the navigation and
   the search open over the page.
-- **The mark.** The top bar shows the lockup. The current heading in "On this page" carries the
-  mark's ribbon in `--action`.
-- **Navigation.** One group per docs folder. The current page is printed in solid `--emph`.
+- **Navigation.** One group per docs folder, its head a caption in `--text`. The current page sits
+  on `--raised`. In "On this page", a hairline runs beside the list and the current heading takes a
+  2 px `--emph` rule.
 - **Reference tables.** They scroll in their own box with the key column sticky. Below 900 px, each
   row stacks into one block: key, type and "yes" when required, then meaning, default and example.
-- **Code** sits on `--term-bg`, dark in both modes, with a copy button.
+- **Code** follows the mode: `--raised` with a `--line` edge and `--radius-card`, and a copy button.
+  Callouts are a `--line` box on `--surface`, with no tinted fill.
+- **Diagrams** are images, so each SVG keeps a copy of the Graphite colors.
+  `python3 site/build.py diagrams` rewrites them, and a test fails when they drift. A person's
+  step is outlined in `--wait`.
 
 ## When to change this file
 
