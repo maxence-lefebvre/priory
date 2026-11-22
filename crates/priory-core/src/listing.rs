@@ -1523,6 +1523,21 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
                OR inbox.seq IN (SELECT inbox FROM waits WHERE task = ?1 AND inbox IS NOT NULL)
              ORDER BY inbox.seq DESC",
         ),
+        (
+            "scores",
+            "SELECT run, step, scorer, kind, verdict, reason, time FROM (
+               SELECT json_extract(event, '$.data.run') AS run,
+                 json_extract(event, '$.data.step') AS step,
+                 json_extract(event, '$.data.scorer') AS scorer,
+                 json_extract(event, '$.data.kind') AS kind,
+                 json_extract(event, '$.data.verdict') AS verdict,
+                 json_extract(event, '$.data.reason') AS reason, time,
+                 row_number() OVER (PARTITION BY json_extract(event, '$.data.run'),
+                   json_extract(event, '$.data.scorer') ORDER BY seq DESC) AS latest
+               FROM trace WHERE type = 'factory.run.scored'
+                 AND json_extract(event, '$.data.task') = CAST(?1 AS TEXT))
+             WHERE latest = 1 ORDER BY CAST(run AS INTEGER), scorer",
+        ),
     ];
     for (name, query) in lists {
         task[name] = rows(db, query, [id])?;

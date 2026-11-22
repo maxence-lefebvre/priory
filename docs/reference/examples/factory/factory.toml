@@ -38,6 +38,16 @@ secret_env = "PRIORY_LINEAR_WEBHOOK_SECRET"    # the variable holding Linear's s
 [webhooks.sentry]
 secret_env = "SENTRY_CLIENT_SECRET"            # the variable holding the Sentry integration's Client Secret
 
+[webhooks.cloudwatch]
+secret_env = "CLOUDWATCH_WEBHOOK_SECRET"       # the variable holding the EventBridge connection's API key value
+
+[webhooks.honeycomb]
+secret_env = "HONEYCOMB_WEBHOOK_SECRET"        # the variable holding the Honeycomb recipient's Shared Secret
+
+[webhooks.intercom]
+secret_env = "INTERCOM_CLIENT_SECRET"          # the variable holding the Intercom app's client secret
+workspace = "a86dr8yl"                         # the one workspace whose notifications it takes
+
 [asks]
 deliver = "bin/deliver"                        # delivers outside answers, from the factory folder
 targets = { ops = "../ops" }                   # where an answer can run an ask's command

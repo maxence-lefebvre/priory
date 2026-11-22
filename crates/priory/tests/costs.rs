@@ -420,3 +420,80 @@ fn at_monday_midnight_this_week_is_empty_and_last_week_is_whole() {
         [0.0, 3.0]
     );
 }
+
+#[test]
+fn costs_count_each_scorers_verdicts_in_the_window_by_the_split() {
+    let setup = Setup::new("scores");
+    let score = |time: &str, run: &str, machine: &str, scorer: &str, verdict: &str| {
+        let data = json!({
+            "workflow": "implement", "task": "1", "run": run, "step": "implement",
+            "machine": machine, "scorer": scorer, "kind": "outcome", "verdict": verdict,
+            "reason": "why",
+        });
+        setup
+            .db()
+            .execute(
+                "INSERT INTO trace (id, type, time, event) VALUES
+                 (lower(hex(randomblob(16))), 'factory.run.scored', ?1, json_object('data', json(?2)))",
+                [time, &data.to_string()],
+            )
+            .unwrap();
+    };
+    score("2026-11-16T09:00:00.000Z", "1", "box", "gate", "fail");
+    // Scored again, so the run counts once, as its latest score.
+    score("2026-11-16T10:00:00.000Z", "1", "box", "gate", "pass");
+    score("2026-11-16T10:00:00.000Z", "2", "box", "gate", "error");
+    score(
+        "2026-11-16T10:00:00.000Z",
+        "3",
+        "rig",
+        "gate",
+        "not applicable",
+    );
+    score("2026-11-16T10:00:00.000Z", "3", "rig", "passed", "fail");
+    // Last week counts in neither split.
+    score("2026-11-10T10:00:00.000Z", "4", "box", "gate", "pass");
+
+    let by_machine = setup.costs_json(&["--by", "machine"]);
+
+    let counts = |pass, fail, error, not_applicable| json!({ "pass": pass, "fail": fail, "error": error, "not_applicable": not_applicable });
+    let expected = vec![
+        ("box", "gate", counts(1, 0, 1, 0)),
+        ("rig", "gate", counts(0, 0, 0, 1)),
+        ("rig", "passed", counts(0, 1, 0, 0)),
+    ]
+    .into_iter()
+    .map(|(machine, scorer, mut row)| {
+        row["machine"] = json!(machine);
+        row["scorer"] = json!(scorer);
+        row
+    })
+    .collect::<Vec<_>>();
+    assert_eq!(by_machine["scores"], json!(expected));
+    // A score takes the model of its run's step record.
+    setup
+        .db()
+        .execute(
+            "INSERT INTO trace (id, type, time, event) VALUES ('s3', 'factory.step.ended',
+             '2026-11-16T09:30:00.000Z', json_object('data', json_object('run', '3', 'model', 'm1')))",
+            [],
+        )
+        .unwrap();
+    let models: Vec<_> = setup.costs_json(&["--by", "model"])["scores"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| format!("{} {}", row["model"], row["scorer"]))
+        .collect();
+    assert_eq!(
+        models,
+        [r#""-" "gate""#, r#""m1" "gate""#, r#""m1" "passed""#]
+    );
+    assert_eq!(
+        setup.costs_json(&[])["scores"],
+        json!([
+            { "workflow": "implement", "scorer": "gate", "pass": 1, "fail": 0, "error": 1, "not_applicable": 1 },
+            { "workflow": "implement", "scorer": "passed", "pass": 0, "fail": 1, "error": 0, "not_applicable": 0 },
+        ])
+    );
+}

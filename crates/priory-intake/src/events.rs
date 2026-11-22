@@ -598,6 +598,84 @@ pub struct SentryIssueCreated {
     pub source: Source,
 }
 
+/// A CloudWatch alarm's state change, from an EventBridge API destination.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CloudwatchAlarmStateChanged {
+    /// The alarm's ARN, such as `arn:aws:cloudwatch:us-east-1:123456789012:alarm:ServerCpuTooHigh`.
+    pub alarm: String,
+    /// The alarm's name.
+    pub name: String,
+    /// The alarm's description; null when it has none.
+    pub description: Option<String>,
+    /// The new state: `ALARM`, `OK` or `INSUFFICIENT_DATA`.
+    pub state: String,
+    /// The state before; null when the event names none.
+    pub previous_state: Option<String>,
+    /// Why the state changed, in CloudWatch's words; null when the event gives none.
+    pub reason: Option<String>,
+    /// The AWS account id.
+    pub account: Option<String>,
+    /// The AWS region, such as `us-east-1`.
+    pub region: Option<String>,
+    /// The EventBridge event id, which stays the same across EventBridge's retries.
+    pub delivery: String,
+    #[serde(flatten)]
+    pub source: Source,
+}
+
+/// A contact started an Intercom conversation, from a signed webhook delivery.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IntercomConversationCreated {
+    /// Intercom's conversation id, such as `1295`.
+    pub conversation: String,
+    /// The workspace id, the notification's `app_id`.
+    pub workspace: String,
+    /// The conversation's title; null when it has none.
+    pub title: Option<String>,
+    /// The first message's subject, as on an email; null when it has none.
+    pub subject: Option<String>,
+    /// The first message's text: plain text from API version 2.15, HTML before it.
+    pub body: Option<String>,
+    /// The name of whoever wrote the first message.
+    pub author: Option<String>,
+    /// The author's type, such as `user` or `lead`.
+    pub author_type: Option<String>,
+    /// The page where the contact started the conversation; null for email and bots.
+    pub page: Option<String>,
+    /// The notification's id, which starts with `notif_`. Intercom signs it with the body.
+    pub delivery: Option<String>,
+    #[serde(flatten)]
+    pub source: Source,
+}
+
+/// A Honeycomb Trigger fired, from a webhook delivery that carried the Shared Secret.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HoneycombTriggerFired {
+    /// Honeycomb's Trigger id, such as `JwwZxfcP5kH`.
+    pub trigger: String,
+    /// The Trigger's name.
+    pub name: String,
+    /// The Trigger's description; null when it has none.
+    pub description: Option<String>,
+    /// The Trigger's page on Honeycomb.
+    pub url: String,
+    /// The Honeycomb environment the Trigger belongs to; null when the payload names none.
+    pub environment: Option<String>,
+    /// Honeycomb's one-line summary of the alert.
+    pub summary: Option<String>,
+    /// The id of this firing, the same across Honeycomb's retries.
+    pub instance: String,
+    /// The query result that fired the Trigger.
+    pub result_url: Option<String>,
+    /// The `X-Honeycomb-Webhook-Delivery-ID` of the delivery.
+    pub delivery: Option<String>,
+    #[serde(flatten)]
+    pub source: Source,
+}
+
 /// A message posted in a Slack trigger's channel, outside a thread.
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]

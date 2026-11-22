@@ -1,0 +1,155 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/cloudwatch.alarm.state_changed.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "CloudwatchAlarmStateChanged": {
+      "additionalProperties": false,
+      "description": "A CloudWatch alarm's state change, from an EventBridge API destination.",
+      "properties": {
+        "account": {
+          "description": "The AWS account id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "alarm": {
+          "description": "The alarm's ARN, such as `arn:aws:cloudwatch:us-east-1:123456789012:alarm:ServerCpuTooHigh`.",
+          "type": "string"
+        },
+        "baseline": {
+          "description": "True when the event came from the first poll of its stream.",
+          "type": "boolean"
+        },
+        "delivery": {
+          "description": "The EventBridge event id, which stays the same across EventBridge's retries.",
+          "type": "string"
+        },
+        "description": {
+          "description": "The alarm's description; null when it has none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The alarm's name.",
+          "type": "string"
+        },
+        "previous_state": {
+          "description": "The state before; null when the event names none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "description": "Why the state changed, in CloudWatch's words; null when the event gives none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "description": "The AWS region, such as `us-east-1`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "description": "The new state: `ALARM`, `OK` or `INSUFFICIENT_DATA`.",
+          "type": "string"
+        },
+        "time": {
+          "description": "When the event happened, RFC 3339.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "triggers": {
+          "description": "The triggers the event matched, so the triggers it requests tasks for; may be empty.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "alarm",
+        "name",
+        "description",
+        "state",
+        "previous_state",
+        "reason",
+        "account",
+        "region",
+        "delivery",
+        "time",
+        "baseline",
+        "triggers"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A CloudWatch alarm's state change, from an EventBridge API destination.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/CloudwatchAlarmStateChanged"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "cloudwatch.alarm.state_changed",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "cloudwatch.alarm.state_changed",
+  "type": "object"
+}

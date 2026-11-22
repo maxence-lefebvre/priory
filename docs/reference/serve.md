@@ -3,7 +3,7 @@
 The HTTP server's endpoints and the JSON they return. [serve.md](../daemon/serve.md) explains where
 the server runs, its token and its limits.
 
-Every endpoint takes `GET`, except the [writes](#writes), `POST /hooks/github`, `POST /hooks/linear` and `POST /hooks/sentry`, which take
+Every endpoint takes `GET`, except the [writes](#writes), `POST /hooks/github`, `POST /hooks/linear`, `POST /hooks/sentry`, `POST /hooks/honeycomb`, `POST /hooks/intercom` and `POST /hooks/cloudwatch`, which take
 `POST`. Each one under `/api` needs `Authorization: Bearer <token>`; the web view's files do not.
 Each listing returns the same JSON as
 the CLI command with `--json`, with the state's `revision`, an integer, read in the same
@@ -70,6 +70,9 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /hooks/github` | | `202` for a signed GitHub delivery, with `[webhooks.github]`. See [below](#post-hooksgithub) |
 | `POST /hooks/linear` | | `200` for a signed Linear delivery, with `[webhooks.linear]`. See [below](#post-hookslinear) |
 | `POST /hooks/sentry` | | `202` for a signed Sentry delivery, with `[webhooks.sentry]`. See [below](#post-hookssentry) |
+| `POST /hooks/cloudwatch` | | `202` for an EventBridge delivery with the API key, with `[webhooks.cloudwatch]`. See [below](#post-hookscloudwatch) |
+| `POST /hooks/honeycomb` | | `202` for a Honeycomb delivery with the Shared Secret, with `[webhooks.honeycomb]`. See [below](#post-hookshoneycomb) |
+| `POST /hooks/intercom` | | `202` for a signed Intercom notification, with `[webhooks.intercom]`. `HEAD` gets `200`. See [below](#post-hooksintercom) |
 | any other path | | the web view, with `web = true`: see [Web view files](#web-view-files) |
 
 Times are RFC 3339 strings in UTC. A field with no value is `null`. Agent text, such as a question
@@ -299,6 +302,55 @@ publishes.
 The reply is `202` with `{"outcome": "published"}`, or `{"outcome": "dropped"}` for a delivery
 Priory does not take or already holds. A body that is not JSON, or an issue that lacks a field its
 event needs, gets `400`.
+
+## `POST /hooks/cloudwatch`
+
+Served only with [`[webhooks.cloudwatch]`](factory.md#webhookscloudwatch). It takes no token: the
+API key header is its authentication. [cloudwatch.md](../intake/cloudwatch.md) explains what a
+delivery publishes and how to set up the EventBridge rule, API destination and connection.
+
+| Header | Meaning |
+| ------ | ------- |
+| `X-Priory-Webhook-Token` | The value of the variable that `secret_env` names, sent by the connection's API key authorization. Missing or wrong: `401`, and the body is never parsed |
+| `Content-Length` | Required, at most 1 MiB. Over it: `413` before the body is read |
+
+The body is the EventBridge event, with no input transformer. The reply is `202` with
+`{"outcome": "published"}`, or `{"outcome": "dropped"}` for an event Priory does not take or
+already holds. A body that is not JSON, or an alarm state change that lacks a field its event
+needs, gets `400`.
+
+## `POST /hooks/honeycomb`
+
+Served only with [`[webhooks.honeycomb]`](factory.md#webhookshoneycomb). It takes no token: the
+Shared Secret is its authentication. [honeycomb.md](../intake/honeycomb.md) explains the payload
+template and what a delivery publishes.
+
+| Header | Meaning |
+| ------ | ------- |
+| `X-Honeycomb-Webhook-Token` | The recipient's Shared Secret, as plain text. Missing or wrong: `401`, and the body is never parsed |
+| `X-Honeycomb-Webhook-Delivery-ID` | The delivery's id, the same across retries, copied into `delivery`. Optional |
+| `Content-Length` | Required, at most 1 MiB. Over it: `413` before the body is read |
+
+The reply is `202` with `{"outcome": "published"}`, or `{"outcome": "dropped"}` for an `OK` or
+test alert, one no trigger matches, or one Priory already holds. A body that is not JSON, or a
+payload that lacks a field of the template, gets `400`. When the event log cannot take the
+message, the reply is `503` with `Retry-After`, so Honeycomb retries.
+
+## `POST /hooks/intercom`
+
+Served only with [`[webhooks.intercom]`](factory.md#webhooksintercom). It takes no token: the
+signature is its authentication. [intercom.md](../intake/intercom.md) explains what a notification
+publishes. `HEAD /hooks/intercom` gets `200` with no body, which Intercom asks before it saves the
+URL.
+
+| Header | Meaning |
+| ------ | ------- |
+| `X-Hub-Signature` | `sha1=` and the hex HMAC-SHA1 of the raw body under the app's client secret. Missing, wrong or without the prefix: `401`, and the body is never parsed |
+| `Content-Length` | Required, at most 1 MiB. Over it: `413` before the body is read |
+
+The reply is `202` with `{"outcome": "published"}`, or `{"outcome": "dropped"}` for a notification
+of another workspace or topic, or one Priory already holds. A body that is not JSON, or a
+conversation that lacks its `id` or `created_at`, gets `400`.
 
 ## Desk
 
@@ -579,6 +631,7 @@ and these arrays, oldest first unless the table says otherwise:
 | `subscriptions` | `resource`, `created`: what the task subscribes to now. Empty once it fails or is dropped |
 | `inbox` | Every event routed to the task, newest first: its source event, the events routing gave it, and those another task took that fired one of its waits or that its subscription delivered to it. Each has `seq`, `type`, `subject`, `time`, `task` (the task routing gave it, or null), `outcome` (as [routing](../daemon/routing.md#outcomes) recorded it, or for an event a subscription delivered beside another task, `woke` or `kept` for this task), `prompt` (the state of this task's prompt that carries the event: `queued`, `attempted`, `uncertain`, `confirmed`, `withdrawn`, or null when none does) and `wait` (the id of this task's wait it fired, or null). See [The task's inbox](../daemon/routing.md#the-tasks-inbox) |
 | `triage` | `item` (a feedback item's URL), `class` (`trivial`, `nothing-to-do` or `persons-call`), `run` (the run whose result sorted it), `created`: how the agent sorted each review feedback item, in the order it first did. See [Review feedback](../daemon/tools.md#review-feedback) |
+| `scores` | `run`, `step`, `scorer`, `kind`, `verdict`, `reason` and `time` of each run's latest score by each scorer, by run then scorer. See [score.md](../daemon/score.md) |
 
 And these objects:
 
@@ -653,6 +706,7 @@ one of `workflow` (the default), `agent`, `model`, `machine` and `repo`. See
 | `current`, `previous` | The two windows: `since` and `until`, `since_day`, the local date `since` falls on in the daemon's timezone, as `days` are keyed, then a [total](#cost-total) and `merges` |
 | `days` | One entry per local day of either window with a record or a merge, oldest first: `day` (`YYYY-MM-DD`), a [total](#cost-total) and `merges` |
 | `split` | One entry per value of the current window's records, sorted: the value under the dimension's name, such as `"model": "claude-opus-5-5"`, and a [total](#cost-total) |
+| `scores` | One entry per value and scorer of the current window's scores, sorted: the value under the dimension's name, `scorer`, then the count of each verdict, `pass`, `fail`, `error` and `not_applicable`. A run counts once per scorer, with its latest score in the window |
 
 ### Cost total
 

@@ -320,6 +320,9 @@ pub struct Costs {
     since_days: [String; 2],
     days: BTreeMap<String, Total>,
     split: BTreeMap<String, Total>,
+    /// Each split value and scorer with its runs' latest verdicts in the current window: pass, fail,
+    /// error and not applicable.
+    scores: Vec<(String, String, [i64; 4])>,
 }
 
 /// The current window, from `start` to `until`, and the previous one, from `previous` to `start`.
@@ -423,6 +426,7 @@ pub fn costs(
         since_days: [local_date(start)?, local_date(previous)?],
         days: BTreeMap::new(),
         split: BTreeMap::new(),
+        scores: Vec::new(),
     };
     let mut statement = db
         .prepare(&format!(
@@ -496,6 +500,41 @@ pub fn costs(
         costs.windows[usize::from(!current)].2.merges += merged;
         costs.days.entry(day).or_default().merges += merged;
     }
+    // A score names no model, so it takes its run's.
+    let key = match by {
+        "model" => {
+            "coalesce((SELECT json_extract(step.event, '$.data.model') FROM trace AS step
+               WHERE step.type = 'factory.step.ended'
+                 AND json_extract(step.event, '$.data.run') = json_extract(trace.event, '$.data.run')
+               ORDER BY step.seq DESC LIMIT 1), '-')"
+        }
+        _ => key,
+    };
+    let mut statement = db
+        .prepare(&format!(
+            "SELECT key, scorer, sum(verdict = 'pass'), sum(verdict = 'fail'),
+               sum(verdict = 'error'), sum(verdict = 'not applicable')
+             FROM (SELECT {key} AS key, json_extract(trace.event, '$.data.scorer') AS scorer,
+               json_extract(trace.event, '$.data.verdict') AS verdict,
+               row_number() OVER (PARTITION BY json_extract(trace.event, '$.data.run'),
+                 json_extract(trace.event, '$.data.scorer') ORDER BY trace.seq DESC) AS latest
+             FROM trace
+             LEFT JOIN tasks ON tasks.id = CAST(json_extract(trace.event, '$.data.task') AS INTEGER)
+             LEFT JOIN runs ON runs.id = CAST(json_extract(trace.event, '$.data.run') AS INTEGER)
+             WHERE trace.type = 'factory.run.scored' AND trace.time >= ?1 AND trace.time < ?2)
+             WHERE latest = 1 GROUP BY 1, 2 ORDER BY 1, 2"
+        ))
+        .map_err(error)?;
+    costs.scores = statement
+        .query_map([start, until], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                [row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?],
+            ))
+        })
+        .and_then(Iterator::collect)
+        .map_err(error)?;
     Ok(costs)
 }
 
@@ -524,6 +563,10 @@ impl Costs {
                 let mut json = total.json();
                 json[&self.by] = json!(key);
                 json
+            }).collect::<Vec<_>>(),
+            "scores": self.scores.iter().map(|(key, scorer, [pass, fail, error, not_applicable])| {
+                json!({ (&self.by): key, "scorer": scorer, "pass": pass, "fail": fail,
+                        "error": error, "not_applicable": not_applicable })
             }).collect::<Vec<_>>(),
         })
     }

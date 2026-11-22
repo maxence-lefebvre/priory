@@ -2065,6 +2065,62 @@ fn an_expect_that_does_not_fit_the_kind_and_a_missing_run_name_their_lines() {
     );
 }
 
+const SHORT_ASK: &str =
+    "description = \"Short.\"\non = \"ask\"\nkind = \"ask-shape\"\nexpect = [\"short\"]\n";
+
+#[test]
+fn a_factory_with_a_benchmark_passes_and_counts_it() {
+    let benchmark = "description = \"Implement tasks.\"\nworkflow = \"implement\"\nprimary = \"passed\"\nscorers = [\"short-ask\"]\ncases = [\"cases/eng-412\"]\n";
+
+    let outcome = with_scorers(
+        "benchmark",
+        &[
+            ("scorers/passed.toml", PASSED),
+            ("scorers/short-ask.toml", SHORT_ASK),
+            ("benchmarks/implement.toml", benchmark),
+        ],
+    );
+
+    assert_eq!(outcome.stderr, "");
+    assert_eq!(
+        outcome.stdout,
+        "ok: 1 agent, 1 trigger, 1 workflow, 1 runner, 2 scorers, 1 benchmark\n"
+    );
+}
+
+#[test]
+fn a_benchmark_refuses_an_ask_scorer_as_primary_and_names_what_is_missing() {
+    let benchmarks = [
+        (
+            "benchmarks/a.toml",
+            "description = \"A.\"\nworkflow = \"implement\"\nprimary = \"short-ask\"\ncases = [\"cases/one\"]\n",
+        ),
+        (
+            "benchmarks/b.toml",
+            "description = \"B.\"\nworkflow = \"review\"\nprimary = \"gone\"\nscorers = [\"passed\", \"lost\"]\ncases = [\"../elsewhere\"]\n",
+        ),
+        (
+            "benchmarks/c.toml",
+            "description = \"C.\"\nworkflow = \"implement\"\nprimary = \"passed\"\ncases = []\n",
+        ),
+        ("scorers/passed.toml", PASSED),
+        ("scorers/short-ask.toml", SHORT_ASK),
+    ];
+
+    let outcome = with_scorers("benchmark-rules", &benchmarks);
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "benchmarks/a.toml:3: the primary scorer `short-ask` reads asks, which not every replay makes: use one on result or diff\n\
+         benchmarks/b.toml:2: no workflow `review` in workflows/\n\
+         benchmarks/b.toml:3: no scorer `gone` in scorers/\n\
+         benchmarks/b.toml:4: no scorer `lost` in scorers/\n\
+         benchmarks/b.toml:5: the case ../elsewhere is not inside the benchmarks folder\n\
+         benchmarks/c.toml:4: a benchmark needs `cases`: folders that priory bench capture wrote\n"
+    );
+}
+
 const SKILL: &str = "---\nname: release-notes\ndescription: Writes release notes from merged pull requests.\n---\nList each change in one line.\n";
 
 #[test]
@@ -2314,6 +2370,117 @@ fn a_sentry_trigger_needs_the_sentry_webhook_and_a_supported_event_filter_and_ke
         ),
         "{}",
         unhooked.stderr
+    );
+}
+
+#[test]
+fn a_cloudwatch_trigger_needs_the_cloudwatch_webhook_and_a_supported_event_filter_and_key() {
+    let good = "source = \"cloudwatch\"\non = \"alarm.state_changed\"\nfilter = { name = \"ServerCpuTooHigh\", state = \"ALARM\", previous_state = \"OK\" }\nrepo = \"owner/repo\"\nworkflow = \"implement\"\nkey = \"alarm.arn\"\n";
+    let wrong = "source = \"cloudwatch\"\non = \"alarm.created\"\nfilter = { region = \"us-east-1\" }\nworkflow = \"implement\"\nkey = \"alarm.name\"\nbackfill = true\n";
+    let hooked = "name = \"demo\"\n\n[serve]\n\n[webhooks.cloudwatch]\nsecret_env = \"CLOUDWATCH_WEBHOOK_SECRET\"\n";
+    let mut files = with("triggers/alarms.toml", good);
+    files.push(("triggers/wrong.toml", wrong));
+    let unhooked = check(&factory("cloudwatch-unhooked", &files));
+    files.retain(|(path, _)| *path != "factory.toml");
+    files.push(("factory.toml", hooked));
+    let hooked = check(&factory("cloudwatch-triggers", &files));
+    files.retain(|(path, _)| *path != "triggers/wrong.toml");
+    let ok = check(&factory("cloudwatch-ok", &files));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(hooked.code, 1);
+    assert_eq!(
+        hooked.stderr,
+        "triggers/wrong.toml:6: only a GitHub, Linear or Slack trigger has `backfill`\n\
+         triggers/wrong.toml:2: a `cloudwatch` trigger handles `alarm.state_changed`, not `alarm.created`\n\
+         triggers/wrong.toml:3: a `cloudwatch` trigger filters on `name` or `state` or `previous_state`\n\
+         triggers/wrong.toml:5: a CloudWatch trigger's `key` is `alarm.arn`\n"
+    );
+    assert_eq!(unhooked.code, 1);
+    assert!(
+        unhooked.stderr.contains(
+            "triggers/alarms.toml:1: a `cloudwatch` trigger needs `[webhooks.cloudwatch]` in factory.toml: CloudWatch alarm state changes arrive only by webhook\n"
+        ),
+        "{}",
+        unhooked.stderr
+    );
+}
+
+#[test]
+fn a_honeycomb_trigger_needs_the_honeycomb_webhook_and_a_supported_event_filter_and_key() {
+    let good = "source = \"honeycomb\"\non = \"trigger.fired\"\nfilter = { environment = \"production\", trigger = \"JwwZxfcP5kH\" }\nrepo = \"owner/repo\"\nworkflow = \"implement\"\nkey = \"trigger.id\"\n";
+    let wrong = "source = \"honeycomb\"\non = \"slo.burn_alert\"\nfilter = { dataset = \"x\" }\nworkflow = \"implement\"\nkey = \"alert.id\"\nbackfill = true\n";
+    let hooked = "name = \"demo\"\n\n[serve]\n\n[webhooks.honeycomb]\nsecret_env = \"HONEYCOMB_WEBHOOK_SECRET\"\n";
+    let mut files = with("triggers/agent-label.toml", good);
+    files.push(("triggers/wrong.toml", wrong));
+    let unhooked = check(&factory("honeycomb-unhooked", &files));
+    files.retain(|(path, _)| *path != "factory.toml");
+    files.push(("factory.toml", hooked));
+    let hooked = check(&factory("honeycomb-triggers", &files));
+    files.retain(|(path, _)| *path != "triggers/wrong.toml");
+    let ok = check(&factory("honeycomb-ok", &files));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(hooked.code, 1);
+    assert_eq!(
+        hooked.stderr,
+        "triggers/wrong.toml:6: only a GitHub, Linear or Slack trigger has `backfill`\n\
+         triggers/wrong.toml:2: a `honeycomb` trigger handles `trigger.fired`, not `slo.burn_alert`\n\
+         triggers/wrong.toml:3: a `honeycomb` trigger filters on `environment` or `trigger`\n\
+         triggers/wrong.toml:5: a Honeycomb trigger's `key` is `trigger.id`\n"
+    );
+    assert_eq!(unhooked.code, 1);
+    assert!(
+        unhooked.stderr.contains(
+            "triggers/agent-label.toml:1: a `honeycomb` trigger needs `[webhooks.honeycomb]` in factory.toml: Honeycomb alerts arrive only by webhook\n"
+        ),
+        "{}",
+        unhooked.stderr
+    );
+}
+
+#[test]
+fn an_intercom_trigger_needs_the_intercom_webhook_and_takes_no_filter() {
+    let good = "source = \"intercom\"\non = \"conversation.created\"\nrepo = \"owner/repo\"\nworkflow = \"implement\"\nkey = \"conversation.id\"\n";
+    let wrong = "source = \"intercom\"\non = \"conversation.replied\"\nfilter = { workspace = \"x\" }\nworkflow = \"implement\"\nkey = \"contact.id\"\nbackfill = true\n";
+    let hooked = "name = \"demo\"\n\n[serve]\n\n[webhooks.intercom]\nworkspace = \"a86dr8yl\"\n";
+    let mut files = with("triggers/agent-label.toml", good);
+    files.push(("triggers/wrong.toml", wrong));
+    let unhooked = check(&factory("intercom-unhooked", &files));
+    files.retain(|(path, _)| *path != "factory.toml");
+    files.push(("factory.toml", hooked));
+    let hooked = check(&factory("intercom-triggers", &files));
+    files.retain(|(path, _)| *path != "triggers/wrong.toml");
+    let ok = check(&factory("intercom-ok", &files));
+    files.retain(|(path, _)| *path != "factory.toml");
+    files.push((
+        "factory.toml",
+        "name = \"demo\"\n\n[serve]\n\n[webhooks.intercom]\n",
+    ));
+    let nameless = check(&factory("intercom-nameless", &files));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(hooked.code, 1);
+    assert_eq!(
+        hooked.stderr,
+        "triggers/wrong.toml:6: only a GitHub, Linear or Slack trigger has `backfill`\n\
+         triggers/wrong.toml:2: an `intercom` trigger handles `conversation.created`, not `conversation.replied`\n\
+         triggers/wrong.toml:3: an `intercom` trigger takes no `filter`\n\
+         triggers/wrong.toml:5: an Intercom trigger's `key` is `conversation.id`\n"
+    );
+    assert_eq!(unhooked.code, 1);
+    assert!(
+        unhooked.stderr.contains(
+            "triggers/agent-label.toml:1: an `intercom` trigger needs `[webhooks.intercom]` in factory.toml: Intercom conversations arrive only by webhook\n"
+        ),
+        "{}",
+        unhooked.stderr
+    );
+    assert_ne!(nameless.code, 0);
+    assert!(
+        nameless.stderr.contains("missing field `workspace`"),
+        "{}",
+        nameless.stderr
     );
 }
 

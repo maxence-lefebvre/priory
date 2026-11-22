@@ -109,7 +109,13 @@ pub struct Replayed {
     /// The `gh` calls the case held no answer for, each as its arguments joined by spaces.
     pub unrecorded: Vec<String>,
     pub took: Duration,
+    /// What `grade` answered on the scratch state once the replay ended.
+    pub scores: Vec<crate::score::Score>,
 }
+
+/// Grades a replay once it ends, from the scratch state, the scratch Priory home and the task's id,
+/// before the scratch folder goes.
+pub type Grade<'a> = dyn FnMut(&Connection, &Path, i64) -> Vec<crate::score::Score> + 'a;
 
 /// The model a replay's run of `spent.step` uses: the configured model of the step's agent, else
 /// the model the case recorded.
@@ -325,13 +331,15 @@ fn see(db: &Connection, prices: &BTreeMap<String, Price>) -> rusqlite::Result<Se
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
+    // A task that settled keeps its last step's tokens, which that step's record already holds.
     let mut statement = db.prepare(
         "SELECT json_extract(event, '$.data.step'), json_extract(event, '$.data.model'),
            json_extract(event, '$.data.tokens')
          FROM trace WHERE type = 'factory.step.ended'
            AND json_extract(event, '$.data.decider') = 'model'
          UNION ALL
-         SELECT step, model, tokens FROM tasks WHERE id = ?1 AND tokens IS NOT NULL",
+         SELECT step, model, tokens FROM tasks WHERE id = ?1 AND tokens IS NOT NULL
+           AND state NOT IN ('done', 'dropped')",
     )?;
     let rows = statement
         .query_map([id], |row| {
@@ -617,6 +625,7 @@ pub fn replay(
     loaded: &Loaded,
     options: &Options,
     say: &mut dyn FnMut(&str),
+    grade: &mut Grade,
 ) -> Result<Replayed, String> {
     let case = &loaded.case;
     let flow = factory.workflows.get(&case.workflow).ok_or_else(|| {
@@ -743,6 +752,14 @@ pub fn replay(
     let spent = see(&db, &factory.prices)
         .map(|seen| seen.spent)
         .unwrap_or_default();
+    let task: Option<i64> = db
+        .query_row("SELECT id FROM tasks ORDER BY id LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .optional()
+        .ok()
+        .flatten();
+    let scores = task.map_or_else(Vec::new, |task| grade(&db, &path.join("home"), task));
     let unrecorded = fs::read_to_string(path.join("gh-unrecorded.log"))
         .unwrap_or_default()
         .lines()
@@ -755,6 +772,7 @@ pub fn replay(
         spent,
         unrecorded,
         took: began.elapsed(),
+        scores,
     })
 }
 

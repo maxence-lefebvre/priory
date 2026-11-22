@@ -1,4 +1,5 @@
 pub mod batch;
+pub mod bench;
 pub mod capture;
 mod command;
 pub mod daemon;

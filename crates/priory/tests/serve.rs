@@ -5038,7 +5038,10 @@ fn use_factory(setup: &Setup, from: &Path) {
             "[webhooks.linear]\nsecret_env = \"PRIORY_LINEAR_WEBHOOK_SECRET\"",
             "",
         )
-        .replace("SENTRY_CLIENT_SECRET", "TEST_SECRET");
+        .replace("SENTRY_CLIENT_SECRET", "TEST_SECRET")
+        .replace("HONEYCOMB_WEBHOOK_SECRET", "TEST_SECRET")
+        .replace("INTERCOM_CLIENT_SECRET", "TEST_SECRET")
+        .replace("CLOUDWATCH_WEBHOOK_SECRET", "TEST_SECRET");
     if !text.contains("[serve]") {
         text.push_str("\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n");
     }
@@ -6159,6 +6162,691 @@ fn a_sentry_issue_without_its_id_gets_400_and_a_body_over_1_mib_gets_413() {
     assert_eq!(big, 413);
     assert!(setup.published().is_empty());
 }
+
+const CLOUDWATCH_HOOKS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n\n[webhooks.cloudwatch]\nsecret_env = \"TEST_SECRET\"\n";
+
+/// CloudWatch's single metric alarm state change example, trimmed, as EventBridge delivers it.
+fn alarm_changed(id: &str, previous: &str, state: &str) -> Value {
+    json!({
+        "version": "0",
+        "id": id,
+        "detail-type": "CloudWatch Alarm State Change",
+        "source": "aws.cloudwatch",
+        "account": "123456789012",
+        "time": "2026-11-17T17:04:40Z",
+        "region": "us-east-1",
+        "resources": ["arn:aws:cloudwatch:us-east-1:123456789012:alarm:ServerCpuTooHigh"],
+        "detail": {
+            "alarmName": "ServerCpuTooHigh",
+            "configuration": {
+                "description": "Goes into alarm when server CPU utilization is too high!",
+                "metrics": []
+            },
+            "previousState": {
+                "reason": "Threshold Crossed: 1 out of the last 1 datapoints was not greater than the threshold (50.0).",
+                "timestamp": "2026-11-17T13:56:40.987+0000",
+                "value": previous
+            },
+            "state": {
+                "reason": "Threshold Crossed: 1 out of the last 1 datapoints [99.5] was greater than the threshold (50.0).",
+                "timestamp": "2026-11-17T17:04:40.989+0000",
+                "value": state
+            }
+        }
+    })
+}
+
+/// POSTs `body` to `/hooks/cloudwatch` as an EventBridge API destination would, with `token` in
+/// the connection's API key header when given.
+fn deliver_cloudwatch(address: &str, token: Option<&str>, body: &str) -> (u16, String) {
+    let token = token.map_or(String::new(), |token| {
+        format!("X-Priory-Webhook-Token: {token}\r\n")
+    });
+    raw(
+        address,
+        &format!(
+            "POST /hooks/cloudwatch HTTP/1.1\r\nHost: {address}\r\nUser-Agent: Amazon/EventBridge/ApiDestinations\r\n\
+             Content-Type: application/json; charset=utf-8\r\nRange: bytes=0-1048575\r\n\
+             {token}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+impl Setup {
+    /// A factory with `[serve]`, the CloudWatch webhook and a `cloudwatch` trigger on `ALARM`.
+    fn cloudwatch_hooks(name: &str) -> Self {
+        let setup = Setup::new(name, CLOUDWATCH_HOOKS);
+        fs::create_dir_all(setup.dir.join("factory/triggers")).unwrap();
+        fs::write(
+            setup.dir.join("factory/triggers/cloudwatch-alarms.toml"),
+            "source = \"cloudwatch\"\non = \"alarm.state_changed\"\nfilter = { state = \"ALARM\" }\nrepo = \"owner/repo\"\nworkflow = \"implement\"\nkey = \"alarm.arn\"\n",
+        )
+        .unwrap();
+        setup
+    }
+
+    fn send_cloudwatch(&self, address: &str, body: &Value) -> (u16, String) {
+        deliver_cloudwatch(address, Some(&self.secret), &body.to_string())
+    }
+}
+
+#[test]
+fn a_cloudwatch_alarm_state_change_with_the_token_publishes_the_event_and_requests_a_task() {
+    let mut setup = Setup::cloudwatch_hooks("cloudwatch-changed");
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, reply) = setup.send_cloudwatch(
+        &address,
+        &alarm_changed("c4c1c1c9-6542-e61b-6ef0-8c4d36933a92", "OK", "ALARM"),
+    );
+
+    assert_eq!(status, 202, "{reply}");
+    assert_eq!(reply, r#"{"outcome":"published"}"#);
+    let published = setup.published();
+    let kinds: Vec<_> = published.iter().map(|m| m.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        ["cloudwatch.alarm.state_changed", "factory.task.requested"]
+    );
+    assert_eq!(published[0].subject.as_deref(), Some("ServerCpuTooHigh"));
+    assert_eq!(
+        published[0].data,
+        json!({
+            "alarm": "arn:aws:cloudwatch:us-east-1:123456789012:alarm:ServerCpuTooHigh",
+            "name": "ServerCpuTooHigh",
+            "description": "Goes into alarm when server CPU utilization is too high!",
+            "state": "ALARM",
+            "previous_state": "OK",
+            "reason": "Threshold Crossed: 1 out of the last 1 datapoints [99.5] was greater than the threshold (50.0).",
+            "account": "123456789012",
+            "region": "us-east-1",
+            "delivery": "c4c1c1c9-6542-e61b-6ef0-8c4d36933a92",
+            "time": "2026-11-17T17:04:40Z",
+            "baseline": false,
+            "triggers": ["cloudwatch-alarms"]
+        })
+    );
+    assert_eq!(
+        published[1].subject.as_deref(),
+        Some("cloudwatch:arn:aws:cloudwatch:us-east-1:123456789012:alarm:ServerCpuTooHigh")
+    );
+}
+
+#[test]
+fn a_cloudwatch_delivery_with_a_wrong_or_missing_token_gets_401_before_it_is_read() {
+    let mut setup = Setup::cloudwatch_hooks("cloudwatch-refused");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = alarm_changed("e1", "OK", "ALARM").to_string();
+    let wrong = format!("{}x", setup.secret);
+    for token in [Some("not-the-secret"), None, Some(""), Some(&wrong[..])] {
+        let (status, reply) = deliver_cloudwatch(&address, token, &body);
+
+        assert_eq!(status, 401, "{token:?}");
+        assert_eq!(
+            reply,
+            r#"{"error":"X-Priory-Webhook-Token is missing or is not the connection's API key"}"#
+        );
+    }
+    let (status, _) = deliver_cloudwatch(&address, Some("x"), "not json, secret-marker");
+    assert_eq!(status, 401);
+    assert!(setup.published().is_empty());
+    let log = fs::read_to_string(setup.dir.join("server.log")).unwrap_or_default();
+    assert!(
+        !log.contains("secret-marker") && !log.contains("ServerCpuTooHigh"),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_redelivered_cloudwatch_event_publishes_nothing() {
+    let mut setup = Setup::cloudwatch_hooks("cloudwatch-replay");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let event = alarm_changed("e1", "OK", "ALARM");
+    let (status, _) = setup.send_cloudwatch(&address, &event);
+    assert_eq!(status, 202);
+    let first = setup.published();
+    let mut retried = event.clone();
+    retried["detail"]["state"]["reason"] = json!("a retry that EventBridge reserialized");
+
+    for body in [event, retried] {
+        let (status, reply) = setup.send_cloudwatch(&address, &body);
+
+        assert_eq!(status, 202, "{reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    }
+    assert_eq!(setup.published(), first);
+}
+
+#[test]
+fn a_cloudwatch_event_no_trigger_matches_or_priory_does_not_map_gets_202_and_publishes_nothing() {
+    let mut setup = Setup::cloudwatch_hooks("cloudwatch-dropped");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut configuration = alarm_changed("e2", "OK", "ALARM");
+    configuration["detail-type"] = json!("CloudWatch Alarm Configuration Change");
+    let mut contributor = alarm_changed("e3", "OK", "ALARM");
+    contributor["detail-type"] = json!("CloudWatch Alarm Contributor State Change");
+    let mut other = alarm_changed("e4", "OK", "ALARM");
+    other["source"] = json!("aws.ec2");
+    let deliveries = [
+        alarm_changed("e1", "ALARM", "OK"),
+        configuration,
+        contributor,
+        other,
+        json!({ "id": "e5" }),
+    ];
+
+    for body in deliveries {
+        let (status, reply) = setup.send_cloudwatch(&address, &body);
+
+        assert_eq!(status, 202, "{body}: {reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    }
+    assert!(setup.published().is_empty());
+}
+
+#[test]
+fn a_cloudwatch_event_without_its_alarm_gets_400_and_a_body_over_1_mib_gets_413() {
+    let mut setup = Setup::cloudwatch_hooks("cloudwatch-invalid");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut nameless = alarm_changed("e1", "OK", "ALARM");
+    nameless["resources"] = json!([]);
+
+    let (status, reply) = setup.send_cloudwatch(&address, &nameless);
+    let (big, _) = raw(
+        &address,
+        &format!(
+            "POST /hooks/cloudwatch HTTP/1.1\r\nHost: {address}\r\nX-Priory-Webhook-Token: {}\r\n\
+             Content-Length: {}\r\n\r\n",
+            setup.secret,
+            1024 * 1024 + 1
+        ),
+    );
+
+    assert_eq!(status, 400);
+    assert_eq!(reply, r#"{"error":"the event lacks `resources[0]`"}"#);
+    assert_eq!(big, 413);
+    assert!(setup.published().is_empty());
+}
+
+const HONEYCOMB_HOOKS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n\n[webhooks.honeycomb]\nsecret_env = \"TEST_SECRET\"\n";
+
+/// The body Honeycomb sends for a Trigger through the payload template in
+/// `docs/intake/honeycomb.md`, rendered for one firing in environment `production`.
+fn honeycomb_alert(status: &str, environment: &str) -> Value {
+    json!({
+        "trigger": "JwwZxfcP5kH",
+        "name": "Checkout errors",
+        "description": "More than 10 checkout errors in 15 minutes.",
+        "url": "https://ui.honeycomb.io/acme/environments/production/datasets/checkout/triggers/JwwZxfcP5kH",
+        "environment": environment,
+        "status": status,
+        "summary": "Triggered: Checkout errors",
+        "instance": "c0fd570f-e920-4022-96d2-39e7df3e0621",
+        "test": false,
+        "time": "2026-11-21T16:40:22.896871538Z",
+        "result_url": "https://ui.honeycomb.io/acme/environments/production/datasets/checkout/result/4656626d79"
+    })
+}
+
+/// POSTs `body` to `/hooks/honeycomb` as Honeycomb would, with `token` in
+/// `X-Honeycomb-Webhook-Token` when given.
+fn deliver_honeycomb(
+    address: &str,
+    delivery: &str,
+    token: Option<&str>,
+    body: &str,
+) -> (u16, String) {
+    let token = token.map_or(String::new(), |token| {
+        format!("X-Honeycomb-Webhook-Token: {token}\r\n")
+    });
+    raw(
+        address,
+        &format!(
+            "POST /hooks/honeycomb HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\n\
+             User-Agent: Honeycomb Triggers\r\nX-Honeycomb-Webhook-Delivery-ID: {delivery}\r\n\
+             {token}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+impl Setup {
+    /// A factory with `[serve]`, the Honeycomb webhook and a `honeycomb` trigger on environment
+    /// `production`.
+    fn honeycomb_hooks(name: &str) -> Self {
+        let setup = Setup::new(name, HONEYCOMB_HOOKS);
+        fs::create_dir_all(setup.dir.join("factory/triggers")).unwrap();
+        fs::write(
+            setup.dir.join("factory/triggers/honeycomb-alerts.toml"),
+            "source = \"honeycomb\"\non = \"trigger.fired\"\nfilter = { environment = \"production\" }\nrepo = \"owner/repo\"\nworkflow = \"implement\"\nkey = \"trigger.id\"\n",
+        )
+        .unwrap();
+        setup
+    }
+
+    fn send_honeycomb(&self, address: &str, body: &Value) -> (u16, String) {
+        deliver_honeycomb(address, "d-1", Some(&self.secret), &body.to_string())
+    }
+}
+
+#[test]
+fn a_honeycomb_trigger_firing_with_the_shared_secret_publishes_the_event_and_requests_a_task() {
+    let mut setup = Setup::honeycomb_hooks("honeycomb-fired");
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, reply) =
+        setup.send_honeycomb(&address, &honeycomb_alert("TRIGGERED", "production"));
+
+    assert_eq!(status, 202, "{reply}");
+    assert_eq!(reply, r#"{"outcome":"published"}"#);
+    let published = setup.published();
+    let kinds: Vec<_> = published.iter().map(|m| m.kind.as_str()).collect();
+    assert_eq!(kinds, ["honeycomb.trigger.fired", "factory.task.requested"]);
+    assert_eq!(published[0].subject.as_deref(), Some("Checkout errors"));
+    assert_eq!(
+        published[0].data,
+        json!({
+            "trigger": "JwwZxfcP5kH",
+            "name": "Checkout errors",
+            "description": "More than 10 checkout errors in 15 minutes.",
+            "url": "https://ui.honeycomb.io/acme/environments/production/datasets/checkout/triggers/JwwZxfcP5kH",
+            "environment": "production",
+            "summary": "Triggered: Checkout errors",
+            "instance": "c0fd570f-e920-4022-96d2-39e7df3e0621",
+            "result_url": "https://ui.honeycomb.io/acme/environments/production/datasets/checkout/result/4656626d79",
+            "delivery": "d-1",
+            "time": "2026-11-21T16:40:22.896871538Z",
+            "baseline": false,
+            "triggers": ["honeycomb-alerts"]
+        })
+    );
+    assert_eq!(
+        published[1].subject.as_deref(),
+        Some("honeycomb:JwwZxfcP5kH")
+    );
+}
+
+#[test]
+fn a_honeycomb_delivery_without_the_shared_secret_gets_401_before_it_is_read() {
+    let mut setup = Setup::honeycomb_hooks("honeycomb-refused");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = honeycomb_alert("TRIGGERED", "production").to_string();
+    let prefix = setup.secret[..setup.secret.len() - 1].to_owned();
+    let longer = format!("{}x", setup.secret);
+    for token in [
+        Some("not-the-secret"),
+        None,
+        Some(""),
+        Some(&prefix),
+        Some(&longer),
+    ] {
+        let (status, reply) = deliver_honeycomb(&address, "d-1", token, &body);
+
+        assert_eq!(status, 401, "{token:?}");
+        assert_eq!(
+            reply,
+            r#"{"error":"X-Honeycomb-Webhook-Token is missing or is not the Shared Secret"}"#
+        );
+    }
+    let (status, _) = deliver_honeycomb(&address, "d-1", Some("x"), "not json, secret-marker");
+    assert_eq!(status, 401);
+    assert!(setup.published().is_empty());
+    let log = fs::read_to_string(setup.dir.join("server.log")).unwrap_or_default();
+    assert!(
+        !log.contains("secret-marker") && !log.contains("Checkout errors"),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_replayed_honeycomb_delivery_publishes_nothing_even_under_a_new_delivery_id() {
+    let mut setup = Setup::honeycomb_hooks("honeycomb-replay");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = honeycomb_alert("TRIGGERED", "production").to_string();
+    let (status, _) = deliver_honeycomb(&address, "d-1", Some(&setup.secret), &body);
+    assert_eq!(status, 202);
+    let first = setup.published();
+
+    for delivery in ["d-1", "d-forged"] {
+        let (status, reply) = deliver_honeycomb(&address, delivery, Some(&setup.secret), &body);
+
+        assert_eq!(status, 202, "{reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    }
+    assert_eq!(setup.published(), first);
+}
+
+#[test]
+fn a_honeycomb_replay_after_a_trigger_was_added_requests_no_task_for_it() {
+    let mut setup = Setup::honeycomb_hooks("honeycomb-replay-new-trigger");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = honeycomb_alert("TRIGGERED", "production").to_string();
+    let (status, _) = deliver_honeycomb(&address, "d-1", Some(&setup.secret), &body);
+    assert_eq!(status, 202);
+    let first = setup.published();
+    let mut server = setup.server.take().unwrap();
+    server.kill().unwrap();
+    server.wait().unwrap();
+    fs::write(
+        setup.dir.join("factory/triggers/honeycomb-any.toml"),
+        "source = \"honeycomb\"\non = \"trigger.fired\"\nrepo = \"owner/repo\"\nworkflow = \"implement\"\n",
+    )
+    .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, reply) = deliver_honeycomb(&address, "d-2", Some(&setup.secret), &body);
+
+    assert_eq!(status, 202, "{reply}");
+    assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    assert_eq!(setup.published(), first);
+}
+
+#[test]
+fn a_honeycomb_alert_that_is_ok_a_test_or_matches_no_trigger_gets_202_and_publishes_nothing() {
+    let mut setup = Setup::honeycomb_hooks("honeycomb-dropped");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut test = honeycomb_alert("TRIGGERED", "production");
+    test["test"] = json!(true);
+    let deliveries = [
+        honeycomb_alert("OK", "production"),
+        honeycomb_alert("TRIGGERED", "staging"),
+        test,
+    ];
+
+    for body in deliveries {
+        let (status, reply) = setup.send_honeycomb(&address, &body);
+
+        assert_eq!(status, 202, "{body}: {reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    }
+    assert!(setup.published().is_empty());
+}
+
+#[test]
+fn a_honeycomb_payload_without_the_template_gets_400_and_a_body_over_1_mib_gets_413() {
+    let mut setup = Setup::honeycomb_hooks("honeycomb-invalid");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let standard = json!({ "version": "v0.1.0", "name": "Checkout errors", "status": "TRIGGERED" });
+
+    let (status, reply) = setup.send_honeycomb(&address, &standard);
+    let (big, _) = raw(
+        &address,
+        &format!(
+            "POST /hooks/honeycomb HTTP/1.1\r\nHost: {address}\r\nX-Honeycomb-Webhook-Token: x\r\n\
+             Content-Length: {}\r\n\r\n",
+            1024 * 1024 + 1
+        ),
+    );
+
+    assert_eq!(status, 400);
+    assert_eq!(
+        reply,
+        r#"{"error":"the payload lacks `trigger`: give the webhook the payload template in docs/intake/honeycomb.md"}"#
+    );
+    assert_eq!(big, 413);
+    let mut quoted = honeycomb_alert("TRIGGERED", "production");
+    quoted["test"] = json!("true");
+    let mut statusless = honeycomb_alert("TRIGGERED", "production");
+    statusless.as_object_mut().unwrap().remove("status");
+    for (body, field) in [(quoted, "test"), (statusless, "status")] {
+        let (status, reply) = setup.send_honeycomb(&address, &body);
+
+        assert_eq!(status, 400, "{reply}");
+        assert!(reply.contains(&format!("lacks `{field}`")), "{reply}");
+    }
+    assert!(setup.published().is_empty());
+}
+
+const INTERCOM_HOOKS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n\n[webhooks.intercom]\nsecret_env = \"TEST_SECRET\"\nworkspace = \"a86dr8yl\"\n";
+
+/// An Intercom notification on `topic` from workspace `workspace`, carrying a conversation a
+/// contact started, trimmed to the fields of Intercom's conversation model that Priory reads.
+fn intercom_notification(topic: &str, workspace: &str) -> Value {
+    json!({
+        "type": "notification_event",
+        "app_id": workspace,
+        "id": "notif_78c122d0-23ba-11e4-9464-79b01267cc2e",
+        "topic": topic,
+        "delivery_status": "pending",
+        "delivery_attempts": 1,
+        "delivered_at": 0,
+        "first_sent_at": 1795353700,
+        "created_at": 1795353699,
+        "data": {
+            "type": "notification_event_data",
+            "item": {
+                "type": "conversation",
+                "id": "1295",
+                "title": null,
+                "created_at": 1795353698,
+                "updated_at": 1795353699,
+                "state": "open",
+                "source": {
+                    "type": "conversation",
+                    "id": "3",
+                    "delivered_as": "customer_initiated",
+                    "subject": "",
+                    "body": "The export button does nothing on Firefox.",
+                    "author": { "type": "user", "id": "274", "name": "Jane Doe", "email": "jane@example.com" },
+                    "url": "https://app.example.com/settings"
+                }
+            }
+        }
+    })
+}
+
+/// `sha1=` and the hex HMAC-SHA1 of `body` under `secret`, as Intercom signs.
+fn intercom_signature(secret: &str, body: &str) -> String {
+    use hmac::{Hmac, KeyInit, Mac};
+    let mut mac = Hmac::<sha1::Sha1>::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(body.as_bytes());
+    let digest = mac.finalize().into_bytes();
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("sha1={hex}")
+}
+
+/// POSTs `body` to `/hooks/intercom` as Intercom would, with `signature` in `X-Hub-Signature`
+/// when given.
+fn deliver_intercom(address: &str, signature: Option<&str>, body: &str) -> (u16, String) {
+    let signature = signature.map_or(String::new(), |signature| {
+        format!("X-Hub-Signature: {signature}\r\n")
+    });
+    raw(
+        address,
+        &format!(
+            "POST /hooks/intercom HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\n\
+             User-Agent: intercom-parrot-service-client/1.0\r\n{signature}Content-Length: {}\r\n\
+             Connection: close\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+impl Setup {
+    /// A factory with `[serve]`, the Intercom webhook for workspace `a86dr8yl` and an `intercom`
+    /// trigger.
+    fn intercom_hooks(name: &str) -> Self {
+        let setup = Setup::new(name, INTERCOM_HOOKS);
+        fs::create_dir_all(setup.dir.join("factory/triggers")).unwrap();
+        fs::write(
+            setup.dir.join("factory/triggers/intercom-conversations.toml"),
+            "source = \"intercom\"\non = \"conversation.created\"\nrepo = \"owner/repo\"\nworkflow = \"implement\"\nkey = \"conversation.id\"\n",
+        )
+        .unwrap();
+        setup
+    }
+
+    fn send_intercom(&self, address: &str, body: &Value) -> (u16, String) {
+        let body = body.to_string();
+        let signature = intercom_signature(&self.secret, &body);
+        deliver_intercom(address, Some(&signature), &body)
+    }
+}
+
+#[test]
+fn a_signed_intercom_conversation_from_the_workspace_publishes_the_event_and_requests_a_task() {
+    let mut setup = Setup::intercom_hooks("intercom-created");
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, reply) = setup.send_intercom(
+        &address,
+        &intercom_notification("conversation.user.created", "a86dr8yl"),
+    );
+
+    assert_eq!(status, 202, "{reply}");
+    assert_eq!(reply, r#"{"outcome":"published"}"#);
+    let published = setup.published();
+    let kinds: Vec<_> = published.iter().map(|m| m.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        ["intercom.conversation.created", "factory.task.requested"]
+    );
+    assert_eq!(published[0].subject.as_deref(), Some("conversation 1295"));
+    assert_eq!(
+        published[0].data,
+        json!({
+            "conversation": "1295",
+            "workspace": "a86dr8yl",
+            "title": null,
+            "subject": null,
+            "body": "The export button does nothing on Firefox.",
+            "author": "Jane Doe",
+            "author_type": "user",
+            "page": "https://app.example.com/settings",
+            "delivery": "notif_78c122d0-23ba-11e4-9464-79b01267cc2e",
+            "time": "2026-11-22T13:21:38Z",
+            "baseline": false,
+            "triggers": ["intercom-conversations"]
+        })
+    );
+    assert_eq!(published[1].subject.as_deref(), Some("intercom:1295"));
+}
+
+#[test]
+fn an_intercom_delivery_with_a_wrong_or_missing_signature_gets_401_before_it_is_read() {
+    let mut setup = Setup::intercom_hooks("intercom-refused");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = intercom_notification("conversation.user.created", "a86dr8yl").to_string();
+    let signed = intercom_signature(&setup.secret, &body);
+    let signatures = [
+        Some(intercom_signature("not-the-secret", &body)),
+        None,
+        Some(signed.replace("sha1=", "")),
+        Some(signed.replace("sha1=", "sha256=")),
+        Some("sha1=zz".to_owned()),
+        Some(sign(&setup.secret, body.as_bytes())),
+    ];
+    for signature in &signatures {
+        let (status, reply) = deliver_intercom(&address, signature.as_deref(), &body);
+
+        assert_eq!(status, 401, "{signature:?}");
+        assert_eq!(
+            reply,
+            r#"{"error":"X-Hub-Signature is missing or does not match the body"}"#
+        );
+    }
+    let (status, _) = deliver_intercom(&address, Some("sha1=00"), "not json, secret-marker");
+    assert_eq!(status, 401);
+    assert!(setup.published().is_empty());
+    let log = fs::read_to_string(setup.dir.join("server.log")).unwrap_or_default();
+    assert!(
+        !log.contains("secret-marker") && !log.contains("export button"),
+        "{log}"
+    );
+}
+
+#[test]
+fn the_intercom_signature_covers_the_exact_body_bytes_not_the_parsed_json() {
+    let mut setup = Setup::intercom_hooks("intercom-raw-bytes");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let pretty = serde_json::to_string_pretty(&intercom_notification(
+        "conversation.user.created",
+        "a86dr8yl",
+    ))
+    .unwrap();
+    let signature = intercom_signature(&setup.secret, &pretty);
+    let reformatted = pretty.replacen("\n", "\n ", 1);
+
+    let (altered, _) = deliver_intercom(&address, Some(&signature), &reformatted);
+    let (status, reply) = deliver_intercom(&address, Some(&signature), &pretty);
+
+    assert_eq!(altered, 401);
+    assert_eq!(status, 202, "{reply}");
+    assert_eq!(reply, r#"{"outcome":"published"}"#);
+}
+
+#[test]
+fn a_replayed_intercom_notification_publishes_nothing() {
+    let mut setup = Setup::intercom_hooks("intercom-replay");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let notification = intercom_notification("conversation.user.created", "a86dr8yl");
+    let (status, _) = setup.send_intercom(&address, &notification);
+    assert_eq!(status, 202);
+    let first = setup.published();
+    let mut retried = notification.clone();
+    retried["delivery_attempts"] = json!(2);
+
+    for body in [notification, retried] {
+        let (status, reply) = setup.send_intercom(&address, &body);
+
+        assert_eq!(status, 202, "{reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    }
+    assert_eq!(setup.published(), first);
+}
+
+#[test]
+fn an_intercom_notification_of_another_workspace_or_topic_gets_202_and_publishes_nothing() {
+    let mut setup = Setup::intercom_hooks("intercom-dropped");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let deliveries = [
+        intercom_notification("conversation.user.created", "otherapp"),
+        intercom_notification("conversation.user.replied", "a86dr8yl"),
+        intercom_notification("conversation.admin.replied", "a86dr8yl"),
+        json!({ "type": "notification_event", "app_id": "a86dr8yl", "topic": "ping", "data": {} }),
+    ];
+
+    for body in deliveries {
+        let (status, reply) = setup.send_intercom(&address, &body);
+
+        assert_eq!(status, 202, "{body}: {reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    }
+    assert!(setup.published().is_empty());
+}
+
+#[test]
+fn intercom_gets_200_to_head_and_400_for_a_conversation_without_its_id_and_413_past_1_mib() {
+    let mut setup = Setup::intercom_hooks("intercom-invalid");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut nameless = intercom_notification("conversation.user.created", "a86dr8yl");
+    nameless["data"]["item"]["id"] = Value::Null;
+
+    let (head, _) = raw(
+        &address,
+        &format!("HEAD /hooks/intercom HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"),
+    );
+    let (status, reply) = setup.send_intercom(&address, &nameless);
+    let (big, _) = raw(
+        &address,
+        &format!(
+            "POST /hooks/intercom HTTP/1.1\r\nHost: {address}\r\nX-Hub-Signature: sha1=00\r\n\
+             Content-Length: {}\r\n\r\n",
+            1024 * 1024 + 1
+        ),
+    );
+
+    assert_eq!(head, 200);
+    assert_eq!(status, 400);
+    assert_eq!(
+        reply,
+        r#"{"error":"the payload lacks the conversation's `id`"}"#
+    );
+    assert_eq!(big, 413);
+    assert!(setup.published().is_empty());
+}
+
 #[test]
 fn the_unsubscribe_endpoint_ends_a_subscription_as_priory_unsubscribe_does() {
     let mut setup = Setup::new("web-unsubscribe", SERVE);

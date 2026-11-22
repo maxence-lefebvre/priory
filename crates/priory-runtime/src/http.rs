@@ -391,6 +391,15 @@ fn respond(
     if method == "POST" && !same_origin(&request, &gate.origins) {
         return Reply::error(403, "a page of another origin cannot post here");
     }
+    // Intercom checks that a webhook URL answers `HEAD` before it saves it.
+    if method == "HEAD" && gate.hooks.contains(&bare) {
+        return Reply {
+            status: 200,
+            kind: "text/plain",
+            headers: "",
+            body: Vec::new(),
+        };
+    }
     if method == "POST" && gate.hooks.contains(&bare) {
         return match read_body(stream, deadline, &request, &read[end..], BODY) {
             Ok(body) => handle(&Request {
@@ -446,7 +455,7 @@ fn same_origin(request: &Request, origins: &[String]) -> bool {
 }
 
 /// Whether `sent` equals `token`, in a time that depends only on `token`'s length.
-fn same(sent: &[u8], token: &[u8]) -> bool {
+pub fn same(sent: &[u8], token: &[u8]) -> bool {
     let mut differ = sent.len() ^ token.len();
     for (i, byte) in token.iter().enumerate() {
         differ |= usize::from(sent.get(i).copied().unwrap_or(0) ^ byte);

@@ -1,7 +1,7 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
 import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, snoozeShortcut, snoozed, stillArmed, submitted, takesText, writeNote } from "./asks.js";
-import { SPLITS, attentionView, costTiles, dayBars, money, splitTable } from "./costs.js";
+import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
 import { around, dossier, nextPick, refusal } from "./reports.js";
@@ -25,6 +25,7 @@ const ICONS = {
   layers: '<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
   "circle-dashed": '<path d="M10.1 2.18a9.93 9.93 0 0 1 3.8 0"/><path d="M17.6 3.71a9.95 9.95 0 0 1 2.69 2.7"/><path d="M21.82 10.1a9.93 9.93 0 0 1 0 3.8"/><path d="M20.29 17.6a9.95 9.95 0 0 1-2.7 2.69"/><path d="M13.9 21.82a9.94 9.94 0 0 1-3.8 0"/><path d="M6.4 20.29a9.95 9.95 0 0 1-2.69-2.7"/><path d="M2.18 13.9a9.93 9.93 0 0 1 0-3.8"/><path d="M3.71 6.4a9.95 9.95 0 0 1 2.7-2.69"/>',
   "circle-dot": '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/>',
+  "circle-alert": '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
   "circle-help": '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>',
   pause: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
   moon: '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
@@ -104,6 +105,8 @@ const STATES = {
   elsewhere: ["muted", "server"],
   // Memory candidates an agent wrote, which wait on a person's accept or drop.
   memories: ["wait", "brain"],
+  // A scorer's verdict on a run: an error means the scorer broke, not the run.
+  pass: ["ok", "check"], fail: ["danger", "circle-x"], error: ["warn", "circle-alert"], "not applicable": ["muted", "minus"],
 };
 const role = (state) => (STATES[state] || ["muted", "circle-help"])[0];
 function tile(state, size = "") {
@@ -1499,7 +1502,9 @@ function taskSections(task) {
     sections.push(["trace", "Trace", sect("trace", "runs", "Trace", "", html`<ol class="hist">${task.runs.map((run) => {
       const tokens = run.tokens ? Object.values(run.tokens).reduce((sum, count) => sum + (Number(count) || 0), 0) : null;
       const minutes = Math.round(((run.ended ? Date.parse(run.ended) : Date.now()) - Date.parse(run.started)) / 60000);
-      return html`<li>${tile(run.ended ? run.end || "moved" : "running", "sm")}<span><b>${run.step}</b>, run <span class="mono">${run.id}</span>, ${minutes} min${run.outcome ? `, ${run.outcome}` : ""}${tokens === null ? "" : `, ${tokens} tokens`}</span>${timeTag(run.started, clock(run.started))}</li>`;
+      const scores = (task.scores || []).filter((score) => score.run === String(run.id));
+      const scored = scores.length ? html`<ol class="scores" aria-label="Scores of run ${run.id}">${scores.map((score) => html`<li>${tile(score.verdict, "sm")}<span><span class="mono">${score.scorer}</span> <span class="v t-${role(score.verdict)}">${score.verdict}</span><span class="meta">${score.reason}</span></span></li>`)}</ol>` : "";
+      return html`<li>${tile(run.ended ? run.end || "moved" : "running", "sm")}<span><b>${run.step}</b>, run <span class="mono">${run.id}</span>, ${minutes} min${run.outcome ? `, ${run.outcome}` : ""}${tokens === null ? "" : `, ${tokens} tokens`}${scored}</span>${timeTag(run.started, clock(run.started))}</li>`;
     })}</ol>`)]);
   }
   return sections;
@@ -1973,11 +1978,13 @@ const statTile = (tile) => html`<div class="stat"><span class="lbl">${tile.label
 
 function costsPart(costs) {
   const table = splitTable(costs);
-  if (!costs.days.length && !costs.split.length) {
-    return html`<p class="empty">No cost in the last two weeks. Costs appear once a model step records its tokens. Price each model in <code>prices.toml</code> in the factory folder.</p>`;
-  }
   const offline = Boolean(state.failed);
   const pick = html`<label class="by"><span>Split by</span><select data-action="costs-by" aria-disabled="${offline}" ${offline ? raw("disabled") : ""}>${SPLITS.map((by) => html`<option value="${by}" ${by === costs.by ? raw("selected") : ""}>${by}</option>`)}</select></label>`;
+  if (!costs.days.length && !costs.split.length) {
+    // Scores can land in a window with no cost, so they keep their table and its Split by.
+    const scores = scoresPart(costs, pick);
+    return html`<p class="empty">No cost in the last two weeks. Costs appear once a model step records its tokens. Price each model in <code>prices.toml</code> in the factory folder.</p>${scores ? html`<section class="sect" aria-labelledby="costs-scores">${scores}</section>` : ""}`;
+  }
   const unpriced = table.unpriced.length || table.unknown
     ? html`<div class="note"><p><b>Not in the cost.</b> ${table.unpriced.length ? html`Tokens with no price: ${table.unpriced.map((entry, i) => html`${i ? ", " : ""}<span class="mono">${entry.model}</span> ${entry.tokens} tokens`)}. Add each model to <code>prices.toml</code> to price them.` : ""} ${table.unknown ? `${table.unknown}, so their cost is unknown.` : ""}</p></div>`
     : "";
@@ -1986,7 +1993,16 @@ function costsPart(costs) {
     <section class="sect" aria-labelledby="costs-days"><h2 class="sh" id="costs-days">Each day</h2>${dayChart(costs)}</section>
     <section class="sect" aria-labelledby="costs-split"><h2 class="sh" id="costs-split">This week by ${costs.by}${pick}</h2>
       <div class="tscroll"><table class="ctbl"><thead><tr><th scope="col">${table.dimension}</th><th scope="col" class="r">Cost</th><th scope="col" class="r">Tokens</th><th scope="col">Notes</th></tr></thead>
-      <tbody>${table.rows.map((row) => html`<tr><th scope="row" class="mono">${row.name}</th><td class="r">${row.cost}</td><td class="r">${row.tokens}</td><td class="n">${row.note}</td></tr>`)}</tbody></table></div></section>`;
+      <tbody>${table.rows.map((row) => html`<tr><th scope="row" class="mono">${row.name}</th><td class="r">${row.cost}</td><td class="r">${row.tokens}</td><td class="n">${row.note}</td></tr>`)}</tbody></table></div>${scoresPart(costs)}</section>`;
+}
+
+function scoresPart(costs, pick = "") {
+  const table = scoreTable(costs);
+  if (!table.rows.length) return "";
+  const head = ["Pass rate", "pass", "fail", "error", "not applicable"].map((label) => html`<th scope="col" class="r">${label}</th>`);
+  return html`<h3 class="sh" id="costs-scores">Scores by ${costs.by}${pick}</h3><p class="cap">The pass rate leaves out errors and not applicable.</p>
+    <div class="tscroll"><table class="ctbl stbl" aria-labelledby="costs-scores"><thead><tr><th scope="col">${table.dimension}</th><th scope="col">Scorer</th>${head}</tr></thead>
+    <tbody>${table.rows.map((row) => html`<tr><th scope="row" class="mono">${row.name}</th><td class="mono">${row.scorer}</td><td class="r c rate">${row.rate}</td><td class="r c">${row.pass}</td><td class="r c">${row.fail}</td><td class="r c">${row.error}</td><td class="r c">${row.notApplicable}</td><td class="line">${row.line}</td></tr>`)}</tbody></table></div>`;
 }
 
 // Bars in percent of the box, so the chart takes any width without stretching its text.

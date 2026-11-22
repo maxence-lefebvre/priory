@@ -82,6 +82,11 @@ schemas.
 
 ## Honeycomb
 
+**Built.** `POST /hooks/honeycomb` publishes `honeycomb.trigger.fired` from Priory's payload
+template. See [honeycomb.md](../intake/honeycomb.md). Resolved Triggers, SLO burn alerts and
+anomaly detection are not mapped yet. The message id uses the firing's `.Alert.InstanceID` rather
+than the delivery id, so a replay under a new delivery id publishes nothing.
+
 **Trigger on.** A Honeycomb Trigger firing: `honeycomb.trigger.fired`. A resolved state could be
 `honeycomb.trigger.resolved`, and SLO burn alerts could be `honeycomb.slo.burn_alert`. Both depend
 on the payload template (see Task key).
@@ -125,6 +130,10 @@ source `honeycomb`, and the schemas.
 
 ## Intercom
 
+**Built.** `POST /hooks/intercom` publishes `intercom.conversation.created`, and `HEAD` there gets
+`200`. `[webhooks.intercom] workspace` is the workspace filter. See
+[intercom.md](../intake/intercom.md). Replies are not mapped yet.
+
 **Trigger on.** A customer starting a conversation: `intercom.conversation.created`, from the topic
 `conversation.user.created` ("Contact initiated conversations"). A customer reply could be
 `intercom.conversation.replied`, from `conversation.user.replied`. Both need the Read conversations
@@ -164,6 +173,11 @@ call. Fetching the full history would, so leave it to a later slice.
 [Rate limiting](https://developers.intercom.com/docs/references/rest-api/errors/rate-limiting.md).
 
 ## CloudWatch
+
+**Built.** `POST /hooks/cloudwatch` takes alarm state changes from an EventBridge API destination
+and publishes `cloudwatch.alarm.state_changed`. The connection's API key authorization sends
+`X-Priory-Webhook-Token`. See [cloudwatch.md](../intake/cloudwatch.md). The poll option is not
+built.
 
 **Trigger on.** An alarm entering `ALARM`: `cloudwatch.alarm.state_changed`, with the new state in
 the event. CloudWatch sends it to EventBridge as `detail-type` `CloudWatch Alarm State Change` from

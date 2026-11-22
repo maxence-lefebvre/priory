@@ -396,15 +396,19 @@ Tests:
    with no tokens ends the replay as `cost unknown`. Its tests use the fake `claude`, so they cost
    nothing, and cover a budget that ends inside a turn and a turn with no tokens. The real-agent
    check is by hand, as the operator rules ask.
-3. `priory bench` with `--base` and `--head`: the pairs, the table and the sign test. The
+3. Built. `priory bench` with `--base` and `--head` ([bench.md](../daemon/bench.md#compare),
+   [benchmarks.md](../reference/benchmarks.md)): the pairs, the table and the sign test. The
    comparison is a pure function over per-case fixtures, which also print the table above. Its
    tests cover ties, a dropped pair, a repeat, and a base that passes 2 of 3 against a head that
-   passes 1 and then errors twice, or asks twice, which the head must lose both times.
+   passes 1 and then errors twice, or asks twice, which the head must lose both times. A repeat is
+   found from the `factory.bench.compared` records of the machine that runs the comparison, and
+   the header reads `of these commits` until `--post` names a pull request.
 4. `--post`, the `benchmark` example factory with its trigger and workflow. Tests start from a
    fresh task with no branch, and cover a label from a bot, which still waits for the person's
    answer, a fork, an event with no `head_repo`, and a head that moved after the answer. This slice closes M4's done-when line.
 5. The `judge` kind, `priory score --calibrate` and the agreement rule.
-6. Scores in the web view's task page and Costs panel, from a reviewed design.
+6. Built. Scores in the web view's task page and Costs panel ([score.md](../daemon/score.md#where-scores-show)).
+   Herdr's Task and Costs panels do not show them yet.
 
 ## Open questions
 

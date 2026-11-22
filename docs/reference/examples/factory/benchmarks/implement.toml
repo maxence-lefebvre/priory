@@ -1,0 +1,6 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/benchmark.json
+description = "Twelve implement tasks merged in November."
+workflow = "implement"
+primary = "gate"                    # the one scorer that gives the verdict
+scorers = ["passed", "short-ask"]   # shown beside it, with no verdict
+cases = ["cases/eng-412", "cases/eng-431", "cases/app-57"]   # beside this file

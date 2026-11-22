@@ -1,0 +1,21 @@
+{
+  "id": "5f0e8c1a-3b7d-5c2e-9a41-6d8b0f2e7c13",
+  "type": "cloudwatch.alarm.state_changed",
+  "subject": "ServerCpuTooHigh",
+  "time": "2026-11-17T17:04:40Z",
+  "data": {
+    "alarm": "arn:aws:cloudwatch:us-east-1:123456789012:alarm:ServerCpuTooHigh",
+    "name": "ServerCpuTooHigh",
+    "description": "Goes into alarm when server CPU utilization is too high!",
+    "state": "ALARM",
+    "previous_state": "OK",
+    "reason": "Threshold Crossed: 1 out of the last 1 datapoints [99.5] was greater than the threshold (50.0).",
+    "account": "123456789012",
+    "region": "us-east-1",
+    "delivery": "c4c1c1c9-6542-e61b-6ef0-8c4d36933a92",
+    "time": "2026-11-17T17:04:40Z",
+    "baseline": false,
+    "triggers": ["cloudwatch-alarms"]
+  },
+  "links": []
+}

@@ -1,7 +1,7 @@
 use crate::factory::{
-    ASK_SHAPE, Agent, Backend, CODEX_PROMPT_LIMIT, Decider, Effect, Factory, Harness, INSTRUCTIONS,
-    Intervention, Loaded, OPEN_MEMORIES_PR, OnChange, PermissionMode, Problem, Proof, ScoreKind,
-    ScoreOn, Scorer, Session, Step, Trigger, Until, Workflow,
+    ASK_SHAPE, Agent, Backend, Benchmark, CODEX_PROMPT_LIMIT, Decider, Effect, Factory, Harness,
+    INSTRUCTIONS, Intervention, Loaded, OPEN_MEMORIES_PR, OnChange, PermissionMode, Problem, Proof,
+    ScoreKind, ScoreOn, Scorer, Session, Step, Trigger, Until, Workflow,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
 use crate::lanes::{self, Lanes};
@@ -283,7 +283,30 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             "github" => check_github(trigger, &mut problems),
             "linear" | "linear.view" => check_linear(trigger, &mut problems),
             "slack" => check_slack(trigger, &mut problems),
-            "sentry" => check_sentry(factory, trigger, &mut problems),
+            "sentry" => check_hooked(
+                trigger,
+                &SENTRY,
+                factory.sentry_webhook().is_some(),
+                &mut problems,
+            ),
+            "honeycomb" => check_hooked(
+                trigger,
+                &HONEYCOMB,
+                factory.honeycomb_webhook().is_some(),
+                &mut problems,
+            ),
+            "cloudwatch" => check_hooked(
+                trigger,
+                &CLOUDWATCH,
+                factory.cloudwatch_webhook().is_some(),
+                &mut problems,
+            ),
+            "intercom" => check_hooked(
+                trigger,
+                &INTERCOM,
+                factory.intercom_webhook().is_some(),
+                &mut problems,
+            ),
             _ if trigger.value.backfill.is_some() => problems.push(problem(
                 trigger,
                 trigger.lines.field("backfill"),
@@ -296,6 +319,9 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             "linear",
             "linear.view",
             "sentry",
+            "cloudwatch",
+            "honeycomb",
+            "intercom",
             "slack",
             "schedule",
         ];
@@ -372,7 +398,67 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
     for scorer in factory.scorers.values() {
         check_scorer(factory, scorer, &mut problems);
     }
+    for benchmark in factory.benchmarks.values() {
+        check_benchmark(factory, benchmark, &mut problems);
+    }
     problems
+}
+
+fn check_benchmark(factory: &Factory, benchmark: &Loaded<Benchmark>, problems: &mut Vec<Problem>) {
+    let value = &benchmark.value;
+    if !factory.workflows.contains_key(&value.workflow) {
+        problems.push(problem(
+            benchmark,
+            benchmark.lines.field("workflow"),
+            format!("no workflow `{}` in workflows/", value.workflow),
+        ));
+    }
+    match factory.scorers.get(&value.primary) {
+        None => problems.push(problem(
+            benchmark,
+            benchmark.lines.field("primary"),
+            format!("no scorer `{}` in scorers/", value.primary),
+        )),
+        Some(scorer) if scorer.value.on == ScoreOn::Ask => problems.push(problem(
+            benchmark,
+            benchmark.lines.field("primary"),
+            format!(
+                "the primary scorer `{}` reads asks, which not every replay makes: use one on result or diff",
+                value.primary
+            ),
+        )),
+        Some(_) => {}
+    }
+    for name in value
+        .scorers
+        .iter()
+        .filter(|name| !factory.scorers.contains_key(*name))
+    {
+        problems.push(problem(
+            benchmark,
+            benchmark.lines.field("scorers"),
+            format!("no scorer `{name}` in scorers/"),
+        ));
+    }
+    if value.cases.is_empty() {
+        problems.push(problem(
+            benchmark,
+            benchmark.lines.field("cases"),
+            "a benchmark needs `cases`: folders that priory bench capture wrote".to_owned(),
+        ));
+    }
+    for case in &value.cases {
+        if case.is_absolute() || case.components().any(|part| part.as_os_str() == "..") {
+            problems.push(problem(
+                benchmark,
+                benchmark.lines.field("cases"),
+                format!(
+                    "the case {} is not inside the benchmarks folder",
+                    case.display()
+                ),
+            ));
+        }
+    }
 }
 
 fn check_scorer(factory: &Factory, scorer: &Loaded<Scorer>, problems: &mut Vec<Problem>) {
@@ -768,10 +854,69 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     }
 }
 
-/// Sentry events arrive only by webhook: a `sentry` trigger takes `issue.created`, filtered on
-/// the project slug or the level, keyed by Sentry's issue id.
-fn check_sentry(factory: &Factory, trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
+/// A source whose events arrive only by webhook: the one event it takes, its filters and its key.
+struct Hooked {
+    source: &'static str,
+    vendor: &'static str,
+    on: &'static str,
+    filters: &'static [&'static str],
+    key: &'static str,
+    events: &'static str,
+}
+
+const SENTRY: Hooked = Hooked {
+    source: "sentry",
+    vendor: "Sentry",
+    on: "issue.created",
+    filters: &["project", "level"],
+    key: "issue.id",
+    events: "events",
+};
+
+const HONEYCOMB: Hooked = Hooked {
+    source: "honeycomb",
+    vendor: "Honeycomb",
+    on: "trigger.fired",
+    filters: &["environment", "trigger"],
+    key: "trigger.id",
+    events: "alerts",
+};
+
+const CLOUDWATCH: Hooked = Hooked {
+    source: "cloudwatch",
+    vendor: "CloudWatch",
+    on: "alarm.state_changed",
+    filters: &["name", "state", "previous_state"],
+    key: "alarm.arn",
+    events: "alarm state changes",
+};
+
+const INTERCOM: Hooked = Hooked {
+    source: "intercom",
+    vendor: "Intercom",
+    on: "conversation.created",
+    filters: &[],
+    key: "conversation.id",
+    events: "conversations",
+};
+
+/// A trigger of a webhook-only source takes its one event, its filters and its key, and needs its
+/// `[webhooks.<source>]` table.
+fn check_hooked(
+    trigger: &Loaded<Trigger>,
+    hooked: &Hooked,
+    webhook: bool,
+    problems: &mut Vec<Problem>,
+) {
     let value = &trigger.value;
+    let Hooked {
+        source, vendor, on, ..
+    } = hooked;
+    let a = if source.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    };
     let mut report = |field: &str, message: String| {
         let line = trigger.lines.field(field).or(trigger.lines.field("source"));
         problems.push(problem(trigger, line, message));
@@ -782,37 +927,46 @@ fn check_sentry(factory: &Factory, trigger: &Loaded<Trigger>, problems: &mut Vec
             "only a GitHub, Linear or Slack trigger has `backfill`".into(),
         );
     }
-    if factory.sentry_webhook().is_none() {
+    if !webhook {
         report(
             "source",
-            "a `sentry` trigger needs `[webhooks.sentry]` in factory.toml: Sentry events arrive only by webhook".into(),
-        );
-    }
-    if value.on != "issue.created" {
-        report(
-            "on",
             format!(
-                "a `sentry` trigger handles `issue.created`, not `{}`",
-                value.on
+                "{a} `{source}` trigger needs `[webhooks.{source}]` in factory.toml: {vendor} {} arrive only by webhook",
+                hooked.events
             ),
         );
     }
-    let filters = ["project", "level"];
-    if value
-        .filter
-        .as_ref()
-        .is_some_and(|filter| filter.keys().any(|key| !filters.contains(&key.as_str())))
-    {
+    if value.on != *on {
         report(
-            "filter",
-            "a `sentry` trigger filters on `project` or `level`".into(),
+            "on",
+            format!("{a} `{source}` trigger handles `{on}`, not `{}`", value.on),
         );
     }
-    if value.repo.as_deref().is_some_and(|repo| !owner_name(repo)) {
-        report("repo", "a Sentry trigger's `repo` is `owner/name`".into());
+    if value.filter.as_ref().is_some_and(|filter| {
+        filter
+            .keys()
+            .any(|key| !hooked.filters.contains(&key.as_str()))
+    }) {
+        let message = match hooked.filters {
+            [] => format!("{a} `{source}` trigger takes no `filter`"),
+            filters => format!(
+                "{a} `{source}` trigger filters on `{}`",
+                filters.join("` or `")
+            ),
+        };
+        report("filter", message);
     }
-    if value.key.as_deref().is_some_and(|key| key != "issue.id") {
-        report("key", "a Sentry trigger's `key` is `issue.id`".into());
+    if value.repo.as_deref().is_some_and(|repo| !owner_name(repo)) {
+        report(
+            "repo",
+            format!("{a} {vendor} trigger's `repo` is `owner/name`"),
+        );
+    }
+    if value.key.as_deref().is_some_and(|key| key != hooked.key) {
+        report(
+            "key",
+            format!("{a} {vendor} trigger's `key` is `{}`", hooked.key),
+        );
     }
 }
 
