@@ -1871,8 +1871,8 @@ pub fn memory_index<'a>(
     }
     let mut index = format!(
         "# Memories\n\nThe factory's memories are in {folder}, one fact per file. Read a memory's \
-         file when its description fits your task. Never edit these files: a memory changes only \
-         through a pull request to the factory.\n"
+         file when its description fits your task. Never edit these files: save a fact with the \
+         remember tool, and remove a wrong one with forget.\n"
     );
     for (name, memory) in memories {
         let description = memory.description.split_whitespace();

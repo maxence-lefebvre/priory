@@ -47,7 +47,9 @@ while the owner routes it as [routing.md](routing.md) says.
 The runners publish more message types on the same output, which
 [events.md](../reference/events.md#runners) lists: `priory.task.claimed`, `priory.task.held`,
 `priory.runner.alive`, `priory.ask.posted`, `priory.ask.applied`, `priory.ask.answered`,
-`priory.ask.dismissed`, `priory.task.acted` and `priory.task.applied`. The daemon stores each claim,
+`priory.ask.dismissed`, `priory.task.acted` and `priory.task.applied`, and the memory messages
+`priory.memory.written`, `priory.memory.accepted` and `priory.memory.dropped` (see
+[skills.md](skills.md#memories-agents-write)). The daemon stores each claim,
 hold, alive, post and applied message in its state file before it publishes it, so a crash between
 the two publishes it at the next start. A message published twice adds nothing, because the log
 keeps the first message of each id. `priory answer`, `priory dismiss`, `priory give`, an action on

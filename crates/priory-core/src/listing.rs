@@ -92,6 +92,7 @@ const DESK_TITLE: &str = "CASE WHEN desk.kind = 'ask' THEN (SELECT coalesce(asks
            FROM asks LEFT JOIN tasks ON tasks.id = asks.task
            WHERE coalesce(asks.name, asks.id) = desk.id
              AND asks.answer IS NULL AND asks.withdrawn IS NULL)
+         WHEN desk.kind = 'memories' THEN 'memory candidates wait for a person'
          WHEN desk.task IS NOT NULL THEN 'task '
            || (SELECT key FROM tasks WHERE tasks.id = desk.task) || ' ' || desk.kind
          WHEN desk.kind = 'report' AND desk.what LIKE 'intake: %' THEN 'the intake fails to poll '
@@ -197,6 +198,13 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                SELECT 0, created, 'todo', id, NULL, NULL,
                  text || coalesce(', due ' || due, '') FROM todos WHERE done IS NULL
                UNION ALL
+               SELECT 0, min(written), 'memories', 'memories', NULL, NULL,
+                 count(*) || CASE count(*) WHEN 1 THEN ' memory candidate waits'
+                   ELSE ' memory candidates wait' END || ' for a person: '
+                   || group_concat(name, ', ') || '; see them with `priory memories`'
+               FROM memory_candidates
+               WHERE logged IS NOT NULL AND accepted IS NULL AND dropped IS NULL
+               HAVING count(*) > 0               UNION ALL
                SELECT 1, tasks.changed, 'queue', queue.place, tasks.id, tasks.lane,
                  coalesce(tasks.band, '-') || coalesce(': ' || tasks.reason, '')
                FROM tasks JOIN queue USING (id)";
@@ -1389,6 +1397,9 @@ pub fn desk(
         let added = remote.len();
         list.splice(waiting..waiting, remote);
         list[..waiting + added].sort_by(|a, b| a["since"].as_str().cmp(&b["since"].as_str()));
+    }
+    for item in list.iter_mut().filter(|item| item["kind"] == "memories") {
+        item["candidates"] = json!(crate::memories::list(db, false)?);
     }
     let ranked = rank(list);
     for item in list.iter_mut() {

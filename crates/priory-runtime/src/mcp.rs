@@ -296,6 +296,40 @@ pub(crate) fn tools() -> Value {
             },
         },
         {
+            "name": "remember",
+            "description": "Save one fact for later runs, as a memory: a lesson about this factory's code or process that a later task would need. Your task's later runs see it at once; other tasks' runs see it once a person accepts it. Saving a name again writes a new version, which a person accepts in turn. At most 4096 bytes, and never a secret. It does not end your turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": text("The memory's name: lowercase letters, digits and hyphens, such as release-day."),
+                    "description": text("When an agent should read it, in one line. The memory index shows it."),
+                    "text": text("The fact itself, in Markdown."),
+                },
+                "required": ["name", "description", "text"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "forget",
+            "description": "Remove a memory that is wrong or out of date, by its name. Your task's later runs stop seeing it at once; other tasks' runs once a person accepts the removal. It does not end your turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "name": text("The memory's name, as the memory index lists it, without .md.") },
+                "required": ["name"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "memory",
+            "description": "Read a memory's file by its name, as your task sees it now. Your instructions' memory index lists each name and when to read it. It does not end your turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "name": text("The memory's name, as the memory index lists it, without .md.") },
+                "required": ["name"],
+                "additionalProperties": false,
+            },
+        },
+        {
             "name": "compact",
             "description": "Compact this conversation when its context runs long, then end your turn. Priory types /compact once you are idle, then a prompt that names your task and step so you carry on.",
             "inputSchema": {

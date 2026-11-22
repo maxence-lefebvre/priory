@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 85;
+const VERSION: i64 = 86;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1542,6 +1542,29 @@ CREATE INDEX IF NOT EXISTS remote_task_submissions_by_key ON remote_task_submiss
 "
 );
 
+// Memory candidates that agents write and people accept, in log order (R11.1).
+const SCHEMA_86: &str = concat!(
+    "
+CREATE TABLE IF NOT EXISTS memory_candidates (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT,
+  text        TEXT,
+  key         TEXT NOT NULL,
+  runner      TEXT,
+  task        INTEGER REFERENCES tasks (id),
+  written     TEXT NOT NULL,
+  logged      INTEGER,
+  accepted    INTEGER,
+  dropped     INTEGER,
+  decided     TEXT
+);
+",
+    bumps!("memory_candidates"),
+    "PRAGMA user_version = 86;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1554,7 +1577,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
-    SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85,
+    SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1754,6 +1777,9 @@ pub(crate) fn route_in(
     let factory = trace.factory;
     if route::outsider(message) {
         record(tx, message, None, "outsider", None)?;
+        return Ok(Vec::new());
+    }
+    if crate::memories::handle(tx, message)?.is_some() {
         return Ok(Vec::new());
     }
     if let Some(me) = trace.runner.as_deref()

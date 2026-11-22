@@ -163,8 +163,14 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         runtime::kill(&tmux);
     }
     runtime::replay(&home, |line| {
-        let (_, kill) =
-            take(&mut db, line, &trace, counting.get(&home)).map_err(|error| error.to_string())?;
+        let (_, kill) = take(
+            &mut db,
+            line,
+            &trace,
+            counting.get(&home),
+            current(kit.as_ref()),
+        )
+        .map_err(|error| error.to_string())?;
         kill.inspect(|tmux| runtime::kill(tmux));
         Ok(())
     })?;
@@ -283,7 +289,13 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             }
         }
         while let Ok(line) = listening.lines.try_recv() {
-            apply(&mut db, line, &trace, counting.get(&home))?;
+            apply(
+                &mut db,
+                line,
+                &trace,
+                counting.get(&home),
+                current(kit.as_ref()),
+            )?;
         }
         start_answers(&mut db, &trace, &home, &mut commands)?;
         commands = run_commands(&mut db, &trace, &home, commands)?;
@@ -331,7 +343,13 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             sweep::retire(&db, &home, short)?;
         }
         match listening.lines.recv_timeout(EVERY) {
-            Ok(line) => apply(&mut db, line, &trace, counting.get(&home))?,
+            Ok(line) => apply(
+                &mut db,
+                line,
+                &trace,
+                counting.get(&home),
+                current(kit.as_ref()),
+            )?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
@@ -688,13 +706,19 @@ fn log_of(home: &Path, id: i64) -> std::path::PathBuf {
 
 /// Applies a line from the socket and replies to its sender. A run its line ended is killed after
 /// the reply, so the hook that sent it is not killed first.
+/// The kit commit runs get now, if any.
+fn current(kit: Option<&crate::kit::Fetcher>) -> Option<&crate::kit::Fetched> {
+    kit.and_then(crate::kit::Fetcher::current)
+}
+
 fn apply(
     db: &mut Connection,
     line: Line,
     trace: &Trace,
     counter: Option<&embed::Counter>,
+    kit: Option<&crate::kit::Fetched>,
 ) -> Result<(), Error> {
-    let (reply, kill) = take(db, &line.text, trace, counter)?;
+    let (reply, kill) = take(db, &line.text, trace, counter, kit)?;
     let _ = line.applied.send(reply);
     kill.inspect(|tmux| runtime::kill(tmux));
     Ok(())
@@ -864,6 +888,7 @@ fn take(
     line: &str,
     trace: &Trace,
     counter: Option<&embed::Counter>,
+    kit: Option<&crate::kit::Fetched>,
 ) -> Result<(String, Option<String>), Error> {
     let replied = |result: Result<String, String>| {
         serde_json::to_string(&result).expect("a result serializes")
@@ -924,6 +949,13 @@ fn take(
         Ok(Input::Call(call)) if call.tool == "progress" => {
             Ok((replied(progress::tool(db, &call, trace)?), None))
         }
+        Ok(Input::Call(call)) if matches!(call.tool.as_str(), "remember" | "forget") => {
+            Ok((replied(crate::memories::write(db, &call, trace)?), None))
+        }
+        Ok(Input::Call(call)) if call.tool == "memory" => Ok((
+            replied(crate::memories::recall(db, &call, trace.factory, kit)?),
+            None,
+        )),
         Ok(Input::Call(call)) if call.tool == "finding" => Ok((
             replied(crate::findings::tool(db, &call, trace.factory)?),
             None,
@@ -1698,7 +1730,8 @@ fn start(
     admission: &Admission,
     kit: Option<&crate::kit::Fetched>,
 ) -> Result<Result<(), String>, Error> {
-    let sources = crate::kit::sources(factory, kit);
+    let candidates = crate::memories::layer(db, Some(admission.task))?;
+    let sources = crate::kit::sources(factory, kit, &candidates);
     let step = factory.workflows[&admission.workflow]
         .value
         .step(&admission.step)
@@ -1943,7 +1976,8 @@ fn compact_idle(
     scope: &[String],
     kit: Option<&crate::kit::Fetched>,
 ) -> Result<(), Error> {
-    let sources = crate::kit::sources(trace.factory, kit);
+    let candidates = crate::memories::layer(db, None)?;
+    let sources = crate::kit::sources(trace.factory, kit, &candidates);
     for live in idle::live(db)? {
         let ended_as = match (live.overdue, live.late) {
             (true, _) => Some("timeout"),

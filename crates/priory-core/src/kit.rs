@@ -34,7 +34,7 @@ pub(crate) struct Fetched {
 }
 
 /// What a run gets: the kit's skills, instructions and memories, then the factory's own, the
-/// factory's winning on a name both hold.
+/// factory's winning on a name both hold, then the memory candidates the run sees, in order.
 pub(crate) struct Sources<'a> {
     skills: BTreeMap<&'a str, &'a Skill>,
     instructions: String,
@@ -45,7 +45,11 @@ pub(crate) struct Sources<'a> {
     pub(crate) commit: Option<&'a str>,
 }
 
-pub(crate) fn sources<'a>(factory: &'a Factory, kit: Option<&'a Fetched>) -> Sources<'a> {
+pub(crate) fn sources<'a>(
+    factory: &'a Factory,
+    kit: Option<&'a Fetched>,
+    candidates: &'a [(String, Option<Memory>)],
+) -> Sources<'a> {
     let mut skills = BTreeMap::new();
     let mut memories = BTreeMap::new();
     let mut instructions = "";
@@ -61,6 +65,12 @@ pub(crate) fn sources<'a>(factory: &'a Factory, kit: Option<&'a Fetched>) -> Sou
     }
     skills.extend(factory.skills.iter().map(|(n, s)| (n.as_str(), &s.value)));
     memories.extend(factory.memories.iter().map(|(n, m)| (n.as_str(), &m.value)));
+    for (name, memory) in candidates {
+        match memory {
+            Some(memory) => memories.insert(name.as_str(), memory),
+            None => memories.remove(name.as_str()),
+        };
+    }
     Sources {
         skills,
         instructions: factory::join_instructions(instructions, factory.instructions()),
@@ -71,6 +81,11 @@ pub(crate) fn sources<'a>(factory: &'a Factory, kit: Option<&'a Fetched>) -> Sou
 }
 
 impl Sources<'_> {
+    /// The memory `name` a run gets, if any.
+    pub(crate) fn memory(&self, name: &str) -> Option<&Memory> {
+        self.memories.get(name).copied()
+    }
+
     /// The instructions, then the index of the memories in `folder`, as every run gets them.
     pub(crate) fn run_instructions(&self, folder: &str) -> String {
         let index = factory::memory_index(folder, self.memories.iter().map(|(n, m)| (*n, *m)));

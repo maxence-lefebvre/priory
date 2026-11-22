@@ -1,0 +1,332 @@
+//! Memories that agents write on the log: the `remember`, `forget` and `memory` tools, the
+//! candidates every runner records in log order, and a person's accept or drop (R11.1).
+
+use crate::tools::Call;
+use crate::trace::Trace;
+use herdr_bus::Message;
+use priory_factory::factory::{Factory, MEMORY_LIMIT, Memory};
+use priory_intake::intake::{self, MEMORY_ACCEPTED, MEMORY_DROPPED, MEMORY_WRITTEN};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use serde_json::{Value, json};
+
+/// A memory's name has lowercase letters, digits and hyphens, and starts with a letter or a digit,
+/// as `priory check` asks of `memories/<name>.md`.
+fn named(name: &str) -> bool {
+    name.bytes()
+        .next()
+        .is_some_and(|first| first.is_ascii_lowercase() || first.is_ascii_digit())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+/// The file a candidate's memory is, as the run's snapshot holds it.
+fn file(name: &str, description: &str, text: &str) -> String {
+    format!(
+        "---\nname: {name}\ndescription: {}\n---\n{text}\n",
+        serde_json::to_string(description).expect("a string serializes")
+    )
+}
+
+/// Why a candidate is refused, if it is: the rules of `remember` and `forget`, which a runner also
+/// applies to every candidate it reads, since anyone who can publish on the log can write one.
+fn refused(name: &str, kept: Option<(&str, &str)>) -> Option<String> {
+    if !named(name) {
+        return Some(
+            "a memory's name has lowercase letters, digits and hyphens, and starts with a letter or a digit"
+                .to_owned(),
+        );
+    }
+    let (description, text) = kept?;
+    if description.trim().is_empty() {
+        return Some(
+            "a memory needs a description, which tells an agent when to read it".to_owned(),
+        );
+    }
+    if text.trim().is_empty() {
+        return Some("a memory needs a text: the fact itself".to_owned());
+    }
+    let bytes = file(name, description, text).len();
+    if bytes > MEMORY_LIMIT {
+        return Some(format!(
+            "a memory holds one fact in at most {MEMORY_LIMIT} bytes: this one is {bytes} bytes"
+        ));
+    }
+    if [name, description, text]
+        .into_iter()
+        .any(crate::screen::holds_secret)
+    {
+        return Some(
+            "the text looks like it holds a credential: a memory reaches every later run, so keep secrets out of it"
+                .to_owned(),
+        );
+    }
+    None
+}
+
+fn argument<'a>(call: &'a Call, name: &str) -> Result<&'a str, String> {
+    call.arguments[name]
+        .as_str()
+        .ok_or_else(|| format!("{name} must be a string"))
+}
+
+/// The task of the run whose harness session is `session`, with its key.
+fn caller(db: &Connection, session: &str) -> rusqlite::Result<Option<(i64, String)>> {
+    db.query_row(
+        "SELECT tasks.id, tasks.key FROM runs JOIN tasks ON tasks.id = runs.task
+         WHERE runs.session = ?1 ORDER BY runs.id DESC LIMIT 1",
+        [session],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+}
+
+/// `remember(name, description, text)` and `forget(name)`: stores a candidate for the caller's
+/// task and queues its `priory.memory.written` for the log.
+pub(crate) fn write(
+    db: &mut Connection,
+    call: &Call,
+    trace: &Trace,
+) -> rusqlite::Result<Result<String, String>> {
+    let fields = (|| {
+        let name = argument(call, "name")?.trim().to_owned();
+        let kept = match call.tool.as_str() {
+            "remember" => Some((
+                argument(call, "description")?.trim().to_owned(),
+                argument(call, "text")?.trim().to_owned(),
+            )),
+            _ => None,
+        };
+        match refused(&name, kept.as_ref().map(|(d, t)| (d.as_str(), t.as_str()))) {
+            Some(why) => Err(why),
+            None => Ok((name, kept)),
+        }
+    })();
+    let (name, kept) = match fields {
+        Ok(fields) => fields,
+        Err(why) => return Ok(Err(why)),
+    };
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let Some((task, key)) = caller(&tx, &call.session)? else {
+        return Ok(Err(format!("no run has session {}", call.session)));
+    };
+    let mut data = json!({ "name": name, "task": key, "runner": trace.runner });
+    match &kept {
+        Some((description, text)) => {
+            data["description"] = json!(description);
+            data["text"] = json!(text);
+        }
+        None => data["forget"] = json!(true),
+    }
+    let time = intake::now().unwrap_or_else(|_| jiff::Timestamp::now());
+    let message = Message::new(MEMORY_WRITTEN, data)
+        .subject(name.clone())
+        .time(time);
+    let id = message.id.to_string();
+    tx.execute(
+        "INSERT INTO memory_candidates (id, name, description, text, key, runner, task, written)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            id,
+            name,
+            kept.as_ref().map(|(description, _)| description),
+            kept.as_ref().map(|(_, text)| text),
+            key,
+            trace.runner,
+            task,
+            time.to_string()
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO sends (message) VALUES (?1)",
+        [serde_json::to_string(&message).expect("a message serializes")],
+    )?;
+    tx.commit()?;
+    let what = if kept.is_some() {
+        format!("remembered {name}")
+    } else {
+        format!("forgot {name}")
+    };
+    Ok(Ok(format!(
+        "{what} as candidate {id}: your task's later runs see it now, and other tasks' runs once a person accepts it"
+    )))
+}
+
+/// Handles a memory message read from the log: records a candidate, or a person's accept or drop.
+/// `None` for any other message.
+pub(crate) fn handle(tx: &Transaction, message: &Message) -> rusqlite::Result<Option<()>> {
+    let kind = message.kind.as_str();
+    if ![MEMORY_WRITTEN, MEMORY_ACCEPTED, MEMORY_DROPPED].contains(&kind) {
+        return Ok(None);
+    }
+    let data = &message.data;
+    let text = |field: &str| data[field].as_str();
+    // Anyone can publish on the log, so a malformed message is refused, never fatal.
+    let applied = if kind == MEMORY_WRITTEN {
+        let forget = data["forget"] == true;
+        let kept = text("description").zip(text("text"));
+        let name = text("name").unwrap_or_default();
+        let well_formed =
+            text("task").is_some() && forget == kept.is_none() && refused(name, kept).is_none();
+        if well_formed {
+            let seq = crate::state::record(tx, message, None, "noted", None)?;
+            tx.execute(
+                "INSERT INTO memory_candidates (id, name, description, text, key, runner, written, logged)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT (id) DO UPDATE SET logged = excluded.logged WHERE logged IS NULL",
+                params![
+                    message.id.to_string(),
+                    name,
+                    text("description"),
+                    text("text"),
+                    text("task"),
+                    text("runner"),
+                    message.time.to_string(),
+                    seq
+                ],
+            )?;
+            return Ok(Some(()));
+        }
+        false
+    } else {
+        let column = if kind == MEMORY_ACCEPTED {
+            "accepted"
+        } else {
+            "dropped"
+        };
+        let seq = crate::state::record(tx, message, None, "noted", None)?;
+        let decided = tx.execute(
+            &format!(
+                "UPDATE memory_candidates SET {column} = ?2, decided = ?3
+                 WHERE id = ?1 AND logged IS NOT NULL AND accepted IS NULL AND dropped IS NULL"
+            ),
+            params![text("candidate"), seq, message.time.to_string()],
+        )?;
+        decided == 1
+    };
+    if !applied {
+        crate::state::record(tx, message, None, "refused", None)?;
+    }
+    Ok(Some(()))
+}
+
+/// The candidates a run of `task` gets over the kit's and the factory's memories, in the order they
+/// apply: each accepted one at its accept, and each of the task's own at its write. A forget is
+/// `None`. Without a task, only the accepted ones.
+pub(crate) fn layer(
+    db: &Connection,
+    task: Option<i64>,
+) -> rusqlite::Result<Vec<(String, Option<Memory>)>> {
+    db.prepare(
+        "SELECT name, description, text FROM (
+           SELECT name, description, text, accepted AS at, rowid AS written
+           FROM memory_candidates WHERE accepted IS NOT NULL
+           UNION ALL
+           SELECT name, description, text, coalesce(logged, 9223372036854775807), rowid
+           FROM memory_candidates WHERE task = ?1 AND dropped IS NULL)
+         ORDER BY at, written",
+    )?
+    .query_map([task], |row| {
+        let name: String = row.get(0)?;
+        let kept: Option<(String, String)> = row.get::<_, Option<String>>(1)?.zip(row.get(2)?);
+        let memory = kept.map(|(description, text)| Memory {
+            bytes: file(&name, &description, &text).into_bytes(),
+            description,
+        });
+        Ok((name, memory))
+    })?
+    .collect()
+}
+
+/// `memory(name)`: the file of the memory `name` as the caller's task sees it now.
+pub(crate) fn recall(
+    db: &Connection,
+    call: &Call,
+    factory: &Factory,
+    kit: Option<&crate::kit::Fetched>,
+) -> rusqlite::Result<Result<String, String>> {
+    let name = match argument(call, "name") {
+        Ok(name) => name.trim(),
+        Err(why) => return Ok(Err(why)),
+    };
+    let Some((task, _)) = caller(db, &call.session)? else {
+        return Ok(Err(format!("no run has session {}", call.session)));
+    };
+    let layer = layer(db, Some(task))?;
+    let sources = crate::kit::sources(factory, kit, &layer);
+    Ok(match sources.memory(name) {
+        Some(memory) => Ok(String::from_utf8_lossy(&memory.bytes).into_owned()),
+        None => Err(format!(
+            "no memory {name} reaches your task: your instructions' index lists those that do"
+        )),
+    })
+}
+
+const STATE: &str = "CASE WHEN accepted IS NOT NULL THEN 'accepted'
+  WHEN dropped IS NOT NULL THEN 'dropped' WHEN logged IS NULL THEN 'sending' ELSE 'pending' END";
+
+/// The candidates this runner read, oldest first: only those that wait for a person, or with `all`
+/// every one.
+pub fn list(db: &Connection, all: bool) -> rusqlite::Result<Vec<Value>> {
+    db.prepare(&format!(
+        "SELECT id, name, description, text, key, runner, written, decided, {STATE}
+         FROM memory_candidates WHERE ?1 OR (logged IS NOT NULL AND accepted IS NULL
+           AND dropped IS NULL)
+         ORDER BY coalesce(logged, 9223372036854775807), rowid"
+    ))?
+    .query_map([all], |row| {
+        let text: Option<String> = row.get(3)?;
+        Ok(json!({
+            "id": row.get::<_, String>(0)?,
+            "name": row.get::<_, String>(1)?,
+            "description": row.get::<_, Option<String>>(2)?,
+            "forget": text.is_none(),
+            "text": text,
+            "task": row.get::<_, String>(4)?,
+            "runner": row.get::<_, Option<String>>(5)?,
+            "written": row.get::<_, String>(6)?,
+            "decided": row.get::<_, Option<String>>(7)?,
+            "state": row.get::<_, String>(8)?,
+        }))
+    })?
+    .collect()
+}
+
+/// Publishes a person's accept or drop of candidate `id` on the factory's log, once this runner's
+/// copy shows it waiting. Every runner applies it as it reads the log.
+pub fn decide(
+    factory: &Factory,
+    db: &Connection,
+    accept: bool,
+    id: &str,
+) -> Result<String, String> {
+    let found = db
+        .query_row(
+            &format!("SELECT name, {STATE} FROM memory_candidates WHERE id = ?1"),
+            [id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let name = match found {
+        None => return Err(format!("no memory candidate {id}")),
+        Some((name, state)) if state == "pending" => name,
+        Some((_, state)) if state == "sending" => {
+            return Err(format!(
+                "candidate {id} is not on the log yet: try again once its runner reaches the log"
+            ));
+        }
+        Some((_, state)) => return Err(format!("candidate {id} is {state}")),
+    };
+    crate::link::refuse_while_unreachable(db)?;
+    let (kind, verb) = if accept {
+        (MEMORY_ACCEPTED, "accepted")
+    } else {
+        (MEMORY_DROPPED, "dropped")
+    };
+    let message = Message::new(kind, json!({ "candidate": id })).subject(name.clone());
+    crate::runners::publish(factory.log(), &message)?;
+    Ok(format!(
+        "{name} {verb}: every runner applies it as it reads the log"
+    ))
+}

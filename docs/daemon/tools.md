@@ -487,6 +487,34 @@ A finding reported in 3 runs in a row moves its fix task up one band, once, unle
 done, failed, dropped or already in the first band. The tool's reply says so. The count is a
 constant, not a setting.
 
+### `remember(name, description, text)`, `forget(name)` and `memory(name)`
+
+`remember` saves one fact for later runs, as a memory. `forget` removes the memory of a name, such
+as one the kit or the factory holds. `memory` replies with the file of a memory, as the caller's
+task sees it now. None of them ends the turn.
+
+```json
+{ "name": "release-day", "description": "When releases go out.", "text": "Releases go out on Tuesdays." }
+```
+
+| Field | Meaning |
+| ----- | ------- |
+| `name` | The memory's name, in lowercase letters, digits and hyphens. Required by all three |
+| `description` | When an agent should read it, as the memory index shows it. Required by `remember` |
+| `text` | The fact, in Markdown. Required by `remember` |
+
+Each `remember` or `forget` call is a candidate. The daemon stores it, then publishes
+`priory.memory.written` on the log through its queue, as it does a claim. Its own task's later runs
+get it at once, and other tasks' runs only once a person accepts it. `remember` refuses a file over
+4096 bytes and text that looks like a credential. The reply names the candidate:
+
+```text
+remembered release-day as candidate 0196f1d0-4a5b-7c6d-8e9f-0a1b2c3d4e5f: your task's later runs see it now, and other tasks' runs once a person accepts it
+```
+
+See [skills.md](skills.md#memories-agents-write) for how a candidate reaches runs, and
+[memories.md](../reference/memories.md#candidates) for the states, the commands and every error.
+
 ### `compact(focus?)`
 
 `compact` queues `/compact <focus>` in the outbox and tells the agent to end its turn. An agent
