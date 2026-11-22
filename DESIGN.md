@@ -1448,7 +1448,8 @@ The calm count, then the one next thing, then the explorer list.
    ask in the Asks panel, so a person answers in one place. Open task opens the [Task](#task)
    panel; Attach opens the live run's terminal.
 3. **Saved views**: Needs me, Running, Asleep, Snoozed and All.
-4. The room banner, Asks, Stopped, To-dos and Later, as on the web desk. The memories row's detail
+4. The pause, room, intake and spend cap banners, then Asks, Stopped, To-dos and Later, as on the
+   web desk. The memories row's detail
    lists each candidate as on the web's [memory candidates](#memory-candidates) page, with a Current
    text button instead of the disclosure, and an armed Accept that reads "Press again to accept".
    A routed ask shows the

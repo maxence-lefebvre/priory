@@ -149,6 +149,13 @@ test("the room and intake banners, Since you looked and Up next come from the de
   ]);
 });
 
+test("a reached spend cap is a banner after the room and intake banners, as on the web Desk", () => {
+  const cap = "spend cap: the factory spent $41.20 of its day cap of $40.00";
+  const model = deskModel({ ...data, desk: { ...data.desk, caps: [cap] } }, { now });
+  assert.equal(model.banners.length, 3);
+  assert.equal(model.banners[2], cap);
+});
+
 test("an empty desk says nothing is queued or scheduled to run next", () => {
   const model = deskModel({ desk: fixture("desk-empty"), asks: { asks: [] }, tasks: { tasks: [] }, queue: { up_next: [] } }, { now });
   assert.deepEqual(model.banners, []);
