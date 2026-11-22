@@ -10,6 +10,27 @@ use rusqlite::{Connection, OptionalExtension, Params, params};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
+/// An ask's id in every listing, on the desk, in `/api/asks` and on its web view page: its name
+/// when it has one, as an outside ask or a daemon's ask does, else its row.
+macro_rules! ask_id {
+    () => {
+        "coalesce(asks.name, asks.id)"
+    };
+}
+
+/// [`ask_id!`] as a constant, for `format!`.
+pub(crate) const ASK_ID: &str = ask_id!();
+
+/// The web view's page of the ask whose [`ASK_ID`] is `id`, which a notification opens.
+pub(crate) fn ask_page(id: &str) -> String {
+    format!("/asks/{id}")
+}
+
+/// The web view's page of task `task`, which a notification or a report's link opens.
+pub(crate) fn task_page(task: i64) -> String {
+    format!("/tasks/{task}")
+}
+
 /// Each queued or ready task's place in the start order, overall and in its band, from 1.
 /// The conditions of a task's open hold as a JSON array, null when it has none.
 const CONDITIONS: &str = "(SELECT json_group_array(json_object('kind', kind, 'until', until,
@@ -77,7 +98,7 @@ fn urgency() -> String {
                WHEN tasks.key GLOB '*:review:*' THEN 'review'
                WHEN asks.kind = 'step' THEN 'plan' ELSE 'ask' END
              FROM asks LEFT JOIN tasks ON tasks.id = asks.task
-             WHERE coalesce(asks.name, asks.id) = desk.id
+             WHERE {ASK_ID} = desk.id
                AND asks.answer IS NULL AND asks.withdrawn IS NULL)
            WHEN desk.kind = 'todo' THEN 'todo'
            ELSE 'rest' END AS urgency"
@@ -87,10 +108,13 @@ fn urgency() -> String {
 /// An item's title as a notification carries it: an ask's title, or its task and step when it
 /// has none, since a question can hold a result's summary; a task's key and kind; a report's
 /// source, never its line, which can quote an error.
-const DESK_TITLE: &str = "CASE WHEN desk.kind = 'ask' THEN (SELECT coalesce(asks.title,
+const DESK_TITLE: &str = concat!(
+    "CASE WHEN desk.kind = 'ask' THEN (SELECT coalesce(asks.title,
              'task ' || tasks.key || ' asks at ' || asks.step, 'ask ' || asks.name)
            FROM asks LEFT JOIN tasks ON tasks.id = asks.task
-           WHERE coalesce(asks.name, asks.id) = desk.id
+           WHERE ",
+    ask_id!(),
+    " = desk.id
              AND asks.answer IS NULL AND asks.withdrawn IS NULL)
          WHEN desk.kind = 'memories' THEN 'memory candidates wait for a person'
          WHEN desk.task IS NOT NULL THEN 'task '
@@ -101,7 +125,8 @@ const DESK_TITLE: &str = "CASE WHEN desk.kind = 'ask' THEN (SELECT coalesce(asks
            THEN 'a merge landed wrong'
          WHEN desk.kind = 'report' THEN 'a report from '
            || substr(desk.what, 1, instr(desk.what, ':') - 1)
-         ELSE desk.kind || ' ' || desk.id END AS title";
+         ELSE desk.kind || ' ' || desk.id END AS title"
+);
 
 /// Asks, blocked tasks and uncertain prompts oldest first, then the queue in start order, each with
 /// its snooze, its group in the ranking and its title.
@@ -122,8 +147,11 @@ fn desk_items() -> String {
     )
 }
 
-const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
-                 coalesce(asks.name, asks.id) AS id, asks.task AS task, tasks.lane AS lane,
+const DESK: &str = concat!(
+    "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
+                 ",
+    ask_id!(),
+    " AS id, asks.task AS task, tasks.lane AS lane,
                  coalesce('routed to ' || asks.routed || ': ', '') || asks.question || ' '
                    || asks.options AS what
                FROM asks LEFT JOIN tasks ON tasks.id = asks.task
@@ -207,11 +235,12 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                HAVING count(*) > 0               UNION ALL
                SELECT 1, tasks.changed, 'queue', queue.place, tasks.id, tasks.lane,
                  coalesce(tasks.band, '-') || coalesce(': ' || tasks.reason, '')
-               FROM tasks JOIN queue USING (id)";
+               FROM tasks JOIN queue USING (id)"
+);
 
 fn asks_query() -> String {
     format!(
-        "SELECT coalesce(asks.name, asks.id) AS id, asks.task,
+        "SELECT {ASK_ID} AS id, asks.task,
      coalesce(tasks.key, asks.key) AS key, asks.step, tasks.lane, tasks.band, tasks.repo, asks.run,
      CASE WHEN asks.withdrawn IS NOT NULL THEN 'withdrawn'
        WHEN asks.answer IS NOT NULL THEN 'answered' ELSE 'open' END AS state,

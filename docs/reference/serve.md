@@ -944,12 +944,13 @@ when none had it. Both reply `{"ok": "subscribed"}` or `{"ok": "unsubscribed"}`.
 
 Each notification is a Web Push message encrypted as RFC 8291 says (`Content-Encoding:
 aes128gcm`), signed with VAPID (RFC 8292), with `TTL: 86400` and `Urgency: high`. Its plaintext is
-JSON with two fields and nothing else:
+JSON with three fields and nothing else:
 
 | Field | For a new ask | For an alarm |
 | ----- | ------------- | ------------ |
+| `id` | `<queued>/<row>`: when the daemon queued the notification and its row, so a service worker drops a copy | as for an ask |
 | `title` | the ask's title, cut to 120 characters; without one, `task <key> asks at <step>`, or `ask <name>` for an outside ask | `task <key> <state>`, such as `task gh:o/r#42 blocked`; for a spend cap reached, the desk's line for it, cut to 120 characters |
-| `url` | `/asks/<id>` | `/tasks/<id>`, or `/` for a spend cap or an intake report |
+| `url` | `/asks/<id>`, with the ask's `id` as `/api/asks` lists it: an outside ask's or the daemon's ask's name, else its number | `/tasks/<id>`, with the task's `id` as `/api/tasks` lists it, or `/` for a spend cap or an intake report |
 
 ## Report
 
