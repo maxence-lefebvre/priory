@@ -236,6 +236,25 @@ export function submitted(ask) {
 /** Who answered, as the views say it: a person, or `agent:<lead>`. Null when unrecorded. @param {string | null | undefined} by */
 export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : "a person");
 
+const date = (/** @type {string} */ iso) => new Date(iso).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+
+/** As the web view's age(): "just now", "12 min", "4 h", then a date (DESIGN.md, Copy). @param {string} iso @param {number} now */
+export function age(iso, now) {
+  const elapsed = now - Date.parse(iso);
+  if (elapsed < 60_000) return "just now";
+  const minutes = Math.round(elapsed / 60_000);
+  if (minutes < 60) return `${minutes} min`;
+  if (minutes < 1440) return `${Math.floor(minutes / 60)} h`;
+  return date(iso);
+}
+
+/** As the web view's ago(): "just now", "12 min ago", or "on Nov 20, 08:00" past a day. @param {string} iso @param {number} now */
+export function ago(iso, now) {
+  const text = age(iso, now);
+  if (text === "just now") return text;
+  return / (min|h)$/.test(text) ? `${text} ago` : `on ${text}`;
+}
+
 // Copied from crates/priory-core/web/inbox.js; a test keeps the two the same.
 const SOURCES = { github: "GitHub", linear: "Linear", slack: "Slack", factory: "" };
 
@@ -244,6 +263,22 @@ export function eventWords(type) {
   const [source, ...rest] = type.split(".");
   return [SOURCES[source] ?? source, ...rest].filter(Boolean).join(" ").replaceAll("_", " ");
 }
+
+/** A Since you looked line, `<type> <subject>: <outcome>`, with its type in plain words; a report's line as it is. @param {string} what */
+export function sinceWords(what) {
+  const [type] = what.split(" ", 1);
+  return /^[a-z_]+(\.[a-z_]+)+$/.test(type) ? eventWords(type) + what.slice(type.length) : what;
+}
+
+/** The tile a check draws by its conclusion: one with none has not finished (DESIGN.md, Pull request summary). @param {string | null} conclusion */
+export function checkState(conclusion) {
+  if (!conclusion) return "running";
+  if (conclusion === "success") return "passed";
+  return ["skipped", "neutral"].includes(conclusion) ? "skipped" : "failed";
+}
+
+/** A review or check state in plain words: `changes_requested` reads "changes requested", `success` "passed". @param {string | null} state */
+export const stateWords = (state) => (state === "success" ? "passed" : String(state ?? "").replaceAll("_", " "));
 
 /**
  * A task's `stack` for the views; one pull request keeps the single PR look. Only `latest`, the

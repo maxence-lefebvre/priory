@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Popover } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
-import { follow, priory } from "./priory.js";
+import { age, ago, follow, priory } from "./priory.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { elsewhere, filtered, remoteActs, remoteSent, TASK_VIEWS, taskFacets, taskViews } from "./view.js";
 
@@ -52,14 +52,6 @@ async function connect() {
 }
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
-
-/** How long a task has been in its state, as the web's age(): "18 min", "4 h", then a date. @param {string} since @param {number} now */
-function age(since, now) {
-  const minutes = Math.max(0, Math.round((now - Date.parse(since)) / 60000));
-  if (minutes < 60) return `${minutes} min`;
-  if (minutes < 1440) return `${Math.floor(minutes / 60)} h`;
-  return new Date(since).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-}
 
 export default class PrioryTasks extends View {
   /** @param {unknown} _props @param {import("gpui-kit").AsyncContext} cx */
@@ -166,8 +158,7 @@ export default class PrioryTasks extends View {
 
   /** The desk's task row: key, workflow, step, state and age; the title; lane, band and batch, or the reason. @param {any} task @param {Palette} t @param {number} now */
   row(task, t, now) {
-    // As the web's ago(): "12 min ago", or "on Nov 15, 12:00" past a day.
-    const away = elsewhere(task, (iso) => (/ (min|h)$/.test(age(iso, now)) ? `${age(iso, now)} ago` : `on ${age(iso, now)}`));
+    const away = elsewhere(task, (iso) => ago(iso, now));
     if (away) return this.remoteRow(task, away, t, now);
     const reason = REASONED.includes(task.state) && task.reason;
     const caption = (/** @type {string} */ line, /** @type {string} */ color) => div().min_w_0().truncate().text_size(S["type-caption"][0]).text_color(t[color]).child(line);

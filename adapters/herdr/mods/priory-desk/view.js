@@ -1,6 +1,6 @@
 // The Desk panel's view model: Priory's listings in, the count, sections and rows out. No drawing, no IO.
 
-import { autolink, prStack, routedMark, runnerOf, seenAgo, sentNote } from "./priory.js";
+import { age, ago, autolink, prStack, routedMark, runnerOf, seenAgo, sentNote, sinceWords } from "./priory.js";
 
 const STOPPED = ["blocked", "failed", "prompt", "delivery"];
 const SNOOZABLE = ["ask", "blocked", "failed", "prompt"];
@@ -55,13 +55,8 @@ const memoryView = (candidate) => ({
   by: `Written by ${candidate.task}${candidate.runner ? ` on ${candidate.runner}` : ""}, candidate ${candidate.id}`,
 });
 
-/** Relative under 24 h, then a date (DESIGN.md, Copy). @param {string} iso @param {number} now */
-export function age(iso, now) {
-  const minutes = Math.max(0, Math.round((now - Date.parse(iso)) / 60_000));
-  if (minutes < 60) return `${minutes} min`;
-  if (minutes < 1440) return `${Math.floor(minutes / 60)} h`;
-  return date(iso);
-}
+/** The pause or stall sentence with when it began in relative words, as the web Desk's deskBanners. @param {string | null | undefined} text @param {number} now */
+const began = (text, now) => text?.replace(/^(paused|stalled) since (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)/, (_, what, iso) => `${what} ${ago(iso, now)}`);
 
 /** @param {any} progress a task's published progress, or null */
 function progressLines(progress) {
@@ -202,10 +197,10 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue,
       { id: "all", label: "All tasks", count: tasks.length },
     ],
     sections: (/** @type {string} */ view) => (views[view] ?? views.needs)().filter((section) => section.rows.length),
-    banners: [desk.paused, desk.banner, desk.intake].filter(Boolean),
+    banners: [began(desk.paused, now), began(desk.banner, now), desk.intake].filter(Boolean),
     since: {
       from: desk.last_visit ? when(desk.last_visit, now) : null,
-      rows: desk.since_you_looked.map((/** @type {any} */ event) => ({ key: event.key, task: event.task, what: event.what, time: when(event.time, now) })),
+      rows: desk.since_you_looked.map((/** @type {any} */ event) => ({ key: event.key, task: event.task, what: sinceWords(event.what), time: age(event.time, now) })),
     },
     upNext: queue.up_next.map((/** @type {any} */ entry) => ({
       when: entry.kind === "queued" ? "now" : when(entry.at, now),

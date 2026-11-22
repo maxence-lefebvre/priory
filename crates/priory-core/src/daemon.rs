@@ -327,6 +327,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut scripts = Vec::new();
     let mut commands = Vec::new();
     let mut recipes = crate::recipe::Running::default();
+    let mut records = crate::evidence::Records::default();
     let mut deliveries = deliver::adopt(&db)?;
     let mut pushing = push::Sending::default();
     let mut desktop = factory
@@ -372,6 +373,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if crate::recipe::tick(&mut db, &trace, &home, &mut recipes)? {
             swept = None;
         }
+        crate::evidence::tick(&mut db, factory, &home, &mut records)?;
         kit.tick(&db)?;
         let fetched = kit.current();
         tend(
@@ -800,6 +802,7 @@ fn apply(
 #[serde(untagged)]
 enum Input {
     Guard(crate::guard::Line),
+    Evidence(crate::evidence::AddLine),
     Connector(crate::todo::ConnectorLine),
     Scoped(crate::scoped::Line),
     Todo(crate::todo::Line),
@@ -984,6 +987,17 @@ fn take(
         Ok(Input::Guard(line)) => {
             Ok((replied(crate::guard::decide(db, &line.guard, trace)?), None))
         }
+        Ok(Input::Evidence(line)) => Ok((
+            replied(crate::evidence::add(
+                db,
+                &line.evidence,
+                trace.factory,
+                &runtime::home(),
+                &|worktree, branch| runtime::kept_head(&runtime::home(), worktree, branch),
+                &runtime::checked_out,
+            )?),
+            None,
+        )),
         Ok(Input::Connector(line)) => {
             crate::todo::connector_used(db, &line.connector_used)?;
             Ok((replied(Ok(String::new())), None))
@@ -1771,6 +1785,7 @@ fn open_pr(
                 )));
             }
             let (title, body) = titled(&summary, evidence.as_deref());
+            let body = with_evidence(db, factory, due.task, body)?;
             let base = base_branch(db, due.task)?;
             let stack = Stack {
                 branches: &branches,
@@ -1803,6 +1818,20 @@ fn titled<'s>(summary: &'s str, evidence: Option<&str>) -> (&'s str, String) {
     (title, body)
 }
 
+/// `body` with the task's Evidence section after it, when the task has items to list.
+fn with_evidence(
+    db: &Connection,
+    factory: &Factory,
+    task: i64,
+    body: String,
+) -> Result<String, Error> {
+    let url = factory.serve().and_then(|serve| serve.url.as_deref());
+    Ok(match crate::evidence::section(db, task, url)? {
+        Some(section) => format!("{body}\n\n{section}"),
+        None => body,
+    })
+}
+
 /// What the irreversible code step `step` of a staged task would do, without doing it: the pull
 /// requests or issue it would open with their title and body, or the command it would run.
 fn preview(
@@ -1825,6 +1854,10 @@ fn preview(
         }
         ("open-pr" | "open-issue", Some(repo), Some(described)) => {
             let (title, body) = titled(&described.summary, described.evidence.as_deref());
+            let body = match action {
+                "open-pr" => with_evidence(db, factory, due.task, body)?,
+                _ => body,
+            };
             let mut lines = Vec::new();
             if action == "open-issue" {
                 lines.push(format!("would open an issue on {repo}"));

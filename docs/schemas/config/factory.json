@@ -711,6 +711,13 @@
           "description": "The environment variable that holds the token clients send, never the token itself.",
           "type": "string"
         },
+        "url": {
+          "description": "The address a person opens the server at, such as `https://runner.example.ts.net:7390`,\nwhich links in a pull request body start with.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "web": {
           "default": true,
           "description": "Whether to serve the web view's files as well as `/api`.",

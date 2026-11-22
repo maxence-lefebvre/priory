@@ -27,6 +27,17 @@ test("the Open view lists the open asks that are not snoozed, oldest first, besi
   ]);
 });
 
+test("Open, Snoozed and All list open asks oldest first, another runner's among this runner's, as the web since #318", () => {
+  // Priory lists this runner's asks, then each other runner's, so a runner's older ask comes last.
+  const mixed = [
+    { ...asks[0], id: 1, since: "2026-11-20T11:00:00Z" },
+    { ...asks[0], id: "laptop:4", runner: "laptop", submissions: [], since: "2026-11-20T10:00:00+01:00" },
+    { ...asks[0], id: "laptop:5", runner: "laptop", submissions: [], since: "2026-11-20T10:30:00Z" },
+  ];
+  assert.deepEqual(asksList(mixed, { view: "open", now }).sections.map(ids), [["laptop:4", "laptop:5", 1]]);
+  assert.deepEqual(asksList(mixed, { view: "all", now }).sections.map(ids), [["laptop:4", "laptop:5", 1]]);
+});
+
 test("an open row shows its tile, task, step, age, question and what it recommends", () => {
   const [open] = asksList(asks, { view: "open", now }).sections;
   assert.deepEqual(open.rows, [
@@ -176,6 +187,10 @@ test("a refused answer says why, from the ask as Priory lists it after the refus
   // Hand-built: the same ask after another answer, or after a revive withdrew it.
   assert.equal(refusal(asks[0], { ...asks[0], state: "answered", answer: "Merge", answered_at: "2026-11-20T20:48:00Z" }, error, now),
     "Already answered 2 min ago: Merge.");
+  // Under a minute, and past a day, in the web view's words.
+  assert.equal(refusal(asks[0], { ...asks[0], state: "answered", answer: "Merge", answered_at: new Date(now - 20_000).toISOString() }, error, now),
+    "Already answered just now: Merge.");
+  assert.equal(askDetail({ ...asks[2], answered_at: "2026-11-18T08:00:00Z" }, { now, armed: null }).decided, "Answered: Per revision. On Nov 18, 08:00.");
   assert.equal(refusal(asks[0], { ...asks[0], state: "withdrawn", withdrawn_why: "dismissed" }, error, now), "Withdrawn: dismissed.");
   assert.equal(refusal(asks[0], asks[0], "priory answer: no priory daemon listens on /run/priory.sock", now),
     "Not sent: priory answer: no priory daemon listens on /run/priory.sock. The draft stays here.");
@@ -215,9 +230,13 @@ test("Brief, Plan, PR and Trace come from the task's detail, each left out when 
   assert.deepEqual(detail.pr, {
     title: "#212 Export the board as CSV",
     line: "pri-61 into main, head a1f3c9e, open",
-    checks: [{ name: "clippy", ok: false, text: "failure" }, { name: "test", ok: true, text: "success" }],
+    checks: [{ name: "clippy", state: "failed", text: "failure" }, { name: "test", state: "passed", text: "passed" }],
     review: null,
   });
+  // As the web's task page: a check with no conclusion is running, a skipped one is muted, and states read in plain words.
+  const pending = { ...task.pull_request, review: "changes_requested", checks: [{ name: "e2e", conclusion: null }, { name: "docs", conclusion: "neutral" }] };
+  const unfinished = askDetail(ask, { now, armed: null, task: { ...task, pull_request: pending } }).pr;
+  assert.deepEqual([unfinished?.checks, unfinished?.review], [[{ name: "e2e", state: "running", text: "running" }, { name: "docs", state: "skipped", text: "neutral" }], "changes requested"]);
   assert.deepEqual(detail.trace, [
     { tile: "moved", label: "groom, run 1", span: "08:00 to 08:20, 20 min", outcome: "yellow", tokens: null },
     { tile: "moved", label: "plan, run 2", span: "08:20 to 08:40, 20 min", outcome: "planned", tokens: "6000 tokens" },

@@ -195,7 +195,8 @@ endpoints. With no `[serve]` table, nothing listens.
 | `public` | boolean | no | `false` | Allow a `listen` address beyond this machine | `true` |
 | `extension_origins` | array of strings | no | `[]` | The browser extensions whose pages may write, each an exact origin: `chrome-extension://` and the extension's 32-letter id, such as the [GitHub extension](../adapters/github.md)'s. They still send the token. `priory check` refuses any other value | `["chrome-extension://ekngedcpijdeijlmffkeehilmafoikkm"]` |
 | `terminal` | string | no | `"watch"` | What a token holder may do with a run's terminal. `"watch"` serves its screen at [`/api/runs/{id}/screen`](serve.md#run-screen); `"type"` also lets a token holder take its [keyboard](serve.md#keyboard) and type into it, past the tool guard; `"off"` serves none | `"off"` |
-| `redact_env` | array of strings | no | `[]` | More environment variables whose values the screen hides, besides the token and the factory's other secrets | `["OPENAI_API_KEY"]` |
+| `redact_env` | array of strings | no | `[]` | More environment variables whose values the screen hides, besides the token and the factory's other secrets. Evidence is also searched for their values ([evidence.md](../daemon/evidence.md#never-secrets)) | `["OPENAI_API_KEY"]` |
+| `url` | string | no | none | The address a person opens the server at, `http://` or `https://` and a host. The Evidence section of a pull request body links each item to the task page under it. Without it, the section holds captions alone. `priory check` refuses another shape with `` `[serve] url` "<url>" is not an address: write it as https://host:port `` | `"https://runner.example.ts.net:7340"` |
 
 The screen is redacted on a best effort basis: whoever holds the token may read what an agent's
 screen shows. See [serve.md](../daemon/serve.md#a-runs-screen) for what it hides.

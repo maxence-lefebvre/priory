@@ -241,7 +241,8 @@ kept, itself or through a subscription, that no prompt carries and no wait took,
 [serve.md](../reference/serve.md#unrouted)). Only what people say, edit and close counts: the
 kinds a task's own key carries, and a `priory add` that joined the task, and not the agent's own
 comments. Checks and pushes stay with the
-checks gate.
+checks gate. An item the triage model settled is left out too: it waits for the task's next
+prompt by design (see [decisions.md](decisions.md#triage)).
 
 Each group names its task and a command: `priory say ID` for an asleep or blocked task, whose next
 run carries the events after the text, or what the owned group gives for an ended task. A task that

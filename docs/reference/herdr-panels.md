@@ -66,7 +66,10 @@ views, then the rows.
 - **Up next** shows `queue`'s `up_next`, under the list below 1024 px and in the left column from
   1024 px. A line opens its task in the Task panel. A schedule that starts a new task names no task,
   so its line opens nothing. **Since you looked** shows from 1024 px.
-- **Since you looked** keeps the events the panel opened on, and adds each newer event to the top.
+- **The banners** are the daemon's sentences. The pause and the stall say when they began in
+  relative words, such as "stalled 12 min ago", as the web Desk does.
+- **Since you looked** names each event's type in plain words, such as "run started", with its
+  time relative, as the web Desk does. It keeps the events the panel opened on, and adds each newer event to the top.
   The first time the panel draws the list, from 1024 px, it runs `priory seen --at` once, with
   the time it started its first read. A panel that stays narrower records no visit. `herdr-app check` runs no
   `priory` command at all.
@@ -115,7 +118,9 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   History. The Desk panel shows the same mark under a routed ask's question. The helpers
   `routedMark`, `routedNote` and `answeredBy` live in `lib/priory.js`, as in the web view's
   `asks.js`; a test keeps the two word for word.
-- **List.** The saved views are Open, Snoozed, Answered and All, each with its count. The facet
+- **List.** The saved views are Open, Snoozed, Answered and All, each with its count. Open, Snoozed
+  and All's open group list the asks oldest first by `since`, other runners' asks among this
+  runner's. The facet
   chips Command, Lane, Band, Risk and Task narrow every view. Band lists the bands in the factory's
   order from the listing's `bands`, and puts an ask with no band, such as an outside ask, under
   `none`. Risk lists `irreversible`, `red`, `yellow`, `green`, then `none` for an ask whose `risk`
@@ -152,9 +157,12 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
 
 The detail shows the sections Why, Brief, Plan, PR, Trace, History and Command. Brief shows the
 request and the `groom` step's result, Plan the `plan` step's result or else the task's
-`progress`, PR the pull request's title, branches, state and checks, then the task's stack when it
+`progress`, PR the pull request's title, branches, state, review and checks, then the task's stack when it
 has two or more pull requests (see [Stacks](#stacks)), and Trace each run with its
-span, outcome and tokens. A section the task lacks is left out with its chip, as DESIGN.md says.
+span, outcome and tokens. A check shows a check, a cross, a clock while it has no conclusion, or a
+dash when skipped or neutral; review and check states read in plain words, such as "changes
+requested" and "passed", as `checkState` and `stateWords` in `lib/priory.js` say them for the web too.
+A section the task lacks is left out with its chip, as DESIGN.md says.
 History lists every revision and refused answer of the ask, and its answer, newest first. A refused
 answer shows on a warn tile. Briefs, plans and results draw as plain text, like the agent's text.
 
@@ -457,14 +465,15 @@ Priory bar opens it as a tab in the center stack when another panel sets `priory
   its age.
 - **What it shows.** The header holds the task's state tile, key and state, then Watch and Attach. Then the
   title with its [links](#links), the workflow, step, lane and band, and the task's reason. Asks
-  lists the task's asks, open ones first. Pull request shows the latest pull request's title as a
-  link, its branches and state, its checks, and the task's stack (see [Stacks](#stacks)). History
-  lists the last 10 runs, newest first, each with its step, outcome and start time, and under it
+  lists the task's asks, open ones first, each open one with when it was asked. Pull request shows the latest pull request's title as a
+  link, its branches and state, its checks, and the task's stack (see [Stacks](#stacks)). A check
+  with no conclusion yet counts as running. History
+  lists the last 10 runs, newest first, each with its step, outcome and how long ago it started, and under it
   the run's latest score by each scorer from the task's `scores`. A section the task lacks is left
   out.
 - **Acting.** Watch asks the Priory bar for a read-only terminal, and Attach for one that types,
   as [Attaching](../adapters/herdr.md#how-it-reads-and-acts) describes. Watch comes first, since it cannot change the
-  run. Answering stays in the Asks panel.
+  run. An open ask's Answer… opens it in the Asks panel, as the Desk's does: answering stays there.
 
 ## Data each panel needs
 

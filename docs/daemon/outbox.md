@@ -14,7 +14,8 @@ A prompt moves through these states:
 | `attempted` | Recorded, with the run marked busy, in the transaction before typing             |
 | `confirmed` | Its `UserPromptSubmit` arrived                                                   |
 | `uncertain` | Attempted before a daemon stop, never confirmed. Priory never types it again     |
-| `withdrawn` | Queued when a person revived the task. Its new generation never gets it          |
+| `held`      | A person's `say` during a debate. The step after the debate reads it             |
+| `withdrawn` | Queued or held when a person revived the task. Its new generation never gets it  |
 
 A prompt usually goes `queued`, then `attempted`, then `confirmed`. The `uncertain` state covers a
 daemon that stopped between typing and confirming. Priory cannot tell whether the agent received

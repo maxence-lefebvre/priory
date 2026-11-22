@@ -1,6 +1,6 @@
 // The Task panel's view model: `priory task ID --json` in, what the panel draws out. No drawing, no IO.
 
-import { autolink, eventWords, prStack } from "./priory.js";
+import { age, ago, autolink, eventWords, prStack } from "./priory.js";
 
 // The runs History shows, newest first.
 const HISTORY = 10;
@@ -23,17 +23,14 @@ function handled(event, task) {
   return text;
 }
 
-const sameDay = (/** @type {string} */ iso, /** @type {number} */ now) => new Date(iso).toDateString() === new Date(now).toDateString();
-const clock = (/** @type {string} */ iso) => new Date(iso).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-const date = (/** @type {string} */ iso) => new Date(iso).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-/** A time of day today, else a date. @param {string} iso @param {number} now */
-const when = (iso, now) => (sameDay(iso, now) ? clock(iso) : date(iso));
-
-/** @param {{ conclusion: string }[]} checks */
+/** @param {{ conclusion: string | null }[]} checks */
 function checksLine(checks) {
   if (!checks.length) return null;
-  const failing = checks.filter((check) => !["success", "skipped", "neutral"].includes(check.conclusion)).length;
-  return failing ? `${failing} of ${checks.length} checks failing` : `${checks.length} checks pass`;
+  const failing = checks.filter((check) => check.conclusion && !["success", "skipped", "neutral"].includes(check.conclusion)).length;
+  const running = checks.filter((check) => !check.conclusion).length;
+  return failing ? `${failing} of ${checks.length} checks failing`
+    : running ? `${running} of ${checks.length} checks running`
+    : `${checks.length} checks pass`;
 }
 
 /**
@@ -60,7 +57,7 @@ export function taskView(task, { now, links = [] }) {
       id: ask.id,
       tile: ask.state === "open" ? "ask" : ask.state,
       text: ask.title || ask.question,
-      note: ask.state === "open" ? `Open since ${when(ask.since, now)}` : ask.state === "answered" ? `Answered ${ask.answer}` : "Withdrawn",
+      note: ask.state === "open" ? `Asked ${ago(ask.since, now)}` : ask.state === "answered" ? `Answered ${ask.answer}` : "Withdrawn",
     })),
     pr: pr ? {
       title: `#${pr.number} ${pr.title ?? ""}`.trim(),
@@ -73,14 +70,14 @@ export function taskView(task, { now, links = [] }) {
       id: event.seq,
       tile: PROMPT_TILES[event.prompt] || (event.outcome === "kept" && event.task === task.id ? "asleep" : "ready"),
       text: `${eventWords(event.type)} ${event.subject ?? ""}`.trim(),
-      note: `${handled(event, task.id)} · ${when(event.time, now)}`,
+      note: `${handled(event, task.id)} · ${age(event.time, now)}`,
     })),
     inboxTotal: (task.inbox ?? []).length,
     history: [...(task.runs ?? [])].reverse().slice(0, HISTORY).map((run) => ({
       id: run.id,
       tile: run.ended ? run.end || "moved" : "running",
       text: `${run.step}, run ${run.id}${run.outcome ? `, ${run.outcome}` : ""}`,
-      when: when(run.started, now),
+      when: age(run.started, now),
       scores: (task.scores ?? []).filter((/** @type {any} */ score) => score.run === String(run.id))
         .map((/** @type {any} */ score) => ({ scorer: score.scorer, verdict: score.verdict, reason: score.reason })),
     })),
