@@ -1075,6 +1075,21 @@ pub struct Trigger {
     /// The agent that answers asks of a `hands-off` task: a `claude-code` agent with a `shared`
     /// session.
     pub lead: Option<String>,
+    /// The most tasks its events request in a window, such as `{ tasks = 20, per = "1h" }`. A
+    /// request past it starts no task. No limit when unset.
+    pub limit: Option<Limit>,
+}
+
+/// The most task requests a trigger makes in a window, counted on the log in event time.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Limit {
+    /// The most requests in the window: 1 or more.
+    pub tasks: std::num::NonZeroU32,
+    /// The window, such as `90s`, `15m` or `2h`.
+    #[serde(deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub per: Option<Duration>,
 }
 
 /// Why a task is held, and the conditions that release it once all of them hold. With none, a

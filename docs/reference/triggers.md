@@ -36,8 +36,13 @@ cannot tell which keys a source refuses; `priory check` does.
 | `hold` | table | no | | Files each task held. See [`hold`](#hold) | `{ reason = "triage first" }` |
 | `intervention` | `plan` or `hands-off` | no | a person answers every ask | Who answers its tasks' asks. See [`intervention` and `lead`](#intervention-and-lead) | `"plan"` |
 | `lead` | string | with `hands-off` | | The agent that answers asks of a `hands-off` task | `"lead"` |
+| `limit` | table | no | no limit | The most new tasks its events request in a window: `tasks`, 1 or more, and `per`, a duration such as `90s`, `15m` or `2h`. A request past it starts no task, and its inbox outcome is `limited`. See [routing.md](../daemon/routing.md#trigger-limits) | `{ tasks = 20, per = "1h" }` |
 
 Without a `repo`, a Linear, Sentry, Honeycomb, Intercom or Slack trigger's tasks block before their first run.
+
+Set `limit` on a trigger whose events anyone can cause, such as an `intercom` trigger, which takes
+no filter, or a `sentry` trigger on a project whose DSN ships in a web page. Each new conversation
+or issue is one task, and room bounds only how many run at once.
 
 ## `github`
 

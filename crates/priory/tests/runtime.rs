@@ -2465,6 +2465,48 @@ fn route(setup: &Setup) {
 }
 
 #[test]
+fn a_trigger_past_its_limit_starts_no_new_task_but_still_reaches_one_it_started() {
+    let setup = Setup::new("trigger-limit");
+    let trigger = format!("{TRIGGER}limit = {{ tasks = 2, per = \"1h\" }}\n");
+    fs::write(setup.dir.join("factory/triggers/agent-label.toml"), trigger).unwrap();
+    let start: herdr_bus::Timestamp = T0.parse().unwrap();
+    let at = |minutes: i64| start + jiff::SignedDuration::from_mins(minutes);
+    for (issue, minutes) in [(1, 0), (2, 1), (3, 2), (1, 3), (4, 121)] {
+        setup.publish(&requested(issue).time(at(minutes)));
+    }
+
+    route(&setup);
+
+    let tasks = setup.rows("tasks");
+    let keys: Vec<&str> = tasks.iter().map(|row| row[1].as_str()).collect();
+    assert_eq!(
+        keys,
+        [
+            "github:owner/repo#1",
+            "github:owner/repo#2",
+            "github:owner/repo#4"
+        ],
+        "{tasks:?}"
+    );
+    let outcomes: Vec<[String; 2]> = setup
+        .rows("inbox")
+        .into_iter()
+        .map(|row| [row[2].clone(), row[4].clone()])
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ["github:owner/repo#1", "created"],
+            ["github:owner/repo#2", "created"],
+            ["github:owner/repo#3", "limited"],
+            ["github:owner/repo#1", "kept"],
+            ["github:owner/repo#4", "created"],
+        ]
+        .map(|row| row.map(str::to_owned))
+    );
+}
+
+#[test]
 fn a_band_comes_from_the_request_then_the_trigger_then_the_workflow() {
     let setup = Setup::new("band-source");
     let trigger = format!("{TRIGGER}band = \"today\"\n");

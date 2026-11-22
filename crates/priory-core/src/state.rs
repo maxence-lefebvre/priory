@@ -1850,6 +1850,52 @@ fn renamed(tx: &Transaction, message: &Message, to: Option<&String>) -> rusqlite
     .map(drop)
 }
 
+/// The inbox outcome of a task request past its trigger's `limit`.
+pub(crate) const LIMITED: &str = "limited";
+
+/// Whether `message` requests a new task past its trigger's `limit`: its key has no active task
+/// here and no claim, and the trigger's requests for other keys in the window before the event,
+/// in event time, already reach the limit. Every runner reads the same log, so each decides alike.
+fn limited(tx: &Transaction, message: &Message, factory: &Factory) -> rusqlite::Result<bool> {
+    if message.kind != route::TASK_REQUESTED {
+        return Ok(false);
+    }
+    let data = &message.data;
+    let (Some(trigger), Some(key)) = (data["trigger"].as_str(), data["key"].as_str()) else {
+        return Ok(false);
+    };
+    let Some((tasks, Some(per))) = factory
+        .triggers
+        .get(trigger)
+        .and_then(|loaded| loaded.value.limit)
+        .map(|limit| (limit.tasks, limit.per))
+    else {
+        return Ok(false);
+    };
+    if keyed(tx, Some(&key.to_owned()))?.is_some() {
+        return Ok(false);
+    }
+    tx.query_row(
+        "SELECT NOT EXISTS (SELECT 1 FROM claims WHERE key = ?2 AND hold != 'ended')
+           AND (SELECT count(DISTINCT json_extract(data, '$.key')) FROM inbox
+             WHERE type = ?1 AND id != ?3 AND outcome != ?7
+             AND json_extract(data, '$.trigger') = ?4 AND json_extract(data, '$.key') != ?2
+             AND julianday(time) <= julianday(?5)
+             AND julianday(time) > julianday(?5) - ?6 / 86400.0) >= ?8",
+        params![
+            route::TASK_REQUESTED,
+            key,
+            message.id.to_string(),
+            trigger,
+            message.time.to_string(),
+            per.as_secs_f64(),
+            LIMITED,
+            tasks.get()
+        ],
+        |row| row.get(0),
+    )
+}
+
 /// Routes `message` in `tx` and records it, or records its new route when the inbox holds it.
 /// Returns the tmux session of each run it ended, to kill once it commits.
 pub(crate) fn route_in(
@@ -1864,6 +1910,10 @@ pub(crate) fn route_in(
         return Ok(Vec::new());
     }
     if crate::memories::handle(tx, message)?.is_some() {
+        return Ok(Vec::new());
+    }
+    if limited(tx, message, factory)? {
+        record(tx, message, None, LIMITED, None)?;
         return Ok(Vec::new());
     }
     if let Some(me) = trace.runner.as_deref()

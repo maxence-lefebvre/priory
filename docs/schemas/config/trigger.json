@@ -84,6 +84,28 @@
         }
       ]
     },
+    "Limit": {
+      "additionalProperties": false,
+      "description": "The most task requests a trigger makes in a window, counted on the log in event time.",
+      "properties": {
+        "per": {
+          "description": "The window, such as `90s`, `15m` or `2h`.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        },
+        "tasks": {
+          "description": "The most requests in the window: 1 or more.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tasks",
+        "per"
+      ],
+      "type": "object"
+    },
     "OneOrMany_After": {
       "anyOf": [
         {
@@ -216,6 +238,17 @@
         "string",
         "null"
       ]
+    },
+    "limit": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Limit"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The most tasks its events request in a window, such as `{ tasks = 20, per = \"1h\" }`. A\nrequest past it starts no task. No limit when unset."
     },
     "on": {
       "default": "",

@@ -140,6 +140,7 @@ Each inbox entry gets one of these outcomes:
 | `github.pull_request.review_request_removed` with `reviewed: false`, with an active task whose key is its review key | `withdrew` | that task, now `dropped`, its live run ended |
 | Any other, with an active task asleep at a model step subscribing to a resource it names, that fires no wait | `woke` | that task, now `ready` (see [tools.md](tools.md#subscribeon-and-unsubscribeon)) |
 | Any other, with an active task owning a resource it names | `kept` | that task                   |
+| `factory.task.requested` past its trigger's `limit`, no active task and no claim holding its key | `limited` | none |
 | `factory.task.requested`, no active task  | `created` | a new task, `queued` at its workflow's start |
 | `factory.task.requested`, malformed       | `ignored` | none                                         |
 | A GitHub comment or review whose `association` is not `OWNER`, `MEMBER` or `COLLABORATOR` | `outsider` | none: it wakes, reopens, claims and reaches no task |
@@ -161,6 +162,16 @@ task moves to the workflow's start step. A malformed request is ignored.
 The intake publishes a source event before its task request. So when the source event arrives, no
 task owns it yet, and it is recorded as `ignored`. The task that its request creates keeps the
 event's id in `source`, and the task's first prompt carries the event.
+
+### Trigger limits
+
+A trigger's `limit` caps the new tasks its events request (see
+[triggers.md](../reference/triggers.md#keys-every-trigger-takes)). The daemon counts, in event time,
+the trigger's task requests for other keys in the `per` window that ends at the request, leaving out
+those already `limited`. When they reach `tasks`, a request whose key has no active task here and no
+claim on the log is recorded as `limited` and starts nothing. A request for a key that already has a
+task is never limited, so a later event of an ongoing task still reaches it. Every runner reads the
+same log in the same order, so each limits the same requests.
 
 ## The task's inbox
 
