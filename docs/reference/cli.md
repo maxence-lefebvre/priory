@@ -223,8 +223,9 @@ several runners, three more follow: runner, hold and when that runner was last a
 1, when it is `queued` or `ready`. `--lane L` prints only the tasks in lane `L`.
 
 `priory runs` prints each run: id, task, step, tmux session, harness session (a Codex run's
-thread), started, ended, how it ended, and the hash and commit of the factory's skills,
-instructions and memories it got (see [skills.md](../daemon/skills.md#what-a-run-records)).
+thread), started, ended, how it ended, the hash and kit commit of the factory's skills,
+instructions and memories it got, and the commit of the memories repository it got (see
+[skills.md](../daemon/skills.md#what-a-run-records)).
 `priory runs --json` prints every run as `/api/runs?all=1` serves it, with its task, outcome, model
 and tokens.
 
