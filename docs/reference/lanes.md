@@ -1,59 +1,82 @@
-# `lanes.toml`
+# Lanes
 
-`lanes.toml`, or `lanes.yaml`, at the factory's root derives the lane of each task whose trigger
-or request sets none, and sets how the queue treats a lane. The file is optional. Without it, every
-such task gets the lane `{team}/misc`. The [PRD](../prd.md#lanes) explains when the daemon derives a
-lane and when it derives it again.
+A lane is a `<team>/<theme>` label, such as `core/intake`, that groups tasks in the listings, the
+reports, the spend caps and the queue's turns. The file `lanes.toml`, `.yaml` or `.yml`, beside `factory.toml`, gives a
+lane to each task whose trigger or request names none. Without the file, every such task gets
+`<team>/misc`.
+
+Schema: [`config/lanes.json`](../schemas/config/lanes.json).
 
 ## Top-level keys
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
-| `fallback` | string | no | `"{team}/misc"` | The lane when no rule matches. `{team}` stands for the task's team, or `none` without one | `"{team}/misc"` |
-| `rules` | list of tables | no | `[]` | The rules, tried in order. The first that matches sets the lane | see below |
-| `lane` | table of tables | no | | Each lane's settings, by its `<team>/<theme>` name | see below |
+| `fallback` | string | no | `"{team}/misc"` | The lane of a task that no rule matches. `{team}` stands for the task's team, or `none` for a task with no team | `"{team}/misc"` |
+| `rules` | array of tables | no | `[]` | The rules, in the order they are tried. The first rule that matches gives the lane | see below |
+| `lane` | table of tables | no | | Each lane's settings, by its `<team>/<theme>` name. See [Lane keys](#lane-keys) | see below |
 
-## `[[rules]]`
+## Rule keys
 
-A rule matches when every field it sets matches the task. It sets at least one.
+A rule names at least one of `key`, `team`, `project` and `branch`. A rule that names several
+matches only a task that fits all of them.
 
 | Key | Type | Required | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- |
-| `key` | string | no | The task's key | `"3D-600"` |
-| `team` | string | no | The team of the task's issue | `"3D"` |
-| `project` | string | no | The project of the task's issue | `"Mobile"` |
-| `branch` | string | no | A pattern on the task's branch, in which `*` matches any run of characters | `"*desktop*"` |
-| `lane` | string | yes | The lane the rule sets, `<team>/<theme>` | `"3D/mobile"` |
+| `lane` | string | yes | The lane the rule gives, `<team>/<theme>` | `"core/intake"` |
+| `key` | string | no | The task's key, exactly | `"linear:ENG-7"` |
+| `team` | string | no | The team of the task's source event, exactly. Linear events carry one | `"ENG"` |
+| `project` | string | no | The project of the task's source event, exactly | `"Desktop"` |
+| `branch` | string | no | A pattern for the task's branch, in which `*` matches any run of characters | `"*desktop*"` |
 
-## `[lane."<team>/<theme>"]`
+## Lane keys
+
+A `[lane."<team>/<theme>"]` table sets how the queue treats one lane.
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `max_running` | integer | no | no cap | The most of the lane's tasks that may have a live run at once, 1 or more. New starts past it wait. See [runs.md](../daemon/runs.md#at-most-so-many-running) | `2` |
 
+## When a lane is set
+
+1. A lane that the trigger's [`lane`](triggers.md#keys-every-trigger-takes) or the request's
+   `--lane` names is kept, and no rule changes it.
+2. Otherwise the daemon derives the lane when it creates the task. The task has no branch yet, so
+   a rule with `branch` cannot match.
+3. When the task's first run creates its branch, the daemon derives the lane once more, with the
+   branch. The lane does not change after that: a later edit of the file moves no task that has a
+   branch.
+
 ## Example
 
+<!-- example: factory/lanes.toml -->
 ```toml
-fallback = "{team}/misc"
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/lanes.json
+fallback = "{team}/misc"       # {team} is the task's team, or `none` without one; this is the default
 
 [[rules]]
-key = "3D-600"
-lane = "3D/mobile"
+key = "linear:ENG-7"           # the task's key, exactly
+lane = "core/intake"
 
 [[rules]]
-branch = "*desktop*"
-lane = "FND/desktop"
+team = "ENG"                   # a rule that names several fields needs all of them
+project = "Desktop"
+lane = "core/desktop"
 
-[lane."3D/mobile"]
-max_running = 2
+[[rules]]
+branch = "*desktop*"           # a glob on the task's branch; `*` matches any run of characters
+lane = "core/desktop"
+
+[lane."core/intake"]
+max_running = 2                # at most two of the lane's tasks run at once; the others wait
 ```
 
 ## Errors from `priory check`
 
 | Message | Cause |
 | ------- | ----- |
-| `` lane `<lane>` is not `<team>/<theme>` `` | A `fallback` or a rule's `lane` that is not `<team>/<theme>` |
-| `` a rule needs `key`, `team`, `project` or `branch` `` | A rule with no field to match on |
+| `` lane `<lane>` is not `<team>/<theme>` `` | `fallback` or a rule's `lane` is not two parts around one `/`, or a part is empty or holds a space |
+| `` a rule needs `key`, `team`, `project` or `branch` `` | A rule that names only a `lane` |
 | `` `[lane]` `<name>` is not a lane such as `team/theme` `` | A `[lane]` table whose name is not `<team>/<theme>` |
 | `` `max_running` is 0: give at least 1, or hold the tasks instead `` | `max_running = 0` |
 | `` unknown field `<key>`, expected one of ... `` | A key the tables above do not list |
+| `` `lanes` is also defined in lanes.toml `` | Two of `lanes.toml`, `lanes.yaml` and `lanes.yml` exist |

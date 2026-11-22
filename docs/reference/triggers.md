@@ -463,6 +463,7 @@ env = ["AMPLITUDE_READ_TOKEN"]
 | `` a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled`, `pull_request.opened` or `pull_request.review_requested`, not `<on>` `` | A bad `on` |
 | `` a `pull_request.review_requested` trigger needs `reviewer = "<GitHub login>"` `` | No `reviewer`, or one that is not letters, digits and dashes |
 | `` a `pull_request.review_requested` trigger takes no `<key>`: ... `` | `repo`, `filter` or `key` on a review request trigger |
+| `` team `<team>` is not `org/team`, a GitHub organization and team slug `` | An entry of `teams` that is not an organization, a `/` and a team slug |
 | `` only a GitHub `pull_request.review_requested` trigger names a `reviewer` `` | `reviewer` on another trigger |
 | `` `filter` works only with `on = "*.labeled"`, on `label` `` | A GitHub `filter` on another event or key |
 | `` a GitHub trigger's `key` is `issue.number` `` | Another `key`. `pull_request.number` for a pull request event |

@@ -65,6 +65,7 @@ or the Red Hat YAML extension:
 | `workflows/*.toml` | `config/workflow.json` |
 | `triggers/*.toml` | `config/trigger.json` |
 | `runners/*.toml` | `config/runner.json` |
+| `lanes.toml` | `config/lanes.json` |
 | `views/*.toml` | `config/view.json` |
 | `scorers/*.toml` | `config/scorer.json` |
 | `agents/*/agent.md` | `config/agent.json`, for tools that read frontmatter; editors do not |
@@ -72,6 +73,7 @@ or the Red Hat YAML extension:
 | `benchmarks/*.toml` | `config/benchmark.json` |
 | A case folder's `case.toml`, `gh/<n>.toml` and `answers.toml` | `config/case.json`, `config/case-gh.json`, `config/case-answers.json` |
 | A judge scorer's labeled cases | `config/judge-cases.json` |
+| A triage decision model's labeled cases | `config/triage-cases.json` (see [factory.md](factory.md#labeled-triage-cases)) |
 | A report a workflow writes | `report.json`, beside the two folders (see [reports.md](../daemon/reports.md)) |
 | What `priory check --repo PATH --json` prints | `readiness.json` (see [readiness.md](readiness.md)) |
 

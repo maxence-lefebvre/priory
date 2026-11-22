@@ -6,6 +6,10 @@ holds the interface, the calibration, the fallback, the caps, the trace, the dec
 the order they would ship, the first code slice with its tests, and the open questions with a
 recommendation for each.
 
+The first slice, triage, is built: [decisions.md](../daemon/decisions.md) describes it, and
+[`examples/decisions/`](../../examples/decisions/README.md) is its starter. The later slices are
+not built.
+
 Principle 2 of the [PRD](../prd.md#principles) does not move: code decides what code can decide,
 and models judge. A decision model judges. Priory's code reads its answer against a threshold a
 person set, and decides.
