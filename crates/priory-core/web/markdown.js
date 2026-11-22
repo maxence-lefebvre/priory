@@ -1,13 +1,25 @@
 // Agent text is untrusted: every character is escaped, and no raw HTML passes through.
 import { linked } from "./links.js";
 
-const LISTS = [{ tag: "ul", item: /^\s*[-*+]\s+(.*)$/ }, { tag: "ol", item: /^\s*\d+[.)]\s+(.*)$/ }];
-const BOX = /^\[([ xX])\]\s+(.*)$/;
+// dotAll lets `.*` take a U+2028 too, so `\s+` never backtracks into a slow retry.
+const LISTS = [{ tag: "ul", item: /^\s*[-*+]\s+(.*)$/s }, { tag: "ol", item: /^\s*\d+[.)]\s+(.*)$/s }];
+const BOX = /^\[([ xX])\]\s+(.*)$/s;
 const CHECK = `<svg class="ico s15" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`;
 const FENCE = /^\s*```/;
-// A label holds no `[`, so a line of unmatched brackets scans in linear time.
-const INLINE = /`(?<code>[^`]+)`|\*\*(?<bold>[^*]+)\*\*|(?<image>!?)\[(?<label>[^[\]]*)\]\((?<url>https:\/\/(?:[^\s()]|\([^\s()]*\))+)\)/g;
-const HEADING = /^\s{0,3}(#{1,6})\s+(.*)$/;
+// A label holds no `[`, so a line of unmatched brackets scans in linear time. Bold holds whole
+// code spans and links, so it never closes inside one.
+const URL_PART = String.raw`https:\/\/(?:[^\s()]|\([^\s()]*\))+`;
+const INLINE = new RegExp(
+  String.raw`\x60(?<code>[^\x60]+)\x60|\*\*(?<bold>(?:\x60[^\x60]+\x60|\[[^[\]]*\]\(${URL_PART}\)|[^*\x60[])+)\*\*|(?<image>!?)\[(?<label>[^[\]]*)\]\((?<url>${URL_PART})\)`,
+  "g",
+);
+const HEADING = /^ {0,3}(#{1,6})[ \t]+(.*)$/s;
+const unclosed = (text) => {
+  const trimmed = text.trimEnd();
+  let end = trimmed.length;
+  while (end && trimmed[end - 1] === "#") end -= 1;
+  return end < trimmed.length && /\s/.test(trimmed[end - 1] ?? "") ? trimmed.slice(0, end).trimEnd() : trimmed;
+};
 const hostOf = (url) => {
   try {
     return new URL(url).host;
@@ -57,7 +69,7 @@ export function markdown(text, links, repo) {
     const heading = line.match(HEADING);
     if (heading) {
       const tag = `h${Math.min(heading[1].length, 3) + 2}`;
-      out.push(`<${tag}>${inline(heading[2].replace(/\s+#+\s*$/, "").trim())}</${tag}>`);
+      out.push(`<${tag}>${inline(unclosed(heading[2]))}</${tag}>`);
       at += 1;
       continue;
     }

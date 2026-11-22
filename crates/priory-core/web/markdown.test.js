@@ -101,9 +101,21 @@ test("keeps balanced parentheses in a link target", () => {
   );
 });
 
-test("renders a line of unmatched brackets and backticks in linear time", () => {
+test("never closes bold inside code or a link target", () => {
+  const links = [{ pattern: String.raw`\b[A-Z]{2,5}-\d+\b`, url: "https://linear.app/i/$0" }];
+
+  assert.equal(markdown("**`ENG-7**x`**", links, null), "<p><strong><code>ENG-7**x</code></strong></p>");
+  assert.equal(
+    markdown("**[ref](https://example.org/a**b)**", [], null),
+    `<p><strong><a href="https://example.org/a**b" rel="noopener noreferrer" target="_blank">ref</a> <span class="host">example.org</span></strong></p>`,
+  );
+});
+
+test("renders long runs of markup characters in linear time", () => {
   const started = performance.now();
   markdown("[".repeat(64000) + "`".repeat(64000), [], null);
+  markdown(`# a${" ".repeat(64000)}z\n# ${" ".repeat(64000)}x\u2028x\n- ${" ".repeat(64000)}x\u2028x`, [], null);
+  markdown("**`*`".repeat(20000), [], null);
 
-  assert.ok(performance.now() - started < 500);
+  assert.ok(performance.now() - started < 1500);
 });
