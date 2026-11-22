@@ -32,10 +32,11 @@ random Shared Secret and reach the server over HTTPS. Honeycomb lets you save a 
 secret. Priory refuses to start while the variable that `secret_env` names is unset or empty, so it
 never takes a delivery without one.
 
-Honeycomb waits 15 seconds for a reply. The route makes no network call: it checks, maps, publishes
-on the local log and replies. When the log cannot take the message, the reply is `503` with
-`Retry-After`, the one failure Honeycomb retries. Honeycomb drops a delivery after any other `4xx`
-or `5xx`, so a payload without the template below is lost.
+Honeycomb waits 15 seconds for a reply, and does not retry a delivery that times out. The route
+makes no call to Honeycomb: it checks, maps, publishes on the event log and replies. When the log
+cannot take the message, the reply is `503` with `Retry-After`, which Honeycomb retries up to three
+times. It also retries a `408`, a `502`, a `429` with `Retry-After` and a refused connection. It
+drops a delivery after any other `4xx` or `5xx`, so a payload without the template below is lost.
 
 ## Setting it up
 
@@ -76,8 +77,8 @@ valid JSON.
 }
 ```
 
-A payload that lacks `trigger`, `name`, `url`, `instance` or `time` gets `400`, which names the
-missing field. That is how a webhook still on the standard payload shows up.
+A payload that lacks `trigger`, `name`, `url`, `instance` or `time`, or whose `status` is not a
+string or `test` not a boolean, gets `400`, which names the field. That is how a webhook still on the standard payload shows up.
 
 ## What a delivery publishes
 

@@ -1,6 +1,7 @@
 use crate::log::{self, Log};
 use herdr_bus::{Bus, Message, Output, Timestamp, Uuid};
 use priory_factory::factory::{Factory, Trigger};
+use priory_runtime::http::Reply;
 mod gh;
 mod honeycomb;
 mod issues;
@@ -584,6 +585,30 @@ fn baseline((repo, kind): &Stream, position: u64) -> Message {
     Message::new(BASELINE, data)
         .id(id(&format!("{BASELINE}:{repo}:{kind}")))
         .subject(format!("{repo} {kind}"))
+}
+
+/// Publishes a webhook's `message` and its task requests, and whether the output lacked the
+/// message: a redelivery or replay of the same body finds it there. Task request ids derive from
+/// the message id, so dispatching again publishes none twice and completes a dispatch that failed.
+fn publish_new(
+    bus: &dyn Log,
+    triggers: &[(&str, &Trigger)],
+    message: &Message,
+) -> Result<bool, String> {
+    let newest = bus
+        .messages(OUTPUT, None, 1)
+        .map_err(|error| format!("read {OUTPUT}: {error}"))?
+        .first()
+        .map(|stored| stored.seq);
+    let seq = bus
+        .publish(OUTPUT, message)
+        .map_err(|error| format!("publish on {OUTPUT}: {error}"))?;
+    dispatch(bus, triggers, message)?;
+    Ok(newest.is_none_or(|newest| seq > newest))
+}
+
+fn accepted(outcome: &str) -> Reply {
+    Reply::json(202, json!({ "outcome": outcome }).to_string())
 }
 
 /// Publishes a task request for each trigger the source names, among those still defined.

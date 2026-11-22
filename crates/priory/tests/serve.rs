@@ -6344,6 +6344,16 @@ fn a_honeycomb_payload_without_the_template_gets_400_and_a_body_over_1_mib_gets_
         r#"{"error":"the payload lacks `trigger`: give the webhook the payload template in docs/intake/honeycomb.md"}"#
     );
     assert_eq!(big, 413);
+    let mut quoted = honeycomb_alert("TRIGGERED", "production");
+    quoted["test"] = json!("true");
+    let mut statusless = honeycomb_alert("TRIGGERED", "production");
+    statusless.as_object_mut().unwrap().remove("status");
+    for (body, field) in [(quoted, "test"), (statusless, "status")] {
+        let (status, reply) = setup.send_honeycomb(&address, &body);
+
+        assert_eq!(status, 400, "{reply}");
+        assert!(reply.contains(&format!("lacks `{field}`")), "{reply}");
+    }
     assert!(setup.published().is_empty());
 }
 
