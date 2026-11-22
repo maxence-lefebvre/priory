@@ -845,7 +845,7 @@ function remoteTableRow(task) {
   const id = remoteId(task);
   const open = state.remoteOpen === id;
   const sent = sentOf(task);
-  const row = html`<tr class="remote" data-action="remote-open" data-task="${id}"><td>${tile("elsewhere", "sm")} ${task.hold}</td><td class="mono">${task.key}</td>
+  const row = html`<tr class="remote" data-action="remote-open" data-task="${id}"><td><span class="sti">${tile("elsewhere", "sm")}${task.hold}</span></td><td class="mono">${task.key}</td>
     <td class="q full"><span>${task.title || task.key}</span>${sent ? html`<span class="why">${sent}</span>` : ""}<span class="why t3">${elsewhere(task, ago)}</span></td>
     <td>${task.workflow || ""}</td><td>${task.lane || ""}</td><td>${task.band || ""}</td><td class="r">${timeTag(task.since)} ${toggle(id, open, task.key)}</td></tr>`;
   return open ? html`${row}<tr class="remote-acts"><td></td><td></td><td colspan="5">${remoteActions(task)}</td></tr>` : row;

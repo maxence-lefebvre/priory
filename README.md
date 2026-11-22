@@ -44,7 +44,7 @@ The daemon's HTTP server, set by `[serve]` in `factory.toml`, serves a web view 
 phone: the desk, asks, the inbox, flows and costs. These screenshots show `priory serve` on a demo
 factory. Its design rules are in [DESIGN.md](DESIGN.md).
 
-![The desk on a 1440 px screen in light mode. A rail of views on the left, the list of four open asks, one stopped task and a going batch in the middle. A drawer on the right shows the ask "Open the pull request for ENG-212?", its recommendation to open, the options open and stop, and the agent's reasoning with the checks.](docs/images/web-view-desk-ask-1440-light.png)
+![The desk on a 1440 px screen in light mode. A rail of views on the left, the list of seven open asks, three of them from the runners laptop and xps13 with their runner tag, one stopped task and a going batch in the middle. A drawer on the right shows the ask "Open the pull request for ENG-212?", its recommendation to open, the options open and stop, and the agent's reasoning with the checks.](docs/images/web-view-desk-ask-1440-light.png)
 
 ![The same desk in dark mode.](docs/images/web-view-desk-ask-1440-dark.png)
 
@@ -68,7 +68,7 @@ The inbox groups unrouted events by resource and offers actions to subscribe an 
 
 Tasks lists every task by saved view and filter, and Runs lists the recent runs with their agent, model, outcome, duration and tokens. Each row opens its task.
 
-![Tasks on a 1440 px screen in light mode: the saved views Active, Blocked and Ended, the filters State, Lane and Workflow, and a table of tasks with their state, key, title, workflow and step, lane, band and age. A blocked task shows its reason under its title, and three tasks carry a batch 1 tag.](docs/images/web-view-tasks-1440-light.png)
+![Tasks on a 1440 px screen in light mode: the saved views Active, Blocked and Ended, the filters State, Lane, Workflow and Runner, and a table of tasks with their state, key, title, workflow and step, lane, band and age. A blocked task shows its reason under its title, and three tasks carry a batch 1 tag. The last two rows are tasks the runners laptop and xps13 hold, each with a server tile, its hold word, and the runner it is on; one shows the cancel sent to xps13.](docs/images/web-view-tasks-1440-light.png)
 
 ![Tasks on a phone in dark mode.](docs/images/web-view-tasks-390-dark.png)
 
