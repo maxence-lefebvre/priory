@@ -135,17 +135,25 @@ test("a to-do's due time reads in the panel's local time with a relative hint", 
 test("the room and intake banners, Since you looked and Up next come from the desk and the queue", () => {
   const model = deskModel(data, { now });
   assert.deepEqual(model.banners, [
-    "stalled since 2026-11-20T11:02:00Z: short of disk by 4.1 GB; task 7 waits for room",
+    "stalled 58 min ago: short of disk by 4.1 GB; task 7 waits for room",
     "the intake fails to poll github since 2026-11-20T10:58:00Z: gh api repos/owner/repo/issues/events?per_page=100&page=1 failed: HTTP 401: Bad credentials",
   ]);
   assert.equal(model.since.from, "09:12");
   assert.deepEqual(model.since.rows.slice(0, 2), [
-    { key: "cli:PRI-66", task: 6, what: "factory.run.started triage", time: "11:02" },
-    { key: "cli:PRI-63", task: 3, what: "factory.step.ended approve: merged #210", time: "10:41" },
+    { key: "cli:PRI-66", task: 6, what: "run started triage", time: "58 min" },
+    { key: "cli:PRI-63", task: 3, what: "step ended approve: merged #210", time: "1 h" },
   ]);
   assert.deepEqual(model.upNext, [
     { when: "now", key: "cli:PRI-72", task: 7, why: "first in the queue" },
     { when: "Nov 21, 02:00", key: "schedule:nightly", task: null, why: "schedule nightly fires" },
+  ]);
+});
+
+test("the pause and stall banners say when in the web Desk's relative words, not a raw time", () => {
+  const banners = (/** @type {any} */ fields) => deskModel({ ...data, desk: { ...data.desk, ...fields } }, { now }).banners.slice(0, 2);
+  assert.deepEqual(banners({ paused: "paused since 2026-11-18T08:00:00Z: freeze since 2026-11-17T00:00:00Z", banner: "stalled since 2026-11-20T11:59:40Z" }), [
+    "paused on Nov 18, 08:00: freeze since 2026-11-17T00:00:00Z",
+    "stalled just now",
   ]);
 });
 

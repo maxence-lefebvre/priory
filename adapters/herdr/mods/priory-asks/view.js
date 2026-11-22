@@ -1,6 +1,6 @@
 // The Asks panel's view model: `priory asks --all --json` in, rows and states out. No drawing, no IO.
 
-import { answeredBy, autolink, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
+import { age, ago, answeredBy, autolink, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
 
 /** @typedef {{ pattern: string, url: string }[]} Links the rules `priory links` lists */
 
@@ -12,13 +12,7 @@ const date = (/** @type {string} */ iso) => new Date(iso).toLocaleString("en", {
 /** A time of day today, else a date. @param {string} iso @param {number} now */
 const when = (iso, now) => (sameDay(iso, now) ? clock(iso) : date(iso));
 
-/** Relative under 24 h, then a date (DESIGN.md, Copy). @param {string} iso @param {number} now */
-export function age(iso, now) {
-  const minutes = Math.max(0, Math.round((now - Date.parse(iso)) / 60_000));
-  if (minutes < 60) return `${minutes} min`;
-  if (minutes < 1440) return `${Math.floor(minutes / 60)} h`;
-  return date(iso);
-}
+const sentence = (/** @type {string} */ text) => text.charAt(0).toUpperCase() + text.slice(1);
 
 /** @param {any} ask @param {number} now */
 function row(ask, now) {
@@ -259,7 +253,7 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
       sent: open || sentNote(ask)?.refused ? sentNote(ask) : null,
       elsewhere: `This ask belongs to ${owner}. Your answer goes there through the log, and ${owner} applies it when it reads it. Snooze stays on ${owner}.`,
     }),
-    decided: ask.state === "answered" ? `Answered: ${ask.answer}.${ask.answered_at ? ` ${age(ask.answered_at, now)} ago.` : ""}${answeredBy(ask.answered_by) ? ` By ${answeredBy(ask.answered_by)}.` : ""}`
+    decided: ask.state === "answered" ? `Answered: ${ask.answer}.${ask.answered_at ? ` ${sentence(ago(ask.answered_at, now))}.` : ""}${answeredBy(ask.answered_by) ? ` By ${answeredBy(ask.answered_by)}.` : ""}`
       : ask.state === "withdrawn" ? `Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}.` : null,
     ran: ask.ran ? { text: ask.ran.status === "failed" ? `${RAN.failed}: ${ask.ran.error}.` : RAN[ask.ran.status] ?? ask.ran.status, warn: ask.ran.status === "uncertain" } : null,
     history: history(ask),
@@ -277,7 +271,7 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
  * @param {any} sent @param {any} fresh @param {string} error @param {number} now
  */
 export function refusal(sent, fresh, error, now) {
-  if (fresh?.state === "answered") return `Already answered ${age(fresh.answered_at, now)} ago: ${fresh.answer}.`;
+  if (fresh?.state === "answered") return `Already answered ${ago(fresh.answered_at, now)}: ${fresh.answer}.`;
   if (fresh?.state === "withdrawn") return `Withdrawn: ${fresh.withdrawn_why}.`;
   if (fresh && fresh.revision !== sent.revision) return `The question changed. Read revision ${fresh.revision} and answer again.`;
   return `Not sent: ${error}. The draft stays here.`;

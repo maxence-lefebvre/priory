@@ -24,10 +24,16 @@ test("a task shows its state, step, asks, pull request and its runs newest first
     checks: "1 of 2 checks failing",
   });
   assert.deepEqual(view.history.map((run) => [run.id, run.tile, run.text, run.when]), [
-    [3, "asleep", "implement, run 3", "08:40"],
-    [2, "moved", "plan, run 2, planned", "08:20"],
-    [1, "moved", "groom, run 1, yellow", "08:00"],
+    [3, "asleep", "implement, run 3", "3 h"],
+    [2, "moved", "plan, run 2, planned", "3 h"],
+    [1, "moved", "groom, run 1, yellow", "4 h"],
   ]);
+});
+
+test("a check with no conclusion yet counts as running, not failing, as the web's prStack does", () => {
+  const checks = (/** @type {any[]} */ list) => taskView({ ...task, pull_request: { ...task.pull_request, checks: list } }, { now }).pr?.checks;
+  assert.equal(checks([{ name: "test", conclusion: "success" }, { name: "e2e", conclusion: null }]), "1 of 2 checks running");
+  assert.equal(checks([{ name: "lint", conclusion: "failure" }, { name: "e2e", conclusion: null }]), "1 of 2 checks failing");
 });
 
 test("each run shows its latest score by each scorer, as the web's task page does", () => {
@@ -56,22 +62,22 @@ test("the Inbox lists the events routed to the task, newest first, with what eac
   ];
   const view = taskView({ ...task, id: 1, inbox }, { now });
   assert.deepEqual(view.inbox.map((event) => [event.id, event.tile, event.text, event.note]), [
-    [9, "queued", "GitHub pull request comment acme/board#212", "kept, still queued · 11:50"],
-    [7, "done", "GitHub check run completed acme/board#212", "woke, delivered as prompt, fired wait 2 · 11:00"],
+    [9, "queued", "GitHub pull request comment acme/board#212", "kept, still queued · 10 min"],
+    [7, "done", "GitHub check run completed acme/board#212", "woke, delivered as prompt, fired wait 2 · 1 h"],
     [5, "ready", "GitHub pull request comment acme/board#212", "kept, fired wait 4 (routed to task 3) · Nov 19, 10:00"],
   ]);
   const { handled: web } = await import("../../../crates/priory-core/web/inbox.js");
   for (const event of inbox) assert.equal(view.inbox.find((row) => row.id === event.seq).note.split(" · ")[0], web(event, 1));
 });
 
-test("open asks come first, and an open one says since when", () => {
+test("open asks come first, and an open one says how long ago it was asked", () => {
   const asks = [
     { id: 1, state: "answered", question: "Merge?", answer: "Merge" },
     { id: 2, state: "open", question: "Ship?", title: "Ship it", since: "2026-11-20T11:30:00Z" },
     { id: 3, state: "withdrawn", question: "Wait?" },
   ];
   assert.deepEqual(taskView({ ...task, asks }, { now }).asks.map((ask) => [ask.id, ask.tile, ask.text, ask.note]), [
-    [2, "ask", "Ship it", "Open since 11:30"],
+    [2, "ask", "Ship it", "Asked 30 min ago"],
     [1, "answered", "Merge?", "Answered Merge"],
     [3, "withdrawn", "Wait?", "Withdrawn"],
   ]);
@@ -117,6 +123,28 @@ test("the Task panel draws each score under its run, with its verdict tile and r
   const icons = all(find(tree, "run-3"), "svg").map((icon) => icon.path);
   assert.ok(icons.includes("mods/priory-task/icons/circle-alert.svg"), icons.join());
   for (const icon of icons) assert.ok(existsSync(new URL(`../${icon}`, import.meta.url)), `${icon} is missing`);
+});
+
+test("an open ask's Answer opens it in the Asks aside, as the web task page links to it", async () => {
+  const { layout } = await import("../lib/layout.js");
+  herdr.reset();
+  const asks = [{ id: 2, state: "open", question: "Ship?", title: "Ship it", since: "2026-11-20T11:30:00Z" }, ...task.asks];
+  herdr.replies = { task: { ...task, asks }, links: { links: [] } };
+  const frame = JSON.parse(readFileSync(new URL("../layouts/frame.json", import.meta.url), "utf8"));
+  herdr.layout = layout("default", { layout: { tabs: ["desk", "asks", "tasks"].map((panel) => ({ panel })) } }, frame);
+  const panel = new TaskPanel();
+  const cx = context();
+  panel.init({}, cx);
+  herdr.shared.set("priory.task.open", { task: 1, at: Date.now() });
+  draw(panel, cx);
+  await settle();
+  const tree = draw(panel, cx);
+  assert.equal(find(tree, "answer-ask:1"), null, "a closed ask has no Answer");
+
+  press(tree, "answer-ask:2");
+
+  assert.equal(herdr.shared.get("priory.asks.open").ask, 2);
+  assert.deepEqual(herdr.runs, [["layout.show", { id: "aside-asks" }]]);
 });
 
 test("the Priory bar opens a read-only terminal for Watch and a typing one for Attach", async () => {

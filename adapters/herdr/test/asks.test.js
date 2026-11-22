@@ -176,6 +176,10 @@ test("a refused answer says why, from the ask as Priory lists it after the refus
   // Hand-built: the same ask after another answer, or after a revive withdrew it.
   assert.equal(refusal(asks[0], { ...asks[0], state: "answered", answer: "Merge", answered_at: "2026-11-20T20:48:00Z" }, error, now),
     "Already answered 2 min ago: Merge.");
+  // Under a minute, and past a day, in the web view's words.
+  assert.equal(refusal(asks[0], { ...asks[0], state: "answered", answer: "Merge", answered_at: new Date(now - 20_000).toISOString() }, error, now),
+    "Already answered just now: Merge.");
+  assert.equal(askDetail({ ...asks[2], answered_at: "2026-11-18T08:00:00Z" }, { now, armed: null }).decided, "Answered: Per revision. On Nov 18, 08:00.");
   assert.equal(refusal(asks[0], { ...asks[0], state: "withdrawn", withdrawn_why: "dismissed" }, error, now), "Withdrawn: dismissed.");
   assert.equal(refusal(asks[0], asks[0], "priory answer: no priory daemon listens on /run/priory.sock", now),
     "Not sent: priory answer: no priory daemon listens on /run/priory.sock. The draft stays here.");

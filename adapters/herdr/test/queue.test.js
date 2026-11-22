@@ -87,8 +87,8 @@ test("Held lists each hold's reason and each of its conditions, met or not", () 
 test("Last day lists the ended tasks latest first, and All shows every section", () => {
   const [ended] = queueList(queue, { view: "ended", now }).sections;
   assert.deepEqual(ended.rows, [
-    { id: 10, tile: "failed", key: "cli:PRI-61", title: "Pin the Actions versions", titleSpans: [{ text: "Pin the Actions versions" }], step: "implement", age: "0 min", why: { text: "checks failed twice", tone: "muted" }, prs: null },
-    { id: 9, tile: "done", key: "cli:PRI-60", title: "Bump the Rust toolchain", titleSpans: [{ text: "Bump the Rust toolchain" }], step: "implement", age: "0 min", why: { text: "merged #210", tone: "muted" }, prs: null },
+    { id: 10, tile: "failed", key: "cli:PRI-61", title: "Pin the Actions versions", titleSpans: [{ text: "Pin the Actions versions" }], step: "implement", age: "just now", why: { text: "checks failed twice", tone: "muted" }, prs: null },
+    { id: 9, tile: "done", key: "cli:PRI-60", title: "Bump the Rust toolchain", titleSpans: [{ text: "Bump the Rust toolchain" }], step: "implement", age: "just now", why: { text: "merged #210", tone: "muted" }, prs: null },
   ]);
   assert.deepEqual(queueList(queue, { view: "all", now }).sections.map((section) => section.title),
     ["Running", "Blocker", "Now", "Today", "Held", "Last day"]);
