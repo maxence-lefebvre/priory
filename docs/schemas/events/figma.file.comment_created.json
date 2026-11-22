@@ -1,0 +1,155 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/figma.file.comment_created.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "FigmaFileCommentCreated": {
+      "additionalProperties": false,
+      "description": "A comment on a Figma file, from a webhook delivery with the right passcode.",
+      "properties": {
+        "author": {
+          "description": "The handle of the person who commented; null when Figma names none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "baseline": {
+          "description": "True when the event came from the first poll of its stream.",
+          "type": "boolean"
+        },
+        "comment": {
+          "description": "Figma's comment id.",
+          "type": "string"
+        },
+        "file": {
+          "description": "The file key, such as `zH44k2FUM629Fa4EMShiHL`.",
+          "type": "string"
+        },
+        "file_name": {
+          "description": "The file name; null when Figma names none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mentions": {
+          "description": "The handles of the people the comment mentions.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "parent": {
+          "description": "The id of the comment this one replies to; null for a top-level comment.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "description": "The comment's text, each mention written as `@<handle>`.",
+          "type": "string"
+        },
+        "time": {
+          "description": "When the event happened, RFC 3339.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "triggers": {
+          "description": "The triggers the event matched, so the triggers it requests tasks for; may be empty.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "url": {
+          "description": "The file's page on Figma.",
+          "type": "string"
+        },
+        "webhook": {
+          "description": "The id of the webhook that delivered it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "file",
+        "file_name",
+        "comment",
+        "text",
+        "parent",
+        "author",
+        "mentions",
+        "url",
+        "webhook",
+        "time",
+        "baseline",
+        "triggers"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A comment on a Figma file, from a webhook delivery with the right passcode.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/FigmaFileCommentCreated"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "figma.file.comment_created",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "figma.file.comment_created",
+  "type": "object"
+}

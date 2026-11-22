@@ -367,6 +367,7 @@ pub struct Webhooks {
     pub github: Option<GithubWebhook>,
     pub linear: Option<LinearWebhook>,
     pub sentry: Option<SentryWebhook>,
+    pub figma: Option<FigmaWebhook>,
     pub honeycomb: Option<HoneycombWebhook>,
 }
 
@@ -394,6 +395,16 @@ pub struct LinearWebhook {
 pub struct SentryWebhook {
     /// The environment variable that holds the integration's Client Secret, never the secret itself.
     #[serde(default = "sentry_secret_env")]
+    pub secret_env: String,
+}
+
+/// Figma v2 webhooks, at `POST /hooks/figma`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FigmaWebhook {
+    /// The environment variable that holds the passcode the webhook was created with, never the
+    /// passcode itself.
+    #[serde(default = "figma_secret_env")]
     pub secret_env: String,
 }
 
@@ -428,6 +439,10 @@ pub struct SlackShortcut {
 
 fn app_token_env() -> String {
     "SLACK_APP_TOKEN".to_owned()
+}
+
+fn figma_secret_env() -> String {
+    "FIGMA_WEBHOOK_PASSCODE".to_owned()
 }
 
 fn honeycomb_secret_env() -> String {
@@ -930,7 +945,7 @@ struct KindOf {
 #[serde(deny_unknown_fields)]
 #[schemars(title = "trigger")]
 pub struct Trigger {
-    /// `github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `slack` or `schedule`.
+    /// `github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `figma`, `slack` or `schedule`.
     pub source: String,
     /// The repository the trigger's tasks work in, a GitHub `owner/name` with no `.` or `..` name;
     /// the polled one for `github`.
@@ -1829,6 +1844,17 @@ impl Factory {
             .as_ref()
     }
 
+    /// The Figma webhook's settings; none takes no Figma webhook.
+    pub fn figma_webhook(&self) -> Option<&FigmaWebhook> {
+        self.settings
+            .as_ref()?
+            .value
+            .webhooks
+            .as_ref()?
+            .figma
+            .as_ref()
+    }
+
     /// The Honeycomb webhook's settings; none takes no Honeycomb webhook.
     pub fn honeycomb_webhook(&self) -> Option<&HoneycombWebhook> {
         self.settings
@@ -1852,6 +1878,8 @@ impl Factory {
                 .map_or_else(linear_secret_env, |hook| hook.secret_env.clone()),
             self.sentry_webhook()
                 .map_or_else(sentry_secret_env, |hook| hook.secret_env.clone()),
+            self.figma_webhook()
+                .map_or_else(figma_secret_env, |hook| hook.secret_env.clone()),
             self.honeycomb_webhook()
                 .map_or_else(honeycomb_secret_env, |hook| hook.secret_env.clone()),
             self.slack_shortcut()

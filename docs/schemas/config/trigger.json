@@ -244,7 +244,7 @@
       ]
     },
     "source": {
-      "description": "`github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `slack` or `schedule`.",
+      "description": "`github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `figma`, `slack` or `schedule`.",
       "type": "string"
     },
     "teams": {

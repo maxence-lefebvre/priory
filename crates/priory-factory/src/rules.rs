@@ -295,6 +295,12 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 factory.honeycomb_webhook().is_some(),
                 &mut problems,
             ),
+            "figma" => check_hooked(
+                trigger,
+                &FIGMA,
+                factory.figma_webhook().is_some(),
+                &mut problems,
+            ),
             _ if trigger.value.backfill.is_some() => problems.push(problem(
                 trigger,
                 trigger.lines.field("backfill"),
@@ -308,6 +314,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             "linear.view",
             "sentry",
             "honeycomb",
+            "figma",
             "slack",
             "schedule",
         ];
@@ -785,7 +792,7 @@ struct Hooked {
     source: &'static str,
     vendor: &'static str,
     on: &'static str,
-    filters: [&'static str; 2],
+    filters: &'static [&'static str],
     key: &'static str,
     events: &'static str,
 }
@@ -794,7 +801,7 @@ const SENTRY: Hooked = Hooked {
     source: "sentry",
     vendor: "Sentry",
     on: "issue.created",
-    filters: ["project", "level"],
+    filters: &["project", "level"],
     key: "issue.id",
     events: "events",
 };
@@ -803,9 +810,18 @@ const HONEYCOMB: Hooked = Hooked {
     source: "honeycomb",
     vendor: "Honeycomb",
     on: "trigger.fired",
-    filters: ["environment", "trigger"],
+    filters: &["environment", "trigger"],
     key: "trigger.id",
     events: "alerts",
+};
+
+const FIGMA: Hooked = Hooked {
+    source: "figma",
+    vendor: "Figma",
+    on: "file.comment_created",
+    filters: &["file"],
+    key: "file.key",
+    events: "comments",
 };
 
 /// A trigger of a webhook-only source takes its one event, its filters and its key, and needs its
@@ -850,10 +866,15 @@ fn check_hooked(
             .keys()
             .any(|key| !hooked.filters.contains(&key.as_str()))
     }) {
-        let [first, second] = hooked.filters;
+        let filters: Vec<String> = hooked.filters.iter().map(|f| format!("`{f}`")).collect();
+        let filters = match filters.split_last() {
+            Some((last, [])) => last.clone(),
+            Some((last, others)) => format!("{} or {last}", others.join(", ")),
+            None => String::new(),
+        };
         report(
             "filter",
-            format!("a `{source}` trigger filters on `{first}` or `{second}`"),
+            format!("a `{source}` trigger filters on {filters}"),
         );
     }
     if value.repo.as_deref().is_some_and(|repo| !owner_name(repo)) {

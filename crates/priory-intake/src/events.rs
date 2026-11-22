@@ -598,6 +598,32 @@ pub struct SentryIssueCreated {
     pub source: Source,
 }
 
+/// A comment on a Figma file, from a webhook delivery with the right passcode.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FigmaFileCommentCreated {
+    /// The file key, such as `zH44k2FUM629Fa4EMShiHL`.
+    pub file: String,
+    /// The file name; null when Figma names none.
+    pub file_name: Option<String>,
+    /// Figma's comment id.
+    pub comment: String,
+    /// The comment's text, each mention written as `@<handle>`.
+    pub text: String,
+    /// The id of the comment this one replies to; null for a top-level comment.
+    pub parent: Option<String>,
+    /// The handle of the person who commented; null when Figma names none.
+    pub author: Option<String>,
+    /// The handles of the people the comment mentions.
+    pub mentions: Vec<String>,
+    /// The file's page on Figma.
+    pub url: String,
+    /// The id of the webhook that delivered it.
+    pub webhook: Option<String>,
+    #[serde(flatten)]
+    pub source: Source,
+}
+
 /// A Honeycomb Trigger fired, from a webhook delivery that carried the Shared Secret.
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]

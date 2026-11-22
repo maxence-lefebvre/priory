@@ -2351,6 +2351,40 @@ fn a_honeycomb_trigger_needs_the_honeycomb_webhook_and_a_supported_event_filter_
 }
 
 #[test]
+fn a_figma_trigger_needs_the_figma_webhook_and_a_supported_event_filter_and_key() {
+    let good = "source = \"figma\"\non = \"file.comment_created\"\nfilter = { file = \"zH44k2FUM629Fa4EMShiHL\" }\nrepo = \"owner/repo\"\nworkflow = \"implement\"\nkey = \"file.key\"\n";
+    let wrong = "source = \"figma\"\non = \"file.updated\"\nfilter = { author = \"x\" }\nworkflow = \"implement\"\nkey = \"comment.id\"\nbackfill = true\n";
+    let hooked =
+        "name = \"demo\"\n\n[serve]\n\n[webhooks.figma]\nsecret_env = \"FIGMA_WEBHOOK_PASSCODE\"\n";
+    let mut files = with("triggers/comments.toml", good);
+    files.push(("triggers/wrong.toml", wrong));
+    let unhooked = check(&factory("figma-unhooked", &files));
+    files.retain(|(path, _)| *path != "factory.toml");
+    files.push(("factory.toml", hooked));
+    let hooked = check(&factory("figma-triggers", &files));
+    files.retain(|(path, _)| *path != "triggers/wrong.toml");
+    let ok = check(&factory("figma-ok", &files));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(hooked.code, 1);
+    assert_eq!(
+        hooked.stderr,
+        "triggers/wrong.toml:6: only a GitHub, Linear or Slack trigger has `backfill`\n\
+         triggers/wrong.toml:2: a `figma` trigger handles `file.comment_created`, not `file.updated`\n\
+         triggers/wrong.toml:3: a `figma` trigger filters on `file`\n\
+         triggers/wrong.toml:5: a Figma trigger's `key` is `file.key`\n"
+    );
+    assert_eq!(unhooked.code, 1);
+    assert!(
+        unhooked.stderr.contains(
+            "triggers/comments.toml:1: a `figma` trigger needs `[webhooks.figma]` in factory.toml: Figma comments arrive only by webhook\n"
+        ),
+        "{}",
+        unhooked.stderr
+    );
+}
+
+#[test]
 fn the_skill_index_counts_toward_the_codex_limit() {
     let description = "d".repeat(3000);
     let skills: Vec<(String, String)> = ["one", "two", "three"]

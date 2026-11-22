@@ -106,6 +106,18 @@
       },
       "type": "object"
     },
+    "FigmaWebhook": {
+      "additionalProperties": false,
+      "description": "Figma v2 webhooks, at `POST /hooks/figma`.",
+      "properties": {
+        "secret_env": {
+          "default": "FIGMA_WEBHOOK_PASSCODE",
+          "description": "The environment variable that holds the passcode the webhook was created with, never the\npasscode itself.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "GithubWebhook": {
       "additionalProperties": false,
       "description": "GitHub webhooks, at `POST /hooks/github`.",
@@ -516,6 +528,16 @@
       "additionalProperties": false,
       "description": "The signed webhooks the HTTP server accepts, by source.",
       "properties": {
+        "figma": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FigmaWebhook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "github": {
           "anyOf": [
             {
