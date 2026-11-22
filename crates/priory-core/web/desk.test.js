@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextLink, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts } from "./desk.js";
+import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts } from "./desk.js";
 
 const why = "an alarm: work stopped and waits on a person";
 
@@ -108,4 +108,10 @@ test("a batch line splits into its counts and what starts next, or keeps a line 
     line: "Ship Next: exports: 1 merged.",
     next: "Next: task 36 starts when task 34 merges.",
   });
+});
+
+test("Up next says a queued task starts on room only while it waits for its place, not for its own reason", () => {
+  for (const why of ["first in the queue", "a band above it", "queue position 4"]) assert.equal(onRoom({ kind: "queued", why }), true, why);
+  assert.equal(onRoom({ kind: "queued", why: "waits for its claim to reach the log" }), false);
+  assert.equal(onRoom({ kind: "held", why: "held until 2026-11-22T10:00:00Z" }), false);
 });

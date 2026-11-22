@@ -10,6 +10,9 @@ export function nextLink(item) {
   return null;
 }
 
+/** Whether an Up next run is a queued task waiting for its place, which starts on room, not for its own reason. @param {any} run */
+export const onRoom = (run) => run.kind === "queued" && /^(first in the queue|a band above it|queue position \d+)$/.test(run.why);
+
 /** `since_you_looked`, newest first, as one group per task, the task with the newest event first. @param {any[]} events */
 export function sinceGroups(events) {
   /** @type {Map<unknown, { task: number | null, key: string | null, events: any[] }>} */

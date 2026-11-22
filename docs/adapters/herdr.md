@@ -585,6 +585,10 @@ DESIGN.md's "Tasks" section holds its visual rules; this section says how it wor
 - **Rows.** Each row shows the task's tile, key, workflow, step, state and how long it has been in
   that state (a date after a day), then its title, then its lane and band, or the reason of a
   blocked, held, failed or dropped task, and its batch. Pressing a row opens it in the [Task panel](#the-task-panel).
+- **Other runners.** In a factory of several runners the panel also lists each task another runner
+  holds, with its hold for a state and "On runner a, last seen 12 min ago". Its row opens nothing,
+  since its page stays on its runner. A Runner chip then follows Workflow and marks this runner
+  `(here)`.
 
 ## The Runs panel
 
@@ -685,7 +689,7 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
 - An answered ask adds `answer`, `answered_by` and `answered_at`; a withdrawn one adds `withdrawn_reason`,
   `withdrawn_why`, the reason in words that the view shows, and `withdrawn_at`.
 - The detail adds the agent's text and the run that asked, `what_waits` and `next_action`, and
-  the ask's `revisions` and `refused` for its history. `priory task ID --json` adds the task's
+  the ask's `revisions` and `refused`, and another runner's ask's `submissions`, for its history. `priory task ID --json` adds the task's
   `brief`, `plan`, `pull_request` and `runs`.
 
 ### Queue
