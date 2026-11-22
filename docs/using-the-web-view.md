@@ -14,12 +14,12 @@ listen = "127.0.0.1:7340"
 ```
 
 The daemon refuses to start with this table unless `PRIORY_TOKEN` holds a token. Generate one, keep
-it, and restart the daemon with it in its environment:
+it, and restart the daemon with it in its environment, from your factory folder:
 
 ```sh
 export PRIORY_TOKEN=$(openssl rand -hex 32)
 echo "$PRIORY_TOKEN"
-priory daemon example
+priory daemon
 ```
 
 When the daemon runs as a service, put the token in the services' environment file instead, as
@@ -40,8 +40,8 @@ HTTPS, because a browser installs an app and offers notifications only on a secu
 
 Which tunnel provides them is your call, for each machine. Whoever reaches the view and holds the
 token reads every task and every agent's screen, and answers asks. Keep the daemon on loopback and
-put a proxy that terminates HTTPS in front of it. `public = true` in `[serve]` makes the daemon
-listen beyond the machine itself, over plain HTTP: see
+put a proxy that terminates HTTPS in front of it. `public = true` in `[serve]` allows a `listen`
+address beyond the machine itself, which the daemon then serves over plain HTTP: see
 [Beyond this machine](daemon/serve.md#beyond-this-machine) before you set it.
 
 This guide uses [Tailscale](https://tailscale.com/kb/1242/tailscale-serve), so only the devices of
