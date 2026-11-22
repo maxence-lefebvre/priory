@@ -2515,6 +2515,19 @@ fn over_budget(
         [run.task],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
+    let tokens = tokens.and_then(|tokens| serde_json::from_str::<Value>(&tokens).ok());
+    Ok(judged(factory, run, budget, tokens, model))
+}
+
+/// `tokens` of `model`, a step's count, priced against the step's `budget`: `None` under it, else
+/// whether it is over, or its cost unknown, and why.
+fn judged(
+    factory: &Factory,
+    run: &Run,
+    budget: f64,
+    tokens: Option<Value>,
+    model: Option<String>,
+) -> Option<(bool, String)> {
     let unknown = |why: String| {
         Some((
             false,
@@ -2524,27 +2537,141 @@ fn over_budget(
             ),
         ))
     };
-    let Some(tokens) = tokens.and_then(|tokens| serde_json::from_str::<Value>(&tokens).ok()) else {
-        return Ok(unknown("its transcript gave no tokens".to_owned()));
+    let Some(tokens) = tokens else {
+        return unknown("its transcript gave no tokens".to_owned());
     };
     let Some(model) = model else {
-        return Ok(unknown("its transcript named no model".to_owned()));
+        return unknown("its transcript named no model".to_owned());
     };
     let Some(price) = factory.prices.get(&model) else {
-        return Ok(unknown(format!("price missing for {model}")));
+        return unknown(format!("price missing for {model}"));
     };
     let spent = trace::priced(&tokens, price);
     if spent <= budget {
-        return Ok(None);
+        return None;
     }
-    Ok(Some((
+    Some((
         true,
         format!(
             "step {} spent {}, over its budget of ${budget:.2}",
             run.step,
             dollars(spent, budget)
         ),
-    )))
+    ))
+}
+
+/// How often the daemon reads a turning run's transcript for its step's budget.
+pub(crate) const BUDGET_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// When the daemon last read each turning run's transcript for its budget, and its size then.
+#[derive(Default)]
+pub(crate) struct Peeked(std::collections::HashMap<i64, (std::time::Instant, u64)>);
+
+impl Peeked {
+    /// Whether to read the transcript of `run`, `size` bytes long with `read` of them counted: once
+    /// it grew past the count, at once the first time, then at most once per `BUDGET_EVERY`.
+    fn due(&mut self, run: i64, size: u64, read: u64, now: std::time::Instant) -> bool {
+        if size <= read {
+            return false;
+        }
+        match self.0.get(&run) {
+            Some(&(_, seen)) if seen == size => false,
+            Some(&(at, _)) if now.duration_since(at) < BUDGET_EVERY => false,
+            _ => {
+                self.0.insert(run, (now, size));
+                true
+            }
+        }
+    }
+}
+
+/// A run mid-turn, with its transcript, the bytes of it counted, and its task's step count.
+type Turning = (Run, String, i64, Option<String>, Option<String>);
+
+/// Ends each run mid-turn whose step has a budget once its step's tokens, with those its
+/// transcript gained since its last count, pass the budget or cannot be priced, and fails its task
+/// as a turn end would. The read counts nothing: a later read may end inside the message this one
+/// ends in, so the turn end still counts the turn. A run that sent or holds its result is left to
+/// its turn end, where the result stands. Returns the tmux sessions to kill.
+pub(crate) fn over_budget_in_turn(
+    db: &mut Connection,
+    trace: &Trace,
+    peeked: &mut Peeked,
+) -> rusqlite::Result<Vec<String>> {
+    let factory = trace.factory;
+    let turning: Vec<Turning> = db
+        .prepare(
+            "SELECT runs.id, runs.task, runs.step, runs.agent, tasks.workflow, runs.tmux,
+             runs.session, runs.debate, runs.transcript, runs.read, tasks.tokens, tasks.model
+             FROM runs JOIN tasks ON tasks.id = runs.task
+             WHERE runs.ended IS NULL AND runs.ready AND runs.idle = 0
+             AND runs.transcript IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM results WHERE results.run = runs.id)
+             AND NOT EXISTS (SELECT 1 FROM gates WHERE gates.run = runs.id AND gates.state = 'grading')
+             ORDER BY runs.id",
+        )?
+        .query_map([], |row| {
+            Ok((
+                Run {
+                    id: row.get(0)?,
+                    task: row.get(1)?,
+                    step: row.get(2)?,
+                    agent: row.get(3)?,
+                    workflow: row.get(4)?,
+                    tmux: row.get(5)?,
+                    session: row.get(6)?,
+                    debate: row.get(7)?,
+                },
+                row.get(8)?,
+                row.get(9)?,
+                row.get(10)?,
+                row.get(11)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    peeked
+        .0
+        .retain(|id, _| turning.iter().any(|(run, ..)| run.id == *id));
+    let now = std::time::Instant::now();
+    let mut killed = Vec::new();
+    for (run, transcript, read, tokens, model) in turning {
+        let Some(budget) =
+            step(&factory.workflows, &run.workflow, &run.step).and_then(Step::budget)
+        else {
+            continue;
+        };
+        let path = Path::new(&transcript);
+        let size = std::fs::metadata(path).map_or(0, |file| file.len());
+        if !peeked.due(run.id, size, read as u64, now) {
+            continue;
+        }
+        // An unreadable transcript, or one with no whole message yet, waits for the turn end.
+        let Some(usage) = (trace.usage)(path, read as u64).filter(|usage| usage.messages > 0)
+        else {
+            continue;
+        };
+        let counted = tokens
+            .and_then(|tokens| serde_json::from_str::<Value>(&tokens).ok())
+            .unwrap_or_else(|| json!({}));
+        let count = |field: &str| counted[field].as_u64().unwrap_or(0);
+        let tokens = json!({
+            "input": count("input") + usage.input,
+            "output": count("output") + usage.output,
+            "cache_read": count("cache_read") + usage.cache_read,
+            "cache_write": count("cache_write") + usage.cache_write,
+        });
+        let Some((_, reason)) = judged(factory, &run, budget, Some(tokens), usage.model.or(model))
+        else {
+            continue;
+        };
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        trace::account(&tx, trace, run.id, None)?;
+        end(&tx, run.id, "budget")?;
+        set(&tx, run.task, "failed", None, Some(&reason))?;
+        tx.commit()?;
+        killed.push(run.tmux);
+    }
+    Ok(killed)
 }
 
 /// `spent` in dollars, to cents unless cents would hide that it passed `budget`.
@@ -5173,6 +5300,23 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use serde_json::json;
+
+    #[test]
+    fn a_turning_runs_transcript_is_read_once_it_grows_then_once_a_minute() {
+        let mut peeked = Peeked::default();
+        let start = std::time::Instant::now();
+        assert!(!peeked.due(1, 100, 100, start), "nothing past the count");
+        assert!(
+            peeked.due(1, 200, 100, start),
+            "the first growth reads at once"
+        );
+        let soon = start + std::time::Duration::from_secs(5);
+        assert!(!peeked.due(1, 300, 100, soon), "a minute has not passed");
+        let later = start + BUDGET_EVERY;
+        assert!(!peeked.due(1, 200, 100, later), "it did not grow since");
+        assert!(peeked.due(1, 300, 100, later));
+        assert!(peeked.due(2, 50, 0, soon), "each run has its own minute");
+    }
 
     /// A state with task 1 waiting on an open step ask at revision 1.
     fn waiting() -> Connection {
