@@ -2619,7 +2619,8 @@ function morePage() {
 
 // Appearance
 const THEMES = [
-  ["indigo", "Indigo", "The default. Ink emphasis with an indigo action."],
+  ["graphite", "Graphite", "The default. A grey ramp, ink actions and one amber for what waits on you."],
+  ["indigo", "Indigo", "Ink emphasis with an indigo action."],
   ["ink", "Ink", "Monochrome. What needs you is printed in solid ink."],
   ["parchment", "Parchment", "Parchment and iron-gall ink, rubric red and lapis."],
   ["abbey", "Abbey", "Vellum, lapis and gold, rubric red."],

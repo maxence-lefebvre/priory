@@ -2,20 +2,73 @@
  * Theme tokens for Priory's web view (DESIGN.md, "Themes").
  * A theme sets colors and the three font roles, nothing else. Each color is one
  * light-dark() pair, so the mode follows color-scheme:
- *   <html data-theme="indigo|ink|parchment|abbey" data-mode="system|light|dark">
+ *   <html data-theme="graphite|indigo|ink|parchment|abbey" data-mode="system|light|dark">
  * The same attributes on any element scope a theme to it, as the Appearance previews do.
- * Indigo is the default. Every theme defines every token below.
+ * Graphite is the default. Every theme defines every token below.
  */
 :root, [data-mode="system"] { color-scheme: light dark; }
 [data-mode="light"] { color-scheme: light; }
 [data-mode="dark"] { color-scheme: dark; }
 
-/* Indigo (default): ink emphasis, indigo action */
-:root, [data-theme="indigo"] {
+/* Graphite (default): a neutral grey ramp, ink actions, one amber accent for what waits on a person */
+:root, [data-theme="graphite"] {
+  --font-display: "Instrument Sans", system-ui, sans-serif;
+  --font-ui: "Instrument Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --display-stretch: 100%; --count-stretch: 100%; --count-weight: 600; --count-tracking: 0px; --display-weight: 600;
+
+  --bg: light-dark(#FAFAFA, #0C0C0C);
+  --surface: light-dark(#FFFFFF, #141414);
+  --raised: light-dark(#F1F1F1, #1D1D1D);
+  --line: light-dark(#E7E7E7, #262626);
+  --control-line: light-dark(#878787, #6B6B6B);
+  --bar: light-dark(#FAFAFA, #0C0C0C);
+  --text: light-dark(#161616, #EDEDED);
+  --text-2: light-dark(#4A4A4A, #B5B5B5);
+  --text-3: light-dark(#6E6E6E, #8A8A8A);
+  --emph: light-dark(#161616, #EDEDED);
+  --on-emph: light-dark(#FFFFFF, #141414);
+  --on-emph-2: light-dark(#A3A3A3, #5C5C5C);
+  --action: light-dark(#161616, #EDEDED);
+  --on-action: light-dark(#FFFFFF, #141414);
+  --action-soft: light-dark(#F1F1F1, #1D1D1D);
+  --action-text: light-dark(#161616, #EDEDED);
+  --wait: light-dark(#A84D06, #F0A04B);
+  --on-wait: light-dark(#FFFFFF, #141414);
+  --count: light-dark(#A84D06, #F0A04B);
+  --badge: light-dark(#A84D06, #F0A04B);
+  --on-badge: light-dark(#FFFFFF, #141414);
+  --tile-live: light-dark(#161616, #EDEDED);
+  --tile-warn: light-dark(#8F5F00, #D9A93F);
+  --tile-danger: light-dark(#C0262D, #CF3A40);
+  --tile-ok: light-dark(#1F7A3A, #3FA265);
+  --tile-hold: light-dark(#6D4AA8, #9C7FD9);
+  --tile-muted: light-dark(#878787, #6E6E6E);
+  --on-tile: light-dark(#FFFFFF, #FFFFFF);
+  --on-tile-live: light-dark(#FFFFFF, #141414);
+  --warn-text: light-dark(#8A5A00, #E2B84B);
+  --danger-text: light-dark(#C0262D, #F2777A);
+  --ok-text: light-dark(#1F7A3A, #5CC883);
+  --term-bg: light-dark(#161616, #0A0A0A);
+  --term-fg: light-dark(#EDEDED, #EDEDED);
+  --term-dim: light-dark(#8F8F8F, #8F8F8F);
+  --term-black: light-dark(#8F8F8F, #8F8F8F);
+  --term-red: light-dark(#FF7B72, #FF7B72);
+  --term-green: light-dark(#7EE787, #7EE787);
+  --term-yellow: light-dark(#E3B341, #E3B341);
+  --term-blue: light-dark(#79C0FF, #79C0FF);
+  --term-magenta: light-dark(#D2A8FF, #D2A8FF);
+  --term-cyan: light-dark(#76E3EA, #76E3EA);
+  --term-white: light-dark(#EDEDED, #EDEDED);
+  --scrim: light-dark(rgb(12 12 12 / 0.40), rgb(0 0 0 / 0.64));
+}
+
+/* Indigo: ink emphasis, indigo action */
+[data-theme="indigo"] {
   --font-display: "Mona Sans", system-ui, sans-serif;
   --font-ui: "Mona Sans", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
-  --display-stretch: 112%; --count-stretch: 125%; --count-weight: 850; --count-tracking: -6px;
+  --display-stretch: 112%; --count-stretch: 125%; --count-weight: 850; --count-tracking: -1px; --display-weight: 700;
 
   --bg: light-dark(#F7F7FA, #000000);
   --surface: light-dark(#FFFFFF, #1C1C1E);
@@ -68,7 +121,7 @@
   --font-display: "Mona Sans", system-ui, sans-serif;
   --font-ui: "Mona Sans", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
-  --display-stretch: 112%; --count-stretch: 125%; --count-weight: 850; --count-tracking: -6px;
+  --display-stretch: 112%; --count-stretch: 125%; --count-weight: 850; --count-tracking: -1px; --display-weight: 700;
 
   --bg: light-dark(#FFFFFF, #000000);
   --surface: light-dark(#FAFAFA, #0E0E0E);
@@ -120,7 +173,7 @@
   --font-display: "EB Garamond", Georgia, serif;
   --font-ui: "IBM Plex Sans", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
-  --display-stretch: 100%; --count-stretch: 100%; --count-weight: 700; --count-tracking: -2px;
+  --display-stretch: 100%; --count-stretch: 100%; --count-weight: 700; --count-tracking: -1px; --display-weight: 700;
 
   --bg: light-dark(#F1E8D4, #17130E);
   --surface: light-dark(#F9F3E5, #211B14);
@@ -173,7 +226,7 @@
   --font-display: "Alegreya", Georgia, serif;
   --font-ui: "Alegreya Sans", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
-  --display-stretch: 100%; --count-stretch: 100%; --count-weight: 800; --count-tracking: -2px;
+  --display-stretch: 100%; --count-stretch: 100%; --count-weight: 800; --count-tracking: -1px; --display-weight: 700;
 
   --bg: light-dark(#F3EDE0, #0E1119);
   --surface: light-dark(#FFFCF5, #171B26);
