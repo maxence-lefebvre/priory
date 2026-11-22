@@ -140,7 +140,7 @@ endpoints. With no `[serve]` table, nothing listens.
 | `token_env` | string | no | `"PRIORY_TOKEN"` | The environment variable that holds the token clients send. Never the token itself | `"PRIORY_WEB_TOKEN"` |
 | `web` | boolean | no | `true` | Serve the web view's files as well as `/api`. `false` serves only `/api` | `false` |
 | `public` | boolean | no | `false` | Allow a `listen` address beyond this machine | `true` |
-| `extension_origins` | array of strings | no | `[]` | The browser extensions whose pages may write, each an exact origin: `chrome-extension://` and the extension's 32-letter id. They still send the token. `priory check` refuses any other value | `["chrome-extension://ekngedcpijdeijlmffkeehilmafoikkm"]` |
+| `extension_origins` | array of strings | no | `[]` | The browser extensions whose pages may write, each an exact origin: `chrome-extension://` and the extension's 32-letter id, such as the [GitHub extension](../adapters/github.md)'s. They still send the token. `priory check` refuses any other value | `["chrome-extension://ekngedcpijdeijlmffkeehilmafoikkm"]` |
 | `terminal` | string | no | `"watch"` | What a token holder may do with a run's terminal. `"watch"` serves its screen at [`/api/runs/{id}/screen`](serve.md#run-screen); `"type"` also lets a token holder take its [keyboard](serve.md#keyboard) and type into it, past the tool guard; `"off"` serves none | `"off"` |
 | `redact_env` | array of strings | no | `[]` | More environment variables whose values the screen hides, besides the token and the factory's other secrets | `["OPENAI_API_KEY"]` |
 

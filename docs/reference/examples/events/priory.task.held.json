@@ -5,7 +5,7 @@
   "time": "2026-11-21T10:00:05Z",
   "data": {
     "key": "github:acme/widgets#42",
-    "runner": "xps13",
+    "runner": "desktop",
     "hold": "kept",
     "generation": 1
   },

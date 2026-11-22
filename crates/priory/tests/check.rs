@@ -61,7 +61,7 @@ fn valid() -> Vec<(&'static str, &'static str)> {
         ("agents/implementer/agent.md", AGENT),
         ("triggers/agent-label.toml", TRIGGER),
         ("workflows/implement.toml", WORKFLOW),
-        ("runners/xps13.toml", RUNNER),
+        ("runners/desktop.toml", RUNNER),
     ]
 }
 
@@ -131,7 +131,7 @@ fn a_factory_in_yaml_passes() {
             "workflows/implement.yaml",
             "start: implement\nsteps:\n  - id: implement\n    decides: model\n    agent: implementer\n    prompt: Implement the issue.\n    effect: reversible\n    next: { passed: done, failed: stop }\n",
         ),
-        ("runners/xps13.yaml", "platform: { os: linux }\n"),
+        ("runners/desktop.yaml", "platform: { os: linux }\n"),
     ];
 
     let outcome = check(&factory("yaml", &files));
@@ -351,11 +351,14 @@ fn the_bypass_permissions_mode_is_refused() {
 fn a_toml_syntax_error_names_its_file_and_line() {
     let runner = "platform = { os = \"linux\" }\nagents = { cpu = 50% }\n";
 
-    let outcome = check(&factory("toml-syntax", &with("runners/xps13.toml", runner)));
+    let outcome = check(&factory(
+        "toml-syntax",
+        &with("runners/desktop.toml", runner),
+    ));
 
     assert_eq!(outcome.code, 1);
     assert!(
-        outcome.stderr.starts_with("runners/xps13.toml:2:"),
+        outcome.stderr.starts_with("runners/desktop.toml:2:"),
         "{}",
         outcome.stderr
     );

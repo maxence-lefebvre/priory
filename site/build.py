@@ -33,7 +33,7 @@ GROUPS = [
     ("Reference", "docs/reference", ["docs/reference/README.md", "docs/reference/cli.md"]),
     ("How it works", "docs/daemon", ["docs/concepts.md", "docs/daemon/README.md"]),
     ("The intake", "docs/intake", ["docs/intake/README.md"]),
-    ("Adapters", "docs/adapters", []),
+    ("Adapters", "docs/adapters", ["docs/adapters/herdr.md", "docs/adapters/github.md"]),
     ("Decisions", None, ["docs/prd.md"]),
     ("Architecture decisions", "docs/adr", []),
     ("Design notes", "docs/design", []),

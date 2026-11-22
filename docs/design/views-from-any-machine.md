@@ -9,8 +9,8 @@ the slices after it, and the open questions with a recommendation for each.
 - Each runner keeps only its own tasks, asks and runs in its own state file, `PRIORY_DB`
   ([runners.md](../daemon/runners.md)).
 - `priory serve`, or the daemon's `[serve]`, reads that file read-only and sends every write to the
-  local daemon's socket ([serve.md](../daemon/serve.md)). So a view on `xps13` shows and changes
-  `xps13`'s tasks only.
+  local daemon's socket ([serve.md](../daemon/serve.md)). So a view on `desktop` shows and changes
+  `desktop`'s tasks only.
 - Two writes already cross machines through the log: `priory answer <runner>:<ask>` publishes
   `priory.ask.answered`, and `priory give` publishes a claim. The owner applies each when it reads
   it, through the same checks as a local write.
@@ -30,9 +30,9 @@ mirrors in one transaction, as it reads today.
 | What | Message | Mirror | Shown as |
 | ---- | ------- | ------ | -------- |
 | An ask, each time any part of it changes | `priory.ask.posted`: the ask as `priory asks --json` lists it, its state, its runner and a `version` | `remote_asks` | A desk and Asks row, `<runner>:<ask>` |
-| The outcome of an answer sent from another machine | `priory.ask.applied`: the submission's id, and answered or refused with the reason | `remote_submissions` | "Sent to xps13", then "Answered" or the refusal |
+| The outcome of an answer sent from another machine | `priory.ask.applied`: the submission's id, and answered or refused with the reason | `remote_submissions` | "Sent to desktop", then "Answered" or the refusal |
 | A task's owner and hold | the existing `priory.task.claimed` and `priory.task.held` | `claims` | A Tasks row with its runner and hold |
-| A runner's last alive time | the existing `priory.runner.alive` | `leases` | "xps13, last seen 12 min ago" |
+| A runner's last alive time | the existing `priory.runner.alive` | `leases` | "desktop, last seen 12 min ago" |
 
 A posted ask carries what the owner's own view shows of it, including `revision`, `revisions`,
 `refused` and whether it is open, answered, dismissed or withdrawn. One message type covers open,
@@ -86,7 +86,7 @@ The reply changes. A local write answers `200` once applied. A remote write answ
 `{"sent": "<runner>", "submission": "<id>"}` once published. The CLI prints the same id. Herdr
 runs the CLI and never sees an HTTP status, so both hosts learn the outcome the same way: the ask's
 row in `asks --json` and `/api/asks` lists its pending and applied submissions. A view keeps the
-person's draft until its submission is applied, and shows "Sent to xps13" until then.
+person's draft until its submission is applied, and shows "Sent to desktop" until then.
 
 Task writes on another runner came in a later slice. `serve` exposes resume, revive, cancel,
 release and say on a task, by the owner's task number, which no other runner knows: `claims` holds
@@ -192,11 +192,11 @@ Tests, on two daemons that share one herdr-bus file, as the runner tests already
    the desk's usual order, with the runner's name on each row and a filter by runner. A person
    answers asks, not machines.
 2. **What does a view show for a runner that is away?** Recommendation: keep its asks, mark the
-   group "xps13 last seen 40 min ago" from `leases`, and still accept answers, which apply when it
+   group "desktop last seen 40 min ago" from `leases`, and still accept answers, which apply when it
    comes back. Hiding them would lose answers the person could give now.
 3. **Should a remote answer that runs a command (R6.8) cross machines?** The command runs on the
    owner, which the person cannot see from here. Recommendation: allow it, with `run: true` as
-   today, and show the owner's name in the confirm step, "Runs on xps13".
+   today, and show the owner's name in the confirm step, "Runs on desktop".
 4. **Do asks cost too much log space?** One post per ask change, and an ask changes a few times.
    Recommendation: no limit in the first slice. Measure the log's growth on Max's factory for a
    week before adding one.

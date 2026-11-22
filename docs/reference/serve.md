@@ -248,7 +248,7 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | Reply | When |
 | ----- | ---- |
 | `200` `{"ok": "ask 42 answered"}` | The daemon applied it |
-| `202` `{"sent": "xps13", "submission": "<id>"}` | For another runner's ask or task: the write is on the log for that runner, which applies it when it reads it. `submission` names it in the ask's or task's `submissions` |
+| `202` `{"sent": "desktop", "submission": "<id>"}` | For another runner's ask or task: the write is on the log for that runner, which applies it when it reads it. `submission` names it in the ask's or task's `submissions` |
 | `200` `{"key": "cli:2026-11-20-1", "id": 7, "outcome": "created"}` | For `/api/request`: the daemon published the request and task `id` holds `key`. `id` is `null` when no task took the key. `outcome` is `created` for a new task; `said` when the text joined an active task that hears it now, or that shows it on its open step's ask; `kept` when it joined a task with no run yet, which reads it in its first prompt; `null` while the log has not handed the request back |
 | `409` `{"error", "ask"}` | The ask's revision is no longer the one sent, or it was answered, dismissed or withdrawn. `ask` is its current state |
 | `409` `{"error"}` | Another runner's task is held by a third runner, or is at another generation than the one sent. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report is at another revision than the one sent, or the pick already holds that choice or an applied one: read the report again |
@@ -615,7 +615,7 @@ an integer, is the number of ended runs left out. `priory runs --json` prints ev
 `/api/tasks?pr=RESOURCE` returns the active tasks that hold one pull request, as `{"revision": N,
 "tasks": [...]}`. `RESOURCE` is the pull request's resource, percent-encoded, such as
 `github%3Aowner%2Frepo%237` for `github:owner/repo#7`. The owner and repository match in any case,
-as GitHub's do, so `github:Owner/Repo#7` finds the same tasks. The GitHub extension reads it to find the
+as GitHub's do, so `github:Owner/Repo#7` finds the same tasks. The [GitHub extension](../adapters/github.md) reads it to find the
 task to show, and to know when no task holds the pull request at all. A task can hold it in several
 ways at once (see [Resources in routing.md](../daemon/routing.md#resources-what-a-task-owns)).
 
