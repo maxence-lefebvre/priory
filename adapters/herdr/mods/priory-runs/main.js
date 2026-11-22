@@ -117,7 +117,7 @@ export default class PrioryRuns extends View {
   /** @param {any[]} shown @param {Palette} t @param {number} now */
   body(shown, t, now) {
     const note = (/** @type {string} */ line) => [div().p(S["space-2"]).whitespace_normal().text_color(t["text-2"]).child(line)];
-    if (!this.runs) return this.error ? [] : note("Reading the runs…");
+    if (!this.runs) return this.error ? [] : note("Loading the runs…");
     const week = shown.filter((run) => !run.ended || now - Date.parse(run.started) < WEEK_MS);
     const older = shown.length - week.length;
     const rows = (this.older ? shown : week).map((run) => this.row(run, t, now));

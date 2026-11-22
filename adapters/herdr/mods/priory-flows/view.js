@@ -6,7 +6,8 @@ export const KINDS = ["read", "reversible", "irreversible", "ask", "answer", "ve
 const WRITES = { reversible: "reversible write", irreversible: "irreversible write" };
 const NODE = { width: 150, height: 52 };
 const GAP = { column: 24, row: 60, edge: 12 };
-const LANE = { pad: 8, step: 14 };
+// A lane is wide enough for its turned label to sit beside its line, clear of the next lane.
+const LANE = { pad: 8, step: 20 };
 const PER_ROW = 2;
 
 /**
@@ -57,6 +58,25 @@ export function ungatedPairs(workflow, paths) {
     entry.path.slice(1).forEach((to, at) => pairs.add(`${entry.path[at]}>${to}`));
   }
   return pairs;
+}
+
+/**
+ * Where a turned label sits along its lane: the middle of the longest stretch of the lane's
+ * straight part that no outer lane edge bends across, 24 px either side of its straight part.
+ * @param {any} edge @param {any[]} edges
+ */
+function clearOf(edge, edges) {
+  const [top, bottom] = edge.straight;
+  const bends = edges.filter((other) => other.label.turned && other.lane > edge.lane)
+    .flatMap((other) => [[other.straight[0] - 24, other.straight[0] + 4], [other.straight[1] - 4, other.straight[1] + 24]])
+    .sort((a, b) => a[0] - b[0]);
+  let [best, from] = [[top, top], top];
+  for (const [start, end] of [...bends, [bottom, bottom]]) {
+    const to = Math.min(start, bottom);
+    if (to - from > best[1] - best[0]) best = [from, to];
+    from = Math.max(from, end);
+  }
+  return (best[0] + best[1]) / 2;
 }
 
 /**
@@ -124,11 +144,15 @@ export function timeline(workflow, ungated) {
       ? `M${start.x} ${start.y}C${start.x} ${start.y + 24} ${lane} ${start.y + 24} ${lane} ${start.y + 44}V${end.y - 44}C${lane} ${end.y - 24} ${end.x} ${end.y - 24} ${end.x} ${end.y}`
       : `M${start.x} ${start.y}C${start.x} ${start.y + 30} ${end.x} ${end.y - 30} ${end.x} ${end.y}`;
     const mid = skips ? { x: lane - 3, y: (start.y + end.y) / 2 } : { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+    // A slanted label goes on the side its edge heads to, where its own curve is not.
+    const left = end.x < start.x;
+    const label = skips ? { x: lane + 14, y: mid.y, anchor: "middle", turned: true } : { x: mid.x + (left ? -6 : 6), y: mid.y, anchor: left ? "end" : "start", turned: false };
     return {
-      from: step.id, to: next.to, outcome: next.outcome, by: next.by, d, mid, back: looped, vertical: skips,
+      from: step.id, to: next.to, outcome: next.outcome, by: next.by, d, mid, lane: skips ? lane : null, label, back: looped, vertical: skips, straight: [start.y + 44, end.y - 44],
       ungated: next.by !== "human" && ungated.has(`${step.id}>${next.to}`),
     };
   }));
+  for (const edge of edges) if (edge.label.turned) edge.label.y = clearOf(edge, edges);
   const width = block + lanes * LANE.step + LANE.pad;
   const height = (rows.length) * (NODE.height + GAP.row) - GAP.row + 2 * GAP.edge;
   const text = [

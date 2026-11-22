@@ -161,7 +161,7 @@ The view sets two attributes on `<html>`:
 | ------------------------------------------- | ---------------------------------------------------------------------- |
 | `--bg`                                      | page ground                                                            |
 | `--surface`                                 | the drawer, sheets, option buttons, chips, inputs                      |
-| `--raised`                                  | pressed rows, the segmented control track, skeletons, code and commands |
+| `--raised`                                  | pressed rows, the segmented control track, code and commands            |
 | `--line`                                    | hairlines between rows and around panels; never the only edge of a control |
 | `--control-line`                            | edges of inputs, option buttons and secondary buttons, at least 3:1    |
 | `--bar`                                     | the tab bar, the rail, the answer bar and the fade behind the capsule  |
@@ -382,7 +382,8 @@ The desk is the "Needs me" view. It lists, top to bottom:
    `--type-hero` and a line in `--text-3`: "Oldest waits 42 min. Also 2 stopped and 1 waiting."
    The line names every other item the Needs me view counts, stopped, to-dos, reports and also
    waiting, so the count and the Needs me chip add up. On wide screens the count sits at the
-   right of the list header in `--type-count-wide`.
+   right of the list header in `--type-count-wide`. With no open ask the desk stays quiet: no
+   number, and "Nothing needs you" in `--type-body` and `--text-2`, over the same line.
 2. **The next thing**: a card on `--surface` with `--radius-md` and a `--line` edge, in every
    saved view, with the desk's `next` whatever its kind: an alarm (a blocked or failed task, an
    uncertain prompt or command, a failing intake) or the ask that ranks first. It shows the tile,
@@ -418,9 +419,10 @@ The desk is the "Needs me" view. It lists, top to bottom:
    A refused action keeps the row and shows why under it, in the row's note.
 7. **Up next**: a strip with the next 3 runs, queued or scheduled, as in the Herdr Queue panel.
    Each line shows when, the task and why, and opens the task. A queued task waiting for its place
-   shows "now, when a runner has room"; one with its own wait reason shows "now" and that reason. With none, the
-   strip says "Nothing is queued or scheduled to run next." An "Open the queue" link ends the
-   strip and opens the Queue panel, where Move and Held live.
+   shows "now, when a runner has room"; one with its own wait reason shows "now" and that reason. With none, a
+   plain sentence with no strip says "Nothing is queued or scheduled to run next." An "Open the
+   queue" link ends the strip, or follows that sentence, and opens the Queue panel, where Move
+   and Held live.
 8. **Since you looked**: a strip with the events since the person's last visit, one group per
    task, the task with the newest event first. Each group opens with the task's key, which opens
    the task page, then each event's time and what: the event type in plain words, as the Inbox
@@ -1164,7 +1166,10 @@ The web view's `/workflow`, named Flows: each workflow of the factory drawn as a
   `--emph`, `asleep` dotted in `--text-3`. Each ends in an arrowhead, and carries its outcome in 11
   px `--text-2` over a `--bg` halo. An edge that skips a row, or loops back, runs down a lane right
   of the nodes with its label turned sideways, so it never crosses a step. So does an outcome that
-  shares both ends with another, so each keeps its own line and label.
+  shares both ends with another, so each keeps its own line and label. Lanes sit 20 px apart, and
+  a turned label sits right of its own line, clear of the next lane, at the middle of the longest
+  stretch that no outer lane's bend crosses. A slanted edge's label sits on the side the edge
+  heads to, where its own curve is not.
 - **Ungated paths**: each edge on a path from the start to an irreversible step that follows no
   `human` edge, the paths `priory check --explain` lists, has a 6 px `--danger-text` halo at 22 %.
   Under the diagram, "Reaches an irreversible step with no person's decision:" lists each path in mono
@@ -1183,7 +1188,7 @@ The web view's `/workflow`, named Flows: each workflow of the factory drawn as a
 
 | State | What shows |
 | ----- | ---------- |
-| loading | "Loading the flows." |
+| loading | "Loading the flows…" |
 | error | "The flows did not load: ..." with `priory check --explain` as the fallback, in `role="alert"`, and a secondary Retry button |
 | empty | "This factory has no workflows. Add one under `workflows/`." |
 
@@ -1229,7 +1234,7 @@ left, with a hairline between them.
 | State | What shows |
 | ----- | ---------- |
 | empty | Costs: "No cost in the last two weeks. Costs appear once a model step records its tokens. Price each model in `prices.toml` in the factory folder." Attention: "No attention counted this week. Your answers, dismissals and snoozes on asks count here, and each task's time once it runs." |
-| loading | Nothing for 300 ms, then three skeleton blocks on `--raised` |
+| loading | "Loading costs…" |
 | offline | The stale strip over the last costs read, which the device keeps, under "Costs as read Nov 21, 09:14." The Split by `select` is disabled |
 | error | A `--warn-text` line above the last costs read: "Could not load costs: why. Check that the daemon runs on its runner, then retry." with Retry, then "Costs as read Nov 21, 09:14." |
 
@@ -1256,8 +1261,9 @@ with no change shows its line without an icon.
 
 - **Empty**: one sentence that says what appears here and what makes it appear, plus the action
   or CLI command. "No open asks. Agents ask here when they need you."
-- **Loading**: show nothing for the first 300 ms, then skeleton rows on `--raised` at the real
-  row height. Never a full-page spinner. A list that has data keeps it while it refreshes.
+- **Loading**: one line of text, in the empty state's place, with the one verb "Loading": "Loading
+  task 7…", "Loading the flows…". Herdr's panels say the same. No skeleton and never a full-page
+  spinner. A list that has data keeps it while it refreshes.
 - **Error**: where it failed, why, and how to fix it, with a "Retry" button. "Could not load runs:
   the daemon refused the connection. Check that the daemon runs on its runner, then retry." Keep
   any stale data visible under the error.
@@ -1490,7 +1496,7 @@ The web's [Costs panel](#costs-panel).
 - The Split by `select` becomes a row of chips, `workflow` to `lane`, beside the split's title.
 - The day chart and each task's bar are drawn with elements, not SVG. The week line is a dashed
   `--text-3` edge before this week's first bar. Waiting on you keeps its `--wait` stripes.
-- Loading reads "Reading costs…", with no skeleton.
+- Loading reads "Loading costs…", with no skeleton.
 - Scores follow the split as the web's do. From 600 px they are rows of columns, the scorer in
   mono and the pass rate in weight 600. Below, each row stacks, as on the web. With no cost, the
   split chips sit beside the scores' title.
@@ -1523,7 +1529,7 @@ open it.
   18 px tile and a `--type-small` line over a `--text-3` caption, split by hairlines. Inbox lists
   the latest 20 events routed to the task, newest first, with the web's tiles and wording and the
   time in the caption: "kept, still queued · 11:50". History lists the last 10 runs, newest first.
-- With no task opened: "Open a task from the Desk to see it here." While it reads: "Reading task
+- With no task opened: "Open a task from the Desk to see it here." While it reads: "Loading task
   7…"
 - Under each History run, one row per scorer with the run's latest score: its 18 px verdict tile,
   the scorer in mono, the verdict word in its role's text color, and the reason in a `--text-2`
@@ -1549,7 +1555,7 @@ The web's [Inbox](#inbox) panel, as a tab in the center stack.
   the web. An asleep task's card shows its `follow_up` command in mono `--text-2` instead of Say,
   which stays on the web. A blocked task's card has Resume task 15 and "It reads them when it
   resumes."
-- While it reads: "Reading the unrouted events…"
+- While it reads: "Loading the unrouted events…"
 
 ### Tasks
 
@@ -1573,7 +1579,7 @@ The web's [Tasks panel](#tasks-panel), as a tab in the center stack.
   the Task panel.
 - In a factory of several runners a Runner chip follows Workflow, and this runner reads
   "workstation (here)", as on the web.
-- While it reads: "Reading the tasks…"
+- While it reads: "Loading the tasks…"
 
 ### Runs
 
@@ -1587,7 +1593,7 @@ The web's [Runs panel](#runs-panel), as a tab in the center stack.
   opens its task in the [Task](#task) panel.
 - Recent ends with a "Show 3 older runs" button in `--action-text` while runs older than 7 days
   match: the pane already holds them, so it shows them on a press instead of on scroll.
-- While it reads: "Reading the runs…"
+- While it reads: "Loading the runs…"
 
 ### Open questions
 

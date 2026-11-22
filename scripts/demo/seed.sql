@@ -147,3 +147,29 @@ SELECT 'demo-score-week-' || n || '-' || s.scorer, 'factory.run.scored', strftim
   'machine', CASE WHEN n%2=0 THEN 'dev-box' ELSE 'build-host' END,'scorer',s.scorer,'kind',s.kind,
   'verdict', CASE WHEN (n*s.k)%7=3 THEN 'fail' WHEN (n+s.k)%9=4 THEN 'error' WHEN n%3=0 AND s.scorer='gate' THEN 'not applicable' ELSE 'pass' END,'reason','seeded'))
 FROM d, (SELECT 'gate' AS scorer,'command' AS kind, 1 AS k UNION ALL SELECT 'passed','outcome',2) s;
+-- task 4's request, brief and plan, as Markdown: the task page shows its Brief and Plan
+INSERT INTO inbox (id,type,subject,time,data,links,outcome,task) VALUES
+('seed-4','linear.issue.created','ENG-231',strftime('%Y-%m-%dT%H:%M:%SZ','now','-3 hours'),json_object('issue','ENG-231','title','Paginate the order history endpoint','description','`GET /orders` returns every order at once, and large merchants time out.'||char(10)||char(10)||'- Return 50 orders a page.'||char(10)||'- Keep the old response for clients that send no cursor.'),'[]','routed',4);
+INSERT INTO runs (id,task,step,tmux,session,agent,started,ended,ended_as) VALUES
+(106,4,'groom','demo','demo-106','groomer',strftime('%Y-%m-%dT%H:%M:%SZ','now','-170 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-160 minutes'),'moved'),
+(107,4,'plan','demo','demo-107','planner',strftime('%Y-%m-%dT%H:%M:%SZ','now','-150 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-130 minutes'),'moved');
+INSERT INTO results (run,task,step,outcome,summary) VALUES
+(106,4,'groom','passed','Paginate `GET /orders` with an opaque cursor.'||char(10)||char(10)||'**Acceptance**'||char(10)||char(10)||'1. A request with no cursor gets the first 50 orders and a `next` cursor.'||char(10)||'2. A request with the last cursor gets an empty page and no `next`.'||char(10)||'3. Clients that send no `limit` keep working.'),
+(107,4,'plan','approved','1. Add a `cursor` and `limit` to the orders query in `orders/list.rs`.'||char(10)||'2. Encode the cursor as the last order id, base64.'||char(10)||'3. Cover the three acceptance cases in `tests/orders.rs`.'||char(10)||char(10)||'See [the API guide](https://example.com/api/pagination) for the cursor format.');
+-- a live run: task 8's implement step is working now
+UPDATE tasks SET state='running', changed=strftime('%Y-%m-%dT%H:%M:%SZ','now','-6 minutes') WHERE id=8;
+INSERT INTO runs (id,task,step,tmux,session,agent,started) VALUES (108,8,'implement','demo','demo-108','implementer',strftime('%Y-%m-%dT%H:%M:%SZ','now','-6 minutes'));
+-- a command ask on this runner: its answer runs a deploy
+INSERT INTO tasks (id,key,workflow,step,state,band,lane,trigger,source,repo,tldr,created,changed,entered,model,branch) VALUES
+(12,'ENG-250','implement','deploy','asleep','now','payments','linear','seed-12','acme/shop','Deploy the invoice retries to staging',strftime('%Y-%m-%dT%H:%M:%SZ','now','-2 hours'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-8 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-8 minutes'),'claude-sonnet-5-5','eng-250');
+INSERT OR IGNORE INTO owns (task, resource) VALUES (12,'linear:ENG-250');
+INSERT INTO asks (id,task,step,kind,revision,question,options,recommendation,title,text,command,created) VALUES
+(40,12,'deploy','step',1,'Deploy ENG-250 to staging?','["deploy","wait"]','deploy','Deploy to staging','The merge commit passed every check.','{"argv":["./deploy","staging","--service","mailer"],"target":"shell","dir":"/home/max/acme/shop","runs":["deploy"],"timeout":null}',strftime('%Y-%m-%dT%H:%M:%SZ','now','-8 minutes'));
+-- ask 2 snoozed until tomorrow 09:00
+INSERT INTO snoozes (kind,item,task,snoozed,until) VALUES ('ask',2,2,strftime('%Y-%m-%dT%H:%M:%SZ','now','-30 minutes'),strftime('%Y-%m-%dT09:00:00Z','now','+1 day'));
+-- a stalled queue's banner, and a check still running on task 1's pull request
+INSERT INTO stalls (resource,missing,task,since) VALUES ('disk','2 GB',4,strftime('%Y-%m-%dT%H:%M:%SZ','now','-15 minutes'));
+INSERT INTO inbox (id,type,subject,time,data,links,outcome,task) VALUES
+('p6','github.check_run.created','acme/shop#212',strftime('%Y-%m-%dT%H:%M:%SZ','now','-140 minutes'),'{"repo":"acme/shop","pull_request":212,"head_sha":"a1f3c9e5b2d4","head_branch":"eng-212-retry-invoice-emails","base_branch":"main","name":"e2e","conclusion":null,"title":"Retry failed invoice emails with backoff","state":"open"}','[]','routed',1);
+-- each open ask's revision was asked when the ask was
+UPDATE ask_revisions SET created = (SELECT created FROM asks WHERE asks.id = ask_revisions.ask) WHERE ask IN (1,2,3,4,40);

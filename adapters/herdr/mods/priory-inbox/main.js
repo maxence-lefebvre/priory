@@ -128,7 +128,7 @@ export default class PrioryInbox extends View {
 
   /** @param {Palette} t */
   body(t) {
-    if (!this.groups) return this.error ? [] : [div().text_color(t["text-2"]).child("Reading the unrouted events…")];
+    if (!this.groups) return this.error ? [] : [div().text_color(t["text-2"]).child("Loading the unrouted events…")];
     const rest = neverOwned(this.groups.other);
     const restLine = rest ? [div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-3"]).child(rest)] : [];
     const unheard = this.groups.unheard ?? [];

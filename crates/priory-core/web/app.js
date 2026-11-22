@@ -11,7 +11,7 @@ import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedP
 import { emptyDetail, eventWords, handled, neverOwned, sinceWords, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
-import { actionNote, batchParts, countWords, dueParts, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
+import { actionNote, batchParts, countHead, countWords, dueParts, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskLabel, taskViews, triageWords } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { PANELS, backTo, pageTitle } from "./pages.js";
@@ -634,9 +634,10 @@ function upNext(model, queueLink = true) {
   const what = (run) => html`<span class="mono">${run.key ? taskLabel(run.key) : run.trigger}</span> ${run.why}`;
   const body = next.length
     ? html`<ol>${next.map((run) => html`<li>${timeTag(run.at, when(run))}${run.task ? html`<a href="/tasks/${run.task}" title="task ${run.task}">${what(run)}</a>` : html`<span>${what(run)}</span>`}</li>`)}</ol>`
-    : html`<p>Nothing is queued or scheduled to run next.</p>`;
+    : null;
   const link = queueLink ? html`<a class="open" href="/queue">Open the queue</a>` : "";
-  return html`<div class="sec">Up next<span>next 3 runs</span></div><div class="strip">${body}${link}</div>`;
+  const shown = body ? html`<div class="strip">${body}${link}</div>` : html`<p class="empty">Nothing is queued or scheduled to run next.</p>${link}`;
+  return html`<div class="sec">Up next<span>next 3 runs</span></div>${shown}`;
 }
 
 // The one next thing (DESIGN.md, Desk): the desk's `next`, an alarm or the ask that ranks first, and why.
@@ -665,8 +666,9 @@ function sinceYouLooked() {
   const body = groups.length
     ? groups.map((group) => html`<div class="sgroup">${group.task ? html`<a class="mono" href="/tasks/${group.task}" title="task ${group.task}">${taskLabel(group.key)}</a>` : html`<span class="mono">factory</span>`}
       <ol>${group.events.map((event) => html`<li>${timeTag(event.time)}<span>${sinceWords(event.what)}</span></li>`)}</ol></div>`)
-    : html`<p>Nothing happened since you looked.</p>`;
-  return html`<div class="sec">Since you looked<span>${from ? `since ${today(from) ? clock(from) : date(from)}` : "latest 50"}</span></div><div class="strip since" data-since>${body}</div>`;
+    : null;
+  const shown = body ? html`<div class="strip since" data-since>${body}</div>` : html`<p class="empty" data-since>Nothing happened since you looked.</p>`;
+  return html`<div class="sec">Since you looked<span>${from ? `since ${today(from) ? clock(from) : date(from)}` : "latest 50"}</span></div>${shown}`;
 }
 
 function deskBody(wide) {
@@ -833,6 +835,7 @@ const review = html`<span class="task-acts"><a class="btn secondary act" href="/
 const itemActs = (item) => (["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : rowActs(item));
 
 function deskTable(model, selected) {
+  if (!model.open.length && !model.stopped.length && !model.todos.length && !model.other.length) return "";
   const itemLine = (item) => item.kind === "memories" ? html`<tr>
     <td>${stateWord("memories")}</td><td class="mono"></td><td></td><td class="q full"><span>${item.candidates?.length ?? 0} memory candidates: ${(item.candidates || []).map((candidate) => candidate.name).join(", ")}</span>${fold(review)}</td>
     <td class="recw">${review}</td><td class="r">${timeTag(item.since)}</td></tr>` : html`<tr>
@@ -1588,7 +1591,7 @@ function terminalBody({ term, task, tmux, end }) {
   if (stale && !end && !gone) notes.push(["warn", "unplug", screen ? `Reconnecting. Screen from ${clock(new Date(at).toISOString())}, ${Math.round((Date.now() - at) / 1000)} s ago.` : "Reconnecting. The screen could not be read yet."]);
   if (end) notes.push(["", (STATES[end] || [, "circle-help"])[1], screen ? `Run ${run} ended as ${end}. This is the last screen this page saw.` : `Run ${run} ended as ${end}.`]);
   else if (gone) notes.push(["warn", "unplug", `This server reads no screen of run ${run}. Run priory screen ${task} on the runner to see why.`]);
-  else if (!screen && !stale) notes.push(["", "clock", "Reading the screen…"]);
+  else if (!screen && !stale) notes.push(["", "clock", "Loading the screen…"]);
   const keys = keyboard.state();
   const held = end ? null : keys.held;
   const offer = !end && !held && Boolean(screen?.keyboard);
@@ -2552,7 +2555,7 @@ const flowEdge = (edge) => {
   const line = (extra) => html`<path d="${edge.d}" fill="none" stroke-width="${style.width}" ${style.dash ? raw(`stroke-dasharray="${style.dash}"`) : ""} class="${extra}"/>`;
   return html`<g class="fedge by-${edge.by}${edge.ungated ? " ungated" : ""}"><title>${edge.outcome}: ${edge.from} to ${edge.to}, ${BY_WORD[edge.by] ?? edge.by}${edge.ungated ? ", reaches an irreversible step with no person's decision" : ""}</title>
     ${edge.ungated ? html`<path d="${edge.d}" fill="none" stroke-width="${style.width + 6}" class="halo"/>` : ""}${line("fline")}
-    <text x="${edge.mid.x + (edge.vertical ? 0 : 5)}" y="${edge.mid.y}" class="felabel"${edge.vertical ? raw(` transform="rotate(-90 ${edge.mid.x} ${edge.mid.y})" text-anchor="middle"`) : ""}>${clip(edge.outcome, 14)}</text></g>`;
+    <text x="${edge.label.x}" y="${edge.label.y}" text-anchor="${edge.label.anchor}" class="felabel"${edge.label.turned ? raw(` transform="rotate(-90 ${edge.label.x} ${edge.label.y})"`) : ""}>${clip(edge.outcome, 14)}</text></g>`;
 };
 
 const flowLegend = () => html`<section class="sect flegend" aria-labelledby="legend-title"><h2 class="sh" id="legend-title">Key</h2>
@@ -2586,7 +2589,7 @@ function flowsPage(compact) {
   const head = compact ? html`<div class="top"><h1>Flows</h1><span class="sp"></span>${connection()}</div>` : html`<div class="lhead"><h1>Flows</h1></div>`;
   const flows = state.data.flows;
   if (!flows && state.flowsError) return html`${head}<p class="empty" role="alert">The flows did not load: ${state.flowsError}. Run <code>priory check --explain</code> meanwhile.</p><p class="empty"><button class="btn secondary" data-action="flows-retry">Retry</button></p>`;
-  if (!flows) { setTimeout(loadFlows); return html`${head}<p class="empty" role="status">Loading the flows.</p>`; }
+  if (!flows) { setTimeout(loadFlows); return html`${head}<p class="empty" role="status">Loading the flows…</p>`; }
   const body = flows.workflows.length ? html`${flowLegend()}${flows.workflows.map((workflow) => flowSection(workflow, flows.paths, flows.irreversible))}` : html`<p class="empty">This factory has no workflows. Add one under <code>workflows/</code>.</p>`;
   return html`${head}<div class="panel" role="region" aria-label="Flows"><div class="scroll">${body}</div></div>`;
 }
@@ -2733,10 +2736,10 @@ async function turnPush(on) {
 // Screens
 function deskPhone(withCapsule = true) {
   const { model, views, banner, rows } = deskBody(false);
-  const n = model.open.length;
+  const head = countHead(model.open.length);
   return html`<div class="top"><span class="fac">${state.data.views.factory}</span>${connection()}</div>
     <div class="panel" role="region" aria-label="Desk"><h1 class="sr">Desk</h1><div class="scroll ${withCapsule ? "desk-end" : ""}">
-      <div class="count"><span class="n num">${n}</span><span class="w">${n === 1 ? "ask needs you" : "asks need you"}<span>${countLine(model)}</span></span></div>
+      <div class="count ${head.n ? "" : "quiet"}">${head.n ? html`<span class="n num">${head.n}</span>` : ""}<span class="w">${head.words}<span>${countLine(model)}</span></span></div>
       ${nextCard(model)}${views}${banner}${rows}</div>${withCapsule ? capsule(model) : ""}</div>`;
 }
 
@@ -2749,9 +2752,9 @@ function asksPhone() {
 function listPanel(panel, wide) {
   if (panel === "desk") {
     const { model, views, banner, rows } = deskBody(wide);
-    const n = model.open.length;
+    const head = countHead(model.open.length);
     return html`<div class="list" role="region" aria-label="Desk"><div class="lhead"><h1>Desk</h1>
-      <span class="cnt"><span class="n num">${n}</span><span class="w">${n === 1 ? "ask needs you" : "asks need you"}<span>${countLine(model)}</span></span></span></div>
+      <span class="cnt">${head.n ? html`<span class="n num">${head.n}</span>` : ""}<span class="w">${head.words}<span>${countLine(model)}</span></span></span></div>
       ${nextCard(model)}${views}${banner}<div class="scroll">${rows}</div>${wide ? keyHints() : ""}</div>`;
   }
   if (panel === "inbox") {

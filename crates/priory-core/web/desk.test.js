@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, countWords, memoryNote, memoryTag } from "./desk.js";
+import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, countWords, memoryNote, memoryTag, countHead } from "./desk.js";
 
 const why = "work stopped and waits on a person";
 
@@ -151,4 +151,10 @@ test("the Desk's count line names every item Needs me counts besides the asks", 
   assert.equal(countWords({ oldest: null, stopped: 0, todos: 2, reports: 1, other: 0 }), "Also 2 to-dos and 1 report.");
   assert.equal(countWords({ oldest: null, stopped: 2, todos: 1, reports: 3, other: 1 }), "Also 2 stopped, 1 to-do, 3 reports and 1 waiting.");
   assert.equal(countWords({ ...none, oldest: null }), "");
+});
+
+test("the count shows a number only when an ask needs you, so an empty desk stays quiet", () => {
+  assert.deepEqual(countHead(0), { n: null, words: "Nothing needs you" });
+  assert.deepEqual(countHead(1), { n: 1, words: "ask needs you" });
+  assert.deepEqual(countHead(7), { n: 7, words: "asks need you" });
 });

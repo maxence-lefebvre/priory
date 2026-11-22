@@ -524,7 +524,7 @@ export default class PrioryBonjour extends View {
   document(model, t, wide) {
     const pad = wide ? S["space-5"] : S["space-4"];
     if (!model) {
-      const text = this.empty ? "No report yet. The factory's bonjour workflow writes one each morning." : this.error ? "" : "Reading the report…";
+      const text = this.empty ? "No report yet. The factory's bonjour workflow writes one each morning." : this.error ? "" : "Loading the report…";
       return v_flex().id("bonjour-document").flex_1().p(pad).text_color(t["text-2"]).child(text);
     }
     return v_flex().id("bonjour-document").flex_1().min_w_0().min_h_0().overflow_y_scrollbar().track_scroll(this.scroll).px(pad).pt(pad).pb(32).gap(6)

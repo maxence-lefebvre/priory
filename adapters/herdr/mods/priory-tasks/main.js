@@ -125,7 +125,7 @@ export default class PrioryTasks extends View {
   /** @param {any[]} shown @param {Palette} t */
   body(shown, t) {
     const note = (/** @type {string} */ line) => [div().p(S["space-2"]).whitespace_normal().text_color(t["text-2"]).child(line)];
-    if (!this.tasks) return this.error ? [] : note("Reading the tasks…");
+    if (!this.tasks) return this.error ? [] : note("Loading the tasks…");
     if (!shown.length) return note(this.picks.size ? "No task matches these filters." : EMPTY[this.view]);
     const now = Date.now();
     return shown.map((task) => this.row(task, t, now));

@@ -140,3 +140,6 @@ export function countWords({ oldest, stopped, todos, reports, other }) {
   const also = rest.length > 1 ? `Also ${rest.slice(0, -1).join(", ")} and ${rest.at(-1)}.` : rest.length ? `Also ${rest[0]}.` : "";
   return [oldest && `Oldest waits ${oldest}.`, also].filter(Boolean).join(" ");
 }
+
+/** The Desk's count: the number of open asks and its words, or no number when none is open. @param {number} n */
+export const countHead = (n) => (n ? { n, words: n === 1 ? "ask needs you" : "asks need you" } : { n: null, words: "Nothing needs you" });

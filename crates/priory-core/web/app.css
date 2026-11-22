@@ -82,6 +82,8 @@ input { font: 400 16px/20px var(--font-ui); color: var(--text); background: var(
 .count .n { font: var(--count-weight) var(--type-count) var(--font-display); font-stretch: var(--count-stretch); letter-spacing: var(--count-tracking); color: var(--count); }
 .count .w { font: 700 var(--type-hero) var(--font-display); font-stretch: var(--display-stretch); letter-spacing: -0.3px; }
 .count .w span { display: block; font: 400 var(--type-caption) var(--font-ui); font-stretch: 100%; letter-spacing: 0; color: var(--text-3); margin-top: 2px; }
+/* An empty desk is quiet: no number, the words in the body role (DESIGN.md, Desk). */
+.count.quiet .w { font: 600 var(--type-body) var(--font-ui); font-stretch: 100%; letter-spacing: 0; color: var(--text-2); }
 
 /* Saved views */
 .views { flex: none; display: flex; gap: var(--space-2); padding: 5px var(--gutter); flex-wrap: wrap; }
@@ -130,6 +132,8 @@ a.facet[aria-current="true"] { background: var(--action-soft); color: var(--acti
 .row.one .tile, .row.one .chev { grid-row: auto; grid-column: auto; margin: 0; }
 .row.past .l2 { color: var(--text-2); font-weight: 400; }
 .empty { padding: var(--space-8) var(--gutter); color: var(--text-2); font: 400 var(--type-small) var(--font-ui); max-width: 52ch; }
+.sec + .empty { padding: 2px var(--gutter) 12px; }
+.sec + .empty + .open { display: inline-flex; align-items: center; min-height: 44px; margin: -12px var(--gutter) 0; color: var(--action-text); font: 500 var(--type-small) var(--font-ui); }
 .empty code, .note code { font: 400 13px/1 var(--font-mono); background: var(--raised); padding: 2px 5px; border-radius: var(--radius-sm); }
 .strip { margin: 0 var(--gutter); padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--text-3); font: 400 var(--type-small) var(--font-ui); }
 .strip li { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 8px; padding: 6px 0; color: var(--text-2); }

@@ -477,7 +477,7 @@ export default class PrioryAsks extends View {
       answered: "No answered asks yet. An ask moves here once someone answers it.",
       all: "No asks yet. Agents ask here when they need you.",
     }[this.view] ?? "";
-    if (!this.data) return v_flex().id("asks-list").p(16).text_color(t["text-3"]).child(this.error ? "" : "Reading the asks…");
+    if (!this.data) return v_flex().id("asks-list").p(16).text_color(t["text-3"]).child(this.error ? "" : "Loading the asks…");
     return v_flex().id("asks-list").min_h_0().overflow_y_scrollbar().pb(16)
       .when(this.view === "snoozed" && list.sections.length > 0, (el) => el.child(div().px(16).pt(10).text_size(TYPE.caption[0]).text_color(t["text-3"])
         .child("Snoozed asks leave the Open count. The agent keeps waiting, and a new revision brings an ask back early.")))
