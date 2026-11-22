@@ -565,6 +565,8 @@ factory spent against its spend caps. The frame places it, so every view shows i
 - **Reading.** The line reads `priory costs FACTORY --json` when it starts, then every minute. It
   also reads Over9k's saved Claude limits, `~/.cache/over9k/usage/claude.json`, on the machine that
   runs priory. It never writes that file, and shows nothing of Claude when the file is absent.
+  When a read fails, the line says "Could not read costs", and the popup keeps the last read under
+  a warning that says why.
 - **The line.** Today's spend and this week's, each against the factory's `day` or `week` cap when
   there is one, then how many tasks are held at a spend cap, then Claude's 7-day limit. Today's
   spend is the factory's `day` cap's `spent_usd`, or else today's entry in `days`. This week's is
