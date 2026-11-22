@@ -161,6 +161,7 @@ pub(crate) fn call(
     db: &mut Connection,
     call: &Call,
     trace: &Trace,
+    kit: crate::kit::Current<'_>,
     head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
     let factory = trace.factory;
@@ -266,7 +267,7 @@ pub(crate) fn call(
                 .to_owned(),
         ),
         "result" => match lead_answer(&tx, &run, &call.arguments, trace, head)? {
-            Ok(()) => match result(&tx, &run, &call.arguments, factory, head, true)? {
+            Ok(()) => match result(&tx, &run, &call.arguments, factory, head, Some(kit))? {
                 Ok(stored) => {
                     crate::consult::answer(&tx, run.task, run.id, &call.arguments, trace)?
                         .map(|()| stored)
@@ -309,15 +310,15 @@ pub(crate) fn call(
     Ok((stored, None))
 }
 
-/// Stores the result `arguments` of `run`, or, when `hold` and a gate grades its outcome, holds it
-/// for the gate and stores nothing.
+/// Stores the result `arguments` of `run`, or, when `hold` names the kit runs get and a gate grades
+/// its outcome, holds it for the gate and stores nothing.
 fn result(
     tx: &Transaction,
     run: &Run,
     arguments: &Value,
     factory: &Factory,
     head: &dyn Fn(&Path, &str) -> Option<String>,
-    hold: bool,
+    hold: Option<crate::kit::Current<'_>>,
 ) -> rusqlite::Result<Result<String, String>> {
     let workflows = &factory.workflows;
     let fields = (|| {
@@ -395,15 +396,39 @@ fn result(
     {
         return Ok(Err(refused));
     }
-    if hold {
-        let scorers = crate::gates::scorers(tx, run.task, &run.workflow, step, &outcome, factory)?;
+    if let Some(kit) = hold {
+        let mut scorers =
+            crate::gates::scorers(tx, run.task, &run.workflow, step, &outcome, factory)?;
+        let lessons = crate::gates::pre_review(
+            tx,
+            run.id,
+            run.task,
+            &run.workflow,
+            step,
+            &outcome,
+            factory,
+            kit,
+        )?;
+        if let Some((name, _)) = &lessons
+            && !scorers.contains(name)
+        {
+            scorers.push(name.clone());
+        }
         if !scorers.is_empty() {
             let read = json!({
                 "run": run.id, "step": run.step, "outcome": outcome, "summary": summary,
                 "evidence": evidence, "commit": commit, "reason": reason,
             });
             crate::gates::hold(
-                tx, run.id, run.task, &run.step, &outcome, arguments, &read, &scorers,
+                tx,
+                run.id,
+                run.task,
+                &run.step,
+                &outcome,
+                arguments,
+                &read,
+                &scorers,
+                lessons.as_ref().map(|(_, lessons)| lessons.as_slice()),
             )?;
             return Ok(Ok(format!(
                 "result held: its gate grades outcome {outcome} when this turn ends, and the task moves to {next} unless the gate refuses it"
@@ -2850,7 +2875,7 @@ pub(crate) fn release(
     else {
         return Ok(Err(format!("run {run} ended before its gate graded it")));
     };
-    if let Err(refused) = result(tx, &run, arguments, trace.factory, head, false)? {
+    if let Err(refused) = result(tx, &run, arguments, trace.factory, head, None)? {
         return Ok(Err(refused));
     }
     tx.execute("UPDATE runs SET nudgeable = 0 WHERE id = ?1", [run.id])?;
@@ -3840,6 +3865,19 @@ fn answer_in(
                 &approvals(workflows, &workflow, &at, &target),
                 head,
             )?;
+            // A note on an approval step's answer that stops the task or sends the work back to a
+            // model step is a rejection, with why: a lesson for that step.
+            let sent_back = target == "stop"
+                || step(workflows, &workflow, &target)
+                    .is_some_and(|next| next.decides == Decider::Model);
+            if let Some(note) = note
+                && sent_back
+                && asked.is_some_and(|asked| !asked.approves.is_empty())
+            {
+                crate::memories::propose_lesson(
+                    tx, trace, task, &workflow, &at, answer.ask, &chosen, note,
+                )?;
+            }
             trace::ended(tx, trace, task, &chosen, None)?;
             crate::grades::answered(tx, trace, task, &at, &chosen, &target)?;
         }

@@ -115,6 +115,22 @@ impl Sources<'_> {
         self.memories.get(name).copied()
     }
 
+    /// The lessons kept for the approval step `scope`, `<workflow>/<step>`: each as its name and
+    /// its text on one line, in name order.
+    pub(crate) fn lessons(&self, scope: &str) -> Vec<String> {
+        self.memories
+            .iter()
+            .filter(|(_, memory)| memory.step.as_deref() == Some(scope))
+            .map(|(name, memory)| {
+                let text = memory.text();
+                format!(
+                    "{name}: {}",
+                    text.split_whitespace().collect::<Vec<_>>().join(" ")
+                )
+            })
+            .collect()
+    }
+
     /// The instructions, then the index of the memories in `folder`, as every run gets them.
     pub(crate) fn run_instructions(&self, folder: &str) -> String {
         let index = factory::memory_index(folder, self.memories.iter().map(|(n, m)| (*n, *m)));

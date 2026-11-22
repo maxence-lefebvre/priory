@@ -141,6 +141,8 @@ Two keys name gates:
   `red`, `yellow` or `green` outcome that leads to a model or code step, of a task whose
   `intervention` is not `plan`. Under `plan`, and for a grade that leads to a human step, a person
   reads the plan, so the critic does not run.
+- `pre_review` in `factory.toml` names one judge that reads an approval step's lessons before the
+  step asks a person (see [Pre-review](#pre-review)).
 
 ### A held result
 
@@ -220,6 +222,59 @@ daemon restart, a gate still grading starts its scorers again.
 
 Each score of a gate appends a `factory.run.scored` record with `gate` set to the outcome it graded
 ([Records](#records)).
+
+## Pre-review
+
+A pre-review keeps a person from rejecting the same mistake twice. A lesson is a memory whose
+[`step`](../reference/memories.md#frontmatter-keys) names an approval step: a human step with
+`approves`, as `<workflow>/<step>`. A factory writes lessons in `memories/`, and the daemon
+proposes one each time a person rejects an approval with a note.
+
+### Where lessons come from
+
+When a person answers an approval step's ask as `OPTION: NOTE`, and the option stops the task or
+sends it back to a model step, the daemon writes a memory candidate scoped to that step, with the
+note as its text (see [memories.md](../reference/memories.md#lessons)). For example:
+
+```sh
+priory answer 12 'rejected: the pull request has no test'
+```
+
+The candidate waits for a person, as an agent's `remember` does (see
+[skills.md](skills.md#accepting-a-candidate)). The rejected task's later runs see it at once.
+Other tasks see it once a person accepts it, which keeps a careless note out of every run.
+
+### What the pre-review reads
+
+When a model step sends a result whose outcome leads to an approval step, the daemon holds the
+result for the `pre_review` judge, as for any gate, when all of these hold:
+
+- `factory.toml` names `pre_review`;
+- the task sees at least one lesson for that approval step: the kit's, the memories repository's,
+  the factory's, or a candidate the task sees, as a run gets them;
+- no pre-review refused a result of this run before.
+
+The judge reads the request, the result and, on `diff`, the diff, as any judge does. After them,
+between markers of their own, it reads the lessons, one per line as `<name>: <text>`. Only the
+pre-review reads them, not the step's other gate scorers. The judge's prompt says what a repeat
+is. A labeled case gives its own `lessons`, so calibration measures the same question (see
+[scorers.md](../reference/scorers.md#labeled-cases)). Like any judge in a gate, it counts only
+while its calibration passes.
+
+### What it does
+
+A pass lets the result through, and the approval step asks the person as before. A refusal from
+the pre-review alone stores nothing, and the agent reads:
+
+```text
+Before step approve-pr asks a person, the pre-review found outcome passed repeats a lesson. asked: It adds no test.. The lessons kept for that step:
+- lesson-tests: Every pull request needs a test.
+Fix it, then send the result again: it then goes to the person.
+```
+
+The pre-review sends a result back once per run. The agent's next result skips it, and the approval
+step asks the person. A refusal from the pre-review never blocks the task, and the pre-review never
+approves anything. When another scorer of the same gate also refuses, the gate's own rule applies.
 
 ## Records
 

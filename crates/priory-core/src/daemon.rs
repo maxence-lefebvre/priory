@@ -1087,7 +1087,7 @@ fn take(
             Ok((replied(subscribe::tool(db, &call)?), None))
         }
         Ok(Input::Call(call)) => {
-            let (reply, kill) = tools::call(db, &call, trace, &|worktree, branch| {
+            let (reply, kill) = tools::call(db, &call, trace, kit, &|worktree, branch| {
                 runtime::kept_head(&runtime::home(), worktree, branch)
             })?;
             Ok((replied(reply), kill))

@@ -109,6 +109,8 @@ pub struct Run {
     /// The asks it made, as an `ask-shape` scorer reads them: each id and shape. `None` when they
     /// were not read, as for a result a gate holds.
     pub asks: Option<Vec<(i64, String)>>,
+    /// The lessons a judge reads with the run, as a pre-review gives them; none otherwise.
+    pub lessons: Vec<String>,
 }
 
 /// Scores the latest finished run of each step of `task` with every scorer, or only `only`, then
@@ -295,6 +297,7 @@ fn finished(db: &Connection, task: i64) -> rusqlite::Result<Vec<Run>> {
                 step: row.get(1)?,
                 result: result.and_then(|text| serde_json::from_str(&text).ok()),
                 asks: None,
+                lessons: Vec::new(),
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -467,6 +470,7 @@ fn judge(home: &Path, task: &Task, gauge: &Gauge, run: &Run, judging: &mut Judgi
         request: &task.request,
         result,
         diff: diff.as_deref(),
+        lessons: &run.lessons,
     };
     let asked = judge::ask(&called, &home.join("scores"), &read, budget - judging.spent);
     judging.spent += asked.cost;

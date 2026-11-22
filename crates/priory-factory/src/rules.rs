@@ -94,6 +94,23 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 problems.push(problem(settings, settings.lines.field("critic"), message));
             }
         }
+        if let Some(name) = &settings.value.pre_review {
+            let refused = match factory.scorers.get(name) {
+                None => Some(format!("the pre-review `{name}` is no scorer in scorers/")),
+                Some(scorer) if scorer.value.kind != ScoreKind::Judge => Some(format!(
+                    "the pre-review `{name}` is of kind {}: a pre-review is a judge, which reads the lessons",
+                    scorer.value.kind.name()
+                )),
+                Some(_) => None,
+            };
+            if let Some(message) = refused {
+                problems.push(problem(
+                    settings,
+                    settings.lines.field("pre_review"),
+                    message,
+                ));
+            }
+        }
         // `sh -c ""` exits 0, so a blank gate would pass every proof.
         if settings
             .value
@@ -509,7 +526,29 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
     for benchmark in factory.benchmarks.values() {
         check_benchmark(factory, benchmark, &mut problems);
     }
+    for memory in factory.memories.values() {
+        if let Some(step) = &memory.value.step
+            && !approval_step(factory, step)
+        {
+            problems.push(problem(
+                memory,
+                memory.lines.field("step"),
+                format!(
+                    "`step` is `{step}`: a lesson names `<workflow>/<step>`, a human step with `approves`"
+                ),
+            ));
+        }
+    }
     problems
+}
+
+/// Whether `scope`, as `<workflow>/<step>`, names a human step with `approves`, which a lesson
+/// is for.
+pub fn approval_step(factory: &Factory, scope: &str) -> bool {
+    scope
+        .split_once('/')
+        .and_then(|(workflow, step)| factory.workflows.get(workflow)?.value.step(step))
+        .is_some_and(|step| step.decides == Decider::Human && !step.approves.is_empty())
 }
 
 fn check_benchmark(factory: &Factory, benchmark: &Loaded<Benchmark>, problems: &mut Vec<Problem>) {

@@ -4010,3 +4010,45 @@ fn a_lead_cannot_be_an_investigator() {
         "triggers/agent-label.toml:9: lead `sentry` is an investigator, which only answers consults\n"
     );
 }
+
+#[test]
+fn a_pre_review_names_a_judge_and_a_lesson_names_an_approval_step() {
+    let judge = critic_files("diff");
+    let mut files = with("factory.toml", "name = \"demo\"\npre_review = \"critic\"\n");
+    files.extend(judge.iter().map(|(path, text)| (*path, text.as_str())));
+    files.push((
+        "memories/lesson-tests.md",
+        "---\nname: lesson-tests\ndescription: What a person rejected before.\nstep: implement/approve-pr\n---\nEvery pull request needs a test.\n",
+    ));
+
+    let outcome = check(&factory("pre-review-valid", &files));
+
+    assert_eq!(outcome.stderr, "");
+    assert_eq!(outcome.code, 0);
+}
+
+#[test]
+fn a_pre_review_that_is_no_judge_and_a_lesson_on_no_approval_step_are_refused() {
+    let mut files = with("factory.toml", "name = \"demo\"\npre_review = \"passed\"\n");
+    files.extend_from_slice(&[
+        ("scorers/passed.toml", PASSED),
+        (
+            "memories/lesson-tests.md",
+            "---\nname: lesson-tests\ndescription: What a person rejected before.\nstep: implement/implement\n---\nEvery pull request needs a test.\n",
+        ),
+        (
+            "memories/lesson-gone.md",
+            "---\nname: lesson-gone\ndescription: What a person rejected before.\nstep: approve-pr\n---\nNo workflow.\n",
+        ),
+    ]);
+
+    let outcome = check(&factory("pre-review-refused", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "factory.toml:2: the pre-review `passed` is of kind outcome: a pre-review is a judge, which reads the lessons\n\
+         memories/lesson-gone.md:4: `step` is `approve-pr`: a lesson names `<workflow>/<step>`, a human step with `approves`\n\
+         memories/lesson-tests.md:4: `step` is `implement/implement`: a lesson names `<workflow>/<step>`, a human step with `approves`\n"
+    );
+}

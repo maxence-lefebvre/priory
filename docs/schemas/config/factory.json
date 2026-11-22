@@ -1127,6 +1127,13 @@
         }
       ]
     },
+    "pre_review": {
+      "description": "The judge that reads a step's lessons before an approval step asks a person: a result that\nrepeats one goes back to the agent once. It can only send the result back.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "queue": {
       "$ref": "#/definitions/Queue"
     },

@@ -568,6 +568,9 @@ Priory serves these as MCP tools.
 - R10.7 Scorers grade finished runs. Benchmarks replay past tasks under another model or
   configuration. A step can name scorers as a gate on an outcome, and the factory a critic for a
   plan no person reads: a failing one refuses the result, and none approves anything. M4
+- R10.8 A person's rejection of an approval, with why, becomes a lesson for that step, which other
+  tasks get once a person accepts it. A pre-review judge reads the step's lessons before the step asks a person, and sends
+  a result that repeats one back to the agent once. It never approves anything. M4
 
 ### R11. Sharing between machines
 
