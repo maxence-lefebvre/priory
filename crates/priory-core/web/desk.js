@@ -125,16 +125,18 @@ export function memoryNote(verb, status, body) {
   return `Could not ${verb} it: ${body?.error || `the server answered ${status}`}.`;
 }
 
+/** A count and its noun: "1 task", "2 tasks"; `many` covers irregular plurals. @param {number} count @param {string} one @param {string} [many] */
+export const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
+
 /**
  * The line under the Desk's ask count: how long the oldest ask waits, then every other item the
  * Needs me view counts, so the two counts add up. @param {{ oldest: string | null, stopped: number, todos: number, reports: number, other: number }} counts
  */
 export function countWords({ oldest, stopped, todos, reports, other }) {
-  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
   const rest = [
     stopped && `${stopped} stopped`,
-    todos && plural(todos, "to-do", "to-dos"),
-    reports && plural(reports, "report", "reports"),
+    todos && plural(todos, "to-do"),
+    reports && plural(reports, "report"),
     other && `${other} waiting`,
   ].filter(Boolean);
   const also = rest.length > 1 ? `Also ${rest.slice(0, -1).join(", ")} and ${rest.at(-1)}.` : rest.length ? `Also ${rest[0]}.` : "";
@@ -146,7 +148,7 @@ export const countHead = (n) => (n ? { n, words: n === 1 ? "ask needs you" : "as
 
 /** The Answer capsule's words for `n` open asks: offline it leaves the primary look and only opens the asks to read. */
 export function capsuleWords(n, offline) {
-  const asks = `${n} ${n === 1 ? "ask" : "asks"}`;
+  const asks = plural(n, "ask");
   return offline ? { text: `Read ${asks}, offline`, icon: "unplug", off: true } : { text: `Answer ${asks}`, icon: "ask", off: false };
 }
 

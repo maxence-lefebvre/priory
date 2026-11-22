@@ -9353,8 +9353,14 @@ fn a_sweep_leaves_the_worktree_of_a_running_or_asleep_task() {
 
     setup.swept();
 
-    assert_eq!(setup.stays(2).as_deref(), Some("task 2 still running"));
-    assert_eq!(setup.stays(3).as_deref(), Some("task 3 still asleep"));
+    assert_eq!(
+        setup.stays(2).as_deref(),
+        Some("kept while task 2 is running")
+    );
+    assert_eq!(
+        setup.stays(3).as_deref(),
+        Some("kept while task 3 is asleep")
+    );
     assert!(setup.branches().contains("priory/2") && setup.branches().contains("priory/3"));
 }
 

@@ -1980,9 +1980,9 @@ pub fn read_only() -> Result<Connection, String> {
 fn refiltered(data: &serde_json::Value) -> String {
     let count = |field: &str| data[field].as_array().map_or(0, Vec::len);
     format!(
-        "view {} changed its filter: {} issues entered and {} left, with no task requested",
+        "view {} changed its filter: {} entered and {} left, with no task requested",
         data["view"].as_str().unwrap_or_default(),
-        count("entered"),
+        priory_factory::plural(count("entered"), "issue", "issues"),
         count("left")
     )
 }

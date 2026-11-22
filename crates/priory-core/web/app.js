@@ -11,7 +11,7 @@ import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedP
 import { emptyDetail, eventWords, handled, neverOwned, sinceWords, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
-import { actionNote, arrivalAsk, batchParts, capsuleWords, countHead, countWords, deskBanners, dueParts, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
+import { actionNote, arrivalAsk, batchParts, capsuleWords, countHead, countWords, deskBanners, dueParts, plural, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskLabel, taskViews, triageWords, workStep } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { PANELS, backTo, pageTitle } from "./pages.js";
@@ -253,10 +253,11 @@ async function refresh() {
     const views = (!state.cached && state.data?.views) || (await api("/api/views"));
     const links = (!state.cached && state.data?.links) || (await api("/api/links")).links;
     const full = (listing) => (state.all[listing] ? `/api/${listing}?all=1` : `/api/${listing}`);
-    // No task has written a report until the first `priory report put`.
     // Taken before the read, so an event between that read and the visit still shows next time.
     const read = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+    // `report` is null until the first `priory report put`; a report the arrows reached may be gone.
     const shown = api(state.reportShown == null ? "/api/reports/latest" : `/api/reports/${state.reportShown}`)
+      .then((found) => (found.report ? found : null))
       .catch((error) => (error.status === 404 ? null : Promise.reject(error)));
     const listed = api("/api/reports").then((read) => read.reports);
     const [desk, asksList, queue, tasksList, runsList, report, reports] = await Promise.all([...["/api/desk", full("asks"), "/api/queue", full("tasks"), full("runs")].map(api), shown, listed]);
@@ -389,7 +390,7 @@ function askRow(ask, current) {
       ? html`<span>Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}</span>`
       : snoozed(ask, Date.now()) ? html`<span>${icon("clock", "s15")}${snoozedUntil(ask)}</span>`
         : sentNote(ask) ? sentLine(ask)
-        : ask.recommendation ? html`<span>Recommends <b>${ask.recommendation}</b></span>` : html`<span>${options.length} options</span>`;
+        : ask.recommendation ? html`<span>Recommends <b>${ask.recommendation}</b></span>` : html`<span>${plural(options.length, "option")}</span>`;
   const when = ask.state === "answered" && ask.answered_at
     ? timeTag(ask.answered_at)
     : timeTag(ask.since);
@@ -429,7 +430,7 @@ function memoriesRow(item) {
   const count = item.candidates?.length ?? 0;
   return html`<a class="row" href="/memories">
     ${tile("memories")}
-    <span class="l1"><span>memories</span><span>${count} ${count === 1 ? "candidate" : "candidates"}</span><span class="age">${timeTag(item.since)}</span></span>
+    <span class="l1"><span>memories</span><span>${plural(count, "candidate")}</span><span class="age">${timeTag(item.since)}</span></span>
     <span class="l2 r">${(item.candidates || []).map((candidate) => candidate.name).join(", ")}</span>
     <span class="l3"><span>Accept or drop each before other tasks get it</span></span>
     <span class="chev">${icon("chevron-right", "s15")}</span></a>`;
@@ -440,7 +441,7 @@ function memoriesPage() {
   const back = html`<div class="top"><a class="back" href="/">${icon("chevron-left", "s22")}Desk</a></div>`;
   const candidates = state.data.desk.items.find((item) => item.kind === "memories")?.candidates || [];
   const n = candidates.length;
-  const intro = html`<div class="ask mhead"><h1 class="question">${n === 1 ? "1 memory candidate" : `${n} memory candidates`}</h1>
+  const intro = html`<div class="ask mhead"><h1 class="question">${plural(n, "memory candidate")}</h1>
     <p class="note">${icon("brain", "s15")}<span>An agent wrote each one. Accept gives it to every task's runs, on every runner. Drop discards it, and the task that wrote it stops getting it.</span></p></div>`;
   const list = n ? candidates.map(memoryCandidate) : html`<p class="empty">No memory candidate waits. Agents write them with the remember and forget tools.</p>`;
   return html`${back}<div class="scroll">${intro}${list}</div>`;
@@ -819,7 +820,7 @@ function needsMe(model, wide) {
     if (model.other.length) sections.push(html`<div class="sec">Also waiting<span>${model.other.length}</span></div>${model.other.map(itemRow)}`);
   }
   sections.push(upNext(model), sinceYouLooked());
-  if (model.asleep) sections.push(html`<div class="sec"></div><a class="row one" href="/?view=asleep">${tile("asleep")}<span>${model.asleep} tasks asleep on waits</span><span class="num">${model.asleep}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
+  if (model.asleep) sections.push(html`<div class="sec"></div><a class="row one" href="/?view=asleep">${tile("asleep")}<span>${plural(model.asleep, "task")} asleep on waits</span><span class="num">${model.asleep}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
   const unrouted = unroutedNote(state.data.desk.counts?.unrouted);
   if (unrouted) sections.push(html`<a class="row one calm" href="/inbox?view=unrouted">${tile("queued")}<span>${unrouted}</span><span class="num">${state.data.desk.counts.unrouted}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
   const unheard = unheardNote(state.data.desk.counts?.unheard);
@@ -837,7 +838,7 @@ const itemActs = (item) => (["blocked", "failed"].includes(item.kind) ? taskActs
 function deskTable(model, selected) {
   if (!model.open.length && !model.stopped.length && !model.todos.length && !model.other.length) return "";
   const itemLine = (item) => item.kind === "memories" ? html`<tr>
-    <td>${stateWord("memories")}</td><td class="mono"></td><td></td><td class="q full"><span>${item.candidates?.length ?? 0} memory candidates: ${(item.candidates || []).map((candidate) => candidate.name).join(", ")}</span>${fold(review)}</td>
+    <td>${stateWord("memories")}</td><td class="mono"></td><td></td><td class="q full"><span>${plural(item.candidates?.length ?? 0, "memory candidate")}: ${(item.candidates || []).map((candidate) => candidate.name).join(", ")}</span>${fold(review)}</td>
     <td class="recw">${review}</td><td class="r">${timeTag(item.since)}</td></tr>` : html`<tr>
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${item.kind === "batch" ? html`<a href="/batches/${item.id}">${taskLabel(item.key)}</a>` : ["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}" title="task ${item.task}">${taskLabel(item.key)}</a>` : taskLabel(item.key)}</td><td>${item.step || ""}</td>
     <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span>${fold(itemActs(item))}</td><td class="recw">${itemActs(item)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
@@ -1166,7 +1167,7 @@ function askDetail(id, wide) {
     ${layout() === "compact" ? html`<h1 class="question">${question}</h1>` : html`<h2 class="question">${question}</h2>`}${decided}</div>`;
   // A go ask reads its batch's plan first; the planning task's own plan result says the same.
   const planned = batch ? [
-    ["batchplan", "Plan", html`<section class="sect" id="batchplan"><div class="sh">${icon("layers", "s15")}Plan, ${batch.entries.length} tasks in start order<span class="meta">rev ${batch.plan_revision}</span></div>${laneKey()}${laneGraph(batch, editable)}${planEditOf(batch).note ? html`<p class="note" role="status">${planEditOf(batch).note}</p>` : ""}</section>`],
+    ["batchplan", "Plan", html`<section class="sect" id="batchplan"><div class="sh">${icon("layers", "s15")}Plan, ${plural(batch.entries.length, "task")} in start order<span class="meta">rev ${batch.plan_revision}</span></div>${laneKey()}${laneGraph(batch, editable)}${planEditOf(batch).note ? html`<p class="note" role="status">${planEditOf(batch).note}</p>` : ""}</section>`],
     ...(batch.closes?.length ? [["closes", "Closes", closesSection(batch)]] : []),
     ...(splitsOf(batch).length ? [["splits", "Splits", splitsSection(batch)]] : []),
   ] : [];
@@ -1201,7 +1202,7 @@ function askDetail(id, wide) {
     : "";
   const barArmed = armed !== null && armed === recommended;
   const bar = !wide && !pending && ask.state === "open" && options.length
-    ? html`<div class="abar" hidden>${barArmed ? commandBlock(ask, bound) : ""}<button class="btn secondary" data-action="options">${icon("chevron-up", "s15")}${options.length} options</button>
+    ? html`<div class="abar" hidden>${barArmed ? commandBlock(ask, bound) : ""}<button class="btn secondary" data-action="options">${icon("chevron-up", "s15")}${plural(options.length, "option")}</button>
       <button class="btn primary ${barArmed ? "armed" : ""}" data-answer="${options.indexOf(recommended)}" aria-disabled="${locked ? "true" : "false"}">${barArmed
         ? html`<span><small>Tap again to run</small>${recommended}<small>Cancels in 4 s</small></span><span class="drain" aria-hidden="true"></span>`
         : html`<span>${recommended}</span><small>${[recommended === ask.recommendation ? "Recommended" : "First option", runsCommand(ask, recommended) && "Runs a command"].filter(Boolean).join(". ")}</small>`}</button>
@@ -1369,7 +1370,7 @@ function batchPage(id) {
   return html`${back}<div class="scroll"><div class="ask bhead">
     <p class="ctx">${tile("batch", "sm")}<a class="mono" href="/tasks/${batch.task}" title="task ${batch.task}">${taskLabel(batch.key)}</a><span>${batch.state}</span><span>${batch.lane || ""}</span>${batch.went ? html`<span>went ${timeTag(batch.went, ago(batch.went))} by ${batch.went_by}</span>` : ""}<span>plan rev ${batch.plan_revision}</span></p>
     <h1 class="question">${batch.title || taskLabel(batch.key)}</h1>${stageBar(batch)}</div>
-    <section class="sect" id="entries"><div class="sh">${icon("layers", "s15")}${batch.entries.length} entries in start order</div>${laneKey()}${laneGraph(batch, false)}</section>
+    <section class="sect" id="entries"><div class="sh">${icon("layers", "s15")}${plural(batch.entries.length, "entry", "entries")} in start order</div>${laneKey()}${laneGraph(batch, false)}</section>
     ${closesSection(batch)}${splitsSection(batch)}</div>`;
 }
 
@@ -1589,7 +1590,7 @@ function terminalBody({ term, task, tmux, end }) {
   const kept = watch.state();
   const { screen, at, stale, gone } = kept.run === run ? kept : {};
   const notes = [];
-  if (screen?.redacted) notes.push(["warn", "shield", `${screen.redacted} ${screen.redacted === 1 ? "secret" : "secrets"} hidden on this screen`]);
+  if (screen?.redacted) notes.push(["warn", "shield", `${plural(screen.redacted, "secret")} hidden on this screen`]);
   if (stale && !end && !gone) notes.push(["warn", "unplug", screen ? `Reconnecting. Screen from ${clock(new Date(at).toISOString())}, ${Math.round((Date.now() - at) / 1000)} s ago.` : "Reconnecting. The screen could not be read yet."]);
   if (end) notes.push(["", (STATES[end] || [, "circle-help"])[1], screen ? `Run ${run} ended as ${end}. This is the last screen this page saw.` : `Run ${run} ended as ${end}.`]);
   else if (gone) notes.push(["warn", "unplug", `This server reads no screen of run ${run}. Run priory screen ${task} on the runner to see why.`]);
@@ -2578,7 +2579,7 @@ function flowSection(workflow, paths, irreversible) {
   const drawing = timeline(workflow, ungated);
   const open = paths.filter((entry) => entry.workflow === workflow.name);
   const id = `flow-${workflow.name.replace(/[^\w-]/g, "_")}`;
-  return html`<section class="sect flow" aria-labelledby="${id}"><h2 class="sh" id="${id}">${workflow.name}<span class="meta num">${workflow.steps.length} steps</span></h2>
+  return html`<section class="sect flow" aria-labelledby="${id}"><h2 class="sh" id="${id}">${workflow.name}<span class="meta num">${plural(workflow.steps.length, "step")}</span></h2>
     <svg class="diagram" viewBox="0 0 ${drawing.width} ${drawing.height}" role="img" aria-label="${drawing.text}">
       <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0 1L10 5L0 9z" fill="context-stroke"/></marker></defs>
       ${drawing.edges.map(flowEdge)}${drawing.nodes.map(flowNode)}</svg>

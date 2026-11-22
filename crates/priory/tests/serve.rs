@@ -3169,6 +3169,18 @@ fn the_report_endpoints_return_what_report_show_json_prints() {
 }
 
 #[test]
+fn the_latest_report_of_a_factory_with_none_is_an_empty_state() {
+    let mut setup = Setup::new("report-none", SERVE);
+    setup.seed();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let latest = api(&address, "/api/reports/latest");
+
+    assert_eq!(latest["report"], Value::Null);
+    assert!(latest["revision"].is_i64(), "{latest}");
+}
+
+#[test]
 fn report_list_names_every_report_newest_first_as_its_endpoint_returns_them() {
     let mut setup = Setup::new("report-list", SERVE);
     setup.seed();

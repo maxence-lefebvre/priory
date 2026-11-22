@@ -1,6 +1,6 @@
 // The Asks panel's view model: `priory asks --all --json` in, rows and states out. No drawing, no IO.
 
-import { age, ago, answeredBy, autolink, checkState, stateWords, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
+import { age, ago, answeredBy, autolink, checkState, plural, stateWords, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
 
 /** @typedef {{ pattern: string, url: string }[]} Links the rules `priory links` lists */
 
@@ -260,7 +260,7 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
     ran: ask.ran ? { text: ask.ran.status === "failed" ? `${RAN.failed}: ${ask.ran.error}.` : RAN[ask.ran.status] ?? ask.ran.status, warn: ask.ran.status === "uncertain" } : null,
     history: history(ask),
     command: command(ask),
-    bar: options.length ? { count: `${options.length} options`, option: recommended } : null,
+    bar: options.length ? { count: plural(options.length, "option"), option: recommended } : null,
     canSnooze: open && ask.task != null && !owner,
     // A step's or a hold's ask takes only its options: no free text and no dismissal.
     takesText: open && ask.free_text !== false,
