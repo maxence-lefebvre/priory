@@ -121,7 +121,7 @@ fn evidence(db: &Connection, start: &str, now: &str) -> rusqlite::Result<Vec<Evi
         // A stop is the same evidence until the task's next generation or another reason.
         let source = format!(
             "task {task} generation {generation} {kind} at {step}: {}",
-            signature(&reason)
+            signature(&redacted(&reason))
         );
         found.push(Evidence {
             task,
@@ -245,7 +245,8 @@ pub fn find(db: &mut Connection, trace: &Trace, start: &str, now: &str) -> Resul
         if known.is_some() {
             continue;
         }
-        let shape = signature(&found.text);
+        // The trace keeps the signature, so it takes the redacted line, as `text` does.
+        let shape = signature(&redacted(&found.text));
         let pattern = id(&found.workflow, &found.step, &shape);
         let data = json!({
             "factory": trace.factory.name,

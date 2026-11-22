@@ -230,6 +230,36 @@ fn find_groups_the_days_stopped_tasks_by_step_and_the_shape_of_their_reason() {
 }
 
 #[test]
+fn find_keeps_no_secret_of_a_reason_in_the_pattern_or_the_trace() {
+    let setup = Setup::new("secret", 1);
+    let token = "ghp_abcdefghijklmnopqrstuvwxyz";
+    setup.stop(
+        1,
+        "failed",
+        "implement",
+        &format!("git push failed for {token}"),
+        1,
+    );
+
+    setup.find(&[]);
+
+    let pattern = setup.pattern("implement");
+    assert!(!pattern.to_string().contains(token), "{pattern}");
+    let trace: Vec<String> = rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .prepare("SELECT event FROM trace")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        trace.iter().all(|event| !event.contains(token)),
+        "{trace:?}"
+    );
+}
+
+#[test]
 fn find_records_each_stop_once_and_a_new_task_grows_its_pattern() {
     let setup = Setup::new("grows", 3);
     setup.stop(1, "failed", "implement", TESTS_FAILED, 2);
