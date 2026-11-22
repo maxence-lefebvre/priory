@@ -63,8 +63,9 @@ its task at the first moment between two turns outside them, such as the next st
 
 When the task has a run, the daemon reads its transcript once more, ends the run as `capped` and
 kills its tmux session. It then holds the task with the reason `held: spent $203.00 of trigger
-agent-label's day cap of $150.00, until a person raises the cap or stops the task` and puts one ask
-on the desk, with the options `raise` and `stop`:
+agent-label's day cap of $150.00, until a person raises the cap or stops the task, or the day ends`
+and puts one ask on the desk, with the options `raise` and `stop`. A `task` cap's reason ends at
+`stops the task`, since no window ends it:
 
 ```
 Task 7 spent $203.00 of trigger agent-label's day cap of $150.00. Raise the cap for this task by $150.00, or stop the task?
@@ -79,6 +80,12 @@ Task 7 spent $203.00 of trigger agent-label's day cap of $150.00. Raise the cap 
 
 A raise lasts for the task's life. To change the cap for every task, change the factory's files in a
 pull request.
+
+When the day or week of the cap a task was held at ends with no answer, the daemon lets the task go
+by itself and answers its ask with `the cap's day ended` or `the cap's week ended`. The task goes
+back to the state it was held from, with no raise. A task whose run was ended resumes its session
+with `The day of the spend cap this task reached ended. Check the worktree, then continue.` first,
+or `week` for a week cap. It then waits like any new run, as [New runs wait](#new-runs-wait) says.
 
 ### New runs wait
 
@@ -117,5 +124,8 @@ The web view does not show caps yet.
 - `priory release` on a task held at a cap lets it go without a raise. The next check holds it
   again, with a new ask.
 - A code step never waits for a cap: it spends nothing.
+- A window's spend counts the current step of every active task, whenever its tokens were spent.
+  A task let go when its day ends can wait again at once if the steps of held or running tasks
+  alone reach the cap.
 - With several runners, each daemon counts only the records of its own state file, so a `day` or
   `week` cap applies to each runner apart.

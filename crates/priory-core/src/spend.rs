@@ -377,6 +377,7 @@ pub(crate) fn tick(
         }
         tx.commit()?;
     }
+    window_ended(db, now)?;
     if caps.is_empty() {
         return Ok(Vec::new());
     }
@@ -480,6 +481,58 @@ pub(crate) fn tick(
     Ok(killed)
 }
 
+/// Lets go each task held at a day or week cap in a window that has ended, with no raise: it
+/// starts again as a queued task under the cap does, once the new window's spend allows.
+fn window_ended(db: &mut Connection, now: &str) -> rusqlite::Result<()> {
+    let open: Vec<(i64, i64, String, String, String)> = db
+        .prepare(
+            "SELECT holds.id, holds.task, holds.resume, holds.created, spend_holds.cap
+             FROM spend_holds JOIN holds ON holds.id = spend_holds.hold
+             WHERE holds.met IS NULL AND holds.released IS NULL
+             AND (spend_holds.cap LIKE '%.day' OR spend_holds.cap LIKE '%.week')",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, task, resume, created, cap) in open {
+        let period = if cap.ends_with(".week") {
+            Period::Week
+        } else {
+            Period::Day
+        };
+        let since = window_start(db, period, now)?;
+        let ended: bool = db.query_row(
+            "SELECT julianday(?1) < julianday(?2)",
+            params![created, since],
+            |row| row.get(0),
+        )?;
+        if !ended {
+            continue;
+        }
+        let name = period.name();
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if resume == "ready" {
+            crate::tools::queue_first(
+                &tx,
+                task,
+                &format!(
+                    "The {name} of the spend cap this task reached ended. Check the worktree, then continue."
+                ),
+            )?;
+        }
+        crate::hold::meet(&tx, id, &format!("the cap's {name} ended"))?;
+        tx.commit()?;
+    }
+    Ok(())
+}
+
 /// Whether `task` is at a model step, which starts a run that spends.
 fn at_model_step(db: &Connection, factory: &Factory, task: i64) -> rusqlite::Result<bool> {
     let (workflow, step): (String, String) = db.query_row(
@@ -502,11 +555,15 @@ fn hold(tx: &Transaction, task: i64, resume: &str, cap: &Cap, spent: f64) -> rus
         params![task, format!("spend cap: {past}"), resume],
     )?;
     let id = tx.last_insert_rowid();
+    let or_window = match cap.period {
+        Period::Task => String::new(),
+        period => format!(", or the {} ends", period.name()),
+    };
     tx.execute(
         "UPDATE tasks SET state = 'held', reason = ?2 WHERE id = ?1",
         params![
             task,
-            format!("held: {past}, until a person raises the cap or stops the task")
+            format!("held: {past}, until a person raises the cap or stops the task{or_window}")
         ],
     )?;
     let question = format!(

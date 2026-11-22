@@ -27538,9 +27538,50 @@ fn a_trigger_day_cap_holds_its_running_task_after_the_turn_that_crossed_it() {
 
     assert_eq!(
         held[0][7],
-        "held: spent $203.00 of trigger agent-label's day cap of $150.00, until a person raises the cap or stops the task"
+        "held: spent $203.00 of trigger agent-label's day cap of $150.00, until a person raises the cap or stops the task, or the day ends"
     );
     assert_eq!(setup.open_asks().len(), 1);
+}
+
+#[test]
+fn a_task_held_at_a_day_cap_goes_on_by_itself_once_the_day_ends() {
+    let mut setup = Setup::new("cap-day-ends");
+    setup.caps("[caps]\nday = 150.0\n");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    // Task 1 spent $101 today; task 2's silent turn takes the day to $203.
+    setup.calls(&[serde_json::Value::Null, result("passed")]);
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| {
+        rows.get(1).is_some_and(|row| row[4] == "held")
+    });
+    assert_eq!(setup.open_asks().len(), 1);
+
+    // The day ends: task 1's record and task 2's hold now belong to yesterday.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "UPDATE trace SET time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 day');
+         UPDATE holds SET created = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 day');",
+    )
+    .unwrap();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.get(1).is_some_and(|row| row[4] == "done")
+    });
+    assert_eq!(tasks[1][4], "done", "{tasks:?}");
+    assert!(setup.open_asks().is_empty());
+    assert!(
+        setup
+            .typed()
+            .iter()
+            .any(|typed| typed.contains("The day of the spend cap this task reached ended")),
+        "{:?}",
+        setup.typed()
+    );
 }
 
 /// One model step whose run may spend `budget` dollars.
