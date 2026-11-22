@@ -24,6 +24,7 @@ config page gives a field table, a complete example and the errors `priory check
 | [e2e-scenarios.md](e2e-scenarios.md) | The scenario file of the end-to-end factory test |
 | [prompt-evals.md](prompt-evals.md) | `priory eval`, its evaluation file and the fake MCP server |
 | [readiness.md](readiness.md) | `priory check --repo`: what an unattended agent needs from a repository |
+| [metrics.md](metrics.md) | Every metric a process sends over OTLP, by group, with its kind, unit and attributes |
 | [label.md](label.md) | `priory label`: a person's `marked-wrong` mark, its flags and errors |
 | [trace-schema.md](../trace-schema.md) | Every trace record, with its fields |
 

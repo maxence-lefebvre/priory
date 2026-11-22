@@ -2,16 +2,34 @@
 //! per-minute cap (docs/daemon/metrics.md).
 
 use crate::otlp;
-use priory_factory::factory::{Factory, METRIC_GROUPS};
+use priory_factory::factory::{Backend, Factory, METRIC_GROUPS};
+use priory_intake::intake::OUTPUT;
+use priory_intake::log::{self, Log};
 use priory_runtime::{room, runtime, ticks};
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const EVERY: Duration = Duration::from_secs(60);
 const CAP: u64 = 1000;
 const MINUTE: Duration = Duration::from_secs(60);
+
+/// The upper bounds of every histogram's buckets, in seconds; the last bucket holds the rest.
+const BOUNDS: [f64; 13] = [
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
+];
+
+const PROBE: &str = "priory.log.probe.duration";
+const CONNECTION_WAIT: &str = "priory.log.connection.wait";
+
+/// Whether the exporter wants the log's backlog, which only the daemon's own thread may ask for.
+static WANT_BACKLOG: AtomicBool = AtomicBool::new(false);
+/// The backlog the daemon read since the last request, if it reached its log.
+static BACKLOG: Mutex<Option<Vec<(String, u64)>>> = Mutex::new(None);
 
 /// The groups this process sends: `PRIORY_METRICS` when set, else the factory's `metrics`.
 pub fn groups(factory: &Factory) -> Result<Vec<String>, String> {
@@ -49,12 +67,52 @@ fn groups_of(text: &str) -> Result<Vec<String>, String> {
     Ok(groups)
 }
 
+/// The groups `service` sends of `groups`: the daemon alone owns the log.
+fn owned(service: &str, groups: Vec<String>) -> Vec<String> {
+    groups
+        .into_iter()
+        .filter(|group| group == "process" || service == "daemon")
+        .collect()
+}
+
+/// Times the first read of a daemon's tick, the log's probe, as `outcome` says it went.
+pub(crate) fn probed(elapsed: Duration, outcome: Result<(), &(dyn std::error::Error + 'static)>) {
+    let outcome = match outcome {
+        Ok(()) => "ok",
+        Err(error) if log::timed_out(error) => "timeout",
+        Err(_) => "error",
+    };
+    ticks::timed_as(PROBE, Some(outcome), elapsed);
+}
+
+/// Reads the log's backlog when the exporter wants it, on the daemon's thread once it reached its
+/// log. A failed read leaves it wanted.
+pub(crate) fn sample_backlog(log: &dyn Log) {
+    if !WANT_BACKLOG.load(Ordering::SeqCst) {
+        return;
+    }
+    if let Ok(backlog) = log.backlog(OUTPUT)
+        && let Ok(mut slot) = BACKLOG.lock()
+    {
+        *slot = Some(backlog);
+        WANT_BACKLOG.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Forgets a backlog read before the daemon lost its log: it is no longer current.
+pub(crate) fn unreached() {
+    if let Ok(mut slot) = BACKLOG.lock() {
+        *slot = None;
+    }
+}
+
 /// Starts sending `groups` on a thread of its own, as `service`: `daemon`, `intake` or `serve`.
-/// Sends nothing without `[telemetry]` or a group.
+/// Sends nothing without `[telemetry]` or a group this process owns.
 pub fn start(factory: &Factory, service: &str, groups: Vec<String>) -> Result<(), String> {
     let Some(endpoint) = factory.otlp() else {
         return Ok(());
     };
+    let groups = owned(service, groups);
     if groups.is_empty() {
         return Ok(());
     }
@@ -78,6 +136,10 @@ pub fn start(factory: &Factory, service: &str, groups: Vec<String>) -> Result<()
         ),
     ];
     let endpoint = endpoint.trim_end_matches('/').to_owned();
+    let backend = match factory.log().backend {
+        Backend::HerdrBus => "herdr-bus",
+        Backend::Postgres => "postgres",
+    };
     let mut exporter = Exporter {
         url: format!("{endpoint}/v1/metrics"),
         endpoint,
@@ -88,11 +150,13 @@ pub fn start(factory: &Factory, service: &str, groups: Vec<String>) -> Result<()
             .filter_map(|(key, value)| otlp::attribute(key, value))
             .collect(),
         groups,
+        backend,
         cap: telemetry.metrics_cap.unwrap_or(CAP),
         started: nanos(SystemTime::now()),
         born: Instant::now(),
         sent: VecDeque::new(),
         dropped: BTreeMap::new(),
+        histograms: BTreeMap::new(),
         logged: HashSet::new(),
         prefix: format!("priory {service}"),
     };
@@ -111,6 +175,9 @@ pub fn start(factory: &Factory, service: &str, groups: Vec<String>) -> Result<()
     Ok(())
 }
 
+/// A point's attributes, each a key and its value.
+type Attributes = Vec<(&'static str, String)>;
+
 /// What one process sends and remembers between requests.
 struct Exporter {
     endpoint: String,
@@ -119,6 +186,8 @@ struct Exporter {
     body: PathBuf,
     resource: Vec<Value>,
     groups: Vec<String>,
+    /// The log's backend, `herdr-bus` or `postgres`.
+    backend: &'static str,
     cap: u64,
     /// When the process started, in Unix nanoseconds: every counter's start time.
     started: u128,
@@ -127,6 +196,8 @@ struct Exporter {
     sent: VecDeque<(Instant, u64)>,
     /// `priory.metrics.dropped`, by group, none for a send, and kind.
     dropped: BTreeMap<(Option<&'static str>, &'static str), u64>,
+    /// Each histogram series since the process started, by metric and attributes.
+    histograms: BTreeMap<(&'static str, Attributes), Histogram>,
     /// The error texts already logged.
     logged: HashSet<String>,
     prefix: String,
@@ -136,6 +207,7 @@ struct Exporter {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Kind {
     Gauge,
+    Histogram,
     Counter,
 }
 
@@ -143,6 +215,7 @@ impl Kind {
     fn name(self) -> &'static str {
         match self {
             Kind::Gauge => "gauge",
+            Kind::Histogram => "histogram",
             Kind::Counter => "counter",
         }
     }
@@ -154,14 +227,38 @@ struct Point {
     kind: Kind,
     name: &'static str,
     unit: &'static str,
-    attributes: Vec<(&'static str, &'static str)>,
+    attributes: Attributes,
     value: Number,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum Number {
     Int(u64),
     Double(f64),
+    Histogram(Histogram),
+}
+
+/// A cumulative histogram over `BOUNDS`.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Histogram {
+    count: u64,
+    sum: f64,
+    buckets: Vec<u64>,
+}
+
+impl Histogram {
+    fn observe(&mut self, seconds: f64) {
+        if self.buckets.is_empty() {
+            self.buckets = vec![0; BOUNDS.len() + 1];
+        }
+        let bucket = BOUNDS
+            .iter()
+            .position(|bound| seconds <= *bound)
+            .unwrap_or(BOUNDS.len());
+        self.buckets[bucket] += 1;
+        self.count += 1;
+        self.sum += seconds;
+    }
 }
 
 impl Exporter {
@@ -178,7 +275,11 @@ impl Exporter {
         let used: u64 = self.sent.iter().map(|(_, points)| points).sum();
         let (points, drops) = capped(points, self.cap.saturating_sub(used), &self.dropped);
         if !drops.is_empty() {
-            let counts: Vec<String> = drops
+            let mut kinds: BTreeMap<Kind, u64> = BTreeMap::new();
+            for ((_, kind), count) in &drops {
+                *kinds.entry(*kind).or_default() += count;
+            }
+            let counts: Vec<String> = kinds
                 .iter()
                 .map(|(kind, count)| format!("{count} {} points", kind.name()))
                 .collect();
@@ -189,12 +290,8 @@ impl Exporter {
                 counts.join(" and ")
             );
         }
-        for (kind, count) in drops {
-            // One group today; a later group's drops count under their own.
-            *self
-                .dropped
-                .entry((Some("process"), kind.name()))
-                .or_default() += count;
+        for ((group, kind), count) in drops {
+            *self.dropped.entry((Some(group), kind.name())).or_default() += count;
         }
         let count = points.len() as u64 + self.dropped.len() as u64;
         let request = self.request(&points);
@@ -219,76 +316,173 @@ impl Exporter {
             Err(error) => {
                 *self.dropped.entry((None, "send")).or_default() += 1;
                 let line = format!("sending metrics to {} failed ({error})", self.endpoint);
-                if self.logged.insert(line.clone()) {
-                    eprintln!("{}: {line}", self.prefix);
-                }
+                self.once(line);
             }
         }
+    }
+
+    /// Logs `line` unless this process already did.
+    fn once(&mut self, line: String) {
+        if self.logged.insert(line.clone()) {
+            eprintln!("{}: {line}", self.prefix);
+        }
+    }
+
+    fn sends(&self, group: &str) -> bool {
+        self.groups.iter().any(|sent| sent == group)
     }
 
     /// The points of this interval, for each group this process sends.
     fn sample(&mut self) -> Vec<Point> {
         let mut points = Vec::new();
-        if self.groups.iter().any(|group| group == "process") {
-            let point = |kind, name, unit, attributes, value| Point {
-                group: "process",
-                kind,
-                name,
-                unit,
-                attributes,
-                value,
-            };
-            let ticks = ticks::take();
-            for (stat, value) in tick_stats(ticks) {
-                let attributes = vec![("stat", stat)];
-                let value = Number::Double(value);
-                points.push(point(
-                    Kind::Gauge,
-                    "priory.process.tick.duration",
-                    "s",
-                    attributes,
-                    value,
-                ));
-            }
-            match room::own() {
-                Ok(own) => {
-                    let memory = Number::Int(own.memory);
-                    points.push(point(
-                        Kind::Gauge,
-                        "process.memory.usage",
-                        "By",
-                        Vec::new(),
-                        memory,
-                    ));
-                    for (mode, seconds) in [("user", own.user), ("system", own.system)] {
-                        let attributes = vec![("cpu.mode", mode)];
-                        let seconds = Number::Double(seconds);
-                        points.push(point(
-                            Kind::Counter,
-                            "process.cpu.time",
-                            "s",
-                            attributes,
-                            seconds,
-                        ));
-                    }
-                }
-                Err(error) => {
-                    let line = format!("metrics: cannot read the process's own use: {error}");
-                    if self.logged.insert(line.clone()) {
-                        eprintln!("{}: {line}", self.prefix);
-                    }
-                }
-            }
-            let uptime = Number::Double(self.born.elapsed().as_secs_f64());
-            points.push(point(
-                Kind::Gauge,
-                "process.uptime",
-                "s",
-                Vec::new(),
-                uptime,
-            ));
+        let ticks = ticks::take();
+        let timed = ticks::take_timed();
+        if self.sends("process") {
+            self.process(ticks, &mut points);
+        }
+        if self.sends("log") {
+            self.log(timed, &mut points);
         }
         points
+    }
+
+    fn process(&mut self, ticks: Vec<f64>, points: &mut Vec<Point>) {
+        let point = |kind, name, unit, attributes, value| Point {
+            group: "process",
+            kind,
+            name,
+            unit,
+            attributes,
+            value,
+        };
+        for (stat, value) in tick_stats(ticks) {
+            let attributes = vec![("stat", stat.to_owned())];
+            let value = Number::Double(value);
+            points.push(point(
+                Kind::Gauge,
+                "priory.process.tick.duration",
+                "s",
+                attributes,
+                value,
+            ));
+        }
+        match room::own() {
+            Ok(own) => {
+                let memory = Number::Int(own.memory);
+                points.push(point(
+                    Kind::Gauge,
+                    "process.memory.usage",
+                    "By",
+                    Vec::new(),
+                    memory,
+                ));
+                for (mode, seconds) in [("user", own.user), ("system", own.system)] {
+                    let attributes = vec![("cpu.mode", mode.to_owned())];
+                    let seconds = Number::Double(seconds);
+                    points.push(point(
+                        Kind::Counter,
+                        "process.cpu.time",
+                        "s",
+                        attributes,
+                        seconds,
+                    ));
+                }
+            }
+            Err(error) => {
+                self.once(format!(
+                    "metrics: cannot read the process's own use: {error}"
+                ));
+            }
+        }
+        let uptime = Number::Double(self.born.elapsed().as_secs_f64());
+        points.push(point(
+            Kind::Gauge,
+            "process.uptime",
+            "s",
+            Vec::new(),
+            uptime,
+        ));
+    }
+
+    /// The log group: the probes and connection waits timed since the last request, the backlog
+    /// the daemon read, and what the state file says of the link, the queue and the leases.
+    fn log(&mut self, timed: Vec<ticks::Timed>, points: &mut Vec<Point>) {
+        let point = |kind, name, unit, attributes, value| Point {
+            group: "log",
+            kind,
+            name,
+            unit,
+            attributes,
+            value,
+        };
+        for timed in timed {
+            let attributes = match (timed.metric, timed.outcome) {
+                (PROBE, Some(outcome)) => vec![
+                    ("priory.log.backend", self.backend.to_owned()),
+                    ("outcome", outcome.to_owned()),
+                ],
+                (CONNECTION_WAIT, None) => Vec::new(),
+                _ => continue,
+            };
+            self.histograms
+                .entry((timed.metric, attributes))
+                .or_default()
+                .observe(timed.seconds);
+        }
+        for ((name, attributes), histogram) in &self.histograms {
+            let value = Number::Histogram(histogram.clone());
+            points.push(point(Kind::Histogram, name, "s", attributes.clone(), value));
+        }
+        let backlog = BACKLOG.lock().ok().and_then(|mut slot| slot.take());
+        WANT_BACKLOG.store(true, Ordering::SeqCst);
+        for (consumer, count) in backlog.into_iter().flatten() {
+            let attributes = vec![
+                ("priory.log.output", OUTPUT.to_owned()),
+                ("priory.log.consumer", consumer),
+            ];
+            let value = Number::Int(count);
+            points.push(point(
+                Kind::Gauge,
+                "priory.log.backlog",
+                "{message}",
+                attributes,
+                value,
+            ));
+        }
+        let state = crate::state::read_only()
+            .and_then(|db| link_state(&db).map_err(|error| error.to_string()));
+        match state {
+            Ok(state) => {
+                let age = Number::Int(state.unreachable);
+                points.push(point(
+                    Kind::Gauge,
+                    "priory.log.unreachable.age",
+                    "s",
+                    Vec::new(),
+                    age,
+                ));
+                let queued = Number::Int(state.queued);
+                points.push(point(
+                    Kind::Gauge,
+                    "priory.log.queued",
+                    "{message}",
+                    Vec::new(),
+                    queued,
+                ));
+                for (runner, age) in state.leases {
+                    let attributes = vec![("priory.lease.runner", runner)];
+                    let age = Number::Int(age);
+                    points.push(point(
+                        Kind::Gauge,
+                        "priory.runner.lease.age",
+                        "s",
+                        attributes,
+                        age,
+                    ));
+                }
+            }
+            Err(error) => self.once(format!("metrics: cannot read the log's state: {error}")),
+        }
     }
 
     /// One `ExportMetricsServiceRequest` holding `points` and `priory.metrics.dropped`.
@@ -303,11 +497,22 @@ impl Exporter {
                 .filter_map(|(key, value)| otlp::attribute(key, &json!(value)))
                 .collect();
             let mut data = json!({ "timeUnixNano": now, "attributes": attributes });
-            match point.value {
+            match &point.value {
                 Number::Int(value) => data["asInt"] = json!(value.to_string()),
                 Number::Double(value) => data["asDouble"] = json!(value),
+                Number::Histogram(histogram) => {
+                    data["count"] = json!(histogram.count.to_string());
+                    data["sum"] = json!(histogram.sum);
+                    data["bucketCounts"] = histogram
+                        .buckets
+                        .iter()
+                        .map(u64::to_string)
+                        .collect::<Vec<_>>()
+                        .into();
+                    data["explicitBounds"] = json!(BOUNDS);
+                }
             }
-            if point.kind == Kind::Counter {
+            if point.kind != Kind::Gauge {
                 data["startTimeUnixNano"] = json!(started);
             }
             match metrics.iter_mut().find(|metric| metric.0 == point.name) {
@@ -338,6 +543,11 @@ impl Exporter {
             .into_iter()
             .map(|(name, unit, kind, points)| match kind {
                 Kind::Gauge => json!({ "name": name, "unit": unit, "gauge": { "dataPoints": points } }),
+                Kind::Histogram => json!({
+                    "name": name,
+                    "unit": unit,
+                    "histogram": { "aggregationTemporality": 2, "dataPoints": points },
+                }),
                 Kind::Counter => json!({
                     "name": name,
                     "unit": unit,
@@ -350,6 +560,45 @@ impl Exporter {
             "scopeMetrics": [{ "scope": { "name": "priory" }, "metrics": metrics }],
         }] })
     }
+}
+
+/// What the state file says of the daemon's link to its log.
+struct LinkState {
+    /// Seconds since the log stopped answering; 0 while it answers.
+    unreachable: u64,
+    /// The messages that wait to publish.
+    queued: u64,
+    /// Each runner's lease age in log time: the newest alive time any lease holds, less its own.
+    leases: Vec<(String, u64)>,
+}
+
+fn link_state(db: &Connection) -> rusqlite::Result<LinkState> {
+    let unreachable: Option<i64> = db
+        .query_row(
+            "SELECT CAST(strftime('%s', 'now') AS INTEGER) - CAST(strftime('%s', since) AS INTEGER)
+             FROM log_link",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let queued: i64 = db.query_row("SELECT count(*) FROM sends", [], |row| row.get(0))?;
+    let leases = db
+        .prepare(
+            "SELECT runner, (SELECT max(alive) FROM leases) - alive FROM leases ORDER BY runner",
+        )?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let whole = |value: i64| u64::try_from(value).unwrap_or_default();
+    Ok(LinkState {
+        unreachable: unreachable.map_or(0, whole),
+        queued: whole(queued),
+        leases: leases
+            .into_iter()
+            .map(|(runner, age)| (runner, whole(age)))
+            .collect(),
+    })
 }
 
 /// The ticks' average, 95th percentile by nearest rank, and maximum; none without a tick.
@@ -369,18 +618,19 @@ fn tick_stats(mut ticks: Vec<f64>) -> Vec<(&'static str, f64)> {
 }
 
 /// `points` cut to fit `budget` with `priory.metrics.dropped`, which is never cut: gauges first,
-/// from the group with most of them, then counters. Returns what stays and the count cut per kind.
+/// then histograms, then counters, each from the group with most of that kind. Returns what stays
+/// and the count cut per group and kind.
 fn capped(
     mut points: Vec<Point>,
     budget: u64,
     dropped: &BTreeMap<(Option<&'static str>, &'static str), u64>,
-) -> (Vec<Point>, BTreeMap<Kind, u64>) {
-    let mut cut: BTreeMap<Kind, u64> = BTreeMap::new();
+) -> (Vec<Point>, BTreeMap<(&'static str, Kind), u64>) {
+    let mut cut: BTreeMap<(&'static str, Kind), u64> = BTreeMap::new();
     loop {
         let series = dropped.len() as u64
             + cut
                 .keys()
-                .filter(|kind| !dropped.contains_key(&(Some("process"), kind.name())))
+                .filter(|(group, kind)| !dropped.contains_key(&(Some(*group), kind.name())))
                 .count() as u64;
         if points.len() as u64 + series <= budget {
             return (points, cut);
@@ -388,7 +638,7 @@ fn capped(
         let Some(kind) = points.iter().map(|point| point.kind).min() else {
             return (points, cut);
         };
-        let mut groups: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut groups: BTreeMap<&'static str, usize> = BTreeMap::new();
         for point in points.iter().filter(|point| point.kind == kind) {
             *groups.entry(point.group).or_default() += 1;
         }
@@ -402,7 +652,7 @@ fn capped(
             .rposition(|point| point.kind == kind && point.group == group)
             .expect("the group has a point of this kind");
         points.remove(last);
-        *cut.entry(kind).or_default() += 1;
+        *cut.entry((group, kind)).or_default() += 1;
     }
 }
 
@@ -439,14 +689,81 @@ mod tests {
         let (kept, cut) = capped(points.clone(), 3, &BTreeMap::new());
         let names: Vec<_> = kept.iter().map(|point| point.name).collect();
         assert_eq!(names, ["b", "d"]);
-        assert_eq!(cut, BTreeMap::from([(Kind::Gauge, 2)]));
+        assert_eq!(cut, BTreeMap::from([(("process", Kind::Gauge), 2)]));
 
         let (kept, cut) = capped(points.clone(), 2, &BTreeMap::new());
         assert_eq!(kept.len(), 0);
-        assert_eq!(cut, BTreeMap::from([(Kind::Gauge, 2), (Kind::Counter, 2)]));
+        assert_eq!(
+            cut,
+            BTreeMap::from([
+                (("process", Kind::Gauge), 2),
+                (("process", Kind::Counter), 2)
+            ])
+        );
 
         let (kept, cut) = capped(points, 4, &BTreeMap::new());
         assert_eq!((kept.len(), cut.len()), (4, 0));
+    }
+
+    #[test]
+    fn the_cap_cuts_every_gauge_before_a_histogram_and_a_histogram_before_a_counter() {
+        let log = |kind, name| Point {
+            group: "log",
+            ..point(kind, name)
+        };
+        let points = vec![
+            log(Kind::Histogram, "probe"),
+            point(Kind::Gauge, "uptime"),
+            point(Kind::Counter, "cpu"),
+            log(Kind::Gauge, "backlog"),
+            log(Kind::Gauge, "queued"),
+        ];
+
+        let (kept, cut) = capped(points, 4, &BTreeMap::new());
+
+        let names: Vec<_> = kept.iter().map(|point| point.name).collect();
+        assert_eq!(names, ["probe", "cpu"]);
+        assert_eq!(
+            cut,
+            BTreeMap::from([(("log", Kind::Gauge), 2), (("process", Kind::Gauge), 1)])
+        );
+
+        let points = vec![
+            point(Kind::Counter, "cpu"),
+            log(Kind::Histogram, "probe"),
+            point(Kind::Counter, "cpu"),
+        ];
+        let dropped = BTreeMap::from([
+            ((Some("log"), "histogram"), 1),
+            ((Some("process"), "counter"), 1),
+        ]);
+        let (kept, cut) = capped(points, 4, &dropped);
+        let names: Vec<_> = kept.iter().map(|point| point.name).collect();
+        assert_eq!(names, ["cpu", "cpu"]);
+        assert_eq!(cut, BTreeMap::from([(("log", Kind::Histogram), 1)]));
+    }
+
+    #[test]
+    fn a_histogram_counts_each_duration_in_the_first_bucket_whose_bound_holds_it() {
+        let mut histogram = Histogram::default();
+        for seconds in [0.001, 0.005, 0.2, 2.0, 61.0] {
+            histogram.observe(seconds);
+        }
+        let mut buckets = vec![0; BOUNDS.len() + 1];
+        for bucket in [0, 0, 5, 8, BOUNDS.len()] {
+            buckets[bucket] += 1;
+        }
+        assert_eq!(histogram.buckets, buckets);
+        assert_eq!(histogram.count, 5);
+        assert!((histogram.sum - 63.206).abs() < 1e-9);
+    }
+
+    #[test]
+    fn only_the_daemon_sends_the_log_group() {
+        let groups = || vec!["process".to_owned(), "log".to_owned()];
+        assert_eq!(owned("daemon", groups()), ["process", "log"]);
+        assert_eq!(owned("intake", groups()), ["process"]);
+        assert_eq!(owned("serve", groups()), ["process"]);
     }
 
     #[test]
@@ -470,7 +787,7 @@ mod tests {
         assert_eq!(
             groups_of("process,nope").unwrap_err(),
             "PRIORY_METRICS names `nope`, which is not a metrics group: the groups are process, \
-             or none"
+             log, or none"
         );
     }
 

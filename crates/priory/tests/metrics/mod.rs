@@ -10,14 +10,14 @@ use std::sync::{Arc, Mutex};
 
 /// An OTLP/HTTP endpoint on 127.0.0.1 that records each request as `{path, body}` and answers
 /// with the next queued status, 200 once none is queued.
-struct Collector {
-    url: String,
+pub(super) struct Collector {
+    pub(super) url: String,
     received: Arc<Mutex<Vec<Value>>>,
     answers: Arc<Mutex<VecDeque<u16>>>,
 }
 
 impl Collector {
-    fn start() -> Collector {
+    pub(super) fn start() -> Collector {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let received = Arc::new(Mutex::new(Vec::new()));
@@ -45,7 +45,7 @@ impl Collector {
     }
 
     /// Waits until `done` holds for the requests received, and returns them.
-    fn until(&self, setup: &Setup, done: impl Fn(&[Value]) -> bool) -> Vec<Value> {
+    pub(super) fn until(&self, setup: &Setup, done: impl Fn(&[Value]) -> bool) -> Vec<Value> {
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             let requests = self.requests();
@@ -137,8 +137,9 @@ impl Setup {
     }
 }
 
-/// Each data point of metric `name` in an OTLP metrics request, as its attributes and its value.
-fn points(request: &Value, name: &str) -> Vec<(Value, f64)> {
+/// Each data point of metric `name` in an OTLP metrics request, as its attributes and its value: a
+/// histogram's value is its count.
+pub(super) fn points(request: &Value, name: &str) -> Vec<(Value, f64)> {
     let metrics = request["body"]["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]
         .as_array()
         .unwrap();
@@ -146,7 +147,7 @@ fn points(request: &Value, name: &str) -> Vec<(Value, f64)> {
         .iter()
         .filter(|metric| metric["name"] == name)
         .flat_map(|metric| {
-            let data = ["gauge", "sum"]
+            let data = ["gauge", "sum", "histogram"]
                 .into_iter()
                 .find_map(|kind| metric.get(kind))
                 .unwrap();
@@ -156,14 +157,17 @@ fn points(request: &Value, name: &str) -> Vec<(Value, f64)> {
             let value = point
                 .get("asDouble")
                 .and_then(Value::as_f64)
-                .unwrap_or_else(|| point["asInt"].as_str().unwrap().parse::<f64>().unwrap());
+                .unwrap_or_else(|| {
+                    let int = point.get("asInt").unwrap_or(&point["count"]);
+                    int.as_str().unwrap().parse::<f64>().unwrap()
+                });
             (attributes(&point["attributes"]), value)
         })
         .collect()
 }
 
 /// The names of the metrics in a request.
-fn names(request: &Value) -> Vec<String> {
+pub(super) fn names(request: &Value) -> Vec<String> {
     request["body"]["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]
         .as_array()
         .unwrap()
@@ -186,7 +190,7 @@ fn attributes(list: &Value) -> Value {
     Value::Object(object)
 }
 
-fn resource(request: &Value) -> Value {
+pub(super) fn resource(request: &Value) -> Value {
     attributes(&request["body"]["resourceMetrics"][0]["resource"]["attributes"])
 }
 
@@ -308,7 +312,7 @@ fn priory_metrics_naming_an_unknown_group_stops_the_daemon_with_its_name() {
     assert_eq!(
         stderr,
         "priory daemon: PRIORY_METRICS names `nope`, which is not a metrics group: the groups are \
-         process, or none\n"
+         process, log, or none\n"
     );
 }
 
@@ -434,5 +438,108 @@ fn the_intake_and_serve_each_send_their_own_metrics() {
             .requests()
             .iter()
             .all(|request| service(request) != "daemon")
+    );
+}
+
+/// The one histogram `name` in a request.
+pub(super) fn histogram(request: &Value, name: &str) -> Value {
+    let metrics = &request["body"]["resourceMetrics"][0]["scopeMetrics"][0]["metrics"];
+    let metric = metrics
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|metric| metric["name"] == name);
+    metric.unwrap_or_else(|| panic!("no {name} in {request}"))["histogram"].clone()
+}
+
+#[test]
+fn a_daemon_sends_its_log_s_probe_and_backlog_and_each_runner_s_lease_age_in_log_time() {
+    let collector = Collector::start();
+    let mut a = runner("metrics-log", "a", None);
+    let mut b = runner("metrics-log", "b", Some(&a));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    logged(&a, "priory.runner.alive", json!({ "runner": "a" }));
+    a.crash();
+
+    b.metrics(&collector, "metrics = [\"log\"]\nmetrics_every = \"10s\"\n");
+    b.start_with(exe, &[("PRIORY_NOW", AN_HOUR_LATER)]);
+
+    let lease = |request: &Value| -> Vec<(Value, f64)> {
+        let mut ages = points(request, "priory.runner.lease.age");
+        ages.sort_by_key(|one| one.0.to_string());
+        ages
+    };
+    let backlog = |request: &Value| points(request, "priory.log.backlog");
+    let requests = collector.until(&b, |requests| {
+        requests
+            .iter()
+            .any(|request| lease(request).len() == 2 && !backlog(request).is_empty())
+    });
+    let request = requests
+        .iter()
+        .find(|request| lease(request).len() == 2 && !backlog(request).is_empty())
+        .unwrap();
+    assert_eq!(resource(request)["priory.runner"], "b");
+    assert_eq!(
+        lease(request),
+        vec![
+            (json!({ "priory.lease.runner": "a" }), 3600.0),
+            (json!({ "priory.lease.runner": "b" }), 0.0)
+        ]
+    );
+    let behind = json!({ "priory.log.output": OUTPUT, "priory.log.consumer": "priory.a" });
+    let behind = backlog(request)
+        .into_iter()
+        .find(|(attributes, _)| *attributes == behind);
+    assert!(behind.is_some_and(|(_, count)| count >= 1.0), "{request}");
+    let probes = points(request, "priory.log.probe.duration");
+    let ok = json!({ "priory.log.backend": "herdr-bus", "outcome": "ok" });
+    assert!(
+        probes
+            .iter()
+            .any(|(attributes, count)| *attributes == ok && *count >= 1.0),
+        "{probes:?}"
+    );
+    let probe = histogram(request, "priory.log.probe.duration");
+    assert_eq!(probe["aggregationTemporality"], 2);
+    let point = &probe["dataPoints"][0];
+    let bounds = point["explicitBounds"].as_array().unwrap();
+    assert_eq!(
+        point["bucketCounts"].as_array().unwrap().len(),
+        bounds.len() + 1
+    );
+    assert_eq!(
+        points(request, "priory.log.unreachable.age"),
+        vec![(json!({}), 0.0)]
+    );
+    assert_eq!(points(request, "priory.log.queued").len(), 1, "{request}");
+    assert!(!names(request).contains(&"priory.log.connection.wait".to_owned()));
+    assert!(!names(request).contains(&"process.uptime".to_owned()));
+}
+
+#[test]
+fn the_intake_and_serve_send_no_log_group_which_only_the_daemon_owns() {
+    let collector = Collector::start();
+    let mut setup = Setup::new("metrics-log-intake");
+    setup.metrics(&collector, "metrics = [\"process\", \"log\"]\n");
+    let factory = setup.dir.join("factory");
+    let log = fs::File::create(setup.dir.join("daemon.log")).unwrap();
+    setup.daemon = Some(
+        setup
+            .command(env!("CARGO_BIN_EXE_priory"))
+            .args(["intake", factory.to_str().unwrap()])
+            .stderr(log)
+            .spawn()
+            .unwrap(),
+    );
+
+    let requests = collector.until(&setup, |requests| !requests.is_empty());
+
+    let names = names(&requests[0]);
+    assert!(names.contains(&"process.uptime".to_owned()), "{names:?}");
+    assert!(
+        names.iter().all(|name| !name.starts_with("priory.log.")),
+        "{names:?}"
     );
 }

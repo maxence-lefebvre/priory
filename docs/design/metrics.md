@@ -7,7 +7,10 @@ the slices after it, what stays out, and the open questions with a recommendatio
 
 The first slice is built: [metrics.md](../daemon/metrics.md) describes it. It covers the exporter,
 the keys, `PRIORY_METRICS`, the cap and the `process` group. The tests use a fake collector on
-127.0.0.1 rather than a fake `curl`. The later slices are not built.
+127.0.0.1 rather than a fake `curl`. The first later slice, the `log` group, is built too:
+[metrics.md](../daemon/metrics.md#the-log-group) describes it, and
+[the metrics reference](../reference/metrics.md) lists every metric. The other later slices are not
+built.
 
 Max proposed it on 2026-11-22, after Mastra Factory's
 [health metrics page](https://factory.mastra.ai/configure/metrics). This note takes the idea of
@@ -299,10 +302,13 @@ export's tests do, and a `PRIORY_PROC` folder for `/proc/self`:
 
 ## Later slices
 
-1. The `log` group. M3's done-when needs it first: a runner cut off for an hour shows as the probe's
-   outcomes, the unreachable age, the queued messages and the other runners' lease ages. Tests use
-   the existing Setup with runners a and b on one log, cut b's link, and wait for the state to say
-   it is unreachable before they read the request.
+1. **Built.** The `log` group. M3's done-when needs it first: a runner cut off for an hour shows as
+   the probe's outcomes, the unreachable age, the queued messages and the other runners' lease
+   ages. Tests use the existing Setup with runners a and b on one log, cut b's link, and wait for
+   the state to say it is unreachable before they read the request. As built, the `Log` trait has
+   `backlog`, which herdr-bus answers from each connection's `lag`. The lease age takes the newest
+   alive time among the leases as the last log time read, so it needs no new column. The cap drops
+   histograms after gauges and before counters, and the intake and `priory serve` skip the group.
 2. The `runs` group, with the `SessionStart` time on the run's row and its migration. Tests use the
    fake `claude`, one that never sends `SessionStart`, and one that shows the trust dialog.
 3. The `intake` group, with the duplicate and missed counts from the publish path.
@@ -341,6 +347,8 @@ export's tests do, and a `PRIORY_PROC` folder for `/proc/self`:
    `priory_log_messages` past the consumer's row in `priory_log_cursors`. herdr-bus keeps its
    cursors in its own file, and the `Log` trait has no call for it. Recommendation: add `backlog` to
    the trait, and ask herdr-bus for a call that counts past a cursor, rather than reading its file.
+   Settled by the `log` slice: herdr-bus already gives each connection's `lag`, the messages past
+   its cursor, so `backlog` reads that and herdr-bus needs no new call.
 3. **Should metrics have an endpoint of their own?** Some backends take traces and metrics at
    different URLs or keys. Recommendation: not until a person needs it. One `otlp` serves both, as
    OTLP's own `OTEL_EXPORTER_OTLP_ENDPOINT` does.

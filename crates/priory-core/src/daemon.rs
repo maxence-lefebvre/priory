@@ -1,6 +1,7 @@
 use crate::idle;
 use crate::link::Link;
 use crate::memory::{self, Gate};
+use crate::metrics;
 use crate::otlp;
 use crate::room::Share;
 use crate::route;
@@ -117,6 +118,7 @@ fn view(factory: &Factory) -> Result<(), Error> {
     loop {
         if link.due() {
             let drained = view_drain(&*bus, &consumer, &mut db, &viewer, &trace);
+            metered(&*bus, drained.as_ref());
             link.tried(&db, drained)?;
         }
         match listening.lines.recv_timeout(EVERY) {
@@ -144,8 +146,9 @@ fn view_drain(
     viewer: &str,
     trace: &Trace,
 ) -> Result<(), Error> {
+    let mut probe = Some(Instant::now());
     loop {
-        let deliveries = bus.read(consumer, OUTPUT, 100)?;
+        let deliveries = read(bus, consumer, &mut probe)?;
         if deliveries.is_empty() {
             return Ok(());
         }
@@ -351,14 +354,16 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         let tick = Instant::now();
         // A runner back from away reads the log, and so drops the tasks that moved, before any run
         // and before it publishes what it queued meanwhile.
-        let drained = link
-            .due()
-            .then(|| drain(&*bus, &consumer, &mut db, &trace, counting.get(&home)));
+        let drained = link.due().then(|| {
+            let counter = counting.get(&home);
+            drain_probed(&*bus, &consumer, &mut db, &trace, counter, true)
+        });
         if let Some(me) = &trace.runner {
             runners::tick(&mut db, me, intake::now()?, &mut alive)?;
         }
         if let Some(drained) = drained {
             let tried = drained.and_then(|()| runners::flush(&db, &*bus));
+            metered(&*bus, tried.as_ref());
             let reached = tried.is_ok();
             link.tried(&db, tried)?;
             // A pick's request that a lost log refused goes out once the log answers again.
@@ -2481,8 +2486,22 @@ fn drain(
     trace: &Trace,
     counter: Option<&embed::Counter>,
 ) -> Result<(), Error> {
+    drain_probed(bus, consumer, db, trace, counter, false)
+}
+
+/// Handles every message past `consumer`'s cursor. With `probe`, times the first read as the
+/// tick's probe of the log.
+fn drain_probed(
+    bus: &dyn Log,
+    consumer: &str,
+    db: &mut Connection,
+    trace: &Trace,
+    counter: Option<&embed::Counter>,
+    probe: bool,
+) -> Result<(), Error> {
+    let mut probe = probe.then(Instant::now);
     loop {
-        let deliveries = bus.read(consumer, OUTPUT, 100)?;
+        let deliveries = read(bus, consumer, &mut probe)?;
         if deliveries.is_empty() {
             return Ok(());
         }
@@ -2494,5 +2513,31 @@ fn drain(
             ended.iter().for_each(|tmux| runtime::kill(tmux));
             bus.ack(consumer, &delivery)?;
         }
+    }
+}
+
+/// Reads up to 100 messages past `consumer`'s cursor, timing the read as the log's probe when
+/// `probe` holds when it started, and then clearing it.
+fn read(
+    bus: &dyn Log,
+    consumer: &str,
+    probe: &mut Option<Instant>,
+) -> Result<Vec<log::Delivery>, Error> {
+    let read = bus.read(consumer, OUTPUT, 100);
+    if let Some(started) = probe.take() {
+        metrics::probed(
+            started.elapsed(),
+            read.as_ref().map(|_| ()).map_err(|error| &**error),
+        );
+    }
+    read
+}
+
+/// Samples the log's backlog for the metrics once a try on the log reached it, and forgets the
+/// last one when it did not.
+fn metered(bus: &dyn Log, tried: Result<&(), &Error>) {
+    match tried {
+        Ok(()) => metrics::sample_backlog(bus),
+        Err(_) => metrics::unreached(),
     }
 }

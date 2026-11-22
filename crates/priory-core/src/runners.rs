@@ -1636,6 +1636,9 @@ mod tests {
         fn ack(&self, _: &str, _: &Delivery) -> priory_intake::log::Result<()> {
             unimplemented!()
         }
+        fn backlog(&self, _: &str) -> priory_intake::log::Result<Vec<(String, u64)>> {
+            unimplemented!()
+        }
     }
 
     #[test]

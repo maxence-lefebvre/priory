@@ -26,6 +26,17 @@ pub fn unreachable(error: &(dyn std::error::Error + 'static)) -> bool {
     error.is::<Unreachable>()
 }
 
+/// What an `Unreachable` says when a call got no answer within the log's timeout, or was refused
+/// because an earlier one still waits.
+pub const NO_ANSWER: &str = "no answer within";
+
+/// Whether `error` says the log gave no answer in time, rather than failing.
+pub fn timed_out(error: &(dyn std::error::Error + 'static)) -> bool {
+    error
+        .downcast_ref::<Unreachable>()
+        .is_some_and(|Unreachable(detail)| detail.contains(NO_ANSWER))
+}
+
 /// A message read as a consumer, to acknowledge once handled.
 #[derive(Clone, Debug)]
 pub struct Delivery {
@@ -54,6 +65,9 @@ pub trait Log {
     fn read(&self, consumer: &str, output: &str, limit: usize) -> Result<Vec<Delivery>>;
     /// Moves `consumer`'s cursor on the delivery's output to it, unless it is past it already.
     fn ack(&self, consumer: &str, delivery: &Delivery) -> Result<()>;
+    /// Each consumer with a cursor on `output`, by the name it reads as, and how many messages of
+    /// `output` are past that cursor.
+    fn backlog(&self, output: &str) -> Result<Vec<(String, u64)>>;
 }
 
 /// The log the factory's `[log]` table names: herdr-bus's SQLite file on this machine unless it
@@ -161,5 +175,19 @@ impl Log for Bus {
         // shortcut: looks the connection up on each ack, a second write; cache it if acks get hot.
         let connection = self.connect(consumer, &delivery.output, Start::Beginning)?;
         Ok(Bus::ack(self, connection, delivery.seq)?)
+    }
+
+    fn backlog(&self, output: &str) -> Result<Vec<(String, u64)>> {
+        // This machine's consumers go by their bare name, as they read; another's keeps its id.
+        let here = format!("@{}", self.id());
+        Ok(self
+            .connections()?
+            .into_iter()
+            .filter(|connection| connection.output == output && connection.enabled)
+            .map(|connection| {
+                let name = connection.consumer.strip_suffix(&here).map(str::to_owned);
+                (name.unwrap_or(connection.consumer), connection.lag)
+            })
+            .collect())
     }
 }

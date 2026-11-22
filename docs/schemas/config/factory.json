@@ -915,7 +915,8 @@
           "description": "The metric groups each process sends to the endpoint's `/v1/metrics`; none sends no metric.",
           "items": {
             "enum": [
-              "process"
+              "process",
+              "log"
             ]
           },
           "type": "array"

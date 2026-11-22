@@ -434,3 +434,111 @@ fn a_task_reopened_after_its_hold_ended_starts_only_once_the_log_says_its_runner
         "a ran the reopened task before the log said a keeps it"
     );
 }
+
+/// Sends the `log` group from runner `setup` to `collector` every 10 seconds.
+fn metered(setup: &Setup, collector: &super::metrics::Collector) {
+    let factory = setup.dir.join("factory/factory.toml");
+    let mut text = fs::read_to_string(&factory).unwrap();
+    text.push_str(&format!(
+        "\n[telemetry]\notlp = \"{}\"\nmetrics = [\"log\"]\nmetrics_every = \"10s\"\n",
+        collector.url
+    ));
+    fs::write(factory, text).unwrap();
+}
+
+/// Whether `request` came from runner `name`.
+fn from(request: &serde_json::Value, name: &str) -> bool {
+    super::metrics::resource(request)["priory.runner"] == name
+}
+
+/// The count of probes of `outcome` in `request`.
+fn probes(request: &serde_json::Value, outcome: &str) -> f64 {
+    let wanted = json!({ "priory.log.backend": "postgres", "outcome": outcome });
+    super::metrics::points(request, "priory.log.probe.duration")
+        .into_iter()
+        .filter(|(attributes, _)| *attributes == wanted)
+        .map(|(_, count)| count)
+        .sum()
+}
+
+#[test]
+fn a_cut_runner_sends_its_failed_probes_and_its_unreachable_age_and_the_other_sees_it_fall_behind()
+{
+    let Some(database) = Database::new("metrics_cut") else {
+        return;
+    };
+    let collector = super::metrics::Collector::start();
+    let (mut a, _a_link) = runner_on(&database, "metrics_cut", "a");
+    let (mut b, b_link) = runner_on(&database, "metrics_cut", "b");
+    metered(&a, &collector);
+    metered(&b, &collector);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.start_as(exe);
+    b.start_as(exe);
+    collector.until(&b, |requests| {
+        requests
+            .iter()
+            .any(|request| from(request, "b") && probes(request, "ok") >= 1.0)
+    });
+
+    b_link.set(Link::Cut);
+    until_unreachable(&b, true);
+    database.publish(&Message::new("test.happened", json!({ "n": 1 })));
+
+    let cut = |request: &serde_json::Value| {
+        let age = super::metrics::points(request, "priory.log.unreachable.age");
+        from(request, "b")
+            && probes(request, "error") >= 1.0
+            && age.first().is_some_and(|age| age.1 >= 1.0)
+    };
+    let requests = collector.until(&b, |requests| requests.iter().any(cut));
+    let request = requests.iter().find(|request| cut(request)).unwrap();
+    let waits = super::metrics::histogram(request, "priory.log.connection.wait");
+    let waits = &waits["dataPoints"][0];
+    assert!(
+        waits["count"].as_str().unwrap().parse::<u64>().unwrap() >= 1,
+        "{waits}"
+    );
+    assert_eq!(waits["attributes"], json!([]));
+    let queued = super::metrics::points(request, "priory.log.queued");
+    assert!(queued.len() == 1 && queued[0].1 >= 0.0, "{queued:?}");
+    assert!(
+        super::metrics::points(request, "priory.log.backlog").is_empty(),
+        "a runner that cannot reach its log sends no backlog: {request}"
+    );
+
+    let behind = json!({ "priory.log.output": OUTPUT, "priory.log.consumer": "priory.b" });
+    collector.until(&a, |requests| {
+        requests.iter().any(|request| {
+            from(request, "a")
+                && super::metrics::points(request, "priory.log.backlog")
+                    .iter()
+                    .any(|(attributes, count)| *attributes == behind && *count >= 1.0)
+        })
+    });
+    assert!(alive(&mut a) && alive(&mut b));
+}
+
+#[test]
+fn a_runner_whose_link_hangs_counts_its_probes_as_timeouts() {
+    let Some(database) = Database::new("metrics_frozen") else {
+        return;
+    };
+    let collector = super::metrics::Collector::start();
+    let (mut a, link) = runner_on(&database, "metrics_frozen", "a");
+    metered(&a, &collector);
+    a.start_as(Path::new(env!("CARGO_BIN_EXE_priory")));
+    collector.until(&a, |requests| {
+        requests.iter().any(|request| probes(request, "ok") >= 1.0)
+    });
+
+    link.set(Link::Frozen);
+    until_unreachable(&a, true);
+
+    collector.until(&a, |requests| {
+        requests
+            .iter()
+            .any(|request| probes(request, "timeout") >= 1.0)
+    });
+    assert!(alive(&mut a));
+}
