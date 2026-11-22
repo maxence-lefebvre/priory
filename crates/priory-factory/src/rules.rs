@@ -1,7 +1,7 @@
 use crate::factory::{
-    ASK_SHAPE, Agent, Backend, CODEX_PROMPT_LIMIT, Decider, Effect, Factory, Harness, INSTRUCTIONS,
-    Intervention, Loaded, OPEN_MEMORIES_PR, OnChange, PermissionMode, Problem, Proof, ScoreKind,
-    ScoreOn, Scorer, Session, Step, Trigger, Until, Workflow,
+    ASK_SHAPE, Agent, Backend, Benchmark, CODEX_PROMPT_LIMIT, Decider, Effect, Factory, Harness,
+    INSTRUCTIONS, Intervention, Loaded, OPEN_MEMORIES_PR, OnChange, PermissionMode, Problem, Proof,
+    ScoreKind, ScoreOn, Scorer, Session, Step, Trigger, Until, Workflow,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
 use crate::lanes::{self, Lanes};
@@ -364,7 +364,67 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
     for scorer in factory.scorers.values() {
         check_scorer(factory, scorer, &mut problems);
     }
+    for benchmark in factory.benchmarks.values() {
+        check_benchmark(factory, benchmark, &mut problems);
+    }
     problems
+}
+
+fn check_benchmark(factory: &Factory, benchmark: &Loaded<Benchmark>, problems: &mut Vec<Problem>) {
+    let value = &benchmark.value;
+    if !factory.workflows.contains_key(&value.workflow) {
+        problems.push(problem(
+            benchmark,
+            benchmark.lines.field("workflow"),
+            format!("no workflow `{}` in workflows/", value.workflow),
+        ));
+    }
+    match factory.scorers.get(&value.primary) {
+        None => problems.push(problem(
+            benchmark,
+            benchmark.lines.field("primary"),
+            format!("no scorer `{}` in scorers/", value.primary),
+        )),
+        Some(scorer) if scorer.value.on == ScoreOn::Ask => problems.push(problem(
+            benchmark,
+            benchmark.lines.field("primary"),
+            format!(
+                "the primary scorer `{}` reads asks, which not every replay makes: use one on result or diff",
+                value.primary
+            ),
+        )),
+        Some(_) => {}
+    }
+    for name in value
+        .scorers
+        .iter()
+        .filter(|name| !factory.scorers.contains_key(*name))
+    {
+        problems.push(problem(
+            benchmark,
+            benchmark.lines.field("scorers"),
+            format!("no scorer `{name}` in scorers/"),
+        ));
+    }
+    if value.cases.is_empty() {
+        problems.push(problem(
+            benchmark,
+            benchmark.lines.field("cases"),
+            "a benchmark needs `cases`: folders that priory bench capture wrote".to_owned(),
+        ));
+    }
+    for case in &value.cases {
+        if case.is_absolute() || case.components().any(|part| part.as_os_str() == "..") {
+            problems.push(problem(
+                benchmark,
+                benchmark.lines.field("cases"),
+                format!(
+                    "the case {} is not inside the benchmarks folder",
+                    case.display()
+                ),
+            ));
+        }
+    }
 }
 
 fn check_scorer(factory: &Factory, scorer: &Loaded<Scorer>, problems: &mut Vec<Problem>) {

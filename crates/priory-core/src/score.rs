@@ -74,17 +74,52 @@ pub fn score(
     task: i64,
     only: Option<&str>,
 ) -> Result<Vec<Score>, String> {
-    let scorers: Vec<(&String, &Loaded<Scorer>)> = match only {
-        Some(name) => match factory.scorers.get_key_value(name) {
-            Some(found) => vec![found],
-            None => return Err(format!("no scorer {name} in scorers/")),
-        },
-        None => factory.scorers.iter().collect(),
+    let names: Vec<&str> = match only {
+        Some(name) if factory.scorers.contains_key(name) => vec![name],
+        Some(name) => return Err(format!("no scorer {name} in scorers/")),
+        None => factory.scorers.keys().map(String::as_str).collect(),
     };
-    if scorers.is_empty() {
+    if names.is_empty() {
         return Err("the factory has no scorers: add one to scorers/".to_owned());
     }
+    let scores = grade(db, factory, home, task, &names)?;
     let error = |error: rusqlite::Error| error.to_string();
+    let machine = room::hostname();
+    let trace = Trace {
+        factory,
+        revision: runtime::revision(&factory.dir),
+        runner: None,
+        machine,
+        usage: transcript::usage,
+    };
+    // A deferred transaction that reads first cannot wait for the daemon's write: it fails at once.
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(error)?;
+    for score in &scores {
+        trace::scored(&tx, &trace, task, score).map_err(error)?;
+    }
+    tx.commit().map_err(error)?;
+    Ok(scores)
+}
+
+/// Scores the latest finished run of each step of `task` with each scorer `names` holds, and
+/// records nothing. Each name must be one of the factory's scorers.
+pub fn grade(
+    db: &Connection,
+    factory: &Factory,
+    home: &Path,
+    task: i64,
+    names: &[&str],
+) -> Result<Vec<Score>, String> {
+    let error = |error: rusqlite::Error| error.to_string();
+    let mut scorers: Vec<(&String, &Loaded<Scorer>)> = Vec::new();
+    for name in names {
+        match factory.scorers.get_key_value(*name) {
+            Some(found) => scorers.push(found),
+            None => return Err(format!("no scorer {name} in scorers/")),
+        }
+    }
     let found = db
         .query_row(
             "SELECT repo, base_sha FROM tasks WHERE id = ?1",
@@ -123,22 +158,6 @@ pub fn score(
             });
         }
     }
-    let machine = room::hostname();
-    let trace = Trace {
-        factory,
-        revision: runtime::revision(&factory.dir),
-        runner: None,
-        machine,
-        usage: transcript::usage,
-    };
-    // A deferred transaction that reads first cannot wait for the daemon's write: it fails at once.
-    let tx = db
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(error)?;
-    for score in &scores {
-        trace::scored(&tx, &trace, task, score).map_err(error)?;
-    }
-    tx.commit().map_err(error)?;
     Ok(scores)
 }
 
@@ -246,6 +265,24 @@ fn command(
     let Some(base) = &task.base else {
         return error("no start commit".to_owned());
     };
+    let Some(repo) = &task.repo else {
+        return error("the task names no repository".to_owned());
+    };
+    on_commit(factory, home, repo, base, head, scorer, result)
+}
+
+/// Runs the `command` scorer `scorer` on the commit `head` of `repo`, from Priory's clone under
+/// `home`, against the start commit `base`, with `result` as the result it reads.
+pub fn on_commit(
+    factory: &Factory,
+    home: &Path,
+    repo: &str,
+    base: &str,
+    head: &str,
+    scorer: &Scorer,
+    result: &Value,
+) -> (Verdict, String) {
+    let error = |reason: String| (Verdict::Error, reason);
     let Some(program) = &scorer.run else {
         return error("the scorer names no `run`".to_owned());
     };
@@ -253,10 +290,7 @@ fn command(
         Ok(program) => program,
         Err(why) => return error(why),
     };
-    let clone = match &task.repo {
-        Some(repo) => home.join("repos").join(repo),
-        None => return error("the task names no repository".to_owned()),
-    };
+    let clone = home.join("repos").join(repo);
     if !clone.is_dir() {
         return error(format!("no clone at {}", clone.display()));
     }

@@ -1,0 +1,43 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/benchmark.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "`benchmarks/<name>.toml` or `.yaml`: the cases a comparison replays and the scorers that grade\nthem. The file name is the benchmark's name.",
+  "properties": {
+    "cases": {
+      "description": "The case folders, each relative to the benchmark file's folder.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "description": {
+      "description": "What the cases are, in one line.",
+      "type": "string"
+    },
+    "primary": {
+      "description": "The scorer whose verdict the comparison gives: one that reads `result` or `diff`.",
+      "type": "string"
+    },
+    "scorers": {
+      "default": [],
+      "description": "Other scorers, shown beside the primary one with no verdict.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "workflow": {
+      "description": "The workflow the cases ran.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "description",
+    "workflow",
+    "primary",
+    "cases"
+  ],
+  "title": "benchmark",
+  "type": "object"
+}
