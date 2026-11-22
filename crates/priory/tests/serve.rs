@@ -37,6 +37,8 @@ const HOOKS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken
 struct Setup {
     dir: PathBuf,
     server: Option<Child>,
+    /// The thread that copies the server's stderr to `server.log`.
+    copy: Option<std::thread::JoinHandle<std::io::Result<u64>>>,
     /// The GitHub webhook secret, generated for this test.
     secret: String,
     tmux: TmuxDir,
@@ -47,7 +49,7 @@ impl Setup {
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
             .join("serve")
             .join(name);
-        let _ = fs::remove_dir_all(&dir);
+        priory_runtime::runtime::remove_sealed(&dir);
         let files = [
             ("factory/factory.toml", settings),
             ("factory/agents/implementer/agent.md", AGENT),
@@ -63,6 +65,7 @@ impl Setup {
             tmux: TmuxDir::new(&dir),
             dir,
             server: None,
+            copy: None,
             secret: uuid::Uuid::new_v4().to_string(),
         };
         setup
@@ -154,11 +157,28 @@ impl Setup {
             if let Some(address) = line.trim().strip_prefix("priory: serving on http://") {
                 let mut log = fs::File::create(self.dir.join("server.log")).unwrap();
                 log.write_all(said.as_bytes()).unwrap();
-                std::thread::spawn(move || std::io::copy(&mut stderr, &mut log));
+                self.copy = Some(std::thread::spawn(move || {
+                    std::io::copy(&mut stderr, &mut log)
+                }));
                 return address.to_owned();
             }
             said.push_str(&line);
         }
+    }
+}
+
+impl Setup {
+    /// Everything the server wrote to stderr. It stops the server, which writes nothing after a
+    /// reply, and waits for the copy thread to reach the end of its stderr.
+    fn server_log(&mut self) -> String {
+        if let Some(mut server) = self.server.take() {
+            let _ = server.kill();
+            let _ = server.wait();
+        }
+        if let Some(copy) = self.copy.take() {
+            copy.join().unwrap().unwrap();
+        }
+        fs::read_to_string(self.dir.join("server.log")).unwrap()
     }
 }
 
@@ -4344,7 +4364,15 @@ fn the_pick_endpoint_records_a_choice_and_tells_a_stale_one_by_409() {
         )
     };
 
-    let (stale, reply) = pick("Take", 0);
+    // The daemon serves before its loop runs, and serve gives up on a reply after 10 s. A stale
+    // pick changes nothing, so it is sent until the daemon answers.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let (stale, reply) = loop {
+        let (status, reply) = pick("Take", 0);
+        if status != 504 || Instant::now() > deadline {
+            break (status, reply);
+        }
+    };
     assert_eq!(stale, 409, "{reply}");
     let (status, reply) = pick("Later", 1);
     assert_eq!(status, 200, "{reply}");
@@ -6083,7 +6111,7 @@ fn a_sentry_delivery_with_a_wrong_or_missing_signature_gets_401_before_it_is_rea
     let (status, _) = deliver_sentry(&address, "issue", "req-1", Some("00"), garbage);
     assert_eq!(status, 401);
     assert!(setup.published().is_empty());
-    let log = fs::read_to_string(setup.dir.join("server.log")).unwrap_or_default();
+    let log = setup.server_log();
     assert!(
         !log.contains("secret-marker") && !log.contains("ZeroDivisionError"),
         "{log}"
@@ -6477,7 +6505,7 @@ fn a_cloudwatch_delivery_with_a_wrong_or_missing_token_gets_401_before_it_is_rea
     let (status, _) = deliver_cloudwatch(&address, Some("x"), "not json, secret-marker");
     assert_eq!(status, 401);
     assert!(setup.published().is_empty());
-    let log = fs::read_to_string(setup.dir.join("server.log")).unwrap_or_default();
+    let log = setup.server_log();
     assert!(
         !log.contains("secret-marker") && !log.contains("ServerCpuTooHigh"),
         "{log}"
@@ -6678,7 +6706,7 @@ fn a_honeycomb_delivery_without_the_shared_secret_gets_401_before_it_is_read() {
     let (status, _) = deliver_honeycomb(&address, "d-1", Some("x"), "not json, secret-marker");
     assert_eq!(status, 401);
     assert!(setup.published().is_empty());
-    let log = fs::read_to_string(setup.dir.join("server.log")).unwrap_or_default();
+    let log = setup.server_log();
     assert!(
         !log.contains("secret-marker") && !log.contains("Checkout errors"),
         "{log}"
@@ -6935,7 +6963,7 @@ fn an_intercom_delivery_with_a_wrong_or_missing_signature_gets_401_before_it_is_
     let (status, _) = deliver_intercom(&address, Some("sha1=00"), "not json, secret-marker");
     assert_eq!(status, 401);
     assert!(setup.published().is_empty());
-    let log = fs::read_to_string(setup.dir.join("server.log")).unwrap_or_default();
+    let log = setup.server_log();
     assert!(
         !log.contains("secret-marker") && !log.contains("export button"),
         "{log}"

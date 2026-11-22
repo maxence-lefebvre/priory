@@ -35,7 +35,7 @@ impl Setup {
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
             .join("relate")
             .join(name);
-        let _ = fs::remove_dir_all(&dir);
+        priory_runtime::runtime::remove_sealed(&dir);
         let setup = Setup {
             tmux: TmuxDir::new(&dir),
             dir,

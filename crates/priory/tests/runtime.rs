@@ -105,12 +105,7 @@ impl Setup {
             tmux,
             log_url: None,
         };
-        // The daemon makes its kit snapshots read-only, which a user other than root cannot remove.
-        let _ = Command::new("chmod")
-            .args(["-R", "u+w"])
-            .arg(&setup.dir)
-            .status();
-        let _ = fs::remove_dir_all(&setup.dir);
+        priory_runtime::runtime::remove_sealed(&setup.dir);
         let files = [
             ("factory/factory.toml", "name = \"demo\""),
             ("factory/agents/implementer/agent.md", AGENT),
@@ -15543,7 +15538,7 @@ fn guard_hook(home: &Path, command: &str) -> (String, Duration) {
 #[test]
 fn a_read_passes_the_tool_guard_with_no_daemon_to_ask() {
     let home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guard-no-daemon");
-    let _ = fs::remove_dir_all(&home);
+    priory_runtime::runtime::remove_sealed(&home);
     fs::create_dir_all(&home).unwrap();
 
     let (printed, _) = guard_hook(&home, "gh pr view 12");
@@ -15554,7 +15549,7 @@ fn a_read_passes_the_tool_guard_with_no_daemon_to_ask() {
 #[test]
 fn a_daemon_that_does_not_answer_gets_a_guarded_call_denied() {
     let home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("guard-silent");
-    let _ = fs::remove_dir_all(&home);
+    priory_runtime::runtime::remove_sealed(&home);
     fs::create_dir_all(&home).unwrap();
     let socket = priory_runtime::runtime::socket_in(Some(&home), &home);
     fs::create_dir_all(socket.parent().unwrap()).unwrap();
@@ -21620,13 +21615,27 @@ impl Setup {
             Path::new(env!("CARGO_BIN_EXE_priory")),
             &[("TEST_TOKEN", SERVE_TOKEN)],
         );
-        // The crashed daemon left its socket file, so only a connection shows this one listens.
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while std::os::unix::net::UnixStream::connect(setup.socket()).is_err() {
-            assert!(Instant::now() < deadline, "the daemon never listened");
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        answering(&served.1);
         (setup, served.0, served.1)
+    }
+}
+
+/// Waits until the daemon behind `address` answers a write. It listens before it recovers what a
+/// crash left, and serve gives up on a reply after 10 s, so a write to a slow start gets 504.
+fn answering(address: &str) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        // No grant has this secret, so the daemon refuses it and changes nothing.
+        let (status, reply) = keys(address, "not-a-secret", "probe", json!({ "text": "x" }));
+        if ![503, 504].contains(&status) {
+            assert_eq!(status, 403, "{reply}");
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never answered: {reply}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -21788,14 +21797,15 @@ fn a_request_a_crash_cut_before_its_outcome_is_uncertain_and_never_sent_again() 
         Path::new(env!("CARGO_BIN_EXE_priory")),
         &[("TEST_TOKEN", SERVE_TOKEN)],
     );
+    answering(&address);
 
-    let deadline = Instant::now() + Duration::from_secs(30);
+    // A repeated request id sends nothing, so a reply lost to serve's timeout is asked again.
+    let deadline = Instant::now() + Duration::from_secs(60);
     let (status, repeated) = loop {
         let reply = keys(&address, &secret, "cut", json!({ "text": "lost" }));
-        if reply.0 != 503 || Instant::now() > deadline {
+        if reply.0 != 504 || Instant::now() > deadline {
             break reply;
         }
-        std::thread::sleep(Duration::from_millis(100));
     };
     assert_eq!(
         (status, repeated),

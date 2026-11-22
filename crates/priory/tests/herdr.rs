@@ -44,7 +44,7 @@ fn setup(name: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join("herdr")
         .join(name);
-    let _ = fs::remove_dir_all(&dir);
+    priory_runtime::runtime::remove_sealed(&dir);
     fs::create_dir_all(dir.join("fake")).unwrap();
     let hc = dir.join("fake/hc");
     fs::write(

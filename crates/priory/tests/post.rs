@@ -26,7 +26,7 @@ impl Setup {
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
             .join("post")
             .join(name);
-        let _ = fs::remove_dir_all(&dir);
+        priory_runtime::runtime::remove_sealed(&dir);
         fs::create_dir_all(&dir).unwrap();
         Setup { dir }
     }

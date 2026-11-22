@@ -429,12 +429,7 @@ impl Drop for Scratch {
             .chain([self.dir.clone()])
         {
             if path.starts_with(&self.dir) && path.exists() {
-                let _ = Command::new("chmod")
-                    .arg("-R")
-                    .arg("u+w")
-                    .arg(&path)
-                    .status();
-                let _ = fs::remove_dir_all(&path);
+                priory_runtime::runtime::remove_sealed(&path);
             }
         }
     }

@@ -6,7 +6,7 @@ use std::process::Command;
 #[test]
 fn a_person_verb_refuses_inside_a_run() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("person");
-    let _ = std::fs::remove_dir_all(&dir);
+    priory_runtime::runtime::remove_sealed(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     for args in [
         &["answer", "--revision", "1", "12", "approve"][..],
