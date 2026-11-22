@@ -9,7 +9,7 @@ use crate::score::{self, Score, Verdict};
 use crate::trace::{self, Trace};
 use priory_factory::case;
 use priory_factory::factory::{self, Factory, ScoreKind, ScoreOn};
-use priory_factory::rules;
+use priory_factory::{plural, rules};
 use priory_runtime::{room, transcript};
 use rusqlite::{Connection, TransactionBehavior};
 use serde_json::json;
@@ -298,13 +298,6 @@ fn columns(rows: &[Vec<String>]) -> String {
 
 fn short(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
-}
-
-fn plural(n: usize, one: &str, many: &str) -> String {
-    match n {
-        1 => format!("1 {one}"),
-        n => format!("{n} {many}"),
-    }
 }
 
 /// The comparison's table: its header, one row per scorer, and each side's endings, median cost

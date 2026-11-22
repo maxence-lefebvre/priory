@@ -299,7 +299,10 @@ impl Total {
             })
             .collect();
         if self.unknown > 0 {
-            notes.push(format!("tokens unknown for {} records", self.unknown));
+            notes.push(format!(
+                "tokens unknown for {}",
+                priory_factory::plural(self.unknown as usize, "record", "records")
+            ));
         }
         let notes = if notes.is_empty() {
             "-".to_owned()

@@ -2927,7 +2927,11 @@ fn asking_session() -> Option<String> {
 /// each task that kept events no agent read, then one count per source for the rest.
 fn print_unrouted(unrouted: &serde_json::Value) {
     let events = |count: u64, what: &str| {
-        format!("{count} {what}event{}", if count == 1 { "" } else { "s" })
+        priory_factory::plural(
+            count as usize,
+            &format!("{what}event"),
+            &format!("{what}events"),
+        )
     };
     for group in unrouted["owned"].as_array().into_iter().flatten() {
         let task = &group["task"];
@@ -3073,10 +3077,9 @@ fn print_outsider(events: &serde_json::Value) {
     let Some(events) = events.as_array().filter(|events| !events.is_empty()) else {
         return;
     };
-    let plural = if events.len() == 1 { "" } else { "s" };
     println!(
-        "from outside the repository: {} event{plural}",
-        events.len()
+        "from outside the repository: {}",
+        priory_factory::plural(events.len(), "event", "events")
     );
     for event in events {
         println!(

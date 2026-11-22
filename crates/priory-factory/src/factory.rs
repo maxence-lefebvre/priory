@@ -481,8 +481,8 @@ impl Link {
             });
         match missing {
             Some(group) => Err(format!(
-                "`[links]` `{pattern}` names group ${group}, but the regex has {groups} group{}",
-                if groups == 1 { "" } else { "s" }
+                "`[links]` `{pattern}` names group ${group}, but the regex has {}",
+                crate::plural(groups, "group", "groups")
             )),
             None => Ok(()),
         }
