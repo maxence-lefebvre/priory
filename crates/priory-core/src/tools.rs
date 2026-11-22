@@ -4048,6 +4048,16 @@ pub(crate) fn say(
             "task {task} has no run yet: say it once its agent started"
         )));
     }
+    // A debater never reads it: the step after the debate does, with its first prompt.
+    if crate::debate::open(tx, task)? {
+        tx.execute(
+            "INSERT INTO outbox (task, text, state) VALUES (?1, ?2, 'held')",
+            params![task, text],
+        )?;
+        return Ok(Ok(format!(
+            "task {task} is in a debate at step {at}: the step after the debate reads it"
+        )));
+    }
     let prompt = wake(tx, task, text)?;
     tx.execute("UPDATE outbox SET wakes = 1 WHERE id = ?1", [prompt])?;
     if state == "asleep" {
@@ -4239,7 +4249,7 @@ fn regenerate(tx: &Transaction, task: i64, generation: i64) -> rusqlite::Result<
         [task],
     )?;
     tx.execute(
-        "UPDATE outbox SET state = 'withdrawn' WHERE task = ?1 AND state = 'queued'",
+        "UPDATE outbox SET state = 'withdrawn' WHERE task = ?1 AND state IN ('queued', 'held')",
         [task],
     )?;
     tx.execute(
