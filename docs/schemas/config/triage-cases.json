@@ -1,0 +1,73 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/triage-cases.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Class": {
+      "description": "How an agent treats a feedback item, as the result tool's `feedback` field names it.",
+      "enum": [
+        "trivial",
+        "nothing-to-do",
+        "persons-call"
+      ],
+      "type": "string"
+    },
+    "TriageCase": {
+      "additionalProperties": false,
+      "description": "One feedback item and the class a person gave it.",
+      "properties": {
+        "body": {
+          "description": "What the person wrote.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "The event type, such as `github.pull_request_review_comment`; a pull request comment when\nunset.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Class"
+            }
+          ],
+          "description": "The right class."
+        },
+        "name": {
+          "description": "A name, unique in the file.",
+          "type": "string"
+        },
+        "why": {
+          "description": "Why the person gave that class, for a reader.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "body",
+        "label"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "The triage decision point's `*.eval.toml`: feedback items a person sorted.",
+  "properties": {
+    "cases": {
+      "description": "The labeled cases: at least 10, of which at least 3 of each class.",
+      "items": {
+        "$ref": "#/definitions/TriageCase"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "cases"
+  ],
+  "title": "triage cases",
+  "type": "object"
+}

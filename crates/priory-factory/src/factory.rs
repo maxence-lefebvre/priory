@@ -84,6 +84,65 @@ pub struct Settings {
     /// task's worktree of that repository.
     #[serde(default)]
     pub repos: BTreeMap<String, Repo>,
+    /// A decision model for each decision point that names one.
+    #[serde(default)]
+    pub decisions: Decisions,
+}
+
+/// `[decisions]`: the decision model of each decision point. A point with none keeps its own
+/// behaviour.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Decisions {
+    /// Sorts a person's feedback on a pull request before it wakes the task.
+    pub triage: Option<Decision>,
+}
+
+/// A decision model: a command that answers typed questions with probabilities, and how much of
+/// its answer Priory trusts.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Decision {
+    /// The command, run with `sh -c` in the factory's folder. It reads the question as JSON on
+    /// stdin and prints the answer as JSON.
+    #[schemars(length(min = 1))]
+    pub run: String,
+    /// The environment variable that holds the model's key, never the key itself. The command
+    /// sees it, `PATH` and `HOME`, and no other variable.
+    pub key_env: String,
+    /// The file of a person's labeled cases, relative to the factory's folder, named `*.eval.toml`.
+    pub evaluation: PathBuf,
+    /// The least share of labeled cases it must sort as the person did; 0.9 when unset.
+    #[schemars(range(min = 0.5, max = 1.0))]
+    pub agreement: Option<f64>,
+    /// The least probability of an answer that Priory acts on; 0.9 when unset.
+    #[schemars(range(min = 0.5, max = 1.0))]
+    pub threshold: Option<f64>,
+    /// How long one call may run; 5s when unset, 30s at most.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub timeout: Option<Duration>,
+    /// The most calls the daemon makes in a day; 200 when unset.
+    #[schemars(range(min = 1))]
+    pub daily_calls: Option<u32>,
+}
+
+impl Decision {
+    pub fn agreement(&self) -> f64 {
+        self.agreement.unwrap_or(0.9)
+    }
+
+    pub fn threshold(&self) -> f64 {
+        self.threshold.unwrap_or(0.9)
+    }
+
+    pub fn timeout(&self) -> Duration {
+        self.timeout.unwrap_or(Duration::from_secs(5))
+    }
+
+    pub fn daily_calls(&self) -> u32 {
+        self.daily_calls.unwrap_or(200)
+    }
 }
 
 /// The factory's spend caps, in dollars, which the daemon enforces from `prices.toml` and the
@@ -2125,6 +2184,11 @@ impl Factory {
         Some(telemetry.otlp.as_str())
     }
 
+    /// The decision model that sorts feedback, if the factory names one.
+    pub fn triage(&self) -> Option<&Decision> {
+        self.settings.as_ref()?.value.decisions.triage.as_ref()
+    }
+
     /// The environment variable that holds the OTLP exporter's headers, if it sends any.
     pub fn otlp_headers_env(&self) -> Option<&str> {
         let telemetry = self.settings.as_ref()?.value.telemetry.as_ref()?;
@@ -2318,6 +2382,7 @@ impl Factory {
             self.log().url_env().to_owned(),
         ];
         names.extend(self.otlp_headers_env().map(str::to_owned));
+        names.extend(self.triage().map(|decision| decision.key_env.clone()));
         names.extend(
             serve
                 .iter()

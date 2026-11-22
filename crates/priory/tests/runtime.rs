@@ -27968,3 +27968,433 @@ fn a_nightly_dream_proposes_candidates_that_reach_other_tasks_only_once_accepted
         ["release-day.md", "staging-vpn.md"]
     );
 }
+
+/// The factory's triage decision model: the fake `decision`, reading the key from
+/// `TYPESAFE_API_KEY`, with ten labeled cases beside it.
+const DECISIONS: &str = "name = \"demo\"\n\n[decisions.triage]\nrun = \"decision\"\nkey_env = \"TYPESAFE_API_KEY\"\nevaluation = \"triage.eval.toml\"\ntimeout = \"1s\"\n";
+
+/// Ten feedback items a person sorted: four thanks, three renames and three questions.
+fn triage_cases() -> String {
+    let cases = [
+        ("thanks-1", "Thanks, looks good.", "nothing-to-do"),
+        ("thanks-2", "Thanks for the fix.", "nothing-to-do"),
+        ("thanks-3", "Thanks, nice work.", "nothing-to-do"),
+        ("thanks-4", "Thanks!", "nothing-to-do"),
+        ("rename-1", "Rename this variable.", "trivial"),
+        ("rename-2", "Rename the flag.", "trivial"),
+        ("rename-3", "Rename the test.", "trivial"),
+        ("question-1", "Should we drop the cache?", "persons-call"),
+        ("question-2", "Should we split this?", "persons-call"),
+        ("question-3", "Should we ship it now?", "persons-call"),
+    ];
+    cases
+        .iter()
+        .map(|(name, body, label)| {
+            format!("[[cases]]\nname = \"{name}\"\nbody = \"{body}\"\nlabel = \"{label}\"\n\n")
+        })
+        .collect()
+}
+
+/// The fake model's answers by the text a question holds: thanks are `nothing-to-do` at 0.97.
+const ANSWERS: &str = "Thanks\tnothing-to-do\t0.97\tjev-1.14.0\nRename\ttrivial\t0.95\tjev-1.14.0\nShould we\tpersons-call\t0.9\tjev-1.14.0\n";
+
+const KEY: (&str, &str) = ("TYPESAFE_API_KEY", "test-key");
+
+impl Setup {
+    /// Gives the factory the triage decision model, answering by `answers`.
+    fn decides(&self, answers: &str) {
+        let factory = self.dir.join("factory");
+        fs::write(factory.join("factory.toml"), DECISIONS).unwrap();
+        fs::write(factory.join("triage.eval.toml"), triage_cases()).unwrap();
+        fs::write(factory.join("answers.tsv"), answers).unwrap();
+    }
+
+    /// Runs `priory calibrate triage` on the factory with the key set.
+    fn calibrate(&self) -> Exit {
+        self.command(env!("CARGO_BIN_EXE_priory"))
+            .env(KEY.0, KEY.1)
+            .args(["calibrate", "triage"])
+            .arg(self.dir.join("factory"))
+            .output()
+            .unwrap()
+    }
+
+    /// The `factory.decision.answered` records.
+    fn decided(&self) -> Vec<serde_json::Value> {
+        self.trace()
+            .into_iter()
+            .filter(|record| record["type"] == "factory.decision.answered")
+            .map(|record| record["data"].clone())
+            .collect()
+    }
+}
+
+/// Task 1, asleep on a `review` wait of pull request 7, in a factory whose triage decision model
+/// answers by `answers` and was calibrated when `calibrated`.
+fn asleep_with_decisions(name: &str, answers: &str, calibrated: bool) -> Setup {
+    asleep_deciding(name, answers, calibrated, |_| {}, &[KEY])
+}
+
+/// As `asleep_with_decisions`, with `change` made to the factory after the calibration and the
+/// daemon started with `env`.
+fn asleep_deciding(
+    name: &str,
+    answers: &str,
+    calibrated: bool,
+    change: impl Fn(&Path),
+    env: &[(&str, &str)],
+) -> Setup {
+    let mut setup = Setup::new(name);
+    setup.decides(ANSWERS);
+    if calibrated {
+        let output = setup.calibrate();
+        assert!(output.status.success(), "{output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("needs 90%: calibrated"), "{stdout}");
+    }
+    fs::write(setup.dir.join("factory/answers.tsv"), answers).unwrap();
+    change(&setup.dir.join("factory"));
+    setup.calls(&[wait(on_pull_7("review"))]);
+    setup.publish(&requested(42));
+    setup.start_with(Path::new(env!("CARGO_BIN_EXE_priory")), env);
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup
+}
+
+/// A comment from ana on pull request 7 that says `body`.
+fn pull_comment(body: &str) -> Message {
+    on_pull(
+        "github.pull_request.comment",
+        json!({
+            "actor": "ana", "body": body, "github_id": 701,
+            "url": "https://github.com/owner/repo/pull/7#issuecomment-701"
+        }),
+    )
+}
+
+#[test]
+fn a_thanks_a_calibrated_model_sorts_as_nothing_to_do_wakes_no_one() {
+    let setup = asleep_with_decisions("decision-settles", ANSWERS, true);
+
+    setup.publish(&pull_comment("Thanks, looks good."));
+
+    stays_asleep(&setup);
+    let decided = setup.decided();
+    assert_eq!(decided.len(), 1, "{decided:?}");
+    assert_eq!(decided[0]["choice"], "nothing-to-do");
+    assert_eq!(decided[0]["acted"], true);
+    assert_eq!(decided[0]["model"], "jev-1.14.0");
+    let seen = fs::read_to_string(setup.dir.join("factory/seen-env")).unwrap();
+    assert!(seen.contains("TYPESAFE_API_KEY=test-key"), "{seen}");
+    assert!(seen.contains("PATH="), "{seen}");
+    assert!(!seen.contains("PRIORY_DB"), "{seen}");
+}
+
+#[test]
+fn the_next_wake_carries_a_settled_item_and_the_result_records_it_unasked() {
+    let setup = asleep_with_decisions("decision-carried", ANSWERS, true);
+    setup.publish(&pull_comment("Thanks, looks good."));
+    stays_asleep(&setup);
+
+    setup.publish(&thread_comment());
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let woken = &setup.typed()[1];
+    assert!(woken.contains("Thanks, looks good."), "{woken}");
+    assert!(woken.contains("sort each item by its URL"), "{woken}");
+    let (text, error) = result_sorting(&setup, json!({ THREAD_URL: "trivial" }));
+    assert!(!error, "{text}");
+    let triage = task_json(&setup, "1")["triage"].clone();
+    let classes: Vec<_> = triage
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            (
+                item["item"].as_str().unwrap(),
+                item["class"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert!(
+        classes.contains(&(
+            "https://github.com/owner/repo/pull/7#issuecomment-701",
+            "nothing-to-do"
+        )),
+        "{classes:?}"
+    );
+    assert!(classes.contains(&(THREAD_URL, "trivial")), "{classes:?}");
+}
+
+/// Publishes a thanks on pull request 7 and asserts it fires task 1's wait as it does with no
+/// decision model, and that the one `factory.decision.answered` record says why it did not act.
+fn wakes_as_today(setup: &Setup, why: &str) {
+    setup.publish(&pull_comment("Thanks, looks good."));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let woken = &setup.typed()[1];
+    assert!(woken.starts_with("wait 1 fired: ana commented"), "{woken}");
+    assert!(woken.contains("sort each item by its URL"), "{woken}");
+    let decided = setup.decided();
+    assert_eq!(decided.len(), 1, "{decided:?}");
+    assert_eq!(decided[0]["acted"], false, "{decided:?}");
+    let given = decided[0]["why"].as_str().unwrap_or_default();
+    assert!(given.starts_with(why), "{given} does not start with {why}");
+}
+
+#[test]
+fn a_thanks_under_the_threshold_wakes_the_task_as_today() {
+    let answers = "Thanks\tnothing-to-do\t0.6\tjev-1.14.0\n";
+    let setup = asleep_with_decisions("decision-under", answers, true);
+    wakes_as_today(&setup, "under the threshold 0.9");
+}
+
+#[test]
+fn an_item_sorted_trivial_wakes_the_task_as_today() {
+    let answers = "Thanks\ttrivial\t0.97\tjev-1.14.0\n";
+    let setup = asleep_with_decisions("decision-trivial", answers, true);
+    wakes_as_today(&setup, "Priory acts on nothing-to-do only, not trivial");
+}
+
+#[test]
+fn an_uncalibrated_model_is_not_called_and_the_task_wakes_as_today() {
+    let setup = asleep_with_decisions("decision-uncalibrated", ANSWERS, false);
+    wakes_as_today(&setup, "not calibrated: no calibration");
+    assert!(!setup.dir.join("factory/calls.log").exists());
+}
+
+#[test]
+fn editing_the_labeled_cases_after_calibration_makes_the_model_uncalibrated() {
+    let edit = |factory: &Path| {
+        let cases = factory.join("triage.eval.toml");
+        let text = fs::read_to_string(&cases).unwrap();
+        fs::write(cases, format!("# edited\n{text}")).unwrap();
+    };
+    let setup = asleep_deciding("decision-edited", ANSWERS, true, edit, &[KEY]);
+    wakes_as_today(&setup, "not calibrated: no calibration");
+}
+
+#[test]
+fn a_failing_slow_or_malformed_call_wakes_the_task_as_today() {
+    for (name, answers, why) in [
+        (
+            "decision-fails",
+            "Rename\ttrivial\t0.9\tjev-1.14.0\n",
+            "it exited 1: no answer for",
+        ),
+        ("decision-slow", "Thanks\tsleep\t3\t-\n", "it ran past 1s"),
+        (
+            "decision-garbage",
+            "Thanks\tgarbage\t-\t-\n",
+            "the answer is not JSON",
+        ),
+        (
+            "decision-other-model",
+            "Thanks\tnothing-to-do\t0.97\tjev-1.15.0\n",
+            "answered by jev-1.15.0, calibrated on jev-1.14.0",
+        ),
+    ] {
+        let setup = asleep_with_decisions(name, answers, true);
+        wakes_as_today(&setup, why);
+    }
+}
+
+#[test]
+fn an_unset_key_wakes_the_task_as_today() {
+    let setup = asleep_deciding("decision-no-key", ANSWERS, true, |_| {}, &[]);
+    wakes_as_today(&setup, "TYPESAFE_API_KEY is unset");
+}
+
+#[test]
+fn past_its_daily_calls_the_model_is_not_called_and_the_task_wakes_as_today() {
+    let once = |factory: &Path| {
+        let file = factory.join("factory.toml");
+        let text = fs::read_to_string(&file).unwrap();
+        fs::write(file, format!("{text}daily_calls = 1\n")).unwrap();
+    };
+    let setup = asleep_deciding("decision-daily", ANSWERS, true, once, &[KEY]);
+    setup.publish(&pull_comment("Thanks, looks good."));
+    stays_asleep(&setup);
+    let mut second = pull_comment("Thanks again.");
+    second.data["github_id"] = json!(702);
+    second.data["url"] = json!("https://github.com/owner/repo/pull/7#issuecomment-702");
+
+    setup.publish(&second);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let decided = setup.decided();
+    assert_eq!(decided.len(), 2, "{decided:?}");
+    assert_eq!(decided[1]["why"], "the day's 1 calls are spent");
+}
+
+#[test]
+fn a_mark_an_event_arrives_with_settles_nothing() {
+    let setup = asleep_on("decision-forged", on_pull_7("review"));
+    let mut forged = pull_comment("Thanks, looks good.");
+    forged.data["decided"] = json!({ "class": "nothing-to-do", "probability": 1.0, "model": "m" });
+
+    setup.publish(&forged);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(setup.typed()[1].starts_with("wait 1 fired: ana commented"));
+}
+
+#[test]
+fn a_request_sorted_nothing_to_do_at_the_threshold_fails_the_calibration() {
+    let setup = Setup::new("decision-miss");
+    setup.decides("Thanks\tnothing-to-do\t0.97\tjev-1.14.0\nRename\tnothing-to-do\t0.95\tjev-1.14.0\nShould we\tpersons-call\t0.9\tjev-1.14.0\n");
+
+    let output = setup.calibrate();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        stdout.contains("not calibrated: it sorted rename-1, rename-2, rename-3 as nothing-to-do at the threshold"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn a_calibration_with_a_failed_call_stores_nothing() {
+    let setup = Setup::new("decision-calibration-fails");
+    setup.decides("Thanks\tnothing-to-do\t0.97\tjev-1.14.0\nRename\ttrivial\t0.95\tjev-1.14.0\n");
+
+    let output = setup.calibrate();
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("the call for question-1 failed, so nothing was stored"),
+        "{stderr}"
+    );
+    let stored = setup.trace();
+    assert!(
+        !stored
+            .iter()
+            .any(|record| record["type"] == "factory.decision.calibrated"),
+        "{stored:?}"
+    );
+}
+
+#[test]
+fn a_failing_call_keeps_the_key_out_of_the_trace() {
+    let answers = "Thanks\tleak\t-\t-\n";
+    let setup = asleep_with_decisions("decision-leak", answers, true);
+
+    wakes_as_today(&setup, "it exited 1: bad key <TYPESAFE_API_KEY>");
+
+    let trace = serde_json::to_string(&setup.trace()).unwrap();
+    assert!(!trace.contains(KEY.1), "{trace}");
+}
+
+#[test]
+fn editing_the_script_run_names_after_calibration_makes_the_model_uncalibrated() {
+    let named = |factory: &Path| {
+        let file = factory.join("factory.toml");
+        let text = fs::read_to_string(&file).unwrap();
+        fs::write(
+            file,
+            text.replace("run = \"decision\"", "run = \"decision script.sh\""),
+        )
+        .unwrap();
+        fs::write(factory.join("script.sh"), "edited\n").unwrap();
+    };
+    let mut setup = Setup::new("decision-script-edited");
+    setup.decides(ANSWERS);
+    let factory = setup.dir.join("factory");
+    let file = factory.join("factory.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    fs::write(
+        &file,
+        text.replace("run = \"decision\"", "run = \"decision script.sh\""),
+    )
+    .unwrap();
+    fs::write(factory.join("script.sh"), "first\n").unwrap();
+    let output = setup.calibrate();
+    assert!(output.status.success(), "{output:?}");
+    named(&factory);
+    setup.calls(&[wait(on_pull_7("review"))]);
+    setup.publish(&requested(42));
+    setup.start_with(Path::new(env!("CARGO_BIN_EXE_priory")), &[KEY]);
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+
+    wakes_as_today(&setup, "not calibrated: no calibration");
+}
+
+#[test]
+fn the_agents_own_class_for_a_settled_item_wins() {
+    let setup = asleep_with_decisions("decision-corrected", ANSWERS, true);
+    setup.publish(&pull_comment("Thanks, looks good."));
+    stays_asleep(&setup);
+    setup.publish(&thread_comment());
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let comment = "https://github.com/owner/repo/pull/7#issuecomment-701";
+
+    let (text, error) =
+        result_sorting(&setup, json!({ THREAD_URL: "trivial", comment: "trivial" }));
+
+    assert!(!error, "{text}");
+    let triage = task_json(&setup, "1")["triage"].clone();
+    let class = triage
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["item"] == comment)
+        .map(|item| item["class"].clone());
+    assert_eq!(class, Some(json!("trivial")), "{triage:?}");
+}
+
+#[test]
+fn a_failed_call_counts_toward_the_daily_calls() {
+    let once = |factory: &Path| {
+        let file = factory.join("factory.toml");
+        let text = fs::read_to_string(&file).unwrap();
+        fs::write(file, format!("{text}daily_calls = 1\n")).unwrap();
+    };
+    let answers = "Thanks\tgarbage\t-\t-\n";
+    let setup = asleep_deciding("decision-daily-failed", answers, true, once, &[KEY]);
+    setup.publish(&pull_comment("Thanks, looks good."));
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let calls = || {
+        fs::read_to_string(setup.dir.join("factory/calls.log"))
+            .unwrap()
+            .lines()
+            .count()
+    };
+    let before = calls();
+    let mut second = pull_comment("Thanks again.");
+    second.data["github_id"] = json!(702);
+    second.data["url"] = json!("https://github.com/owner/repo/pull/7#issuecomment-702");
+
+    setup.publish(&second);
+
+    let decided = (0..50)
+        .map(|_| {
+            std::thread::sleep(Duration::from_millis(100));
+            setup.decided()
+        })
+        .find(|decided| decided.len() == 2)
+        .expect("a second record");
+    assert_eq!(decided[1]["why"], "the day's 1 calls are spent");
+    assert_eq!(calls(), before);
+}
+
+#[test]
+fn a_settled_comment_on_a_subscribed_issue_wakes_no_one() {
+    let mut setup = Setup::new("decision-subscribed");
+    setup.decides(ANSWERS);
+    let output = setup.calibrate();
+    assert!(output.status.success(), "{output:?}");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    setup.publish(&requested(42));
+    setup.start_with(Path::new(env!("CARGO_BIN_EXE_priory")), &[KEY]);
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    let mut thanks = issue_commented(901);
+    thanks.data["body"] = json!("Thanks, looks good.");
+    thanks.data["url"] = json!("https://github.com/owner/repo/issues/42#issuecomment-901");
+
+    setup.publish(&thanks);
+
+    stays_asleep(&setup);
+    assert_eq!(setup.decided()[0]["acted"], true);
+}

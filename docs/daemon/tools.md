@@ -117,6 +117,10 @@ an item with `own` true written inside a run of the task, past its first second 
 last, is the agent's, as routing reads it, and no class is recorded for it. A person's own comment
 written in that window reads as the agent's too. No factory key names another login.
 
+A factory with a calibrated triage decision model sorts some items itself: an item it marks
+`nothing-to-do` is not named by the rule, and the next result records its class with no word from
+the agent (see [decisions.md](decisions.md)).
+
 The task keeps each class, and a later result can sort an item again. `priory task <id> --json`
 gives them as `triage` (see [Task in detail](../reference/serve.md#task-in-detail)), and the task
 page lists them in its PR section. A result without `feedback` is a plain result while no typed

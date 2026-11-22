@@ -3,6 +3,7 @@ pub mod bench;
 pub mod capture;
 mod command;
 pub mod daemon;
+pub mod decision;
 pub mod deliver;
 pub mod embed;
 mod findings;

@@ -2301,7 +2301,8 @@ fn drain(
             return Ok(());
         }
         for delivery in deliveries {
-            let message = runners::clocked(delivery.message.clone(), delivery.logged);
+            let mut message = runners::clocked(delivery.message.clone(), delivery.logged);
+            crate::decision::triage(db, trace, &mut message)?;
             let ended = state::handle(db, &message, trace, counter)?;
             // Before the ack, which can fail on a lost link: a redelivered message kills nothing.
             ended.iter().for_each(|tmux| runtime::kill(tmux));

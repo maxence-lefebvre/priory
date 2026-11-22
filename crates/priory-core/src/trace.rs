@@ -829,6 +829,19 @@ pub(crate) fn calibrated(tx: &Transaction, trace: &Trace, data: Value) -> rusqli
     append(tx, trace, "factory.scorer.calibrated", &time, data)
 }
 
+/// Appends a record of `kind` now, with `data`.
+pub(crate) fn record(
+    tx: &Transaction,
+    trace: &Trace,
+    kind: &str,
+    data: Value,
+) -> rusqlite::Result<()> {
+    let time: String = tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
+        row.get(0)
+    })?;
+    append(tx, trace, kind, &time, data)
+}
+
 /// Appends a `factory.bench.compared` record: a comparison of two commits on a benchmark ended.
 pub(crate) fn compared(tx: &Transaction, trace: &Trace, data: Value) -> rusqlite::Result<()> {
     let time: String = tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {

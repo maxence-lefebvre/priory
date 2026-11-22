@@ -561,6 +561,94 @@ calibration that the budget cut short appends no record.
 | `spent`         | yes      | What the calls cost, in dollars                                   |
 | `factory_revision` | no    | The factory folder's Git commit, when it is in a repository       |
 
+## `factory.decision.calibrated`
+
+`priory calibrate triage` asked the triage decision model every labeled case, and each call
+answered with the same model (see [decisions.md](daemon/decisions.md#calibration)). The daemon
+reads the latest record whose `point`, `run_sha256`, `cases_sha256` and `threshold` match the
+factory as it is now. A calibration with a failed call, or answered by two models, appends no
+record.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-00000000000c",
+  "source": "factory://example/desktop",
+  "type": "factory.decision.calibrated",
+  "time": "2026-11-22T10:04:41Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "point": "triage",
+    "model": "jev-1.14.0",
+    "run_sha256": "86ae35d58a6aa3b5742df94ef9d7162219f0106a911ae1954c1f0604aaec805d",
+    "cases_sha256": "9d878db9853640b8319a3081477425ecf0c93bab7313bf31da408990a86a738c",
+    "threshold": 0.9,
+    "cases": 10,
+    "agreed": 10,
+    "agreement": 1.0,
+    "needs": 0.9,
+    "misses": []
+  }
+}
+```
+
+| Field              | Required | Meaning                                                                 |
+| ------------------ | -------- | ----------------------------------------------------------------------- |
+| `point`            | yes      | The decision point, `triage`                                            |
+| `model`            | yes      | The model that answered every case, as the answers named it             |
+| `run_sha256`       | yes      | The SHA-256 of the point's `run`, each file it names in the factory's folder, and Priory's question |
+| `cases_sha256`     | yes      | The SHA-256 of its evaluation file                                      |
+| `threshold`        | yes      | The point's `threshold` when it was calibrated                          |
+| `cases`            | yes      | The labeled cases it asked                                              |
+| `agreed`           | yes      | The cases whose choice equals the person's label                        |
+| `agreement`        | yes      | `agreed` over `cases`                                                   |
+| `needs`            | yes      | The point's `agreement` when it was calibrated                          |
+| `misses`           | yes      | The cases labeled other than `nothing-to-do` that the model sorted `nothing-to-do` at the threshold. One is enough to leave the point not calibrated |
+| `factory_revision` | no       | The factory folder's Git commit, when it is in a repository             |
+
+## `factory.decision.answered`
+
+The daemon considered asking the triage decision model about a feedback item that a task owns or
+subscribes to (see [decisions.md](daemon/decisions.md)). A factory with no `[decisions.triage]`
+appends none. The record holds no text of the item: the inbox holds the event.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-00000000000d",
+  "source": "factory://example/desktop",
+  "type": "factory.decision.answered",
+  "time": "2026-11-22T10:06:02Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "point": "triage",
+    "item": "https://github.com/owner/name/pull/57#issuecomment-701",
+    "model": "jev-1.14.0",
+    "choice": "nothing-to-do",
+    "probability": 0.97,
+    "input_tokens": 212,
+    "millis": 340,
+    "called": true,
+    "acted": true
+  }
+}
+```
+
+| Field          | Required | Meaning                                                                      |
+| -------------- | -------- | ---------------------------------------------------------------------------- |
+| `point`        | yes      | The decision point, `triage`                                                 |
+| `item`         | yes      | The feedback item's URL                                                      |
+| `acted`        | yes      | Whether Priory settled the item on the answer                                |
+| `called`       | yes      | Whether Priory ran the command. `daily_calls` counts these                   |
+| `millis`       | yes      | How long the check and the call took                                         |
+| `why`          | no       | Why Priory did not act, such as `under the threshold 0.9` or `it ran past 5s` |
+| `model`        | no       | The model that answered, when a call answered                                |
+| `choice`       | no       | Its choice                                                                   |
+| `probability`  | no       | The probability it gave its choice                                           |
+| `input_tokens` | no       | The input tokens the answer reported                                         |
+
 ## `factory.bench.compared`
 
 A comparison of two commits of the factory on a benchmark ended (see

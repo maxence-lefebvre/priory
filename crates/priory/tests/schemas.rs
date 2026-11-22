@@ -2,7 +2,7 @@ use priory_factory::case::{Answers, Case, GhAnswer};
 use priory_factory::factory::{
     Agent, Benchmark, MemoryFrontmatter, Runner, Scorer, Settings, Trigger, View, Workflow,
 };
-use priory_factory::labels::Labels;
+use priory_factory::labels::{Labels, TriageCases};
 use priory_intake::events::*;
 use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
@@ -50,6 +50,7 @@ fn generated() -> Vec<(String, Value)> {
         config::<View>("view"),
         config::<Scorer>("scorer"),
         config::<Labels>("judge-cases"),
+        config::<TriageCases>("triage-cases"),
         config::<Benchmark>("benchmark"),
         config::<MemoryFrontmatter>("memory"),
         config::<Case>("case"),
