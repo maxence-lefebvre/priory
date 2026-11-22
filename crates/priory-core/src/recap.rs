@@ -114,7 +114,8 @@ pub fn recap(
 /// What the closing line about left-out records may take.
 const FOOTER_ROOM: usize = 120;
 
-/// The window's records, oldest first.
+/// The window's records, oldest second first. Within one second they come as results, answers,
+/// says, step ends, then stopped tasks.
 fn records(db: &Connection, start: &str, now: &str) -> rusqlite::Result<Vec<Record>> {
     let mut records = Vec::new();
     let within = "julianday(?1) <= julianday(TIME) AND julianday(TIME) <= julianday(?2)";
@@ -337,12 +338,13 @@ fn records(db: &Connection, start: &str, now: &str) -> rusqlite::Result<Vec<Reco
         records.push(Record { time, text });
     }
 
-    // Times come in two precisions, so they sort by their instant.
+    // The state keeps whole seconds, so a stable sort by second keeps a stopped task after a step
+    // end of its own second.
     records.sort_by_cached_key(|record| {
         record
             .time
             .parse::<jiff::Timestamp>()
-            .map(|time| time.as_millisecond())
+            .map(|time| time.as_second())
             .unwrap_or_default()
     });
     Ok(records)
@@ -432,6 +434,27 @@ mod tests {
             prop_assert!(out.len() <= max_bytes, "{} bytes over {max_bytes}", out.len());
             prop_assert!(!crate::screen::holds_secret(&out), "{out}");
         }
+    }
+
+    #[test]
+    fn a_task_stopped_in_the_second_of_a_step_end_is_the_newest_record() {
+        let db = day(&["one".to_owned()], &[]);
+        db.execute(
+            "INSERT INTO trace (id, type, time, event) VALUES ('e1', 'factory.step.ended',
+               '2026-11-21T10:00:00.615Z', '{\"data\":{\"task\":\"1\",\"step\":\"implement\"}}')",
+            [],
+        )
+        .unwrap();
+        for sql in [
+            "UPDATE tasks SET state = 'blocked'",
+            "UPDATE tasks SET changed = '2026-11-21T10:00:00Z'",
+        ] {
+            db.execute(sql, []).unwrap();
+        }
+        let out = recap(&db, START, NOW, MAX_BYTES).unwrap();
+        let at = |text: &str| out.find(text).unwrap_or_else(|| panic!("{text} in {out}"));
+        assert!(at("## Result of") < at("## Step ended"), "{out}");
+        assert!(at("## Step ended") < at("is blocked"), "{out}");
     }
 
     #[test]
