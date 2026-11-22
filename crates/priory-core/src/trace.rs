@@ -1,6 +1,6 @@
 use priory_factory::factory::{Decider, Factory};
 use priory_runtime::transcript::Usage;
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -724,6 +724,33 @@ pub(crate) fn scored(
         fields.retain(|_, value| !value.is_null());
     }
     append(tx, trace, "factory.run.scored", &time, data)
+}
+
+/// Appends a `factory.bench.compared` record: a comparison of two commits on a benchmark ended.
+pub(crate) fn compared(tx: &Transaction, trace: &Trace, data: Value) -> rusqlite::Result<()> {
+    let time: String = tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
+        row.get(0)
+    })?;
+    append(tx, trace, "factory.bench.compared", &time, data)
+}
+
+/// The earlier comparisons of `base` and `head` on `benchmark`: how many, and whether one of them
+/// was complete.
+pub(crate) fn comparisons(
+    db: &Connection,
+    benchmark: &str,
+    base: &str,
+    head: &str,
+) -> rusqlite::Result<(usize, bool)> {
+    db.query_row(
+        "SELECT count(*), coalesce(max(json_extract(event, '$.data.complete')), 0) FROM trace
+         WHERE type = 'factory.bench.compared'
+           AND json_extract(event, '$.data.benchmark') = ?1
+           AND json_extract(event, '$.data.base') = ?2
+           AND json_extract(event, '$.data.head') = ?3",
+        params![benchmark, base, head],
+        |row| Ok((row.get::<_, i64>(0)? as usize, row.get::<_, i64>(1)? != 0)),
+    )
 }
 
 /// The `source` of every record this factory writes on this machine.

@@ -184,6 +184,7 @@ fn every_example_config_matches_its_schema() {
             "runners" => "runner",
             "views" => "view",
             "scorers" => "scorer",
+            "benchmarks" => "benchmark",
             "memories" => "memory",
             "scripts" => continue,
             other => panic!("no schema for {other}"),

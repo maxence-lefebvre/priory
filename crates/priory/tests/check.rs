@@ -2065,6 +2065,62 @@ fn an_expect_that_does_not_fit_the_kind_and_a_missing_run_name_their_lines() {
     );
 }
 
+const SHORT_ASK: &str =
+    "description = \"Short.\"\non = \"ask\"\nkind = \"ask-shape\"\nexpect = [\"short\"]\n";
+
+#[test]
+fn a_factory_with_a_benchmark_passes_and_counts_it() {
+    let benchmark = "description = \"Implement tasks.\"\nworkflow = \"implement\"\nprimary = \"passed\"\nscorers = [\"short-ask\"]\ncases = [\"cases/eng-412\"]\n";
+
+    let outcome = with_scorers(
+        "benchmark",
+        &[
+            ("scorers/passed.toml", PASSED),
+            ("scorers/short-ask.toml", SHORT_ASK),
+            ("benchmarks/implement.toml", benchmark),
+        ],
+    );
+
+    assert_eq!(outcome.stderr, "");
+    assert_eq!(
+        outcome.stdout,
+        "ok: 1 agent, 1 trigger, 1 workflow, 1 runner, 2 scorers, 1 benchmark\n"
+    );
+}
+
+#[test]
+fn a_benchmark_refuses_an_ask_scorer_as_primary_and_names_what_is_missing() {
+    let benchmarks = [
+        (
+            "benchmarks/a.toml",
+            "description = \"A.\"\nworkflow = \"implement\"\nprimary = \"short-ask\"\ncases = [\"cases/one\"]\n",
+        ),
+        (
+            "benchmarks/b.toml",
+            "description = \"B.\"\nworkflow = \"review\"\nprimary = \"gone\"\nscorers = [\"passed\", \"lost\"]\ncases = [\"../elsewhere\"]\n",
+        ),
+        (
+            "benchmarks/c.toml",
+            "description = \"C.\"\nworkflow = \"implement\"\nprimary = \"passed\"\ncases = []\n",
+        ),
+        ("scorers/passed.toml", PASSED),
+        ("scorers/short-ask.toml", SHORT_ASK),
+    ];
+
+    let outcome = with_scorers("benchmark-rules", &benchmarks);
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "benchmarks/a.toml:3: the primary scorer `short-ask` reads asks, which not every replay makes: use one on result or diff\n\
+         benchmarks/b.toml:2: no workflow `review` in workflows/\n\
+         benchmarks/b.toml:3: no scorer `gone` in scorers/\n\
+         benchmarks/b.toml:4: no scorer `lost` in scorers/\n\
+         benchmarks/b.toml:5: the case ../elsewhere is not inside the benchmarks folder\n\
+         benchmarks/c.toml:4: a benchmark needs `cases`: folders that priory bench capture wrote\n"
+    );
+}
+
 const SKILL: &str = "---\nname: release-notes\ndescription: Writes release notes from merged pull requests.\n---\nList each change in one line.\n";
 
 #[test]
