@@ -22,18 +22,26 @@ no model.
 - That message carries the workflow, key, band, lane, trigger and source event. It carries no
   title and no text: a task reads those from its source event
   ([events.md](../reference/events.md#factorytaskrequested)).
-- The intake is its own process, with no state file. It publishes on the log, and every runner's
-  daemon reads the log ([runners.md](../daemon/runners.md#every-runner-reads-the-whole-log)).
+- The intake is its own process. It builds the request for the sources it polls and for
+  schedules. For a webhook source such as Sentry, the server takes the delivery, checks its
+  signature, maps it and publishes it ([webhooks.md](../intake/webhooks.md)). Both publish on the
+  log, and every runner's daemon reads the log
+  ([runners.md](../daemon/runners.md#every-runner-reads-the-whole-log)).
+- The intake records each poll in the state file, posts one report when a source's poll fails,
+  and marks it read when the next poll succeeds. That is the desk's intake banner
+  ([desk.md](../daemon/desk.md#intake-banner)).
 - The factory already names scripts in three places. `[asks] deliver` is a path in the factory
   folder, run with each value as one argument and never through a shell
   ([asks.md](../daemon/asks.md)). `[sweep] scripts` run a shell line with a timeout
   ([factory.md](../reference/factory.md#sweep)). A `run` action runs a step's shell line in the
-  task's worktree, with `PRIORY_TASK` in its environment, and its last line can be the step's
+  task's worktree, or in the factory folder for a task with none, with `PRIORY_TASK` in its
+  environment, and its last line can be the step's
   outcome ([tools.md](../daemon/tools.md#the-run-action)).
 - A workflow's last step can be such a `run` action. It runs only on a path that reaches it, so
   not for a task that failed, was dropped or was cancelled.
-- A task with a pull request reaches `done` only after its checks gate
-  ([waits.md](../daemon/waits.md#done-and-checks)), which comes after the workflow's last step.
+- A task with a pull request and a result that reaches `done` first waits on its checks gate,
+  which comes after the step that led to `done`. A step with `after = "merged"` runs after the
+  gate ([waits.md](../daemon/waits.md#done-and-checks)).
 
 ## The model
 
@@ -41,6 +49,8 @@ no model.
 
 ```toml
 source = "sentry"
+on = "issue.created"
+repo = "owner/name"
 filter = { project = "api" }
 workflow = "bug-investigation"
 key = "issue.id"
@@ -69,9 +79,12 @@ autonomous = "Posts the task's outcome to #api-alerts and labels its pull reques
    needs a token to read another system names it there. Once
    [agent-credentials.md](agent-credentials.md) is built, `env` takes declared secrets.
 4. **A timeout and an output cap.** `timeout` defaults to 10 seconds for `pre` and 30 for `post`,
-   and `priory check` refuses more than 60 seconds for `pre` and 10 minutes for `post`. Past it,
-   the script and its process group are killed. Stdout past 64 KiB ends the script as failed.
-   Priory keeps the last 2000 bytes of stderr.
+   and `priory check` refuses more than 60 seconds for `pre` and 10 minutes for `post`. It counts
+   from the start, the writing of stdin included, so a script that never reads its input is
+   killed like any other. Past it, the script and its process group are killed. Priory reads
+   both streams as they come and stores at most 64 KiB of stdout and 64 KiB of stderr. A script
+   that prints more on either is killed and counts as failed. Priory keeps the last 2000 bytes
+   of stderr.
 5. **The working folder is the factory folder**, with stdin closed after the JSON.
 6. **What a script prints is still untrusted text.** It was computed from an event an outsider
    wrote. It reaches an agent's prompt as the event's own text does, and no part of it is ever a
@@ -138,30 +151,59 @@ with nobody told.
 
 `on_error` says which, and defaults to the one that loses nothing:
 
-| `on_error` | The request | The desk |
-| ---------- | ----------- | -------- |
-| `"pass"`, the default | is published unchanged, with `pre.failed` set | the intake banner names the trigger, the script and its exit, once per trigger until a run succeeds |
-| `"drop"` | is dropped | the same banner |
+| `on_error` | The request |
+| ---------- | ----------- |
+| `"pass"`, the default | is published unchanged, with `pre.failed` set to how the script failed |
+| `"drop"` | is dropped, and the drop's record says the script failed |
 
-#### Run twice, publish once
+Either way the desk says so, through the mechanism the intake banner already uses. The process
+that ran the script posts one report from `intake`, `pre of trigger sentry-api: exit 2: <stderr
+tail>`, and posts again only when the text changes. It marks the report read at that trigger's
+next run that exits 0 or 1, whether or not the run changed anything.
 
-The intake delivers at least once. If it stops after `pre` ran and before the publish, it runs
-`pre` again for the same event. The request's id is the same both times, so the log keeps one.
-A script that reads another system may print two different texts, and the first one published
-stands. So a `pre` script must be safe to run twice: it reads, and it changes nothing outside.
-`priory check` cannot see that. The how-to guide says it, and `post` is the place for effects.
+#### One decision per event
+
+For one event and one trigger, exactly one message says what `pre` decided:
+
+- a `factory.task.requested`, whose `pre` object names the script, the fields it changed, the old
+  and new `band`, `lane` and `key`, and `failed` when it failed;
+- or a `factory.intake.dropped`, which takes the id the request would have had.
+
+Both share one id, the UUIDv5 of the trigger and the source event that the request has today. The
+log drops a second message with an id it holds. So a script that ran twice, and answered
+differently the second time, still leaves one decision: the first one published. No separate
+record can disagree with the request, since the request is the record.
+
+A process that stops after the script ran and before the publish runs the script again. So a
+`pre` script must be safe to run twice: it reads, and it changes nothing outside. `priory check`
+cannot see that. The how-to guide says it, and `post` is the place for effects.
 
 #### Where `pre` runs
 
-In the intake's process, on the machine that runs the intake, from that machine's checkout of the
-factory. The intake runs one script at a time, so a slow script delays the events behind it by at
-most its timeout each. The intake publishes each request once for the whole factory, so `pre`
-runs once per event and not once per runner.
+In the process that builds the request, on its machine, from that machine's checkout of the
+factory:
+
+| Source | Process |
+| ------ | ------- |
+| Polled sources and schedules | the intake |
+| Webhook deliveries, such as Sentry's | the server that took the delivery |
+
+The request for this note names the intake. A webhook source has no intake step today, so the
+server runs the script there. See open question 8.
+
+A webhook sender waits for its reply, and a script may take 60 seconds. So the server keeps
+replying `202` as it does today, after it published the source event. It stores the pending
+request in the state file in that same step, and runs `pre` on stored requests afterwards, oldest
+first. A server that restarts finds them and runs them, with the once-or-twice rule above.
+
+Each process runs one script at a time, so a slow script delays the events behind it by at most
+its timeout each. Every request is published once for the whole factory, so `pre` runs once per
+event and not once per runner.
 
 ### `post`: after the task
 
 The daemon runs `post` when a task ends: `done`, `failed` or `dropped`, a cancel included. `done`
-means done: for a task with a pull request, after its checks gate.
+means done: for a task that waits on its checks gate, after the gate.
 
 Stdin is the task as `priory task ID --json` prints it. The environment adds `PRIORY_TASK`,
 `PRIORY_STATE` (`done`, `failed` or `dropped`), `PRIORY_HOME`, `PRIORY_DB` and `PRIORY_FACTORY`,
@@ -204,7 +246,7 @@ factory. A machine that only views runs nothing.
 | --- | --- | --- |
 | Runs when | the task ends, however it ends: `done`, `failed`, `dropped`, cancelled | the task reaches that step |
 | Runs for a failed or cancelled task | yes | no |
-| Runs relative to the checks gate | after it | before it |
+| Runs relative to the checks gate | after it | before it, unless the step sets `after = "merged"` |
 | Can change the task | no | yes: its outcome moves the task |
 | Its failure | a desk item; the task stays as it ended | the step's `failed` outcome |
 | Can wait for a person's approval | no: it is `autonomous` with a reason | yes: a human step `approves` it |
@@ -217,18 +259,17 @@ Use `post` to tell the world how a task ended.
 
 ### What the trace records
 
-The intake has no state file, so it publishes its records on the log, where the daemon stores
-them with the inbox:
-
 | Record | Written by | When | Fields |
 | ------ | ---------- | ---- | ------ |
-| `factory.intake.dropped` | the intake | `pre` dropped a request, by exit 1 or by `on_error = "drop"` | trigger, source event id, the request's key, script, exit, reason, seconds |
-| `factory.intake.changed` | the intake | `pre` changed a request | trigger, source event id, script, the fields changed, the old and new `band`, `lane` and `key`, the old and new lengths of `title`, `text` and `context`, seconds |
-| `factory.intake.pre_failed` | the intake | `pre` failed | trigger, source event id, script, how it failed, the stderr tail, what `on_error` did |
-| `factory.task.post` | the daemon | a `post` action ends | task, generation, state, script, status, exit, seconds |
+| `factory.task.requested`, with `pre` | the process that ran `pre` | the request passed, changed or not | as today, plus `pre`: script, the fields changed, the old and new `band`, `lane` and `key`, the old and new lengths of `title`, `text` and `context`, seconds, and `failed` |
+| `factory.intake.dropped` | the same | `pre` dropped a request, by exit 1 or by `on_error = "drop"` | trigger, source event id, the request's key, script, exit, reason, seconds, and `failed` |
+| `factory.task.post` | the daemon | a `post` action ends | task, generation, attempt, state, script, status, exit, seconds |
 
-Each record's id derives from the trigger and the source event, so a `pre` that ran twice leaves
-one record. `priory inbox` shows a dropped request beside its source event, with the reason.
+A request with no `pre` script, or whose script changed nothing, carries no `pre` object beyond
+the script's name.
+
+A `factory.task.post` record's id derives from its task, generation and attempt, so a retry is
+its own record. `priory inbox` shows a dropped request beside its source event, with the reason.
 `priory report intake` counts, per trigger, the events matched, dropped, changed and failed.
 
 ## The first slice: `pre`
@@ -239,24 +280,29 @@ one record. `priory inbox` shows a dropped request beside its source event, with
 2. The intake runs the script as the shared rules say, and applies its result.
 3. `title`, `text`, `context` and `pre` on `factory.task.requested`, and the daemon's use of them
    when it creates the task.
-4. The three intake records, the banner, and the dropped request in `priory inbox`.
-5. `priory intake pre TRIGGER < event.json`, which runs the script on one event and prints what
+4. The `pre` object on the request, the `factory.intake.dropped` record with the request's id,
+   the report on the desk, and the dropped request in `priory inbox`.
+5. For webhook sources, the pending request the server stores and runs `pre` on.
+6. `priory intake pre TRIGGER < event.json`, which runs the script on one event and prints what
    the intake would do, and publishes nothing.
-6. [triggers.md](../reference/triggers.md), [events.md](../reference/events.md),
+7. [triggers.md](../reference/triggers.md), [events.md](../reference/events.md),
    [task-requests.md](../intake/task-requests.md), a how-to guide, "How to filter and enrich
    events with a script", and a `pre` script in the `bug-investigation` starter.
 
-The slice runs a child process with a timeout, a process group and capped output. The daemon's
-own commands already do most of that through `crates/priory-runtime/src/script.rs`. The slice
-reuses it and names any crate it rejected.
+The slice runs a child process with a timeout, a process group, JSON on stdin and capped
+output. `crates/priory-runtime/src/script.rs` gives the first two. It writes both streams to
+files with no limit and trims them afterwards (`script.rs:66`, `:132`), and it has no way to
+feed stdin. So the slice adds the bounded reading and the stdin writer there, and names any
+crate it rejected.
 
 Tests, through the CLI and the intake's own tests, with scripts written into a scratch factory:
 
 - A script that exits 0 and prints nothing leaves the request as it was.
 - A script that exits 1 publishes the source event, no task request and one
-  `factory.intake.dropped`, with its first stdout line as the reason. No task is created.
+  `factory.intake.dropped`, with its first stdout line as the reason and the id the request
+  would have had. No task is created.
 - A script that prints `band`, `lane`, `title`, `text` and `context` creates a task with each, and
-  one `factory.intake.changed` that names the five fields.
+  the request's `pre` object names the five fields.
 - Two alerts whose script prints the same `key` create one task, and the second event routes to
   it.
 - A printed `key` of `github:owner/name#42` from a Sentry trigger is scoped to Sentry and owns no
@@ -269,11 +315,20 @@ Tests, through the CLI and the intake's own tests, with scripts written into a s
 - An unknown field, a `band` the factory lacks, a lane of another shape, a title of two lines, a
   `text` over 16 KiB, stdout that is not JSON and stdout over 64 KiB each count as a failure.
 - With the default `on_error`, a script that exits 2, one that sleeps past its timeout and one
-  that is missing each publish the request unchanged with `pre.failed`, one
-  `factory.intake.pre_failed`, and the banner. With `on_error = "drop"`, each drops the request.
+  that is missing each publish the request unchanged with `pre.failed`, and the desk shows the
+  report. With `on_error = "drop"`, each drops the request.
+- After a failure, a run that exits 0 and changes nothing marks the report read. So does a run
+  that exits 1.
+- A script that writes 1 MiB to stderr is killed and counts as failed, and Priory stored at most
+  64 KiB of it. A script that never reads stdin is killed at its timeout, for an event larger
+  than a pipe's buffer.
 - A script that leaves a child running past its timeout has the child killed too.
 - An intake stopped after the script ran and before the publish runs it again, and the log holds
-  one request and one record.
+  one message for the event and trigger.
+- A script that passes on its first run and drops on a second run of the same event leaves the
+  request and no drop record. The reverse leaves the drop and no request.
+- A Sentry delivery gets its `202` before the script ends. The server then publishes the request
+  the script decided, and a server restarted in between runs the script and publishes once.
 - An event about an existing task still routes to it when `pre` drops the request.
 - `priory intake pre` prints the changed request for one event and publishes nothing.
 - `priory check` fails, with the line, for an `argv[0]` outside the factory folder, one that is
@@ -324,10 +379,11 @@ Tests, through the CLI:
 
 ## Open questions
 
-1. **Does every non-zero exit drop the request?** The brief says a non-zero exit drops it. A
+1. **Does every non-zero exit drop the request?** The request for this note says a non-zero exit
+   drops it. A
    script with a typo exits non-zero too, and would then drop every alert in silence.
    Recommendation: exit 1 drops, as a decision. Any other failure follows `on_error`, which
-   defaults to `pass` and raises the banner. A factory that prefers silence over noise sets
+   defaults to `pass` and posts a report on the desk. A factory that prefers silence over noise sets
    `on_error = "drop"` for that trigger.
 2. **May `pre` change the workflow?** Routing an event to another workflow by its content is
    useful. It also makes the answer of `priory check --explain` depend on an event. Recommendation:
@@ -349,3 +405,8 @@ Tests, through the CLI:
 7. **A shell line or an `argv` array?** `[sweep] scripts` and the `run` action take a shell
    line. Recommendation: `argv` here. These two scripts are the ones that sit next to untrusted
    text, and an array leaves no place to interpolate it.
+8. **Where does `pre` run for a webhook?** In the server, as written above, or in the intake,
+   after a handoff. A handoff would put every decision in one process. It needs a durable queue
+   from the server to the intake that does not exist. Recommendation: the server, with the
+   pending request in the state file. One function runs the script in both processes, so the
+   rules cannot drift.
