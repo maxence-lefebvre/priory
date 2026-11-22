@@ -1,7 +1,6 @@
 use crate::factory::{
     ASK_SHAPE, Agent, Backend, Benchmark, CODEX_PROMPT_LIMIT, Confidence, Debate, Decider, Effect,
-    Factory,
-    Harness, INSTRUCTIONS, Intervention, Loaded, Moment, OPEN_MEMORIES_PR, OnChange,
+    Factory, Harness, INSTRUCTIONS, Intervention, Loaded, Moment, OPEN_MEMORIES_PR, OnChange,
     PermissionMode, Problem, Proof, Recipe, ScoreKind, ScoreOn, Scorer, Session, Step, Trigger,
     Until, Workflow, join_instructions,
 };
