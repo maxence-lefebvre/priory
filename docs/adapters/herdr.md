@@ -334,7 +334,8 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   order from the listing's `bands`, and puts an ask with no band, such as an outside ask, under
   `none`. Risk lists `irreversible`, `red`, `yellow`, `green`, then `none` for an ask whose `risk`
   is empty, and counts an ask under each risk it carries. A row shows its tile, task key, step,
-  age, question, and what it recommends, its answer or why it was withdrawn.
+  age, question, and what it recommends, its answer or why it was withdrawn. An ask whose answer
+  lets an irreversible step run shows its History line under the context line in its detail.
 - **Width.** Below 720 px the selected row opens under itself: the decide part, the section chips
   and Why. A section chip opens that section with the answer bar under it, since gpui-kit has no
   sticky positioning. From 720 px the list and the detail sit side by side. The decide part stays
@@ -618,11 +619,12 @@ DESIGN.md's "Flows panel" section holds its visual rules; this section says how 
   calls, scaled to the pane. `main.js` paints them. The node tests in `test/flows.test.js` check
   both against JSON captured from a real `priory flows DIR --json`.
 - **Reading.** The panel reads `priory flows FACTORY --json` once, as the web view reads
-  `/api/flows`: the factory's workflows change only when its files do. "Read again" in the header
-  reads it again. When the read fails, the panel says why and offers Retry.
+  `/api/flows`: the factory's workflows change only when its files do. Each irreversible step's
+  history is as of that read. "Read again" in the header reads it again. When the read fails, the panel says why and offers Retry.
 - **Drawing.** The key, then each workflow: its name and step count, the drawing at most 560 px
-  wide, the paths that reach an irreversible step with no person's decision, and "Steps as text",
-  which lists every step and where each outcome leads.
+  wide, each irreversible step's history when the state was read (see
+  [serve.md's Flows](../reference/serve.md#flows)), the paths that reach an irreversible step with
+  no person's decision, and "Steps as text", which lists every step and where each outcome leads.
 
 ## The Task panel
 

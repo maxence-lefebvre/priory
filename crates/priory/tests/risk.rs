@@ -552,7 +552,7 @@ fn an_irreversible_asks_estimate_is_the_own_row_of_the_step_its_answer_lets_run(
     );
     assert_eq!(
         estimate["line"],
-        "History: 0 of 20 tasks through this step were judged wrong within 30 days, 0 after the merge. 95 % posterior upper bounds: 13.3 % and 13.3 %."
+        "History: 0 of 20 tasks through this step were judged wrong within 30 days, 0 after the merge. 95\u{a0}% posterior upper bounds: 13.3\u{a0}% and 13.3\u{a0}%."
     );
     let before_merge = setup.listed_ask(2);
     assert_eq!(before_merge["risk_estimate"]["step"], "merge-pr");

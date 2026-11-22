@@ -139,6 +139,24 @@ export function timeline(workflow, ungated) {
 }
 
 /**
+ * The history of each irreversible step of workflow `name` in `irreversible`, as `GET /api/flows`
+ * sends it: none when the server read no state. Each outcome is its count, then the 95 % bound.
+ * @param {any[]} irreversible @param {string} name
+ */
+export function historyRows(irreversible, name) {
+  const percent = (/** @type {number} */ share) => `${(share * 100).toFixed(1)} %`;
+  return irreversible
+    .filter((entry) => entry.workflow === name && entry.risk_estimate)
+    .map(({ step, risk_estimate: estimate }) => {
+      const outcome = (/** @type {{ k: number, p95: number }} */ counted) => [
+        `${counted.k} of ${estimate.trials}`,
+        estimate.shown ? `95 % bound ${percent(counted.p95)}` : "needs 20",
+      ];
+      return { step, caught: estimate.caught, judged: outcome(estimate.judged_wrong), landed: outcome(estimate.landed_wrong) };
+    });
+}
+
+/**
  * Where a node's padlock sits and how big it is, in the drawing's units. An SVG icon nested in the
  * drawing needs `width` and `height` attributes: CSS sizes do not reach it, so it would fill the drawing.
  * @param {number} nodeWidth

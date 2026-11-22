@@ -233,6 +233,7 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
     context: [ask.key, ask.step, ask.lane, ask.command ? "Command" : null, owner && [owner, away].filter(Boolean).join(", "), age(ask.since, now), `revision ${ask.revision}`].filter(Boolean),
     question,
     questionSpans: autolink(question, links, ask.repo ?? null),
+    riskLine: ask.risk_estimate?.line ?? null,
     recommendation: ask.recommendation ? { text: `Recommended: ${ask.recommendation}.`, next: ask.next_action } : null,
     options: options.map((/** @type {string} */ label, /** @type {number} */ index) => ({
       index,

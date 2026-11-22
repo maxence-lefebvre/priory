@@ -6,7 +6,7 @@ import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
 import { around, dossier, nextPick, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
-import { KINDS, edgeStyle, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
+import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
 import { emptyDetail, eventWords, handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, sayLine, screenRows, screenWatch } from "./terminal.js";
@@ -992,6 +992,7 @@ function askDetail(id, wide) {
       <div class="opts" role="group" aria-label="Options">${optionButtons}</div>${lockedNote}${more}${elsewhere}`;
   const top = html`<div class="ask">
     <a class="ctx" href="${ask.task && !owner ? `/tasks/${ask.task}` : "/asks"}">${wide ? "" : tile("ask", "sm")}<span class="mono">${ask.key}</span><span>${ask.step}</span><span>${ask.lane || ""}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${runnerTag(ask)}${wide ? "" : html`<span>${timeTag(ask.since)}</span><span>revision ${ask.revision}</span>`}</a>
+    ${ask.risk_estimate ? html`<p class="note">${icon("lock", "s15")}<span>${ask.risk_estimate.line}</span></p>` : ""}
     <h2 class="question">${autolinked(ask.question || ask.title, ask.repo)}</h2>${decided}</div>`;
   // A go ask reads its batch's plan first; the planning task's own plan result says the same.
   const planned = batch ? [
@@ -2344,7 +2345,15 @@ const flowLegend = () => html`<section class="sect flegend" aria-labelledby="leg
   ${["code", "model", "human", "asleep"].map((by) => html`<li><svg viewBox="0 0 48 8" width="48" height="8" aria-hidden="true" class="fedge by-${by}"><path d="M0 4H48" stroke-width="${edgeStyle(by).width}" ${edgeStyle(by).dash ? raw(`stroke-dasharray="${edgeStyle(by).dash}"`) : ""} class="fline"/></svg>${BY_WORD[by]}</li>`)}
   <li><svg viewBox="0 0 48 12" width="48" height="12" aria-hidden="true" class="fedge ungated"><path d="M0 6H48" stroke-width="8" class="halo"/></svg>no person's decision before an irreversible step</li></ul></section>`;
 
-function flowSection(workflow, paths) {
+function flowHistory(rows) {
+  if (!rows.length) return "";
+  const outcome = (label, [count, bound]) => html`<td data-label="${label}">${count}<span class="bound">${bound}</span></td>`;
+  return html`<div class="history"><p class="note">Tasks through each irreversible step in the last 180 days, judged within 30 days of it.</p>
+    <table class="ctbl rtbl"><thead><tr><th scope="col">Step</th><th scope="col" class="r">Caught</th><th scope="col">Judged wrong</th><th scope="col">Landed wrong</th></tr></thead>
+    <tbody>${rows.map((row) => html`<tr><th scope="row" class="mono">${row.step}</th><td class="r" data-label="Caught">${row.caught}</td>${outcome("Judged wrong", row.judged)}${outcome("Landed wrong", row.landed)}</tr>`)}</tbody></table></div>`;
+}
+
+function flowSection(workflow, paths, irreversible) {
   const ungated = ungatedPairs(workflow.name, paths);
   const drawing = timeline(workflow, ungated);
   const open = paths.filter((entry) => entry.workflow === workflow.name);
@@ -2353,6 +2362,7 @@ function flowSection(workflow, paths) {
     <svg class="diagram" viewBox="0 0 ${drawing.width} ${drawing.height}" role="img" aria-label="${drawing.text}">
       <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="10" markerHeight="10" orient="auto-start-reverse"><path d="M0 1L10 5L0 9z" fill="context-stroke"/></marker></defs>
       ${drawing.edges.map(flowEdge)}${drawing.nodes.map(flowNode)}</svg>
+    ${flowHistory(historyRows(irreversible ?? [], workflow.name))}
     ${open.length ? html`<div class="unattended" role="note"><p class="t-danger">${icon("lock", "s15")}Reaches an irreversible step with no person's decision:</p><ul>${open.map((entry) => html`<li class="mono">${entry.path.join(" > ")}</li>`)}</ul></div>` : ""}
     <details class="astext"><summary>Steps as text</summary><ol>${workflow.steps.map((step) => html`<li><b class="mono">${step.id}</b>, ${KIND_WORD[step.kind] ?? step.kind}, decided by ${step.decides}. ${step.edges.map((edge) => html`${edge.outcome} leads to ${edge.to} (${BY_WORD[edge.by] ?? edge.by}). `)}</li>`)}</ol></details></section>`;
 }
@@ -2362,7 +2372,7 @@ function flowsPage(compact) {
   const flows = state.data.flows;
   if (!flows && state.flowsError) return html`${head}<p class="empty" role="alert">The flows did not load: ${state.flowsError}. Run <code>priory check --explain</code> meanwhile.</p><p class="empty"><button class="btn secondary" data-action="flows-retry">Retry</button></p>`;
   if (!flows) { setTimeout(loadFlows); return html`${head}<p class="empty" role="status">Loading the flows.</p>`; }
-  const body = flows.workflows.length ? html`${flowLegend()}${flows.workflows.map((workflow) => flowSection(workflow, flows.paths))}` : html`<p class="empty">This factory has no workflows. Add one under <code>workflows/</code>.</p>`;
+  const body = flows.workflows.length ? html`${flowLegend()}${flows.workflows.map((workflow) => flowSection(workflow, flows.paths, flows.irreversible))}` : html`<p class="empty">This factory has no workflows. Add one under <code>workflows/</code>.</p>`;
   return html`${head}<div class="panel" role="region" aria-label="Flows"><div class="scroll">${body}</div></div>`;
 }
 
