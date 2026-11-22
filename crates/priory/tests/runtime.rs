@@ -10889,6 +10889,20 @@ fn wait_since(setup: &Setup) -> herdr_bus::Timestamp {
         .unwrap()
 }
 
+/// A second after the first wait was stored, which the state keeps to the second: the earliest
+/// instant a Slack reply surely counts for it.
+fn after_wait_stored(setup: &Setup) -> herdr_bus::Timestamp {
+    let created: herdr_bus::Timestamp = rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT created FROM waits ORDER BY id LIMIT 1", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap()
+        .parse()
+        .unwrap();
+    created.checked_add(Duration::from_secs(1)).unwrap()
+}
+
 /// Slack's `ts` for `time`: seconds since the epoch, with six decimals.
 fn ts(time: herdr_bus::Timestamp) -> String {
     format!("{}.{:06}", time.as_second(), time.subsec_microsecond())
@@ -10903,22 +10917,14 @@ fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_do
     // The instant the wait counts replies from: the agent's last prompt, before the intake polls.
     let stored = wait_since(&setup);
     let before_prompt = stored.checked_sub(Duration::from_secs(3600)).unwrap();
-    // A reply counts once the wait is stored, which the state keeps to the second: one after it does.
-    let created: herdr_bus::Timestamp = rusqlite::Connection::open(setup.dir.join("priory.db"))
-        .unwrap()
-        .query_row("SELECT created FROM waits ORDER BY id LIMIT 1", [], |row| {
-            row.get::<_, String>(0)
-        })
-        .unwrap()
-        .parse()
-        .unwrap();
     let old = slack_message(&ts(before_prompt), "U0PERSON");
     let mine = slack_message(&ts(herdr_bus::Timestamp::now()), "U0BOT");
     setup.answer_slack(&[old.clone(), mine.clone()]);
 
     setup.intake();
     stays_asleep(&setup);
-    let person = created.checked_add(Duration::from_secs(1)).unwrap();
+    // A reply counts once the wait is stored.
+    let person = after_wait_stored(&setup);
     setup.answer_slack(&[old, slack_message(&ts(person), "U0PERSON"), mine]);
     setup.intake();
 
@@ -10959,7 +10965,7 @@ fn a_slack_reply_names_its_author_by_display_name_asking_slack_once_per_user() {
         json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
     );
     let stored = wait_since(&setup);
-    let later = stored.checked_add(Duration::from_secs(1)).unwrap();
+    let later = after_wait_stored(&setup);
     let mut messages =
         vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
     messages.extend([
@@ -11218,9 +11224,8 @@ fn a_failing_slack_channel_still_lets_a_watched_thread_publish_its_reply() {
         "source = \"slack\"\nchannel = \"C0999\"\non = \"message.posted\"\nworkflow = \"implement\"\n",
     )
     .unwrap();
-    let stored = wait_since(&setup);
     // The fake answers no `conversations.history`, so the trigger's channel fails.
-    setup.answer_slack(&[slack_message(&ts(stored), "U0PERSON")]);
+    setup.answer_slack(&[slack_message(&ts(after_wait_stored(&setup)), "U0PERSON")]);
 
     let output = setup.poll(&[]);
 
