@@ -5,7 +5,9 @@ use crate::{
     grades, keyboard, listing, push, report, runners, screen, sections, snooze, state, todo, tools,
 };
 use priory_factory::factory::{Factory, Price, Terminal, Trigger};
-use priory_intake::intake::{self, ASK_ANSWERED, ASK_DISMISSED, Github, LinearWebhook};
+use priory_intake::intake::{
+    self, ASK_ANSWERED, ASK_DISMISSED, Github, LinearWebhook, SentryWebhook,
+};
 use priory_intake::log;
 use priory_runtime::http::{self, Reply, Request};
 use priory_runtime::runtime;
@@ -20,6 +22,7 @@ use std::time::Duration;
 
 const GITHUB: &str = "/hooks/github";
 const LINEAR: &str = "/hooks/linear";
+const SENTRY: &str = "/hooks/sentry";
 const INDEX: &[u8] = include_bytes!("../web/index.html");
 /// How long `/api/events` holds a request without a change, at most and by default.
 const WAIT: u64 = 25;
@@ -173,6 +176,13 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         .map(|secret| LinearWebhook::new(secret, factory))
         .transpose()?
         .map(Arc::new);
+    let sentry = factory
+        .sentry_webhook()
+        .map(|hook| env(&hook.secret_env, "the Sentry integration's Client Secret"))
+        .transpose()?
+        .map(|secret| SentryWebhook::new(secret, factory))
+        .transpose()?
+        .map(Arc::new);
     drop(state::read_only()?);
     let listener =
         TcpListener::bind(listen).map_err(|error| format!("listen on {listen}: {error}"))?;
@@ -201,12 +211,16 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         kit: factory.settings.as_ref().and_then(|s| s.value.kit.clone()),
         memories: crate::memories::Held::of(factory).factory,
     });
-    let hooks: &[&str] = match (github.is_some(), linear.is_some()) {
-        (true, true) => &[GITHUB, LINEAR],
-        (true, false) => &[GITHUB],
-        (false, true) => &[LINEAR],
-        (false, false) => &[],
-    };
+    let hooks: &'static [&'static str] = [
+        (github.is_some(), GITHUB),
+        (linear.is_some(), LINEAR),
+        (sentry.is_some(), SENTRY),
+    ]
+    .into_iter()
+    .filter_map(|(on, path)| on.then_some(path))
+    .collect::<Vec<_>>()
+    // One small list per server, which lives as long as the process.
+    .leak();
     let waiters = Arc::new(AtomicUsize::new(0));
     let public = |path: &str| !path.starts_with("/api") && !path.starts_with("/hooks");
     let event_log = factory.log().clone();
@@ -233,17 +247,22 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
                 log::open(&event_log).map_err(|error| error.to_string()),
             )
         });
-        move |request: &Request| match (&mut github, &mut linear) {
-            (Some((github, bus)), _)
-                if request.method == "POST" && request.path.split('?').next() == Some(GITHUB) =>
-            {
-                github.receive(bus, request)
-            }
-            (_, Some((linear, bus)))
-                if request.method == "POST" && request.path.split('?').next() == Some(LINEAR) =>
-            {
-                linear.receive(bus, request)
-            }
+        let mut sentry = sentry.clone().map(|sentry| {
+            (
+                sentry,
+                log::open(&event_log).map_err(|error| error.to_string()),
+            )
+        });
+        move |request: &Request| match (
+            request.method == "POST",
+            request.path.split('?').next(),
+            &mut github,
+            &mut linear,
+            &mut sentry,
+        ) {
+            (true, Some(GITHUB), Some((github, bus)), _, _) => github.receive(bus, request),
+            (true, Some(LINEAR), _, Some((linear, bus)), _) => linear.receive(bus, request),
+            (true, Some(SENTRY), _, _, Some((sentry, bus))) => sentry.receive(bus, request),
             _ if request.method == "POST" => write(&db, &home, &served, &remote, request),
             _ => route(
                 &db,

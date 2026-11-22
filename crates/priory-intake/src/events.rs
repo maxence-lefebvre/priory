@@ -570,6 +570,34 @@ pub struct LinearCommentCreated {
     pub source: Source,
 }
 
+/// A Sentry issue created, from a signed webhook delivery.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SentryIssueCreated {
+    /// Sentry's issue id, such as `1234567890`.
+    pub issue: String,
+    /// The issue's short id, such as `PYTHON-Y`.
+    pub short_id: String,
+    /// The issue title.
+    pub title: String,
+    /// Where the error happened, such as a function; null when Sentry names none.
+    pub culprit: Option<String>,
+    /// The issue's page on Sentry.
+    pub url: String,
+    /// The slug of the issue's project.
+    pub project: String,
+    /// The issue's level, such as `error` or `fatal`; null when Sentry names none.
+    pub level: Option<String>,
+    /// The issue's category, such as `error`, `outage` or `feedback`; null when Sentry names none.
+    pub category: Option<String>,
+    /// Who created it: a user's name, an integration's, or `Sentry`.
+    pub actor: Option<String>,
+    /// The `Request-ID` of the delivery. Sentry does not sign it.
+    pub delivery: Option<String>,
+    #[serde(flatten)]
+    pub source: Source,
+}
+
 /// A message posted in a Slack trigger's channel, outside a thread.
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]

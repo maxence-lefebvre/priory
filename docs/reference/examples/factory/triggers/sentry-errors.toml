@@ -1,0 +1,7 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "sentry"
+on = "issue.created"
+filter = { project = "api", level = "error" }   # the project's slug, and the issue's level
+repo = "owner/name"            # where its tasks work; without it they block
+workflow = "implement"
+key = "issue.id"               # the task key is sentry:1234567890

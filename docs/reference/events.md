@@ -23,6 +23,7 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
   [`linear.issue.created`](#linearissuecreated), [`linear.issue.state_changed`](#linearissuestate_changed),
   [`linear.issue.updated`](#linearissueupdated), [`linear.issue.blockers`](#linearissueblockers),
   [`linear.comment.created`](#linearcommentcreated)
+- Sentry: [`sentry.issue.created`](#sentryissuecreated)
 - Slack: [`slack.message.posted`](#slackmessageposted), [`slack.thread.replied`](#slackthreadreplied)
 - Others: [`schedule.fired`](#schedulefired), [`priory.task.requested.cli`](#priorytaskrequestedcli),
   [`factory.task.requested`](#factorytaskrequested), [`factory.intake.baseline`](#factoryintakebaseline)
@@ -42,7 +43,7 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
 | `subject` | string | A short line for listings; each type below gives its own |
 | `time` | RFC 3339 | When the event happened |
 | `data` | object | The fields below, by type |
-| `links` | array | GitHub and Linear events carry one `{ "label", "url" }` to the event's page; others carry none |
+| `links` | array | GitHub, Linear and Sentry events carry one `{ "label", "url" }` to the event's page; others carry none |
 
 Every GitHub, Linear and Slack event ends its `data` with the same three fields:
 
@@ -957,6 +958,55 @@ Schema: [`linear.comment.created.json`](../schemas/events/linear.comment.created
     "triggers": []
   },
   "links": [{ "label": "issue", "url": "https://linear.app/acme/issue/ENG-7/export-fails-on-an-empty-project#comment-6f1c1c9e" }]
+}
+```
+
+## Sentry
+
+### `sentry.issue.created`
+
+One message per issue Sentry creates and some `sentry` trigger matches. Only a webhook delivery
+publishes it: see [sentry.md](../intake/sentry.md). Subject: the issue's short id, such as
+`API-3F`.
+Schema: [`sentry.issue.created.json`](../schemas/events/sentry.issue.created.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `issue` | string | Sentry's issue id. The task key is `sentry:<issue>` |
+| `short_id` | string | The issue's short id |
+| `title` | string | The issue title |
+| `culprit` | string or null | Where the error happened, such as a function |
+| `url` | string | The issue's page on Sentry |
+| `project` | string | The project's slug |
+| `level` | string or null | The issue's level, such as `error` or `fatal` |
+| `category` | string or null | The issue's category: `error`, `outage` or `feedback` |
+| `actor` | string or null | Who created it: a user, an integration, or `Sentry` |
+| `delivery` | string or null | The delivery's `Request-ID`, which Sentry does not sign |
+| `time` | string | The issue's `firstSeen` |
+
+<!-- example: events/sentry.issue.created.json -->
+```json
+{
+  "id": "1833aec5-ebf2-5829-9a22-932f024ead54",
+  "type": "sentry.issue.created",
+  "subject": "API-3F",
+  "time": "2026-11-17T10:58:21.679Z",
+  "data": {
+    "issue": "1234567890",
+    "short_id": "API-3F",
+    "title": "ZeroDivisionError: division by zero",
+    "culprit": "app.views in divide",
+    "url": "https://acme.sentry.io/issues/1234567890/",
+    "project": "api",
+    "level": "error",
+    "category": "error",
+    "actor": "Sentry",
+    "delivery": "b1f2a3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+    "time": "2026-11-17T10:58:21.679000+00:00",
+    "baseline": false,
+    "triggers": ["sentry-errors"]
+  },
+  "links": [{ "label": "issue", "url": "https://acme.sentry.io/issues/1234567890/" }]
 }
 ```
 

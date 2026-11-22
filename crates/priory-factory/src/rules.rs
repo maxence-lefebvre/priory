@@ -283,6 +283,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             "github" => check_github(trigger, &mut problems),
             "linear" | "linear.view" => check_linear(trigger, &mut problems),
             "slack" => check_slack(trigger, &mut problems),
+            "sentry" => check_sentry(factory, trigger, &mut problems),
             _ if trigger.value.backfill.is_some() => problems.push(problem(
                 trigger,
                 trigger.lines.field("backfill"),
@@ -290,7 +291,14 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             )),
             _ => {}
         }
-        let checked = ["github", "linear", "linear.view", "slack", "schedule"];
+        let checked = [
+            "github",
+            "linear",
+            "linear.view",
+            "sentry",
+            "slack",
+            "schedule",
+        ];
         if !checked.contains(&trigger.value.source.as_str())
             && trigger
                 .value
@@ -757,6 +765,54 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
             trigger.lines.field("key"),
             format!("a GitHub trigger's `key` is `{number}`"),
         ));
+    }
+}
+
+/// Sentry events arrive only by webhook: a `sentry` trigger takes `issue.created`, filtered on
+/// the project slug or the level, keyed by Sentry's issue id.
+fn check_sentry(factory: &Factory, trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
+    let value = &trigger.value;
+    let mut report = |field: &str, message: String| {
+        let line = trigger.lines.field(field).or(trigger.lines.field("source"));
+        problems.push(problem(trigger, line, message));
+    };
+    if value.backfill.is_some() {
+        report(
+            "backfill",
+            "only a GitHub, Linear or Slack trigger has `backfill`".into(),
+        );
+    }
+    if factory.sentry_webhook().is_none() {
+        report(
+            "source",
+            "a `sentry` trigger needs `[webhooks.sentry]` in factory.toml: Sentry events arrive only by webhook".into(),
+        );
+    }
+    if value.on != "issue.created" {
+        report(
+            "on",
+            format!(
+                "a `sentry` trigger handles `issue.created`, not `{}`",
+                value.on
+            ),
+        );
+    }
+    let filters = ["project", "level"];
+    if value
+        .filter
+        .as_ref()
+        .is_some_and(|filter| filter.keys().any(|key| !filters.contains(&key.as_str())))
+    {
+        report(
+            "filter",
+            "a `sentry` trigger filters on `project` or `level`".into(),
+        );
+    }
+    if value.repo.as_deref().is_some_and(|repo| !owner_name(repo)) {
+        report("repo", "a Sentry trigger's `repo` is `owner/name`".into());
+    }
+    if value.key.as_deref().is_some_and(|key| key != "issue.id") {
+        report("key", "a Sentry trigger's `key` is `issue.id`".into());
     }
 }
 
