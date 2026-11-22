@@ -2,6 +2,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Input, InputState, ScrollHandle, TextView } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile } from "herdr";
 import { follow, priory, spansHtml } from "./priory.js";
+import { selectable } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { around, dossier, nextPick, refusal } from "./view.js";
 
@@ -410,8 +411,8 @@ export default class PrioryBonjour extends View {
       })
       .child(this.toolbar(model, t, wide))
       .when(Boolean(this.error), (el) => el.child(this.offline(t, now)))
-      .when(Boolean(this.flash), (el) => el.child(h_flex().flex_none().px(S["space-4"]).py(6).gap(S["space-2"]).items_center().border_b(1).border_color(t.line)
-        .text_size(S["type-small"][0]).text_color(t["warn-text"]).child(div().flex_1().whitespace_normal().child(this.flash ?? ""))
+      .when(Boolean(this.flash), (el) => el.child(h_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).items_center().border_b(1).border_color(t.line)
+        .text_size(S["type-small"][0]).text_color(t["warn-text"]).child(div().flex_1().min_w_0().whitespace_normal().child(selectable("flash", this.flash ?? "")))
         .child(this.secondary("flash-close", "Close", (cx) => { this.flash = null; cx.notify(); }, t))))
       .when(Boolean(model) && this.searching, (el) => el.child(this.searchbar(/** @type {Dossier} */ (model), t)))
       .when(Boolean(model) && !wide, (el) => el.child(this.chips(/** @type {Dossier} */ (model), t)))
@@ -430,8 +431,8 @@ export default class PrioryBonjour extends View {
       .when(task != null, (el) => el.hover((s) => s.bg(t.raised))).focus((s) => s.border(2).border_color(t["action-text"]))
       .on_click((_event, cx) => { if (task != null) this.go(task, cx); })
       .child(svg(ICON(icon)).size(14).text_color(t["text-2"]));
-    return h_flex().flex_none().h(S["pane-head"]).px(S["space-4"]).gap(10).items_center().border_b(1).border_color(t.line)
-      .child(h_flex().flex_none().gap(2).items_center()
+    return h_flex().flex_none().h(S["pane-head"]).px(S["space-4"]).gap(S["space-3"]).items_center().border_b(1).border_color(t.line)
+      .child(h_flex().flex_none().gap(S["space-1"]).items_center()
         .when(Boolean(model), (el) => el.child(arrow("report-older", "Older report", "chevron-left", older)))
         .child(div().font_family(this.font.mono).font_weight(600).text_size(S["type-small"][0]).child(model?.date ?? "Bonjour"))
         .when(Boolean(model), (el) => el.child(arrow("report-newer", "Newer report", "chevron-right", newer))))
@@ -459,8 +460,8 @@ export default class PrioryBonjour extends View {
 
   /** @param {Dossier} model @param {Palette} t */
   searchbar(model, t) {
-    return h_flex().id("report-query").flex_none().px(S["space-4"]).py(6).gap(S["space-2"]).items_center().border_b(1).border_color(t.line)
-      .child(div().flex_1().min_w_0().h(S["control-fine"]).px(8).rounded(S["radius-sm"]).border(1).border_color(t["control-line"])
+    return h_flex().id("report-query").flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).items_center().border_b(1).border_color(t.line)
+      .child(div().flex_1().min_w_0().h(S["control-fine"]).px(S["space-2"]).rounded(S["radius-sm"]).border(1).border_color(t["control-line"])
         .child(Input.new(this.query).h_full().w_full().text_size(S["type-small"][0]).text_color(t.text)))
       .when(model.found != null, (el) => el.child(div().flex_none().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(`${model.found} found`)));
   }
@@ -469,29 +470,29 @@ export default class PrioryBonjour extends View {
   offline(t, now) {
     const minutes = Math.round((now - this.updated) / 60_000);
     const last = this.data ? ` Last update ${minutes < 1 ? "under a minute" : `${minutes} min`} ago.` : "";
-    return h_flex().flex_none().px(S["space-4"]).py(6).gap(6).items_start().text_size(S["type-small"][0]).text_color(t["warn-text"]).border_b(1).border_color(t.line)
-      .child(div().flex_1().whitespace_normal().child(`Reconnecting to priory: ${this.error}.${last}`));
+    return h_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).items_start().text_size(S["type-small"][0]).text_color(t["warn-text"]).border_b(1).border_color(t.line)
+      .child(div().flex_1().min_w_0().whitespace_normal().child(selectable("offline", `Reconnecting to priory: ${this.error}.${last}`)));
   }
 
   /** @param {Dossier} model @param {Palette} t */
   rail(model, t) {
     /** @param {string} id @param {string} label @param {number | null} count @param {boolean} on @param {(cx: import("gpui-kit").Context) => void} action */
-    const item = (id, label, count, on, action) => Button.new(id).w_full().h(S["pane-chip"]).px(S["space-2"]).flex().items_center().gap(6).rounded(S["radius-sm"])
+    const item = (id, label, count, on, action) => Button.new(id).w_full().h(S["pane-chip"]).px(S["space-2"]).flex().items_center().gap(S["space-2"]).rounded(S["radius-sm"])
       .selected(on).bg(on ? t["action-soft"] : t.bg).text_color(on ? t["action-text"] : t.text).text_size(S["type-small"][0]).font_weight(on ? 600 : 500)
       .hover((s) => s.bg(on ? t["action-soft"] : t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
       .on_click((_event, cx) => action(cx))
       .child(div().flex_1().min_w_0().truncate().child(label))
       .when(count != null, (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(String(count))));
-    return v_flex().id("bonjour-rail").flex_none().w(RAIL.width).min_h_0().overflow_y_scrollbar().p(S["space-2"]).gap(2).border_r(1).border_color(t.line)
+    return v_flex().id("bonjour-rail").flex_none().w(RAIL.width).min_h_0().overflow_y_scrollbar().p(S["space-2"]).gap(S["space-1"]).border_r(1).border_color(t.line)
       .children(model.views.map((view) => item(`view-${view.id}`, view.label, view.count, this.view === view.id, (cx) => this.show(view.id, cx))))
-      .child(div().h(1).my(6).bg(t.line))
+      .child(div().h(1).my(S["space-2"]).bg(t.line))
       .children(this.every(model).map((section) => item(`jump-${section.id}`, section.title, section.count, false, (cx) => this.jump(section.id, cx))));
   }
 
   /** @param {Dossier} model @param {Palette} t */
   chips(model, t) {
     /** @param {string} id @param {string} label @param {boolean} on @param {(cx: import("gpui-kit").Context) => void} action */
-    const chip = (id, label, on, action) => Button.new(id).h(S["pane-chip"]).px(10).flex().flex_none().items_center().rounded(S["radius-full"])
+    const chip = (id, label, on, action) => Button.new(id).h(S["pane-chip"]).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-full"])
       .selected(on).bg(on ? t.emph : t.bg).text_color(on ? t["on-emph"] : t["text-2"]).text_size(S["type-small"][0]).font_weight(500)
       .hover((s) => s.bg(on ? t.emph : t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
       .on_click((_event, cx) => action(cx)).child(label);
@@ -527,7 +528,7 @@ export default class PrioryBonjour extends View {
       const text = this.empty ? "No report yet. The factory's bonjour workflow writes one each morning." : this.error ? "" : "Loading the report…";
       return v_flex().id("bonjour-document").flex_1().p(pad).text_color(t["text-2"]).child(text);
     }
-    return v_flex().id("bonjour-document").flex_1().min_w_0().min_h_0().overflow_y_scrollbar().track_scroll(this.scroll).px(pad).pt(pad).pb(32).gap(6)
+    return v_flex().id("bonjour-document").flex_1().min_w_0().min_h_0().overflow_y_scrollbar().track_scroll(this.scroll).px(pad).pt(pad).pb(S["space-6"]).gap(S["space-2"])
       .children(items(model).map((item) => {
         if (item[0] === "greeting") {
           return v_flex().gap(S["space-1"]).max_w(DOCUMENT).pb(S["space-3"])
@@ -538,7 +539,7 @@ export default class PrioryBonjour extends View {
           ? `Nothing in this report holds “${this.query.value().trim()}”.`
           : this.view === "picks" ? "Every pick is agreed." : "This report has no sections.");
         if (item[0] === "section") {
-          return h_flex().max_w(DOCUMENT).pt(S["space-3"]).gap(6).items_center().text_size(S["type-small"][0]).font_weight(650)
+          return h_flex().max_w(DOCUMENT).pt(S["space-3"]).gap(S["space-2"]).items_center().text_size(S["type-small"][0]).font_weight(650)
             .child(item[1].title).child(div().font_weight(400).text_color(t["text-3"]).child(String(item[1].count)));
         }
         const row = item[1];
@@ -566,20 +567,23 @@ export default class PrioryBonjour extends View {
   /** @param {Dossier} model @param {Row} row @param {Palette} t */
   line(model, row, t) {
     const selected = row.id === this.selected;
-    return Button.new(`row-${row.id}`).w_full().min_h(S["pane-row"]).px(S["space-2"]).py(S["space-2"]).flex().items_start().gap(10).rounded(S["radius-md"])
-      .selected(selected).bg(selected ? t["action-soft"] : t.bg).hover((s) => s.bg(selected ? t["action-soft"] : t.raised))
-      .focus((s) => s.border(2).border_color(t["action-text"]))
-      .accessibility_label([row.tile, row.key, row.text, row.owner].filter(Boolean).join(", "))
-      .on_click((_event, cx) => this.select(model, row.id, cx))
+    // A press selects the row; the selected row is no Button, so its text selects and copies.
+    const box = selected ? h_flex().id(`row-${row.id}`).bg(t["action-soft"])
+      : Button.new(`row-${row.id}`).flex().bg(t.bg).hover((s) => s.bg(t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
+        .accessibility_label([row.tile, row.key, row.text, row.owner].filter(Boolean).join(", "))
+        .on_click((_event, cx) => this.select(model, row.id, cx));
+    /** @param {string} id @param {string | { text: string, url?: string }[]} text */
+    const words = (id, text) => (selected ? selectable(id, text) : typeof text === "string" ? text : linked(id, text));
+    return box.w_full().min_h(S["pane-row"]).px(S["space-2"]).py(S["space-2"]).items_start().gap(S["space-3"]).rounded(S["radius-md"])
       .child(row.tile ? this.tile(row.tile, t) : h_flex().size(S["pane-tile"]).flex_none().items_center().justify_center()
         .child(svg(ICON("file-text")).size(14).text_color(t["text-3"])))
-      .child(v_flex().flex_1().min_w_0().gap(2)
+      .child(v_flex().flex_1().min_w_0().gap(S["space-1"])
         .child(h_flex().gap(S["space-2"]).items_start()
-          .child(v_flex().flex_1().min_w_0().gap(2)
-            .when(Boolean(row.key), (el) => el.child(div().font_family(this.font.mono).text_size(S["type-caption"][0]).text_color(t["text-2"]).child(row.key ?? "")))
-            .child(div().whitespace_normal().line_height(LINE(S["type-body"])).font_weight(500).child(linked(`text-${row.id}`, row.textSpans))))
+          .child(v_flex().flex_1().min_w_0().gap(S["space-1"])
+            .when(Boolean(row.key), (el) => el.child(div().font_family(this.font.mono).text_size(S["type-caption"][0]).text_color(t["text-2"]).child(words(`key-${row.id}`, row.key ?? ""))))
+            .child(div().whitespace_normal().line_height(LINE(S["type-body"])).font_weight(500).child(words(`text-${row.id}`, row.textSpans))))
           .when(Boolean(row.owner || row.time), (el) => el.child(this.side(row, t))))
-        .when(Boolean(row.meta), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(row.meta ?? ""))));
+        .when(Boolean(row.meta), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(words(`meta-${row.id}`, row.meta ?? "")))));
   }
 
   /** @param {string} state @param {Palette} t */
@@ -589,9 +593,9 @@ export default class PrioryBonjour extends View {
       .child(icon ? svg(ICON(icon)).size(14).text_color(t[ink]) : div().size(8).rounded(4).bg(t[ink]));
   }
 
-  /** @param {string | undefined} notice @param {Palette} t */
-  notice(notice, t) {
-    return div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["warn-text"]).child(notice ?? "");
+  /** @param {string} id @param {string | undefined} notice @param {Palette} t */
+  notice(id, notice, t) {
+    return div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["warn-text"]).child(selectable(`notice-${id}`, notice ?? ""));
   }
 
   /** An open pick is a card with a segmented control; an agreed one folds to one line. */
@@ -604,7 +608,7 @@ export default class PrioryBonjour extends View {
     const commentable = !selected && this.threadable(row);
     const reopened = pick.state === "agreed" && this.changing === row.id;
     if (pick.state !== "open" && !reopened) {
-      return v_flex().w_full().px(S["space-3"]).py(6).gap(S["space-1"]).rounded(S["radius-md"]).border(1).border_color(t.line).bg(selected ? t["action-soft"] : t.bg)
+      return v_flex().w_full().px(S["space-3"]).py(S["space-2"]).gap(S["space-1"]).rounded(S["radius-md"]).border(1).border_color(t.line).bg(selected ? t["action-soft"] : t.bg)
         .child(h_flex().min_h(S["control-fine"] - 4).gap(S["space-2"]).items_center()
           .child(svg(ICON("check")).size(14).flex_none().text_color(t["ok-text"]))
           .child(div().flex_none().max_w("40%").truncate().font_family(row.key ? this.font.mono : this.font.ui).text_size(S["type-small"][0]).text_color(t["text-2"]).child(row.key ?? row.text))
@@ -615,23 +619,23 @@ export default class PrioryBonjour extends View {
             cx.notify();
           }, t)))
           .when(commentable, (el) => el.child(this.secondary(`comment-${row.id}`, "Comment", (cx) => this.select(model, row.id, cx), t))))
-        .when(Boolean(notice), (el) => el.child(this.notice(notice, t)));
+        .when(Boolean(notice), (el) => el.child(this.notice(String(row.id), notice, t)));
     }
     const pending = this.pending?.row === row.id ? this.pending : null;
     const busy = Boolean(this.pending) || Boolean(this.error);
-    return v_flex().w_full().p(S["space-3"]).gap(6).rounded(S["radius-md"]).border(1).border_color(selected ? t["action-soft"] : t.line).bg(selected ? t["action-soft"] : t.surface)
+    return v_flex().w_full().p(S["space-3"]).gap(S["space-2"]).rounded(S["radius-md"]).border(1).border_color(selected ? t["action-soft"] : t.line).bg(selected ? t["action-soft"] : t.surface)
       .when(Boolean(row.tile || row.key || row.owner || row.time), (el) => el.child(h_flex().gap(S["space-2"]).items_center()
         .when(Boolean(row.tile), (el) => el.child(this.tile(/** @type {string} */ (row.tile), t)))
-        .child(div().flex_1().min_w_0().truncate().font_family(this.font.mono).text_size(S["type-caption"][0]).text_color(t["text-2"]).child(row.key ?? ""))
+        .child(div().flex_1().min_w_0().font_family(this.font.mono).text_size(S["type-caption"][0]).text_color(t["text-2"]).child(selectable(`key-${row.id}`, row.key ?? "")))
         .when(Boolean(row.owner || row.time), (el) => el.child(this.side(row, t)))))
-      .child(div().whitespace_normal().line_height(LINE(S["type-body"])).font_weight(600).child(linked(`text-${row.id}`, row.textSpans)))
-      .when(Boolean(row.meta), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(row.meta ?? "")))
-      .when(Boolean(notice), (el) => el.child(this.notice(notice, t)))
+      .child(div().whitespace_normal().line_height(LINE(S["type-body"])).font_weight(600).child(selectable(`text-${row.id}`, row.textSpans)))
+      .when(Boolean(row.meta), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(selectable(`meta-${row.id}`, row.meta ?? ""))))
+      .when(Boolean(notice), (el) => el.child(this.notice(String(row.id), notice, t)))
       .child(h_flex().gap(S["space-2"]).items_center().flex_wrap()
-        .child(h_flex().min_w_0().flex_wrap().p(2).gap(2).rounded(S["radius-sm"] + 2).border(1).border_color(t["control-line"]).bg(t.bg)
+        .child(h_flex().min_w_0().flex_wrap().p(S["space-1"]).gap(S["space-1"]).rounded(S["radius-sm"] + 2).border(1).border_color(t["control-line"]).bg(t.bg)
           .children(pick.options.map((option) => {
             const on = pending ? pending.option === option.label : option.label === pick.chosen;
-            return Button.new(`pick-${row.id}-${option.key || option.label}`).h(S["pane-chip"] - 4).px(10).flex().items_center().gap(S["space-1"]).rounded(S["radius-sm"])
+            return Button.new(`pick-${row.id}-${option.key || option.label}`).h(S["pane-chip"] - 4).px(S["space-3"]).flex().items_center().gap(S["space-1"]).rounded(S["radius-sm"])
               .selected(on).disabled(busy && !on).opacity(busy && !on ? 0.5 : 1)
               .bg(on ? t.emph : t.bg).text_color(on ? t["on-emph"] : t.text)
               .text_size(S["type-small"][0]).font_weight(on ? 600 : 500)
@@ -654,7 +658,7 @@ export default class PrioryBonjour extends View {
   threads(model, row, t) {
     const selected = row.id === this.selected && (this.threadable(row) || this.replyTo != null);
     const notice = row.pick ? undefined : this.notices.get(row.id);
-    return v_flex().pl(S["pane-tile"] + 10 + S["space-2"]).pt(S["space-1"]).pb(S["space-2"]).gap(S["space-2"])
+    return v_flex().pl(S["pane-tile"] + S["space-3"] + S["space-2"]).pt(S["space-1"]).pb(S["space-2"]).gap(S["space-2"])
       .children(row.threads.map((thread) => {
         if (thread.resolved) {
           return h_flex().gap(S["space-2"]).items_center().text_size(S["type-caption"][0]).text_color(t["text-3"])
@@ -663,11 +667,11 @@ export default class PrioryBonjour extends View {
             .child(this.secondary(`reopen-${thread.id}`, "Reopen", (cx) => this.remark(row, (client) => client.reopen(thread.id), cx), t));
         }
         return v_flex().p(S["space-2"]).gap(S["space-2"]).rounded(S["radius-md"]).bg(t.surface)
-          .children([thread, ...thread.replies].map((comment) => v_flex().gap(2)
+          .children([thread, ...thread.replies].map((comment) => v_flex().gap(S["space-1"])
             .child(h_flex().gap(S["space-2"]).text_size(S["type-caption"][0])
               .child(div().font_weight(600).text_color(t["text-2"]).child(comment.author))
               .child(div().text_color(t["text-3"]).child(comment.when ?? "")))
-            .child(div().whitespace_normal().text_size(S["type-small"][0]).child(comment.text))))
+            .child(div().whitespace_normal().text_size(S["type-small"][0]).child(selectable(`comment-text-${comment.id}`, comment.text)))))
           .child(h_flex().gap(S["space-2"])
             .child(this.secondary(`reply-${thread.id}`, "Reply", (cx) => {
               this.select(model, row.id, cx);
@@ -675,11 +679,11 @@ export default class PrioryBonjour extends View {
             }, t))
             .child(this.secondary(`resolve-${thread.id}`, "Resolve", (cx) => this.remark(row, (client) => client.resolve(thread.id), cx), t)));
       }))
-      .when(Boolean(notice), (el) => el.child(this.notice(notice, t)))
+      .when(Boolean(notice), (el) => el.child(this.notice(String(row.id), notice, t)))
       .when(selected, (el) => el.child(v_flex().gap(S["space-1"])
         .when(this.replyTo != null, (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(`Replying in thread ${this.replyTo}`)))
         .child(h_flex().gap(S["space-2"]).items_center()
-          .child(div().flex_1().min_w_0().h(S["control-fine"]).px(8).rounded(S["radius-sm"]).border(1).border_color(t["control-line"])
+          .child(div().flex_1().min_w_0().h(S["control-fine"]).px(S["space-2"]).rounded(S["radius-sm"]).border(1).border_color(t["control-line"])
             .child(Input.new(this.draft).h_full().w_full().text_size(S["type-small"][0]).text_color(t.text)))
           .child(this.secondary("comment-send", this.replyTo == null ? "Comment" : "Reply", (cx) => this.post(cx), t))
           .when(this.replyTo != null, (el) => el.child(this.secondary("comment-cancel", "Cancel", (cx) => { this.replyTo = null; cx.notify(); }, t))))));

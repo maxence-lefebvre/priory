@@ -30,6 +30,11 @@
           "const": "held",
           "description": "Grades a merged task when `after` comes: fails when a signal of `fails` happened by then.",
           "type": "string"
+        },
+        {
+          "const": "intent",
+          "description": "Asks the decision model `run` yes or no questions drawn from the trigger's intent and\nno-op cases.",
+          "type": "string"
         }
       ]
     },
@@ -106,13 +111,20 @@
       },
       "type": "array"
     },
+    "key_env": {
+      "description": "For `intent`, the environment variable that holds the decision model's key, never the key\nitself. `run` sees it, `PATH` and `HOME`, and no other variable.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "kind": {
       "allOf": [
         {
           "$ref": "#/definitions/ScoreKind"
         }
       ],
-      "description": "How it answers: `outcome`, `command`, `ask-shape`, `judge` or `held`."
+      "description": "How it answers: `outcome`, `command`, `ask-shape`, `judge`, `held` or `intent`."
     },
     "model": {
       "description": "For `judge`, the model that grades, such as `opus`.",
@@ -137,7 +149,7 @@
       ]
     },
     "run": {
-      "description": "For `command`, an executable in the factory folder: exit 0 passes, 1 fails, any other\nending is an error.",
+      "description": "For `command`, an executable in the factory folder: exit 0 passes, 1 fails, any other\nending is an error. For `intent`, a decision model in the factory folder: it reads the\nquestions as JSON on stdin and prints the answers as JSON.",
       "type": [
         "string",
         "null"
@@ -145,7 +157,7 @@
     },
     "timeout": {
       "default": null,
-      "description": "For `command`, how long it may run before Priory kills it; 20 minutes when unset.",
+      "description": "For `command` and `intent`, how long it may run before Priory kills it; 20 minutes for\n`command` and 30 seconds for `intent` when unset.",
       "pattern": "^0*[1-9][0-9]*[smh]$",
       "type": "string"
     }

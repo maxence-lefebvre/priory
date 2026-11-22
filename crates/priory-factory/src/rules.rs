@@ -375,6 +375,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         check_lead(factory, trigger, &mut problems);
         check_auto_answer(trigger, &mut problems);
         check_pre(factory, trigger, &mut problems);
+        check_intent(trigger, &mut problems);
         match trigger.value.source.as_str() {
             "github" => check_github(trigger, &mut problems),
             "linear" | "linear.view" => check_linear(trigger, &mut problems),
@@ -594,6 +595,7 @@ fn check_scorer(factory: &Factory, scorer: &Loaded<Scorer>, problems: &mut Vec<P
         ScoreKind::AskShape => ScoreOn::Ask,
         ScoreKind::Judge => ScoreOn::Diff,
         ScoreKind::Held => ScoreOn::Merge,
+        ScoreKind::Intent => ScoreOn::Result,
     };
     // A judge reads the result alone, as a plan's critic does, or the result and its diff.
     let judged = value.kind == ScoreKind::Judge && value.on == ScoreOn::Result;
@@ -660,6 +662,11 @@ fn check_scorer(factory: &Factory, scorer: &Loaded<Scorer>, problems: &mut Vec<P
             expect,
             "a `held` scorer takes no `expect`: name what fails it in `fails`".to_owned(),
         )),
+        ScoreKind::Intent if !value.expect.is_empty() => problems.push(problem(
+            scorer,
+            expect,
+            "an `intent` scorer takes no `expect`: its questions come from the trigger".to_owned(),
+        )),
         _ => {}
     }
     check_held(scorer, problems);
@@ -681,7 +688,20 @@ fn check_scorer(factory: &Factory, scorer: &Loaded<Scorer>, problems: &mut Vec<P
             }
         }
     }
-    if value.kind != ScoreKind::Command {
+    match (&value.key_env, value.kind) {
+        (Some(_), kind) if kind != ScoreKind::Intent => problems.push(problem(
+            scorer,
+            scorer.lines.field("key_env"),
+            format!("`key_env` is for kind `intent`, not `{kind}`", kind = kind.name()),
+        )),
+        (Some(name), _) if !variable(name) => problems.push(problem(
+            scorer,
+            scorer.lines.field("key_env"),
+            "`key_env` names the environment variable that holds the model's key, such as TYPESAFE_API_KEY, never the key itself".to_owned(),
+        )),
+        _ => {}
+    }
+    if !matches!(value.kind, ScoreKind::Command | ScoreKind::Intent) {
         for (field, set) in [
             ("run", value.run.is_some()),
             ("timeout", value.timeout.is_some()),
@@ -690,17 +710,23 @@ fn check_scorer(factory: &Factory, scorer: &Loaded<Scorer>, problems: &mut Vec<P
                 problems.push(problem(
                     scorer,
                     scorer.lines.field(field),
-                    format!("`{field}` is for kind `command`, not `{kind}`"),
+                    format!("`{field}` is for kind `command` or `intent`, not `{kind}`"),
                 ));
             }
         }
         return;
     }
     let Some(run) = &value.run else {
+        let message = match value.kind {
+            ScoreKind::Intent => {
+                "an `intent` scorer needs `run`: a decision model in the factory folder"
+            }
+            _ => "a `command` scorer needs `run`: an executable in the factory folder",
+        };
         problems.push(problem(
             scorer,
             scorer.lines.field("kind"),
-            "a `command` scorer needs `run`: an executable in the factory folder".to_owned(),
+            message.to_owned(),
         ));
         return;
     };
@@ -1360,6 +1386,38 @@ fn check_lead(factory: &Factory, trigger: &Loaded<Trigger>, problems: &mut Vec<P
             at,
             format!("lead `{lead}` needs harness = \"claude-code\" and session = \"shared\""),
         ));
+    }
+}
+
+/// An `intent` is one sentence on one line, and each `noop` case says something.
+fn check_intent(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
+    if let Some(intent) = &trigger.value.intent {
+        let lines = intent.trim().lines().count();
+        let message = match lines {
+            0 => Some(
+                "`intent` is empty: say in one sentence the outcome the trigger exists for"
+                    .to_owned(),
+            ),
+            1 => None,
+            n => Some(format!(
+                "`intent` is one sentence on one line, not {n} lines"
+            )),
+        };
+        if let Some(message) = message {
+            problems.push(problem(trigger, trigger.lines.field("intent"), message));
+        }
+    }
+    for (at, case) in trigger.value.noop.iter().enumerate() {
+        if case.trim().is_empty() {
+            problems.push(problem(
+                trigger,
+                trigger.lines.field("noop"),
+                format!(
+                    "`noop` case {} is empty: say which case must create no ask and no write",
+                    at + 1
+                ),
+            ));
+        }
     }
 }
 

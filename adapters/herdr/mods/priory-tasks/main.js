@@ -2,6 +2,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Popover } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
 import { age, ago, follow, priory } from "./priory.js";
+import { selectable } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { elsewhere, filtered, remoteActs, remoteSent, TASK_VIEWS, taskFacets, taskViews } from "./view.js";
 
@@ -107,9 +108,9 @@ export default class PrioryTasks extends View {
     const shown = views[this.view];
     return v_flex().id("priory-tasks").size_full().min_h_0().bg(t.bg).text_color(t.text).font_family(this.font.ui).text_size(S["type-body"][0])
       .child(h_flex().flex_none().h(S["pane-head"]).px(S["space-4"]).items_center().border_b(1).border_color(t.line).child(div().font_weight(650).child("Tasks")))
-      .when(Boolean(this.error), (el) => el.child(div().flex_none().px(S["space-4"]).py(6).whitespace_normal().text_size(S["type-small"][0])
+      .when(Boolean(this.error), (el) => el.child(div().flex_none().px(S["space-4"]).py(S["space-2"]).whitespace_normal().text_size(S["type-small"][0])
         .text_color(t["warn-text"]).border_b(1).border_color(t.line)
-        .child(`Could not read the tasks: ${this.error}. Check that priory runs, then it reads again on its own.`)))
+        .child(selectable("tasks-error", `Could not read the tasks: ${this.error}. Check that priory runs, then it reads again on its own.`))))
       .child(this.filters(views, facets, t))
       .child(v_flex().id("tasks-body").flex_1().min_h_0().overflow_y_scrollbar().px(S["space-2"]).py(S["space-2"]).children(this.body(shown, t)));
   }
@@ -125,7 +126,7 @@ export default class PrioryTasks extends View {
 
   /** The saved views with their filtered counts, then a chip per facet offering every task's values A to Z. @param {Record<string, any[]>} views @param {any[]} facets @param {Palette} t */
   filters(views, facets, t) {
-    const chip = (/** @type {string} */ id, /** @type {boolean} */ on) => Button.new(id).h(S["pane-chip"]).px(10).flex().flex_none().items_center().gap(4)
+    const chip = (/** @type {string} */ id, /** @type {boolean} */ on) => Button.new(id).h(S["pane-chip"]).px(S["space-3"]).flex().flex_none().items_center().gap(S["space-1"])
       .selected(on).text_size(S["type-small"][0]).focus((s) => s.border(2).border_color(t["action-text"]));
     /** @param {[string, string, (task: any) => string[], unknown, ((name: string) => string)?]} facet */
     const picker = ([key, label, values, , named = (name) => name]) => {
@@ -140,20 +141,20 @@ export default class PrioryTasks extends View {
       for (const task of this.tasks ?? []) for (const name of values(task)) counts.set(name, (counts.get(name) ?? 0) + 1);
       return Popover.new(`facet-${key}-menu`).trigger(trigger).anchor("top_left").open(this.popover === key)
         .on_open_change((/** @type {boolean} */ next, /** @type {import("gpui-kit").Context} */ cx) => { this.popover = next ? key : null; cx.notify(); })
-        .content(v_flex().min_w(200).p(4).gap(2).rounded(S["radius-md"]).bg(t.surface).border(1).border_color(t["control-line"])
-          .children([...counts].sort(([a], [b]) => a.localeCompare(b)).map(([name, count]) => Button.new(`pick-${key}-${name}`).h(S["control-fine"]).px(8).flex().items_center().gap(8)
+        .content(v_flex().min_w(200).p(S["space-1"]).gap(S["space-1"]).rounded(S["radius-md"]).bg(t.surface).border(1).border_color(t["control-line"])
+          .children([...counts].sort(([a], [b]) => a.localeCompare(b)).map(([name, count]) => Button.new(`pick-${key}-${name}`).h(S["control-fine"]).px(S["space-2"]).flex().items_center().gap(S["space-2"])
             .rounded(S["radius-sm"]).text_size(S["type-small"][0]).hover((s) => s.bg(t.raised)).focus((s) => s.bg(t.raised))
             .on_click((_event, cx) => { this.picks.set(key, name); this.popover = null; cx.notify(); })
             .child(div().flex_1().child(named(name))).child(div().text_color(t["text-3"]).child(String(count))))));
     };
     return v_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).border_b(1).border_color(t.line)
-      .child(h_flex().gap(6).flex_wrap().children(TASK_VIEWS.map((id) => {
+      .child(h_flex().gap(S["space-2"]).flex_wrap().children(TASK_VIEWS.map((id) => {
         const on = this.view === id;
         return chip(`view-${id}`, on).rounded(S["radius-full"]).font_weight(on ? 600 : 500).bg(on ? t.emph : t.surface).text_color(on ? t["on-emph"] : t.text)
           .on_click((_event, cx) => { [this.view, this.popover] = [id, null]; cx.notify(); })
           .child(LABELS[id]).child(div().opacity(0.7).child(String(views[id].length)));
       })))
-      .child(h_flex().gap(6).flex_wrap().children(facets.map(picker)));
+      .child(h_flex().gap(S["space-2"]).flex_wrap().children(facets.map(picker)));
   }
 
   /** The desk's task row: key, workflow, step, state and age; the title; lane, band and batch, or the reason. @param {any} task @param {Palette} t @param {number} now */
@@ -167,14 +168,14 @@ export default class PrioryTasks extends View {
       .accessibility_label(`Open task ${task.key}`)
       .on_click(() => setShared("priory.task.open", { task: task.id, at: Date.now() }))
       .child(this.tile(task.state, t))
-      .child(v_flex().flex_1().min_w_0().gap(2)
-        .child(h_flex().gap(6).items_baseline().text_size(S["type-caption"][0]).text_color(t["text-2"])
+      .child(v_flex().flex_1().min_w_0().gap(S["space-1"])
+        .child(h_flex().gap(S["space-2"]).items_baseline().text_size(S["type-caption"][0]).text_color(t["text-2"])
           .child(div().font_family(this.font.mono).text_color(t.text).child(task.key))
           .child(task.workflow).child(task.step)
           .child(div().text_color(t[ROLE[task.state] ?? "text-2"]).child(task.state))
           .child(div().flex_1()).child(div().text_color(t["text-3"]).child(age(task.since, now))))
         .child(div().min_w_0().truncate().text_size(S["type-small"][0]).child(task.title || task.tldr || ""))
-        .child(h_flex().gap(6).min_w_0()
+        .child(h_flex().gap(S["space-2"]).min_w_0()
           .child(reason ? caption(reason, ROLE[task.state] ?? "text-2") : caption([task.lane, task.band].filter(Boolean).join(" · "), "text-3"))
           .when(task.batch != null, (el) => el.child(caption(`· batch ${task.batch}`, "text-3")))));
   }
@@ -193,8 +194,8 @@ export default class PrioryTasks extends View {
       .accessibility_label(this.open === target ? `Close the actions of ${target}` : `Open the actions of ${target}`)
       .on_click((_event, cx) => { [this.open, this.armed, this.sendError] = [this.open === target ? null : target, null, null]; cx.notify(); })
       .child(this.tile("elsewhere", t))
-      .child(v_flex().flex_1().min_w_0().gap(2)
-        .child(h_flex().gap(6).items_baseline().text_size(S["type-caption"][0]).text_color(t["text-2"])
+      .child(v_flex().flex_1().min_w_0().gap(S["space-1"])
+        .child(h_flex().gap(S["space-2"]).items_baseline().text_size(S["type-caption"][0]).text_color(t["text-2"])
           .child(div().font_family(this.font.mono).text_color(t.text).child(task.key))
           .child(task.workflow ?? "").child(task.hold)
           .child(div().flex_1()).child(div().text_color(t["text-3"]).child(age(task.since, now))))
@@ -204,8 +205,8 @@ export default class PrioryTasks extends View {
       .child(svg(ICON(this.open === target ? "chevron-up" : "chevron-down")).size(14).flex_none().text_color(t["text-3"]));
     if (this.open !== target) return row;
     return v_flex().w_full().child(row).child(v_flex().pl(S["pane-tile"] + S["space-3"] + S["space-2"]).pr(S["space-2"]).pb(S["space-2"]).gap(S["space-2"])
-      .child(h_flex().gap(6).flex_wrap().children(remoteActs(task).map((act) => this.remoteButton(task, target, act, t, now))))
-      .when(this.sendError?.target === target, (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["warn-text"]).child(this.sendError?.text ?? "")))
+      .child(h_flex().gap(S["space-2"]).flex_wrap().children(remoteActs(task).map((act) => this.remoteButton(task, target, act, t, now))))
+      .when(this.sendError?.target === target, (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["warn-text"]).child(selectable(`send-error-${target}`, this.sendError?.text ?? ""))))
       .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"])
         .child(`This task runs on ${task.runner}. An action goes there through the log, and ${task.runner} applies it when it reads it.`)));
   }
@@ -214,7 +215,7 @@ export default class PrioryTasks extends View {
   remoteButton(task, target, act, t, now) {
     const armed = this.armedFor(task, target) && this.armed?.act === act;
     const left = armed && this.armed ? Math.max(0, 1 - (now - this.armed.at) / ARM_MS) : 0;
-    return Button.new(`remote-${target}-${act}`).h(S["control-fine"]).px(10).flex().flex_col().justify_center().rounded(S["radius-sm"])
+    return Button.new(`remote-${target}-${act}`).h(S["control-fine"]).px(S["space-3"]).flex().flex_col().justify_center().rounded(S["radius-sm"])
       .bg(armed ? t.emph : t.surface).text_color(armed ? t["on-emph"] : t.text).border(armed ? 3 : 1).border_color(armed ? t.action : t["control-line"])
       .disabled(this.sending).opacity(this.sending ? 0.45 : 1).focus((s) => s.border(2).border_color(t["action-text"]))
       .accessibility_label(armed ? `Press again to ${act} ${target}` : `${ACTS[act]} ${target}`)

@@ -76,7 +76,7 @@ const UNDO_PRE: &str = undo_pre!();
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
 /// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, 66, which added the step a gate enters after the merge, 70, which added idle compactions and session definitions, and 71, which added cleared deliveries, ended snoozes and withdrawal times. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = concat!(undo_pre!(), "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN debate; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE runs DROP COLUMN preempted_for; ALTER TABLE runs DROP COLUMN marked; ALTER TABLE tasks DROP COLUMN preempted; ALTER TABLE tasks DROP COLUMN protected; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+const UNDO_SINCE_SEARCH: &str = concat!(undo_pre!(), "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN debate; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE runs DROP COLUMN preempted_for; ALTER TABLE tasks DROP COLUMN intent; ALTER TABLE tasks DROP COLUMN noop; ALTER TABLE runs DROP COLUMN marked; ALTER TABLE tasks DROP COLUMN preempted; ALTER TABLE tasks DROP COLUMN protected; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
@@ -1471,6 +1471,52 @@ fn the_first_prompt_is_the_step_prompt_and_the_task_events_typed_once_and_confir
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.typed().len(), 2, "the silent turn gets one nudge");
     assert!(setup.typed()[1].starts_with("Your last turn ended"));
+}
+
+/// The agent-label trigger with an intent and one no-op case.
+const INTENT: &str = "intent = \"Fix each labeled bug with a reviewed pull request.\"\nnoop = [\"The issue is a question, not a bug.\"]\n";
+
+#[test]
+fn the_first_prompt_and_the_brief_carry_the_triggers_intent_and_noop_cases() {
+    let mut setup = Setup::new("first-prompt-intent");
+    fs::write(
+        setup.dir.join("factory/triggers/agent-label.toml"),
+        format!("{TRIGGER}{INTENT}"),
+    )
+    .unwrap();
+    let source = labeled(42);
+    let mut request = requested(42);
+    request.data["source"] = json!(source.id.to_string());
+    for message in [&source, &request] {
+        setup.publish(message);
+    }
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let typed = setup.typed();
+    let lines: Vec<_> = typed[0].lines().collect();
+    assert!(
+        lines[2].starts_with("github.issues.labeled owner/repo#42 {"),
+        "{lines:?}"
+    );
+    assert_eq!(
+        lines[3..],
+        [
+            "The trigger's intent: Fix each labeled bug with a reviewed pull request.",
+            "If one of these cases holds, raise no ask and write nothing: end the step with a result that names the case.",
+            "- The issue is a question, not a bug."
+        ]
+    );
+    let brief = task_json(&setup, "1")["brief"].clone();
+    assert_eq!(
+        brief["intent"],
+        "Fix each labeled bug with a reviewed pull request."
+    );
+    assert_eq!(
+        brief["noop"],
+        json!(["The issue is a question, not a bug."])
+    );
 }
 
 #[test]
@@ -6928,7 +6974,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          ALTER TABLE actions DROP COLUMN stdout; ALTER TABLE actions DROP COLUMN stderr;
          ALTER TABLE actions DROP COLUMN pid; ALTER TABLE actions DROP COLUMN pid_started;
          ALTER TABLE actions DROP COLUMN ended;
-         ALTER TABLE tasks DROP COLUMN progress; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN debate; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE runs DROP COLUMN preempted_for; ALTER TABLE runs DROP COLUMN marked; ALTER TABLE tasks DROP COLUMN preempted; ALTER TABLE tasks DROP COLUMN protected; ALTER TABLE tasks DROP COLUMN base_sha;
+         ALTER TABLE tasks DROP COLUMN progress; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN debate; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE runs DROP COLUMN preempted_for; ALTER TABLE tasks DROP COLUMN intent; ALTER TABLE tasks DROP COLUMN noop; ALTER TABLE runs DROP COLUMN marked; ALTER TABLE tasks DROP COLUMN preempted; ALTER TABLE tasks DROP COLUMN protected; ALTER TABLE tasks DROP COLUMN base_sha;
          ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head;
          DROP TABLE deliveries;
          DROP TABLE reports;
@@ -9581,6 +9627,30 @@ fn a_sweep_keeps_a_worktree_a_process_runs_in() {
 }
 
 #[test]
+fn a_sweep_removes_a_merged_worktree_while_the_desk_checks_it() {
+    let mut setup = Setup::ended("sweep-desk", 1);
+    setup.work_on(1);
+    setup.push(1);
+    setup.merge(1);
+    let hold = setup.dir.join("fake/desk-hold");
+    fs::write(&hold, "").unwrap();
+    let mut desk = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .arg("desk")
+        .env("FAKE_GIT_HOLD", &hold)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    setup.written("fake/desk-hold.held");
+
+    setup.start();
+
+    setup.removed(1);
+    fs::remove_file(&hold).unwrap();
+    desk.wait().unwrap();
+}
+
+#[test]
 fn a_sweep_leaves_the_worktree_of_a_running_or_asleep_task() {
     let mut setup = Setup::new("sweep-active");
     let silent = serde_json::Value::Null;
@@ -11579,7 +11649,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(UNDO_PRE).unwrap();
     db.execute_batch(
-        "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN debate; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE runs DROP COLUMN preempted_for; ALTER TABLE runs DROP COLUMN marked; ALTER TABLE tasks DROP COLUMN preempted; ALTER TABLE tasks DROP COLUMN protected; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+        "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN debate; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE runs DROP COLUMN preempted_for; ALTER TABLE tasks DROP COLUMN intent; ALTER TABLE tasks DROP COLUMN noop; ALTER TABLE runs DROP COLUMN marked; ALTER TABLE tasks DROP COLUMN preempted; ALTER TABLE tasks DROP COLUMN protected; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
@@ -25234,6 +25304,204 @@ fn scored_task(name: &str) -> Setup {
     setup
 }
 
+/// An intent scorer whose decision model is `scripts/decide`, with its key in `TYPESAFE_API_KEY`.
+const INTENT_SCORER: &str = "description = \"Serves the trigger's intent.\"\non = \"result\"\nkind = \"intent\"\nrun = \"scripts/decide\"\nkey_env = \"TYPESAFE_API_KEY\"\ntimeout = \"5s\"\n";
+
+/// A decision model that keeps the questions it read in `asked.json` and prints `answers.json`.
+const DECIDE: &str = "#!/bin/sh\ncat > asked.json\n[ -f answers.json ] || { echo \"no answers\" >&2; exit 1; }\ncat answers.json\n";
+
+/// Task 1 as `scored_task` makes it, from a trigger with an intent and one no-op case, with the
+/// intent scorer and its decision model in the factory.
+fn intent_task(name: &str) -> Setup {
+    use std::os::unix::fs::PermissionsExt;
+    let setup = Setup::with_workflow(name, STEPS);
+    let factory = setup.dir.join("factory");
+    fs::write(
+        factory.join("triggers/agent-label.toml"),
+        format!("{TRIGGER}{INTENT}"),
+    )
+    .unwrap();
+    fs::create_dir_all(factory.join("scripts")).unwrap();
+    fs::write(factory.join("scripts/decide"), DECIDE).unwrap();
+    fs::set_permissions(
+        factory.join("scripts/decide"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let mut setup = setup;
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    scorer(&setup, "intent", INTENT_SCORER);
+    setup
+}
+
+/// Makes the decision model answer `intent` and `noop` to the two questions, with `usage`.
+fn answers(setup: &Setup, intent: &str, noop: &str, usage: bool) {
+    let mut answer = json!({
+        "model": "jev-1.14.0",
+        "answers": {
+            "intent": { "type": "choice", "choice": intent, "probabilities": { intent: 0.9 } },
+            "noop-1": { "type": "choice", "choice": noop, "probabilities": { noop: 0.9 } },
+        },
+    });
+    if usage {
+        answer["usage"] = json!({ "input_tokens": 300 });
+    }
+    fs::write(setup.dir.join("factory/answers.json"), answer.to_string()).unwrap();
+}
+
+/// `priory score --scorer intent` on task 1 with the key set, as rows of run, verdict and reason.
+fn intent_scores(setup: &Setup) -> Vec<[String; 3]> {
+    let factory = setup.dir.join("factory");
+    let output = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .env("TYPESAFE_API_KEY", "test-key")
+        .args([
+            "score",
+            factory.to_str().unwrap(),
+            "1",
+            "--scorer",
+            "intent",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let shown: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    shown["scores"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            ["run", "verdict", "reason"].map(|field| {
+                row[field]
+                    .as_str()
+                    .map_or_else(|| row[field].to_string(), str::to_owned)
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn an_intent_scorer_passes_a_noop_case_that_asked_and_wrote_nothing() {
+    let setup = intent_task("score-intent-noop");
+    answers(&setup, "NO", "YES", true);
+
+    let rows = intent_scores(&setup);
+
+    assert_eq!(
+        rows,
+        [
+            [
+                "1",
+                "not applicable",
+                "an intent scorer grades the task's latest finished run"
+            ],
+            [
+                "2",
+                "pass",
+                "no-op case \"The issue is a question, not a bug.\" holds, and the task asked and wrote nothing"
+            ],
+        ]
+        .map(|row| row.map(str::to_owned))
+    );
+    let asked: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(setup.dir.join("factory/asked.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        asked["questions"]["noop-1"]["instructions"],
+        "Is the request this case, which must create no ask and no write? The issue is a question, not a bug."
+    );
+    assert_eq!(
+        asked["questions"]["intent"]["instructions"],
+        "Did the task's work serve this intent? Fix each labeled bug with a reviewed pull request."
+    );
+    assert_eq!(asked["state"]["asked"], false);
+    assert_eq!(asked["state"]["result"]["outcome"], "passed");
+    let records = scored_records(&setup);
+    let last = &records.last().unwrap()["data"];
+    assert_eq!(last["kind"], "intent");
+    assert_eq!(last["evaluated"], true);
+    assert_eq!(last["model"], "jev-1.14.0");
+    assert_eq!(last["input_tokens"], 300);
+    assert_eq!(last["answers"], json!({ "intent": "NO", "noop-1": "YES" }));
+    assert_eq!(last["noop_case"], "The issue is a question, not a bug.");
+}
+
+#[test]
+fn an_intent_scorer_fails_a_noop_case_that_asked_and_a_task_that_missed_its_intent() {
+    let setup = intent_task("score-intent-fail");
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "INSERT INTO asks (task, step, kind, question, options) VALUES (1, 'plan', 'agent', 'Which?', '[]')",
+        [],
+    )
+    .unwrap();
+
+    answers(&setup, "YES", "YES", true);
+    let noop = intent_scores(&setup);
+    answers(&setup, "NO", "NO", true);
+    let missed = intent_scores(&setup);
+    answers(&setup, "YES", "UNKNOWN", false);
+    let unknown = intent_scores(&setup);
+
+    assert_eq!(
+        noop[1][1..],
+        [
+            "fail",
+            "no-op case \"The issue is a question, not a bug.\" holds, but the task asked"
+        ]
+    );
+    assert_eq!(
+        missed[1][1..],
+        ["fail", "the task did not serve its trigger's intent"]
+    );
+    assert_eq!(
+        unknown[1][1..],
+        [
+            "not applicable",
+            "UNKNOWN whether no-op case \"The issue is a question, not a bug.\" holds"
+        ]
+    );
+    let records = scored_records(&setup);
+    assert_eq!(
+        records.last().unwrap()["data"]["input_tokens"],
+        "unavailable",
+        "a model that reports no usage is unavailable, not zero"
+    );
+}
+
+#[test]
+fn an_intent_scorer_whose_call_fails_is_not_evaluated_and_one_without_intent_does_not_apply() {
+    let setup = intent_task("score-intent-error");
+
+    let failed = intent_scores(&setup);
+    fs::write(setup.dir.join("factory/triggers/agent-label.toml"), TRIGGER).unwrap();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute("UPDATE tasks SET intent = NULL, noop = NULL", [])
+        .unwrap();
+    let none = intent_scores(&setup);
+
+    assert_eq!(
+        failed[1][1..],
+        ["error", "not evaluated: it exited 1: no answers"]
+    );
+    let records = scored_records(&setup);
+    assert_eq!(records[1]["data"]["evaluated"], false);
+    assert!(records[1]["data"].get("answers").is_none());
+    assert_eq!(
+        none[1][1..],
+        [
+            "not applicable",
+            "the task's trigger names no intent and no no-op case"
+        ]
+    );
+}
+
 #[test]
 fn priory_score_waits_for_a_write_that_commits_while_it_reads() {
     let setup = scored_task("score-locked");
@@ -29273,6 +29541,33 @@ fn wakes_as_today(setup: &Setup, why: &str) {
     assert_eq!(decided[0]["acted"], false, "{decided:?}");
     let given = decided[0]["why"].as_str().unwrap_or_default();
     assert!(given.starts_with(why), "{given} does not start with {why}");
+}
+
+#[test]
+fn the_triage_model_reads_the_intent_and_noop_cases_of_the_task_it_sorts_for() {
+    let intent = |factory: &Path| {
+        fs::write(
+            factory.join("triggers/agent-label.toml"),
+            format!("{TRIGGER}{INTENT}"),
+        )
+        .unwrap();
+    };
+    let setup = asleep_deciding("decision-intent", ANSWERS, true, intent, &[KEY]);
+
+    setup.publish(&pull_comment("Thanks, looks good."));
+
+    stays_asleep(&setup);
+    let calls = fs::read_to_string(setup.dir.join("factory/calls.log")).unwrap();
+    let last: serde_json::Value = serde_json::from_str(calls.lines().last().unwrap()).unwrap();
+    assert_eq!(
+        last["state"]["intent"],
+        "Fix each labeled bug with a reviewed pull request."
+    );
+    assert_eq!(
+        last["state"]["noop"],
+        json!(["The issue is a question, not a bug."])
+    );
+    assert_eq!(last["state"]["body"], "Thanks, looks good.");
 }
 
 #[test]

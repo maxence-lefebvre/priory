@@ -1,8 +1,9 @@
 import { View, div, svg } from "gpui-kit";
-import { h_flex, v_flex, Button, TextView } from "gpui-base";
+import { h_flex, v_flex, Button } from "gpui-base";
 import { appHome, exec, focused, home as herdrHome, layout as shown, panes, readTextFile, run, setShared, shared } from "herdr";
 import { showAsks } from "./layout.js";
-import { follow, priory, spansHtml } from "./priory.js";
+import { follow, priory } from "./priory.js";
+import { selectable } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { taskView } from "./view.js";
 
@@ -48,9 +49,6 @@ async function connect() {
   const links = await client.links().then((read) => read.links, () => []);
   return { theme: config.theme ?? "indigo", client, links };
 }
-
-/** Text with its autolinks; plain text stays a plain child. @param {string} id @param {{ text: string, url?: string }[]} spans */
-const linked = (id, spans) => (spans.some((span) => span.url) ? TextView.html(id, spansHtml(spans)) : spans.map((span) => span.text).join(""));
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
 
@@ -117,7 +115,7 @@ export default class PrioryTask extends View {
   header(task, t, font) {
     return h_flex().flex_none().h(S["pane-head"]).px(S["space-4"]).gap(S["space-2"]).items_center().border_b(1).border_color(t.line)
       .child(this.tile(task.state, t))
-      .child(div().flex_none().font_family(font.mono).text_size(S["type-mono"][0]).text_color(t["text-2"]).child(task.key))
+      .child(div().flex_none().font_family(font.mono).text_size(S["type-mono"][0]).text_color(t["text-2"]).child(selectable("task-key", task.key)))
       .child(div().flex_none().text_size(S["type-caption"][0]).text_color(t[ROLE[task.state] ?? "text-2"]).child(task.state))
       .child(div().flex_1())
       // Watch and Attach open the live run's terminal, where Open task opens this panel. Watch cannot type, so it comes first.
@@ -149,8 +147,8 @@ export default class PrioryTask extends View {
   offline(t) {
     const minutes = Math.round((Date.now() - this.updated) / 60_000);
     const last = this.task ? ` Last update ${minutes < 1 ? "under a minute" : `${minutes} min`} ago.` : "";
-    return div().flex_none().px(S["space-4"]).py(6).whitespace_normal().text_size(S["type-small"][0]).text_color(t["warn-text"]).border_b(1).border_color(t.line)
-      .child(`Reconnecting to priory: ${this.error}.${last}`);
+    return div().flex_none().px(S["space-4"]).py(S["space-2"]).whitespace_normal().text_size(S["type-small"][0]).text_color(t["warn-text"]).border_b(1).border_color(t.line)
+      .child(selectable("offline", `Reconnecting to priory: ${this.error}.${last}`));
   }
 
   /** @param {Task} task @param {Palette} t @param {typeof FONTS.indigo} font */
@@ -161,41 +159,41 @@ export default class PrioryTask extends View {
     /** @param {string} id @param {string} tile @param {string} text @param {string | null} note @param {any[]} [below] */
     const line = (id, tile, text, note, below = []) => h_flex().id(id).gap(S["space-2"]).py(S["space-1"]).items_start().border_t(1).border_color(t.line)
       .child(this.tile(tile, t))
-      .child(v_flex().flex_1().min_w_0().gap(2)
-        .child(div().whitespace_normal().text_size(S["type-small"][0]).child(text))
+      .child(v_flex().flex_1().min_w_0().gap(S["space-1"])
+        .child(div().whitespace_normal().text_size(S["type-small"][0]).child(selectable(`${id}-text`, text)))
         .when(Boolean(note), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(note ?? "")))
         .children(below));
-    /** @param {Task["history"][number]["scores"][number]} score */
-    const scored = (score) => h_flex().gap(S["space-2"]).pt(S["space-1"]).items_start().border_t(1).border_color(t.line)
+    /** @param {Task["history"][number]["scores"][number]} score @param {string} key */
+    const scored = (score, key) => h_flex().gap(S["space-2"]).pt(S["space-1"]).items_start().border_t(1).border_color(t.line)
       .child(this.tile(score.verdict, t))
-      .child(v_flex().flex_1().min_w_0().gap(2)
+      .child(v_flex().flex_1().min_w_0().gap(S["space-1"])
         .child(h_flex().gap(S["space-1"]).flex_wrap().text_size(S["type-small"][0])
           .child(div().font_family(font.mono).child(score.scorer))
           .child(div().font_weight(600).text_color(t[VERDICT_ROLE[score.verdict] ?? "text-2"]).child(score.verdict)))
-        .when(Boolean(score.reason), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(score.reason ?? ""))));
+        .when(Boolean(score.reason), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(selectable(`score-${key}`, score.reason ?? "")))));
     const pr = task.pr;
     return v_flex().id("task-scroll").flex_1().min_h_0().overflow_y_scrollbar().p(S["space-4"]).gap(S["space-4"])
       .child(v_flex().gap(S["space-2"])
         .child(div().whitespace_normal().font_family(font.display).text_size(S["type-pane-question"][0])
-          .line_height(`${S["type-pane-question"][1]}px`).font_weight(650).child(linked("task-title", task.titleSpans)))
+          .line_height(`${S["type-pane-question"][1]}px`).font_weight(650).child(selectable("task-title", task.titleSpans)))
         .child(h_flex().gap(S["space-2"]).flex_wrap().text_size(S["type-caption"][0]).text_color(t["text-2"]).children(task.context))
         .when(Boolean(task.reason), (el) => el.child(div().whitespace_normal().text_size(S["type-small"][0])
-          .text_color(t[ROLE[task.state] ?? "text-2"]).child(task.reason ?? ""))))
+          .text_color(t[ROLE[task.state] ?? "text-2"]).child(selectable("task-reason", task.reason ?? "")))))
       .when(task.asks.length > 0, (el) => el.child(v_flex().gap(S["space-1"]).child(heading("Asks", task.asks.length))
         .children(task.asks.map((ask) => line(`ask-${ask.id}`, ask.tile, ask.text, ask.note)
           .when(ask.tile === "ask", (el) => el.child(this.answerButton(ask.id, t)))))))
       .when(Boolean(pr) || task.stack.length > 0, (el) => el.child(v_flex().gap(S["space-1"]).child(heading("Pull request", Math.max(1, task.stack.length)))
-        .when(Boolean(pr), (el) => el.child(v_flex().gap(2).py(S["space-1"]).border_t(1).border_color(t.line)
+        .when(Boolean(pr), (el) => el.child(v_flex().gap(S["space-1"]).py(S["space-1"]).border_t(1).border_color(t.line)
           .child(div().whitespace_normal().text_size(S["type-small"][0]).font_weight(600)
-            .child(linked("pr-title", [{ text: pr?.title ?? "", ...(pr?.url?.startsWith("https://") && { url: pr.url }) }])))
-          .child(div().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(pr?.line ?? ""))
+            .child(selectable("pr-title", [{ text: pr?.title ?? "", ...(pr?.url?.startsWith("https://") && { url: pr.url }) }])))
+          .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(selectable("pr-line", pr?.line ?? "")))
           .when(Boolean(pr?.checks), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(pr?.checks ?? "")))))
         .children(task.stack.map((pull) => line(`pull-${pull.number}`, pull.state === "merged" ? "done" : pull.state === "closed" ? "dropped" : pull.next ? "ready" : "queued",
           `#${pull.number} ${pull.branch} into ${pull.base}`, pull.next ? `${pull.state}, next to merge` : pull.state)))))
       .when(task.inbox.length > 0, (el) => el.child(v_flex().gap(S["space-1"]).child(heading("Inbox", task.inboxTotal))
         .children(task.inbox.map((event) => line(`event-${event.id}`, event.tile, event.text, event.note)))))
       .when(task.history.length > 0, (el) => el.child(v_flex().gap(S["space-1"]).child(heading("History", task.history.length))
-        .children(task.history.map((run) => line(`run-${run.id}`, run.tile, run.text, run.when, run.scores.map(scored))))));
+        .children(task.history.map((run) => line(`run-${run.id}`, run.tile, run.text, run.when, run.scores.map((score, index) => scored(score, `${run.id}-${index}`)))))));
   }
 
   /** @param {string} state @param {Palette} t */

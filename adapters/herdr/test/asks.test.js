@@ -134,7 +134,13 @@ test("an open command ask's detail puts the decision first, then Why, History an
     title: "Command an answer runs",
     words: ["gh", "pr", "merge", "212", "--squash", "--match-head-commit", "a1f3c9e", ""],
     note: "In /home/me/wt/pri-61 (worktree). Runs when answered Merge. Bound to revision 2. Runs at most once.",
+    line: "gh pr merge 212 --squash --match-head-commit a1f3c9e ''",
   });
+  // Copy gives a shell line: a word with a space or a quote stays one word.
+  const quoted = askDetail({ ...asks[0], command: { ...asks[0].command, argv: ["echo", "it's done", "a b"] } }, { now, armed: null });
+  assert.equal(quoted.command?.line, `echo 'it'\\''s done' 'a b'`);
+  // An outside ask's command is one string, copied as it is.
+  assert.equal(askDetail(asks[4], { now, armed: null }).command?.line, asks[4].command);
   assert.deepEqual(detail.bar, { count: "3 options", option: 0 });
   assert.equal(detail.canSnooze, true);
 });
@@ -443,4 +449,23 @@ test("another runner's ask lists each answer sent to it in its history, newest f
     { tile: "refused", text: "Sent reject to desktop for revision 2. desktop refused it: ask 12 is at revision 3", time: "20:30" },
     { tile: "ask", text: "Asked revision 2", time: "10:00" },
   ]);
+});
+
+test("Copy puts an ask's command on the clipboard as one shell line, and its note is selectable", async () => {
+  const { context, draw, find, herdr, press, settle } = await import("./kit.js");
+  const { default: Asks } = await import("../mods/priory-asks/main.js");
+  herdr.reset();
+  herdr.replies = { asks: fixture("asks.json"), task: fixture("task.json"), links: { links: [] } };
+  const panel = new Asks();
+  const cx = context();
+  panel.init({}, cx);
+  await settle();
+  panel.select(1, cx);
+  panel.reading = "command";
+  await settle();
+  const tree = draw(panel, cx);
+  assert.equal(find(tree, "command-note-section")?.calls.selectable?.[0], true);
+  press(tree, "copy-command-section");
+  assert.equal(herdr.clipboard, "gh pr merge 212 --squash --match-head-commit a1f3c9e ''");
+  assert.equal(find(draw(panel, cx), "copy-command-section")?.kids.join(""), "Copied");
 });

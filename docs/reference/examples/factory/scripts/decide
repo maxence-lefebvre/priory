@@ -1,0 +1,4 @@
+#!/bin/sh
+# Reads Priory's questions as JSON on stdin and prints the answers as JSON, in the shape of Jev's
+# System One API. Copy examples/decisions/jev.py from Priory's repository beside this script.
+exec python3 "$(dirname "$0")/jev.py"

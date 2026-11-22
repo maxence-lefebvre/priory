@@ -2,6 +2,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
 import { follow, priory } from "./priory.js";
+import { selectable } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { droppedWhy, eventWords, neverOwned, routeAction, unheardActs } from "./view.js";
 
@@ -119,11 +120,11 @@ export default class PrioryInbox extends View {
       .child(h_flex().flex_none().h(S["pane-head"]).px(S["space-4"]).gap(S["space-2"]).items_center().border_b(1).border_color(t.line)
         .child(div().font_weight(650).child("Inbox"))
         .child(div().flex_1())
-        .child(h_flex().h(S["pane-chip"]).px(10).gap(6).items_center().rounded(S["radius-full"]).bg(t.emph).text_color(t["on-emph"])
+        .child(h_flex().h(S["pane-chip"]).px(S["space-3"]).gap(S["space-2"]).items_center().rounded(S["radius-full"]).bg(t.emph).text_color(t["on-emph"])
           .text_size(S["type-small"][0]).font_weight(500).child("Unrouted").when(count !== null, (el) => el.child(String(count)))))
-      .when(Boolean(this.error), (el) => el.child(div().flex_none().px(S["space-4"]).py(6).whitespace_normal().text_size(S["type-small"][0])
+      .when(Boolean(this.error), (el) => el.child(div().flex_none().px(S["space-4"]).py(S["space-2"]).whitespace_normal().text_size(S["type-small"][0])
         .text_color(t["warn-text"]).border_b(1).border_color(t.line)
-        .child(`Could not read the unrouted events: ${this.error}. Check that priory runs, then it reads again on its own.`)))
+        .child(selectable("inbox-error", `Could not read the unrouted events: ${this.error}. Check that priory runs, then it reads again on its own.`))))
       .child(v_flex().id("inbox-body").flex_1().min_h_0().overflow_y_scrollbar().p(S["space-4"]).gap(S["space-4"]).children(this.body(t)));
   }
 
@@ -131,12 +132,12 @@ export default class PrioryInbox extends View {
   body(t) {
     if (!this.groups) return this.error ? [] : [div().text_color(t["text-2"]).child("Loading the unrouted events…")];
     const rest = neverOwned(this.groups.other);
-    const restLine = rest ? [div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-3"]).child(rest)] : [];
+    const restLine = rest ? [div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-3"]).child(selectable("never-owned", rest))] : [];
     const unheard = this.groups.unheard ?? [];
     const dropped = this.groups.dropped ?? [];
     const heard = [
       ...(unheard.length ? [this.heading("Unheard", "no agent read them", t), ...unheard.map((group) => this.unheard(group, t))] : []),
-      ...(dropped.length ? [this.heading("Dropped", "a script judged each once", t), ...dropped.map((drop) => this.dropped(drop, t))] : []),
+      ...(dropped.length ? [this.heading("Dropped", "a script judged each once", t), ...dropped.map((drop, at) => this.dropped(drop, `dropped-${at}`, t))] : []),
     ];
     if (heard.length) heard.push(this.heading("Unrouted", "reached no task", t));
     if (!this.groups.owned.length) {
@@ -149,26 +150,26 @@ export default class PrioryInbox extends View {
    * A request a pre script dropped: its key and count, its trigger and script, its source event,
    * then why; no action, since a drop is final for its event. @param {Drop} drop @param {Palette} t
    */
-  dropped(drop, t) {
+  dropped(drop, key, t) {
     const events = drop.event ? [drop.event] : [];
     return v_flex().gap(S["space-2"]).p(S["space-3"]).rounded(S["radius-md"]).border(1).border_color(t.line).bg(t.surface)
       .child(h_flex().gap(S["space-2"]).items_baseline()
-        .child(div().flex_1().min_w_0().truncate().font_family(this.font.mono).text_size(S["type-small"][0]).child(drop.key ?? "-"))
+        .child(div().flex_1().min_w_0().font_family(this.font.mono).text_size(S["type-small"][0]).child(selectable(`${key}-key`, drop.key ?? "-")))
         .child(div().text_size(S["type-small"][0]).text_color(t["text-2"]).child(String(events.length))))
       .child(h_flex().gap(S["space-2"]).items_center().text_size(S["type-small"][0]).text_color(t["text-2"])
-        .child(this.tile("dropped", t)).child(div().min_w_0().whitespace_normal().child(`trigger ${drop.trigger}, ${drop.script}`)))
-      .children(events.map((event) => this.event(event, t)))
-      .child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-2"]).child(droppedWhy(drop)));
+        .child(this.tile("dropped", t)).child(div().min_w_0().whitespace_normal().child(selectable(`${key}-trigger`, `trigger ${drop.trigger}, ${drop.script}`))))
+      .children(events.map((event, index) => this.event(event, `${key}-${index}`, t)))
+      .child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-2"]).child(selectable(`${key}-why`, droppedWhy(drop))));
   }
 
-  /** One event: its type, subject and time on one line, its first line under them. @param {any} event @param {Palette} t */
-  event(event, t) {
-    return v_flex().gap(2).text_size(S["type-small"][0])
-      .child(h_flex().gap(6).items_baseline()
+  /** One event: its type, subject and time on one line, its first line under them; `key` names its text. @param {any} event @param {string} key @param {Palette} t */
+  event(event, key, t) {
+    return v_flex().gap(S["space-1"]).text_size(S["type-small"][0])
+      .child(h_flex().gap(S["space-2"]).items_baseline()
         .child(div().font_weight(600).child(eventWords(event.type)))
-        .child(div().flex_1().min_w_0().truncate().child(event.subject ?? ""))
+        .child(div().flex_1().min_w_0().child(selectable(`subject-${key}`, event.subject ?? "")))
         .child(div().flex_none().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(when(event.time))))
-      .when(Boolean(event.line), (el) => el.child(div().whitespace_normal().text_color(t["text-2"]).child(event.line)));
+      .when(Boolean(event.line), (el) => el.child(div().whitespace_normal().text_color(t["text-2"]).child(selectable(`line-${key}`, event.line))));
   }
 
   /** A section's title and its note. @param {string} title @param {string} note @param {Palette} t */
@@ -191,7 +192,7 @@ export default class PrioryInbox extends View {
       ? h_flex().gap(S["space-2"]).items_center()
         .child(this.button(key, `Resume task ${task.id}`, async (client) => { await client.resume(task.id); return `Resumed task ${task.id}.`; }, t))
         .child(line("It reads them when it resumes."))
-      : acts.includes("say") ? line(group.follow_up ?? "").font_family(this.font.mono)
+      : acts.includes("say") ? div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-2"]).font_family(this.font.mono).child(selectable(`say-${task.id}`, group.follow_up ?? ""))
         : acts.length ? this.route({ ...group, resource: task.key }, t, acts[0], key)
           : line("Its next run reads them.");
     return this.card(task.key, { ...group, resource: task.key }, action, t, key);
@@ -206,7 +207,7 @@ export default class PrioryInbox extends View {
     const notice = this.notices.get(key);
     return v_flex().gap(S["space-2"]).p(S["space-3"]).rounded(S["radius-md"]).border(1).border_color(t.line).bg(t.surface)
       .child(h_flex().gap(S["space-2"]).items_baseline()
-        .child(div().flex_1().min_w_0().truncate().font_family(this.font.mono).text_size(S["type-small"][0]).child(title))
+        .child(div().flex_1().min_w_0().font_family(this.font.mono).text_size(S["type-small"][0]).child(selectable(`title-${key}`, title)))
         .child(div().text_size(S["type-small"][0]).text_color(t["text-2"]).child(String(group.events.length))))
       .child(Button.new(`open-${key}`).h(S["pane-tile"] + 8).flex().gap(S["space-2"]).items_center().rounded(S["radius-sm"])
         .text_size(S["type-small"][0]).text_color(t["text-2"]).hover((s) => s.bg(t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
@@ -214,10 +215,10 @@ export default class PrioryInbox extends View {
         .on_click(() => setShared("priory.task.open", { task: task.id, at: Date.now() }))
         .child(this.tile(task.state, t)).child(`task ${task.id}`).child(task.state)
         .child(div().min_w_0().truncate().font_family(this.font.mono).child(task.key)))
-      .children(group.events.slice(0, SHOWN).map((event) => this.event(event, t)))
+      .children(group.events.slice(0, SHOWN).map((event, index) => this.event(event, `${key}-${index}`, t)))
       .when(group.events.length > SHOWN, (el) => el.child(div().text_size(S["type-small"][0]).text_color(t["text-3"]).child(`and ${group.events.length - SHOWN} older`)))
       .child(action)
-      .when(Boolean(notice), (el) => el.child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-2"]).accessibility_label(notice ?? "").child(notice ?? "")));
+      .when(Boolean(notice), (el) => el.child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-2"]).accessibility_label(notice ?? "").child(selectable(`notice-${key}`, notice ?? ""))));
   }
 
   /**
