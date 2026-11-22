@@ -7,6 +7,7 @@ pub(crate) mod debate;
 pub mod decision;
 pub mod deliver;
 pub mod embed;
+pub mod evidence;
 mod findings;
 mod gates;
 pub mod grades;

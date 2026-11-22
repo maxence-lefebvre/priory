@@ -342,7 +342,8 @@ For each branch:
 3. Otherwise it runs `gh pr create -R <repo> --base <base> --head <branch>`. The base is the
    branch below, or the default branch for the bottom one. The title is the first line of the
    latest result's `summary`, followed by ` (2 of 3)` in a stack of two or more. The body is the
-   `summary`, then its `evidence`.
+   `summary`, then its `evidence`, then an Evidence section that lists the task's evidence items
+   its approval covers ([evidence.md](evidence.md#on-the-pull-request)).
 
 Its status is `opened` or `failed`. A failure records the error, which a human step reached by
 `next.failed` shows in its question. On `opened`, the task owns each pull request and subscribes to

@@ -574,6 +574,9 @@ pub struct Serve {
     /// More environment variables whose values the terminal hides, besides the factory's secrets.
     #[serde(default)]
     pub redact_env: Vec<String>,
+    /// The address a person opens the server at, such as `https://runner.example.ts.net:7390`,
+    /// which links in a pull request body start with.
+    pub url: Option<String>,
 }
 
 /// What the HTTP server lets a token holder do with a run's terminal.
@@ -612,6 +615,19 @@ impl Serve {
                     id.len() == 32 && id.bytes().all(|byte| (b'a'..=b'p').contains(&byte))
                 })
         };
+        if let Some(url) = &self.url {
+            let host = url
+                .strip_prefix("https://")
+                .or_else(|| url.strip_prefix("http://"));
+            if host.is_none_or(|host| {
+                host.is_empty()
+                    || host.contains(|c: char| c.is_whitespace() || "?#\"<>".contains(c))
+            }) {
+                return Err(format!(
+                    "`[serve] url` {url:?} is not an address: write it as https://host:port"
+                ));
+            }
+        }
         if let Some(bad) = self.extension_origins.iter().find(|origin| !id(origin)) {
             return Err(format!(
                 "`[serve] extension_origins` {bad} is not a Chromium extension's origin, \
@@ -1714,6 +1730,9 @@ pub struct Step {
     /// with `prices.toml` at each turn end.
     #[schemars(regex(pattern = r"^[0-9]+(\.[0-9]+)?$"))]
     pub budget: Option<String>,
+    /// Model steps only: the factory's command that records evidence after the step's result, in a
+    /// checkout of the result's commit, relative to the factory folder.
+    pub record: Option<PathBuf>,
 }
 
 impl Step {

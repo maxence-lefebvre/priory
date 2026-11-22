@@ -1633,6 +1633,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
     for result in task["results"].as_array_mut().expect("rows are an array") {
         parse(&mut result["merge_risk"]);
     }
+    crate::evidence::attach(db, id, &mut task["results"])?;
     let first = |rows: Value| rows.as_array().and_then(|rows| rows.first()).cloned();
     let request = first(rows(
         db,

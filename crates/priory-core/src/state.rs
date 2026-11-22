@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 98;
+const VERSION: i64 = 99;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1763,6 +1763,43 @@ ALTER TABLE tasks ADD COLUMN auto_answer TEXT CHECK (auto_answer IN ('high', 'me
 PRAGMA user_version = 98;
 ";
 
+// Evidence: each file a run's result carries, never changed; each step's `record` command the
+// daemon owes or ran after a result; and the last item each approval covers.
+const SCHEMA_99: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS evidence (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  task       INTEGER NOT NULL REFERENCES tasks (id),
+  run        INTEGER NOT NULL REFERENCES runs (id),
+  kind       TEXT NOT NULL CHECK (kind IN ('image', 'cast', 'video')),
+  media      TEXT NOT NULL,
+  caption    TEXT NOT NULL,
+  commit_sha TEXT NOT NULL,
+  bytes      INTEGER NOT NULL,
+  sha256     TEXT NOT NULL,
+  created    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE TRIGGER IF NOT EXISTS evidence_is_never_changed BEFORE UPDATE ON evidence
+  BEGIN SELECT RAISE(ABORT, 'evidence is never changed'); END;
+CREATE TABLE IF NOT EXISTS evidence_records (
+  run        INTEGER PRIMARY KEY REFERENCES runs (id),
+  task       INTEGER NOT NULL REFERENCES tasks (id),
+  command    TEXT NOT NULL,
+  commit_sha TEXT,
+  state      TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'recorded', 'refused', 'failed')),
+  reason     TEXT,
+  created    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  ended      TEXT
+);
+CREATE TABLE IF NOT EXISTS approval_evidence (
+  approval INTEGER PRIMARY KEY REFERENCES approvals (id),
+  evidence INTEGER NOT NULL
+);
+",
+    bumps!("evidence", "evidence_records"),
+    "PRAGMA user_version = 99;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1777,7 +1814,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
-    SCHEMA_98,
+    SCHEMA_98, SCHEMA_99,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

@@ -1,6 +1,7 @@
 mod auto_answer;
 mod conform;
 mod debate;
+mod evidence;
 #[cfg(feature = "postgres")]
 mod partition;
 mod preempt;

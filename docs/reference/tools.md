@@ -8,6 +8,9 @@ subscription carries events, and how the task moves on.
 ## `result(outcome, summary, evidence?, commit?, reason?, branches?, risk?, goal?, testing?, brief?, verification?, feedback?, batch?)`
 
 `result` stores the run's result and ends the step. Nothing can change or delete a stored result.
+When the step names a `record` command, the daemon then runs it and adds the files it makes to the
+result, and an agent can add a terminal recording from its pane with `priory evidence add`
+([evidence.md](../daemon/evidence.md)).
 
 `batch` is a batch's plan, sent by its planning task. The daemon checks it and stores it with the
 batch, or refuses the result with what to fix; [batches.md](../daemon/batches.md) lists the checks.

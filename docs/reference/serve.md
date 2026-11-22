@@ -39,6 +39,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/costs?since=WINDOW&by=SPLIT` | `priory costs --json --since WINDOW --by SPLIT` | an object: [Costs](#costs) |
 | `/api/grades?since=WINDOW` | `priory grades --json --since WINDOW` | an object: [Grades](#grades) |
 | `/api/attention?since=WINDOW&by=SPLIT` | `priory report attention --json --since WINDOW --by SPLIT` | an object: [Attention](#attention) |
+| `/api/evidence/{id}` | | the evidence item's file. See [Evidence](#evidence) |
 | `/api/runs/{id}/screen?have=HASH&history=N` | `priory screen [DIR] --run ID --history N --json` | the run's screen in colour, after up to 2,000 rows of scrollback, with secrets hidden. See [Run screen](#run-screen) |
 | `/api/events?since=REV` | `priory wait --since REV` | `{"revision": N}` once it differs from `REV`. See [below](#apievents) |
 | `/api/push/key` | | `{"key": "<base64url>"}`, the daemon's VAPID public key. See [Notifications](#notifications) |
@@ -93,7 +94,7 @@ or a reason, is untrusted: render it as text.
 | `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`, or a `pr` that is not a pull request such as `github:owner/repo#7`; `/api/runs` has a parameter other than `all=1`; a run screen's `history` is not a whole number; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the six [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); a keys body whose text or key the [Keyboard](#keyboard) section refuses; for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site, and that is not one of [`[serve] extension_origins`](factory.md#serve). Or a keys or keyboard return request whose secret matches no open grant of the run |
-| `404` | No such path, task, report, ask, batch, memory candidate or web view file; a run screen whose run ended or does not exist; any run screen with `[serve] terminal = "off"`; any [keyboard](#keyboard) path, for any method, unless `[serve] terminal = "type"` |
+| `404` | No such path, task, report, ask, batch, memory candidate, evidence item or web view file; a run screen whose run ended or does not exist; any run screen with `[serve] terminal = "off"`; any [keyboard](#keyboard) path, for any method, unless `[serve] terminal = "type"` |
 | `405` | `POST` on a path that reads, or `GET` on a write. The `Allow` header names the method |
 | `408` | The request sent no byte within 1 second, or took over 5 seconds in all |
 | `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report moved past its `revision`, or the pick already holds that choice or an applied one. Or a batch edit's `revision` is no longer the plan's revision. Or a memory candidate is not on the log yet, or a person already decided it |
@@ -671,7 +672,7 @@ and these arrays, oldest first unless the table says otherwise:
 | `steps` | A code step's action: `id`, `step`, `action`, `status`, `pull_request`, `commit_sha`, `error`, `created` |
 | `asks` | An ask, as in [Asks](#asks) |
 | `waits` | `id`, `run`, `kind`, `resource`, `until`, `target`, `created`, `fired`, `withdrawn` (1 once withdrawn, else null), `withdrawn_reason` (see [withdrawal reasons](../daemon/waits.md#why-an-ask-or-wait-was-withdrawn)), `withdrawn_at` (when, in UTC; null for a wait withdrawn before Priory kept the time) |
-| `results` | `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha`, `reason`, `merge_risk` (a risk step's verdict and lines, else null), `created` |
+| `results` | `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha`, `reason`, `merge_risk` (a risk step's verdict and lines, else null), `created`, `attachments` and `record`. `attachments` lists the run's [evidence items](#evidence), oldest first. `record` is null when the step has no `record` command, else its run: `state` (`queued`, `recorded`, `refused` or `failed`), `reason` (why nothing was recorded, or which files were left out and why, else null), `commit_sha`, `created` and `ended` |
 | `subscriptions` | `resource`, `created`: what the task subscribes to now. Empty once it fails or is dropped |
 | `inbox` | Every event routed to the task, newest first: its source event, the events routing gave it, and those another task took that fired one of its waits or that its subscription delivered to it. Each has `seq`, `type`, `subject`, `time`, `task` (the task routing gave it, or null), `outcome` (as [routing](../daemon/routing.md#outcomes) recorded it, or for an event a subscription delivered beside another task, `woke` or `kept` for this task), `prompt` (the state of this task's prompt that carries the event: `queued`, `attempted`, `uncertain`, `confirmed`, `withdrawn`, or null when none does) and `wait` (the id of this task's wait it fired, or null). See [The task's inbox](../daemon/routing.md#the-tasks-inbox) |
 | `triage` | `item` (a feedback item's URL), `class` (`trivial`, `nothing-to-do` or `persons-call`), `run` (the run whose result sorted it), `created`: how the agent sorted each review feedback item, in the order it first did. See [Review feedback](tools.md#review-feedback) |
@@ -684,6 +685,27 @@ And these objects:
 | `brief` | object | `title` and `request`, the request's title and text, each null when it has none, and `result`, the latest result of a step named `groom`, or null |
 | `plan` | object or null | The latest result of a step named `plan`. A result has `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha` and `created`. When it is null, `progress` holds the plan the agent published |
 | `pull_request` | object or null | The latest pull request the task owns that has stored GitHub events: `repo`, `number`, `title`, `url`, `branch`, `base`, `head_sha` (each from the newest event that carries it), `state` (`open`, `closed` or `merged`; a reopened pull request stays `closed`, since the intake publishes no reopen event), `review` (the latest review's state, or null) and `checks`, the latest conclusion of each check run on the head: `name`, `conclusion` and `at` |
+
+## Evidence
+
+Each item in a result's `attachments`, and in `priory evidence TASK --json`, has:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `id` | integer | The item's id, which `/api/evidence/{id}` serves |
+| `run` | integer | The run whose result carries it |
+| `kind` | string | `image`, `cast` or `video` |
+| `caption` | string | One line of at most 200 characters, as the agent or the `record` command wrote it. Show it as text |
+| `commit_sha` | string | The commit it was made at |
+| `bytes` | integer | Its size |
+| `sha256` | string | Its SHA-256, in hexadecimal |
+| `created` | string | When it was stored, in UTC |
+| `approved` | boolean | Whether the task's latest approval covers it: it existed when the person answered |
+
+`GET /api/evidence/{id}` returns the file with a fixed content type for its type: `image/png`,
+`image/jpeg`, `image/webp`, `video/mp4`, `video/webm`, or `text/plain; charset=utf-8` for a cast.
+Every reply carries `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`, and an
+image or a video `Content-Disposition: inline`. See [evidence.md](../daemon/evidence.md).
 
 ## Queue
 
