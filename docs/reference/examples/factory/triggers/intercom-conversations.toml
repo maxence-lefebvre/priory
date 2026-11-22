@@ -1,0 +1,6 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "intercom"
+on = "conversation.created"    # a customer started a conversation
+repo = "owner/name"            # where its tasks work; without it they block
+workflow = "implement"
+key = "conversation.id"        # the task key is intercom:1295

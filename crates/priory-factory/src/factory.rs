@@ -369,6 +369,7 @@ pub struct Webhooks {
     pub sentry: Option<SentryWebhook>,
     pub figma: Option<FigmaWebhook>,
     pub honeycomb: Option<HoneycombWebhook>,
+    pub intercom: Option<IntercomWebhook>,
 }
 
 /// GitHub webhooks, at `POST /hooks/github`.
@@ -418,6 +419,18 @@ pub struct HoneycombWebhook {
     pub secret_env: String,
 }
 
+/// Intercom conversation webhooks, at `POST /hooks/intercom`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IntercomWebhook {
+    /// The environment variable that holds the app's client secret, never the secret itself.
+    #[serde(default = "intercom_secret_env")]
+    pub secret_env: String,
+    /// The workspace id, such as `a86dr8yl`, whose notifications Priory takes. Intercom sends an
+    /// app's notifications from every workspace that installed it.
+    pub workspace: String,
+}
+
 /// Slack features beyond its triggers.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -443,6 +456,10 @@ fn app_token_env() -> String {
 
 fn figma_secret_env() -> String {
     "FIGMA_WEBHOOK_PASSCODE".to_owned()
+}
+
+fn intercom_secret_env() -> String {
+    "INTERCOM_CLIENT_SECRET".to_owned()
 }
 
 fn honeycomb_secret_env() -> String {
@@ -964,7 +981,7 @@ struct KindOf {
 #[serde(deny_unknown_fields)]
 #[schemars(title = "trigger")]
 pub struct Trigger {
-    /// `github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `figma`, `slack` or `schedule`.
+    /// `github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `intercom`, `figma`, `slack` or `schedule`.
     pub source: String,
     /// The repository the trigger's tasks work in, a GitHub `owner/name` with no `.` or `..` name;
     /// the polled one for `github`.
@@ -1887,6 +1904,17 @@ impl Factory {
             .as_ref()
     }
 
+    /// The Intercom webhook's settings; none takes no Intercom webhook.
+    pub fn intercom_webhook(&self) -> Option<&IntercomWebhook> {
+        self.settings
+            .as_ref()?
+            .value
+            .webhooks
+            .as_ref()?
+            .intercom
+            .as_ref()
+    }
+
     /// The environment variables that hold a secret the factory reads, defaults included, then the
     /// ones `[serve] redact_env` lists.
     pub fn secret_envs(&self) -> Vec<String> {
@@ -1903,6 +1931,8 @@ impl Factory {
                 .map_or_else(figma_secret_env, |hook| hook.secret_env.clone()),
             self.honeycomb_webhook()
                 .map_or_else(honeycomb_secret_env, |hook| hook.secret_env.clone()),
+            self.intercom_webhook()
+                .map_or_else(intercom_secret_env, |hook| hook.secret_env.clone()),
             self.slack_shortcut()
                 .map_or_else(app_token_env, |shortcut| shortcut.token_env.clone()),
             self.log().url_env().to_owned(),

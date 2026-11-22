@@ -26,6 +26,7 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
 - Sentry: [`sentry.issue.created`](#sentryissuecreated)
 - Honeycomb: [`honeycomb.trigger.fired`](#honeycombtriggerfired)
 - Figma: [`figma.file.comment_created`](#figmafilecomment_created)
+- Intercom: [`intercom.conversation.created`](#intercomconversationcreated)
 - Slack: [`slack.message.posted`](#slackmessageposted), [`slack.thread.replied`](#slackthreadreplied)
 - Others: [`schedule.fired`](#schedulefired), [`priory.task.requested.cli`](#priorytaskrequestedcli),
   [`factory.task.requested`](#factorytaskrequested), [`factory.intake.baseline`](#factoryintakebaseline)
@@ -1079,7 +1080,7 @@ Schema: [`figma.file.comment_created.json`](../schemas/events/figma.file.comment
 | `mentions` | list of strings | The handles the comment mentions |
 | `url` | string | The file's page on Figma |
 | `webhook` | string or null | The id of the webhook that sent it |
-| `time` | string | The comment's `created_at` |
+| `time` | string | The comment's `created_at`, else the delivery's `timestamp` |
 
 <!-- example: events/figma.file.comment_created.json -->
 ```json
@@ -1103,6 +1104,54 @@ Schema: [`figma.file.comment_created.json`](../schemas/events/figma.file.comment
     "triggers": ["figma-comments"]
   },
   "links": [{ "label": "file", "url": "https://www.figma.com/file/zH44k2FUM629Fa4EMShiHL" }]
+}
+```
+
+## Intercom
+
+### `intercom.conversation.created`
+
+One message per conversation a contact starts in the workspace that
+[`[webhooks.intercom]`](factory.md#webhooksintercom) names. Only a webhook delivery publishes it:
+see [intercom.md](../intake/intercom.md). Subject: the conversation's title, else
+`conversation <id>`. It carries no link.
+Schema: [`intercom.conversation.created.json`](../schemas/events/intercom.conversation.created.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `conversation` | string | Intercom's conversation id. The task key is `intercom:<conversation>` |
+| `workspace` | string | The workspace id, the notification's `app_id` |
+| `title` | string or null | The conversation's title |
+| `subject` | string or null | The first message's subject, as on an email |
+| `body` | string or null | The first message's text, written by the customer: untrusted |
+| `author` | string or null | The name of whoever wrote the first message |
+| `author_type` | string or null | The author's type, such as `user` or `lead` |
+| `page` | string or null | The page where the conversation started |
+| `delivery` | string or null | The notification's `id`, which Intercom signs with the body |
+| `time` | string | The conversation's `created_at` |
+
+<!-- example: events/intercom.conversation.created.json -->
+```json
+{
+  "id": "ba22da8d-9ef5-5fa3-9a78-7c6ff0bb9dd8",
+  "type": "intercom.conversation.created",
+  "subject": "conversation 1295",
+  "time": "2026-11-22T13:21:38Z",
+  "data": {
+    "conversation": "1295",
+    "workspace": "a86dr8yl",
+    "title": null,
+    "subject": null,
+    "body": "The export button does nothing on Firefox.",
+    "author": "Jane Doe",
+    "author_type": "user",
+    "page": "https://app.example.com/settings",
+    "delivery": "notif_78c122d0-23ba-11e4-9464-79b01267cc2e",
+    "time": "2026-11-22T13:21:38Z",
+    "baseline": false,
+    "triggers": ["intercom-conversations"]
+  },
+  "links": []
 }
 ```
 

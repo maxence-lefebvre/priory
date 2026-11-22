@@ -1,8 +1,9 @@
 # Bug investigation
 
 When someone adds the label `bug` to an issue of `owner/repo`, Sentry reports a new error issue
-in `my-project`, a Honeycomb Trigger fires in `production`, or someone comments on the Figma file
-where your designers review the built app, an agent reproduces the bug, finds its root cause, fixes it with a test, and asks
+in `my-project`, a Honeycomb Trigger fires in `production`, a customer starts an Intercom
+conversation, or someone comments on the Figma file where your designers review the built app, an
+agent reproduces the bug, finds its root cause, fixes it with a test, and asks
 you before it opens the fix pull request.
 
 ## What it needs
@@ -31,6 +32,12 @@ The Figma trigger needs the same server, reachable from Figma, and a Figma webho
 key. Every comment on that file reaches the same task while it is open. Delete the file and the
 `[webhooks.figma]` table if you do not use Figma. See
 [docs/intake/figma.md](../../docs/intake/figma.md).
+
+The Intercom trigger needs the same server, reachable from Intercom, and an Intercom app whose
+webhook URL is `<url>/hooks/intercom`, subscribed to `conversation.user.created`. Put the app's
+client secret in `INTERCOM_CLIENT_SECRET`, and replace `my-workspace` in `factory.toml` with your
+workspace id. Or delete `triggers/intercom-conversation.toml` and the `[webhooks.intercom]` table.
+See [docs/intake/intercom.md](../../docs/intake/intercom.md).
 
 ## Gates
 

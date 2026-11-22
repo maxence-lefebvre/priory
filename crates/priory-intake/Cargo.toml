@@ -15,6 +15,7 @@ rustls.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha1.workspace = true
 sha2.workspace = true
 tungstenite.workspace = true
 postgres = { version = "0.19.14", features = ["with-jiff-0_2"], optional = true }

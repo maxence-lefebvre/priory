@@ -165,6 +165,25 @@
       },
       "type": "object"
     },
+    "IntercomWebhook": {
+      "additionalProperties": false,
+      "description": "Intercom conversation webhooks, at `POST /hooks/intercom`.",
+      "properties": {
+        "secret_env": {
+          "default": "INTERCOM_CLIENT_SECRET",
+          "description": "The environment variable that holds the app's client secret, never the secret itself.",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "The workspace id, such as `a86dr8yl`, whose notifications Priory takes. Intercom sends an\napp's notifications from every workspace that installed it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace"
+      ],
+      "type": "object"
+    },
     "Kit": {
       "additionalProperties": false,
       "description": "A kit repository whose skills, instructions and memories every run gets, before the factory's\nown. Each runner fetches it with git's own credentials.",
@@ -552,6 +571,16 @@
           "anyOf": [
             {
               "$ref": "#/definitions/HoneycombWebhook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "intercom": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IntercomWebhook"
             },
             {
               "type": "null"

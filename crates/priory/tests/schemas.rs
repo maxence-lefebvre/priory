@@ -79,6 +79,7 @@ fn generated() -> Vec<(String, Value)> {
         event::<SentryIssueCreated>("sentry.issue.created"),
         event::<FigmaFileCommentCreated>("figma.file.comment_created"),
         event::<HoneycombTriggerFired>("honeycomb.trigger.fired"),
+        event::<IntercomConversationCreated>("intercom.conversation.created"),
         event::<SlackPosted>("slack.message.posted"),
         event::<SlackReplied>("slack.thread.replied"),
         event::<ScheduleFired>("schedule.fired"),

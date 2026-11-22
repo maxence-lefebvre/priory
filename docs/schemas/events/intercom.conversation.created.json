@@ -1,0 +1,161 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/intercom.conversation.created.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "IntercomConversationCreated": {
+      "additionalProperties": false,
+      "description": "A contact started an Intercom conversation, from a signed webhook delivery.",
+      "properties": {
+        "author": {
+          "description": "The name of whoever wrote the first message.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "author_type": {
+          "description": "The author's type, such as `user` or `lead`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "baseline": {
+          "description": "True when the event came from the first poll of its stream.",
+          "type": "boolean"
+        },
+        "body": {
+          "description": "The first message's text: plain text from API version 2.15, HTML before it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conversation": {
+          "description": "Intercom's conversation id, such as `1295`.",
+          "type": "string"
+        },
+        "delivery": {
+          "description": "The notification's id, which starts with `notif_`. Intercom signs it with the body.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "page": {
+          "description": "The page where the contact started the conversation; null for email and bots.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subject": {
+          "description": "The first message's subject, as on an email; null when it has none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "time": {
+          "description": "When the event happened, RFC 3339.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "title": {
+          "description": "The conversation's title; null when it has none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "triggers": {
+          "description": "The triggers the event matched, so the triggers it requests tasks for; may be empty.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "workspace": {
+          "description": "The workspace id, the notification's `app_id`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "conversation",
+        "workspace",
+        "title",
+        "subject",
+        "body",
+        "author",
+        "author_type",
+        "page",
+        "delivery",
+        "time",
+        "baseline",
+        "triggers"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A contact started an Intercom conversation, from a signed webhook delivery.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/IntercomConversationCreated"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "intercom.conversation.created",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "intercom.conversation.created",
+  "type": "object"
+}

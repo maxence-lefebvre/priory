@@ -24,10 +24,10 @@ chose when you created the webhook. The server takes deliveries at `POST /hooks/
 token, and runs these checks in order:
 
 1. The body is read up to 1 MiB. A larger one gets `413` before it is read.
-2. The body is parsed as JSON only to read `passcode`, which must equal the value of the variable
-   that `secret_env` names. The server compares them in constant time. A body that is not JSON, or
-   a missing or wrong passcode, gets `400`. Nothing else in the body is read, and the server never
-   logs it.
+2. The body is parsed as JSON, since the passcode is inside it. `passcode` must equal the value of
+   the variable that `secret_env` names. The server compares them in constant time. A body that is
+   not JSON, or a missing or wrong passcode, gets `400`. No other field is mapped before this
+   check, and the server never logs the body.
 3. Only then does it map the comment, publish it and reply `200`.
 
 The passcode proves one thing: the sender knows the passcode. That is the same proof as a shared
@@ -37,7 +37,12 @@ It does not prove that Figma wrote the rest of the body. The passcode travels in
 anyone who sees one delivery can send any comment text with it. It does not prove the delivery is
 new, so a captured delivery can be sent again. And Figma's API never shows the passcode after you
 create the webhook, so you cannot check which one it holds. A passcode that leaks stays valid until
-you set a new one with `PUT /v2/webhooks/<webhook id>` and in `secret_env`.
+you replace it.
+
+Priory reads the passcode when it starts, and a delivery from Figma with the wrong passcode stops
+the webhook. So replace it in this order: pause the webhook with `PUT /v2/webhooks/<webhook id>`
+and `"status": "PAUSED"`, set the new passcode there and in the services' environment file,
+restart the daemon, then set `"status": "ACTIVE"`.
 
 So keep the endpoint behind HTTPS, use a long random passcode, and treat a comment's text as a
 report to check, never as an instruction. A replayed comment publishes nothing (see
@@ -94,8 +99,10 @@ so also check the webhook now and then. Figma lists every request it sent in the
 curl -H "X-Figma-Token: $FIGMA_TOKEN" https://api.figma.com/v2/webhooks/<webhook id>/requests
 ```
 
-A comment you made that the list lacks means Figma stopped sending. A comment the list shows with
-`200` that has no task means no trigger matched it.
+A comment you made that the list lacks points to Figma not sending, though the webhook's context
+may not cover that file, and the list keeps only 7 days. A comment the list shows with `200` but
+no new task matched no trigger, or reached a task already open for its file, or repeated a comment
+already published.
 
 ## What a delivery publishes
 
@@ -106,8 +113,10 @@ A comment you made that the list lacks means Figma stopped sending. A comment th
 | `PING` | nothing; `200` |
 | any other event, such as `FILE_UPDATE` or `LIBRARY_PUBLISH` | nothing; `200` |
 
-A trigger matches when its `file` filter equals the comment's file key. A delivery that matches no
-trigger publishes nothing, so a team webhook never widens what the factory acts on.
+A trigger matches when its `file` filter equals the comment's file key. A trigger with no `file`
+filter matches every file the webhook covers, so give each trigger a `file` filter to keep a team
+or project webhook from widening what the factory acts on. A delivery that matches no trigger
+publishes nothing.
 
 The message's `text` joins the comment's fragments, each mention written as `@<handle>`. A reply
 carries its `parent` comment id.
@@ -115,7 +124,7 @@ carries its `parent` comment id.
 The task key is `figma:<file key>`. Every comment on one file reaches the same task while that task
 is open.
 
-Its `time` is the comment's `created_at`. Its `url` is the file's page.
+Its `time` is the comment's `created_at`, else the delivery's `timestamp`. Its `url` is the file's page.
 
 ## Duplicates
 

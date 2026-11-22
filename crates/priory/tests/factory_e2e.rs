@@ -141,6 +141,9 @@ impl Play {
             .join("e2e")
             .join(test)
             .join(scenario_name(factory, file));
+        // The daemon makes its kit snapshots read-only, so an earlier play, or a CI cache that
+        // restored one, leaves a folder `remove_dir_all` cannot remove without this.
+        let _ = Command::new("chmod").args(["-R", "u+w"]).arg(&dir).status();
         let _ = fs::remove_dir_all(&dir);
         let tmux = TmuxDir::new(&dir);
         let mut play = Play {
