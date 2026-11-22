@@ -808,8 +808,34 @@ open Priory window when there is one.
 - Tokens add up input, output and cache tokens: "640", "1.5k", "312k", "3.3M".
 - Another runner's task row shows its hold's tile and word in place of the state, and its workflow
   without a step. Its line 3, or the line under its title on wide screens, reads "On runner a, last
-  seen 12 min ago" in `--text-3`, or "On runner a, never seen alive". Its key is plain text and the
-  row has no chevron: its page stays on its runner.
+  seen 12 min ago" in `--text-3`, or "On runner a, never seen alive". Its key is plain text: its
+  page stays on its runner. See [Another runner's task](#another-runners-task) for its actions.
+
+### Another runner's task
+
+A remote task row has no page here, so a tap anywhere on it opens it in place, under its lines, and
+a second tap closes it. A `chevron-down` button, `chevron-up` while open, ends the row for the
+keyboard, with `aria-expanded`. On wide screens the open part is a row of its own under the task's,
+in the title column.
+
+- **Actions** follow the hold, since the state stays on its runner: Resume, Cancel and Release for a
+  `kept` task, Cancel only for a `waiting` one, which has no run to resume, release or say to. They
+  reuse the task page's `.btn secondary` buttons, and Cancel arms on the first tap. A `kept` task
+  adds the Say box. There is no Revive, since an ended task leaves the list, and no Hold.
+- **Note**, under them, with the `corner-down-right` icon: "This task runs on laptop. An action goes
+  there through the log, and laptop applies it when it reads it."
+- **Sent**: the newest submission takes a line of its own above "On runner", never sharing it, so
+  "last seen" is never cut. "Sent to laptop: cancel" in `--action-text` while pending; "laptop
+  refused resume: task 2 is running, not blocked" in `--warn-text`; "laptop applied release" in
+  `--text-3`. A say reads `say “text”`.
+- **Not sent**: a 409 says "Not sent: task laptop:ENG-262 is at generation 3, not 2. The list reads
+  it again: check the task, then send again."; a 503 says "Could not send: why. Nothing was sent: try again.";
+  both under the actions, as the task page's notes. The Say draft stays. A sent action leaves no note:
+  it shows as the Sent line once the list reads it again. A Cancel armed at one generation disarms
+  when the list shows another.
+
+It adds no token: it reuses `.task-acts`, `.acts-note`, `.writeform`, `--action-text` and
+`--warn-text`. The board is in `~/shared/priory-remote-task-actions/board/` on the author's machine.
 
 ### Tasks panel
 
@@ -1446,7 +1472,12 @@ The web's [Tasks panel](#tasks-panel), as a tab in the center stack.
 - The batch tag is text: Herdr has no batch panel yet.
 - Another runner's task row shows its hold's tile, the `server` icon on `--tile-muted`, and word in
   place of the state, and its workflow without a step. Its last line reads "On runner a, last seen
-  12 min ago" in `--text-3`. Pressing it does nothing: its page stays on its runner.
+  12 min ago" in `--text-3`. Its page stays on its runner, so pressing it opens it in place, under
+  the row, at every width: Resume, Cancel and Release (Cancel only for `waiting`) as `.btn
+  secondary` buttons at `--control-fine`, Cancel armed by the first press with the draining bar,
+  then the web's note. Its newest submission takes a caption line above "On runner", in the web's
+  colors, and a failed send shows under the buttons in `--warn-text`. Say stays on the web, as for
+  the Task panel.
 - In a factory of several runners a Runner chip follows Workflow, and this runner reads
   "workstation (here)", as on the web.
 - While it reads: "Reading the tasks…"

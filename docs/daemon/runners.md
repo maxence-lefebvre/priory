@@ -208,6 +208,11 @@ is `ended` leaves the list. Tasks of this runner carry its `runner` and `hold` t
 the actions sent to it from other machines under `submissions`, as below. The Herdr Tasks
 panel lists them as well, and both panels offer a Runner facet that marks this runner `(here)`.
 
+Both panels open such a row in place with the actions of [Acting on another runner's
+task](#acting-on-another-runners-task) its hold allows: Resume, Cancel and Release for a `kept` task,
+and Cancel for a `waiting` one, which has no run yet. The web adds Say for a `kept` task. The row's
+newest submission shows under its title: sent, refused with why, or applied.
+
 ## Answering another runner's ask
 
 ```sh

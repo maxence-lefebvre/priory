@@ -3,9 +3,13 @@ import { h_flex, v_flex, Button, Popover } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
 import { follow, priory } from "./priory.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
-import { elsewhere, filtered, TASK_VIEWS, taskFacets, taskViews } from "./view.js";
+import { elsewhere, filtered, remoteActs, remoteSent, TASK_VIEWS, taskFacets, taskViews } from "./view.js";
 
 const RETRY_MS = 3000;
+// How long a first press on Cancel stays armed for the second, as an ask's command option.
+const ARM_MS = 4000;
+const ACTS = /** @type {Record<string, string>} */ ({ resume: "Resume", cancel: "Cancel", release: "Release" });
+const TONES = /** @type {Record<string, string>} */ ({ action: "action-text", warn: "warn-text", quiet: "text-3" });
 const ICON = (/** @type {string} */ name) => `mods/priory-tasks/icons/${name}.svg`;
 const LABELS = /** @type {Record<string, string>} */ ({ active: "Active", blocked: "Blocked", ended: "Ended" });
 const EMPTY = /** @type {Record<string, string>} */ ({
@@ -72,6 +76,13 @@ export default class PrioryTasks extends View {
     /** @type {string | null} the facet whose menu is open */
     this.popover = null;
     this.font = FONTS.indigo;
+    /** @type {string | null} the `runner:key` of the remote row opened in place */
+    this.open = null;
+    /** @type {{ act: string, at: number, target: string, generation: number } | null} a Cancel armed by a first press, for the generation it showed */
+    this.armed = null;
+    this.sending = false;
+    /** @type {{ target: string, text: string } | null} why the last send failed, and to which task */
+    this.sendError = null;
     /** @type {ReturnType<typeof priory>} the client of the last read, which its wait uses */
     let client;
     cx.spawn((cx) => follow({
@@ -177,9 +188,19 @@ export default class PrioryTasks extends View {
           .when(task.batch != null, (el) => el.child(caption(`· batch ${task.batch}`, "text-3")))));
   }
 
-  /** Another runner's task: its hold for a state, where it runs, and no Task panel to open. @param {any} task @param {string} away @param {Palette} t @param {number} now */
+  /**
+   * Another runner's task: its hold for a state, where it runs, and the newest action sent to it.
+   * Pressing it opens its actions in place, since its Task panel stays on its runner.
+   * @param {any} task @param {string} away @param {Palette} t @param {number} now
+   */
   remoteRow(task, away, t, now) {
-    return h_flex().w_full().min_h(S["pane-row"]).px(S["space-2"]).py(S["space-2"]).gap(S["space-3"]).items_start()
+    const target = `${task.runner}:${task.key}`;
+    const sent = remoteSent(task);
+    const caption = (/** @type {string} */ line, /** @type {string} */ color) => div().min_w_0().truncate().text_size(S["type-caption"][0]).text_color(t[color]).child(line);
+    const row = Button.new(`remote-${target}`).w_full().min_h(S["pane-row"]).px(S["space-2"]).py(S["space-2"]).flex().gap(S["space-3"]).items_start()
+      .rounded(S["radius-sm"]).hover((s) => s.bg(t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
+      .accessibility_label(this.open === target ? `Close the actions of ${target}` : `Open the actions of ${target}`)
+      .on_click((_event, cx) => { [this.open, this.armed, this.sendError] = [this.open === target ? null : target, null, null]; cx.notify(); })
       .child(this.tile("elsewhere", t))
       .child(v_flex().flex_1().min_w_0().gap(2)
         .child(h_flex().gap(6).items_baseline().text_size(S["type-caption"][0]).text_color(t["text-2"])
@@ -187,7 +208,65 @@ export default class PrioryTasks extends View {
           .child(task.workflow ?? "").child(task.hold)
           .child(div().flex_1()).child(div().text_color(t["text-3"]).child(age(task.since, now))))
         .child(div().min_w_0().truncate().text_size(S["type-small"][0]).child(task.title || task.key))
-        .child(div().min_w_0().truncate().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(away)));
+        .when(Boolean(sent), (el) => el.child(caption(sent?.text ?? "", TONES[sent?.tone ?? "quiet"])))
+        .child(caption(away, "text-3")))
+      .child(svg(ICON(this.open === target ? "chevron-up" : "chevron-down")).size(14).flex_none().text_color(t["text-3"]));
+    if (this.open !== target) return row;
+    return v_flex().w_full().child(row).child(v_flex().pl(S["pane-tile"] + S["space-3"] + S["space-2"]).pr(S["space-2"]).pb(S["space-2"]).gap(S["space-2"])
+      .child(h_flex().gap(6).flex_wrap().children(remoteActs(task).map((act) => this.remoteButton(task, target, act, t, now))))
+      .when(this.sendError?.target === target, (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["warn-text"]).child(this.sendError?.text ?? "")))
+      .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"])
+        .child(`This task runs on ${task.runner}. An action goes there through the log, and ${task.runner} applies it when it reads it.`)));
+  }
+
+  /** One action of an open remote row; Cancel arms on the first press. @param {any} task @param {string} target @param {string} act @param {Palette} t @param {number} now */
+  remoteButton(task, target, act, t, now) {
+    const armed = this.armedFor(task, target) && this.armed?.act === act;
+    const left = armed && this.armed ? Math.max(0, 1 - (now - this.armed.at) / ARM_MS) : 0;
+    return Button.new(`remote-${target}-${act}`).h(S["control-fine"]).px(10).flex().flex_col().justify_center().rounded(S["radius-sm"])
+      .bg(armed ? t.emph : t.surface).text_color(armed ? t["on-emph"] : t.text).border(armed ? 3 : 1).border_color(armed ? t.action : t["control-line"])
+      .disabled(this.sending).opacity(this.sending ? 0.45 : 1).focus((s) => s.border(2).border_color(t["action-text"]))
+      .accessibility_label(armed ? `Press again to ${act} ${target}` : `${ACTS[act]} ${target}`)
+      .on_click((_event, cx) => this.remoteAct(task, target, act, cx))
+      .child(div().text_size(S["type-small"][0]).font_weight(600).child(armed ? `Press again to ${act}` : ACTS[act]))
+      .when(armed, (el) => el.child(div().h(3).w_full().rounded(2).bg(t["on-emph-2"]).child(div().h(3).w(`${Math.round(left * 100)}%`).rounded(2).bg(t.action))));
+  }
+
+  /** @param {any} task @param {string} target @param {string} act @param {import("gpui-kit").Context} cx */
+  remoteAct(task, target, act, cx) {
+    if (this.sending) return;
+    if (act === "cancel" && !this.armedFor(task, target)) {
+      this.armed = { act, at: Date.now(), target, generation: task.generation };
+      this.drain(cx);
+      return cx.notify();
+    }
+    [this.armed, this.sending, this.sendError] = [null, true, null];
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        await (this.priory ??= await connect()).client.remote(act, target, task.generation);
+      } catch (error) {
+        this.sendError = { target, text: `Could not ${act}: ${message(error)}` };
+      }
+      this.sending = false;
+      cx.notify();
+    });
+  }
+
+  /** Whether a Cancel armed on this task still holds: a new generation is a task the person did not see. @param {any} task @param {string} target */
+  armedFor(task, target) {
+    return this.armed?.target === target && this.armed.generation === task.generation;
+  }
+
+  // Redraws the draining bar until the arming lapses, then shows Cancel unarmed.
+  /** @param {import("gpui-kit").Context} cx */
+  drain(cx) {
+    cx.timer.after(100, (cx) => {
+      if (!this.armed) return;
+      if (Date.now() - this.armed.at >= ARM_MS) this.armed = null;
+      else this.drain(cx);
+      cx.notify();
+    });
   }
 
   /** @param {string} state @param {Palette} t */

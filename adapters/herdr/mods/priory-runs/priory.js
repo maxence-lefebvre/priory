@@ -83,6 +83,8 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
       call(["hold", String(task), "--reason", reason, ...(until ? ["--until", until] : []), ...expected(revision)]),
     release: (/** @type {Id} */ task, /** @type {number | null} */ revision = null) => call(["release", String(task), ...expected(revision)]),
     cancel: (/** @type {Id} */ task, /** @type {number | null} */ revision = null) => call(["cancel", String(task), ...expected(revision)]),
+    // Resume, cancel or release another runner's task, named `runner:key`, at the generation the panel read.
+    remote: (/** @type {string} */ act, /** @type {string} */ target, /** @type {number} */ generation) => call([act, "--generation", String(generation), target]),
     // Pausing stops new runs from starting; the live ones go on.
     pause: (/** @type {string} */ reason = "") => call(["pause", ...(reason ? [reason] : [])]),
     unpause: () => call(["unpause"]),

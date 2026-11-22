@@ -343,7 +343,9 @@ the batch. The Runs panel lists the runs of the last 7 days with their agent, mo
 duration and tokens, filtered by outcome, agent or step. `priory tasks` and `priory runs` print the
 same tasks and runs, and the Herdr Tasks and Runs panels show them too. In a factory of several
 runners, both Tasks panels also list the tasks the other runners hold and filter by runner. Such a
-task's row opens nothing here: its page stays on its runner.
+task's page stays on its runner, so a tap opens its row in place, with the actions its hold allows:
+Resume, Cancel, Release and Say for a `kept` task, Cancel for a `waiting` one. Each goes to its
+runner through the log, and the row then shows "Sent to laptop: cancel", or what laptop did with it.
 
 The Queue panel, under More on a phone, shows Up next, then each band's waiting tasks in the order
 they start, with why each one waits. Its Move menu moves a task to the top of its band, up or down

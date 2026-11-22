@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TASK_FACETS, TASK_VIEWS, elsewhere, filtered, olderPart, taskFacets, taskViews, triageWords } from "./tasks.js";
+import { TASK_FACETS, TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskViews, triageWords } from "./tasks.js";
 
 // `/api/tasks` as the server sends it: in start order, ended tasks in it too.
 const tasks = [
@@ -65,4 +65,23 @@ test("in a factory of several runners a Runner facet filters by runner and marks
   assert.equal(named("a"), "a");
   assert.deepEqual(filtered(all, new Map([["runner", "a"]]), facets), [remote]);
   assert.equal(filtered(all, new Map([["runner", "b"]]), facets).length, tasks.length);
+});
+
+test("another runner's task offers the actions its hold allows, sent to its key and generation", () => {
+  const remote = { id: null, key: "github:acme/shop#42", runner: "a", hold: "kept", generation: 2, submissions: [] };
+  assert.deepEqual(remoteActs(remote), ["resume", "cancel", "release"]);
+  assert.deepEqual(remoteActs({ ...remote, hold: "waiting" }), ["cancel"], "no run yet: nothing to resume, release or say to");
+  assert.deepEqual(remoteActs(tasks[0]), [], "a task of this runner acts on its page");
+  assert.equal(remoteId(remote), "a:github%3Aacme%2Fshop%2342", "its id in /api/tasks/{id}/{act}");
+});
+
+test("another runner's task says what became of the newest action sent to it", () => {
+  const sent = { submission: "s1", act: "resume", generation: 2, text: null, step: null, sent: "2026-11-21T09:00:00Z", outcome: null, why: null, applied: null };
+  const remote = { id: null, key: "ENG-250", runner: "a", hold: "kept", generation: 2, submissions: [sent] };
+  assert.deepEqual(remoteSent(remote), { text: "Sent to a: resume", tone: "action" });
+  assert.deepEqual(remoteSent({ ...remote, submissions: [sent, { ...sent, act: "say", text: "Use the staging token" }] }), { text: "Sent to a: say “Use the staging token”", tone: "action" });
+  assert.deepEqual(remoteSent({ ...remote, submissions: [{ ...sent, outcome: "refused", why: "task 2 is running, not blocked" }] }), { text: "a refused resume: task 2 is running, not blocked", tone: "warn" });
+  assert.deepEqual(remoteSent({ ...remote, submissions: [{ ...sent, act: "release", outcome: "applied" }] }), { text: "a applied release", tone: "quiet" });
+  assert.equal(remoteSent({ ...remote, submissions: [] }), null);
+  assert.equal(remoteSent({ ...tasks[0], runner: "b", submissions: [sent] }), null, "this runner's own task shows its state instead");
 });

@@ -108,9 +108,12 @@ INSERT INTO inbox (id,type,subject,time,data,links,outcome) VALUES
 ('r-264','priory.task.requested','ENG-264',strftime('%Y-%m-%dT%H:%M:%SZ','now','-30 minutes'),'{"key":"ENG-264","workflow":"implement","band":"today","lane":"search","tldr":"Reindex the product catalog"}','[]','ignored'),
 ('c-262','priory.task.claimed','ENG-262',strftime('%Y-%m-%dT%H:%M:%SZ','now','-48 minutes'),'{"key":"ENG-262","runner":"laptop"}','[]','ignored'),
 ('c-264','priory.task.claimed','ENG-264',strftime('%Y-%m-%dT%H:%M:%SZ','now','-28 minutes'),'{"key":"ENG-264","runner":"xps13"}','[]','ignored');
-INSERT INTO claims (key,runner,request,hold,won) VALUES
-('ENG-262','laptop','r-262','kept',(SELECT seq FROM inbox WHERE id='c-262')),
-('ENG-264','xps13','r-264','waiting',(SELECT seq FROM inbox WHERE id='c-264'));
+INSERT INTO claims (key,runner,request,hold,won,generation) VALUES
+('ENG-262','laptop','r-262','kept',(SELECT seq FROM inbox WHERE id='c-262'),2),
+('ENG-264','xps13','r-264','waiting',(SELECT seq FROM inbox WHERE id='c-264'),1);
+-- a cancel sent to xps13's task, which xps13 has not read yet
+INSERT INTO remote_task_submissions (submission,runner,key,generation,act,sent) VALUES
+('0193f0a2-demo-0003','xps13','ENG-264',1,'cancel',strftime('%Y-%m-%dT%H:%M:%SZ','now','-3 minutes'));
 -- events a task kept that no agent read: an asleep task, the blocked task 3 and a done task
 INSERT INTO tasks (id,key,workflow,step,state,band,lane,trigger,source,repo,tldr,created,changed,entered,model,branch) VALUES
 (10,'linear:ENG-245','implement','implement','asleep','today','payments','linear','seed-10','acme/shop','Retry webhook deliveries',strftime('%Y-%m-%dT%H:%M:%SZ','now','-6 hours'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-90 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-90 minutes'),'claude-sonnet-5-5','eng-245'),
