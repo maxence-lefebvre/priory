@@ -154,7 +154,7 @@ test("the Desk's count line names every item Needs me counts besides the asks", 
 });
 
 test("the count shows a number only when an ask needs you, so an empty desk stays quiet", () => {
-  assert.deepEqual(countHead(0), { n: null, words: "Nothing needs you" });
+  assert.deepEqual(countHead(0), { n: null, words: "No asks need you" });
   assert.deepEqual(countHead(1), { n: 1, words: "ask needs you" });
   assert.deepEqual(countHead(7), { n: 7, words: "asks need you" });
 });

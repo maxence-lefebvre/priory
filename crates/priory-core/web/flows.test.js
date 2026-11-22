@@ -162,3 +162,15 @@ test("a turned label sits where no outer lane edge bends across it", () => {
     }
   }
 });
+
+test("a loop back's turned label stays on its own lane's straight part, inside the drawing", () => {
+  const looping = structuredClone(implement);
+  looping.steps[1].edges[1] = edge("rejected", "plan", "human");
+  looping.steps[0].edges.push(edge("again", "plan", "model"));
+  const drawing = timeline(looping, new Set());
+  for (const each of drawing.edges.filter((one) => one.label.turned)) {
+    const [low, high] = [Math.min(...each.straight), Math.max(...each.straight)];
+    assert.ok(each.label.y > low && each.label.y < high, `${each.outcome} sits at its lane's end`);
+    assert.ok(each.label.y > 0 && each.label.y < drawing.height, `${each.outcome} leaves the drawing`);
+  }
+});

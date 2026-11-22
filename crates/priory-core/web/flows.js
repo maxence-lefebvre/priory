@@ -66,7 +66,8 @@ export function ungatedPairs(workflow, paths) {
  * @param {any} edge @param {any[]} edges
  */
 function clearOf(edge, edges) {
-  const [top, bottom] = edge.straight;
+  // A loop back runs up its lane, so its straight part starts below where it ends.
+  const [top, bottom] = [Math.min(...edge.straight), Math.max(...edge.straight)];
   const bends = edges.filter((other) => other.label.turned && other.lane > edge.lane)
     .flatMap((other) => [[other.straight[0] - 24, other.straight[0] + 4], [other.straight[1] - 4, other.straight[1] + 24]])
     .sort((a, b) => a[0] - b[0]);

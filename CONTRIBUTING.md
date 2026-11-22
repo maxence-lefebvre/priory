@@ -36,7 +36,7 @@ AGENTS.md](AGENTS.md#verify) and fix every failure. CI runs the same checks on e
 - Retake the README's screenshots from synthetic data. Run `scripts/demo/serve.sh DIR` with a new
   folder `DIR`: it seeds a scratch state and serves it on 127.0.0.1:7391 for 15 minutes. The seed
   holds the states a design review needs to reach: a live run, a command ask, a snoozed ask, a
-  stalled queue's banner, a check still running, and a task with a brief and a plan. In another
+  stalled queue's banner, a skipped check, and a task with a brief and a plan. In another
   shell, run `PLAYWRIGHT=<path to playwright-core/index.mjs> node scripts/demo/shoot.mjs docs/images`.
   Keep each PNG under 400 KB.
 

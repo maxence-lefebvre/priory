@@ -167,9 +167,9 @@ INSERT INTO asks (id,task,step,kind,revision,question,options,recommendation,tit
 (40,12,'deploy','step',1,'Deploy ENG-250 to staging?','["deploy","wait"]','deploy','Deploy to staging','The merge commit passed every check.','{"argv":["./deploy","staging","--service","mailer"],"target":"shell","dir":"/home/max/acme/shop","runs":["deploy"],"timeout":null}',strftime('%Y-%m-%dT%H:%M:%SZ','now','-8 minutes'));
 -- ask 2 snoozed until tomorrow 09:00
 INSERT INTO snoozes (kind,item,task,snoozed,until) VALUES ('ask',2,2,strftime('%Y-%m-%dT%H:%M:%SZ','now','-30 minutes'),strftime('%Y-%m-%dT09:00:00Z','now','+1 day'));
--- a stalled queue's banner, and a check still running on task 1's pull request
+-- a stalled queue's banner, and a skipped check on task 1's pull request
 INSERT INTO stalls (resource,missing,task,since) VALUES ('disk','2 GB',4,strftime('%Y-%m-%dT%H:%M:%SZ','now','-15 minutes'));
 INSERT INTO inbox (id,type,subject,time,data,links,outcome,task) VALUES
-('p6','github.check_run.created','acme/shop#212',strftime('%Y-%m-%dT%H:%M:%SZ','now','-140 minutes'),'{"repo":"acme/shop","pull_request":212,"head_sha":"a1f3c9e5b2d4","head_branch":"eng-212-retry-invoice-emails","base_branch":"main","name":"e2e","conclusion":null,"title":"Retry failed invoice emails with backoff","state":"open"}','[]','routed',1);
+('p6','github.check_run.completed','acme/shop#212',strftime('%Y-%m-%dT%H:%M:%SZ','now','-140 minutes'),'{"repo":"acme/shop","pull_request":212,"head_sha":"a1f3c9e5b2d4","head_branch":"eng-212-retry-invoice-emails","base_branch":"main","name":"e2e","conclusion":"skipped","title":"Retry failed invoice emails with backoff","state":"open"}','[]','routed',1);
 -- each open ask's revision was asked when the ask was
 UPDATE ask_revisions SET created = (SELECT created FROM asks WHERE asks.id = ask_revisions.ask) WHERE ask IN (1,2,3,4,40);

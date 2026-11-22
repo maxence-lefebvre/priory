@@ -379,7 +379,8 @@ The desk is the "Needs me" view. It lists, top to bottom:
    The line names every other item the Needs me view counts, stopped, to-dos, reports and also
    waiting, so the count and the Needs me chip add up. On wide screens the count sits at the
    right of the list header in `--type-count-wide`. With no open ask the desk stays quiet: no
-   number, and "Nothing needs you" in `--type-body` and `--text-2`, over the same line.
+   number, and "No asks need you" in `--type-body` and `--text-2`, over the same line, which
+   still names any stopped work.
 2. **The next thing**: a card on `--surface` with `--radius-md` and a `--line` edge, in every
    saved view, with the desk's `next` whatever its kind: an alarm (a blocked or failed task, an
    uncertain prompt or command, a failing intake) or the ask that ranks first. It shows the tile,
