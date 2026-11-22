@@ -223,6 +223,7 @@ a.autolink { color: var(--action-text); text-decoration: underline; text-underli
 .hist .scores { list-style: none; margin: 8px 0 0; padding: 0; }
 .hist .scores li { grid-template-columns: 22px minmax(0, 1fr); padding: 6px 0; border-top: 1px solid var(--line); }
 .hist .scores .v { font-weight: 600; }
+.hist .scores .meta { overflow-wrap: anywhere; }
 textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid var(--control-line); border-radius: var(--radius-md); padding: 10px 12px; width: 100%; resize: vertical; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .routednote { display: flex; gap: 6px; align-items: baseline; color: var(--action-text); font: 600 var(--type-small) var(--font-ui); }
@@ -545,13 +546,13 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .ctbl td, .ctbl th[scope="row"] { cursor: default; height: var(--row-wide); padding: 0 8px; border-top: 1px solid var(--line); white-space: nowrap; }
 .ctbl th[scope="row"] { position: sticky; left: 0; background: var(--bg); text-align: left; font-weight: 400; padding-left: 0; }
 .ctbl td.n { color: var(--text-3); font-size: var(--type-caption); }
-.stbl th:not(.r), .stbl .rate { white-space: nowrap; } .stbl .rate { font-weight: 600; }
+.stbl .rate { font-weight: 600; }
 .stbl td.line { display: none; }
 .sect .cap { font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); margin: 0 0 6px; }
 @container (max-width: 599px) {
   .stbl thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-  .stbl tr { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: var(--space-2); padding: var(--space-2) 0; border-top: 1px solid var(--line); }
-  .stbl th[scope="row"], .stbl td { display: block; height: auto; padding: 0; border: 0; position: static; }
+  .stbl tr { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); column-gap: var(--space-2); padding: var(--space-2) 0; border-top: 1px solid var(--line); }
+  .stbl th[scope="row"], .stbl td { display: block; height: auto; padding: 0; border: 0; position: static; white-space: normal; overflow-wrap: anywhere; }
   .stbl td.c { display: none; }
   .stbl td.line { display: block; grid-column: 1 / -1; font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); white-space: normal; }
 }

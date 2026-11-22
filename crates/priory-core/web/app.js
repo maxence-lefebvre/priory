@@ -1978,11 +1978,13 @@ const statTile = (tile) => html`<div class="stat"><span class="lbl">${tile.label
 
 function costsPart(costs) {
   const table = splitTable(costs);
-  if (!costs.days.length && !costs.split.length) {
-    return html`<p class="empty">No cost in the last two weeks. Costs appear once a model step records its tokens. Price each model in <code>prices.toml</code> in the factory folder.</p>`;
-  }
   const offline = Boolean(state.failed);
   const pick = html`<label class="by"><span>Split by</span><select data-action="costs-by" aria-disabled="${offline}" ${offline ? raw("disabled") : ""}>${SPLITS.map((by) => html`<option value="${by}" ${by === costs.by ? raw("selected") : ""}>${by}</option>`)}</select></label>`;
+  if (!costs.days.length && !costs.split.length) {
+    // Scores can land in a window with no cost, so they keep their table and its Split by.
+    const scores = scoresPart(costs, pick);
+    return html`<p class="empty">No cost in the last two weeks. Costs appear once a model step records its tokens. Price each model in <code>prices.toml</code> in the factory folder.</p>${scores ? html`<section class="sect" aria-labelledby="costs-scores">${scores}</section>` : ""}`;
+  }
   const unpriced = table.unpriced.length || table.unknown
     ? html`<div class="note"><p><b>Not in the cost.</b> ${table.unpriced.length ? html`Tokens with no price: ${table.unpriced.map((entry, i) => html`${i ? ", " : ""}<span class="mono">${entry.model}</span> ${entry.tokens} tokens`)}. Add each model to <code>prices.toml</code> to price them.` : ""} ${table.unknown ? `${table.unknown}, so their cost is unknown.` : ""}</p></div>`
     : "";
@@ -1994,12 +1996,11 @@ function costsPart(costs) {
       <tbody>${table.rows.map((row) => html`<tr><th scope="row" class="mono">${row.name}</th><td class="r">${row.cost}</td><td class="r">${row.tokens}</td><td class="n">${row.note}</td></tr>`)}</tbody></table></div>${scoresPart(costs)}</section>`;
 }
 
-// Each scorer's pass rate beside the cost split; on a phone each row stacks into one caption line.
-function scoresPart(costs) {
+function scoresPart(costs, pick = "") {
   const table = scoreTable(costs);
   if (!table.rows.length) return "";
   const head = ["Pass rate", "pass", "fail", "error", "not applicable"].map((label) => html`<th scope="col" class="r">${label}</th>`);
-  return html`<h3 class="sh" id="costs-scores">Scores by ${costs.by}</h3><p class="cap">The pass rate leaves out errors and not applicable.</p>
+  return html`<h3 class="sh" id="costs-scores">Scores by ${costs.by}${pick}</h3><p class="cap">The pass rate leaves out errors and not applicable.</p>
     <div class="tscroll"><table class="ctbl stbl" aria-labelledby="costs-scores"><thead><tr><th scope="col">${table.dimension}</th><th scope="col">Scorer</th>${head}</tr></thead>
     <tbody>${table.rows.map((row) => html`<tr><th scope="row" class="mono">${row.name}</th><td class="mono">${row.scorer}</td><td class="r c rate">${row.rate}</td><td class="r c">${row.pass}</td><td class="r c">${row.fail}</td><td class="r c">${row.error}</td><td class="r c">${row.notApplicable}</td><td class="line">${row.line}</td></tr>`)}</tbody></table></div>`;
 }

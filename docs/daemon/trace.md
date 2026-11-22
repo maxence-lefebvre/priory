@@ -199,8 +199,8 @@ prices them from the same `prices.toml` in `DIR` (default: the current folder).
 
 `--json` prints one object, which `GET /api/costs` also answers (see
 [the serve reference](../reference/serve.md#costs)). The web view's Costs panel draws it. Its
-`scores` counts the verdicts of the window's `factory.run.scored` records by the same split; a
-score takes its run's agent and its run's model. The text output leaves the scores out.
+`scores` counts, by the same split, each run's latest score by each scorer in the window. A score
+takes its run's agent and its run's model. The text output leaves the scores out.
 
 Known limits:
 
