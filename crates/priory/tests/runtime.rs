@@ -10725,6 +10725,104 @@ fn a_comment_kept_during_the_turn_refuses_a_wait_until_the_agent_read_it() {
     assert!(setup.rows("waits").is_empty(), "{:?}", setup.rows("waits"));
 }
 
+const IMPLEMENT_THEN_APPROVE: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "approve", failed = "stop" }
+
+[[steps]]
+id = "approve"
+decides = "human"
+effect = "none"
+options = ["approved", "revise"]
+next = { approved = "done", revise = "implement" }
+"#;
+
+/// A task at its `approve` step of `IMPLEMENT_THEN_APPROVE`, asking its first revision.
+fn at_approve(name: &str) -> Setup {
+    let mut setup = Setup::with_workflow(name, IMPLEMENT_THEN_APPROVE);
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first()
+            .is_some_and(|row| row[3] == "approve" && row[4] == "asleep")
+    });
+    setup.until("asks", |rows| rows.len() == 1 && rows[0][2] == "1");
+    setup
+}
+
+#[test]
+fn a_comment_kept_while_a_person_decides_joins_the_steps_ask_and_gets_no_say() {
+    let setup = at_approve("kept-at-human-step");
+    let written = herdr_bus::Timestamp::now() - jiff::SignedDuration::from_mins(10);
+
+    setup.publish(&issue_commented(804).time(written));
+
+    setup.until("asks", |rows| rows.len() == 1 && rows[0][2] == "2");
+    let ask = &asks_json(&setup)["asks"][0];
+    assert!(
+        ask["text"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with("While this waited: ana on owner/repo#42: Also the empty case. u"),
+        "{ask}"
+    );
+    let output = setup.priory(&["inbox", "--unrouted", "--json"]);
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let unheard = &listed["unrouted"]["unheard"][0];
+    assert_eq!(unheard["task"]["id"], 1, "{listed}");
+    assert_eq!(unheard["follow_up"], json!(null), "{listed}");
+    assert_eq!(unheard["say_text"], json!(null), "{listed}");
+    let stale = setup.priory(&["answer", "1", "approved", "--revision", "1"]);
+    assert!(!stale.status.success(), "{stale:?}");
+    let answered = setup.priory(&["answer", "1", "approved", "--revision", "2"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| rows[0][4] == "done");
+}
+
+#[test]
+fn say_while_a_person_decides_joins_the_steps_ask_and_reaches_the_next_agent_run() {
+    let setup = at_approve("say-at-human-step");
+
+    let said = setup.priory(&["say", "1", "Use the v2 API."]);
+
+    let text = String::from_utf8_lossy(&said.stdout);
+    assert!(said.status.success(), "{said:?}");
+    assert!(
+        text.contains(
+            "task 1 waits at step approve: its ask shows it, and its next agent run reads it"
+        ),
+        "{text}"
+    );
+    setup.until("asks", |rows| rows.len() == 1 && rows[0][2] == "2");
+    let ask = &asks_json(&setup)["asks"][0];
+    assert!(
+        ask["text"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with("While this waited: A person says: Use the v2 API."),
+        "{ask}"
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+    setup.calls(&[result("passed")]);
+    let answered = setup.priory(&["answer", "1", "revise", "--revision", "2"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("Implement the issue.")
+            && typed[1].contains("\nA person says: Use the v2 API."),
+        "{typed:?}"
+    );
+}
+
 #[test]
 fn a_comment_on_a_dropped_tasks_own_issue_posts_a_report_that_names_its_revive() {
     let mut setup = Setup::new("dropped-comment");
@@ -22342,7 +22440,18 @@ fn a_cancel_sent_to_another_runners_task_is_applied_by_its_runner_and_a_revive_b
 
 #[test]
 fn a_say_that_another_runner_refuses_comes_back_with_its_reason_on_the_still_listed_task() {
-    let (a, b, _ask, address) = asked_on_a("remote-say");
+    let mut a = runner("remote-say", "a", None);
+    let mut b = runner("remote-say", "b", Some(&a));
+    with_serve(&b);
+    // No room on `a`, so its agent never starts and the say has no run to reach.
+    a.memory(1);
+    a.publish(&requested(1));
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+    a.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "queued");
+    let address = start_serving(&mut b, T0);
     until_task(&address, ASKED_KEY, "a", |task| {
         task.is_some_and(|task| task["generation"] == 1)
     });
@@ -22368,10 +22477,10 @@ fn a_say_that_another_runner_refuses_comes_back_with_its_reason_on_the_still_lis
     assert_eq!(submission["act"], "say", "{refused}");
     assert_eq!(submission["text"], "look at the tests", "{refused}");
     assert_eq!(
-        submission["why"], "task 1 is at step approve, which no agent runs",
+        submission["why"], "task 1 has no run yet: say it once its agent started",
         "{refused}"
     );
-    assert_eq!(a.rows("tasks")[0][4], "asleep");
+    assert_eq!(a.rows("tasks")[0][4], "queued");
 }
 
 #[test]

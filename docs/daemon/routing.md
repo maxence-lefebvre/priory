@@ -227,7 +227,9 @@ kinds a task's own key carries, and not the agent's own comments. Checks and pus
 checks gate.
 
 Each group names its task and a command: `priory say ID` for an asleep or blocked task, whose next
-run carries the events after the text, or what the owned group gives for an ended task. The Desk
+run carries the events after the text, or what the owned group gives for an ended task. A task that
+waits on a step's ask gets no command: its ask shows the events already (see
+[What a kept message does](#what-a-kept-message-does)). The Desk
 counts these events over the last 24 hours (see [desk.md](desk.md#unrouted-events)).
 
 The web and Herdr Inbox panels list these groups first, under Unheard. On the web, Say sends the
@@ -240,8 +242,8 @@ group's Revive or Request a task. The Herdr panel has no Say: it shows an asleep
 What happens to a `kept` message depends on the task's state:
 
 - For a `running` task, the daemon also queues an outbox prompt with the message, so the agent reads
-  it after its current turn. Until then, for feedback, the agent's `result` and `ask` are refused
-  (see [tools.md](tools.md#the-tools)).
+  it after its current turn. Until then, for feedback, the agent's `result`, `ask` and `wait` are
+  refused (see [tools.md](tools.md#the-tools)).
 - If the message satisfies the task's open wait, the wait fires in any active state (see
   [waits.md](waits.md)). An asleep task wakes. A ready, blocked or held task keeps its state, and
   its next run gets the prompt.
@@ -253,6 +255,11 @@ What happens to a `kept` message depends on the task's state:
   Another active task that subscribes to
   it gets it too: a prompt of its own while it runs, or a wake while it sleeps (see
   [tools.md](tools.md#subscribeon-and-unsubscribeon)).
+- For a task that waits on a step's ask, where a person decides and no agent runs, a message of
+  the kinds the task's own key takes, and not the agent's own, is added to that ask as its next
+  revision: `While this waited: <who> on <subject>: <first line> <url>`. The new revision pushes,
+  and an answer to the earlier revision is refused, so the person who answers reads it. The answer
+  may lead to `done` with no agent run at all. If a run follows, it reads the message too.
 - Any other kept message waits for the task's next run, which reads it in its first prompt.
 
 ## Schedule firings

@@ -3525,7 +3525,10 @@ pub(crate) fn act_in_tx(
             };
             // A fixed first line keeps a text starting with `/` from running as a slash command.
             let text = format!("{SAYS}{text}");
-            Ok((say(tx, act.task, &text, &state, &factory.workflows)?, None))
+            Ok((
+                say_or_hold(tx, act.task, &text, &state, &factory.workflows)?,
+                None,
+            ))
         }
         "cancel" if ["done", "failed", "dropped"].contains(&state.as_str()) => {
             Ok((Err(format!("task {} is already {state}", act.task)), None))
@@ -3573,6 +3576,30 @@ pub(crate) fn cancel(
 /// The first words of a person's `say` text in the agent's prompt.
 pub(crate) const SAYS: &str = "A person says: ";
 
+/// As `say`, but a task that waits on a step's ask, where no agent runs while a person decides,
+/// shows `text` on that ask and queues it for its next agent run.
+pub(crate) fn say_or_hold(
+    tx: &Transaction,
+    task: i64,
+    text: &str,
+    state: &str,
+    workflows: &Workflows,
+) -> rusqlite::Result<Result<String, String>> {
+    if !["done", "failed", "dropped"].contains(&state) && tell_ask(tx, task, text)? {
+        tx.execute(
+            "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
+            params![task, text],
+        )?;
+        let at: String = tx.query_row("SELECT step FROM tasks WHERE id = ?1", [task], |row| {
+            row.get(0)
+        })?;
+        return Ok(Ok(format!(
+            "task {task} waits at step {at}: its ask shows it, and its next agent run reads it"
+        )));
+    }
+    say(tx, task, text, state, workflows)
+}
+
 /// Queues `text` as the next prompt of the agent at the task's model step, as an answer
 /// is: typed once its run is idle, or waking an asleep task into a new run that resumes the session.
 pub(crate) fn say(
@@ -3614,6 +3641,37 @@ pub(crate) fn say(
         set(tx, task, "ready", None, None)?;
     }
     Ok(Ok(format!("task {task} will hear it")))
+}
+
+/// Adds `line` to the open step ask of `task` as its next revision, which pushes, so the person
+/// who answers reads it. Returns whether the task waits on such an ask.
+pub(crate) fn tell_ask(tx: &Transaction, task: i64, line: &str) -> rusqlite::Result<bool> {
+    let told = tx.execute(
+        "UPDATE asks SET revision = revision + 1,
+           text = coalesce(text || char(10) || char(10), '') || 'While this waited: ' || ?2
+         WHERE id = (SELECT max(id) FROM asks WHERE task = ?1 AND kind = 'step'
+           AND answer IS NULL AND withdrawn IS NULL)",
+        params![task, line],
+    )?;
+    Ok(told > 0)
+}
+
+/// Who said what on which resource in an event, `ana on owner/repo#42: Also the empty case. URL`,
+/// for a person to read on an ask.
+pub(crate) fn heard(kind: &str, subject: Option<&str>, data: &Value) -> String {
+    let who = data["actor"]
+        .as_str()
+        .or(data["user"].as_str())
+        .unwrap_or(kind);
+    let said = ["body", "text", "title"]
+        .iter()
+        .find_map(|field| data[field].as_str())
+        .and_then(|text| text.lines().find(|line| !line.trim().is_empty()))
+        .unwrap_or(kind);
+    let url = data["url"].as_str().unwrap_or_default();
+    format!("{who} on {}: {said} {url}", subject.unwrap_or("-"))
+        .trim_end()
+        .to_owned()
 }
 
 /// Moves a failed or dropped task back into its step, or `act.step`, as its next generation, and

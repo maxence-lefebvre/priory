@@ -2012,11 +2012,14 @@ pub(crate) fn route_in(
         (Some(task), "kept") => {
             let (fired, ended) = crate::tools::event(tx, task, seq, factory)?;
             kill.extend(ended);
-            if !fired
-                && delivered(tx, task, message, &resources, Some(seq), factory)?
+            if !fired {
+                if delivered(tx, task, message, &resources, Some(seq), factory)?
                     .is_some_and(|(outcome, _)| outcome == "woke")
-            {
-                tx.execute("UPDATE inbox SET outcome = 'woke' WHERE seq = ?1", [seq])?;
+                {
+                    tx.execute("UPDATE inbox SET outcome = 'woke' WHERE seq = ?1", [seq])?;
+                } else {
+                    told(tx, task, message)?;
+                }
             }
         }
         (Some(task), "woke") => {
@@ -2040,7 +2043,7 @@ pub(crate) fn route_in(
             let text = message.data["text"].as_str().unwrap_or_default();
             let text = format!("{}{text}", crate::tools::SAYS);
             // An agent that cannot hear it yet reads the request with its next prompt instead.
-            if crate::tools::say(tx, task, &text, &state, &factory.workflows)?.is_err() {
+            if crate::tools::say_or_hold(tx, task, &text, &state, &factory.workflows)?.is_err() {
                 tx.execute("UPDATE inbox SET outcome = 'kept' WHERE seq = ?1", [seq])?;
                 kill.extend(crate::tools::event(tx, task, seq, factory)?.1);
             } else {
@@ -2251,6 +2254,16 @@ fn delivered(
         return Ok(Some(("kept", Some(tx.last_insert_rowid()))));
     }
     Ok(None)
+}
+
+/// Adds what a person said in `message` to the open step ask of `task`, since no agent runs while
+/// a person decides and the answer may lead to `done` with no run at all.
+fn told(tx: &Transaction, task: i64, message: &Message) -> rusqlite::Result<bool> {
+    if !OWN_KEY.contains(&message.kind.as_str()) || message.data["own"] == true {
+        return Ok(false);
+    }
+    let line = crate::tools::heard(&message.kind, message.subject.as_deref(), &message.data);
+    crate::tools::tell_ask(tx, task, &line)
 }
 
 /// The events a task's subscription to its own key carries: what people say, edit, close and take
