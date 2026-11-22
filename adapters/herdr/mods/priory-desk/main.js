@@ -19,6 +19,7 @@ const STEPS = /** @type {Record<string, number>} */ ({ j: 1, down: 1, k: -1, up:
 const TILES = /** @type {Record<string, [string, string | null, string]>} */ ({
   ask: ["wait", "ask", "text-2"],
   todo: ["wait", "square", "text-2"],
+  memories: ["wait", "brain", "text-2"],
   blocked: ["tile-warn", "hand", "warn-text"],
   prompt: ["tile-warn", "hand", "warn-text"],
   failed: ["tile-danger", "circle-x", "danger-text"],
@@ -35,6 +36,8 @@ const TILES = /** @type {Record<string, [string, string | null, string]>} */ ({
 });
 const RESTART = /** @type {Record<string, string>} */ ({ blocked: "Resume", prompt: "Resume", failed: "Revive" });
 const HOUR = { for: "1h" };
+// DESIGN.md, Ask detail: an armed Accept waits this long for the second press.
+const ARM_MS = 4000;
 /**
  * Text with its autolinks; plain text stays a plain child. Linked text keeps its press, so a link
  * opens without selecting the row around it.
@@ -79,7 +82,7 @@ const message = (error) => (error instanceof Error ? error.message : String(erro
 export default class PrioryDesk extends View {
   /** @param {unknown} _props @param {import("gpui-kit").Context} cx */
   init(_props, cx) {
-    /** @type {{ desk: any, asks: any, tasks: any, queue: any } | null} */
+    /** @type {{ desk: any, asks: any, tasks: any, queue: any, memories: any } | null} */
     this.data = null;
     /** @type {{ pattern: string, url: string }[]} */
     this.links = [];
@@ -95,6 +98,14 @@ export default class PrioryDesk extends View {
     this.width = 0;
     this.slow = false;
     this.busy = false;
+    // A memory candidate's Accept armed by its first press, and the candidates whose current text shows.
+    /** @type {{ id: string, at: number } | null} */
+    this.memoryArmed = null;
+    /** @type {Set<string>} */
+    this.currentShown = new Set();
+    // Candidates whose verdict was sent, with what priory said: their buttons stay off until the desk drops them.
+    /** @type {Map<string, string>} */
+    this.memorySent = new Map();
     /** @type {Promise<{ theme: string, client: ReturnType<typeof priory> }> | null} */
     this.client = null;
     this.theme = "indigo";
@@ -140,13 +151,15 @@ export default class PrioryDesk extends View {
         const read = new Date().toISOString().replace(/\.\d+Z$/, "Z");
         const [desk, asks, tasks, queue] = await Promise.all([client.desk({ all: true }), client.asks(), client.tasks(), client.queue()])
           .finally(() => { this.reading = false; });
+        // Only `priory memories DIR` says what memory each candidate replaces, so it is read while one waits.
+        const memories = desk.items.some((/** @type {any} */ item) => item.kind === "memories") ? await client.memories() : null;
         if (chain !== this.chain) return null;
         if (!this.data) {
           this.sinceFrom = desk.last_visit;
           this.opened = read;
         }
         this.since = mergeSince(this.since, desk.since_you_looked);
-        this.data = { desk, asks, tasks, queue };
+        this.data = { desk, asks, tasks, queue, memories };
         this.error = null;
         cx.notify();
         return desk.revision;
@@ -220,6 +233,25 @@ export default class PrioryDesk extends View {
   /** @param {import("gpui-kit").Context} cx @param {number} seq */
   read(cx, seq) {
     this.act(cx, "mark it read", (client) => client.read(seq));
+  }
+
+  // Accept arms on the first press and publishes on the second, within ARM_MS; Drop publishes at once.
+  /** @param {import("gpui-kit").Context} cx @param {string} id @param {boolean} accept */
+  decide(cx, id, accept) {
+    const armed = this.memoryArmed?.id === id && Date.now() - this.memoryArmed.at < ARM_MS;
+    this.memoryArmed = null;
+    if (accept && !armed) {
+      this.memoryArmed = { id, at: Date.now() };
+      cx.timer.after(ARM_MS, (cx) => {
+        if (this.memoryArmed?.id === id && Date.now() - this.memoryArmed.at >= ARM_MS) this.memoryArmed = null;
+        cx.notify();
+      });
+      return cx.notify();
+    }
+    this.act(cx, accept ? "accept it" : "drop it", async (client) => {
+      const said = await (accept ? client.acceptMemory(id) : client.dropMemory(id));
+      this.memorySent.set(id, `${said.trim()}, then it leaves this list.`);
+    });
   }
 
   // The Asks panel is the one place to answer: open the ask there.
@@ -490,8 +522,37 @@ export default class PrioryDesk extends View {
         .child(ui.button(`tomorrow-${row.id}`, "Snooze until tomorrow 09:00",
           (_e, cx) => this.snooze(cx, /** @type {NonNullable<Row["snooze"]>} */ (item), { until: tomorrowAt(9, Date.now()) }), { icon: "moon", disabled: this.busy })));
     return v_flex().gap(S["space-2"]).pl(S["pane-tile"] + S["space-3"])
+      .children((row.memories ?? []).map((/** @type {any} */ memory) => this.memory(ui, memory)))
       .children((row.progress ?? []).map((/** @type {string} */ line, /** @type {number} */ i) => div().id(`progress-${row.id}-${i}`).whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(String(line))))
       .child(actions);
+  }
+
+  // One memory candidate: its name and tag, description, full text, the text it replaces on demand, then Accept and Drop.
+  /** @param {Ui} ui @param {any} memory */
+  memory(ui, memory) {
+    const { t } = ui;
+    const armed = this.memoryArmed?.id === memory.id;
+    const sent = this.memorySent.get(memory.id);
+    const shown = this.currentShown.has(memory.id);
+    const text = (/** @type {string} */ id, /** @type {string} */ body) => div().id(id).whitespace_normal().px(S["space-3"]).py(S["space-2"]).rounded(S["radius-md"]).bg(t.raised).text_size(S["type-small"][0]).child(body);
+    return v_flex().id(`memory-${memory.id}`).gap(S["space-2"]).pt(S["space-2"]).border_t(1).border_color(t.line)
+      .child(h_flex().gap(S["space-2"]).items_center().text_size(S["type-caption"][0])
+        .child(div().font_family(ui.fonts.mono).text_color(t.text).child(String(memory.name)))
+        .child(div().px(5).rounded(S["radius-sm"]).border(1).border_color(memory.warn ? t["warn-text"] : t["control-line"]).text_color(memory.warn ? t["warn-text"] : t["text-2"]).child(String(memory.tag))))
+      .when(Boolean(memory.description), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(String(memory.description))))
+      .child(text(`memory-text-${memory.id}`, String(memory.text)))
+      .when(memory.current != null, (el) => el
+        .child(ui.button(`current-${memory.id}`, shown ? "Hide current text" : "Current text", (_e, cx) => {
+          if (shown) this.currentShown.delete(memory.id);
+          else this.currentShown.add(memory.id);
+          cx.notify();
+        }))
+        .when(shown, (el) => el.child(text(`memory-current-${memory.id}`, String(memory.current)))))
+      .child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(String(memory.by)))
+      .child(h_flex().gap(S["space-2"])
+        .child(ui.button(`accept-${memory.id}`, armed ? "Press again to accept" : "Accept", (_e, cx) => this.decide(cx, memory.id, true), { primary: true, disabled: this.busy || Boolean(sent) }))
+        .child(ui.button(`drop-${memory.id}`, "Drop", (_e, cx) => this.decide(cx, memory.id, false), { disabled: this.busy || Boolean(sent) })))
+      .when(Boolean(sent), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["action-text"]).child(String(sent))));
   }
 
   /** @param {Ui} ui @param {Model} model */

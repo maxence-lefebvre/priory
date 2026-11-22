@@ -37,6 +37,24 @@ export function dueText(what, now) {
 /** @param {any} item @param {number} now */
 const itemText = (item, now) => (item.kind === "todo" ? dueText(item.what, now) : item.what);
 
+/** The web view's `memoryTag`: whether a candidate replaces or forgets a memory runs get now. @param {any} candidate */
+function memoryTag(candidate) {
+  if (candidate.forget) return candidate.replaces ? { tag: "forgets a memory runs get", warn: true } : { tag: "forget", warn: false };
+  if (candidate.replaces == null) return { tag: "may replace a memory runs get", warn: true };
+  return candidate.replaces ? { tag: "replaces a memory runs get", warn: true } : { tag: "new", warn: false };
+}
+
+/** A memory candidate as the memories row's detail shows it: the full text, never cut. @param {any} candidate */
+const memoryView = (candidate) => ({
+  id: candidate.id,
+  name: candidate.name,
+  ...memoryTag(candidate),
+  description: candidate.description,
+  text: candidate.forget ? `Forgets ${candidate.name}: runs stop getting it.` : candidate.text,
+  current: candidate.current_text ?? null,
+  by: `Written by ${candidate.task}${candidate.runner ? ` on ${candidate.runner}` : ""}, candidate ${candidate.id}`,
+});
+
 /** Relative under 24 h, then a date (DESIGN.md, Copy). @param {string} iso @param {number} now */
 export function age(iso, now) {
   const minutes = Math.max(0, Math.round((now - Date.parse(iso)) / 60_000));
@@ -60,10 +78,10 @@ function progressLines(progress) {
 /**
  * The Desk at `now`: the count, the next thing, the room banner, the saved views and each view's
  * sections. Agent text passes through as text, and as `autolink` spans where the web view links it.
- * @param {{ desk: any, asks: any, tasks: any, queue: any }} data
+ * @param {{ desk: any, asks: any, tasks: any, queue: any, memories?: any }} data `memories` as `priory memories DIR --json` lists them
  * @param {{ now: number, links?: { pattern: string, url: string }[] }} options `links` as `priory links` lists them
  */
-export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue }, { now, links = [] }) {
+export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue, memories }, { now, links = [] }) {
   /** @type {Map<unknown, any>} */
   const askById = new Map(asksListing.asks.map((/** @type {any} */ ask) => [ask.id, ask]));
   /** @type {any[]} */
@@ -75,6 +93,9 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
     const ask = item.kind === "ask" ? askById.get(item.id) : null;
     const task = taskById.get(item.task);
     const back = item.back_early;
+    /** @type {any[] | null} */
+    const candidates = item.kind === "memories" ? memories?.candidates ?? item.candidates ?? [] : null;
+    if (candidates) item = { ...item, what: `${candidates.length} memory ${candidates.length === 1 ? "candidate" : "candidates"}: ${candidates.map((candidate) => candidate.name).join(", ")}` };
     const text = ask ? ask.title || ask.question : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : itemText(item, now);
     return {
       id: `${item.kind}:${item.id}`,
@@ -99,6 +120,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
       prs: prStack(task?.stack).label,
       revision: ask?.revision ?? null,
       progress: progressLines(task?.progress),
+      ...(candidates && { memories: candidates.map(memoryView) }),
       ...(routedMark(item) && { routed: routedMark(item) }),
       ...(runnerOf(ask) && { runner: runnerOf(ask), away: seenAgo(ask, now, (iso) => age(iso, now)), sent: sentNote(ask) }),
     };

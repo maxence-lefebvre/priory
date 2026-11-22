@@ -242,7 +242,9 @@ Herdr Desk: the count, the next thing, the room and intake banners, the saved vi
 - **What it reads.** `desk --all --json`, `asks --all --json`, `tasks --json` and
   `queue FACTORY --json`, read together, then again after each `priory wait`, even one that ends
   with the same revision, so it also catches changes that raise no revision, such as a worktree item following the disk. `--all` keeps the
-  snoozed items for the Snoozed view; the panel leaves them out of everything else.
+  snoozed items for the Snoozed view; the panel leaves them out of everything else. While the desk
+  holds a `memories` item, it also reads `memories FACTORY --json`, whose candidates say what
+  memory each replaces.
 - **The count** counts the open asks that are not snoozed, then the oldest wait, the stopped items
   (`blocked`, `failed`, `prompt` and `delivery`) and `counts.snoozed`.
 - **The next thing** is the oldest open ask that is not snoozed, with its recommendation and
@@ -264,6 +266,9 @@ Herdr Desk: the count, the next thing, the room and intake banners, the saved vi
   uncertain prompt, and Revive runs `priory revive TASK` for a failed one. Done runs
   `priory todo done ID` for a to-do, from its row or the next thing card.
   Read runs `priory inbox read SEQ` for a report, from its row, so the row leaves the desk.
+  The `memories` row's detail lists each candidate with its full text, a Current text button that
+  shows the text it replaces, and Accept and Drop. Accept arms on the first press, for 4 seconds, and
+  runs `priory memories accept FACTORY ID` on the second. Drop runs `priory memories drop FACTORY ID`.
   Open task opens the row's task in the [Task panel](#the-task-panel), and Attach asks the Priory
   bar with `priory.attach`; the next thing card offers both. Answer… opens the ask in the Asks
   panel: it sets `priory.asks.open` and brings the first block that shows `asks` into view. When

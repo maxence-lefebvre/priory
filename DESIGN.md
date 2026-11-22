@@ -332,6 +332,9 @@ with the `check` icon (answered) or the `minus` icon (withdrawn).
 
 A batch is not a task state either. Its desk row takes a muted tile with the `layers` icon.
 
+Memory candidates are not a task state either. Their desk row takes the ask role's `--wait` tile
+with the `brain` icon, since they wait on a person.
+
 Another runner's task shows its hold instead of a state: `kept` or `waiting`, beside a muted tile
 with the `server` icon. A task of this runner in the `waiting` state keeps its own tile.
 
@@ -384,7 +387,9 @@ The desk is the "Needs me" view. It lists, top to bottom:
    the `square` tile in the ask role, its text and due time, and a Done button in `.btn
    secondary` that marks it done (`POST /api/todos/{id}/done`). The next thing card offers Done
    for a to-do. Then **Also waiting**: the desk's other items (held tasks, going batches, sweeps,
-   memory waits, retired tasks and worktrees that stay), each with the daemon's sentence. A
+   memory waits, retired tasks and worktrees that stay), each with the daemon's sentence. The
+   [memory candidates](#memory-candidates) row names the candidates instead and opens their
+   review list; on wide screens its Recommends column holds a Review button. A
    batch row stands for its entries' held rows. On the phone list, its title and counts are the
    main line and the `Next: ...` sentence a caption below; the wide table and the Herdr Desk keep the
    line whole, as board 3 shows. Its key opens the [batch page](#batch-page-and-lane-graph). A held task's row carries a
@@ -424,6 +429,29 @@ selected row.
 - A round [Add](#add) button, `--capsule` wide and tall, sits at the right of the capsule with
   `--space-2` between them. It stays where the capsule hides. It takes `--surface` with a
   `--control-line` edge and `--action-text`, so the capsule stays the one primary action.
+
+### Memory candidates
+
+`/memories` lists the memory candidates that wait for a person, oldest first, as a page of its own
+with a back link to the Desk, like the batch page. Accepting one gives it to every task's runs, so
+the page shows everything a person needs before they tap:
+
+- A heading with the count, and one note: an agent wrote each one; Accept gives it to every task's
+  runs, on every runner; Drop discards it.
+- Per candidate, in a section: a small memories tile, the name in mono, a tag, and the age. The tag
+  is `new`, `forget`, or in `--warn-text` `replaces a memory runs get`, `forgets a memory runs
+  get` or `may replace a memory runs get`, when this machine cannot tell, such as one with no kit
+  checkout. It never says `new` unless the server confirmed it. Then the description in `--text-2`, the full text on `--raised` with `--radius-md`, never
+  cut, and for a candidate that replaces a memory, the current text behind a "Current text"
+  disclosure, closed by default, which stays as the person left it across redraws. Then "Written by KEY on RUNNER, candidate ID" in `--text-3`.
+- Accept in `.btn primary` and Drop in `.btn secondary`. Accept arms on its first tap, as Cancel
+  does, and sends on the second within 4 seconds. Drop sends at once: a dropped candidate reaches
+  no other task.
+- Once sent, both buttons turn off and a note under them says what the server answered. The
+  candidate leaves the list once the daemon reads the verdict from the log. A refusal says why in
+  the same note.
+- With none waiting: "No memory candidate waits. Agents write them with the remember and forget
+  tools."
 
 ### Inbox
 
@@ -1330,7 +1358,10 @@ The calm count, then the one next thing, then the explorer list.
    ask in the Asks panel, so a person answers in one place. Open task opens the [Task](#task)
    panel; Attach opens the live run's terminal.
 3. **Saved views**: Needs me, Running, Asleep, Snoozed and All.
-4. The room banner, Asks, Stopped, To-dos and Later, as on the web desk. A routed ask shows the
+4. The room banner, Asks, Stopped, To-dos and Later, as on the web desk. The memories row's detail
+   lists each candidate as on the web's [memory candidates](#memory-candidates) page, with a Current
+   text button instead of the disclosure, and an armed Accept that reads "Press again to accept".
+   A routed ask shows the
    [routed mark](#routed-ask) under its question, and in the next thing's card. A selected
    to-do's detail offers Done.
 5. **Since you looked**, from 1024 px: the events since the person's last visit.
