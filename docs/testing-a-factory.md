@@ -11,7 +11,8 @@ host. It then starts this build's daemon with the fake `claude`, `codex` and `gh
 asks for one task, plays your scenario, and checks where the task ended. `gh`, `claude`, `codex`
 and Git's GitHub remotes go to fakes, and every process starts with a cleared environment, a
 scratch home and a scratch Priory home. Your factory's own scripts still run as written, so read
-what a `run` step calls before you play it.
+what a `run` step calls before you play it. The fakes serve tests such as this one only.
+Each script's opening comments list its options. Keep them off the `PATH` of a real run.
 
 ## 1. Write a scenario
 
