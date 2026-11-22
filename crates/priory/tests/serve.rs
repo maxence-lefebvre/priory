@@ -5900,7 +5900,7 @@ fn an_outsider_comment_is_counted_on_the_desk_and_listed_as_a_group_of_its_own()
     assert_eq!(desk["counts"]["unrouted"], 0);
     assert_eq!(
         unrouted["unrouted"],
-        json!({ "owned": [], "other": [], "unheard": [] })
+        json!({ "owned": [], "dropped": [], "other": [], "unheard": [] })
     );
     assert_eq!(unrouted["outsider"][0]["subject"], "owner/repo#7");
     assert_eq!(unrouted["outsider"][0]["actor"], "stranger");

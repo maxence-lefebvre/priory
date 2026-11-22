@@ -2777,8 +2777,8 @@ fn asking_session() -> Option<String> {
 /// Sets a task's TL;DR by hand.
 /// Prints `priory task TASK --json`: the body `/api/tasks/TASK` returns.
 /// Prints `priory inbox --unrouted`: each group of a resource a task owned, with that task, its
-/// events and the command that routes the next one, then each task that kept events no agent read,
-/// then one count per source for the rest.
+/// events and the command that routes the next one, then each request a `pre` script dropped, then
+/// each task that kept events no agent read, then one count per source for the rest.
 fn print_unrouted(unrouted: &serde_json::Value) {
     let events = |count: u64, what: &str| {
         format!("{count} {what}event{}", if count == 1 { "" } else { "s" })
@@ -2806,6 +2806,23 @@ fn print_unrouted(unrouted: &serde_json::Value) {
             group["follow_up"]
                 .as_str()
                 .unwrap_or("no command can key a new task by it: start one from its thread")
+        );
+    }
+    let dropped = unrouted["dropped"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    if !dropped.is_empty() {
+        println!("Dropped by a pre script, each judged once:");
+    }
+    for drop in dropped {
+        let why = drop["reason"].as_str().or(drop["failed"].as_str());
+        println!(
+            "  {}  {}  {}  dropped by {}{}",
+            drop["seq"],
+            drop["trigger"].as_str().unwrap_or_default(),
+            drop["key"].as_str().unwrap_or("-"),
+            drop["script"].as_str().unwrap_or_default(),
+            why.map(|why| format!(": {why}")).unwrap_or_default()
         );
     }
     for group in unrouted["unheard"].as_array().into_iter().flatten() {

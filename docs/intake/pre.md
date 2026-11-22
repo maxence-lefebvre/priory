@@ -110,8 +110,16 @@ A script can run twice. An intake that stops after the script ran and before the
 again at its next start, and so does a server restarted while requests wait. So a `pre` script
 reads and changes nothing outside. Effects belong in a workflow step.
 
+A drop is final for its event. A Linear view publishes `linear.issue.entered` once, when an issue
+joins it, and no later edit of that issue runs the trigger again. So a script that drops an issue
+because it lacks a fact today, such as an estimate, leaves it in the view with no task until it
+leaves the view and enters it again. Filter on facts that do not change, or let the request through
+and let a step wait for the fact.
+
 `priory inbox` lists a dropped request after its source event, with `dropped by <script>: <reason>`
-in its `line` column.
+in its `line` column. `priory inbox --unrouted` lists each drop whose key no task has, with its
+trigger, script, reason and key, apart from the events no trigger wanted (see
+[serve.md](../reference/serve.md#unrouted)).
 
 ## Where it runs
 
