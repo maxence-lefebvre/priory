@@ -93,4 +93,10 @@ test("the Costs panel shows each scorer's pass rate under the split, stacked whe
   const names = all(await drawn({ ...fixture("costs"), scores: long }, 700), "div").filter((cell) => text(cell) === "integration-tests-linux");
   assert.equal(names.length, 1);
   assert.ok(names[0].calls.whitespace_normal && !names[0].calls.truncate);
+  // Each selectable cell has its own id, even when two rows' names join to the same words.
+  const alike = [{ workflow: "a-b", scorer: "c", pass: 1, fail: 0, error: 0, not_applicable: 0 }, { workflow: "a", scorer: "b-c", pass: 1, fail: 0, error: 0, not_applicable: 0 }];
+  for (const width of [420, 700]) {
+    const ids = all(await drawn({ ...fixture("costs"), scores: alike }, width), "text").map((cell) => cell.id);
+    assert.equal(new Set(ids).size, ids.length, `ids at ${width} px: ${ids}`);
+  }
 });

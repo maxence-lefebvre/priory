@@ -233,15 +233,15 @@ export default class PrioryCosts extends View {
   scoresPart(costs, t, chips) {
     const table = /** @type {Scores} */ (scoreTable(costs));
     if (!table.rows.length) return [];
-    /** @param {string[]} cells @param {boolean} head */
-    const row = (cells, head) => h_flex().min_h(head ? 28 : 36).gap(S["space-3"]).items_center().border_b(1).border_color(t.line)
+    /** @param {string[]} cells @param {boolean} head @param {number} [at] the row's place, which keeps its cells' ids apart */
+    const row = (cells, head, at = -1) => h_flex().min_h(head ? 28 : 36).gap(S["space-3"]).items_center().border_b(1).border_color(t.line)
       .text_size(head ? S["type-caption"][0] : S["type-small"][0]).text_color(head ? t["text-3"] : t.text)
-      .children(cells.slice(0, 2).map((cell, index) => div().w(120).flex_none().whitespace_normal().font_family(head ? this.font.ui : this.font.mono).child(head ? cell : selectable(`score-cell-${cells[0]}-${cells[1]}-${index}`, cell))))
+      .children(cells.slice(0, 2).map((cell, index) => div().w(120).flex_none().whitespace_normal().font_family(head ? this.font.ui : this.font.mono).child(head ? cell : selectable(`score-cell-${at}-${index}`, cell))))
       .children(cells.slice(2).map((cell, index) => div().w(index ? 56 : 72).flex_none().whitespace_normal().text_right()
         .when(!head && index === 0, (el) => el.font_weight(600)).child(cell)));
-    const stacked = (/** @type {Scores["rows"][number]} */ entry) => v_flex().py(S["space-2"]).gap(S["space-1"]).border_b(1).border_color(t.line)
+    const stacked = (/** @type {Scores["rows"][number]} */ entry, /** @type {number} */ at) => v_flex().py(S["space-2"]).gap(S["space-1"]).border_b(1).border_color(t.line)
       .child(h_flex().gap(S["space-2"]).flex_wrap().font_family(this.font.mono).text_size(S["type-small"][0]).child(entry.name).child(entry.scorer))
-      .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(selectable(`score-${entry.name}-${entry.scorer}`, entry.line)));
+      .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(selectable(`score-line-${at}`, entry.line)));
     return [v_flex().id("costs-scores").gap(S["space-2"])
       .child(h_flex().gap(S["space-2"]).items_center().flex_wrap()
         .child(this.heading(`Scores by ${costs.by}`, null, t)).child(div().flex_1()).when(chips, (el) => el.children(this.splitChips(t))))
@@ -249,7 +249,7 @@ export default class PrioryCosts extends View {
       .child(this.width < SCORE_COLUMNS
         ? v_flex().children(table.rows.map(stacked))
         : v_flex().id("costs-scores-table").overflow_x_scrollbar().child(row([table.dimension, "Scorer", "Pass rate", "pass", "fail", "error", "not applicable"], true))
-          .children(table.rows.map((entry) => row([entry.name, entry.scorer, entry.rate, ...[entry.pass, entry.fail, entry.error, entry.notApplicable].map(String)], false))))];
+          .children(table.rows.map((entry, at) => row([entry.name, entry.scorer, entry.rate, ...[entry.pass, entry.fail, entry.error, entry.notApplicable].map(String)], false, at))))];
   }
 
   /** One bar per day of both weeks; a dotted line starts this week, so the split never rests on color. @param {any} costs @param {Palette} t */
