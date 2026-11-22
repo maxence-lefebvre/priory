@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 652" width="680" height="652" role="img" aria-labelledby="title desc">
   <title id="title">How a task moves through Priory</title>
-  <desc id="desc">From top to bottom. The intake polls GitHub, Linear, Slack and schedules, a webhook is checked then published, and a request you type comes from priory add: all three land on the log. The daemon finds the task each message concerns, and a request for new work creates a task, queued at its workflow's first step. When the machine has room, a run starts a model step's agent, Claude Code or Codex, in the task's git worktree and a tmux session. The agent ends its turn with a tool call. With result, the step's outcome picks the next step, done or stop. With wait, the task sleeps until an event such as checks or a merge. With ask, the task sleeps until a person answers on the desk. An event or an answer wakes the task, and its next run resumes the agent's session. At done, a task with a pull request first waits for the pull request's checks.</desc>
+  <desc id="desc">From top to bottom. The intake polls GitHub, Linear, Slack and schedules, a webhook is checked then published, and a request you type comes from priory add: all three land on the log. The daemon finds the task each message concerns, and a task request creates a task, queued at its workflow's first step, or joins the active task of its key. When the machine has room, a run starts a model step's agent, Claude Code or Codex, in the task's git worktree and a tmux session. The agent ends its turn with a tool call. With result, the step's outcome picks the next step, done or stop, and a next model step starts a run again. With wait, the task sleeps until an event such as checks or a merge. With ask, the task sleeps until a person answers on the desk. An event or an answer wakes the task, and its next run resumes the agent's session. At done, a task with a pull request first waits for the pull request's checks.</desc>
   <style>
     svg { --surface: #FFFFFF; --raised: #ECECF2; --line: #E3E3EA; --edge: #85858F; --text: #0B0B14; --text-2: #3C3C46; --text-3: #686872; --action: #5856D6; --action-soft: #ECEBFC; --action-text: #4F4DC9; --danger: #C4161C; }
     @media (prefers-color-scheme: dark) {
@@ -50,7 +50,7 @@
 
   <rect class="box" x="80" y="276" width="520" height="52" rx="8"/>
   <text class="t mid" x="340" y="298">The daemon finds the task a message concerns</text>
-  <text class="mid" x="340" y="316">a request for new work creates a task, queued at its workflow's first step</text>
+  <text class="mid" x="340" y="316">a task request creates a task, or joins the active task of its key</text>
   <path class="flow" marker-end="url(#tip)" d="M340,328 V367"/>
   <text x="352" y="352">when the machine has room</text>
 
@@ -76,7 +76,7 @@
   <text class="mid" x="545" y="519">person answers on the desk</text>
 
   <path class="flow" marker-end="url(#tip)" d="M40,496 H28 Q20,496 20,488 V402 Q20,394 28,394 H79"/>
-  <text x="30" y="444">next step</text>
+  <text x="30" y="444">next model step</text>
   <path class="flow" marker-end="url(#tip)" d="M340,532 V548 Q340,556 348,556 H652 Q660,556 660,548 V402 Q660,394 652,394 H601"/>
   <path class="flow" d="M545,532 V556"/>
   <text class="end-anchor" x="660" y="576">an event or an answer wakes the task: its next run resumes the agent's session</text>

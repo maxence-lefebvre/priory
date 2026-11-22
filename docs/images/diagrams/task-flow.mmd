@@ -6,12 +6,12 @@ flowchart TD
   webhook["A webhook: checked, then published"] --> log
   request["A request you type: priory add"] --> log
   intake --> log["The log: every message, in one order"]
-  log --> daemon["The daemon finds the task a message concerns. A request for new work creates a task, queued at its workflow's first step"]
+  log --> daemon["The daemon finds the task a message concerns. A task request creates a task, or joins the active task of its key"]
   daemon -- when the machine has room --> run["A run starts a model step's agent: Claude Code or Codex, in the task's git worktree and a tmux session"]
   run -- its turn ends with a tool call --> result["result: its outcome picks the next step, done or stop"]
   run --> wait["wait: the task sleeps until an event: checks, a merge"]
   run --> ask["ask: the task sleeps until a person answers on the desk"]
-  result -- next step --> run
+  result -- next model step --> run
   wait -- an event wakes the task: its next run resumes the agent's session --> run
   ask -- an answer wakes the task: its next run resumes the agent's session --> run
   result --> done(["done: at done, a task with a pull request first waits for the pull request's checks"])

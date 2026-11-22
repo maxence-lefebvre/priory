@@ -4,7 +4,7 @@ This page explains the terms Priory uses, each with the page that covers it in d
 
 The drawing shows how a task moves, from an event to `done`. The terms below name its parts.
 
-![How a task moves, from top to bottom. GitHub, Linear, Slack and schedules reach the intake, and a webhook or a request you type goes straight to the log. The daemon finds the task each message concerns, and a request for new work creates one. A run starts a model step's agent in the task's git worktree and a tmux session. The agent ends its turn with result, wait or ask. A result picks the next step, done or stop. A wait or an ask puts the task to sleep until an event or a person's answer wakes it, and the next run resumes the agent's session.](images/diagrams/task-flow.svg)
+![How a task moves, from top to bottom. GitHub, Linear, Slack and schedules reach the intake, and a webhook or a request you type goes straight to the log. The daemon finds the task each message concerns, and a task request creates a task or joins the active one. A run starts a model step's agent in the task's git worktree and a tmux session. The agent ends its turn with result, wait or ask. A result picks the next step, done or stop. A wait or an ask puts the task to sleep until an event or a person's answer wakes it, and the next run resumes the agent's session.](images/diagrams/task-flow.svg)
 
 **Factory.** The folder of files that defines everything else: `factory.toml`, `agents/`,
 `workflows/`, `triggers/` and `runners/`. Optional files add to them: `views/`, `memories/`,
