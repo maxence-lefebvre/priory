@@ -549,6 +549,11 @@ and `time` is when the score was recorded. Scoring a run again appends another r
 | `agreement` | for a judge | The share of labeled cases its calibration got right              |
 | `cases`     | for a judge | The number of labeled cases its calibration ran                   |
 | `gate`      | for a gate  | The outcome a step's `gate`, the factory's `critic` or its `pre_review` graded before it was stored. Absent for `priory score` |
+| `evaluated` | for an intent scorer | Whether its decision model answered. A failed call is `false`, never an `UNKNOWN` answer |
+| `model`     | for an intent scorer that answered | The model its decision model named |
+| `answers`   | for an intent scorer that answered | Each question's answer, `YES`, `NO` or `UNKNOWN`, by name: `intent`, then `noop-1` and on |
+| `input_tokens` | for an intent scorer that answered | The tokens the model reported, or `"unavailable"` when it reported none, never 0 |
+| `noop_case` | for an intent scorer | The trigger's no-op case the model answered `YES` for, if any |
 
 ## `factory.scorer.calibrated`
 

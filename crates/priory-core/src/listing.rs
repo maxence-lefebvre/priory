@@ -1604,7 +1604,8 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         &format!(
             "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
                generation, retired, tldr, changed AS since, repo, branch, base_sha, grade, grade_reason,
-               merge_risk, progress, plan_goal, plan_testing, plan_brief, verification, intervention, lead, auto_answer, batch, added_by, {CONDITIONS}
+               merge_risk, progress, plan_goal, plan_testing, plan_brief, verification, intervention, lead, auto_answer, batch, added_by,
+               intent, noop, {CONDITIONS}
              FROM tasks LEFT JOIN queue USING (id) WHERE id = ?1",
             places()
         ),
@@ -1733,10 +1734,21 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
             .unwrap_or(Value::Null)
     };
     let (brief, plan) = (latest(BRIEF_STEP), latest(PLAN_STEP));
+    let noop = task
+        .as_object_mut()
+        .and_then(|fields| fields.remove("noop"))
+        .and_then(|noop| serde_json::from_str::<Value>(noop.as_str()?).ok())
+        .unwrap_or_else(|| json!([]));
+    let intent = task
+        .as_object_mut()
+        .and_then(|fields| fields.remove("intent"))
+        .unwrap_or(Value::Null);
     task["brief"] = json!({
         "title": request["title"],
         "request": request["request"],
         "result": brief,
+        "intent": intent,
+        "noop": noop,
     });
     task["plan"] = plan;
     task["pull_request"] = pull_request(db, id)?.unwrap_or(Value::Null);

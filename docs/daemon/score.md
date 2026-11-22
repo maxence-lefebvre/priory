@@ -263,6 +263,50 @@ its verdict, its reason as the evidence, and the moment as `happened`
 `held_scores`. `priory grades`, `priory report risk` and `priory bench capture` read none of them:
 a score is not an outcome label.
 
+## An intent scorer
+
+An `intent` scorer asks a decision model whether a task did what its trigger exists for. It reads
+the [`intent` and `noop`](../reference/triggers.md#intent-and-noop) the task kept from its trigger,
+and grades only the task's latest finished run, since a no-op is a property of the whole task.
+Every earlier run answers `not applicable`, and so does every run of a task whose trigger named
+neither.
+
+Priory runs the scorer's `run` in the factory folder, with a cleared environment that keeps
+`PATH`, `HOME` and the variable `key_env` names. It writes one question set on stdin, in the shape
+[decisions.md](decisions.md#what-priory-sends-and-reads) describes, with three options per
+question:
+
+```json
+{"state": {"request": "...", "result": {"outcome": "passed", "summary": "..."}, "asked": false, "wrote": false},
+ "questions": {
+   "intent": {"type": "choice", "instructions": "Did the task's work serve this intent? Fix each labeled bug with a reviewed pull request.",
+     "criteria": {"YES": "...", "NO": "...", "UNKNOWN": "The state does not say"}},
+   "noop-1": {"type": "choice", "instructions": "Is the request this case, which must create no ask and no write? The issue is a question, not a bug.",
+     "criteria": {"YES": "...", "NO": "...", "UNKNOWN": "The state does not say"}}}}
+```
+
+`asked` says whether the task raised an ask, and `wrote` whether a result named a commit or the
+task opened a pull request. The model must answer every question, each with a probability, as one
+`model`. The verdict follows the answers in this order:
+
+| Answers | Verdict |
+| ------- | ------- |
+| A no-op case `YES`, and the task neither asked nor wrote | `pass`: `no-op case "<case>" holds, and the task asked and wrote nothing` |
+| A no-op case `YES`, and the task asked or wrote | `fail`: `no-op case "<case>" holds, but the task asked` (or `wrote`, or both) |
+| A no-op case `UNKNOWN` | `not applicable`: `UNKNOWN whether no-op case "<case>" holds` |
+| `intent` `YES`, or no `intent` and no case holds | `pass` |
+| `intent` `NO` | `fail`: `the task did not serve its trigger's intent` |
+| `intent` `UNKNOWN` | `not applicable` |
+
+`UNKNOWN` is an answer the model gave. A call that fails, runs past `timeout`, or prints what is
+not an answer to every question is `error: not evaluated: <why>`, never `UNKNOWN`. Its record holds
+`"evaluated": false` and no answers. A model that reports no usage gets `"input_tokens":
+"unavailable"` in the record, not 0.
+
+In a [gate](#gates), it grades the held result as the task's latest run, and a commit the result
+names counts as a write. Its verdict is not calibrated against a person's labels, as a judge's is.
+[The attention report](trace.md#no-op-tasks) counts the tasks it found a no-op case for.
+
 ## Pre-review
 
 A pre-review keeps a person from rejecting the same mistake twice. A lesson is a memory whose
@@ -322,7 +366,8 @@ approves anything. When another scorer of the same gate also refuses, the gate's
 
 Each score appends one `factory.run.scored` record to the trace, as [the trace
 schema](../trace-schema.md#factoryrunscored) defines it. A judge's record also holds its model, its
-agreement and its number of labeled cases. A score is a record: scoring a run again, with the same
+agreement and its number of labeled cases. An intent scorer's record holds whether it was
+evaluated, its model, its answers, its input tokens and the no-op case that held. A score is a record: scoring a run again, with the same
 scorer or a changed one, appends another record and replaces none.
 
 ## Where scores show

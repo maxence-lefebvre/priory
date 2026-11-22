@@ -12,7 +12,9 @@ It removes a folder and its branch `priory/<id>` only when all checks hold:
 - Task `<id>` is `done`, `failed` or `dropped`, and its recorded `worktree` is this folder.
 - It is a worktree of Priory's clone `repos/<owner>/<name>`, on branch `priory/<id>`.
 - Nothing is uncommitted or untracked, whatever `status.showUntrackedFiles` says.
-- No process has its working directory inside it (read from `/proc`).
+- No process has its working directory inside it (read from `/proc`). Priory's own git commands,
+  such as the desk's checks, do not count: each carries `PRIORY_GIT=1` in its environment, and so
+  do its children.
 - The branch tip is in `origin/HEAD`, or is the head commit of a merged pull request for the
   branch (a `github.pull_request.closed` event with `merged` true). Otherwise it stays as
   `unpushed commits` when a commit is on no remote branch, else as `not merged`.

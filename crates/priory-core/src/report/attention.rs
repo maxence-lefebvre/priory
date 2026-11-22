@@ -23,10 +23,11 @@ struct Wait {
     acted: Option<i64>,
 }
 
-/// A person's act: when, and the split's value for it.
+/// A person's act: when, the split's value for it, and the task it was on, if any.
 struct Act {
     at: i64,
     key: String,
+    task: Option<i64>,
 }
 
 /// A task's current generation, from its creation to its end or the window's end, split by what
@@ -34,6 +35,7 @@ struct Act {
 struct Task {
     id: i64,
     key: String,
+    trigger: String,
     workflow: String,
     lane: Option<String>,
     state: String,
@@ -62,6 +64,51 @@ pub struct Attention {
     waits: Vec<Wait>,
     tasks: Vec<Task>,
     merges: i64,
+    noop: Vec<Noop>,
+}
+
+/// The tasks of one trigger that ended in the window: how many ended as a no-op, with no ask and
+/// no write, and how many an intent scorer found a no-op case for although they asked or wrote.
+struct Noop {
+    trigger: String,
+    ended: usize,
+    noop: usize,
+    should: Vec<i64>,
+}
+
+/// The tasks that ended in the window, by trigger.
+fn noops(db: &Connection, tasks: &[Task]) -> rusqlite::Result<Vec<Noop>> {
+    let mut by: std::collections::BTreeMap<&str, Noop> = std::collections::BTreeMap::new();
+    for task in tasks
+        .iter()
+        .filter(|task| ["done", "failed", "dropped"].contains(&task.state.as_str()))
+    {
+        let (asked, wrote) = crate::intent::attention(db, task.id)?;
+        // The task's latest intent score: whether it found a no-op case.
+        let should: bool = db.query_row(
+            "SELECT coalesce((SELECT json_extract(event, '$.data.noop_case') IS NOT NULL
+               FROM trace WHERE type = 'factory.run.scored'
+               AND json_extract(event, '$.data.kind') = 'intent'
+               AND json_extract(event, '$.data.task') = ?1
+               AND json_extract(event, '$.data.evaluated') = 1
+               ORDER BY seq DESC LIMIT 1), 0)",
+            [task.id.to_string()],
+            |row| row.get(0),
+        )?;
+        let row = by.entry(&task.trigger).or_insert_with(|| Noop {
+            trigger: task.trigger.clone(),
+            ended: 0,
+            noop: 0,
+            should: Vec::new(),
+        });
+        row.ended += 1;
+        if !asked && !wrote {
+            row.noop += 1;
+        } else if should {
+            row.should.push(task.id);
+        }
+    }
+    Ok(by.into_values().collect())
 }
 
 /// The SQL value of the split `by` for a row joined to `asks` and `tasks`, `-` for none.
@@ -86,7 +133,7 @@ fn acts(db: &Connection, until: &str, key: &str) -> rusqlite::Result<Vec<Act>> {
                THEN CAST(json_extract(event, '$.data.item.id') AS INTEGER) END,
              CAST(json_extract(event, '$.data.task') AS INTEGER) FROM trace
              WHERE type IN ('factory.task.snoozed', 'factory.task.unsnoozed'))
-         SELECT {time}, {key} FROM acts LEFT JOIN asks ON asks.id = acts.ask
+         SELECT {time}, {key}, tasks.id FROM acts LEFT JOIN asks ON asks.id = acts.ask
          LEFT JOIN tasks ON tasks.id = coalesce(asks.task, acts.task)
          WHERE julianday(acts.time) <= julianday(?1) ORDER BY 1",
         time = ms("acts.time"),
@@ -96,6 +143,7 @@ fn acts(db: &Connection, until: &str, key: &str) -> rusqlite::Result<Vec<Act>> {
             Ok(Act {
                 at: row.get(0)?,
                 key: row.get(1)?,
+                task: row.get(2)?,
             })
         })?
         .collect()
@@ -184,7 +232,7 @@ fn tasks(db: &Connection, window: &Window) -> rusqlite::Result<Vec<Task>> {
         wait_run = next_run("waits.created"),
     ))?;
     let mut statement = db.prepare(&format!(
-        "SELECT id, key, workflow, lane, state, created, ended, {since}, {until} FROM (
+        "SELECT id, key, workflow, lane, state, created, ended, {since}, {until}, trigger FROM (
            SELECT *, CASE WHEN state IN ('done', 'failed', 'dropped') THEN coalesce((SELECT max(ended)
              FROM task_ends WHERE task = tasks.id AND generation = tasks.generation), changed)
              END AS ended
@@ -200,6 +248,7 @@ fn tasks(db: &Connection, window: &Window) -> rusqlite::Result<Vec<Task>> {
             Task {
                 id: row.get(0)?,
                 key: row.get(1)?,
+                trigger: row.get(9)?,
                 workflow: row.get(2)?,
                 lane: row.get(3)?,
                 state: row.get(4)?,
@@ -271,6 +320,7 @@ pub fn attention(db: &Connection, window: &Window, by: &str) -> Result<Attention
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(error)?;
+    let tasks = tasks(db, window).map_err(error)?;
     Ok(Attention {
         since: window.start.clone(),
         until: window.until.clone(),
@@ -278,7 +328,8 @@ pub fn attention(db: &Connection, window: &Window, by: &str) -> Result<Attention
         by: by.to_owned(),
         acts: acts(db, &window.until, key).map_err(error)?,
         waits: waits(db, window, key).map_err(error)?,
-        tasks: tasks(db, window).map_err(error)?,
+        noop: noops(db, &tasks).map_err(error)?,
+        tasks,
         merges,
     })
 }
@@ -344,19 +395,37 @@ fn spread(mut minutes: Vec<f64>) -> [Option<f64>; 2] {
 }
 
 impl Attention {
+    /// Each act in the window with its cost: the time since the person's previous act, up to
+    /// `ACT_MS`.
+    fn costs(&self) -> impl Iterator<Item = (&Act, i64)> {
+        self.acts
+            .iter()
+            .enumerate()
+            .filter(|(_, act)| act.at >= self.start)
+            .map(|(at, act)| match at {
+                0 => (act, ACT_MS),
+                _ => (act, (act.at - self.acts[at - 1].at).min(ACT_MS)),
+            })
+    }
+
+    /// The person-minutes of the window's acts on `tasks`.
+    fn minutes_on(&self, tasks: &[i64]) -> f64 {
+        minutes(
+            self.costs()
+                .filter(|(act, _)| act.task.is_some_and(|task| tasks.contains(&task)))
+                .map(|(_, cost)| cost)
+                .sum(),
+        )
+    }
+
     /// The summary of the acts in the window and the waits, of the split's value `key`, or of all.
     /// Each act costs the time since the person's previous act, up to `ACT_MS`.
     fn summary(&self, key: Option<&str>) -> Summary {
         let of = |other: &str| key.is_none_or(|key| key == other);
         let costs: Vec<_> = self
-            .acts
-            .iter()
-            .enumerate()
-            .filter(|(_, act)| act.at >= self.start && of(&act.key))
-            .map(|(at, act)| match at {
-                0 => ACT_MS,
-                _ => (act.at - self.acts[at - 1].at).min(ACT_MS),
-            })
+            .costs()
+            .filter(|(act, _)| of(&act.key))
+            .map(|(_, cost)| cost)
             .collect();
         let acted: Vec<_> = self
             .waits
@@ -426,6 +495,12 @@ impl Attention {
                 "world_wait_minutes": minutes(task.split[WORLD]),
                 "queued_minutes": minutes(task.split[QUEUED]),
             })).collect::<Vec<_>>(),
+            "noop": self.noop.iter().map(|row| json!({
+                "trigger": row.trigger, "ended": row.ended, "noop": row.noop,
+                "share": row.noop as f64 / row.ended as f64,
+                "should_have": row.should.len(),
+                "should_have_person_minutes": self.minutes_on(&row.should),
+            })).collect::<Vec<_>>(),
         })
     }
 
@@ -478,6 +553,22 @@ impl Attention {
                 task.workflow,
                 task.lane.as_deref().unwrap_or("-"),
                 task.state
+            ));
+        }
+        if self.noop.is_empty() {
+            return;
+        }
+        crate::state::emit("");
+        crate::state::emit("trigger\tended\tno-op\tshare\tshould have\tperson minutes");
+        for row in &self.noop {
+            crate::state::emit(&format!(
+                "{}\t{}\t{}\t{}\t{}\t{:.1}",
+                row.trigger,
+                row.ended,
+                row.noop,
+                crate::judge::percent(row.noop as f64 / row.ended as f64),
+                row.should.len(),
+                self.minutes_on(&row.should)
             ));
         }
     }

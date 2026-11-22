@@ -2,6 +2,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Popover } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
 import { age, follow, plural, priory } from "./priory.js";
+import { selectable } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { filtered } from "./tasks.js";
 import { duration, RUN_FACETS, RUN_VIEWS, runState, runViews, tokenText } from "./view.js";
@@ -99,9 +100,9 @@ export default class PrioryRuns extends View {
     const shown = views[this.view];
     return v_flex().id("priory-runs").size_full().min_h_0().bg(t.bg).text_color(t.text).font_family(this.font.ui).text_size(S["type-body"][0])
       .child(h_flex().flex_none().h(S["pane-head"]).px(S["space-4"]).items_center().border_b(1).border_color(t.line).child(div().font_weight(650).child("Runs")))
-      .when(Boolean(this.error), (el) => el.child(div().flex_none().px(S["space-4"]).py(6).whitespace_normal().text_size(S["type-small"][0])
+      .when(Boolean(this.error), (el) => el.child(div().flex_none().px(S["space-4"]).py(S["space-2"]).whitespace_normal().text_size(S["type-small"][0])
         .text_color(t["warn-text"]).border_b(1).border_color(t.line)
-        .child(`Could not read the runs: ${this.error}. Check that priory runs, then it reads again on its own.`)))
+        .child(selectable("runs-error", `Could not read the runs: ${this.error}. Check that priory runs, then it reads again on its own.`))))
       .child(this.filters(views, runs, t))
       .child(v_flex().id("runs-body").flex_1().min_h_0().overflow_y_scrollbar().px(S["space-2"]).py(S["space-2"]).children(this.body(shown, t, now)));
   }
@@ -126,7 +127,7 @@ export default class PrioryRuns extends View {
    * @param {Record<string, any[]>} views @param {any[]} runs @param {Palette} t
    */
   filters(views, runs, t) {
-    const chip = (/** @type {string} */ id, /** @type {boolean} */ on) => Button.new(id).h(S["pane-chip"]).px(10).flex().flex_none().items_center().gap(4)
+    const chip = (/** @type {string} */ id, /** @type {boolean} */ on) => Button.new(id).h(S["pane-chip"]).px(S["space-3"]).flex().flex_none().items_center().gap(S["space-1"])
       .selected(on).text_size(S["type-small"][0]).focus((s) => s.border(2).border_color(t["action-text"]));
     /** @param {[string, string, (run: any) => string[]]} facet */
     const picker = ([key, label, values]) => {
@@ -141,20 +142,20 @@ export default class PrioryRuns extends View {
       for (const run of runs) for (const name of values(run)) counts.set(name, (counts.get(name) ?? 0) + 1);
       return Popover.new(`facet-${key}-menu`).trigger(trigger).anchor("top_left").open(this.popover === key)
         .on_open_change((/** @type {boolean} */ next, /** @type {import("gpui-kit").Context} */ cx) => { this.popover = next ? key : null; cx.notify(); })
-        .content(v_flex().min_w(200).p(4).gap(2).rounded(S["radius-md"]).bg(t.surface).border(1).border_color(t["control-line"])
-          .children([...counts].sort(([a], [b]) => a.localeCompare(b)).map(([name, count]) => Button.new(`pick-${key}-${name}`).h(S["control-fine"]).px(8).flex().items_center().gap(8)
+        .content(v_flex().min_w(200).p(S["space-1"]).gap(S["space-1"]).rounded(S["radius-md"]).bg(t.surface).border(1).border_color(t["control-line"])
+          .children([...counts].sort(([a], [b]) => a.localeCompare(b)).map(([name, count]) => Button.new(`pick-${key}-${name}`).h(S["control-fine"]).px(S["space-2"]).flex().items_center().gap(S["space-2"])
             .rounded(S["radius-sm"]).text_size(S["type-small"][0]).hover((s) => s.bg(t.raised)).focus((s) => s.bg(t.raised))
             .on_click((_event, cx) => { this.picks.set(key, name); this.popover = null; cx.notify(); })
             .child(div().flex_1().child(name)).child(div().text_color(t["text-3"]).child(String(count))))));
     };
     return v_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).border_b(1).border_color(t.line)
-      .child(h_flex().gap(6).flex_wrap().children(RUN_VIEWS.map((id) => {
+      .child(h_flex().gap(S["space-2"]).flex_wrap().children(RUN_VIEWS.map((id) => {
         const on = this.view === id;
         return chip(`view-${id}`, on).rounded(S["radius-full"]).font_weight(on ? 600 : 500).bg(on ? t.emph : t.surface).text_color(on ? t["on-emph"] : t.text)
           .on_click((_event, cx) => { [this.view, this.popover] = [id, null]; cx.notify(); })
           .child(LABELS[id]).child(div().opacity(0.7).child(String(views[id].length)));
       })))
-      .child(h_flex().gap(6).flex_wrap().children(RUN_FACETS.map(picker)));
+      .child(h_flex().gap(S["space-2"]).flex_wrap().children(RUN_FACETS.map(picker)));
   }
 
   /** A run row: task key, step, state and start; agent and model; run, outcome, duration and tokens. @param {any} run @param {Palette} t @param {number} now */
@@ -167,8 +168,8 @@ export default class PrioryRuns extends View {
       .accessibility_label(`Open task ${run.key}`)
       .on_click(() => setShared("priory.task.open", { task: run.task, at: Date.now() }))
       .child(this.tile(state, t))
-      .child(v_flex().flex_1().min_w_0().gap(2)
-        .child(h_flex().gap(6).items_baseline().text_size(S["type-caption"][0]).text_color(t["text-2"])
+      .child(v_flex().flex_1().min_w_0().gap(S["space-1"])
+        .child(h_flex().gap(S["space-2"]).items_baseline().text_size(S["type-caption"][0]).text_color(t["text-2"])
           .child(div().font_family(this.font.mono).text_color(t.text).child(run.key))
           .child(run.step)
           .child(div().text_color(t[ROLE[state] ?? "text-2"]).child(state))

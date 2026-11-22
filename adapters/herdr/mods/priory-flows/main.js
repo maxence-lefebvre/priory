@@ -3,6 +3,7 @@ import { h_flex, v_flex, Button } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile } from "herdr";
 import { labelSpots, pathCalls } from "./path.js";
 import { plural, priory } from "./priory.js";
+import { selectable } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { edgeStyle, historyRows, KINDS, nodeShape, timeline, ungatedPairs } from "./view.js";
 
@@ -114,13 +115,13 @@ export default class PrioryFlows extends View {
       .child(h_flex().flex_none().h(S["pane-head"]).px(S["space-4"]).gap(S["space-2"]).items_center().border_b(1).border_color(t.line)
         .child(div().font_weight(650).child("Flows")).child(div().flex_1())
         .when(Boolean(this.flows) && !this.loading, (el) => el.child(this.secondary("reload", "Read again", (cx) => this.load(cx), t))))
-      .child(v_flex().id("flows-body").flex_1().min_w_0().min_h_0().overflow_y_scrollbar().px(pad).pt(pad).pb(32).gap(S["space-5"])
+      .child(v_flex().id("flows-body").flex_1().min_w_0().min_h_0().overflow_y_scrollbar().px(pad).pt(pad).pb(S["space-6"]).gap(S["space-5"])
         .children(this.body(t, pad)));
   }
 
   /** @param {Palette} t @param {number} pad */
   body(t, pad) {
-    const note = (/** @type {string} */ text) => div().whitespace_normal().text_color(t["text-2"]).child(text);
+    const note = (/** @type {string} */ text) => div().whitespace_normal().text_color(t["text-2"]).child(selectable("flows-note", text));
     if (!this.flows && this.error) {
       return [note(`The flows did not load: ${this.error}. Run priory check --explain meanwhile.`).text_color(t["warn-text"]),
         h_flex().child(this.secondary("retry", "Retry", (cx) => this.load(cx), t))];
@@ -139,7 +140,7 @@ export default class PrioryFlows extends View {
   /** @param {Palette} t */
   legend(t) {
     const shape = (/** @type {string} */ kind) => nodeShape(kind, 150, 52).d;
-    const item = (/** @type {any} */ mark, /** @type {string} */ label) => h_flex().gap(6).items_center().child(mark).child(label);
+    const item = (/** @type {any} */ mark, /** @type {string} */ label) => h_flex().gap(S["space-2"]).items_center().child(mark).child(label);
     return v_flex().gap(S["space-2"])
       .child(div().text_size(S["type-small"][0]).font_weight(650).child("Key"))
       .child(h_flex().gap_x(S["space-3"]).gap_y(S["space-1"]).flex_wrap().text_size(S["type-caption"][0]).text_color(t["text-2"])
@@ -164,8 +165,8 @@ export default class PrioryFlows extends View {
     const open = paths.filter((entry) => entry.workflow === workflow.name);
     const text = this.asText.has(workflow.name);
     return v_flex().gap(S["space-2"])
-      .child(h_flex().gap(6).items_baseline().text_size(S["type-small"][0]).font_weight(650)
-        .child(div().font_family(this.font.mono).child(workflow.name))
+      .child(h_flex().gap(S["space-2"]).items_baseline().text_size(S["type-small"][0]).font_weight(650)
+        .child(div().font_family(this.font.mono).child(selectable(`name-${workflow.name}`, workflow.name)))
         .child(div().font_weight(400).text_color(t["text-3"]).child(plural(workflow.steps.length, "step"))))
       .child(div().id(`diagram-${workflow.name}`).relative().flex_none().w(drawing.width * scale + lanes).h(drawing.height * scale)
         .accessibility_label(drawing.text)
@@ -179,9 +180,9 @@ export default class PrioryFlows extends View {
           .child(div().whitespace_normal().child(`Judged wrong ${row.judged.join(", ")}`))
           .child(div().whitespace_normal().child(`Landed wrong ${row.landed.join(", ")}`))))))
       .when(open.length > 0, (el) => el.child(v_flex().gap(S["space-1"]).text_size(S["type-small"][0]).text_color(t["danger-text"])
-        .child(h_flex().gap(6).items_center().child(svg(ICON("lock")).size(14).flex_none()).child("Reaches an irreversible step with no person's decision:"))
-        .children(open.map((entry) => div().pl(20).whitespace_normal().font_family(this.font.mono).text_size(S["type-caption"][0]).child(entry.path.join(" > "))))))
-      .child(Button.new(`text-${workflow.name}`).h(S["control-fine"]).flex().items_center().gap(6).rounded(S["radius-sm"]).px(S["space-1"])
+        .child(h_flex().gap(S["space-2"]).items_center().child(svg(ICON("lock")).size(14).flex_none()).child("Reaches an irreversible step with no person's decision:"))
+        .children(open.map((entry, index) => div().pl(S["space-5"]).whitespace_normal().font_family(this.font.mono).text_size(S["type-caption"][0]).child(selectable(`path-${workflow.name}-${index}`, entry.path.join(" > ")))))))
+      .child(Button.new(`text-${workflow.name}`).h(S["control-fine"]).flex().items_center().gap(S["space-2"]).rounded(S["radius-sm"]).px(S["space-1"])
         .text_size(S["type-small"][0]).text_color(t["action-text"]).hover((s) => s.bg(t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
         .accessibility_label(text ? "Hide the steps as text" : "Show the steps as text")
         .on_click((_event, cx) => {
@@ -192,8 +193,8 @@ export default class PrioryFlows extends View {
         .child(text ? "Hide steps as text" : "Steps as text"))
       .when(text, (el) => el.child(v_flex().gap(S["space-1"]).text_size(S["type-small"][0]).text_color(t["text-2"])
         .children(workflow.steps.map((/** @type {any} */ step, /** @type {number} */ index) => div().whitespace_normal()
-          .child(`${index + 1}. ${step.id}, ${word(KIND_WORD, step.kind)}, decided by ${step.decides}. ${step.edges
-            .map((/** @type {any} */ next) => `${next.outcome} leads to ${next.to} (${word(BY_WORD, next.by)}).`).join(" ")}`)))));
+          .child(selectable(`step-${workflow.name}-${index}`, `${index + 1}. ${step.id}, ${word(KIND_WORD, step.kind)}, decided by ${step.decides}. ${step.edges
+            .map((/** @type {any} */ next) => `${next.outcome} leads to ${next.to} (${word(BY_WORD, next.by)}).`).join(" ")}`))))));
   }
 
   /** @param {string} kind @param {Palette} t */
@@ -220,7 +221,7 @@ export default class PrioryFlows extends View {
       .when(edge.ungated, (el) => el.child(window.paint_path(build(PathBuilder.stroke(style.width + 6), edge.d, scale), Background.solid(t["danger-text"]).opacity(0.22)).absolute().inset_0()))
       .child(window.paint_path(build(this.dashed(PathBuilder.stroke(style.width), style.dash), edge.d, scale), this.ink(edge.by, t)).absolute().inset_0())
       .child(window.paint_path(arrowhead(edge.d, scale), this.ink(edge.by, t)).absolute().inset_0())
-      .child(div().absolute().left(x).top(y).px(2).rounded(3).bg(t.bg).text_size(11).text_color(t["text-2"])
+      .child(div().absolute().left(x).top(y).px(S["space-1"]).rounded(3).bg(t.bg).text_size(11).text_color(t["text-2"])
         .accessibility_label(`${edge.outcome}: ${edge.from} to ${edge.to}, ${word(BY_WORD, edge.by)}${edge.ungated ? ", reaches an irreversible step with no person's decision" : ""}`)
         .child(clip(edge.outcome, edge.vertical ? 10 : 14)));
   }

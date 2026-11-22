@@ -85,28 +85,49 @@ fn question(state: Value) -> Value {
 
 /// Runs the decision model on `question`, with the key and no other secret in its environment.
 fn call(factory: &Factory, decision: &Decision, question: &Value) -> Result<Answer, String> {
-    let key = std::env::var(&decision.key_env)
-        .ok()
-        .filter(|key| !key.is_empty())
-        .ok_or_else(|| format!("{} is unset", decision.key_env))?;
     let mut command = Command::new("sh");
     command
         .args(["-c", &decision.run])
-        .current_dir(&factory.dir)
-        .env_clear()
-        .env(&decision.key_env, &key);
+        .current_dir(&factory.dir);
+    let stdout = run(
+        command,
+        Some(&decision.key_env),
+        question,
+        decision.timeout(),
+    )?;
+    let options = Class::ALL.map(Class::name);
+    parse(&stdout, TRIAGE, &options)
+}
+
+/// Runs a decision model's `command` on `question`, with a cleared environment that keeps `PATH`,
+/// `HOME` and the key `key_env` names, and returns its stdout, or why it gave none.
+pub(crate) fn run(
+    mut command: Command,
+    key_env: Option<&str>,
+    question: &Value,
+    timeout: std::time::Duration,
+) -> Result<Vec<u8>, String> {
+    command.env_clear();
+    let mut key = None;
+    if let Some(name) = key_env {
+        let value = std::env::var(name)
+            .ok()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("{name} is unset"))?;
+        command.env(name, &value);
+        key = Some((name, value));
+    }
     for name in ["PATH", "HOME"] {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
         }
     }
-    let timeout = decision.timeout();
     let output = runtime::fed_within(&mut command, Some(question.to_string().into()), timeout)
         .map_err(|error| format!("cannot run it: {error}"))?
         .ok_or_else(|| format!("it ran past {}s", timeout.as_secs()))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let first: String = stderr
+        let mut first: String = stderr
             .lines()
             .next()
             .unwrap_or_default()
@@ -114,14 +135,15 @@ fn call(factory: &Factory, decision: &Decision, question: &Value) -> Result<Answ
             .take(200)
             .collect();
         // The trace and the terminal keep this line, so the key never reaches them.
-        let first = first.replace(&key, &format!("<{}>", decision.key_env));
+        if let Some((name, value)) = &key {
+            first = first.replace(value.as_str(), &format!("<{name}>"));
+        }
         return Err(match output.status.code() {
             Some(code) => format!("it exited {code}: {first}"),
             None => format!("it was killed: {first}"),
         });
     }
-    let options = Class::ALL.map(Class::name);
-    parse(&output.stdout, TRIAGE, &options)
+    Ok(output.stdout)
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -401,12 +423,15 @@ pub(crate) fn triage(
     let Some(item) = crate::triage::item(&message.kind, &message.data).map(str::to_owned) else {
         return Ok(());
     };
-    if crate::route::outsider(message) || !held(db, message)? {
+    if crate::route::outsider(message) {
         return Ok(());
     }
+    let Some(task) = held(db, message)? else {
+        return Ok(());
+    };
     let mut record = json!({ "point": TRIAGE, "item": item, "acted": false, "called": false });
     let started = Instant::now();
-    let answered = asked(db, factory, decision, message)?;
+    let answered = asked(db, factory, decision, message, task)?;
     record["millis"] = json!(started.elapsed().as_millis() as u64);
     record["called"] = json!(matches!(&answered, Ok(_) | Err(Asked::Failed(_))));
     match answered.map_err(Asked::why) {
@@ -472,6 +497,7 @@ fn asked(
     factory: &Factory,
     decision: &Decision,
     message: &Message,
+    task: i64,
 ) -> rusqlite::Result<Result<(Answer, String), Asked>> {
     let calibrated = match calibrated(db, factory) {
         Ok(model) => model,
@@ -491,11 +517,19 @@ fn asked(
         ))));
     }
     let data = &message.data;
+    let (intent, noop): (Option<String>, Option<String>) = db.query_row(
+        "SELECT intent, noop FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let noop = noop.and_then(|noop| serde_json::from_str::<Value>(&noop).ok());
     let state = json!({
         "kind": message.kind,
         "body": data["body"],
         "path": data["path"],
         "review_state": data["state"],
+        "intent": intent,
+        "noop": noop,
     });
     let state = match state {
         Value::Object(mut fields) => {
@@ -514,33 +548,33 @@ fn asked(
         .map_err(Asked::Failed))
 }
 
-/// Whether a task that is not done owns or subscribes to a resource `message` is about, and the
+/// The task that is not done and owns or subscribes to a resource `message` is about, when the
 /// inbox does not hold it yet: a redelivered message is routed once. A done task's feedback reopens
 /// it as before, since a settled item would reach no task.
-fn held(db: &Connection, message: &Message) -> rusqlite::Result<bool> {
+fn held(db: &Connection, message: &Message) -> rusqlite::Result<Option<i64>> {
     let seen: bool = db.query_row(
         "SELECT EXISTS (SELECT 1 FROM inbox WHERE id = ?1)",
         [message.id.to_string()],
         |row| row.get(0),
     )?;
     if seen {
-        return Ok(false);
+        return Ok(None);
     }
     for resource in crate::route::resources(message) {
-        let held: bool = db.query_row(
-            "SELECT EXISTS (SELECT 1 FROM owns JOIN tasks ON tasks.id = owns.task
-                 WHERE owns.resource = ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped'))
-               OR EXISTS (SELECT 1 FROM subscriptions JOIN tasks ON tasks.id = subscriptions.task
+        let held: Option<i64> = db.query_row(
+            "SELECT coalesce((SELECT min(tasks.id) FROM owns JOIN tasks ON tasks.id = owns.task
+                 WHERE owns.resource = ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')),
+               (SELECT min(tasks.id) FROM subscriptions JOIN tasks ON tasks.id = subscriptions.task
                  WHERE subscriptions.resource = ?1
-                 AND tasks.state NOT IN ('done', 'failed', 'dropped'))",
+                 AND tasks.state NOT IN ('done', 'failed', 'dropped')))",
             [&resource],
             |row| row.get(0),
         )?;
-        if held {
-            return Ok(true);
+        if held.is_some() {
+            return Ok(held);
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 #[cfg(test)]

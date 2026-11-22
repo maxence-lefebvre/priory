@@ -427,3 +427,57 @@ fn a_dismissal_ends_its_asks_wait_when_it_happens() {
     let wait = attention["waits"]["median_minutes"].as_f64().unwrap();
     assert!((29.9..30.5).contains(&wait), "{wait}");
 }
+
+#[test]
+fn the_report_shows_the_share_of_ended_tasks_that_were_no_ops_and_the_attention_on_those_that_should_have_been()
+ {
+    let setup = Setup::new("noop");
+    for id in 1..=4 {
+        setup.task(id, "implement", "lane-a", "2026-11-16T08:00:00Z");
+    }
+    // Task 2 asks and is answered; an intent scorer found a no-op case for it.
+    setup.ask(1, 2, "2026-11-16T09:00:00Z", Some("2026-11-16T09:20:00Z"));
+    let scored = json!({
+        "task": "2", "kind": "intent", "verdict": "fail", "evaluated": true,
+        "noop_case": "The issue is a question, not a bug.",
+    });
+    setup
+        .db()
+        .execute(
+            "INSERT INTO trace (id, type, time, event) VALUES
+             (lower(hex(randomblob(16))), 'factory.run.scored', '2026-11-16T13:00:00Z',
+              json_object('data', json(?1)))",
+            [scored.to_string()],
+        )
+        .unwrap();
+    // Task 1 ends with nothing, task 3 ends with a commit, task 4 is still asleep.
+    setup
+        .db()
+        .execute_batch(
+            "UPDATE tasks SET trigger = 'agent-label' WHERE id IN (1, 2, 3, 4);
+             INSERT INTO runs (id, task, step, tmux, session, started, ended) VALUES
+               (1, 3, 'work', 't', 's', '2026-11-16T09:00:00Z', '2026-11-16T10:00:00Z');
+             INSERT INTO results (run, task, step, outcome, summary, commit_sha)
+               VALUES (1, 3, 'work', 'passed', 'Fixed.', 'abc1234');
+             UPDATE tasks SET state = 'done' WHERE id IN (1, 2, 3);
+             UPDATE task_ends SET ended = '2026-11-16T12:00:00.000Z';",
+        )
+        .unwrap();
+
+    let attention = setup.attention_json(&["--since", "2026-11-16T00:00:00Z"]);
+    let text = setup.attention(&["--since", "2026-11-16T00:00:00Z"]);
+
+    assert_eq!(
+        attention["noop"],
+        json!([{
+            "trigger": "agent-label", "ended": 3, "noop": 1, "share": 1.0 / 3.0,
+            "should_have": 1, "should_have_person_minutes": 5.0,
+        }])
+    );
+    assert!(
+        text.ends_with(
+            "trigger\tended\tno-op\tshare\tshould have\tperson minutes\nagent-label\t3\t1\t33%\t1\t5.0\n"
+        ),
+        "{text}"
+    );
+}

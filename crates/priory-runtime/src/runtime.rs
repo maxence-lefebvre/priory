@@ -185,9 +185,13 @@ fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> 
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// The variable each git command Priory runs carries, so the sweep tells Priory's own short checks
+/// in a worktree, such as the desk's, from a process that keeps the worktree.
+pub(crate) const OWN_GIT: (&str, &str) = ("PRIORY_GIT", "1");
+
 pub(crate) fn git(dir: &Path) -> Command {
     let mut command = Command::new("git");
-    command.arg("-C").arg(dir);
+    command.env(OWN_GIT.0, OWN_GIT.1).arg("-C").arg(dir);
     command
 }
 

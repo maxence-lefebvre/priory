@@ -269,10 +269,11 @@ test("autolink returns the spans the web view links", async () => {
   ]);
 });
 
-test("spansHtml escapes the text and the URL, keeps line breaks and links only the spans with a URL", () => {
+// Herdr's TextView drops <br>, so each line is a paragraph, and a blank line an empty one.
+test("spansHtml escapes the text and the URL, keeps each line as a paragraph and links only the spans with a URL", () => {
   assert.equal(
-    spansHtml([{ text: "<b>it's</b> " }, { text: "ENG-8", url: "https://x.test/?a=1&b=\"2\"" }, { text: "\nnext" }]),
-    '&lt;b&gt;it&#39;s&lt;/b&gt; <a href="https://x.test/?a=1&amp;b=&quot;2&quot;">ENG-8</a><br>next',
+    spansHtml([{ text: "<b>it's</b> " }, { text: "ENG-8", url: "https://x.test/?a=1&b=\"2\"" }, { text: "\nnext\n\nlast" }]),
+    '<p>&lt;b&gt;it&#39;s&lt;/b&gt; <a href="https://x.test/?a=1&amp;b=&quot;2&quot;">ENG-8</a></p><p>next</p><p></p><p>last</p>',
   );
 });
 
