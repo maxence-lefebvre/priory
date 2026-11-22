@@ -21635,6 +21635,31 @@ fn scored_task(name: &str) -> Setup {
 }
 
 #[test]
+fn priory_score_waits_for_a_write_that_commits_while_it_reads() {
+    let setup = scored_task("score-locked");
+    scorer(&setup, "passed", PASSED_SCORER);
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch("BEGIN IMMEDIATE; UPDATE revision SET value = value + 1;")
+        .unwrap();
+
+    let factory = setup.dir.join("factory");
+    let score = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["score", factory.to_str().unwrap(), "1", "--json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Held while score reads, so its write comes after a commit newer than what it read.
+    std::thread::sleep(Duration::from_millis(1000));
+    db.execute_batch("COMMIT;").unwrap();
+    let output = score.wait_with_output().unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(scored_records(&setup).len(), 2);
+}
+
+#[test]
 fn priory_score_grades_the_latest_finished_run_of_each_step_and_traces_each_score() {
     let setup = scored_task("score");
     scorer(&setup, "passed", PASSED_SCORER);
