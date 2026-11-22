@@ -29,7 +29,8 @@ any task runs.
 1. Built. `priory check [DIR] --repo PATH [--json]`, its seven criteria, `docs/schemas/readiness.json`
    and the [`readiness`](../../examples/readiness/README.md) starter, which files one issue per gap
    after a person approves and fixes each in a pull request.
-2. Count a setup recipe once idea 6 adds one to the factory, beside the setup files.
+2. Count a repository's [setup recipe](../daemon/runs.md#recipes) beside the setup files. The
+   recipes are built, and the check does not read them yet.
 3. Show the score in the web view, once `DESIGN.md` describes a panel for it.
 
 ## Open questions

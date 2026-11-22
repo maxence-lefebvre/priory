@@ -17,12 +17,17 @@ frontmatter. Changing the factory is a pull request. Every key is in
 sources `github`, `linear`, `linear.view`, `slack` and `schedule`. Webhooks, each checked by a signature or a shared secret, deliver `sentry`, `honeycomb`,
 `intercom`, `cloudwatch` and `figma` events, and GitHub and Linear events sooner than a poll. A trigger's `key` says which events are the same
 work, and a factory holds at most one active task per key. See
-[docs/intake/README.md](intake/README.md).
+[docs/intake/README.md](intake/README.md). A trigger can run a [`pre` script](intake/pre.md) on
+each event, which passes, changes or drops the task request. A `staged` trigger runs its tasks as
+a trial: the model steps run, and no irreversible step does. See
+[staged tasks](daemon/tools.md#staged-tasks).
 
 **Workflow and steps.** A workflow is a graph of steps. Each step has one decider: a `model` step
 runs an agent, a `human` step asks a person, and a `code` step runs a built-in action such as
 `open-pr`. Each outcome maps to the next step, `done` or `stop`. A step marked `irreversible` runs
-only after a person approved it, unless it is marked `autonomous` with a reason. See
+only after a person approved it, unless it is marked `autonomous` with a reason. A
+[debate step](daemon/debates.md) has two agents answer one question in turns, and ends with their
+shared verdict or a person's pick. See
 [workflows.md](reference/workflows.md) for the keys of a step, and [tools.md](daemon/tools.md)
 for how a task moves between steps.
 
@@ -41,7 +46,8 @@ looked. See [docs/daemon/waits.md](daemon/waits.md#answered-by-auto).
 
 **Task and run.** A task is one unit of work, from its event to `done`, `failed` or `dropped`. A run
 is one agent process working on a task's step. A task can have many runs, and its agent's session
-carries over between them. See [docs/daemon/runs.md](daemon/runs.md).
+carries over between them. A repository's [recipes](daemon/runs.md#recipes) are the commands
+that prepare and clean up its worktrees. See [docs/daemon/runs.md](daemon/runs.md).
 
 **Inbox and routing.** Every event the intake publishes lands in the daemon's inbox before anything
 acts on it. The daemon then finds the task the event concerns, such as the task that owns the pull
@@ -57,18 +63,61 @@ asking agent has no process. See [docs/daemon/waits.md](daemon/waits.md).
 **Desk.** Everything that waits on a person, in one list: asks, blocked and failed tasks, prompts
 Priory could not confirm, a banner when the queue is stalled, and one when the intake fails to poll
 or stopped. See
-[docs/daemon/desk.md](daemon/desk.md).
+[docs/daemon/desk.md](daemon/desk.md). The [Claude Code plugin](adapters/claude-plugin.md) lets
+your own session read the desk, ask you a question and add a task.
 
 **Queue, bands and room.** Tasks start in band order (`blocker`, `now`, `today`, `later` by
 default), then in an order you set, then oldest first.
 A task's lane, such as `core/intake`, groups tasks by team and theme for `priory tasks --lane`
-and `priory report --by lane`. Without a lane or a matching rule, it is `<team>/misc`, or
-`none/misc` for a task with no team. A run starts only when the machine has room for the memory
-and disk its agent declares. See [docs/daemon/room.md](daemon/room.md).
+and `priory report --by lane`. A trigger or a request names it, or
+[`lanes.toml`](reference/lanes.md) derives it. A run starts only when the machine has room for the memory
+and disk its agent declares. See [docs/daemon/room.md](daemon/room.md). Two settings change who
+starts. A [review limit](daemon/runs.md#review-limit) holds new starts while too many pull requests
+wait for a person. An [urgent wake](daemon/room.md#urgent-wakes) lets a task in a band you name
+stop a lower band's run at the end of its turn.
 
 **Health.** Every second, the daemon checks each run for an unexpected exit, a timeout or a
 permission prompt. It never approves a permission prompt. A crashed run gets one repair attempt.
-See [docs/daemon/health.md](daemon/health.md).
+A step's `budget` limits the dollars a task may spend at that step. When a fix fails the
+same checks as the commit before it, the daemon asks a person instead of waking the agent again.
+See [docs/daemon/health.md](daemon/health.md) and
+[a fix that fails the same way](daemon/waits.md#a-fix-that-fails-the-same-way).
+
+**Spend caps.** The most a task, a trigger's tasks, a lane's tasks or the whole factory may spend,
+in dollars, per task, day or week. Past a cap, new runs wait, and a held task asks you to raise
+the cap or stop it. See [docs/daemon/spend.md](daemon/spend.md).
+
+**Skills and memories.** A skill is a folder of instructions an agent follows when its description
+fits the task. A memory is one fact in one file. A run gets the factory's skills and memories,
+and those of two optional git repositories: a kit of skills and a memories repository. An agent
+can name the skills its runs get. When a Claude Code run reads, edits or creates a file that
+matches the `paths` of a skill or memory, Priory adds that skill or memory to the run's context.
+An agent
+proposes a memory with `remember`, a [nightly dream](setting-up-a-nightly-dream.md) proposes
+memories from the day's tasks, and a person accepts each one before other tasks get it. See
+[docs/daemon/skills.md](daemon/skills.md).
+
+**Scorers, gates and benchmarks.** A scorer grades a finished run.
+A `judge` scorer asks a model, and counts only once its answers agree with a person's labels. A
+gate is a scorer that refuses a step's result when it fails. A benchmark replays past tasks to
+compare two commits of the factory. See [docs/daemon/score.md](daemon/score.md) and
+[docs/daemon/bench.md](daemon/bench.md).
+
+**Evidence.** Screenshots and recordings a run attaches to its result, so a person sees the change
+work before reading the diff. See [docs/daemon/evidence.md](daemon/evidence.md).
+
+**Decision model.** A command that answers a typed question with a probability for each option.
+Once measured against a person's labels, it settles feedback on a pull request that asks the agent
+for nothing, so the task is not woken. See [docs/daemon/decisions.md](daemon/decisions.md).
+
+**Consult.** A run asks an investigator one question with the `consult` tool and gets the report
+in its next prompt. An investigator is an agent that only reads, with MCP servers of its own, such
+as an error tracker's. The asking run never gets those servers. See
+[consulting an investigator](daemon/tools.md#consulting-an-investigator).
+
+**Repository readiness.** `priory check --repo PATH` scores what an unattended agent needs from a
+repository, such as one test command and CI on pull requests. See
+[docs/reference/readiness.md](reference/readiness.md).
 
 **Trace and reports.** Each step's end is recorded with its outcome, tokens and time. `priory report`
 reads these records, and the daemon can export them as OpenTelemetry spans. See
