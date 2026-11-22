@@ -169,6 +169,12 @@ place numbers every active task of the band in its current order, so tasks that 
 after them, oldest first. `priory move` writes the state file directly. It needs no daemon, and the
 daemon reads the new order on its next tick.
 
+A task at the head of the queue in a band of `[queue] preempt` may mark live runs of lower bands to
+stop at their next turn end, so it fits. A marked task stays `running`, with the reason `stops at
+its next turn end for task 12 (blocker)`. The stopped task is `ready` again in its own band, at its
+own place, and its next run resumes its session. See
+[room.md](room.md#urgent-wakes).
+
 `priory move`, `hold`, `release` and `cancel` take `--expected REVISION`, the state revision that
 every listing carries. When the state's revision differs from it, the verb changes nothing and fails with `the
 state is at revision <current>, not <REVISION>`, so a change made on a stale read never applies.

@@ -1,6 +1,7 @@
 mod conform;
 #[cfg(feature = "postgres")]
 mod partition;
+mod preempt;
 #[cfg(feature = "postgres")]
 mod proxy;
 mod tmux_dir;

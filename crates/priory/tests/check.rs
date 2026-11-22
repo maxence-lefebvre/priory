@@ -1458,6 +1458,28 @@ fn factory_toml_renames_the_bands() {
 }
 
 #[test]
+fn preempt_names_bands_the_factory_has_above_its_last() {
+    let good = "name = \"demo\"\n\n[queue]\npreempt = [\"blocker\"]\n";
+    let ok = check(&factory("preempt-ok", &with("factory.toml", good)));
+    let unknown = good.replace("[\"blocker\"]", "[\"urgent\"]");
+    let unknown = check(&factory("preempt-unknown", &with("factory.toml", &unknown)));
+    let last = good.replace("[\"blocker\"]", "[\"blocker\", \"later\"]");
+    let last = check(&factory("preempt-last", &with("factory.toml", &last)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(unknown.code, 1);
+    assert_eq!(
+        unknown.stderr,
+        "factory.toml:3: `preempt` names band `urgent`, which is not one of blocker, now, today, later\n"
+    );
+    assert_eq!(last.code, 1);
+    assert_eq!(
+        last.stderr,
+        "factory.toml:3: `preempt` names band `later`, the last band, which has no band below it\n"
+    );
+}
+
+#[test]
 fn a_sweep_table_passes_and_a_bad_one_names_its_line() {
     let good = "name = \"demo\"\n\n[sweep]\nevery = \"5m\"\nafter = \"30m\"\nagent = \"implementer\"\nrepo = \"owner/priory\"\nscripts = [{ run = \"docker system prune -f\", when = \"disk\", timeout = \"2m\" }]\n";
     let ok = check(&factory("sweep-ok", &with("factory.toml", good)));

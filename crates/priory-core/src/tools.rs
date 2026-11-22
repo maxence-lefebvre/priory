@@ -245,6 +245,13 @@ pub(crate) fn call(
     };
     if stored.is_ok() {
         tx.execute("UPDATE runs SET nudgeable = 0 WHERE id = ?1", [run.id])?;
+        // A result, ask or wait is progress: the task may be stopped for an urgent wake again.
+        if call.tool != "compact" {
+            tx.execute(
+                "UPDATE tasks SET preempted = NULL WHERE id = ?1",
+                [run.task],
+            )?;
+        }
         tx.commit()?;
         return Ok((stored, kill));
     }
@@ -2291,6 +2298,102 @@ fn dollars(spent: f64, budget: f64) -> String {
         return format!("${spent:.2}");
     }
     format!("${spent:.6}")
+}
+
+/// After the turn of a run marked to stop for task `head`: settles it as `stop` does, but ends it
+/// as `preempted` wherever its process would have gone on, with the stop prompt ahead of the
+/// task's queued prompts. Returns the tmux session to kill.
+pub(crate) fn preempt(
+    tx: &Transaction,
+    session: &str,
+    trace: &Trace,
+    head: i64,
+) -> rusqlite::Result<Option<String>> {
+    let Some(mut run) = run(tx, session)? else {
+        return Ok(None);
+    };
+    // No process carries on, so a next step of the same agent gets a new run.
+    let agent = run.agent.take();
+    let settled = settle(tx, &run, trace)?;
+    if let Some(kill) = settled {
+        let (state, at, ended_as): (String, String, Option<String>) = tx.query_row(
+            "SELECT tasks.state, tasks.step, runs.ended_as FROM tasks JOIN runs ON runs.task = tasks.id
+             WHERE runs.id = ?1",
+            [run.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let carried = state == "ready"
+            && ended_as.as_deref() == Some("moved")
+            && step(&trace.factory.workflows, &run.workflow, &at).is_some_and(|next| {
+                next.decides == Decider::Model
+                    && next.agent.is_some()
+                    && next.agent == agent
+                    && next.effect != Effect::Irreversible
+            });
+        if !carried {
+            return Ok(kill);
+        }
+    }
+    stop_for(tx, trace, run.id, head)?;
+    Ok(Some(run.tmux))
+}
+
+/// Ends the run `run` as `preempted` for task `head`, if it is not ended yet, and makes its task
+/// `ready` with the stop prompt ahead of its queued prompts.
+pub(crate) fn stop_for(
+    tx: &Transaction,
+    trace: &Trace,
+    run: i64,
+    head: i64,
+) -> rusqlite::Result<()> {
+    let (task, waited): (i64, Option<i64>) = tx.query_row(
+        "SELECT task, CAST(round((julianday('now') - julianday(marked)) * 86400000) AS INTEGER)
+         FROM runs WHERE id = ?1",
+        [run],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    tx.execute(
+        &format!(
+            "UPDATE runs SET ended = coalesce(ended, {NOW}), ended_as = 'preempted' WHERE id = ?1"
+        ),
+        [run],
+    )?;
+    let (band, text) = crate::preempt::prompt(tx, trace.factory, head)?;
+    wake(tx, task, &text)?;
+    tx.execute(
+        "UPDATE tasks SET state = 'ready', reason = ?2, preempted = ?3 WHERE id = ?1",
+        params![
+            task,
+            format!("stopped for task {head} ({band}); resumes when there is room"),
+            head
+        ],
+    )?;
+    trace::preempted(tx, trace, run, head, &band, waited)
+}
+
+/// Ends the idle live run of `session`, marked to stop, as `preempted`, unless its mark no longer
+/// holds. Returns the tmux session to kill.
+pub(crate) fn preempt_idle(
+    db: &mut Connection,
+    trace: &Trace,
+    session: &str,
+    watched: &dyn Fn(&str) -> bool,
+) -> rusqlite::Result<Option<String>> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let Some(run) = run(&tx, session)? else {
+        return Ok(None);
+    };
+    let idle: bool = tx.query_row("SELECT idle FROM runs WHERE id = ?1", [run.id], |row| {
+        row.get(0)
+    })?;
+    let Some(head) = crate::preempt::due(&tx, run.id, watched)?.filter(|_| idle) else {
+        tx.commit()?;
+        return Ok(None);
+    };
+    trace::account(&tx, trace, run.id, None)?;
+    stop_for(&tx, trace, run.id, head)?;
+    tx.commit()?;
+    Ok(Some(run.tmux))
 }
 
 /// Measure a change to it first with `nudge.eval.toml` (docs/evaluating-a-prompt.md).

@@ -6,6 +6,14 @@ the machine full waits for a run to end, however long that takes. It builds noth
 model, the first code slice with its tests, the slices after it, and the open questions with a
 recommendation for each.
 
+The first slice is built, with every open question's recommendation taken:
+[room.md](../daemon/room.md#urgent-wakes) describes it. It differs from this note in three ways.
+The head stores the runs it may not stop in `tasks.protected` and stamps each mark's time in
+`runs.marked`, so `priory queue --json` and the trace record can read them. A stopped run's
+resumed session compacts after its first turn, as any session that resumes past `compactAt` does,
+since a new run's first prompt is never a `/compact`. And a reason names a run that is too small to
+help as `the runs it may stop free too little`. The later slices are not built.
+
 ## What existed when this note was written
 
 - The queue starts tasks in band order, then a person's order, then age: `START_ORDER`
@@ -231,6 +239,8 @@ The web and Herdr Desks print the same reasons with no change. A badge or a coun
 later slice 4, and starts from a design a person reviewed.
 
 ## The first slice: stop a lower run at its turn end
+
+Built.
 
 1. `[queue] preempt`, a list of bands. `priory check` refuses a band the factory lacks and the last
    band, which has no band below it, each with its line.

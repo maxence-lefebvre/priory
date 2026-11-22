@@ -43,6 +43,13 @@ impl Need {
             disk: self.disk.saturating_add(other.disk),
         }
     }
+
+    pub(crate) fn minus(self, other: Need) -> Need {
+        Need {
+            memory: self.memory.saturating_sub(other.memory),
+            disk: self.disk.saturating_sub(other.disk),
+        }
+    }
 }
 
 /// The memory and disk `agent` declares, in bytes.

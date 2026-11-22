@@ -824,6 +824,10 @@ pub struct Queue {
     /// Whether a task waits for an earlier active task that changes the same files; true when unset.
     #[serde(default = "on")]
     pub overlap: bool,
+    /// The bands whose waiting head may stop a run of a lower band at the end of its turn; none
+    /// when unset.
+    #[serde(default)]
+    pub preempt: Vec<String>,
 }
 
 fn on() -> bool {
@@ -832,7 +836,10 @@ fn on() -> bool {
 
 impl Default for Queue {
     fn default() -> Self {
-        Queue { overlap: true }
+        Queue {
+            overlap: true,
+            preempt: Vec::new(),
+        }
     }
 }
 
@@ -2335,6 +2342,13 @@ impl Factory {
         self.settings
             .as_ref()
             .is_none_or(|settings| settings.value.queue.overlap)
+    }
+
+    /// The bands whose waiting head may stop a run of a lower band.
+    pub fn preempt(&self) -> &[String] {
+        self.settings
+            .as_ref()
+            .map_or(&[], |settings| settings.value.queue.preempt.as_slice())
     }
 
     /// The agent's own prompt, then the factory's writing guide.
