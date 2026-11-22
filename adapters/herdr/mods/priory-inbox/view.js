@@ -29,6 +29,24 @@ export function unroutedNote(count) {
   return `${count} ${count === 1 ? "event" : "events"} reached no task in the last 24 hours`;
 }
 
+/** The desk's calm line for `count` events a task kept that no agent read, or "" with none. */
+export function unheardNote(count) {
+  if (!count) return "";
+  return `${count} ${count === 1 ? "event" : "events"} kept by a sleeping task reached no agent`;
+}
+
+/**
+ * What gets an unheard group's events to an agent, by its task's state: say to an asleep task;
+ * say to a blocked one, which reads them when it resumes; route an ended one as an owned group
+ * would; else nothing, since its next run reads them.
+ * @param {{ state: string }} task
+ */
+export function unheardActs(task) {
+  if (task.state === "asleep") return ["say"];
+  if (task.state === "blocked") return ["say", "resume"];
+  return ["done", "failed", "dropped"].includes(task.state) ? [routeAction(task)] : [];
+}
+
 /**
  * What routes an owned group's next event, by its owner's state: revive a failed or dropped task,
  * request a new one after a done task, else subscribe the active one.

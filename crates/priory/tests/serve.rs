@@ -5761,6 +5761,58 @@ fn unrouted_events_split_into_ended_owners_with_their_follow_up_and_a_count_per_
 }
 
 #[test]
+fn an_unheard_group_carries_the_text_its_follow_up_sends() {
+    let mut setup = Setup::new("unheard-texts", SERVE);
+    unrouted_comment(&setup, 7, "2026-11-17T11:00:00Z");
+    unrouted_comment(&setup, 8, "2026-11-17T11:30:00Z");
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    let done = setup.owner("done", &["github:owner/repo#7"]);
+    let blocked = setup.owner("blocked", &["github:owner/repo#8"]);
+    // Each comment as the task that owns its pull request kept it while it was not running.
+    setup
+        .db()
+        .execute(
+            "UPDATE inbox SET outcome = 'kept', task = (SELECT task FROM owns
+               WHERE resource = 'github:' || inbox.subject)",
+            [],
+        )
+        .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let unheard = &api(&address, "/api/inbox?unrouted=1")["unrouted"]["unheard"];
+    let texts: Vec<_> = unheard
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|group| {
+            (
+                group["task"]["id"].clone(),
+                group["say_text"].clone(),
+                group["request_text"].clone(),
+            )
+        })
+        .collect();
+    let seq = &unheard[1]["events"][0]["seq"];
+    assert_eq!(
+        texts,
+        [
+            (
+                json!(blocked),
+                json!("Read the events that came while you slept."),
+                Value::Null
+            ),
+            (
+                json!(done),
+                Value::Null,
+                json!(format!(
+                    "Follow up on https://github.com/owner/repo/issues/7 after event {seq}"
+                ))
+            ),
+        ]
+    );
+}
+
+#[test]
 fn an_outsider_comment_is_counted_on_the_desk_and_listed_as_a_group_of_its_own() {
     let setup = Setup::new("desk-outsider", SERVE);
     let message = herdr_bus::Message::new(

@@ -324,8 +324,18 @@ pub fn unrouted(db: &Connection, since: i64, now: Timestamp) -> rusqlite::Result
     let unheard: Vec<Value> = unheard
         .into_iter()
         .map(|(task, events)| {
-            let follow_up = unheard_follow_up(&task, &events);
-            json!({ "task": task, "events": events, "follow_up": follow_up })
+            let state = task["state"].as_str().unwrap_or_default();
+            let say_text = ["asleep", "blocked"]
+                .contains(&state)
+                .then_some(UNHEARD_SAY);
+            let request_text = (state == "done")
+                .then(|| request_text(task["key"].as_str().unwrap_or_default(), &events))
+                .flatten();
+            let follow_up = unheard_follow_up(&task, say_text, request_text.as_deref());
+            json!({
+                "task": task, "events": events, "follow_up": follow_up,
+                "say_text": say_text, "request_text": request_text,
+            })
         })
         .collect();
     Ok(json!({
@@ -384,20 +394,23 @@ fn unheard_events(
     Ok(events)
 }
 
-/// The command that gets a task's unheard `events` to an agent: `say` wakes an asleep or blocked
-/// task, whose next run carries them; an ended task gets what an unrouted event of it would. None
-/// for a task whose next run reads them anyway.
-fn unheard_follow_up(task: &Value, events: &[Value]) -> Option<String> {
-    let id = &task["id"];
+/// What `priory say` tells an asleep or blocked task that kept unheard events.
+const UNHEARD_SAY: &str = "Read the events that came while you slept.";
+
+/// The command that gets a task's unheard events to an agent: `say` with `say_text`, which wakes an
+/// asleep task and reaches a blocked one when it resumes; for an ended task, what an unrouted event
+/// of it would get. None for a task whose next run reads them anyway.
+fn unheard_follow_up(
+    task: &Value,
+    say_text: Option<&str>,
+    request_text: Option<&str>,
+) -> Option<String> {
+    if let Some(text) = say_text {
+        return Some(format!("priory say {} {}", task["id"], quoted(text)));
+    }
     match task["state"].as_str().unwrap_or_default() {
-        "asleep" | "blocked" => Some(format!(
-            "priory say {id} {}",
-            quoted("Read the events that came while you slept.")
-        )),
         "done" | "failed" | "dropped" => {
-            let resource = task["key"].as_str().unwrap_or_default();
-            let request_text = request_text(resource, events);
-            follow_up(task, resource, request_text.as_deref())
+            follow_up(task, task["key"].as_str().unwrap_or_default(), request_text)
         }
         _ => None,
     }
