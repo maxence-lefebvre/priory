@@ -62,6 +62,7 @@ pub fn request(call: &Call) -> Result<priory_intake::request::Add, String> {
         repo: added.repo,
         relates: Vec::new(),
         intervention: None,
+        auto_answer: None,
         session: Some(call.session.clone().unwrap_or_else(|| ANONYMOUS.to_owned())),
     })
 }
