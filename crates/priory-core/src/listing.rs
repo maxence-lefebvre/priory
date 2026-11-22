@@ -93,6 +93,7 @@ const DESK_TITLE: &str = "CASE WHEN desk.kind = 'ask' THEN (SELECT coalesce(asks
            WHERE coalesce(asks.name, asks.id) = desk.id
              AND asks.answer IS NULL AND asks.withdrawn IS NULL)
          WHEN desk.kind = 'memories' THEN 'memory candidates wait for a person'
+         WHEN desk.kind = 'pattern' THEN 'tasks stopped for one reason'
          WHEN desk.task IS NOT NULL THEN 'task '
            || (SELECT key FROM tasks WHERE tasks.id = desk.task) || ' ' || desk.kind
          WHEN desk.kind = 'report' AND desk.what LIKE 'intake: %' THEN 'the intake fails to poll '
@@ -204,7 +205,33 @@ const DESK: &str = "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                    || group_concat(name, ', ') || '; see them with `priory memories`'
                FROM memory_candidates
                WHERE logged IS NOT NULL AND accepted IS NULL AND dropped IS NULL
-               HAVING count(*) > 0               UNION ALL
+               HAVING count(*) > 0
+               UNION ALL
+               SELECT 0, last, 'pattern', pattern, NULL, NULL,
+                 workflow || '/' || step || ': ' || tasks || ' tasks stopped for one reason: ' || text
+                   || '; see it with `priory patterns show ' || pattern || '`'
+               FROM (SELECT json_extract(event, '$.data.pattern') AS pattern,
+                   max(julianday(json_extract(event, '$.data.happened'))),
+                   json_extract(event, '$.data.happened') AS last,
+                   json_extract(event, '$.data.workflow') AS workflow,
+                   json_extract(event, '$.data.step') AS step,
+                   json_extract(event, '$.data.text') AS text,
+                   count(DISTINCT json_extract(event, '$.data.task')) AS tasks
+                 FROM trace WHERE type = 'factory.pattern.matched' GROUP BY 1) AS patterns
+               WHERE tasks >= 2 AND NOT EXISTS (SELECT 1 FROM trace AS closed
+                 WHERE closed.type = 'factory.pattern.closed'
+                   AND json_extract(closed.event, '$.data.pattern') = patterns.pattern
+                   AND (json_extract(closed.event, '$.data.dismissed')
+                     OR closed.seq = (SELECT max(seq) FROM trace AS latest
+                       WHERE latest.type = 'factory.pattern.closed'
+                         AND json_extract(latest.event, '$.data.pattern') = patterns.pattern)
+                       AND NOT EXISTS (SELECT 1 FROM trace AS later
+                         WHERE later.type = 'factory.pattern.matched'
+                           AND json_extract(later.event, '$.data.pattern') = patterns.pattern
+                           AND later.seq > closed.seq
+                           AND unixepoch(json_extract(later.event, '$.data.happened'))
+                             >= unixepoch(closed.time))))
+               UNION ALL
                SELECT 1, tasks.changed, 'queue', queue.place, tasks.id, tasks.lane,
                  coalesce(tasks.band, '-') || coalesce(': ' || tasks.reason, '')
                FROM tasks JOIN queue USING (id)";

@@ -26214,7 +26214,7 @@ fn bench_capture_refuses_a_task_with_no_irreversible_step_or_no_start_commit() {
     assert!(!unbounded.status.success(), "{unbounded:?}");
     assert_eq!(
         String::from_utf8_lossy(&unbounded.stderr),
-        "priory bench capture: task 1 reached no irreversible step, so a replay of it would have no end\n"
+        "priory bench capture: task 1 reached no irreversible step and did not stop, so a replay of it would have no end\n"
     );
     assert!(!unstarted.status.success(), "{unstarted:?}");
     assert_eq!(
@@ -26222,6 +26222,87 @@ fn bench_capture_refuses_a_task_with_no_irreversible_step_or_no_start_commit() {
         "priory bench capture: task 1 has no start commit: it began before Priory stored one\n"
     );
     assert!(!into.exists(), "a refused capture wrote {}", into.display());
+}
+
+#[test]
+fn bench_capture_takes_a_failed_task_up_to_the_step_it_stopped_at() {
+    let setup = scored_task("capture-failed");
+    let factory = setup.dir.join("factory");
+    let into = setup.dir.join("case");
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "UPDATE tasks SET state = 'failed', step = 'implement', reason = 'cargo test failed' WHERE id = 1",
+        [],
+    )
+    .unwrap();
+
+    let output = setup.priory(&[
+        "bench",
+        "capture",
+        factory.to_str().unwrap(),
+        "1",
+        "--into",
+        into.to_str().unwrap(),
+    ]);
+
+    assert!(output.status.success(), "{output:?}");
+    let case = fs::read_to_string(into.join("case.toml")).unwrap();
+    assert!(case.contains("\nends_at = \"implement\"\n"), "{case}");
+    assert!(
+        case.contains("path = [\"plan:ready\", \"implement:passed\"]"),
+        "{case}"
+    );
+}
+
+#[test]
+fn patterns_capture_turns_each_task_of_a_pattern_into_a_case() {
+    let setup = scored_task("capture-pattern");
+    let factory = setup.dir.join("factory");
+    let into = setup.dir.join("cases");
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "UPDATE tasks SET state = 'failed', step = 'implement', reason = 'cargo test failed' WHERE id = 1",
+        [],
+    )
+    .unwrap();
+    let found = setup.priory(&["patterns", "find", factory.to_str().unwrap()]);
+    assert!(found.status.success(), "{found:?}");
+    let listed = setup.priory(&["patterns", "--all", "--json"]);
+    let listed: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    let id = listed[0]["id"].as_str().unwrap().to_owned();
+    let capture = || {
+        setup.priory(&[
+            "patterns",
+            "capture",
+            factory.to_str().unwrap(),
+            &id,
+            "--into",
+            into.to_str().unwrap(),
+        ])
+    };
+
+    let first = capture();
+    let again = capture();
+
+    assert!(first.status.success(), "{first:?}");
+    let folder = into.join("task-1");
+    assert_eq!(
+        String::from_utf8_lossy(&first.stdout),
+        format!(
+            "captured task 1 into {}: 0 gh answer(s), 0 answer(s), complete\n",
+            folder.display()
+        )
+    );
+    assert!(folder.join("case.toml").exists());
+    assert!(!again.status.success(), "{again:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&again.stdout),
+        format!("skipped task 1: {} already exists\n", folder.display())
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&again.stderr),
+        format!("priory patterns capture: no task of pattern {id} could be captured\n")
+    );
 }
 
 /// A workflow whose human step leads to an irreversible code step, which a replay must never run.

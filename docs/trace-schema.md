@@ -878,6 +878,62 @@ or would be for a task that moved on:
 | `tokens`, `model` | no     | What the investigator's run spent so far, since a run ended by its deadline or cap writes no `factory.step.ended` |
 | `cost_usd`      | no       | `tokens` priced with `prices.toml` |
 
+## `factory.pattern.matched`
+
+One piece of evidence of a failure pattern: a task that failed, blocked, was repaired or was marked
+wrong, which `priory patterns find` recorded (see [patterns.md](daemon/patterns.md)). A pattern is
+the records of its `pattern` id. Its `data` also holds `factory`, `factory_revision` and `machine`.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d7-0000-7000-8000-00000000000b",
+  "source": "factory://example/desktop",
+  "type": "factory.pattern.matched",
+  "time": "2026-11-22T02:45:03.120Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "pattern": "3fa2b1c0",
+    "workflow": "implement",
+    "step": "implement",
+    "signature": "cargo test failed: # tests failed in #s",
+    "text": "cargo test failed: 12 tests failed in 9s",
+    "task": "27",
+    "key": "github:example/app#42",
+    "generation": 1,
+    "kind": "failed",
+    "happened": "2026-11-21T16:20:05Z",
+    "source": "task 27 generation 1 failed at implement: cargo test failed: # tests failed in #s",
+    "machine": "desktop"
+  }
+}
+```
+
+| Field        | Required | Meaning                                                              |
+| ------------ | -------- | -------------------------------------------------------------------- |
+| `pattern`    | yes      | The pattern's id: the first 8 hex digits of the SHA-256 of its workflow, step and signature |
+| `workflow`, `step` | yes | Where the task stopped                                        |
+| `signature`  | yes      | The text's shape, which groups the pattern                           |
+| `text`       | yes      | The text's first line, with credential shapes redacted               |
+| `task`, `key`, `generation` | yes | The task                                                |
+| `kind`       | yes      | `failed`, `blocked`, `repaired` or `marked-wrong`                    |
+| `happened`   | yes      | When the task stopped, was repaired or was marked                   |
+| `source`     | yes      | What the evidence is, so `find` records it once: a stopped task's id, generation, kind, step and signature, or the id of the `factory.task.repaired` or `factory.step.labeled` record |
+
+## `factory.pattern.closed`
+
+A person ran `priory patterns close` or `priory patterns dismiss`. A closed pattern is open again
+once a match recorded after this record happened in its second or later; a dismissed one stays
+dismissed. Its `data` also holds `factory`, `factory_revision` and `machine`.
+
+| Field       | Required | Meaning                                              |
+| ----------- | -------- | ---------------------------------------------------- |
+| `pattern`   | yes      | The pattern's id                                     |
+| `workflow`, `step` | yes | The pattern's workflow and step                  |
+| `tasks`     | yes      | How many tasks the pattern held when it was closed   |
+| `dismissed` | yes      | `true` for `dismiss`, `false` for `close`            |
+
 ## Spans
 
 A factory that exports OpenTelemetry spans (Priory does: see

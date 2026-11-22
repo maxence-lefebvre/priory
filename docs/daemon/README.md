@@ -116,6 +116,9 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
   the ask to raise a cap or stop a task, and the new runs a reached cap holds.
 - [score.md](score.md): `priory score`, which grades a task's finished runs with the factory's
   scorers, and `priory score --calibrate`, which measures a judge scorer against a person's labels.
+- [patterns.md](patterns.md): failure patterns, `priory patterns find`, which groups the day's
+  failed, blocked, repaired and marked-wrong tasks by step and reason, the desk's `pattern` row,
+  closing and dismissing a pattern, and capturing its tasks as benchmark cases.
 - [bench.md](bench.md): `priory bench capture`, which turns a past task into a benchmark case,
   `priory bench replay`, which plays one case under one configuration, and `priory bench` with
   `--base` and `--head`, which compares two commits of the factory on a benchmark.
