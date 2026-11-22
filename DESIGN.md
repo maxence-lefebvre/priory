@@ -1452,7 +1452,9 @@ The web's [Costs panel](#costs-panel).
 - The day chart and each task's bar are drawn with elements, not SVG. The week line is a dashed
   `--text-3` edge before this week's first bar. Waiting on you keeps its `--wait` stripes.
 - Loading reads "Reading costs…", with no skeleton.
-- The scores table stays on the web page for now.
+- Scores follow the split as the web's do. From 600 px they are rows of columns, the scorer in
+  mono and the pass rate in weight 600. Below, each row stacks, as on the web. With no cost, the
+  split chips sit beside the scores' title.
 
 ### Flows
 
@@ -1484,7 +1486,10 @@ open it.
   time in the caption: "kept, still queued · 11:50". History lists the last 10 runs, newest first.
 - With no task opened: "Open a task from the Desk to see it here." While it reads: "Reading task
   7…"
-- The actions, Say, Progress, the workflow grid and each run's scores stay on the web page for now.
+- Under each History run, one row per scorer with the run's latest score: its 18 px verdict tile,
+  the scorer in mono, the verdict word in its role's text color, and the reason in a `--text-2`
+  caption, under a hairline.
+- The actions, Say, Progress and the workflow grid stay on the web page for now.
 
 ### Inbox
 

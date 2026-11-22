@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { context, draw, find, herdr, settle, text } from "./kit.js";
 import { attentionView, costTiles, dayBars, splitTable } from "../mods/priory-costs/view.js";
 
 process.env.TZ = "UTC";
@@ -10,6 +11,8 @@ process.env.TZ = "UTC";
 // Tuesday 2026-11-17 12:00 in Paris: three priced records last week, then one priced record, one
 // unpriced model and one record without tokens this week, one merge, two tasks and three asks.
 const fixture = (name) => JSON.parse(readFileSync(new URL(`./fixtures/${name}.json`, import.meta.url), "utf8"));
+
+const { default: CostsPanel } = await import("../mods/priory-costs/main.js");
 
 test("the view model is the web view's costs.js, copied", () => {
   const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
@@ -58,4 +61,31 @@ test("attention gives minutes per merge, the ask waits and where each task's tim
     ["PRI-41", "implement", "4 h", ["1 h 50 min", "30 min", "1 h 30 min", "10 min"]],
     ["PRI-42", "review", "1 d 3 h", ["0 min", "1 h 1 min", "0 min", "1 d 1 h"]],
   ]);
+});
+
+test("the Costs panel shows each scorer's pass rate under the split, stacked when narrow, and with no cost", async () => {
+  const scores = [
+    { workflow: "implement", scorer: "gate", pass: 11, fail: 3, error: 1, not_applicable: 0 },
+    { workflow: "plan-batch", scorer: "gate", pass: 0, fail: 0, error: 2, not_applicable: 0 },
+  ];
+  /** @param {any} costs */
+  const drawn = async (costs, width) => {
+    herdr.reset();
+    herdr.replies = { costs, report: fixture("attention") };
+    const panel = new CostsPanel();
+    const cx = context();
+    panel.init({}, cx);
+    await settle();
+    panel.width = width;
+    return find(draw(panel, cx), "costs-scores");
+  };
+
+  const wide = text(await drawn({ ...fixture("costs"), scores }, 700));
+  assert.match(wide, /^Scores by workflow The pass rate leaves out errors and not applicable\. Workflow Scorer Pass rate pass fail error not applicable /);
+  assert.match(wide, /implement gate 79% 11 3 1 0 plan-batch gate - 0 0 2 0$/);
+  const narrow = text(await drawn({ ...fixture("costs"), scores }, 420));
+  assert.match(narrow, /implement gate pass rate 79%, 11 pass, 3 fail, 1 error plan-batch gate no pass rate, 2 error$/);
+  const empty = text(await drawn({ ...fixture("costs"), days: [], split: [], scores }, 420));
+  assert.match(empty, /implement gate pass rate 79%/);
+  assert.equal(await drawn(fixture("costs"), 420), null);
 });

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { context, draw, find, herdr, press, settle, text } from "./kit.js";
+import { existsSync, readFileSync } from "node:fs";
+import { all, context, draw, find, herdr, press, settle, text } from "./kit.js";
 import { taskView } from "../mods/priory-task/view.js";
 
 process.env.TZ = "UTC";
@@ -27,6 +27,24 @@ test("a task shows its state, step, asks, pull request and its runs newest first
     [3, "asleep", "implement, run 3", "08:40"],
     [2, "moved", "plan, run 2, planned", "08:20"],
     [1, "moved", "groom, run 1, yellow", "08:00"],
+  ]);
+});
+
+test("each run shows its latest score by each scorer, as the web's task page does", () => {
+  // As `priory task ID --json` lists them: the latest per run and scorer, the run as text.
+  const scores = [
+    { run: "2", step: "plan", scorer: "gate", kind: "outcome", verdict: "pass", reason: "Plan names the files.", time: "2026-11-20T08:30:00Z" },
+    { run: "3", step: "implement", scorer: "gate", kind: "outcome", verdict: "error", reason: "Scorer timed out.", time: "2026-11-20T09:00:00Z" },
+    { run: "3", step: "implement", scorer: "tests", kind: "outcome", verdict: "not applicable", reason: null, time: "2026-11-20T09:00:00Z" },
+  ];
+  const view = taskView({ ...task, scores }, { now });
+  assert.deepEqual(view.history.map((run) => [run.id, run.scores]), [
+    [3, [
+      { scorer: "gate", verdict: "error", reason: "Scorer timed out." },
+      { scorer: "tests", verdict: "not applicable", reason: null },
+    ]],
+    [2, [{ scorer: "gate", verdict: "pass", reason: "Plan names the files." }]],
+    [1, []],
   ]);
 });
 
@@ -78,6 +96,27 @@ test("the Task panel shows the task another panel opened, and Attach asks the Pr
   assert.deepEqual([herdr.shared.get("priory.attach").task, herdr.shared.get("priory.attach").readOnly], [1, false]);
   press(tree, "watch");
   assert.deepEqual([herdr.shared.get("priory.attach").task, herdr.shared.get("priory.attach").readOnly], [1, true]);
+});
+
+test("the Task panel draws each score under its run, with its verdict tile and reason", async () => {
+  herdr.reset();
+  const scores = [
+    { run: "3", step: "implement", scorer: "gate", kind: "outcome", verdict: "error", reason: "Scorer timed out.", time: "2026-11-20T09:00:00Z" },
+    { run: "3", step: "implement", scorer: "tests", kind: "outcome", verdict: "fail", reason: "2 tests fail.", time: "2026-11-20T09:00:00Z" },
+  ];
+  herdr.replies = { task: { ...task, scores }, links: { links: [] } };
+  const panel = new TaskPanel();
+  const cx = context();
+  panel.init({}, cx);
+  herdr.shared.set("priory.task.open", { task: 1, at: Date.now() });
+  draw(panel, cx);
+  await settle();
+  const tree = draw(panel, cx);
+  assert.match(text(find(tree, "run-3")), /implement, run 3.*gate.*error.*Scorer timed out\..*tests.*fail.*2 tests fail\./s);
+  assert.doesNotMatch(text(find(tree, "run-2")), /gate/);
+  const icons = all(find(tree, "run-3"), "svg").map((icon) => icon.path);
+  assert.ok(icons.includes("mods/priory-task/icons/circle-alert.svg"), icons.join());
+  for (const icon of icons) assert.ok(existsSync(new URL(`../${icon}`, import.meta.url)), `${icon} is missing`);
 });
 
 test("the Priory bar opens a read-only terminal for Watch and a typing one for Attach", async () => {

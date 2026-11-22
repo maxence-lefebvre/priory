@@ -81,6 +81,8 @@ export function taskView(task, { now, links = [] }) {
       tile: run.ended ? run.end || "moved" : "running",
       text: `${run.step}, run ${run.id}${run.outcome ? `, ${run.outcome}` : ""}`,
       when: when(run.started, now),
+      scores: (task.scores ?? []).filter((/** @type {any} */ score) => score.run === String(run.id))
+        .map((/** @type {any} */ score) => ({ scorer: score.scorer, verdict: score.verdict, reason: score.reason })),
     })),
   };
 }

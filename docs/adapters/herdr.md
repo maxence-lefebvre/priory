@@ -549,7 +549,9 @@ DESIGN.md's "Costs panel" section holds its visual rules; this section says how 
 - **Costs.** This week's cost, merges and cost per merge against last week, what is not in the
   cost, one bar per day of both weeks, and this week split by workflow, agent, model, machine or
   repo. A split chip reads the costs again with that `--by`. While priory is unreachable, the
-  chips are disabled.
+  chips are disabled. When the window has scores, each scorer's pass rate and verdict counts by the
+  same split follow, from the `scores` of `priory costs --json`. With no cost, the scores still
+  show, with the split chips beside their title.
 - **Attention.** Your minutes per merge, the ask waits and where each task's time went.
 
 ## The Inbox panel
@@ -656,8 +658,9 @@ Priory bar opens it as a tab in the center stack when another panel sets `priory
   title with its [links](#links), the workflow, step, lane and band, and the task's reason. Asks
   lists the task's asks, open ones first. Pull request shows the latest pull request's title as a
   link, its branches and state, its checks, and the task's stack (see [Stacks](#stacks)). History
-  lists the last 10 runs, newest first, each with its step, outcome and start time. A section the
-  task lacks is left out.
+  lists the last 10 runs, newest first, each with its step, outcome and start time, and under it
+  the run's latest score by each scorer from the task's `scores`. A section the task lacks is left
+  out.
 - **Acting.** Watch asks the Priory bar for a read-only terminal, and Attach for one that types,
   as [Attaching](#how-it-reads-and-acts) describes. Watch comes first, since it cannot change the
   run. Answering stays in the Asks panel.

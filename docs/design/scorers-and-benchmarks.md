@@ -407,8 +407,8 @@ Tests:
    fresh task with no branch, and cover a label from a bot, which still waits for the person's
    answer, a fork, an event with no `head_repo`, and a head that moved after the answer. This slice closes M4's done-when line.
 5. The `judge` kind, `priory score --calibrate` and the agreement rule.
-6. Built. Scores in the web view's task page and Costs panel ([score.md](../daemon/score.md#where-scores-show)).
-   Herdr's Task and Costs panels do not show them yet.
+6. Built. Scores in the task page and Costs panel of the web view and Herdr, and in `priory costs`
+   ([score.md](../daemon/score.md#where-scores-show)).
 
 ## Open questions
 

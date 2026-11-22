@@ -160,7 +160,7 @@ price changes past costs too. A task's handler calls show as one more row per mo
 
 `priory costs [DIR] [--since <window>] [--by workflow|agent|model|machine|repo] [--json]` prints what
 the factory spent in the current window against the window before it, then each day, then the
-current window split by one dimension:
+current window split by one dimension, then each scorer's verdicts by the same split:
 
 ```
 period	since	until	cost	notes	merges
@@ -174,6 +174,9 @@ day	cost	notes	merges
 
 workflow	cost	notes
 implement	$2.000000	-
+
+workflow	scorer	pass	fail	error	not_applicable
+implement	gate	11	3	1	0
 ```
 
 A `notes` cell names what has no cost, such as `price missing for m2: 1500 tokens` or
@@ -200,7 +203,7 @@ prices them from the same `prices.toml` in `DIR` (default: the current folder).
 `--json` prints one object, which `GET /api/costs` also answers (see
 [the serve reference](../reference/serve.md#costs)). The web view's Costs panel draws it. Its
 `scores` counts, by the same split, each run's latest score by each scorer in the window. A score
-takes its run's agent and its run's model. The text output leaves the scores out.
+takes its run's agent and its run's model. The text output prints the same counts in its last table.
 
 Known limits:
 
