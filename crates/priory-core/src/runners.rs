@@ -906,7 +906,8 @@ pub(crate) fn with_remote_asks(
     Ok(())
 }
 
-/// When runner `runner` was last alive, from its last alive, claim or held message.
+/// When runner `runner` was last alive, from its last alive or held message. A claim renews no
+/// lease, so it does not count.
 fn last_seen(db: &Connection, runner: &str) -> rusqlite::Result<Option<String>> {
     Ok(db
         .query_row(
