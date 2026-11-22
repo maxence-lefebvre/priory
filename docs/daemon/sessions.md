@@ -177,7 +177,8 @@ The daemon sets a run's idle flag and turn from hooks, tool calls and its own ty
 It never reads tmux clients, so attaching and detaching change no run's idle flag, turn or prompt. A client that can type can still type into the
 agent, as a person at the pane would: the daemon then sees that turn's hooks like any other.
 
-`priory screen TASK` prints the same pane's screen once, and exits. `--run RUN` names one run, and
+`priory screen [DIR] TASK` prints the same pane's screen once, and exits. `DIR` names the factory
+whose secret variables it hides. `--run RUN` names one run, `--history N` adds rows of scrollback, and
 `--json` prints the object [`/api/runs/{id}/screen`](../reference/serve.md#run-screen) returns.
 It refuses the same runs, with the same sentences as attach.
 

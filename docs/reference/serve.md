@@ -39,7 +39,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/costs?since=WINDOW&by=SPLIT` | `priory costs --json --since WINDOW --by SPLIT` | an object: [Costs](#costs) |
 | `/api/grades?since=WINDOW` | `priory grades --json --since WINDOW` | an object: [Grades](#grades) |
 | `/api/attention?since=WINDOW&by=SPLIT` | `priory report attention --json --since WINDOW --by SPLIT` | an object: [Attention](#attention) |
-| `/api/runs/{id}/screen?have=HASH&history=N` | `priory screen --run ID --json` | the run's screen in colour, after up to 2,000 rows of scrollback, with secrets hidden. See [Run screen](#run-screen) |
+| `/api/runs/{id}/screen?have=HASH&history=N` | `priory screen [DIR] --run ID --history N --json` | the run's screen in colour, after up to 2,000 rows of scrollback, with secrets hidden. See [Run screen](#run-screen) |
 | `/api/events?since=REV` | `priory wait --since REV` | `{"revision": N}` once it differs from `REV`. See [below](#apievents) |
 | `/api/push/key` | | `{"key": "<base64url>"}`, the daemon's VAPID public key. See [Notifications](#notifications) |
 | `POST /api/asks/{id}/answer` | `priory answer ID TEXT --revision N` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
@@ -131,11 +131,13 @@ reply carries `Cache-Control: no-store`.
 | `scrollback` | How many rows of scrollback tmux keeps for the pane. The hash leaves it out |
 | `keyboard` | `true` under `[serve] terminal = "type"`, when a token holder may take the run's [keyboard](#keyboard); absent otherwise. The hash leaves it out |
 
-`priory screen (TASK | --run RUN) [--json]` prints the same screen, with no scrollback, as rows of
-text or, with `--json`, as this object. Its rows keep their colours on a terminal and drop them
-when the output goes to a file or a pipe. It hides the values of the default secret variables,
-such as `PRIORY_TOKEN`, from its own environment, and the secret shapes. Like the endpoint, it
-gives tmux 2 seconds.
+`priory screen [DIR] (TASK | --run RUN) [--history N] [--json]` prints the same screen as rows of
+text or, with `--json`, as this object. `--history N` takes `N` rows of scrollback, as `history`
+does, with the same cap of 2,000; without it there is none. Its rows keep their colours on a
+terminal and drop them when the output goes to a file or a pipe. It hides the secret shapes and,
+from its own environment, the values of the secret variables of the factory in `DIR`, as `serve`
+does. Without `DIR` it hides only the default ones, such as `PRIORY_TOKEN`. A factory that fails
+to load prints its problems and exits 1. Like the endpoint, it gives tmux 2 seconds.
 
 ## Keyboard
 

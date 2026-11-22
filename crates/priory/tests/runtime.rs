@@ -20554,7 +20554,7 @@ fn a_runs_screen_keeps_its_colour_codes_drops_links_and_hides_a_secret_a_code_sp
 }
 
 #[test]
-fn a_runs_screen_takes_earlier_rows_up_to_its_cap_and_hashes_them() {
+fn a_runs_screen_takes_earlier_rows_up_to_its_cap_and_hashes_them_and_the_cli_takes_the_same() {
     let setup = Setup::running("screen-history");
     let (mut server, address) = serving(&setup, WATCH, &[("TEST_TOKEN", SERVE_TOKEN)]);
     // A pane takes the history limit it was made with, so a new one holds more than the cap.
@@ -20619,6 +20619,19 @@ fn a_runs_screen_takes_earlier_rows_up_to_its_cap_and_hashes_them() {
     assert_eq!(capped["lines"].as_array().unwrap().len(), 2000 + height);
     let (status, _) = http(&address, "GET", "/api/runs/1/screen?history=many", "", "");
     assert_eq!(status, 400);
+    let cli = |rows: &str| {
+        let cli = setup.priory(&["screen", "1", "--history", rows, "--json"]);
+        assert!(cli.status.success(), "{cli:?}");
+        serde_json::from_slice::<serde_json::Value>(&cli.stdout).unwrap()
+    };
+    assert_eq!(cli("5")["hash"], five["hash"]);
+    assert_eq!(cli("99999")["hash"], capped["hash"]);
+    assert!(
+        !setup
+            .priory(&["screen", "1", "--history", "many"])
+            .status
+            .success()
+    );
     server.kill().unwrap();
     server.wait().unwrap();
 }
@@ -20689,7 +20702,7 @@ fn a_runs_screen_reads_its_tagged_pane_not_the_active_one_and_refuses_a_run_it_c
 }
 
 #[test]
-fn a_runs_screen_hides_the_factorys_secrets_and_secret_shapes_and_its_hash_ignores_them() {
+fn a_runs_screen_and_priory_screen_dir_hide_the_factorys_secrets_and_the_hash_ignores_them() {
     let setup = Setup::running("screen-secrets");
     let serve = format!(
         "{WATCH}redact_env = [\"TEST_ONE\", \"TEST_TWO\"]\n\n[webhooks.github]\nsecret_env = \"TEST_HOOK\"\n\n\
@@ -20743,6 +20756,23 @@ fn a_runs_screen_hides_the_factorys_secrets_and_secret_shapes_and_its_hash_ignor
     std::thread::sleep(Duration::from_millis(300));
     let again = screen_once(&address, |screen| screen_row(screen, 49) == "[redacted]");
     assert_eq!(again["hash"], shown["hash"]);
+    let cli = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["screen", setup.dir.join("factory").to_str().unwrap(), "1"])
+        .envs(env)
+        .output()
+        .unwrap();
+    assert!(cli.status.success(), "{cli:?}");
+    let rows: Vec<_> = std::str::from_utf8(&cli.stdout).unwrap().lines().collect();
+    assert_eq!(
+        (rows[0], rows[1], rows[2], rows[49]),
+        (
+            "token [redacted] hook [redacted]",
+            "header [redacted] tiny [redacted]",
+            "gh [redacted] and [redacted]",
+            "[redacted]"
+        )
+    );
     server.kill().unwrap();
     server.wait().unwrap();
     let log = fs::read_to_string(setup.dir.join("serve.log")).unwrap();

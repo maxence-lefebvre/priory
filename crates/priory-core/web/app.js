@@ -9,7 +9,7 @@ import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
 import { emptyDetail, eventWords, handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
-import { EARLIER_CAP, KEYS, keyboardSession, sayLine, screenRows, screenWatch } from "./terminal.js";
+import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
 import { actionNote, batchParts, dueParts, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 import { TASK_VIEWS, elsewhere, filtered, olderPart, taskFacets, taskViews, triageWords } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
@@ -1406,10 +1406,7 @@ function terminalBody({ term, task, tmux, end }) {
   const held = end ? null : keys.held;
   const offer = !end && !held && Boolean(screen?.keyboard);
   if (keys.ended && !held) notes.push(["", "clock", keys.ended, offer]);
-  // Each part's classes come from screenRows' fixed set; its text stays text.
-  const part = (part) => (part.hidden ? html`<span class="hid">${part.text}</span>` : part.cls ? html`<span class="${part.cls}">${part.text}</span>` : part.text);
   const earlier = screen?.earlier || 0;
-  const rows = screen ? screenRows(screen.lines).map((parts, at) => html`${at < earlier ? html`<span class="earlier">${parts.map(part)}</span>` : parts.map(part)}\n${at === earlier - 1 ? raw('<span class="fold" aria-hidden="true"></span>') : ""}`) : "";
   const top = end || !screen ? "" : kept.more ? html`<button class="term-more" data-action="term-earlier">${icon("chevron-up", "s15")}Load earlier${earlier ? html` <span class="dim">(${earlier} shown)</span>` : ""}</button>`
     : earlier >= EARLIER_CAP ? html`<p class="term-edge">The last ${EARLIER_CAP.toLocaleString("en")} lines are as far back as this pane reads.</p>` : "";
   const typing = terminal.typing && !end;
@@ -1426,11 +1423,21 @@ function terminalBody({ term, task, tmux, end }) {
         <button data-action="term-copy" aria-label="Copy screen" ${screen ? "" : raw('aria-disabled="true"')}>${icon("copy", "s15")}<span>${copied("screen", "Copy screen")}</span></button>
         <button data-action="term-fit" aria-label="Fit" aria-pressed="${String(terminal.fit)}">${icon("fit", "s15")}<span>Fit</span></button>
         <button data-action="term-menu" aria-label="More" aria-controls="term-more" aria-expanded="${String(terminal.menu)}">${icon("more", "s15")}</button></div>
-      ${menu}${top}<pre id="term-screen" tabindex="0" aria-label="Screen${screen ? `, ${screen.width} by ${screen.height}` : ""}">${rows}</pre>
+      ${menu}${top}<pre id="term-screen" tabindex="0" aria-label="Screen${screen ? `, ${screen.width} by ${screen.height}` : ""}"></pre>
       ${typing ? html`<div class="term-type"><form data-action="term-say" data-task="${task}"><span class="pr" aria-hidden="true">›</span><label class="sr" for="term-line">Say to the agent</label>
-        <input id="term-line" autocomplete="off" placeholder="Say to the agent" value="${terminal.line}"><button class="send" ${terminal.line.trim() && !terminal.saying ? "" : raw('aria-disabled="true"')}>Say</button></form>
+        <input id="term-line" autocomplete="off" placeholder="Say to the agent"><button class="send" ${terminal.line.trim() && !terminal.saying ? "" : raw('aria-disabled="true"')}>Say</button></form>
         ${terminal.said ? html`<p class="tn ${terminal.said.said ? "ok" : "no"}" role="status">${icon(terminal.said.said ? "check" : "circle-x", "s15")}<span>${terminal.said.note}</span></p>` : ""}</div>` : ""}
       ${held ? keysBar(held, keys) : ""}</div>`;
+}
+
+// The markup of each row of the screen. The cursor shows only on a live run's screen with no earlier rows above it.
+function terminalRows(screen, end) {
+  if (!screen) return [];
+  // Each part's classes come from screenRows' fixed set; its text stays text.
+  const inner = (part) => (part.hidden ? html`<span class="hid">${part.text}</span>` : part.cls ? html`<span class="${part.cls}">${part.text}</span>` : part.text);
+  const part = (part) => (part.cursor ? html`<span class="cur">${inner(part)}</span>` : inner(part));
+  const earlier = screen.earlier || 0;
+  return screenRows(screen.lines, earlier || end ? null : screen.cursor).map((parts, at) => html`${at < earlier ? html`<span class="earlier">${parts.map(part)}</span>` : parts.map(part)}\n${at === earlier - 1 ? raw('<span class="fold" aria-hidden="true"></span>') : ""}`.text);
 }
 
 // The bar of a held keyboard: whose and until when, a text pasted without Enter, and one button a key.
@@ -1438,7 +1445,7 @@ function keysBar(held, { note, returning, pasting }) {
   const row = KEYS.map((key) => (key ? html`<button data-action="term-key" data-key="${key[0]}" aria-label="${key[0]}"${key[2] ? raw(' class="hot"') : ""}>${key[1]}</button>` : raw('<span class="gap" aria-hidden="true"></span>')));
   return html`<div class="keys-bar"><p class="who">${icon("keyboard", "s15")}<span><b>Your keys</b> until ${clock(held.ends)}</span><span class="sp"></span><button class="give" data-action="term-give-ask" ${returning ? raw('aria-disabled="true"') : ""}>${returning ? "Giving back…" : "Give back"}</button></p>
     <form data-action="term-paste"><span class="pr" aria-hidden="true">›</span><label class="sr" for="term-keys">Text to paste, without Enter</label>
-      <input id="term-keys" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Text, sent without Enter" value="${terminal.keys}"><button class="send" ${pasting || returning ? raw('aria-disabled="true"') : ""}>Send</button></form>
+      <input id="term-keys" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Text, sent without Enter"><button class="send" ${pasting || returning ? raw('aria-disabled="true"') : ""}>Send</button></form>
     <div class="keys-row" role="group" aria-label="Keys">${row}</div>
     ${note ? html`<p class="tn" role="status">${icon("check", "s15")}<span>${note}</span></p>` : ""}</div>`;
 }
@@ -1495,18 +1502,23 @@ function paintTerminal(app, rendered = false) {
   const box = app?.querySelector("[data-term]");
   // A page without the pane gives back a keyboard it held.
   if (!box) return app && keyboard.leave();
-  const { screen, stale, gone, at, more } = watch.state();
-  const key = JSON.stringify([screen?.hash, stale, gone, more, stale && Math.round((Date.now() - at) / 1000), terminal.fit, terminal.copied, terminal.typing, terminal.menu, keyboard.state(), innerWidth]);
-  if (box.dataset.painted === key && !rendered) return;
+  const kept = watch.state();
+  // The watch may still hold the run shown before, until it polls the one in this box.
+  const screen = kept.run === Number(box.dataset.term) ? kept.screen : null;
   // A grant this page holds on a run it no longer shows goes back, so that run's outbox resumes.
   keyboard.at(box.dataset.end ? null : Number(box.dataset.term));
   if (terminal.run !== box.dataset.term) Object.assign(terminal, { run: box.dataset.term, left: 0, typing: false, line: "", said: null, saying: false, menu: false, keys: "" });
+  const frame = terminalBody(box.dataset).text;
+  const key = JSON.stringify([frame, innerWidth]);
+  // A new screen in the same frame rewrites only its changed rows, so a selection elsewhere stays.
+  if (box.dataset.painted === key && !rendered) return paintRows(box.querySelector("pre"), terminalRows(screen, box.dataset.end));
   const active = document.activeElement;
   const focused = !box.contains(active) ? null : active.dataset.key ? `[data-key="${CSS.escape(active.dataset.key)}"]` : active.id ? `#${active.id}` : active.dataset.action ? `[data-action="${active.dataset.action}"]` : "pre";
   const caret = ["term-line", "term-keys"].includes(active?.id) ? [active.id, active.selectionStart, active.selectionEnd] : null;
-  box.innerHTML = terminalBody(box.dataset).text;
+  box.innerHTML = frame;
   box.dataset.painted = key;
   const pre = box.querySelector("pre");
+  paintRows(pre, terminalRows(screen, box.dataset.end));
   const own = parseFloat(getComputedStyle(pre).fontSize);
   const fit = terminal.fit && screen;
   pre.style.fontSize = fit ? `${Math.min(own, Math.max(9, (pre.clientWidth - 24) / (screen.width * 0.6)))}px` : "";
@@ -1514,6 +1526,11 @@ function paintTerminal(app, rendered = false) {
   pre.scrollLeft = terminal.left;
   pre.addEventListener("scroll", () => { terminal.left = pre.scrollLeft; });
   if (focused) (focused === "pre" ? pre : box.querySelector(focused))?.focus({ preventScroll: true });
+  // Typed text stays out of the frame, so typing alone repaints nothing.
+  for (const [id, text] of [["term-line", terminal.line], ["term-keys", terminal.keys]]) {
+    const input = box.querySelector(`#${id}`);
+    if (input) input.value = text;
+  }
   if (caret) box.querySelector(`#${caret[0]}`)?.setSelectionRange(caret[1], caret[2]);
 }
 
