@@ -173,3 +173,7 @@ INSERT INTO inbox (id,type,subject,time,data,links,outcome,task) VALUES
 ('p6','github.check_run.completed','acme/shop#212',strftime('%Y-%m-%dT%H:%M:%SZ','now','-140 minutes'),'{"repo":"acme/shop","pull_request":212,"head_sha":"a1f3c9e5b2d4","head_branch":"eng-212-retry-invoice-emails","base_branch":"main","name":"e2e","conclusion":"skipped","title":"Retry failed invoice emails with backoff","state":"open"}','[]','routed',1);
 -- each open ask's revision was asked when the ask was
 UPDATE ask_revisions SET created = (SELECT created FROM asks WHERE asks.id = ask_revisions.ask) WHERE ask IN (1,2,3,4,40);
+-- a request a trigger's pre script dropped: the Inbox's Dropped section and the Desk's row
+INSERT INTO inbox (id,type,subject,time,data,links,outcome) VALUES
+('d1','linear.issue.entered','ENG-241',strftime('%Y-%m-%dT%H:%M:%SZ','now','-70 minutes'),'{"identifier":"ENG-241","title":"Speed up the CSV export","url":"https://linear.app/acme/issue/ENG-241"}','[]','ignored'),
+('d2','factory.intake.dropped','linear:ENG-241',strftime('%Y-%m-%dT%H:%M:%SZ','now','-70 minutes'),'{"trigger":"linear-view","script":"scripts/has-estimate","reason":"no estimate yet","failed":null,"key":"linear:ENG-241","source":"d1"}','[]','ignored');

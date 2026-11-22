@@ -167,6 +167,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue,
     desk.counts.snoozed ? `${desk.counts.snoozed} snoozed.` : null,
     desk.counts.unrouted ? `${desk.counts.unrouted} ${desk.counts.unrouted === 1 ? "event" : "events"} reached no task in 24 h.` : null,
     desk.counts.unheard ? `${desk.counts.unheard} ${desk.counts.unheard === 1 ? "event" : "events"} no agent read.` : null,
+    desk.counts.dropped ? `${desk.counts.dropped} ${desk.counts.dropped === 1 ? "request" : "requests"} a script dropped in 24 h.` : null,
   ].filter(Boolean).join(" ");
 
   /** @type {Record<string, () => { title: string, note: string | null, rows: any[] }[]>} */

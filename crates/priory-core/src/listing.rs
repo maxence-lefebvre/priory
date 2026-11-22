@@ -1483,6 +1483,10 @@ pub fn desk(
         unrouted += usize::from(owner(db, &resource)?.is_some());
     }
     let unheard = unheard_events(db, 0, Some((day.0, &day.1)), now)?.len();
+    let dropped = dropped_requests(db, 0)?
+        .iter()
+        .filter(|drop| drop["time"].as_str() >= Some(day.0))
+        .count();
     let outside = [
         crate::link::banner(db)?,
         post::intake_banner(db)?,
@@ -1502,7 +1506,7 @@ pub fn desk(
         "intake": outside,
         "counts": {
             "asleep": asleep, "snoozed": snoozed, "unrouted": unrouted, "unheard": unheard,
-            "outsider": outsider,
+            "dropped": dropped, "outsider": outsider,
         },
         "items": items,
         "next": ranked.first(),

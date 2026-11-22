@@ -33,6 +33,13 @@ test("the count line ends with a calm count of the events no agent read", () => 
   assert.match(deskModel({ ...data, desk: one }, { now }).count.line, / snoozed\. 1 event no agent read\.$/);
 });
 
+test("the count line ends with a calm count of the requests a script dropped", () => {
+  const desk = { ...data.desk, counts: { ...data.desk.counts, unrouted: 3, unheard: 2, dropped: 2 } };
+  assert.equal(deskModel({ ...data, desk }, { now }).count.line, "Oldest waits 42 min. 1 stopped. 2 snoozed. 3 events reached no task in 24 h. 2 events no agent read. 2 requests a script dropped in 24 h.");
+  const one = { ...data.desk, counts: { ...data.desk.counts, dropped: 1 } };
+  assert.match(deskModel({ ...data, desk: one }, { now }).count.line, / snoozed\. 1 request a script dropped in 24 h\.$/);
+});
+
 test("the next thing is the desk's next, so an alarm comes before every ask", () => {
   assert.deepEqual(deskModel(data, { now }).next, {
     ask: null,

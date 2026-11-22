@@ -387,6 +387,7 @@ conversation that lacks its `id` or `created_at`, gets `400`.
 | `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
 | `counts.unrouted` | integer | [Unrouted](#unrouted) events from the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
 | `counts.unheard` | integer | [Unheard](#unrouted) events from the 24 hours before now (`PRIORY_NOW` when set): kept by a task that is not running, and read by no agent. See [desk.md](../daemon/desk.md#unrouted-events) |
+| `counts.dropped` | integer | Requests a trigger's `pre` script dropped in the 24 hours before now (`PRIORY_NOW` when set), as [`dropped`](#unrouted) lists them. See [desk.md](../daemon/desk.md#unrouted-events) |
 | `counts.outsider` | integer | The comments and reviews from outside the repository in the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
 | `items` | array | What waits on a person, then the queue, then worktrees that stay. `priory desk --all --json` keeps the snoozed items |
 | `next` | object or null | The item that ranks first, as in `ranked`; null when nothing waits on a person |

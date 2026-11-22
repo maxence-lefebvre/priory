@@ -380,6 +380,10 @@ DESIGN.md's "Inbox" section holds its visual rules; this section says how it wor
   [routing.md](../daemon/routing.md#events-no-agent-read)). An asleep task's group shows its
   `priory say` command, since Say stays on the web page. A blocked task's group has Resume task N,
   which runs `priory resume N`. An ended task's group routes as an owned group does.
+- **Dropped.** After the unheard groups and before the owned ones, under Dropped, each request a
+  trigger's `pre` script dropped shows its key, its trigger and script, its source event and why,
+  from `unrouted.dropped`. It has no button: a drop is final for its event (see
+  [pre.md](../intake/pre.md#one-decision-per-event)).
 
 ## The Tasks panel
 

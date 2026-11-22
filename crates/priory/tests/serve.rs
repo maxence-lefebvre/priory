@@ -483,7 +483,7 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     assert_eq!(queue["running"], json!([]));
     assert_eq!(
         api(&address, "/api/desk")["counts"],
-        json!({ "asleep": 0, "snoozed": 0, "unrouted": 0, "unheard": 0, "outsider": 0 })
+        json!({ "asleep": 0, "snoozed": 0, "unrouted": 0, "unheard": 0, "dropped": 0, "outsider": 0 })
     );
     let desk = api(&address, "/api/desk");
     assert_eq!(desk["banner"], Value::Null);
