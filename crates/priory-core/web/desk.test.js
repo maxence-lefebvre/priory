@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts } from "./desk.js";
+import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, memoryNote, memoryTag } from "./desk.js";
 
 const why = "an alarm: work stopped and waits on a person";
 
@@ -114,4 +114,32 @@ test("Up next says a queued task starts on room only while it waits for its plac
   for (const why of ["first in the queue", "a band above it", "queue position 4"]) assert.equal(onRoom({ kind: "queued", why }), true, why);
   assert.equal(onRoom({ kind: "queued", why: "waits for its claim to reach the log" }), false);
   assert.equal(onRoom({ kind: "held", why: "held until 2026-11-22T10:00:00Z" }), false);
+});
+
+// A `memories` desk item's candidates as `/api/desk` sends them.
+const remember = { id: "c-1", name: "release-day", forget: false, text: "Wednesdays.", replaces: true, current_text: "Tuesdays." };
+const fresh = { id: "c-2", name: "search-staging", forget: false, text: "Use staging-b.", replaces: false, current_text: null };
+const tombstone = { id: "c-3", name: "kit-fact", forget: true, text: null, replaces: true, current_text: "In git." };
+
+test("a memory candidate's tag says whether it replaces or forgets a memory runs get", () => {
+  assert.deepEqual(
+    [remember, fresh, tombstone, { ...tombstone, replaces: false }, { ...fresh, replaces: null }].map(memoryTag),
+    [
+      { label: "replaces a memory runs get", warn: true },
+      { label: "new", warn: false },
+      { label: "forgets a memory runs get", warn: true },
+      { label: "forget", warn: false },
+      // Unknown where the kit is not checked out: never "new".
+      { label: "may replace a memory runs get", warn: true },
+    ],
+  );
+});
+
+test("an accept or a drop says what happened, or why it was not sent", () => {
+  const ok = { ok: "release-day accepted: every runner applies it as it reads the log" };
+  assert.equal(memoryNote("accept", 200, ok), "Release-day accepted: every runner applies it as it reads the log, then it leaves this list.");
+  assert.equal(memoryNote("drop", 409, { error: "candidate c-1 is accepted" }), "Not sent: candidate c-1 is accepted. The list reads it again.");
+  assert.equal(memoryNote("drop", 404, { error: "no memory candidate c-9" }), "Not sent: no memory candidate c-9. The list reads it again.");
+  assert.equal(memoryNote("accept", 503, { error: "the log is unreachable since 10:00: try again when it is back. Nothing was sent: try again" }), "Could not send: the log is unreachable since 10:00: try again when it is back. Nothing was sent: try again.");
+  assert.equal(memoryNote("accept", 0, { error: "the connection dropped" }), "The server may have sent this but did not confirm it. Check the list before you send again.");
 });

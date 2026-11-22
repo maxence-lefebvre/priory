@@ -727,7 +727,7 @@ transaction then records the action run and moves the task by `next[status]` (se
 Moving on). A `run` action records itself first and runs in the background (see The `run` action).
 An action that is not built yet blocks the task with `action <name> is not built yet`.
 
-The built-in actions are `open-pr`, `open-issue`, `run` and `start-batch`. `start-batch` creates a
+The built-in actions are `open-pr`, `open-issue`, `open-memories-pr`, `run` and `start-batch`. `start-batch` creates a
 batch's tasks and records itself in one transaction; [batches.md](batches.md) describes it. `open-pr` opens one pull request per
 branch of the latest result's `branches`, bottom first, or for the task's branch alone without it.
 For each branch:
@@ -761,6 +761,16 @@ start, once the approval still holds. The push repeats and the open pull request
 someone closed that pull request meanwhile, a second one opens.
 
 `open-issue` opens an issue the same way; [sweep.md](sweep.md) describes it.
+
+`open-memories-pr` opens the daily pull request of accepted memories to the kit repository.
+[skills.md](skills.md#accepted-memories-move-into-the-kit) describes it. Its status is `opened`,
+`unchanged` when the kit already holds every accepted memory, or `failed`. It records the commit it
+pushed, and its stdout names the pull request. The task owns no pull request, so it waits for no
+checks at `done`. `priory check` refuses the action in a factory without `[kit]`:
+
+```text
+workflows/memories.toml:3: step `open`: an `open-memories-pr` action writes to the kit repository, so factory.toml needs a `[kit]`
+```
 
 ### The `run` action
 

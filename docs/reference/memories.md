@@ -97,18 +97,25 @@ at its write. A forget removes the memory of its name. The tools are in
 ### `priory memories`
 
 ```sh
-priory memories [--all] [--json]
+priory memories [DIR] [--all] [--json]
 priory memories (accept | drop) [DIR] CANDIDATE
 ```
 
 The first lists the `pending` candidates this runner read, oldest first, or with `--all` every
 candidate: id, name, kind (`remember` or `forget`), state, task key, runner (`-` in a factory of one
 runner) and when it was written. `--json` prints `{ "candidates": [...] }`, each with `id`, `name`,
-`description`, `text` and `forget`, `task`, `runner`, `written`, `decided` and `state`.
+`description`, `text` and `forget`, `task`, `runner`, `written`, `decided` and `state`. Given the
+factory's folder `DIR`, each also carries `replaces`, whether runs get a memory of its name now, and
+`current_text`, that memory's text, or null. Those memories are the kit's at the commit runs get,
+the factory's, then the accepted candidates. `replaces` is null, unknown, for a name the factory and
+the accepted candidates lack while the factory's kit has no commit checked out on this machine, as
+on a machine that only views. `/api/desk` marks its candidates the same way.
 
 `accept` and `drop` publish [`priory.memory.accepted`](events.md#priorymemoryaccepted) or
 [`priory.memory.dropped`](events.md#priorymemorydropped) on the log of the factory in `DIR`, `.` by
-default, and print `<name> accepted: every runner applies it as it reads the log`. They check this
+default, and print `<name> accepted: every runner applies it as it reads the log`.
+`POST /api/memories/{id}/accept` and `POST /api/memories/{id}/drop` are their twins (see
+[serve.md](serve.md#writes)). They check this
 runner's state file first and refuse:
 
 | Message | Cause |

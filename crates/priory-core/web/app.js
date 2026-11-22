@@ -10,7 +10,7 @@ import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedP
 import { emptyDetail, eventWords, handled, neverOwned, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
-import { actionNote, batchParts, dueParts, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
+import { actionNote, batchParts, dueParts, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskViews, triageWords } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
@@ -72,6 +72,7 @@ const ICONS = {
   fit: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>',
   eye: '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
   keyboard: '<path d="M10 8h.01"/><path d="M12 12h.01"/><path d="M14 8h.01"/><path d="M16 12h.01"/><path d="M18 8h.01"/><path d="M6 8h.01"/><path d="M7 16h10"/><path d="M8 12h.01"/><rect width="20" height="16" x="2" y="4" rx="2"/>',
+  brain: '<path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/><path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/><path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/><path d="M3.477 10.896a4 4 0 0 1 .585-.396"/><path d="M19.938 10.5a4 4 0 0 1 .585.396"/><path d="M6 18a4 4 0 0 1-1.967-.516"/><path d="M19.967 17.484A4 4 0 0 1 18 18"/>',
   shield: '<path d="M20 13c0 5-3.5 7.5-7.7 9a1 1 0 0 1-.6 0C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.2-2.7a1.2 1.2 0 0 1 1.6 0C14.5 3.8 17 5 19 5a1 1 0 0 1 1 1z"/>',
 };
 
@@ -101,6 +102,8 @@ const STATES = {
   restarted: ["muted", "rotate-ccw"], cancelled: ["muted", "x"], exited: ["danger", "log-out"],
   // Another runner's task: its tile has its own key, since `waiting` is also a task state.
   elsewhere: ["muted", "server"],
+  // Memory candidates an agent wrote, which wait on a person's accept or drop.
+  memories: ["wait", "brain"],
 };
 const role = (state) => (STATES[state] || ["muted", "circle-help"])[0];
 function tile(state, size = "") {
@@ -155,6 +158,14 @@ const state = {
   todoNotices: new Map(),
   rowBusy: null,
   rowNotices: new Map(),
+  // Memory candidates: the Accept armed by its first tap { id, at, timer }, the one in flight, each
+  // candidate's last note, and those sent, whose buttons stay off until the desk drops them.
+  memoryArmed: null,
+  memoryBusy: null,
+  memoryNotices: new Map(),
+  memorySent: new Set(),
+  // The candidates whose Current text is open, so a redraw keeps it open.
+  memoryCurrent: new Set(),
   // The task whose Move is in flight, and each task's last Move refusal.
   moveBusy: null,
   moveNotices: new Map(),
@@ -391,6 +402,7 @@ function olderRow(listing, count, wide, columns = 6) {
 }
 
 function itemRow(item) {
+  if (item.kind === "memories") return memoriesRow(item);
   // An uncertain command, like an uncertain prompt, waits on a person to check what happened.
   const kind = ["prompt", "command"].includes(item.kind) ? "prompt" : ["blocked", "failed", "held", "batch"].includes(item.kind) ? item.kind : "queued";
   const stopped = ["blocked", "failed"].includes(item.kind);
@@ -401,6 +413,83 @@ function itemRow(item) {
     ${tile(kind)}
     <span class="l1">${key}<span>${item.step || ""}</span><span>${item.kind}</span>${item.task && item.kind !== "batch" ? prsTag({}, item.task) : ""}<span class="age">${timeTag(item.since)}</span></span>
     <span class="l2 r t-${role(kind)}">${autolinked(line, null)}</span>${next ? html`<span class="l3">${autolinked(next, null)}</span>` : ""}${stopped ? taskActs(item.task, item.kind) : rowActs(item)}</div>`;
+}
+
+// The one row of every memory candidate that waits, which opens their review list.
+function memoriesRow(item) {
+  const count = item.candidates?.length ?? 0;
+  return html`<a class="row" href="/memories">
+    ${tile("memories")}
+    <span class="l1"><span>memories</span><span>${count} ${count === 1 ? "candidate" : "candidates"}</span><span class="age">${timeTag(item.since)}</span></span>
+    <span class="l2 r">${(item.candidates || []).map((candidate) => candidate.name).join(", ")}</span>
+    <span class="l3"><span>Accept or drop each before other tasks get it</span></span>
+    <span class="chev">${icon("chevron-right", "s15")}</span></a>`;
+}
+
+// The review list (DESIGN.md, Memory candidates): each candidate's full text, then Accept and Drop.
+function memoriesPage() {
+  const back = html`<div class="top"><a class="back" href="/">${icon("chevron-left", "s22")}Desk</a></div>`;
+  const candidates = state.data.desk.items.find((item) => item.kind === "memories")?.candidates || [];
+  const n = candidates.length;
+  const intro = html`<div class="ask mhead"><h2 class="question">${n === 1 ? "1 memory candidate" : `${n} memory candidates`}</h2>
+    <p class="note">${icon("brain", "s15")}<span>An agent wrote each one. Accept gives it to every task's runs, on every runner. Drop discards it, and the task that wrote it stops getting it.</span></p></div>`;
+  const list = n ? candidates.map(memoryCandidate) : html`<p class="empty">No memory candidate waits. Agents write them with the remember and forget tools.</p>`;
+  return html`${back}<div class="scroll">${intro}${list}</div>`;
+}
+
+function memoryCandidate(candidate) {
+  const tag = memoryTag(candidate);
+  const body = candidate.forget
+    ? html`<p class="text">Forgets ${candidate.name}: runs stop getting it.</p>`
+    : html`<p class="desc">${candidate.description}</p><p class="text">${candidate.text}</p>`;
+  const current = candidate.current_text == null ? ""
+    : html`<details class="current" ${state.memoryCurrent.has(candidate.id) ? raw("open") : ""}><summary data-action="memory-current" data-id="${candidate.id}">Current text</summary><p class="text">${candidate.current_text}</p></details>`;
+  return html`<section class="sect mem" aria-label="${candidate.name}"><div class="sh">${tile("memories", "sm")}<span class="mono">${candidate.name}</span><span class="tag ${tag.warn ? "t-warn" : ""}">${tag.label}</span><span class="meta">${timeTag(candidate.written)}</span></div>
+    ${body}${current}
+    <p class="by">Written by <span class="mono">${candidate.task}</span>${candidate.runner ? ` on ${candidate.runner}` : ""}, candidate <span class="mono">${candidate.id}</span></p>
+    ${memoryActs(candidate.id)}</section>`;
+}
+
+// Accept arms on the first tap and sends on the second, as Cancel does; Drop sends at once.
+function memoryActs(id) {
+  const busy = state.memoryBusy !== null || state.memorySent.has(id) || Boolean(state.failed);
+  const armed = state.memoryArmed?.id === id;
+  const accept = armed ? html`<span><small>Tap again to accept</small>Accept</span><span class="drain" aria-hidden="true"></span>` : "Accept";
+  const button = (verb, kind, label) => html`<button id="memory-${verb}-${id}" class="btn ${kind} act ${verb === "accept" && armed ? "armed" : ""}" data-action="memory-act" data-id="${id}" data-verb="${verb}" aria-disabled="${busy ? "true" : "false"}">${label}</button>`;
+  const notice = state.memoryNotices.get(id);
+  return html`<span class="task-acts">${button("accept", "primary", accept)}${button("drop", "secondary", "Drop")}</span>${notice ? html`<p class="note acts-note" role="status">${icon("corner-down-right", "s15")}<span>${notice}</span></p>` : ""}`;
+}
+
+function disarmMemory() {
+  if (!state.memoryArmed) return;
+  clearTimeout(state.memoryArmed.timer);
+  state.memoryArmed = null;
+}
+
+async function memoryAct(target) {
+  if (target.getAttribute("aria-disabled") === "true") return;
+  const { id, verb } = target.dataset;
+  const armed = state.memoryArmed?.id === id;
+  disarmMemory();
+  if (verb === "accept" && !armed) {
+    state.memoryArmed = { id, at: Date.now(), timer: setTimeout(() => { state.memoryArmed = null; render(); }, ARM_MS) };
+    return render();
+  }
+  state.memoryBusy = id;
+  render();
+  let reply;
+  try {
+    reply = await post(`/api/memories/${encodeURIComponent(id)}/${verb}`, {});
+  } catch {
+    reply = { status: 0, body: { error: "the connection dropped" } };
+  }
+  state.memoryBusy = null;
+  const { status, body } = reply;
+  if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
+  if (status === 200) state.memorySent.add(id);
+  state.memoryNotices.set(id, memoryNote(verb, status, body));
+  render();
+  refresh();
 }
 
 // Read on a report and Release on a held task, the twins of `priory inbox read` and `priory release`.
@@ -736,7 +825,9 @@ function needsMe(model, wide) {
 }
 
 function deskTable(model, selected) {
-  const itemLine = (item) => html`<tr>
+  const itemLine = (item) => item.kind === "memories" ? html`<tr>
+    <td>${stateWord("memories")}</td><td class="mono"></td><td></td><td class="q full"><span>${item.candidates?.length ?? 0} memory candidates: ${(item.candidates || []).map((candidate) => candidate.name).join(", ")}</span></td>
+    <td class="recw"><span class="task-acts"><a class="btn secondary act" href="/memories">Review</a></span></td><td class="r">${timeTag(item.since)}</td></tr>` : html`<tr>
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${item.kind === "batch" ? html`<a href="/batches/${item.id}">${item.key || ""}</a>` : ["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
     <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : rowActs(item)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const todoLine = (item) => html`<tr>
@@ -2781,12 +2872,13 @@ function render() {
   if (state.armed && (!state.token || selectedAsk() !== String(state.armed.id) || askOnScreen()?.revision !== state.armed.revision)) disarm();
   // Likewise a Cancel armed on another runner's task at a generation the list no longer shows.
   if (typeof state.taskArmed?.task === "string" && remoteGeneration(state.taskArmed.task) !== state.taskArmed.generation) disarmTask();
+  if (state.memoryArmed && current() !== "memories") disarmMemory();
   app.innerHTML = page().text;
   paintTerminal(app, true);
   observeTerminal(app);
   // A render must not restart the countdown; CSP allows no inline style, so it is set here.
   app.querySelectorAll(".drain").forEach((drain) => {
-    const armed = drain.closest(".act") ? state.taskArmed : state.armed;
+    const armed = drain.closest("[data-action=memory-act]") ? state.memoryArmed : drain.closest(".act") ? state.taskArmed : state.armed;
     drain.style.animationDelay = `-${armed ? Date.now() - armed.at : 0}ms`;
   });
   state.renderedKey = routeKey();
@@ -2833,20 +2925,21 @@ function page() {
     else if (here === "more") body = morePage();
     else if (taskId) body = taskPage(taskId);
     else if (batchId) body = batchPage(batchId);
+    else if (here === "memories") body = memoriesPage();
     else if (here === "reports") body = reportsPage(true);
     else if (here === "costs") body = costsPage(true);
     else if (here === "workflow") body = flowsPage(true);
     else if (here === "settings") body = html`<div class="top"><a class="back" href="/more">${icon("chevron-left", "s22")}More</a></div>${settingsScreen()}`;
     else if (PANELS[here]) body = html`<div class="top"><h1>${PANELS[here][0]}</h1></div>${laterPanel(here)}`;
     else body = notFound();
-    const tab = selectedAsk() ? null : here === "settings" ? "more" : batchId ? "tasks" : here;
+    const tab = selectedAsk() ? null : here === "settings" ? "more" : batchId ? "tasks" : here === "memories" ? "desk" : here;
     return html`${staleStrip()}${body}${tab ? tabs(tab, "bar") : ""}`;
   }
   const list = selectedAsk() ? state.list : here;
   const top = html`<header class="wtop"><span class="fac">${state.data.views.factory}</span>${connection()}<span class="sp"></span>${addButton("addtop")}</header>`;
   const wide = size === "wide";
-  const utility = taskId ? taskPage(taskId) : batchId ? batchPage(batchId) : here === "reports" ? reportsPage(false) : here === "costs" ? costsPage(false) : here === "workflow" ? flowsPage(false) : here === "settings" ? settingsScreen() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
-  const nav = (kind) => tabs(here === "settings" && wide ? "settings" : here === "settings" ? "more" : batchId ? "tasks" : list, kind);
+  const utility = taskId ? taskPage(taskId) : batchId ? batchPage(batchId) : here === "memories" ? memoriesPage() : here === "reports" ? reportsPage(false) : here === "costs" ? costsPage(false) : here === "workflow" ? flowsPage(false) : here === "settings" ? settingsScreen() : here === "more" ? morePage() : PANELS[list] ? null : notFound();
+  const nav = (kind) => tabs(here === "settings" && wide ? "settings" : here === "settings" ? "more" : batchId ? "tasks" : here === "memories" ? "desk" : list, kind);
   if (utility) {
     return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}<div class="list">${utility}</div></div>${wide ? "" : nav("bar")}`;
   }
@@ -2969,6 +3062,13 @@ document.addEventListener("click", (event) => {
   if (action === "batch-edit") return editPlan(target);
   if (action === "todo-done") return markDone(target);
   if (action === "row-act") return rowAct(target);
+  if (action === "memory-act") return memoryAct(target);
+  if (action === "memory-current") {
+    event.preventDefault();
+    const { id } = target.dataset;
+    if (!state.memoryCurrent.delete(id)) state.memoryCurrent.add(id);
+    return render();
+  }
   if (action === "move") return moveTask(target);
   if (action === "request-task") return requestTask(target.dataset.text, target.dataset.workflow);
   if (action === "unheard-say") {

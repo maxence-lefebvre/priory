@@ -198,6 +198,8 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         terminal: config.terminal,
         secrets: screen::secrets(&factory.secret_envs()),
         snapshots: AtomicUsize::new(0),
+        kit: factory.settings.as_ref().and_then(|s| s.value.kit.clone()),
+        memories: crate::memories::Held::of(factory).factory,
     });
     let hooks: &[&str] = match (github.is_some(), linear.is_some()) {
         (true, true) => &[GITHUB, LINEAR],
@@ -290,6 +292,10 @@ struct Served {
     secrets: Vec<String>,
     /// Screens being read now.
     snapshots: AtomicUsize,
+    /// The factory's `[kit]`, for the memories a candidate on the desk replaces.
+    kit: Option<priory_factory::factory::Kit>,
+    /// The factory's own memories, each name's text.
+    memories: BTreeMap<String, String>,
 }
 
 fn route(
@@ -367,7 +373,18 @@ fn route(
                 Err(error) => return Reply::error(500, &error),
             };
             listing::revised(db, "desk", |db| {
-                listing::desk(db, home, false, &person, now).map(Some)
+                let mut desk = listing::desk(db, home, false, &person, now)?;
+                let held = crate::memories::Held {
+                    kit: served.kit.as_ref(),
+                    factory: served.memories.clone(),
+                };
+                let item = desk["items"].as_array_mut().into_iter().flatten();
+                for item in item.filter(|item| item["kind"] == "memories") {
+                    if let Some(candidates) = item["candidates"].as_array_mut() {
+                        held.mark(db, home, candidates)?;
+                    }
+                }
+                Ok(Some(desk))
             })
         }
         "/api/inbox" => match query {
@@ -554,6 +571,8 @@ enum Write<'a> {
     Read(i64),
     BatchEdit(&'a str),
     Move(&'a str),
+    /// A person's accept (`true`) or drop of a memory candidate.
+    Memory(&'a str, bool),
 }
 
 impl<'a> Write<'a> {
@@ -585,6 +604,16 @@ impl<'a> Write<'a> {
             .and_then(|rest| rest.strip_suffix("/read"))
         {
             return seq.parse().ok().map(Write::Read);
+        }
+        if let Some((id, verdict)) = path
+            .strip_prefix("/api/memories/")
+            .and_then(|rest| rest.split_once('/'))
+        {
+            return match verdict {
+                "accept" => Some(Write::Memory(id, true)),
+                "drop" => Some(Write::Memory(id, false)),
+                _ => None,
+            };
         }
         if let Some(batch) = path
             .strip_prefix("/api/batches/")
@@ -774,6 +803,9 @@ fn write(
     };
     if let Some(reply) = remote_write(db, remote, &write, request.body) {
         return reply;
+    }
+    if let Write::Memory(id, accept) = write {
+        return decide_memory(db, remote, id, accept, request.body);
     }
     let (line, sent) = match write_line(db, &write, request.body) {
         Ok(line) => line,
@@ -1109,6 +1141,29 @@ fn remote_act(
     Some(reply.unwrap_or_else(|reply| reply))
 }
 
+/// A person's accept or drop of memory candidate `id`, which `priory memories accept|drop` does too:
+/// it publishes the verdict on the log, and every runner's daemon applies it as it reads the log.
+fn decide_memory(db: &Connection, remote: &Remote, id: &str, accept: bool, body: &[u8]) -> Reply {
+    if let Err(error) = serde_json::from_slice::<Empty>(body) {
+        return Reply::error(400, &error.to_string());
+    }
+    let Some(id) = decode(id) else {
+        return Reply::error(400, "the candidate is not percent-encoded UTF-8");
+    };
+    match crate::memories::decide(&remote.log, db, accept, &id) {
+        Ok(done) => Reply::json(200, serde_json::json!({ "ok": done }).to_string()),
+        Err(crate::memories::Refused::Unknown(why)) => Reply::error(404, &why),
+        Err(crate::memories::Refused::Stale(why)) => Reply::error(409, &why),
+        Err(crate::memories::Refused::Unsent(why)) => {
+            Reply::error(503, &format!("{why}. Nothing was sent: try again"))
+        }
+        Err(crate::memories::Refused::Unconfirmed(why)) => Reply::error(
+            504,
+            &format!("{why}. The log may hold it: read the candidates before you retry"),
+        ),
+    }
+}
+
 /// The revision a write was made on, which tells a stale write from a refused one.
 enum Sent {
     /// The ask and the ask's revision the body sent.
@@ -1242,6 +1297,7 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
             };
             Ok((line(&act), Sent::Task(act.task, act.expected)))
         }
+        Write::Memory(..) => unreachable!("write publishes a memory verdict on the log itself"),
         Write::Move(task) => {
             let body: MoveBody = serde_json::from_slice(body).map_err(bad)?;
             let place = match (body.top, body.before, body.after) {

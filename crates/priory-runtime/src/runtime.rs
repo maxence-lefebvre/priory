@@ -953,9 +953,22 @@ fn replace(staging: &Path, target: &Path) -> std::io::Result<()> {
 /// Runs git `args` and returns its stdout, or an error naming `what` with git's first line of
 /// complaint, short enough for a banner.
 fn kit_git(what: &str, command: &mut Command) -> Result<String, String> {
-    let output = output_within(command.env("GIT_TERMINAL_PROMPT", "0"))
-        .map_err(|error| format!("{what}: {error}"))?
-        .ok_or_else(|| format!("{what}: timed out after {}s", command_timeout().as_secs()))?;
+    kit_git_fed(what, command, None)
+}
+
+/// As `kit_git`, with `input` on git's stdin.
+fn kit_git_fed(
+    what: &str,
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+) -> Result<String, String> {
+    let output = fed_within(
+        command.env("GIT_TERMINAL_PROMPT", "0"),
+        input,
+        command_timeout(),
+    )
+    .map_err(|error| format!("{what}: {error}"))?
+    .ok_or_else(|| format!("{what}: timed out after {}s", command_timeout().as_secs()))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let line = stderr
@@ -971,6 +984,19 @@ fn kit_git(what: &str, command: &mut Command) -> Result<String, String> {
 /// Fetches `reference` of `repo` into the bare mirror `mirror`, made on first use, and returns the
 /// commit it names. Git's own credentials fetch it, and a prompt for one fails instead of waiting.
 pub fn kit_fetch(mirror: &Path, repo: &str, reference: &str) -> Result<String, String> {
+    kit_mirror(mirror)?;
+    kit_git(
+        &format!("git fetch {repo} {reference}"),
+        git(mirror).args(["fetch", "--quiet", "--no-tags", "--", repo, reference]),
+    )?;
+    kit_git(
+        "git rev-parse",
+        git(mirror).args(["rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}"]),
+    )
+}
+
+/// Makes the bare mirror `mirror` unless it exists.
+fn kit_mirror(mirror: &Path) -> Result<(), String> {
     if !mirror.join("HEAD").is_file() {
         fs::create_dir_all(mirror).map_err(|error| format!("{}: {error}", mirror.display()))?;
         kit_git(
@@ -980,14 +1006,172 @@ pub fn kit_fetch(mirror: &Path, repo: &str, reference: &str) -> Result<String, S
                 .arg(mirror),
         )?;
     }
+    Ok(())
+}
+
+/// A commit that `kit_commit` made on a kit's ref, and the files it changed, each as git's status
+/// letter (`A`, `M` or `D`) and path.
+pub struct KitCommit {
+    pub commit: String,
+    pub changed: Vec<(char, String)>,
+}
+
+/// Fetches `reference` of `repo` into the bare mirror `mirror`, then commits `files` on top of it:
+/// each path with its bytes, or none to remove it. The commit is dated `date` and authored by
+/// Priory, so the same files on the same ref make the same commit. Returns none when the files
+/// leave the ref's tree as it is.
+pub fn kit_commit(
+    mirror: &Path,
+    repo: &str,
+    reference: &str,
+    files: &[(String, Option<Vec<u8>>)],
+    message: &str,
+    date: &str,
+) -> Result<Option<KitCommit>, String> {
+    kit_mirror(mirror)?;
+    // A ref of its own, and no FETCH_HEAD, so the kit's own fetch on the daemon's tick never reads
+    // this one's.
+    let base_ref = "refs/priory/memories-base";
     kit_git(
         &format!("git fetch {repo} {reference}"),
-        git(mirror).args(["fetch", "--quiet", "--no-tags", "--", repo, reference]),
+        git(mirror).args([
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-write-fetch-head",
+            "--",
+            repo,
+            &format!("+{reference}:{base_ref}"),
+        ]),
     )?;
-    kit_git(
+    let base = kit_git(
         "git rev-parse",
-        git(mirror).args(["rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}"]),
+        git(mirror).args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{base_ref}^{{commit}}"),
+        ]),
+    )?;
+    let index = mirror.join(format!("priory-memories.{}.index", std::process::id()));
+    let _ = fs::remove_file(&index);
+    let indexed = |args: &[&str]| {
+        let mut command = git(mirror);
+        command.args(args).env("GIT_INDEX_FILE", &index);
+        command
+    };
+    let made = (|| {
+        kit_git("git read-tree", &mut indexed(&["read-tree", &base]))?;
+        // A zero mode removes the path; `--index-info` needs no work tree, which a mirror lacks.
+        let mut info = Vec::new();
+        for (path, bytes) in files {
+            let entry = match bytes {
+                Some(bytes) => {
+                    let blob = kit_git_fed(
+                        "git hash-object",
+                        git(mirror).args(["hash-object", "-w", "--stdin"]),
+                        Some(bytes.clone()),
+                    )?;
+                    format!("100644 {blob}\t{path}\n")
+                }
+                None => format!("0 {}\t{path}\n", "0".repeat(40)),
+            };
+            info.extend(entry.into_bytes());
+        }
+        kit_git_fed(
+            "git update-index",
+            &mut indexed(&["update-index", "--index-info"]),
+            Some(info),
+        )?;
+        let tree = kit_git("git write-tree", &mut indexed(&["write-tree"]))?;
+        let changed = kit_git(
+            "git diff-tree",
+            git(mirror).args(["diff-tree", "-r", "--name-status", &base, &tree]),
+        )?;
+        let changed: Vec<(char, String)> = changed
+            .lines()
+            .filter_map(|line| {
+                let (status, path) = line.split_once('\t')?;
+                Some((status.chars().next()?, path.to_owned()))
+            })
+            .collect();
+        if changed.is_empty() {
+            return Ok(None);
+        }
+        let mut command = git(mirror);
+        command.args(["commit-tree", &tree, "-p", &base, "-F", "-"]);
+        for (name, value) in [
+            ("GIT_AUTHOR_NAME", "Priory"),
+            ("GIT_AUTHOR_EMAIL", "priory@localhost"),
+            ("GIT_AUTHOR_DATE", date),
+            ("GIT_COMMITTER_NAME", "Priory"),
+            ("GIT_COMMITTER_EMAIL", "priory@localhost"),
+            ("GIT_COMMITTER_DATE", date),
+        ] {
+            command.env(name, value);
+        }
+        let commit = kit_git_fed(
+            "git commit-tree",
+            &mut command,
+            Some(message.as_bytes().to_vec()),
+        )?;
+        Ok(Some(KitCommit { commit, changed }))
+    })();
+    let _ = fs::remove_file(&index);
+    made
+}
+
+/// Pushes `commit` of the bare mirror `mirror` to `branch` of `repo`, replacing what it held. Git's
+/// own credentials push it, and a prompt for one fails instead of waiting.
+pub fn kit_push(mirror: &Path, repo: &str, commit: &str, branch: &str) -> Result<(), String> {
+    kit_git(
+        &format!("git push {repo} {branch}"),
+        git(mirror).args([
+            "push",
+            "--quiet",
+            "--force",
+            "--",
+            repo,
+            &format!("{commit}:refs/heads/{branch}"),
+        ]),
     )
+    .map(|_| ())
+}
+
+/// Opens a pull request from `branch` of the GitHub repository `repo` onto `base`, or its default
+/// branch without one, titled `title` and described by `body`. An open one from `branch` is edited
+/// to that title and body instead. Returns its number.
+pub fn kit_pull_request(
+    repo: &str,
+    branch: &str,
+    base: Option<&str>,
+    title: &str,
+    body: &str,
+) -> Result<u64, String> {
+    let open = run(Command::new("gh").args([
+        "pr", "list", "-R", repo, "--head", branch, "--state", "open", "--json", "number",
+    ]))?;
+    let open: Vec<serde_json::Value> = serde_json::from_str(&open)
+        .map_err(|error| format!("gh pr list printed {open:?}: {error}"))?;
+    if let Some(number) = open.first().and_then(|pull| pull["number"].as_u64()) {
+        let shown = number.to_string();
+        run(Command::new("gh").args([
+            "pr", "edit", &shown, "-R", repo, "--title", title, "--body", body,
+        ]))?;
+        return Ok(number);
+    }
+    let mut command = Command::new("gh");
+    command.args(["pr", "create", "-R", repo]);
+    if let Some(base) = base {
+        command.args(["--base", base]);
+    }
+    command.args(["--head", branch, "--title", title, "--body", body]);
+    let url = run(&mut command)?;
+    url.trim()
+        .rsplit('/')
+        .next()
+        .and_then(|number| number.parse().ok())
+        .ok_or_else(|| format!("gh pr create printed {url:?}, not a pull request URL"))
 }
 
 /// Checks `commit` of the bare mirror `mirror` out into `<dir>/<commit>`, read-only, unless that

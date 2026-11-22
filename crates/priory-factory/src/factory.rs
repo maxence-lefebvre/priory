@@ -103,6 +103,9 @@ pub struct Kit {
     pub every: Option<Duration>,
 }
 
+/// The code step action that opens the pull request of accepted memories to the kit repository.
+pub const OPEN_MEMORIES_PR: &str = "open-memories-pr";
+
 /// How often a runner fetches the kit when `[kit]` sets no `every`.
 pub const KIT_EVERY: Duration = Duration::from_secs(300);
 
@@ -1178,7 +1181,8 @@ pub struct Step {
     /// The answers a person picks from at a human step.
     #[serde(default)]
     pub options: Vec<String>,
-    /// The built-in action a code step runs: `open-pr`, `open-issue` or `run`.
+    /// The built-in action a code step runs: `open-pr`, `open-issue`, `open-memories-pr`, `run` or
+    /// `start-batch`.
     pub action: Option<String>,
     /// The command a `run` action runs with `sh -c`.
     pub run: Option<String>,
@@ -1548,6 +1552,13 @@ pub struct Memory {
     pub description: String,
     /// The file as it is on disk.
     pub bytes: Vec<u8>,
+}
+
+impl Memory {
+    /// The fact: the file's text after its frontmatter.
+    pub fn text(&self) -> String {
+        body(&String::from_utf8_lossy(&self.bytes))
+    }
 }
 
 /// The frontmatter of `memories/<name>.md`: one fact every run gets in its index. Priory reads

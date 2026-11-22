@@ -4207,6 +4207,8 @@ pub(crate) struct Done {
     pub pull_request: Option<String>,
     pub commit: Option<String>,
     pub error: Option<String>,
+    /// What the action reports beyond its status, shown as its stdout.
+    pub stdout: Option<String>,
     /// The pull requests `open-pr` opened, bottom first; the last is `pull_request`.
     pub stack: Vec<Stacked>,
 }
@@ -4427,8 +4429,9 @@ pub(crate) fn performed_in(
         }
     }
     tx.execute(
-        "INSERT INTO actions (task, step, action, status, pull_request, commit_sha, error, result, inbox)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7,
+        "INSERT INTO actions (task, step, action, status, pull_request, commit_sha, error, stdout,
+           result, inbox)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
            (SELECT max(run) FROM results WHERE task = ?1), (SELECT max(seq) FROM inbox))",
         params![
             task,
@@ -4437,7 +4440,8 @@ pub(crate) fn performed_in(
             done.status,
             done.pull_request,
             done.commit,
-            done.error
+            done.error,
+            done.stdout
         ],
     )?;
     for pull in &done.stack {

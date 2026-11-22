@@ -16,6 +16,9 @@ mv "$runners/my-machine.toml" "$runners/workstation.toml"
 cp "$runners/workstation.toml" "$runners/laptop.toml"
 cp "$runners/workstation.toml" "$runners/xps13.toml"
 sed -i 's/^name = .*/name = "shop"/' "$dir/factory/factory.toml"
+# the memory a seeded candidate replaces
+mkdir -p "$dir/factory/memories"
+printf -- '---\nname: release-day\ndescription: When releases go out. Read it before you plan or merge a change near a release.\n---\nReleases go out on Tuesdays. Merge nothing risky on a Monday afternoon.\n' > "$dir/factory/memories/release-day.md"
 printf '\n[serve]\nlisten = "127.0.0.1:7391"\ntoken_env = "PRIORY_TOKEN"\n' >> "$dir/factory/factory.toml"
 export PRIORY_DB="$dir/state.db" PRIORY_HOME="$dir/home" PRIORY_TOKEN=demo-token
 [ ! -e "$PRIORY_DB" ] || { echo "serve.sh: $PRIORY_DB exists; give a new folder" >&2; exit 1; }

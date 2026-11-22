@@ -145,21 +145,78 @@ priory memories accept 0196f1d0-4a5b-7c6d-8e9f-0a1b2c3d4e5f
 priory memories drop 0196f1d0-9a8b-7c6d-8e9f-0a1b2c3d4e5f
 ```
 
+The web Desk and the Herdr Desk offer the same Accept and Drop, beside each candidate's full text
+and the text it replaces (see [desk.md](desk.md#memory-candidates)).
+
 Each publishes its verdict on the log, and every runner applies it as it reads it. A drop also
 takes the candidate from its own task's later runs. A candidate takes one verdict: the first in log
 order stands.
 
+### Accepted memories move into the kit
+
+Accepted candidates live in the log and in each state file. A daily pull request moves them into
+the kit repository, where a person merges them. A schedule trigger starts it, and a code step with
+the `open-memories-pr` action opens it:
+
+```toml
+# triggers/kit-memories.toml
+source = "schedule"
+repo = "owner/abbey"           # the kit's GitHub owner/name, where the pull request opens
+at = "06:00"
+key = "kit-memories"
+workflow = "memories"
+```
+
+```toml
+# workflows/memories.toml
+start = "open"
+
+[[steps]]
+id = "open"
+decides = "code"
+action = "open-memories-pr"
+effect = "irreversible"
+autonomous = "a person reviews the pull request before any memory merges"
+next = { opened = "done", unchanged = "done", failed = "stop" }
+```
+
+Each firing is a task request, so the runners claim its key as they claim any other, and one
+runner runs the step (see [runners.md](runners.md#claims)). That runner:
+
+1. Fetches the kit's `ref` into its mirror under Priory home.
+2. Takes, for each name, the accepted candidate whose accept came last in log order. A pending or
+   dropped candidate never goes in.
+3. On top of the ref's commit, writes each accepted memory as `<memories>/<name>.md`, byte for byte
+   the file runs get, and removes the file of each accepted forget. `<memories>` is the kit's
+   `memories` folder, `memories` by default.
+4. When that changes no file, ends `unchanged` and pushes nothing. So once the pull request merges,
+   the next firing proposes nothing.
+5. Otherwise pushes the commit to the kit's `priory/memories` branch with git's own credentials,
+   replacing what the branch held.
+6. Opens a pull request from `priory/memories` onto the kit's `ref`, or onto the default branch when
+   `[kit]` sets no `ref`, with `gh pr create -R <repo>`. When one is open already, it edits that
+   one's title and body with `gh pr edit`.
+
+The body lists each memory the commit adds, changes or removes, with its candidate's id, task,
+runner and accept time. The commit is authored by `Priory <priory@localhost>` and dated at the last
+accept, so the same memories on the same ref make the same commit.
+
+The step needs push rights to the kit repository and a signed-in `gh` on whichever runner wins
+the claim. A runner without them ends the step `failed`, with git's or gh's error.
+
 ### Limits
 
-- Accepted candidates live in the log and in each state file, not in git. The daily pull request
-  that moves them into the kit repository is a later slice of
-  [the design note](../design/shared-skills-and-memories.md#later-slices).
+- An accepted candidate stays in the state file once the kit holds it, and still overrides the
+  kit's file of its name. So a later edit of that file in git reaches no run, and the next pull
+  request proposes the candidate's text again. Dropping a candidate once the fetched kit holds it
+  is not built yet.
+- `priory/memories` is Priory's own branch: each firing rebuilds it from the kit's ref, so a commit
+  pushed to it is lost.
+- The kit's `ref` must be a branch, or unset, for the pull request to open onto it.
 - Write access to the log equals a person's accept, as it does an answer (see
   [runners.md](runners.md#every-runner-reads-the-whole-log)).
 - The credential check matches common key shapes only. A memory reaches other tasks only after a
   person reads it, so read each one for secrets and for instructions an issue may have planted.
-- The web and Herdr Desks show the `memories` item as a plain row with its line, and no Accept or
-  Drop button, since [DESIGN.md](../../DESIGN.md) describes none. Use `priory memories`.
 
 The plugin folder, the memory snapshot and the kit checkout below are read-only: each file is
 `0444` and each folder `0555`. An agent can still make them writable with a shell, so before each

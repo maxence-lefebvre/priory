@@ -82,7 +82,7 @@
       "description": "One step: who decides its outcome, what it may change, and where each outcome leads.",
       "properties": {
         "action": {
-          "description": "The built-in action a code step runs: `open-pr`, `open-issue` or `run`.",
+          "description": "The built-in action a code step runs: `open-pr`, `open-issue`, `open-memories-pr`, `run` or\n`start-batch`.",
           "type": [
             "string",
             "null"

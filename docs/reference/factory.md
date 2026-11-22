@@ -76,6 +76,10 @@ See [skills.md](../daemon/skills.md#a-kit-repository) for when each runner fetch
 
 A missing folder or file gives nothing. Each path is relative and stays inside the repository.
 
+An `open-memories-pr` code step writes accepted memories to the `memories` folder, on a branch based
+on `ref`, and opens a pull request onto it (see
+[skills.md](../daemon/skills.md#accepted-memories-move-into-the-kit)).
+
 ## `[search]`
 
 See [search.md](../daemon/search.md).

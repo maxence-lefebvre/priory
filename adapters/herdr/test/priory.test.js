@@ -365,3 +365,16 @@ test("eventWords is the web view's, word for word", () => {
   const herdr = readFileSync(new URL("../lib/priory.js", import.meta.url), "utf8");
   assert.equal(body(herdr), body(web), "copy SOURCES and eventWords from crates/priory-core/web/inbox.js to adapters/herdr/lib/priory.js");
 });
+
+test("reads the memory candidates with the factory folder, then accepts or drops one on the factory's log", async () => {
+  const run = fake({ memories: { candidates: [] } });
+  const client = priory({ exec, binary: FAKE, factory: "/srv/factory" });
+  assert.deepEqual(await client.memories(), { candidates: [] });
+  await client.acceptMemory("c-1");
+  await client.dropMemory("c-2");
+  assert.deepEqual(run.argv(), [
+    ["memories", "/srv/factory", "--json"],
+    ["memories", "accept", "/srv/factory", "c-1"],
+    ["memories", "drop", "/srv/factory", "c-2"],
+  ]);
+});

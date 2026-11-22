@@ -73,6 +73,11 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     resume: (/** @type {Id} */ task) => call(["resume", String(task)]),
     revive: (/** @type {Id} */ task) => call(["revive", String(task)]),
     todoDone: (/** @type {Id} */ todo) => call(["todo", "done", String(todo)]),
+    // The memory candidates that wait for a person, each with the memory of its name runs get now.
+    memories: () => read("memories", ...inFactory),
+    // A person's verdict on a candidate, published on the factory's log; every runner applies it.
+    acceptMemory: (/** @type {string} */ id) => call(["memories", "accept", ...inFactory, id]),
+    dropMemory: (/** @type {string} */ id) => call(["memories", "drop", ...inFactory, id]),
     // Marks a report read, so its row leaves the desk.
     read: (/** @type {Id} */ seq) => call(["inbox", "read", String(seq)]),
     // A field left out comes from the factory's [request] table; the reply is the new task's key.
