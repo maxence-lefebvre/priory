@@ -10,7 +10,7 @@ create-missing = false
 use-default-preprocessors = false
 
 [output.html]
-theme = "theme"
+theme = "build/theme"
 additional-css = ["theme/site.css"]
 additional-js = ["theme/site.js"]
 git-repository-url = "https://github.com/maxence-lefebvre/priory"

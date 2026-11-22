@@ -3,7 +3,8 @@
 
 Copies GETTING_STARTED.md and docs/ into site/build/src, writes SUMMARY.md from the docs folders
 and their README files, builds the home page from site/home.md, and points links to files outside
-the book at GitHub. Run `build.py diagrams` to copy the Graphite colours into docs/images/diagrams.
+the book at GitHub. Beside each page it writes the page's source as `<page>.md.txt`, for the Copy
+as Markdown button, and it writes the theme's top bar tabs into site/build/theme/index.hbs. Run `build.py diagrams` to copy the Graphite colours into docs/images/diagrams.
 """
 
 import os
@@ -51,6 +52,8 @@ GROUPS = [
     ("Design notes", "docs/design", []),
 ]
 EXTRA_REFERENCE = ["docs/trace-schema.md"]
+# The top bar's tabs, one per Diátaxis type. A group takes its own title's tab, or else Explanation.
+TABS = ["Tutorial", "How-to guides", "Reference", "Explanation"]
 
 LINK = re.compile(r"(!?\[[^\]]*\]\()([^)\s]+)((?:\s+\"[^\"]*\")?\))")
 REF_DEF = re.compile(r"^(\s{0,3}\[[^\]]+\]:\s+)(\S+)(.*)$")
@@ -114,6 +117,36 @@ def summary(groups):
         lines += [f"- [{title_of(p)}]({p})" for p in pages]
         lines.append("")
     return "\n".join(lines)
+
+
+def tabs(groups):
+    """Return [(tab, first page, [group titles])] in GROUPS order."""
+    out = {name: (None, []) for name in TABS}
+    for title, pages in groups:
+        name = title if title in out else "Explanation"
+        first, titles = out[name]
+        out[name] = (first or (pages[0] if pages else None), titles + [title])
+    return [(name, first, titles) for name, (first, titles) in out.items()]
+
+
+def theme_page(tab_list):
+    """Return site/theme/index.hbs with its `<!-- tabs -->` marker replaced by the tab links."""
+    links = "".join(
+        f'<a href="{{{{ path_to_root }}}}{first[:-3]}.html" data-groups="{"|".join(titles)}">{name}</a>'
+        for name, first, titles in tab_list
+    )
+    page = (SITE / "theme" / "index.hbs").read_text(encoding="utf-8")
+    if "<!-- tabs -->" not in page:
+        raise ValueError("site/theme/index.hbs needs a <!-- tabs --> marker")
+    return page.replace("<!-- tabs -->", f'<nav class="tabs" aria-label="Sections">{links}</nav>')
+
+
+def stage_markdown(out, pages):
+    """Write each page's source Markdown beside it as `<page>.md.txt`, for Copy as Markdown."""
+    for page in pages:
+        target = out / f"{page}.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text((ROOT / page).read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def rewrite_target(target, source, pages):
@@ -209,8 +242,9 @@ def sync_diagrams():
 
 def main():
     out = SITE / "build" / "src"
-    if any(p.is_symlink() for p in (SITE / "build", out)):
-        sys.exit("build.py: site/build or site/build/src is a symlink; remove it before staging")
+    theme = SITE / "build" / "theme"
+    if any(p.is_symlink() for p in (SITE / "build", out, theme)):
+        sys.exit("build.py: site/build, its src or its theme is a symlink; remove it before staging")
     if out.exists():
         shutil.rmtree(out)
     shutil.copytree(ROOT / "docs", out / "docs")
@@ -224,6 +258,9 @@ def main():
             unlisted.unlink()
     (out / "SUMMARY.md").write_text(summary(groups), encoding="utf-8")
     (out / "index.md").write_text(home(pages), encoding="utf-8")
+    stage_markdown(out, pages)
+    theme.mkdir(parents=True, exist_ok=True)
+    (theme / "index.hbs").write_text(theme_page(tabs(groups)), encoding="utf-8")
     assets = out / "assets"
     shutil.copytree(ROOT / "design" / "fonts", assets / "fonts", ignore=shutil.ignore_patterns("*.md"))
     shutil.copytree(ROOT / "design" / "tokens", assets / "tokens")

@@ -80,6 +80,37 @@ function mdbook_something_else_has_focus(e) {
     pre.prepend(button);
   });
 
+  // Section tabs: the current one holds the active sidebar link's group.
+  const activeLink = document.querySelector("#mdbook-sidebar a.active");
+  let groupItem = activeLink && activeLink.closest("li");
+  while (groupItem && !groupItem.classList.contains("part-title")) groupItem = groupItem.previousElementSibling;
+  const group = groupItem ? groupItem.textContent.trim() : null;
+  document.querySelectorAll(".tabs a").forEach((tab) => {
+    if (group && tab.dataset.groups.split("|").includes(group)) tab.setAttribute("aria-current", "true");
+  });
+
+  // Copy as Markdown: build.py writes each page's source beside it as <page>.md.txt.
+  const copyMarkdown = document.querySelector(".copy-md");
+  if (copyMarkdown && navigator.clipboard) {
+    const label = copyMarkdown.querySelector("span");
+    const say = (text) => {
+      label.textContent = text;
+      setTimeout(() => { label.textContent = "Copy as Markdown"; }, 2000);
+    };
+    const source = () => fetch(copyMarkdown.dataset.markdown).then((r) => {
+      if (!r.ok) throw new Error(r.statusText);
+      return r.text();
+    });
+    copyMarkdown.addEventListener("click", () => {
+      // Safari keeps the click's permission only when the clipboard write starts before the fetch ends.
+      const write = window.ClipboardItem
+        ? navigator.clipboard.write([new ClipboardItem({ "text/plain": source().then((t) => new Blob([t], { type: "text/plain" })) })])
+        : source().then((t) => navigator.clipboard.writeText(t));
+      write.then(() => say("Copied"), () => say("Could not copy the page"));
+    });
+    copyMarkdown.hidden = false;
+  }
+
   if (html.classList.contains("is-home")) return;
 
   // Breadcrumb and page kind from the active sidebar link's group.
@@ -93,11 +124,8 @@ function mdbook_something_else_has_focus(e) {
     "Architecture decisions": "Decision",
     "Design notes": "Explanation",
   };
-  const active = document.querySelector("#mdbook-sidebar a.active");
-  let item = active && active.closest("li");
-  while (item && !item.classList.contains("part-title")) item = item.previousElementSibling;
-  if (item) {
-    const group = item.textContent.trim();
+  const active = activeLink;
+  if (group) {
     document.getElementById("crumb-group").textContent = group;
     const kind = document.getElementById("page-kind");
     if (KINDS[group]) {
