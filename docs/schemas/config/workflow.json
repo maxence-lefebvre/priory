@@ -263,6 +263,13 @@
             "null"
           ]
         },
+        "record": {
+          "description": "Model steps only: the factory's command that records evidence after the step's result, in a\ncheckout of the result's commit, relative to the factory folder.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "run": {
           "description": "The command a `run` action runs with `sh -c`.",
           "type": [

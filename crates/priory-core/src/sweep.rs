@@ -77,6 +77,7 @@ fn assess(db: &Connection, home: &Path) -> rusqlite::Result<Vec<Entry>> {
 /// clone, and after the repository's teardown succeeded in it. A teardown owed here starts at the
 /// daemon's next tick.
 pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<()> {
+    crate::evidence::sweep(db, home)?;
     let mut repos: Vec<_> = worktrees::found(home)
         .into_iter()
         .map(|found| found.repo)

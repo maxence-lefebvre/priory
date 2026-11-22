@@ -156,6 +156,9 @@ See [Columns](#columns).
 - `priory runs [--json]`: prints every run.
 - `priory outbox`: prints every prompt. See [outbox.md](../daemon/outbox.md).
 - `priory waits`: prints each open wait. See [waits.md](../daemon/waits.md#waits).
+- `priory evidence TASK [--json]`: prints the task's evidence items, oldest first. `--json`
+  prints `{"evidence": [...]}`, each item as [the API](serve.md#evidence) gives it. See
+  [evidence.md](../daemon/evidence.md).
 - `priory actions`: prints each code step's and each answer's action, with its status, error and
   output. Read it when a code step failed, or to read what a `staged` action would have done. See
   [tools.md](../daemon/tools.md#code-steps).
@@ -226,6 +229,9 @@ An agent's settings and its shell call these. A person rarely does.
 - `priory gate`: runs the factory's `gate` in the run's worktree and records its exit code for the
   branch's head.
   See [tools.md](../daemon/tools.md#proofs).
+- `priory evidence add FILE --caption TEXT`: adds an asciicast v2 recording inside the run's
+  worktree to the run's result, once it passes the admission checks. It refuses an image or a
+  video. See [evidence.md](../daemon/evidence.md#a-cast-the-agent-adds).
 - `priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]`: runs a heavy command once
   the machine has the memory for it, or prints the grants. See
   [memory-gate.md](../daemon/memory-gate.md).
@@ -262,3 +268,6 @@ workflow.
 fields that the HTTP server returns for the same listing. [serve.md](serve.md) lists them.
 `priory tasks --json` prints every task, where `/api/tasks` leaves out the tasks that ended more
 than a week ago.
+
+`priory evidence TASK` prints each item, oldest first: id, run, kind, caption, commit, bytes,
+SHA-256, created, and `yes` when the task's latest approval covers it, else `-`.

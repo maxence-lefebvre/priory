@@ -359,6 +359,13 @@ pub fn head(worktree: &Path, branch: &str) -> Option<String> {
         .map(|head| head.trim().to_owned())
 }
 
+/// The commit checked out in `dir`, or `None` outside git or before any commit.
+pub fn checked_out(dir: &Path) -> Option<String> {
+    run(git(dir).args(["rev-parse", "--verify", "--quiet", "HEAD"]))
+        .ok()
+        .map(|head| head.trim().to_owned())
+}
+
 /// The last commit that changed the files under `dir`, or `None` outside git or before any commit.
 pub fn revision(dir: &Path) -> Option<String> {
     run(git(dir).args(["log", "-1", "--format=%H", "--", "."]))

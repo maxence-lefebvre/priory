@@ -163,6 +163,21 @@ question 1.
 
 ## The first slice: the `record` command, casts and the API
 
+This slice is built, with every open question's recommendation taken, which Max approved on
+2026-11-22. [evidence.md](../daemon/evidence.md) describes it. It differs from this note in these
+ways:
+
+- A `record` command writes each item's caption to a file of the item's name followed by
+  `.caption`. Its environment's Priory variables are `PRIORY_EVIDENCE`, `PRIORY_TASK` and
+  `PRIORY_COMMIT`.
+- The secrets searched are the factory's secret variables and `[serve] redact_env`. The secrets
+  declared for agents do not exist yet ([agent-credentials.md](agent-credentials.md)).
+- The factory names its server's address with a new key, `[serve] url`.
+- Each attachment also has `run` and `approved`, whether the task's latest approval covers it, and
+  each result has `record`, the state of its `record` command. The approving ask does not list the
+  items yet: that is later slice 1.
+- The type check reads the six signatures by hand, with no new crate.
+
 1. The `evidence` table and its migration, the store under `PRIORY_HOME/evidence/`, and the
    admission checks.
 2. A step's `record` key: the command, its environment, and its files as items.

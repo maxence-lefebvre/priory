@@ -388,6 +388,19 @@ fn result(
         ],
     )?;
     crate::triage::store(tx, run.task, run.id, &triage)?;
+    if let Some(record) = step.record.as_deref() {
+        let worktree: Option<String> = tx.query_row(
+            "SELECT worktree FROM tasks WHERE id = ?1",
+            [run.task],
+            |row| row.get(0),
+        )?;
+        let at = commit.clone().or_else(|| {
+            worktree
+                .zip(own.as_deref())
+                .and_then(|(worktree, branch)| head(Path::new(&worktree), branch))
+        });
+        crate::evidence::owe(tx, run.id, run.task, record, at.as_deref())?;
+    }
     for ((_, column), value) in PLAN_FIELDS.iter().zip(&plan) {
         tx.execute(
             &format!("UPDATE tasks SET {column} = coalesce(?2, {column}) WHERE id = ?1"),
@@ -4673,6 +4686,7 @@ fn approve(
              VALUES (?1, ?2, ?3, ?4, ?5, (SELECT generation FROM tasks WHERE id = ?1))",
             params![task, step, answer.ask, answer.revision, commit],
         )?;
+        crate::evidence::approved(tx, task, tx.last_insert_rowid())?;
     }
     Ok(())
 }
