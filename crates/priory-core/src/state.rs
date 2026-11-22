@@ -2626,14 +2626,14 @@ pub(crate) fn admissible<'r>(
         "SELECT id, workflow, step, trigger, state = 'queued', repo FROM tasks
              WHERE state IN ('queued', 'ready')
              -- With several runners, only a task whose key the log gives this one, and not one
-             -- whose `kept` it waits to read back.
-             AND (?1 IS NULL OR EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
+             -- whose `kept` it waits to read back. A lead task stays on its ask's runner.
+             AND (?1 IS NULL OR tasks.trigger = ?2 OR EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
                AND claims.runner = ?1
-               AND NOT (claims.hold = 'waiting' AND claims.published IS 'kept')))
+               AND NOT (claims.hold != 'kept' AND claims.published IS 'kept')))
              ORDER BY {START_ORDER}"
     ))?;
     let queued = statement
-        .query_map([runner], |row| {
+        .query_map(params![runner, crate::tools::LEAD_TRIGGER], |row| {
             Ok(Admission {
                 task: row.get(0)?,
                 workflow: row.get(1)?,

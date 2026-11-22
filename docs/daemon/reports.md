@@ -197,5 +197,6 @@ so a later pick of the same key and text requests another task, and publishing o
 adds nothing.
 
 When the publish fails, the pick stays recorded and `priory report pick` exits with the error. The
-daemon publishes every pending dispatch again when it starts, so a crash after the choice never
+daemon publishes every pending dispatch again when it starts, and once its log answers again, at
+most every 10 seconds while a publish keeps failing. So a lost log or a crash after the choice never
 loses its task, and a crash before it never requests one.

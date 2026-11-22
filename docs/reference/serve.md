@@ -442,7 +442,7 @@ The list then adds, after this runner's tasks, each task another runner holds wh
 | `key` | string | The task's key |
 | `runner` | string | The runner that holds it |
 | `hold` | string | `waiting` or `kept`, as that runner last published it |
-| `last_seen` | string or null | When that runner was last alive, from its last alive, claim or held message |
+| `last_seen` | string or null | When that runner was last alive, from its last alive or held message |
 | `since` | string | When the claim that gave it the key was published |
 | `workflow`, `band`, `lane` | string or null | From the task's request |
 | `title` | string or null | The request's TL;DR, else its subject |

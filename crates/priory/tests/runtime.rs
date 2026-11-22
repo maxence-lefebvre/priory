@@ -13990,6 +13990,26 @@ fn a_chosen_pick_whose_request_the_bus_refused_publishes_it_when_the_daemon_star
 }
 
 #[test]
+fn a_chosen_pick_whose_request_the_bus_refused_publishes_it_once_the_bus_takes_messages_again() {
+    let requests = json!({ "Take": {
+        "workflow": "implement", "key": "fnd-2409", "text": "Fix the DWARF pause", "repo": "owner/repo"
+    } });
+    let setup = asleep_on_a_report("report-retried", &bonjour(requests));
+    let bus = rusqlite::Connection::open(setup.dir.join("bus.db")).unwrap();
+    bus.execute_batch(
+        "CREATE TRIGGER full BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT, 'bus full'); END",
+    )
+    .unwrap();
+
+    let take = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+    bus.execute_batch("DROP TRIGGER full").unwrap();
+
+    assert!(!take.status.success(), "{take:?}");
+    let tasks = setup.until("tasks", |rows| rows.len() == 2);
+    assert_eq!(tasks[1][1], "cli:fnd-2409");
+}
+
+#[test]
 fn a_dispatch_published_before_a_crash_is_published_again_under_the_same_ids() {
     let requests = json!({ "Take": {
         "workflow": "implement", "key": "fnd-2409", "text": "Fix the DWARF pause", "repo": "owner/repo"
@@ -18156,6 +18176,52 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     assert_eq!(task["reason"], "owned by runner b", "{task}");
     // b starts its task on its own clock, so wait for it rather than read it once.
     b.until_own_tasks(|rows| rows[0][4] == "running");
+}
+
+#[test]
+fn a_lead_task_runs_on_the_runner_of_the_ask_it_answers_without_a_claim_and_cannot_be_given() {
+    let mut a = hands_off("lead-runner", WORKFLOW);
+    for (path, content) in [
+        ("factory/runners/a.toml", "platform = { os = \"linux\" }\n"),
+        ("factory/runners/b.toml", "platform = { os = \"linux\" }\n"),
+        ("proc/sys/kernel/hostname", "a\n"),
+    ] {
+        let file = a.dir.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, content).unwrap();
+    }
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.calls(&[ask()]);
+    a.publish(&requested(42));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+
+    let lead = "priory:ask:1:1";
+    a.until_own_tasks(|rows| rows.iter().any(|row| row[1] == lead && row[4] == "running"));
+    let claims: Vec<serde_json::Value> = a
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 1000,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "priory.task.claimed")
+        .map(|stored| stored.message.data["key"].clone())
+        .collect();
+    assert_eq!(
+        claims,
+        [json!("github:owner/repo#42")],
+        "no other runner has the lead task's source, so its key stays off the log"
+    );
+
+    let factory = a.dir.join("factory");
+    let given = a.priory(&["give", factory.to_str().unwrap(), lead, "b", "--force"]);
+    assert_eq!(
+        String::from_utf8_lossy(&given.stderr),
+        "priory give: priory:ask:1:1 is a lead task, which stays on the runner of the ask it answers\n"
+    );
+    assert!(!given.status.success());
 }
 
 #[test]
