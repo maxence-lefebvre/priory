@@ -278,16 +278,35 @@ fn priory_metrics_naming_an_unknown_group_stops_the_daemon_with_its_name() {
     let setup = Setup::new("metrics-unknown");
     setup.metrics(&collector, "");
 
-    let output = setup
+    let mut daemon = setup
         .command(env!("CARGO_BIN_EXE_priory"))
         .args(["daemon", setup.dir.join("factory").to_str().unwrap()])
         .env("PRIORY_METRICS", "process,nope")
-        .output()
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .unwrap();
 
-    assert!(!output.status.success());
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = daemon.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            daemon.kill().unwrap();
+            panic!("the daemon did not stop");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut stderr = String::new();
+    daemon
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(!status.success());
     assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
+        stderr,
         "priory daemon: PRIORY_METRICS names `nope`, which is not a metrics group: the groups are \
          process, or none\n"
     );
