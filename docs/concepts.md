@@ -67,14 +67,15 @@ or stopped. See
 your own session read the desk, ask you a question and add a task.
 
 **Queue, bands and room.** Tasks start in band order (`blocker`, `now`, `today`, `later` by
-default), then in an order you set, then oldest first.
-A task's lane, such as `core/intake`, groups tasks by team and theme for `priory tasks --lane`
-and `priory report --by lane`. A trigger or a request names it, or
-[`lanes.toml`](reference/lanes.md) derives it. A run starts only when the machine has room for the memory
-and disk its agent declares. See [docs/daemon/room.md](daemon/room.md). Two settings change who
-starts. A [review limit](daemon/runs.md#review-limit) holds new starts while too many pull requests
-wait for a person. An [urgent wake](daemon/room.md#urgent-wakes) lets a task in a band you name
-stop a lower band's run at the end of its turn.
+default), then in an order you set, then oldest first, or in turns between lanes with
+`[queue] fair = "lane"`. A task's lane, such as `core/intake`, groups tasks by team and theme for
+`priory tasks --lane` and `priory report --by lane`. A trigger or a request names it, or
+[`lanes.toml`](reference/lanes.md) derives it. A lane or a trigger can cap how many of its tasks
+run at once. A run starts only when the machine has room for the memory and disk its agent
+declares. See [docs/daemon/room.md](daemon/room.md) and [docs/daemon/runs.md](daemon/runs.md#queue).
+Two more settings change who starts. A [review limit](daemon/runs.md#review-limit) holds new starts
+while too many pull requests wait for a person. An [urgent wake](daemon/room.md#urgent-wakes) lets a
+task in a band you name stop a lower band's run at the end of its turn.
 
 **Health.** Every second, the daemon checks each run for an unexpected exit, a timeout or a
 permission prompt. It never approves a permission prompt. A crashed run gets one repair attempt.
@@ -122,3 +123,9 @@ repository, such as one test command and CI on pull requests. See
 **Trace and reports.** Each step's end is recorded with its outcome, tokens and time. `priory report`
 reads these records, and the daemon can export them as OpenTelemetry spans. See
 [docs/daemon/trace.md](daemon/trace.md) and [docs/trace-schema.md](trace-schema.md).
+
+**Failure pattern.** The tasks that failed, blocked, were repaired or were marked wrong at one step
+for the same reason. A nightly code step groups the day's into patterns, the desk shows a pattern
+once it holds two tasks, and its count grows as new tasks match. A person closes it once a fix
+merged, dismisses it, or captures its tasks as benchmark cases to compare the fix on. See
+[docs/daemon/patterns.md](daemon/patterns.md).

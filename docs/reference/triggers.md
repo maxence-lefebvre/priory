@@ -40,6 +40,7 @@ cannot tell which keys a source refuses; `priory check` does.
 | `intervention` | `plan` or `hands-off` | no | a person answers every ask | Who answers its tasks' asks. See [`intervention` and `lead`](#intervention-and-lead) | `"plan"` |
 | `lead` | string | with `hands-off` | | The agent that answers asks of a `hands-off` task | `"lead"` |
 | `auto_answer` | `high` or `medium` | no | no ask is answered this way | The lowest confidence at which the daemon answers its tasks' asks with their recommendation. See [`auto_answer`](#auto_answer) | `"high"` |
+| `max_running` | integer | no | no cap | The most of its tasks that may have a live run at once, 1 or more. New starts past it wait. See [runs.md](../daemon/runs.md#at-most-so-many-running) | `3` |
 | `caps` | table | no | no cap | Spend caps in dollars for its tasks: `task`, `day` and `week`, each above zero. See [spend.md](../daemon/spend.md) | `{ task = 2.0, day = 10.0 }` |
 | `pre` | table | no | | A script that runs on each matching event before its task request, and can drop or change it. See [`pre`](#pre) | `{ argv = ["scripts/sentry-pre"] }` |
 | `staged` | boolean | no | `false` | Whether its tasks are a trial: model steps run, and each task blocks before its first irreversible step with what that step would have done. See [Staged tasks](../daemon/tools.md#staged-tasks) | `true` |
@@ -486,6 +487,7 @@ noop = [
 | `` missing field `workflow` `` | No `workflow` |
 | `<n> is not a spend cap: give dollars above zero` | A `caps` value of zero or less, or not finite |
 | `` `caps` needs prices.toml, which turns the steps' tokens into dollars `` | `caps` in a factory without `prices.toml` |
+| `` `max_running` is 0: give at least 1, or hold the tasks instead `` | `max_running = 0` |
 | `` workflow `<name>` does not exist `` | `workflow` names no file under `workflows/` |
 | `` band `<band>` is not one of <bands> `` | `band` is not a band of the factory |
 | `` lane `<lane>` is not `<team>/<theme>` `` | A malformed `lane` |

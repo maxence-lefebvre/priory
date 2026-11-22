@@ -69,14 +69,14 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [routing.md](routing.md): how one message is recorded, acked and routed to a task.
 - [home.md](home.md): what `PRIORY_HOME` holds: clones, worktrees, the socket and the lock.
 - [runs.md](runs.md): how a run starts its harness, a repository's setup, resume and teardown
-  recipes, and the queue, bands and holds.
+  recipes, and the queue, bands, turns between lanes, `max_running` and holds.
 - [room.md](room.md): when the machine has room to admit a run, and queue stalls.
 - [runners.md](runners.md): which runner owns each task in a factory of several, leases,
   `priory give`, and answering another runner's ask.
 - [agents-slice.md](agents-slice.md): the systemd slice that caps every agent's CPU and memory.
 - [memory-gate.md](memory-gate.md): `priory memory acquire`, which queues heavy commands for memory.
-- [sessions.md](sessions.md): shared agent sessions, attaching to a run's terminal, and trusting a
-  clone for Claude.
+- [sessions.md](sessions.md): shared agent sessions, attaching to a run's terminal, and trusting the
+  worktrees folder and each clone for Claude.
 - [codex.md](codex.md): how a Codex run differs from a Claude run.
 - [signals.md](signals.md): the hook signals a run sends, the nudge after a silent turn, and the
   nudge's evaluation.
@@ -117,6 +117,9 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [score.md](score.md): `priory score`, which grades a task's finished runs with the factory's
   scorers, the intent scorer, which asks a decision model about the trigger's intent and no-op
   cases, and `priory score --calibrate`, which measures a judge scorer against a person's labels.
+- [patterns.md](patterns.md): failure patterns, `priory patterns find`, which groups the day's
+  failed, blocked, repaired and marked-wrong tasks by step and reason, the desk's `pattern` row,
+  closing and dismissing a pattern, and capturing its tasks as benchmark cases.
 - [bench.md](bench.md): `priory bench capture`, which turns a past task into a benchmark case,
   `priory bench replay`, which plays one case under one configuration, and `priory bench` with
   `--base` and `--head`, which compares two commits of the factory on a benchmark.

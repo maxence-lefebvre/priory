@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { emptyDetail, eventWords, handled, sinceWords, unheardActs, unheardNote, unroutedNote, routeAction, neverOwned } from "./inbox.js";
+import { droppedNote, droppedWhy, emptyDetail, eventWords, handled, sinceWords, unheardActs, unheardNote, unroutedNote, routeAction, neverOwned } from "./inbox.js";
 
 const event = (fields) => ({ seq: 4, type: "github.pull_request.comment", subject: "o/r#7", time: "2026-11-21T09:00:00Z", task: 1, outcome: "kept", prompt: null, wait: null, ...fields });
 
@@ -70,4 +70,18 @@ test("a Since you looked line names its event type in plain words and keeps its 
   assert.equal(sinceWords("github.pull_request_review.submitted acme/shop#245: kept"), "GitHub pull request review submitted acme/shop#245: kept");
   assert.equal(sinceWords("linear.issue.updated"), "Linear issue updated");
   assert.equal(sinceWords("ENG-224: Morning report is ready"), "ENG-224: Morning report is ready");
+});
+
+test("the desk's calm line counts the requests a pre script dropped, and says nothing with none", () => {
+  assert.equal(droppedNote(0), "");
+  assert.equal(droppedNote(undefined), "");
+  assert.equal(droppedNote(1), "1 request a pre script dropped in the last 24 hours");
+  assert.equal(droppedNote(3), "3 requests a pre script dropped in the last 24 hours");
+});
+
+test("a dropped request says why, or how its script failed, and what judges it again", () => {
+  const again = " A new event of it that a trigger wants runs the script again.";
+  assert.equal(droppedWhy({ reason: "no estimate yet", failed: null }), `Dropped: no estimate yet.${again}`);
+  assert.equal(droppedWhy({ reason: null, failed: "exit status 2" }), `Dropped: the script failed: exit status 2.${again}`);
+  assert.equal(droppedWhy({ reason: null, failed: null }), `Dropped with no reason.${again}`);
 });

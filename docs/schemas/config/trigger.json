@@ -348,6 +348,16 @@
         "null"
       ]
     },
+    "max_running": {
+      "default": null,
+      "description": "The most of its tasks that may have a live run at once; new starts past it wait.",
+      "format": "uint32",
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "noop": {
       "default": [],
       "description": "The cases that must create no ask and no write, each one line. Its tasks' brief and the\ndecision model at triage read them.",

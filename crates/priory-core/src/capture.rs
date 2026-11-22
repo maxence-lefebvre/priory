@@ -19,6 +19,36 @@ pub struct Captured {
     pub gaps: usize,
 }
 
+/// Captures `task` into the new folder `into`, and says what it holds.
+pub fn capture_into(
+    db: &Connection,
+    factory: &Factory,
+    task: i64,
+    into: &std::path::Path,
+) -> Result<String, String> {
+    let read = |path: &str| std::fs::read(path);
+    let case = capture(db, factory, task, &read)?;
+    for (path, text) in &case.files {
+        let file = into.join(path);
+        let written = file
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&file, text));
+        written.map_err(|error| format!("{}: {error}", file.display()))?;
+    }
+    let state = match case.gaps {
+        0 => "complete".to_owned(),
+        1 => "partial, 1 gap".to_owned(),
+        gaps => format!("partial, {gaps} gaps"),
+    };
+    Ok(format!(
+        "captured task {task} into {}: {} gh answer(s), {} answer(s), {state}",
+        into.display(),
+        case.gh,
+        case.answers
+    ))
+}
+
 /// One run of the task before its first irreversible step.
 struct Run {
     id: i64,
@@ -48,10 +78,15 @@ pub fn capture(
         Option<String>,
         Option<String>,
         String,
+        Option<String>,
     );
+    // A failed or blocked task stopped before the step it was at: its whole history counts.
     let row: Option<Row> = db
         .query_row(
-            "SELECT workflow, key, step, repo, base_sha, coalesce(entered, '') FROM tasks WHERE id = ?1",
+            "SELECT workflow, key, step, repo, base_sha, coalesce(entered, ''),
+               iif(state IN ('failed', 'blocked'),
+                 strftime('%Y-%m-%dT%H:%M:%SZ', changed, '+1 second'), NULL)
+             FROM tasks WHERE id = ?1",
             [task],
             |row| {
                 Ok((
@@ -61,12 +96,13 @@ pub fn capture(
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
+                    row.get(6)?,
                 ))
             },
         )
         .optional()
         .map_err(error)?;
-    let Some((workflow, key, current, repo, base, entered)) = row else {
+    let Some((workflow, key, current, repo, base, entered, stopped)) = row else {
         return Err(format!("no task {task}"));
     };
     let Some(start) = base else {
@@ -84,10 +120,11 @@ pub fn capture(
         .iter()
         .find(|step| step.effect == "irreversible")
         .map(|step| (step.step.clone(), step.started.clone()))
-        .or_else(|| at_current.then(|| (current.clone(), entered.clone())));
+        .or_else(|| at_current.then(|| (current.clone(), entered.clone())))
+        .or_else(|| stopped.map(|stopped| (current.clone(), stopped)));
     let Some((ends_at, cutoff)) = boundary else {
         return Err(format!(
-            "task {task} reached no irreversible step, so a replay of it would have no end"
+            "task {task} reached no irreversible step and did not stop, so a replay of it would have no end"
         ));
     };
     let cutoff: Timestamp = cutoff
@@ -240,11 +277,13 @@ fn ended(db: &Connection, task: i64) -> rusqlite::Result<Vec<Ended>> {
         .collect()
 }
 
-/// The outcome labels the task holds: each label not cleared after it was given.
+/// The outcome labels the task holds: each label not cleared after it was given. A held scorer's
+/// record is a score, not an outcome label.
 fn labels(db: &Connection, task: i64) -> rusqlite::Result<Vec<String>> {
     let mut statement = db.prepare(
         "SELECT DISTINCT json_extract(event, '$.data.label') FROM trace AS labeled
          WHERE type = 'factory.step.labeled' AND json_extract(event, '$.data.task') = ?1
+           AND json_extract(event, '$.data.label') != 'scored'
            AND NOT EXISTS (SELECT 1 FROM trace AS cleared WHERE cleared.type = 'factory.step.unlabeled'
              AND cleared.seq > labeled.seq
              AND json_extract(cleared.event, '$.data.task') = ?1

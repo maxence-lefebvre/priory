@@ -240,7 +240,8 @@ a done task's merged pull request. So `priory inbox --unrouted [--since SEQ]` an
 - The rest, which no task ever owned, are one count per source.
 
 The web Inbox panel's Unrouted view offers the same actions from a phone: Revive, the Add sheet, or
-`POST /api/subscribe`. The Desk counts only the first kind, over the last 24 hours (see
+`POST /api/subscribe`. Its Dropped section lists the requests a script dropped, with why and no
+action. The Desk counts the first kind and the drops, each over the last 24 hours (see
 [desk.md](desk.md#unrouted-events)).
 
 A comment or review from outside the repository is not unrouted: its outcome is `outsider`. The

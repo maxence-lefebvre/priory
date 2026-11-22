@@ -304,7 +304,8 @@ A notification leaves the queue once every browser got it or the daemon gave up 
 so a queue left by a stopped daemon goes out when the next one starts.
 
 Each notification carries an id and the ask's title, or the task's key and step or state, and the path that
-opens it, `/asks/<id>` or `/tasks/<id>`. Another alarm carries the desk's title for it, such as
+opens it, `/asks/<id>` or `/tasks/<id>`, with the same `id` the web view's lists link: an outside
+ask opens by its name, such as `/asks/notify.test`, not by its row in the state file. Another alarm carries the desk's title for it, such as
 `the intake fails to poll github` or `task cli:docs-1 prompt`, and its task's path, or `/` for an
 intake report. A cap's alarm carries its line, such as `spend cap reached: factory spent $50.10 of
 its day cap of $50.00; its new runs wait for the next day`, and `/`. It never carries the question, which can quote a result's

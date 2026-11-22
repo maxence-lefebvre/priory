@@ -119,7 +119,8 @@ and let a step wait for the fact.
 `priory inbox` lists a dropped request after its source event, with `dropped by <script>: <reason>`
 in its `line` column. `priory inbox --unrouted` lists each drop whose key no task has, with its
 trigger, script, reason and key, apart from the events no trigger wanted (see
-[serve.md](../reference/serve.md#unrouted)).
+[serve.md](../reference/serve.md#unrouted)). The web and Herdr Inboxes show them under Dropped, and
+the Desk counts those of the last 24 hours (see [desk.md](../daemon/desk.md#unrouted-events)).
 
 ## Where it runs
 

@@ -892,7 +892,11 @@ pub(crate) fn section(
             let short = commit.get(..7).unwrap_or(&commit);
             let line = format!("- {} ({kind} at {short})", markdown_text(&caption));
             match url {
-                Some(url) => format!("{line}: {}/tasks/{task}", url.trim_end_matches('/')),
+                Some(url) => format!(
+                    "{line}: {}{}",
+                    url.trim_end_matches('/'),
+                    crate::listing::task_page(task)
+                ),
                 None => line,
             }
         })

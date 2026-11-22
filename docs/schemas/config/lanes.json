@@ -3,6 +3,23 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
+    "Lane": {
+      "additionalProperties": false,
+      "description": "`[lane.\"<team>/<theme>\"]`: how the queue treats one lane.",
+      "properties": {
+        "max_running": {
+          "default": null,
+          "description": "The most of the lane's tasks that may have a live run at once; new starts past it wait.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "Rule": {
       "additionalProperties": false,
       "description": "A rule sets at least one of `key`, `team`, `project` and `branch`, and matches a task that fits\neach one it sets.",
@@ -54,6 +71,13 @@
         "string",
         "null"
       ]
+    },
+    "lane": {
+      "additionalProperties": {
+        "$ref": "#/definitions/Lane"
+      },
+      "description": "Each lane's settings, by its `<team>/<theme>` name.",
+      "type": "object"
     },
     "rules": {
       "description": "The rules, tried in order: the first that matches gives the lane.",

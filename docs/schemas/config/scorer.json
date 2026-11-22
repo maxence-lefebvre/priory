@@ -27,6 +27,11 @@
           "type": "string"
         },
         {
+          "const": "held",
+          "description": "Grades a merged task when `after` comes: fails when a signal of `fails` happened by then.",
+          "type": "string"
+        },
+        {
           "const": "intent",
           "description": "Asks the decision model `run` yes or no questions drawn from the trigger's intent and\nno-op cases.",
           "type": "string"
@@ -50,12 +55,25 @@
           "const": "ask",
           "description": "The asks the run made.",
           "type": "string"
+        },
+        {
+          "const": "merge",
+          "description": "What followed the task's merge.",
+          "type": "string"
         }
       ]
     }
   },
-  "description": "`scorers/<name>.toml` or `.yaml`: a question that grades one finished run with `pass` or\n`fail`. The file name is the scorer's name.",
+  "description": "`scorers/<name>.toml` or `.yaml`: a question that grades one finished run, or for `held` a merged\ntask, with `pass` or `fail`. The file name is the scorer's name.",
   "properties": {
+    "after": {
+      "description": "For `held`, when the daemon grades the task: `merged + <n>` with a unit of `m`, `h` or\n`d`, such as `merged + 7d`.",
+      "pattern": "^merged *\\+ *0*[1-9][0-9]*[mhd]$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "agreement": {
       "description": "For `judge`, the least share of labeled cases it must get right before its verdict counts;\n0.8 when unset.",
       "format": "double",
@@ -85,6 +103,14 @@
       },
       "type": "array"
     },
+    "fails": {
+      "default": [],
+      "description": "For `held`, the signals that fail it when they happened by the moment `after` names:\n`changes-requested`, `red-after-merge`, `reverted`, `marked-wrong` or `fixed`.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "key_env": {
       "description": "For `intent`, the environment variable that holds the decision model's key, never the key\nitself. `run` sees it, `PATH` and `HOME`, and no other variable.",
       "type": [
@@ -98,7 +124,7 @@
           "$ref": "#/definitions/ScoreKind"
         }
       ],
-      "description": "How it answers: `outcome`, `command`, `ask-shape`, `judge` or `intent`."
+      "description": "How it answers: `outcome`, `command`, `ask-shape`, `judge`, `held` or `intent`."
     },
     "model": {
       "description": "For `judge`, the model that grades, such as `opus`.",
@@ -113,7 +139,7 @@
           "$ref": "#/definitions/ScoreOn"
         }
       ],
-      "description": "What it reads: `result`, `diff` or `ask`."
+      "description": "What it reads: `result`, `diff`, `ask` or `merge`."
     },
     "prompt": {
       "description": "For `judge`, the file beside the scorer that holds the judge's whole prompt.",

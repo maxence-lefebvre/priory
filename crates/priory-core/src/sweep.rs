@@ -2,7 +2,7 @@ use crate::recipe::{self, Teardown};
 use priory_factory::factory::Factory;
 use priory_runtime::worktrees::{self, Found};
 use rusqlite::{Connection, OptionalExtension};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// A task folder under `PRIORY_HOME/worktrees` and why it stays, or `None` when it can go.
 struct Entry {
@@ -74,8 +74,8 @@ fn assess(db: &Connection, home: &Path) -> rusqlite::Result<Vec<Entry>> {
 }
 
 /// Removes the worktree and branch of every ended task that nothing keeps, after fetching each
-/// clone, and after the repository's teardown succeeded in it. A teardown owed here starts at the
-/// daemon's next tick.
+/// clone (see `fetch`), and after the repository's teardown succeeded in it. A teardown owed here
+/// starts at the daemon's next tick.
 pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<()> {
     crate::evidence::sweep(db, home)?;
     let mut repos: Vec<_> = worktrees::found(home)
@@ -83,13 +83,7 @@ pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<
         .map(|found| found.repo)
         .collect();
     repos.dedup();
-    let mut unfetched = Vec::new();
-    for repo in repos {
-        if let Err(error) = worktrees::fetch(home, &repo) {
-            eprintln!("priory daemon: fetching {repo}: {error}");
-            unfetched.push(repo);
-        }
-    }
+    let unfetched = fetch(home, &repos, jiff::Timestamp::now());
     for entry in assess(db, home)? {
         if unfetched.contains(&entry.found.repo) {
             continue;
@@ -118,6 +112,134 @@ pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<
         }
     }
     Ok(())
+}
+
+/// How long the sweep waits before it fetches again a clone whose fetch failed.
+const RETRY: jiff::SignedDuration = jiff::SignedDuration::from_hours(1);
+
+/// A clone whose last fetch failed, kept in `<home>/fetches/<owner>/<name>.json`.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Failing {
+    since: jiff::Timestamp,
+    tried: jiff::Timestamp,
+    error: String,
+}
+
+fn failing_file(home: &Path, repo: &str) -> PathBuf {
+    home.join("fetches").join(format!("{repo}.json"))
+}
+
+fn failing(home: &Path, repo: &str) -> Option<Failing> {
+    serde_json::from_slice(&std::fs::read(failing_file(home, repo)).ok()?).ok()
+}
+
+/// Fetches the clone of each of `repos` and returns those it did not fetch. A clone whose fetch
+/// failed is logged once, kept as failing, and fetched again only an hour after its last try. A
+/// failure of a repository with no worktree left is forgotten.
+fn fetch(home: &Path, repos: &[String], now: jiff::Timestamp) -> Vec<String> {
+    let now = jiff::Timestamp::from_second(now.as_second()).unwrap_or(now);
+    let mut unfetched = Vec::new();
+    for repo in repos {
+        let failed = failing(home, repo);
+        if failed
+            .as_ref()
+            .is_some_and(|failed| failed.tried + RETRY > now)
+        {
+            unfetched.push(repo.clone());
+            continue;
+        }
+        let file = failing_file(home, repo);
+        match worktrees::fetch(home, repo) {
+            Ok(()) if failed.is_some() => {
+                let _ = std::fs::remove_file(&file);
+                eprintln!("priory daemon: fetching {repo} works again");
+            }
+            Ok(()) => {}
+            Err(error) => {
+                if failed.is_none() {
+                    eprintln!(
+                        "priory daemon: fetching {repo}: {error}; the sweep tries it again every hour"
+                    );
+                }
+                let failing = Failing {
+                    since: failed.map_or(now, |failed| failed.since),
+                    tried: now,
+                    error: git_error(&error),
+                };
+                let written = std::fs::create_dir_all(file.parent().expect("a repo has an owner"))
+                    .and_then(|()| {
+                        std::fs::write(&file, serde_json::to_vec(&failing).expect("serializes"))
+                    });
+                if let Err(written) = written {
+                    eprintln!("priory daemon: recording {}: {written}", file.display());
+                }
+                unfetched.push(repo.clone());
+            }
+        }
+    }
+    for (repo, file) in failing_files(home) {
+        if !repos.contains(&repo) {
+            let _ = std::fs::remove_file(file);
+        }
+    }
+    unfetched
+}
+
+/// The first line git printed, without the command `run` puts first.
+fn git_error(error: &str) -> String {
+    let first = error.lines().next().unwrap_or_default();
+    first
+        .split_once("\": ")
+        .map_or(first, |(_, said)| said)
+        .to_owned()
+}
+
+/// Each `owner/name` with a failing fetch on record, and its file.
+fn failing_files(home: &Path) -> Vec<(String, PathBuf)> {
+    let read = |dir: &Path| {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| {
+                (
+                    entry.file_name().to_string_lossy().into_owned(),
+                    entry.path(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut found = Vec::new();
+    for (owner, dir) in read(&home.join("fetches")) {
+        for (file, path) in read(&dir) {
+            if let Some(name) = file.strip_suffix(".json") {
+                found.push((format!("{owner}/{name}"), path));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// One line per repository whose clone fails to fetch while it still has worktrees: since when,
+/// git's error, and the folders to remove when its remote is gone. Joined by `; `.
+pub fn fetch_banner(home: &Path) -> Option<String> {
+    let lines: Vec<String> = failing_files(home)
+        .into_iter()
+        .filter(|(repo, _)| home.join("worktrees").join(repo).is_dir())
+        .filter_map(|(repo, _)| {
+            let failed = failing(home, &repo)?;
+            Some(format!(
+                "fetching {repo} fails since {}: {}; the sweep tries it again every hour. \
+                 If its remote is gone, remove {} and {}",
+                failed.since,
+                failed.error,
+                home.join("worktrees").join(&repo).display(),
+                home.join("repos").join(&repo).display()
+            ))
+        })
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("; "))
 }
 
 /// Retires asleep tasks, longest asleep first, while `short` says the disk is short: removes each
