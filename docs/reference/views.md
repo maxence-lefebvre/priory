@@ -101,6 +101,7 @@ tabs = [
   { panel = "tasks" },
   { panel = "runs" },
   { panel = "inbox" },
+  { panel = "queue" },
   { panel = "reports" },
   { panel = "workflow" },
   { panel = "costs" },

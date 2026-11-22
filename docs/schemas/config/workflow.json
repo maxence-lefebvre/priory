@@ -121,6 +121,14 @@
             "null"
           ]
         },
+        "budget": {
+          "description": "Model steps only: the dollars the task may spend at this step, such as `\"1.00\"`, priced\nwith `prices.toml` at each turn end.",
+          "pattern": "^[0-9]+(\\.[0-9]+)?$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "by": {
           "additionalProperties": {
             "$ref": "#/definitions/By"

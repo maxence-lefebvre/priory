@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 89;
+const VERSION: i64 = 90;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1606,6 +1606,33 @@ CREATE TABLE IF NOT EXISTS spend_reached (
 PRAGMA user_version = 89;
 ";
 
+// Each repository recipe the daemon owes or ran in a task's worktree: `setup`, `resume` or
+// `teardown`, with its command, its process group while it runs, and its status and output after.
+const SCHEMA_90: &str = concat!(
+    "
+CREATE TABLE IF NOT EXISTS recipes (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  task        INTEGER NOT NULL REFERENCES tasks (id),
+  moment      TEXT NOT NULL CHECK (moment IN ('setup', 'resume', 'teardown')),
+  worktree    TEXT NOT NULL,
+  argv        TEXT NOT NULL,
+  timeout     INTEGER NOT NULL,
+  created     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  started     TEXT,
+  pid         INTEGER,
+  pid_started INTEGER,
+  ended       TEXT,
+  status      TEXT,
+  output      TEXT,
+  shown       TEXT
+);
+CREATE INDEX IF NOT EXISTS recipes_by_task ON recipes (task, id);
+",
+    bumps!("recipes"),
+    "PRAGMA user_version = 90;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1619,6 +1646,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
+    SCHEMA_90,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -2807,6 +2835,10 @@ pub(crate) fn admissible<'r>(
     let mut statement = db.prepare(&format!(
         "SELECT id, workflow, step, trigger, state = 'queued', repo FROM tasks
              WHERE state IN ('queued', 'ready')
+             -- A task waits while a recipe runs in its worktree, or a teardown is owed there.
+             AND NOT EXISTS (SELECT 1 FROM recipes WHERE recipes.task = tasks.id
+               AND recipes.ended IS NULL
+               AND (recipes.started IS NOT NULL OR recipes.moment = 'teardown'))
              -- With several runners, only a task whose key the log gives this one, and not one
              -- whose `kept` it waits to read back. A lead task stays on its ask's runner.
              AND (?1 IS NULL OR tasks.trigger = ?2 OR EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key

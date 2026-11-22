@@ -1,0 +1,7 @@
+# Dollars per million tokens of each kind, by the model name the transcript gives. The dream's
+# budget needs the price of the model its agent runs.
+["claude-sonnet-5-5"]
+input = 2.0
+output = 10.0
+cache_read = 0.1
+cache_write = 2.5

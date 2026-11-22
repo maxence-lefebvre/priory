@@ -1,0 +1,20 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+start = "fix"
+band = "later"
+
+[[steps]]
+id = "fix"
+decides = "model"
+agent = "fixer"
+prompt = "Make the change the issue asks for, so `priory check --repo .` reports its criterion as met. Run the tests, and commit."
+effect = "reversible"
+next = { passed = "open-pr", failed = "stop" }
+
+# A person reviews every pull request before it merges, and nothing here merges.
+[[steps]]
+id = "open-pr"
+decides = "code"
+action = "open-pr"
+effect = "irreversible"
+autonomous = "it only opens a pull request, which a person reviews before anyone merges it"
+next = { opened = "done", failed = "stop" }

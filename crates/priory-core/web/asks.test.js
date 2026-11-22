@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, takesText, writeNote } from "./asks.js";
+import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, takesText, openAsksOf, writeNote } from "./asks.js";
 
 const now = Date.parse("2026-11-20T12:00:00Z");
 const ask = (id, fields) => ({ id, state: "open", snoozed_until: null, ...fields });
@@ -86,14 +86,14 @@ test("a step's ask takes only its options, so it offers no text and no dismissal
 });
 
 test("another runner's ask names its runner, and this runner's ask names none", () => {
-  assert.equal(runnerOf(ask("xps13:12", { runner: "xps13", last_seen: null, submissions: [] })), "xps13");
+  assert.equal(runnerOf(ask("desktop:12", { runner: "desktop", last_seen: null, submissions: [] })), "desktop");
   assert.equal(runnerOf(ask(7, { runner: "workstation" })), null);
   assert.equal(runnerOf(ask(8)), null);
 });
 
 test("another runner's ask says when its runner was last seen once that is over 3 minutes ago", () => {
   const ago = (iso) => `${Math.round((now - Date.parse(iso)) / 60000)} min`;
-  const remote = (last_seen) => ask("xps13:12", { runner: "xps13", last_seen, submissions: [] });
+  const remote = (last_seen) => ask("desktop:12", { runner: "desktop", last_seen, submissions: [] });
   assert.equal(seenAgo(remote("2026-11-20T11:20:00Z"), now, ago), "last seen 40 min ago");
   assert.equal(seenAgo(remote("2026-11-20T11:58:00Z"), now, ago), null);
   assert.equal(seenAgo(remote(null), now, ago), "never seen");
@@ -113,14 +113,14 @@ test("another runner's ask says what became of its latest submission until its r
 });
 
 test("a write to another runner's ask that could not reach the log says nothing was sent, in the server's words", () => {
-  const remote = ask("xps13:12", { runner: "xps13", submissions: [] });
+  const remote = ask("desktop:12", { runner: "desktop", submissions: [] });
   const body = { error: "the log is unreachable: connection refused. Nothing was sent: try again" };
   assert.equal(writeNote(503, body, () => "", remote), "Could not send: the log is unreachable: connection refused. Nothing was sent: try again.");
   assert.match(writeNote(503, body, () => "", ask(7)), /no priory daemon runs beside this server/);
 });
 
 test("the S key snoozes no ask of another runner, whose task is a task of that runner", () => {
-  assert.equal(snoozeShortcut(ask("xps13:12", { task: 4, runner: "xps13", submissions: [] }), now), null);
+  assert.equal(snoozeShortcut(ask("desktop:12", { task: 4, runner: "desktop", submissions: [] }), now), null);
 });
 
 test("each answer and dismiss sent to another runner's ask is a history row with its runner, its outcome and when it was sent", () => {
@@ -137,4 +137,15 @@ test("each answer and dismiss sent to another runner's ask is a history row with
     { tile: "queued", text: "Sent merge to laptop for revision 2. Not applied yet", at: "2026-11-20T11:30:00Z" },
   ]);
   assert.deepEqual(submitted(ask(7)), []);
+});
+
+test("a task page lists its task's open asks, snoozed ones too, oldest first", () => {
+  const asks = [
+    { id: 4, task: 7, state: "open", since: "2026-11-20T11:00:00Z" },
+    { id: 3, task: 7, state: "open", since: "2026-11-20T09:00:00Z", snoozed_until: "2026-11-21T09:00:00Z" },
+    { id: 2, task: 7, state: "answered", since: "2026-11-20T08:00:00Z" },
+    { id: 1, task: 8, state: "open", since: "2026-11-20T07:00:00Z" },
+  ];
+  assert.deepEqual(openAsksOf(asks, 7).map((ask) => ask.id), [3, 4]);
+  assert.deepEqual(openAsksOf(asks, 9), []);
 });

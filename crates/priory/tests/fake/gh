@@ -5,6 +5,8 @@
 # FAKE_DIR/pr-state holds the state `pr view` prints, OPEN by default. `pr comment` appends the body
 # it reads on stdin to FAKE_DIR/pr-comments, and `api repos/<repo>/statuses/<sha>` prints `{}`. `pr create` numbers its pull
 # requests 7, 8, 9 and on, in order, and `pr edit` prints the URL of the pull request it edits. `api user` names the login in FAKE_DIR/gh-user, and fails without it.
+# `api repos/{owner}/{repo}` prints FAKE_DIR/repo, and fails without it. `api repos/<repo>/rules/branches/<b>`
+# prints FAKE_DIR/rules, `[]` by default, and `api repos/<repo>/branches/<b>` prints FAKE_DIR/branch, unprotected by default.
 set -u
 jq -nc '$ARGS.positional' --args -- "$@" >> "$FAKE_DIR/gh.log"
 case "$1 $2" in
@@ -26,6 +28,12 @@ case "$1 $2" in
   "pr comment")
     cat >> "$FAKE_DIR/pr-comments"
     echo "https://github.com/owner/repo/pull/$3#issuecomment-1" ;;
+  "api repos/{owner}/{repo}")
+    if [ -e "$FAKE_DIR/repo" ]; then cat "$FAKE_DIR/repo"; else echo 'none of the git remotes configured for this repository point to a known GitHub host' >&2; exit 1; fi ;;
+  "api repos/"*"/rules/branches/"*)
+    if [ -e "$FAKE_DIR/rules" ]; then cat "$FAKE_DIR/rules"; else echo '[]'; fi ;;
+  "api repos/"*"/branches/"*)
+    if [ -e "$FAKE_DIR/branch" ]; then cat "$FAKE_DIR/branch"; else echo '{"name":"main","protection":{"enabled":false}}'; fi ;;
   "api repos/"*"/statuses/"*)
     echo '{}' ;;
   "issue create")

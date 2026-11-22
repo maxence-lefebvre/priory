@@ -139,6 +139,17 @@ see it drawn, paste it into a Mermaid viewer, or open Flows in the web view afte
 `approve-pr` that approves it. `priory check` refuses a workflow that reaches an irreversible step
 with no person's approval.
 
+Then check your repository's checkout, here `../my-project`:
+
+```sh
+priory check example --repo ../my-project
+```
+
+It prints a score, such as `readiness: 5 of 7 met, 2 missing, 0 unknown`, then one line per
+criterion, such as `met`, `test-command` and `cargo test`. Each missing one has a line that says how
+to fix it, such as an `AGENTS.md` or a `gate` in `factory.toml`. It changes nothing. An agent left alone does better
+in a repository that meets them all. See [readiness.md](docs/reference/readiness.md).
+
 ## 4. Run it
 
 Priory runs as two processes. The daemon turns requests into tasks and runs the agents. The intake
@@ -245,9 +256,11 @@ with a key such as `github:owner/name#42`. It goes through the same steps.
   [A task's life](docs/daemon/README.md#a-tasks-life).
 - Stop an agent's irreversible command, or make an outcome need proof: [the tool guard](docs/daemon/guard.md)
   and [proofs](docs/daemon/tools.md#proofs).
+- Install and build each new worktree before its agent starts, and clean it up before the sweep
+  removes it: [recipes](docs/daemon/runs.md#recipes).
 - Give every agent the same writing guide, facts and skills: [writing.md](docs/daemon/writing.md) and
   [skills.md](docs/daemon/skills.md).
 - Run one factory on two machines: [How to add a second machine](docs/adding-a-second-machine.md).
 - Work from Herdr or from GitHub's pull request page: [the Herdr adapter](docs/adapters/herdr.md) and
-  [the GitHub extension](adapters/github/README.md).
+  [the GitHub extension](docs/adapters/github.md).
 - Queue a Slack thread from Slack: [the message shortcut](docs/intake/slack.md#message-shortcut).

@@ -2215,11 +2215,82 @@ pub(crate) fn stop(
     let Some(run) = run(tx, session)? else {
         return Ok(None);
     };
+    // Priced before the result moves the task, since a move resets the step's tokens.
+    if let Some((over, reason)) = over_budget(tx, &run, trace)? {
+        let sent = tx
+            .query_row("SELECT 1 FROM results WHERE run = ?1", [run.id], |_| Ok(()))
+            .optional()?
+            .is_some();
+        // The money of a turn that sent its result is spent: the result stands, and its step's
+        // trace record carries the overrun.
+        if !(over && sent) {
+            end(tx, run.id, "budget")?;
+            set(tx, run.task, "failed", None, Some(&reason))?;
+            return Ok(Some(run.tmux.clone()));
+        }
+    }
     if let Some(kill) = settle(tx, &run, trace)? {
         return Ok(kill);
     }
     nudge(tx, run.id, run.task)?;
     Ok(None)
+}
+
+/// What the task has spent at its current step, priced with `prices.toml`, against the step's
+/// `budget`: `None` under it or without one, else whether it is over, or its cost unknown, and why.
+fn over_budget(
+    tx: &Transaction,
+    run: &Run,
+    trace: &Trace,
+) -> rusqlite::Result<Option<(bool, String)>> {
+    let factory = trace.factory;
+    let Some(budget) = step(&factory.workflows, &run.workflow, &run.step).and_then(Step::budget)
+    else {
+        return Ok(None);
+    };
+    let (tokens, model): (Option<String>, Option<String>) = tx.query_row(
+        "SELECT tokens, model FROM tasks WHERE id = ?1",
+        [run.task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let unknown = |why: String| {
+        Some((
+            false,
+            format!(
+                "step {} has a budget, and run {}'s cost is unknown: {why}",
+                run.step, run.id
+            ),
+        ))
+    };
+    let Some(tokens) = tokens.and_then(|tokens| serde_json::from_str::<Value>(&tokens).ok()) else {
+        return Ok(unknown("its transcript gave no tokens".to_owned()));
+    };
+    let Some(model) = model else {
+        return Ok(unknown("its transcript named no model".to_owned()));
+    };
+    let Some(price) = factory.prices.get(&model) else {
+        return Ok(unknown(format!("price missing for {model}")));
+    };
+    let spent = trace::priced(&tokens, price);
+    if spent <= budget {
+        return Ok(None);
+    }
+    Ok(Some((
+        true,
+        format!(
+            "step {} spent {}, over its budget of ${budget:.2}",
+            run.step,
+            dollars(spent, budget)
+        ),
+    )))
+}
+
+/// `spent` in dollars, to cents unless cents would hide that it passed `budget`.
+fn dollars(spent: f64, budget: f64) -> String {
+    if (spent * 100.0).round() > (budget * 100.0).round() {
+        return format!("${spent:.2}");
+    }
+    format!("${spent:.6}")
 }
 
 /// Measure a change to it first with `nudge.eval.toml` (docs/evaluating-a-prompt.md).

@@ -28,6 +28,8 @@ pub mod post;
 pub mod progress;
 pub mod proof;
 mod push;
+pub mod recap;
+mod recipe;
 pub mod relate;
 pub mod replay;
 pub mod report;

@@ -5,14 +5,14 @@ import { address, call, request } from "../lib/request.js";
 const TOKEN = "s3cret-token";
 
 test("an address becomes an origin: https beyond loopback, http only on loopback", () => {
-  assert.deepEqual(address(" xps13.tail1234.ts.net "), { origin: "https://xps13.tail1234.ts.net" });
+  assert.deepEqual(address(" desktop.tail1234.ts.net "), { origin: "https://desktop.tail1234.ts.net" });
   assert.deepEqual(address("127.0.0.1:7340"), { origin: "http://127.0.0.1:7340" });
   assert.deepEqual(address("http://localhost:7340/"), { origin: "http://localhost:7340" });
-  assert.deepEqual(address("https://xps13.tail1234.ts.net/"), { origin: "https://xps13.tail1234.ts.net" });
+  assert.deepEqual(address("https://desktop.tail1234.ts.net/"), { origin: "https://desktop.tail1234.ts.net" });
 });
 
 test("an address with a path, a query, credentials or plain http beyond loopback is refused", () => {
-  for (const bad of ["", "http://xps13.tail1234.ts.net", "https://h/api", "https://h/?token=x", "https://u:p@h", "ftp://h", "https://h#x"]) {
+  for (const bad of ["", "http://desktop.tail1234.ts.net", "https://h/api", "https://h/?token=x", "https://u:p@h", "ftp://h", "https://h#x"]) {
     assert.ok(address(bad).error, bad);
   }
 });

@@ -77,6 +77,10 @@ class Chapters(unittest.TestCase):
         }
         self.assertEqual(on_disk - set(listed), set())
 
+    def test_the_adapters_group_lists_herdr_then_github(self):
+        adapters = dict(build.chapters())["Adapters"]
+        self.assertEqual(adapters, ["docs/adapters/herdr.md", "docs/adapters/github.md"])
+
     def test_home_includes_every_section_it_names(self):
         home = build.home(PAGES)
         self.assertNotIn("<!-- include", home)
