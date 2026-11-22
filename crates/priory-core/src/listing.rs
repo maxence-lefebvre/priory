@@ -681,7 +681,7 @@ fn tasks_since(
     let query = format!(
         "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
            generation, retired, tldr, changed AS since, grade, grade_reason, progress, {CONDITIONS},
-           {TITLE}, batch
+           {TITLE}, batch, added_by
          FROM tasks LEFT JOIN queue USING (id)
          WHERE (?1 IS NULL OR lane = ?1) AND (?2 IS NULL OR grade = ?2)
            AND (?3 IS NULL OR state NOT IN ('done', 'failed', 'dropped') OR changed >= ?3)
@@ -1277,7 +1277,9 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
            UNION ALL
            SELECT * FROM (SELECT time, task,
                CASE type WHEN ?2 THEN subject || ': ' || json_extract(data, '$.line')
-                 ELSE type || coalesce(' ' || subject, '') || coalesce(': ' || outcome, '') END,
+                 ELSE type || coalesce(' ' || subject, '') || coalesce(': ' || outcome, '')
+                   || CASE type WHEN ?3 THEN coalesce(', added by session '
+                     || json_extract(data, '$.session'), '') ELSE '' END END,
                1, seq
              FROM inbox WHERE julianday(time) >= (SELECT at FROM visited)
              -- An event no task took would crowd out the rest in a busy repository.
@@ -1286,7 +1288,7 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
          SELECT time, task, (SELECT key FROM tasks WHERE tasks.id = events.task) AS key, what
          FROM events
          ORDER BY julianday(time) DESC, source DESC, seq DESC LIMIT 50",
-        params![person, post::REPORT],
+        params![person, post::REPORT, crate::route::TASK_REQUESTED],
     )
 }
 
@@ -1521,7 +1523,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         &format!(
             "{} SELECT id, key, workflow, step, state, band, lane, reason, queue.place AS position,
                generation, retired, tldr, changed AS since, repo, branch, base_sha, grade, grade_reason,
-               merge_risk, progress, plan_goal, plan_testing, plan_brief, verification, intervention, lead, batch, {CONDITIONS}
+               merge_risk, progress, plan_goal, plan_testing, plan_brief, verification, intervention, lead, batch, added_by, {CONDITIONS}
              FROM tasks LEFT JOIN queue USING (id) WHERE id = ?1",
             places()
         ),

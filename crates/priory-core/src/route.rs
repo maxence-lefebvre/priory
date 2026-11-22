@@ -53,6 +53,8 @@ pub(crate) struct NewTask {
     pub context: Option<String>,
     #[serde(default)]
     pub pre: Option<PreScript>,
+    #[serde(default)]
+    pub session: Option<String>,
 }
 
 /// The `pre` object of a request, as far as a task keeps it.

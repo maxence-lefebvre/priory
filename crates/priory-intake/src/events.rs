@@ -822,6 +822,10 @@ pub struct TaskRequested {
     /// The batch a planning task plans, from `priory batch add`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch: Option<BatchRequest>,
+    /// The outside session that added the task through `priory mcp --outside`: its hc terminal,
+    /// then its Claude session id, or `outside` without an hc terminal. CLI sources only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
     /// When the firing was due. Schedule sources only.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(extend("format" = "date-time"))]

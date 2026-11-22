@@ -302,6 +302,9 @@ outside ask's `command` is a string that Priory stores and never runs; the answe
 the factory names a `deliver` command, the daemon then delivers the answer or the dismissal to
 `session`, as [asks.md](../daemon/asks.md) describes.
 
+The `ask` tool of `priory mcp --outside` stores the same ask from a person's own session, with the
+session named the same way (see [The outside server](../daemon/tools.md#the-outside-server)).
+
 ## `wait(on?, any?)`
 
 `wait` stores a wait on one condition, `on`, or on a list of them, `any`. A call takes one of the

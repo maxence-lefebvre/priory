@@ -5,6 +5,16 @@ desk, add a task and ask a question through Priory, with a plugin and an MCP mod
 builds nothing. It holds the model, the first code slice with its tests, the slices after it, and
 the open questions with a recommendation for each.
 
+The first slice is built, with each recommendation taken:
+[claude-plugin.md](../adapters/claude-plugin.md) describes it, and
+[tools.md](../daemon/tools.md#the-outside-server) holds the server and the hook. It differs here:
+the `desk`, `ask` and `add` skills are also the `/priory:desk`, `/priory:ask` and `/priory:add`
+commands, since a skill is a slash command and a command file of the same name would clash, so
+`commands/` holds only `answer.md`. The server also drops a `session` the model passes to `ask`,
+and Since you looked names the session that added a task. Claude Code's docs confirm the first two
+facts below; they do not say whether a `!` line passes through `PreToolUse`, so that one stays
+unchecked.
+
 A person's session is not a run. Priory did not start it, it has no task, and the person sits in
 front of it. Today such a session reaches Priory through `priory ask ID JSON`, which the person's
 own instruction files tell the model to type.

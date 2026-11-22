@@ -31,8 +31,9 @@ Run `sh install.sh --prefix /usr/local` from a clone to install to `/usr/local/b
 
 ### What a release holds
 
-Each release also holds `priory-herdr.tar.gz`, the [Herdr adapter](../adapters/herdr/), and
-`priory-github-extension.zip`, the [GitHub extension](adapters/github.md).
+Each release also holds `priory-herdr.tar.gz`, the [Herdr adapter](../adapters/herdr/),
+`priory-github-extension.zip`, the [GitHub extension](adapters/github.md), and
+`priory-claude-plugin.tar.gz`, the [Claude Code plugin](adapters/claude-plugin.md).
 
 The release binaries leave out the cargo features. A build from source can add them: the
 in-process embedding model for search with `--features model`, and the Postgres event log, which

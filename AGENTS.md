@@ -15,7 +15,8 @@ Read it before you change behaviour or name a concept, and use its Concepts tabl
 - `examples/`: one starter factory per folder. A test runs `priory check` on each folder.
 - `adapters/`: one view host per folder, outside the Cargo workspace. `adapters/herdr/` holds the
   Herdr mods, layout and install script, and their Node.js tests. `adapters/github/` holds the
-  browser extension for GitHub's pull request page, and its Node.js tests.
+  browser extension for GitHub's pull request page, and its Node.js tests. `adapters/claude-plugin/`
+  holds the Claude Code plugin for a person's own session, and its Node.js tests.
 - `docs/prd.md`: what Priory does and in which milestone.
 - `docs/daemon/`: how the daemon runs tasks, one file per topic. Its `README.md` says which file to read.
 - `docs/intake/`: the intake's message contract, one file per source. Its `README.md` says which file to read.
@@ -36,7 +37,7 @@ Before you call a change done, run these from the repository root and fix every 
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-node --test adapters/herdr/test/*.test.js adapters/github/test/*.test.js crates/priory-core/web/*.test.js
+node --test adapters/herdr/test/*.test.js adapters/github/test/*.test.js adapters/claude-plugin/test/*.test.js crates/priory-core/web/*.test.js
 ```
 
 CI runs the same four commands on every push to `main` and every pull request.

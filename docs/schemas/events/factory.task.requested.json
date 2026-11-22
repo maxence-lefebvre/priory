@@ -456,6 +456,13 @@
             "null"
           ]
         },
+        "session": {
+          "description": "The outside session that added the task through `priory mcp --outside`: its hc terminal,\nthen its Claude session id, or `outside` without an hc terminal. CLI sources only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "source": {
           "description": "The `id` of the source event's message.",
           "format": "uuid",
