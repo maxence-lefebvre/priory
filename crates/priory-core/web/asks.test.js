@@ -22,6 +22,21 @@ test("an ask snoozed past now leaves Open and its count, and an expired snooze d
   assert.deepEqual(groups.withdrawn.map((each) => each.id), [5]);
 });
 
+test("Open and Snoozed list their asks oldest first, as the Desk does", () => {
+  const asks = [
+    ask(1, { since: "2026-11-20T11:20:00Z" }),
+    ask(2, { since: "2026-11-20T10:00:00+01:00" }),
+    ask(3, { since: "2026-11-20T11:47:00Z" }),
+    ask(4, { since: "2026-11-20T11:00:00Z", snoozed_until: "2026-11-20T13:00:00Z" }),
+    ask(5, { since: "2026-11-20T09:00:00Z", snoozed_until: "2026-11-20T14:00:00Z" }),
+  ];
+
+  const groups = askGroups(asks, now);
+
+  assert.deepEqual(groups.open.map((each) => each.id), [2, 1, 3]);
+  assert.deepEqual(groups.snoozed.map((each) => each.id), [5, 4]);
+});
+
 test("an open ask routed to a lead is marked with the lead, and an unrouted or answered ask is not", () => {
   assert.equal(routedMark(ask(1, { routed_to: "lead" })), "with lead");
   assert.equal(routedMark(ask(2, { routed_to: null })), null);

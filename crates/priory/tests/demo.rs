@@ -28,6 +28,26 @@ fn the_demo_sends_answers_to_both_other_runners_asks() {
         .unwrap();
     assert!(seeded.status.success(), "{seeded:?}");
 
+    // The README's screenshots come from this seed, so it holds only the states R4.1 names.
+    let listed = Command::new(real)
+        .args(["tasks", "--json"])
+        .env("PRIORY_DB", demo.join("state.db"))
+        .env("PRIORY_HOME", demo.join("home"))
+        .output()
+        .unwrap();
+    assert!(listed.status.success(), "{listed:?}");
+    let tasks: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    let states = [
+        "queued", "held", "ready", "running", "asleep", "blocked", "done", "failed", "dropped",
+    ];
+    for task in tasks["tasks"].as_array().unwrap() {
+        // Another runner's task carries its hold, not a state.
+        let Some(state) = task["state"].as_str() else {
+            continue;
+        };
+        assert!(states.contains(&state), "task {} is {state}", task["id"]);
+    }
+
     for (ask, option, revision, runner) in [
         ("laptop:4", "split it", "2", "laptop"),
         ("desktop:12", "approved", "1", "desktop"),

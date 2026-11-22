@@ -11,7 +11,8 @@ export const snoozed = (ask, now) => ask.state === "open" && Boolean(ask.snoozed
 
 // The asks list's groups. An ask snoozed past `now` leaves Open for Snoozed (DESIGN.md, Snooze).
 export function askGroups(asks, now) {
-  const open = asks.filter((ask) => ask.state === "open");
+  // `since` may carry any offset, so compare instants, not strings.
+  const open = asks.filter((ask) => ask.state === "open").sort((a, b) => (Date.parse(a.since) || 0) - (Date.parse(b.since) || 0));
   return {
     open: open.filter((ask) => !snoozed(ask, now)),
     snoozed: open.filter((ask) => snoozed(ask, now)),
