@@ -1,9 +1,9 @@
 # DESIGN.md
 
 The design system for Priory's web view (`docs/prd.md`, R8). Follow it for every panel, view and
-component. The live reference is the
-[Priory design system artifact](https://claude.ai/artifact/3YYj2s5hmKksarCCC3VgHb): tokens, the
-main components and their states in every theme. The token files in
+component. The
+[Priory design system artifact](https://claude.ai/artifact/3YYj2s5hmKksarCCC3VgHb) is an older
+reference: tokens, the main components and their states in every theme. The token files in
 [`design/tokens/`](design/tokens/) are the source of truth for values. When the artifact, this
 file and the token files disagree, the token files win for values and this file wins for rules.
 Fix the others. The artifact still shows the older Ledger layout and four themes; redraw it for
@@ -1252,10 +1252,12 @@ with no change shows its line without an icon.
 
 - **Empty**: one sentence that says what appears here and what makes it appear, plus the action
   or CLI command. "No open asks. Agents ask here when they need you."
-- **Loading**: one sentence in the empty state's place, "Loading" and what loads: "Loading task
-  7…", "Loading older runs…". The Costs panel alone shows nothing for 300 ms, then skeleton
-  blocks on `--raised`. Never a full-page spinner. A list that has data keeps it while it
-  refreshes.
+- **Loading**: until the first listing arrives, the frame shows nothing. A page then shows one
+  sentence in the empty state's place, "Loading" and what loads: "Loading task 7…". A list that
+  loads its older rows ends with "Loading older runs…". The ask's plan and the terminal say
+  "Reading the plan of revision 2 before you answer." and "Reading the screen…". The Costs panel
+  alone shows nothing for 300 ms, then three skeleton blocks on `--raised`. Never a full-page
+  spinner. A list that has data keeps it while it refreshes.
 - **Error**: where it failed, why, and how to fix it, with a "Retry" button. "Could not load runs:
   the daemon refused the connection. Check that the daemon runs on its runner, then retry." Keep
   any stale data visible under the error.
@@ -1292,8 +1294,10 @@ run.
 - Focus ring: 2 px solid `--action-text` with a 2 px offset, on every focusable element, using
   `:focus-visible`.
 - Every control works by keyboard. Desktop shortcuts: `j` and `k` move, `Enter` opens, `1` to
-  `9` pick an option in the drawer (twice for a command), `n` adds a task, `s` snoozes the open ask
-  for 1 h, `Esc` closes. Single-key shortcuts never fire inside an input or an open sheet.
+  `9` pick an option of the open ask (twice for a command), `n` adds a task, `Esc` closes. `s`
+  snoozes the open ask for 1 h when it is open, not snoozed, belongs to a task on this runner, and
+  the page is online with no answer sending. Single-key shortcuts never fire inside an input or an
+  open sheet, and a setting turns them off. That setting is not built yet (see Open questions).
 - The sheet over `--scrim` is a modal `dialog`: focus moves into it, stays there, and returns to
   the answer bar when it closes. The section chips are a `nav` of in-page links.
 - Each panel is a `region` labelled by its title. The tab bar is a `nav`.
@@ -1349,7 +1353,8 @@ the adapter lives, how it reads and acts, and the data each panel needs. The app
   (52 px) with a `--pane-tile` (24 px) tile, views and chips `--pane-chip` (28 px) tall, options
   `--pane-option` (40 px) tall, the question in `--type-pane-question` (18 / 24), the desk count in
   `--type-pane-count` (40 / 1), and buttons at `--control-fine`.
-- **Width.** Every panel works at `--pane-narrow` (420 px), the default width of the view beside Herdr's terminals. Below
+- **Width.** An aside opens at 360 px and narrows to 280 px at least. Every panel should work at
+  `--pane-narrow` (420 px), which is wider than both: see the open question on Herdr asides. Below
   `--pane-split` (720 px) a selected row opens its detail in place, under the row. From
   `--pane-split`, the list and the detail sit side by side.
 - **Selection.** A selected row takes the `--action-soft` fill on its own rounded surface. It has
@@ -1593,8 +1598,8 @@ The web's [Runs panel](#runs-panel), as a tab in the center stack.
 - **Not built in the web view.** These were drawn and are not on `main`: the wide top bar's
   command bar (`Ctrl K`) and runner name, the phone top bar's filter and search buttons, the query
   bar, the shortcuts sheet (`?`), the `w` and `[` `]` keys, and skeleton rows outside Costs. Build
-  each with its rule here, or leave it out. A setting that turns single-key shortcuts off is also
-  missing; WCAG 2.2 (2.1.4, Character Key Shortcuts) needs one.
+  each with its rule here, or leave it out. The setting that turns single-key shortcuts off is
+  missing too; WCAG 2.2 (2.1.4, Character Key Shortcuts) needs it, so build it.
 - **Herdr asides.** An aside is a bare column, while the frame's main pane and the `cockpit-fleet`
   panels take a card: ground, 1 px border, 10 px radius and a small shadow. Decide whether asides
   take the same card. Asides open at 360 px with a 280 px floor, under `--pane-narrow` (420 px),
