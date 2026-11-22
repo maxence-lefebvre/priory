@@ -352,8 +352,15 @@ fn reports(desk: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
+/// `PRIORY_NOW` for a poll `minutes` before the real time, so the desk's 5-minute check still sees
+/// the last poll as recent.
+fn minutes_ago(minutes: i64) -> String {
+    let now = herdr_bus::Timestamp::now().as_second() - minutes * 60;
+    herdr_bus::Timestamp::from_second(now).unwrap().to_string()
+}
+
 #[test]
-fn a_failing_poll_reports_once_and_shows_a_banner_until_a_good_poll_clears_both() {
+fn a_failing_poll_reports_once_past_15_minutes_and_a_good_poll_clears_the_report_and_banner() {
     let setup = Setup::new("gh-fails-desk", &[]);
     Setup::fake_gh(
         &setup.dir,
@@ -361,8 +368,9 @@ fn a_failing_poll_reports_once_and_shows_a_banner_until_a_good_poll_clears_both(
     );
     let error = format!("gh api {EVENTS_PATH} failed: HTTP 401: Bad credentials");
 
-    setup.intake();
-    setup.intake();
+    setup.intake_at(&minutes_ago(16));
+    setup.intake_at(&minutes_ago(1));
+    setup.intake_at(&minutes_ago(0));
 
     let desk = setup.desk();
     assert_eq!(reports(&desk), [format!("intake: github: {error}")]);
@@ -377,6 +385,149 @@ fn a_failing_poll_reports_once_and_shows_a_banner_until_a_good_poll_clears_both(
     let desk = setup.desk();
     assert_eq!(desk["intake"], serde_json::Value::Null);
     assert!(reports(&desk).is_empty(), "{desk}");
+}
+
+#[test]
+fn a_poll_failing_for_less_than_15_minutes_posts_no_alarm_and_shows_a_calm_banner() {
+    let setup = Setup::new("gh-fails-briefly", &[]);
+    Setup::fake_gh(
+        &setup.dir,
+        "#!/bin/sh\necho 'HTTP 401: Bad credentials' >&2\nexit 1\n",
+    );
+    let error = format!("gh api {EVENTS_PATH} failed: HTTP 401: Bad credentials");
+    let since = minutes_ago(14);
+
+    setup.intake_at(&since);
+    setup.intake_at(&minutes_ago(0));
+
+    let desk = setup.desk();
+    assert!(reports(&desk).is_empty(), "{desk}");
+    assert_eq!(desk["next"], serde_json::Value::Null, "{desk}");
+    assert_eq!(
+        desk["intake"],
+        format!("the intake retries github since {since}: {error}")
+    );
+    setup.answer(&[]);
+    succeeded(&setup.intake());
+    assert_eq!(setup.desk()["intake"], serde_json::Value::Null);
+}
+
+#[test]
+fn intake_alarm_after_sets_how_long_a_poll_fails_before_it_reports() {
+    let setup = Setup::new("gh-fails-alarm-after", &[]);
+    write(
+        &setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[intake]\nalarm_after = \"2m\"\n",
+    );
+    Setup::fake_gh(
+        &setup.dir,
+        "#!/bin/sh\necho 'HTTP 401: Bad credentials' >&2\nexit 1\n",
+    );
+
+    setup.intake_at(&minutes_ago(3));
+    let calm = setup.desk()["revision"].as_i64().unwrap();
+    setup.intake_at(&minutes_ago(0));
+
+    let alarmed = setup.desk()["revision"].as_i64().unwrap();
+    assert!(alarmed > calm, "{alarmed} after {calm}");
+    let error = format!("gh api {EVENTS_PATH} failed: HTTP 401: Bad credentials");
+    assert_eq!(reports(&setup.desk()), [format!("intake: github: {error}")]);
+}
+
+impl Setup {
+    /// Makes the fake `gh` fail its first `failures` calls whose arguments start with `api
+    /// {path}` with `stderr`, then answer every call from `answers`. `calls-{path}` counts them.
+    fn fail_first(
+        &self,
+        path: &str,
+        failures: u32,
+        stderr: &str,
+        answers: &[(&str, serde_json::Value)],
+    ) {
+        self.answer(answers);
+        let gh = self.dir.join("bin/gh");
+        let answering = fs::read_to_string(&gh).unwrap();
+        let count = self.dir.join(format!("calls-{}", path.replace('/', "-")));
+        let script = answering.replacen(
+            "#!/bin/sh\n",
+            &format!(
+                "#!/bin/sh\ncase \"$*\" in\n  \"api {path}\"*)\n    n=$(($(cat '{count}' 2>/dev/null || echo 0) + 1)); echo $n > '{count}'\n    if [ $n -le {failures} ]; then echo '{stderr}' >&2; exit 1; fi ;;\nesac\n",
+                count = count.display()
+            ),
+            1,
+        );
+        Setup::fake_gh(&self.dir, &script);
+    }
+
+    /// How many times the fake `gh` of `fail_first` was called for `path`.
+    fn calls(&self, path: &str) -> u32 {
+        let count = self.dir.join(format!("calls-{}", path.replace('/', "-")));
+        fs::read_to_string(count).map_or(0, |count| count.trim().parse().unwrap())
+    }
+}
+
+#[test]
+fn a_504_from_the_graphql_query_is_retried_in_the_same_poll() {
+    let setup = Setup::baseline("gh-504-once");
+    setup.fail_first(
+        "graphql",
+        1,
+        "gh: HTTP 504",
+        &[(EVENTS_PATH, json!([labeled(101, 42, "agent")]))],
+    );
+
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.calls("graphql"), 2);
+    assert_eq!(
+        kinds(&setup.published()[1..]),
+        ["github.issues.labeled", "factory.task.requested"]
+    );
+    assert!(reports(&setup.desk()).is_empty());
+    assert_eq!(setup.desk()["intake"], serde_json::Value::Null);
+}
+
+#[test]
+fn a_graphql_timeout_and_a_rest_502_are_retried_too() {
+    let setup = Setup::baseline("gh-timeout-once");
+    setup.fail_first(
+        "graphql",
+        1,
+        "GraphQL: Something went wrong while executing your query. This may be the result of a timeout, or it could be a GitHub bug.",
+        &[],
+    );
+    succeeded(&setup.intake());
+    assert_eq!(setup.calls("graphql"), 2);
+
+    setup.fail_first(EVENTS_PATH, 1, "HTTP 502: Bad Gateway", &[]);
+    succeeded(&setup.intake());
+    assert_eq!(setup.calls(EVENTS_PATH), 2);
+}
+
+#[test]
+fn a_504_that_outlasts_two_retries_fails_the_poll() {
+    let setup = Setup::baseline("gh-504-thrice");
+    setup.fail_first("graphql", 3, "gh: HTTP 504", &[]);
+
+    let output = setup.intake();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(setup.calls("graphql"), 3);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("gh api graphql failed: gh: HTTP 504"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn a_client_error_is_not_retried() {
+    let setup = Setup::baseline("gh-404-no-retry");
+    setup.fail_first(EVENTS_PATH, 1, "HTTP 404: Not Found", &[]);
+
+    let output = setup.intake();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(setup.calls(EVENTS_PATH), 1);
 }
 
 #[test]

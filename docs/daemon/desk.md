@@ -202,17 +202,23 @@ Each watched unit adds `OnFailure=priory-notice@%n.service`, so `%i` is the fail
 The intake records each poll of each source it polls, `github`, `linear` or `slack`, in the state.
 A tick that polls no Linear or Slack source records only `github`.
 
-- When a source's poll fails, the intake posts one report from `intake`, `<source>: <error>`, as
-  `priory post` stores it. It posts again only when the error's text changes.
-- When that source's next poll succeeds, its report is marked read, so it leaves the desk.
+- When a source's poll fails, the desk shows the banner `the intake retries <source> since <time>:
+  <error>`. It posts no report yet, so nothing ranks as an alarm and no notification goes out. A
+  single failed poll, such as a GitHub 504, clears on the next good poll.
+- When the source's polls have failed for [`[intake] alarm_after`](../reference/factory.md#intake),
+  15 minutes by default, the intake posts one report from `intake`, `<source>: <error>`, as
+  `priory post` stores it. The banner then reads `the intake fails to poll <source> since <time>:
+  <error>`. The intake posts again only when the error's text changes.
+- When that source's next poll succeeds, its report is marked read, so it leaves the desk, and the
+  banner clears.
 - When a trigger's `pre` script fails, the process that ran it posts one report from `intake`,
   `pre of trigger <name>: <how it failed>`, and posts again only when the text changes. The
   trigger's next run that exits 0 or 1 marks it read. It shows as an alarm and adds no banner. See
   [pre.md](../intake/pre.md#when-it-fails).
 - When a source the triggers need cannot start, such as Linear without `LINEAR_API_KEY`, the
-  intake records the failure the same way, then exits, and systemd restarts it.
-- `priory desk` prints the banner `the intake fails to poll <source> since <time>: <error>` while a
-  source fails, one per failing source joined by `; `.
+  intake records the failure the same way, but posts its report at once, then exits, and systemd
+  restarts it.
+- `priory desk` prints one banner per failing source, joined by `; `.
 - When no source polled in the last 5 minutes, the banner is instead `the intake has not polled
   since <time>: waits on GitHub, Linear and Slack cannot fire`. A factory whose intake never ran
   shows no banner.

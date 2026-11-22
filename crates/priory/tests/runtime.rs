@@ -12985,7 +12985,7 @@ fn a_wait_on_a_replys_ts_fails_the_poll_as_not_a_threads_first_message() {
 }
 
 #[test]
-fn a_thread_the_intake_cannot_read_fails_the_poll_and_reaches_the_desk() {
+fn a_thread_the_intake_cannot_read_fails_the_poll_and_reaches_the_desk_banner() {
     let setup = asleep_on(
         "slack-thread-fails",
         json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
@@ -13009,12 +13009,12 @@ fn a_thread_the_intake_cannot_read_fails_the_poll_and_reaches_the_desk() {
         stderr.contains(&format!("C0123:{THREAD}")) && stderr.contains("not_in_channel"),
         "{stderr}"
     );
-    let desk = desk(&setup, &[]);
+    let desk: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["desk", "--json"]).stdout).unwrap();
+    let banner = desk["intake"].as_str().unwrap_or_default();
     assert!(
-        desk.iter().any(
-            |row| row.join(" ").contains("slack: ") && row.join(" ").contains("not_in_channel")
-        ),
-        "{desk:?}"
+        banner.starts_with("the intake retries slack since ") && banner.contains("not_in_channel"),
+        "{desk}"
     );
 }
 

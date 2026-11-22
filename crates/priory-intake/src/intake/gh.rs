@@ -2,6 +2,7 @@ use priory_runtime::runtime::{command_timeout, output_within};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use std::process::Command;
+use std::time::Duration;
 
 const PAGE: usize = 100;
 
@@ -45,16 +46,90 @@ pub(super) fn pages<T: DeserializeOwned>(
     Ok((items, top))
 }
 
+/// The waits before each retry of a call GitHub failed with a 5xx or its GraphQL timeout: a busy
+/// repository's query can time out once and answer the next time.
+const BACKOFF: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(3)];
+
 pub(super) fn gh<T: DeserializeOwned>(path: &str, fields: &[&str]) -> Result<T, String> {
+    let mut waits = BACKOFF.iter();
+    loop {
+        match call(path, fields) {
+            Err(Failed::Transient(error)) => match waits.next() {
+                Some(wait) => std::thread::sleep(*wait),
+                None => return Err(error),
+            },
+            Err(Failed::Other(error)) => return Err(error),
+            Ok(stdout) => {
+                return serde_json::from_slice(&stdout)
+                    .map_err(|error| format!("gh api {path}: {error}"));
+            }
+        }
+    }
+}
+
+enum Failed {
+    /// A 5xx or GitHub's GraphQL timeout: worth another try.
+    Transient(String),
+    /// Any other failure, a call past `command_timeout` among them: retrying it could hold the
+    /// poll for minutes.
+    Other(String),
+}
+
+fn call(path: &str, fields: &[&str]) -> Result<Vec<u8>, Failed> {
     let output = output_within(Command::new("gh").args(["api", path]).args(fields))
-        .map_err(|error| format!("gh api {path}: {error}"))?
+        .map_err(|error| Failed::Other(format!("gh api {path}: {error}")))?
         .ok_or_else(|| {
             let timeout = command_timeout().as_secs();
-            format!("gh api {path} timed out after {timeout}s")
+            Failed::Other(format!("gh api {path} timed out after {timeout}s"))
         })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("gh api {path} failed: {}", stderr.trim()));
+        let error = format!("gh api {path} failed: {}", stderr.trim());
+        return Err(if transient(&stderr) {
+            Failed::Transient(error)
+        } else {
+            Failed::Other(error)
+        });
     }
-    serde_json::from_slice(&output.stdout).map_err(|error| format!("gh api {path}: {error}"))
+    Ok(output.stdout)
+}
+
+/// Whether `gh`'s `stderr` says GitHub failed on its side: an HTTP 5xx, or the GraphQL error it
+/// returns when a query runs out of time.
+fn transient(stderr: &str) -> bool {
+    let server = stderr.match_indices("HTTP 5").any(|(at, _)| {
+        let code = &stderr.as_bytes()[at + 6..];
+        code.len() >= 2
+            && code[..2].iter().all(u8::is_ascii_digit)
+            && code.get(2).is_none_or(|next| !next.is_ascii_digit())
+    });
+    server || stderr.contains("Something went wrong while executing your query")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::transient;
+    use proptest::prelude::*;
+
+    #[test]
+    fn a_5xx_and_a_graphql_timeout_are_transient_and_a_4xx_is_not() {
+        assert!(transient("gh: HTTP 504"));
+        assert!(transient(
+            "HTTP 502: Bad Gateway (https://api.github.com/graphql)"
+        ));
+        assert!(transient(
+            "GraphQL: Something went wrong while executing your query. This may be the result of a timeout, or it could be a GitHub bug."
+        ));
+        assert!(!transient("HTTP 401: Bad credentials"));
+        assert!(!transient("HTTP 404: Not Found"));
+        assert!(!transient("HTTP 5"));
+        assert!(!transient("HTTP 5000"));
+    }
+
+    proptest! {
+        #[test]
+        fn any_stderr_is_classified_without_panicking(stderr in ".*") {
+            transient(&stderr);
+        }
+    }
 }

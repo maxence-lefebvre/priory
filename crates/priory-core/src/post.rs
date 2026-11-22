@@ -1,6 +1,8 @@
 //! Report lines that scripts and automations post to the inbox for a person to read.
 
+use jiff::Timestamp;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use std::time::Duration;
 
 /// The inbox type of a posted report.
 pub const REPORT: &str = "priory.report";
@@ -49,42 +51,53 @@ pub(crate) fn report(db: &Connection, source: &str, line: &str) -> Result<(), St
     Ok(())
 }
 
-/// Records a poll of intake `source` at `at`. A new error posts one report; the next good poll, or
-/// another error, marks it read.
+/// Records a poll of intake `source` at `at`. Once the source has failed for `alarm_after`, its
+/// error posts one report, and a changed error posts another; the next good poll marks it read.
+/// Until then the failure shows only on the banner.
 pub fn polled(
     db: &mut Connection,
     source: &str,
     error: Option<&str>,
     at: &str,
+    alarm_after: Duration,
 ) -> Result<(), String> {
     // Immediate, so a busy daemon makes it wait: a read that then writes cannot wait in WAL mode.
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| error.to_string())?;
-    let (before, report): (Option<String>, Option<i64>) = tx
+    let (before, report, since): (Option<String>, Option<i64>, Option<String>) = tx
         .query_row(
-            "SELECT error, report FROM intake_sources WHERE source = ?1",
+            "SELECT error, report, failing_since FROM intake_sources WHERE source = ?1",
             [source],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()
         .map_err(|error| error.to_string())?
         .unwrap_or_default();
     let changed = before.as_deref() != error;
-    if changed {
+    let stale = report.filter(|_| error.is_none() || changed);
+    if let Some(stale) = stale {
         tx.execute(
             "UPDATE inbox SET read = coalesce(read, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
              WHERE seq = ?1",
-            [report],
+            [stale],
         )
         .map_err(|error| error.to_string())?;
     }
+    let due = || failed_for(since.as_deref().unwrap_or(at), at) >= alarm_after;
     let report = match error {
-        Some(error) if changed => {
+        Some(_) if report.is_some_and(|_| !changed) => report,
+        Some(error) if report.is_some() || due() => {
             self::report(&tx, INTAKE, &format!("{source}: {error}"))?;
-            Some(tx.last_insert_rowid())
+            let posted = tx.last_insert_rowid();
+            if !changed {
+                // The same error turned into an alarm: only `error` moves the revision by itself.
+                tx.execute("UPDATE revision SET value = value + 1", [])
+                    .map_err(|error| error.to_string())?;
+            }
+            Some(posted)
         }
-        _ => report.filter(|_| error.is_some()),
+        _ => None,
     };
     tx.execute(
         "INSERT INTO intake_sources (source, polled, error, failing_since, report)
@@ -95,6 +108,15 @@ pub fn polled(
     )
     .map_err(|error| error.to_string())?;
     tx.commit().map_err(|error| error.to_string())
+}
+
+/// How long from `since` to `at`, both as the intake writes them; past any threshold when either
+/// does not parse, so a failure still reports.
+fn failed_for(since: &str, at: &str) -> Duration {
+    let (Ok(since), Ok(at)) = (since.parse::<Timestamp>(), at.parse::<Timestamp>()) else {
+        return Duration::MAX;
+    };
+    Duration::from_secs(u64::try_from(at.as_second() - since.as_second()).unwrap_or_default())
 }
 
 /// Records a run of trigger `trigger`'s `pre` script. A failure posts one report from `intake`,
@@ -133,14 +155,16 @@ pub fn pre_ran(db: &mut Connection, trigger: &str, failure: Option<&str>) -> Res
     tx.commit().map_err(|error| error.to_string())
 }
 
-/// The intake's banner: when no source polled in the last 5 minutes, or else which fail and why.
+/// The intake's banner: when no source polled in the last 5 minutes, or else which fail and why. A
+/// source that has not reported yet reads `the intake retries`.
 pub fn intake_banner(db: &Connection) -> rusqlite::Result<Option<String>> {
     db.query_row(
         "SELECT CASE WHEN max(polled) < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-5 minutes')
            THEN 'the intake has not polled since ' || max(polled)
              || ': waits on GitHub, Linear and Slack cannot fire'
-           ELSE 'the intake fails to poll ' || (SELECT group_concat(source || ' since '
-             || failing_since || ': ' || error, '; ') FROM intake_sources WHERE error IS NOT NULL)
+           ELSE (SELECT group_concat(CASE WHEN report IS NULL THEN 'the intake retries '
+               ELSE 'the intake fails to poll ' END || source || ' since ' || failing_since
+               || ': ' || error, '; ') FROM intake_sources WHERE error IS NOT NULL)
            END
          FROM intake_sources",
         [],

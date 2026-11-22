@@ -323,15 +323,20 @@ fn ended(key: &str) -> Result<u64, String> {
     state::ended(&db, key).map_err(|error| format!("tasks with key {key}: {error}"))
 }
 
-/// Records each intake source's poll in the state, when the intake has one.
-fn health(outcomes: &intake::Outcomes, at: jiff::Timestamp) -> Result<(), String> {
+/// Records each intake source's poll in the state, when the intake has one. A source failing for
+/// longer than `alarm_after` reports.
+fn health(
+    outcomes: &intake::Outcomes,
+    at: jiff::Timestamp,
+    alarm_after: std::time::Duration,
+) -> Result<(), String> {
     if std::env::var_os("PRIORY_DB").is_none() {
         return Ok(());
     }
     let mut db = state::open()?;
     let at = at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
     for (source, error) in outcomes {
-        post::polled(&mut db, source, error.as_deref(), &at)
+        post::polled(&mut db, source, error.as_deref(), &at, alarm_after)
             .map_err(|error| format!("record the {source} poll: {error}"))?;
     }
     Ok(())
