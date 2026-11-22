@@ -13,6 +13,7 @@ cannot tell which keys a source refuses; `priory check` does.
 - [`linear`](#linear)
 - [`linear.view`](#linearview)
 - [`sentry`](#sentry)
+- [`honeycomb`](#honeycomb)
 - [`slack`](#slack)
 - [`schedule`](#schedule)
 - [Task requests: `triggers/cli.toml` and `hold`](#task-requests-triggersclitoml-and-hold)
@@ -23,7 +24,7 @@ cannot tell which keys a source refuses; `priory check` does.
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
-| `source` | string | yes | | `github`, `linear`, `linear.view`, `sentry`, `slack` or `schedule` | `"github"` |
+| `source` | string | yes | | `github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `slack` or `schedule` | `"github"` |
 | `workflow` | string | yes | | The workflow a matching event starts, by file name | `"implement"` |
 | `repo` | string | per source | | The repository the trigger's tasks work in, a GitHub `owner/name`. `priory check` refuses any other shape, such as `..` or a path | `"owner/name"` |
 | `key` | string | no | per source | Which events are the same work. A factory holds at most one active task per key | `"issue.number"` |
@@ -33,7 +34,7 @@ cannot tell which keys a source refuses; `priory check` does.
 | `intervention` | `plan` or `hands-off` | no | a person answers every ask | Who answers its tasks' asks. See [`intervention` and `lead`](#intervention-and-lead) | `"plan"` |
 | `lead` | string | with `hands-off` | | The agent that answers asks of a `hands-off` task | `"lead"` |
 
-Without a `repo`, a Linear, Sentry or Slack trigger's tasks block before their first run.
+Without a `repo`, a Linear, Sentry, Honeycomb or Slack trigger's tasks block before their first run.
 
 ## `github`
 
@@ -163,6 +164,32 @@ filter = { project = "api", level = "error" }   # the project's slug, and the is
 repo = "owner/name"            # where its tasks work; without it they block
 workflow = "implement"
 key = "issue.id"               # the task key is sentry:1234567890
+```
+
+## `honeycomb`
+
+Starts a task when a Honeycomb Trigger fires. Honeycomb pushes the alert to
+`POST /hooks/honeycomb`, so the trigger needs
+[`[webhooks.honeycomb]`](factory.md#webhookshoneycomb) and the payload template in
+[honeycomb.md](../intake/honeycomb.md#the-payload-template).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `on` | string | yes | | `trigger.fired` | `"trigger.fired"` |
+| `filter` | table | no | | `environment` (the Honeycomb environment's name) and `trigger` (the Honeycomb Trigger's id). Every key must match | `{ environment = "production" }` |
+| `key` | string | no | the Trigger id | `trigger.id`. The task key is `honeycomb:JwwZxfcP5kH` | `"trigger.id"` |
+
+A `honeycomb` trigger takes no `backfill`: Honeycomb sends only new alerts.
+
+<!-- example: factory/triggers/honeycomb-alerts.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "honeycomb"
+on = "trigger.fired"
+filter = { environment = "production" }   # the Honeycomb environment's name
+repo = "owner/name"            # where its tasks work; without it they block
+workflow = "implement"
+key = "trigger.id"             # the task key is honeycomb:JwwZxfcP5kH
 ```
 
 ## `slack`

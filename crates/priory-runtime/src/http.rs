@@ -446,7 +446,7 @@ fn same_origin(request: &Request, origins: &[String]) -> bool {
 }
 
 /// Whether `sent` equals `token`, in a time that depends only on `token`'s length.
-fn same(sent: &[u8], token: &[u8]) -> bool {
+pub fn same(sent: &[u8], token: &[u8]) -> bool {
     let mut differ = sent.len() ^ token.len();
     for (i, byte) in token.iter().enumerate() {
         differ |= usize::from(sent.get(i).copied().unwrap_or(0) ^ byte);

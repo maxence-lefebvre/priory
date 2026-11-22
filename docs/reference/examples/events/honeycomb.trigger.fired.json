@@ -1,0 +1,21 @@
+{
+  "id": "afeef28c-9b40-54fe-bda7-28659f1360d0",
+  "type": "honeycomb.trigger.fired",
+  "subject": "Checkout errors",
+  "time": "2026-11-21T16:40:22.896Z",
+  "data": {
+    "trigger": "JwwZxfcP5kH",
+    "name": "Checkout errors",
+    "description": "More than 10 checkout errors in 15 minutes.",
+    "url": "https://ui.honeycomb.io/acme/environments/production/datasets/checkout/triggers/JwwZxfcP5kH",
+    "environment": "production",
+    "summary": "Triggered: Checkout errors",
+    "instance": "c0fd570f-e920-4022-96d2-39e7df3e0621",
+    "result_url": "https://ui.honeycomb.io/acme/environments/production/datasets/checkout/result/4656626d79",
+    "delivery": "4b9a6e2c-1f3d-4c5e-8a7b-9d0e1f2a3b4c",
+    "time": "2026-11-21T16:40:22.896871538Z",
+    "baseline": false,
+    "triggers": ["honeycomb-alerts"]
+  },
+  "links": [{ "label": "trigger", "url": "https://ui.honeycomb.io/acme/environments/production/datasets/checkout/triggers/JwwZxfcP5kH" }]
+}

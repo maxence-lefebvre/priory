@@ -1,5 +1,5 @@
 use super::webhook::{opened, unhex};
-use super::{OUTPUT, dispatch, id, output};
+use super::{accepted, id, output, publish_new};
 use crate::log::{self, Log};
 use herdr_bus::{Message, Timestamp};
 use hmac::{Hmac, KeyInit, Mac};
@@ -94,28 +94,6 @@ impl SentryWebhook {
     }
 }
 
-/// Publishes `message` and its task requests, unless the output holds its id already: a
-/// redelivery or a replay of the same signed body.
-fn publish_new(
-    bus: &dyn Log,
-    triggers: &[(&str, &Trigger)],
-    message: &Message,
-) -> Result<bool, String> {
-    let newest = bus
-        .messages(OUTPUT, None, 1)
-        .map_err(|error| format!("read {OUTPUT}: {error}"))?
-        .first()
-        .map(|stored| stored.seq);
-    let seq = bus
-        .publish(OUTPUT, message)
-        .map_err(|error| format!("publish on {OUTPUT}: {error}"))?;
-    if newest.is_some_and(|newest| seq <= newest) {
-        return Ok(false);
-    }
-    dispatch(bus, triggers, message)?;
-    Ok(true)
-}
-
 /// The message a delivery reports, or none for a resource or action Priory does not take, or an
 /// issue no trigger matches. Errs when a field the event needs is missing.
 fn observe(
@@ -200,10 +178,6 @@ fn matching<'a>(triggers: &[(&'a str, &Trigger)], data: &Value) -> Vec<&'a str> 
         })
         .map(|(name, _)| *name)
         .collect()
-}
-
-fn accepted(outcome: &str) -> Reply {
-    Reply::json(202, json!({ "outcome": outcome }).to_string())
 }
 
 #[cfg(test)]

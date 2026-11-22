@@ -1,0 +1,155 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/honeycomb.trigger.fired.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "HoneycombTriggerFired": {
+      "additionalProperties": false,
+      "description": "A Honeycomb Trigger fired, from a webhook delivery that carried the Shared Secret.",
+      "properties": {
+        "baseline": {
+          "description": "True when the event came from the first poll of its stream.",
+          "type": "boolean"
+        },
+        "delivery": {
+          "description": "The `X-Honeycomb-Webhook-Delivery-ID` of the delivery.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "The Trigger's description; null when it has none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "environment": {
+          "description": "The Honeycomb environment the Trigger belongs to; null when the payload names none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instance": {
+          "description": "The id of this firing, the same across Honeycomb's retries.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The Trigger's name.",
+          "type": "string"
+        },
+        "result_url": {
+          "description": "The query result that fired the Trigger.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "summary": {
+          "description": "Honeycomb's one-line summary of the alert.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "time": {
+          "description": "When the event happened, RFC 3339.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "trigger": {
+          "description": "Honeycomb's Trigger id, such as `JwwZxfcP5kH`.",
+          "type": "string"
+        },
+        "triggers": {
+          "description": "The triggers the event matched, so the triggers it requests tasks for; may be empty.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "url": {
+          "description": "The Trigger's page on Honeycomb.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trigger",
+        "name",
+        "description",
+        "url",
+        "environment",
+        "summary",
+        "instance",
+        "result_url",
+        "delivery",
+        "time",
+        "baseline",
+        "triggers"
+      ],
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A Honeycomb Trigger fired, from a webhook delivery that carried the Shared Secret.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/HoneycombTriggerFired"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "honeycomb.trigger.fired",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "honeycomb.trigger.fired",
+  "type": "object"
+}

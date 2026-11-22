@@ -2318,6 +2318,39 @@ fn a_sentry_trigger_needs_the_sentry_webhook_and_a_supported_event_filter_and_ke
 }
 
 #[test]
+fn a_honeycomb_trigger_needs_the_honeycomb_webhook_and_a_supported_event_filter_and_key() {
+    let good = "source = \"honeycomb\"\non = \"trigger.fired\"\nfilter = { environment = \"production\", trigger = \"JwwZxfcP5kH\" }\nrepo = \"owner/repo\"\nworkflow = \"implement\"\nkey = \"trigger.id\"\n";
+    let wrong = "source = \"honeycomb\"\non = \"slo.burn_alert\"\nfilter = { dataset = \"x\" }\nworkflow = \"implement\"\nkey = \"alert.id\"\nbackfill = true\n";
+    let hooked = "name = \"demo\"\n\n[serve]\n\n[webhooks.honeycomb]\nsecret_env = \"HONEYCOMB_WEBHOOK_SECRET\"\n";
+    let mut files = with("triggers/agent-label.toml", good);
+    files.push(("triggers/wrong.toml", wrong));
+    let unhooked = check(&factory("honeycomb-unhooked", &files));
+    files.retain(|(path, _)| *path != "factory.toml");
+    files.push(("factory.toml", hooked));
+    let hooked = check(&factory("honeycomb-triggers", &files));
+    files.retain(|(path, _)| *path != "triggers/wrong.toml");
+    let ok = check(&factory("honeycomb-ok", &files));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(hooked.code, 1);
+    assert_eq!(
+        hooked.stderr,
+        "triggers/wrong.toml:6: only a GitHub, Linear or Slack trigger has `backfill`\n\
+         triggers/wrong.toml:2: a `honeycomb` trigger handles `trigger.fired`, not `slo.burn_alert`\n\
+         triggers/wrong.toml:3: a `honeycomb` trigger filters on `environment` or `trigger`\n\
+         triggers/wrong.toml:5: a Honeycomb trigger's `key` is `trigger.id`\n"
+    );
+    assert_eq!(unhooked.code, 1);
+    assert!(
+        unhooked.stderr.contains(
+            "triggers/agent-label.toml:1: a `honeycomb` trigger needs `[webhooks.honeycomb]` in factory.toml: Honeycomb alerts arrive only by webhook\n"
+        ),
+        "{}",
+        unhooked.stderr
+    );
+}
+
+#[test]
 fn the_skill_index_counts_toward_the_codex_limit() {
     let description = "d".repeat(3000);
     let skills: Vec<(String, String)> = ["one", "two", "three"]
