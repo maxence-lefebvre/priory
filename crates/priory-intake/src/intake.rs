@@ -592,7 +592,8 @@ fn baseline((repo, kind): &Stream, position: u64) -> Message {
 
 /// Publishes a webhook's `message` and its task requests, and whether the output lacked the
 /// message: a redelivery or replay of the same body finds it there. Task request ids derive from
-/// the message id, so dispatching again publishes none twice and completes a dispatch that failed.
+/// the message id, so dispatching the stored message again publishes none twice, completes a
+/// dispatch that failed, and ignores triggers added since.
 fn publish_new(
     bus: &dyn Log,
     triggers: &[(&str, &Trigger)],
@@ -606,8 +607,15 @@ fn publish_new(
     let seq = bus
         .publish(OUTPUT, message)
         .map_err(|error| format!("publish on {OUTPUT}: {error}"))?;
-    dispatch(bus, triggers, message)?;
-    Ok(newest.is_none_or(|newest| seq > newest))
+    if newest.is_none_or(|newest| seq > newest) {
+        dispatch(bus, triggers, message)?;
+        return Ok(true);
+    }
+    let stored = bus
+        .message(seq)
+        .map_err(|error| format!("read {OUTPUT}: {error}"))?;
+    dispatch(bus, triggers, &stored.message)?;
+    Ok(false)
 }
 
 fn accepted(outcome: &str) -> Reply {
