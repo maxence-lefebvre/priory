@@ -149,3 +149,17 @@ export function capsuleWords(n, offline) {
   const asks = `${n} ${n === 1 ? "ask" : "asks"}`;
   return offline ? { text: `Read ${asks}, offline`, icon: "unplug", off: true } : { text: `Answer ${asks}`, icon: "ask", off: false };
 }
+
+/**
+ * The Desk's banners, each the daemon's sentence: the pause, the room, the intake, then one per
+ * day or week spend cap reached, as `priory desk` prints them.
+ * @param {any} desk `/api/desk`
+ */
+export function deskBanners(desk) {
+  return [
+    { text: desk.paused, icon: "pause", intake: false },
+    { text: desk.banner, icon: "hard-drive", intake: false },
+    { text: desk.intake, icon: "unplug", intake: true },
+    ...(desk.caps ?? []).map((/** @type {string} */ text) => ({ text, icon: "hourglass", intake: false })),
+  ].filter((banner) => banner.text);
+}

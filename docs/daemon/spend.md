@@ -98,6 +98,8 @@ A lane's caps only ever hold new runs. Its `task` cap holds the task with an ask
 
 ## What a person sees
 
+- A browser [subscribed to notifications](serve.md#notifications) gets one when a `day` or `week`
+  cap is first reached, with the desk's line for it.
 - `priory desk` prints one line per `day` or `week` cap reached, after the pause line:
   `spend cap reached: lane core/intake spent $12.40 of its day cap of $10.00; its new runs wait for
   the next day`. `priory desk --json` carries the lines as `caps`.
@@ -109,8 +111,7 @@ A lane's caps only ever hold new runs. Its `task` cap holds the task with an ask
 - The Herdr adapter's [usage line](../adapters/herdr.md#the-usage-line) shows today's and this
   week's spend against the factory's caps, and how many tasks are held at a cap. A click lists
   every cap and each held task.
-
-The web view does not show caps yet.
+- The web view's Desk shows each line of `caps` as a banner. It shows no spend or cap table yet.
 
 ## Known limits
 

@@ -356,7 +356,15 @@ pub(crate) fn tick(
         .collect::<rusqlite::Result<_>>()?;
     {
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute("DELETE FROM spend_reached", [])?;
+        let reached: Vec<String> = windows
+            .iter()
+            .filter(|(cap, spent)| *spent >= cap.usd)
+            .map(|(cap, _)| cap.id())
+            .collect();
+        tx.execute(
+            "DELETE FROM spend_reached WHERE cap NOT IN (SELECT value FROM json_each(?1))",
+            [json!(reached).to_string()],
+        )?;
         for (cap, spent) in windows.iter().filter(|(cap, spent)| *spent >= cap.usd) {
             let until = match cap.period {
                 Period::Week => "next week",
@@ -370,10 +378,28 @@ pub(crate) fn tick(
                 cap.period.name(),
                 usd(cap.usd)
             );
+            let first = tx
+                .query_row(
+                    "SELECT 1 FROM spend_reached WHERE cap = ?1",
+                    [cap.id()],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_none();
             tx.execute(
-                "INSERT INTO spend_reached (cap, line) VALUES (?1, ?2)",
+                "INSERT INTO spend_reached (cap, line) VALUES (?1, ?2)
+                 ON CONFLICT (cap) DO UPDATE SET line = excluded.line",
                 params![cap.id(), line],
             )?;
+            // The row keeps its rowid while the cap stays reached, so the push names it.
+            if first {
+                tx.execute(
+                    "INSERT INTO push_queue (kind, item, state)
+                     SELECT 'alarm', rowid, 'cap' FROM spend_reached
+                     WHERE cap = ?1 AND EXISTS (SELECT 1 FROM push_subscriptions)",
+                    [cap.id()],
+                )?;
+            }
         }
         tx.commit()?;
     }
