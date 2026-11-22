@@ -178,6 +178,29 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                     .to_owned(),
             ));
         }
+        if let Some(telemetry) = factory.telemetry() {
+            let line = settings.lines.field("telemetry");
+            let mut refuse = |message: String| problems.push(problem(settings, line, message));
+            for group in &telemetry.metrics {
+                if !crate::factory::METRIC_GROUPS.contains(&group.as_str()) {
+                    refuse(format!(
+                        "`metrics` names `{group}`, which is not a metrics group: the groups are {}",
+                        crate::factory::METRIC_GROUPS.join(", ")
+                    ));
+                }
+            }
+            let least = crate::factory::METRICS_EVERY_LEAST;
+            if let Some(every) = telemetry.metrics_every.filter(|every| *every < least) {
+                refuse(format!(
+                    "`metrics_every` is {}s: it needs to be {}s or more",
+                    every.as_secs(),
+                    least.as_secs()
+                ));
+            }
+            if telemetry.metrics_cap == Some(0) {
+                refuse("`metrics_cap` is 0: it needs to be 1 or more".to_owned());
+            }
+        }
         if settings
             .value
             .log

@@ -107,6 +107,9 @@ task id and generation, run id or record id, so sending a record again gives the
 
 The resource carries `service.name = priory`, `priory.factory` and `host.name`, the machine.
 
+The same endpoint can also take Priory's own metrics, at `<otlp>/v1/metrics`: see
+[metrics.md](metrics.md).
+
 To send to a local ClickStack, Honeycomb or Grafana Cloud, see
 [How to send traces to an OpenTelemetry backend](../sending-traces-to-opentelemetry.md).
 

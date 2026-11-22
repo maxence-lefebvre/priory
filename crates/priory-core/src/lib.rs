@@ -26,6 +26,7 @@ pub mod link;
 pub mod listing;
 pub mod memories;
 pub mod memory;
+pub mod metrics;
 #[cfg(feature = "model")]
 mod model;
 mod notify;

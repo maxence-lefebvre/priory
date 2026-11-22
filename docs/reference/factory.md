@@ -189,6 +189,9 @@ See [trace.md](../daemon/trace.md) and, for backends, [How to send traces to an 
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `otlp` | string | yes | | The OTLP/HTTP base URL. Spans go to its `/v1/traces` | `"http://127.0.0.1:4318"` |
 | `headers_env` | string | no | no headers | The environment variable that holds the headers each request carries, as `key1=value1,key2=value2` with URL-encoded values. The daemon refuses to start when it is unset, empty or malformed. `priory check` refuses a value that is not a variable name | `"OTEL_EXPORTER_OTLP_HEADERS"` |
+| `metrics` | list of strings | no | `[]`: no metric is sent | The metric groups each process sends to `<otlp>/v1/metrics`. `process` is the only group. `PRIORY_METRICS` replaces it for one process. See [metrics.md](../daemon/metrics.md) | `["process"]` |
+| `metrics_every` | duration | no | `"60s"` | How often a process samples its groups and sends one request. At least `"10s"` | `"30s"` |
+| `metrics_cap` | integer | no | `1000` | The data points a process sends per minute at most, over a rolling minute. At least 1 | `500` |
 
 ## `[notify]`
 
@@ -611,6 +614,9 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` [log] backend = "postgres" needs a priory built with `--features postgres` `` | `[log] backend = "postgres"` in a build without the Postgres adapter |
 | `` `[log] url_env` names the environment variable that holds the connection string, such as PRIORY_LOG_URL, never the string itself `` | `url_env` is not a variable name, such as a pasted URL |
 | `` `headers_env` names the environment variable that holds the headers, such as OTEL_EXPORTER_OTLP_HEADERS, never the headers themselves `` | `[telemetry] headers_env` is not a variable name, such as pasted headers |
+| `` `metrics` names `<group>`, which is not a metrics group: the groups are <groups> `` | `[telemetry] metrics` names a group Priory does not send |
+| `` `metrics_every` is <n>s: it needs to be 10s or more `` | `[telemetry] metrics_every` is under 10 seconds |
+| `` `metrics_cap` is 0: it needs to be 1 or more `` | `[telemetry] metrics_cap` is 0 |
 | `` the handler agent `<name>` does not exist `` | `handler` names no agent |
 | `` the handler agent `<name>` needs harness = "claude-code" `` | `handler` names a Codex agent |
 | `` the summarizer agent `<name>` does not exist `` | `[search] tldr` names no agent |

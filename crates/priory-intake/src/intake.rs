@@ -272,6 +272,7 @@ pub fn run(
     let mut unchecked = HashSet::new();
     let mut first = true;
     loop {
+        let tick = std::time::Instant::now();
         let watching = match watched() {
             Ok(watching) => watching,
             Err(error) if once => return Err(error),
@@ -356,6 +357,7 @@ pub fn run(
         if once {
             return Ok(());
         }
+        priory_runtime::ticks::record(tick.elapsed());
         std::thread::sleep(EVERY);
     }
 }

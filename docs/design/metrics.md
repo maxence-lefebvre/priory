@@ -2,9 +2,12 @@
 
 This page explains how Priory could export its own health as OpenTelemetry metrics over OTLP: how
 long its loops take, whether its log answers, how long a run takes to start, whether the intake
-keeps up, and what waits on a person. It builds nothing. It holds the model, the first code slice
-with its tests, the slices after it, what stays out, and the open questions with a recommendation
-for each.
+keeps up, and what waits on a person. It holds the model, the first code slice with its tests,
+the slices after it, what stays out, and the open questions with a recommendation for each.
+
+The first slice is built: [metrics.md](../daemon/metrics.md) describes it. It covers the exporter,
+the keys, `PRIORY_METRICS`, the cap and the `process` group. The tests use a fake collector on
+127.0.0.1 rather than a fake `curl`. The later slices are not built.
 
 Max proposed it on 2026-11-22, after Mastra Factory's
 [health metrics page](https://factory.mastra.ai/configure/metrics). This note takes the idea of

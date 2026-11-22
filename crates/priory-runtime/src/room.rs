@@ -53,6 +53,44 @@ pub fn hostname() -> Option<String> {
     Some(name.trim().to_owned()).filter(|name| !name.is_empty())
 }
 
+/// This process's own resident memory and CPU time, from `/proc/self`.
+#[derive(Debug, PartialEq)]
+pub struct Own {
+    /// Resident memory, in bytes.
+    pub memory: u64,
+    /// CPU time in user mode, in seconds.
+    pub user: f64,
+    /// CPU time in kernel mode, in seconds.
+    pub system: f64,
+}
+
+/// Measures this process from `/proc/self`, or `PRIORY_PROC`'s `self` when set.
+pub fn own() -> Result<Own, String> {
+    let dir = proc().join("self");
+    let status = read(&dir.join("status"))?;
+    let stat = read(&dir.join("stat"))?;
+    own_of(&status, &stat).ok_or_else(|| format!("{}: no VmRSS, utime or stime", dir.display()))
+}
+
+/// Clock ticks per second in `/proc/<pid>/stat`: Linux's `USER_HZ`, 100 on every architecture.
+const USER_HZ: f64 = 100.0;
+
+/// Reads `VmRSS` from the text of `status`, and `utime` and `stime` from the text of `stat`.
+pub fn own_of(status: &str, stat: &str) -> Option<Own> {
+    let memory = status.lines().find_map(|line| {
+        let kilobytes = line.strip_prefix("VmRSS:")?.trim().strip_suffix("kB")?;
+        kilobytes.trim().parse::<u64>().ok()?.checked_mul(1024)
+    })?;
+    // The command name in parentheses may hold spaces and parentheses, so fields count from the last.
+    let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+    let ticks = |index: usize| Some(fields.get(index)?.parse::<u64>().ok()? as f64 / USER_HZ);
+    Some(Own {
+        memory,
+        user: ticks(11)?,
+        system: ticks(12)?,
+    })
+}
+
 fn proc() -> PathBuf {
     std::env::var_os("PRIORY_PROC")
         .filter(|proc| !proc.is_empty())
@@ -92,5 +130,36 @@ fn disk(path: &Path) -> Result<(u64, u64), String> {
             path.display(),
             String::from_utf8_lossy(&output.stderr).trim()
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn own_reads_resident_memory_and_cpu_time_past_a_command_name_with_parentheses() {
+        let status = "Name:\tpriory\nVmRSS:\t   20480 kB\n";
+        let stat = "42 (a) b (c) S 1 42 42 0 -1 0 0 0 0 0 250 50 0 0 20 0 3 0 100\n";
+        assert_eq!(
+            own_of(status, stat),
+            Some(Own {
+                memory: 20480 * 1024,
+                user: 2.5,
+                system: 0.5,
+            })
+        );
+        assert_eq!(own_of("VmRSS: 1 kB\n", "42 (a) S 1"), None);
+    }
+
+    proptest! {
+        #[test]
+        fn own_of_any_text_returns_or_refuses_without_panicking(
+            status in "\\PC{0,200}",
+            stat in "[0-9 ()a-zS-]{0,200}",
+        ) {
+            let _ = own_of(&status, &stat);
+        }
     }
 }

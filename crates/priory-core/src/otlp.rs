@@ -383,7 +383,7 @@ fn span_id(id: &Uuid) -> String {
 }
 
 /// An OTLP attribute, or none for a missing value.
-fn attribute(key: &str, value: &Value) -> Option<Value> {
+pub(crate) fn attribute(key: &str, value: &Value) -> Option<Value> {
     let value = match value {
         Value::String(text) => json!({ "stringValue": text }),
         Value::Number(number) if number.is_i64() => json!({ "intValue": number.to_string() }),
@@ -392,6 +392,33 @@ fn attribute(key: &str, value: &Value) -> Option<Value> {
         _ => return None,
     };
     Some(json!({ "key": key, "value": value }))
+}
+
+/// Writes the OTLP headers from `[telemetry] headers_env` to the file `name` in `home`, readable by
+/// this user only, and returns its path. Refuses an unset, empty or malformed variable.
+pub(crate) fn header_file(
+    factory: &priory_factory::factory::Factory,
+    home: &std::path::Path,
+    name: &str,
+) -> Result<Option<std::path::PathBuf>, String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let Some(variable) = factory.otlp_headers_env() else {
+        return Ok(None);
+    };
+    let text = crate::serve::env(variable, "the OTLP headers, as key1=value1,key2=value2")?;
+    let lines = header_lines(&text).map_err(|error| format!("{variable}: {error}"))?;
+    let file = home.join(name);
+    // A file left by an older process keeps its mode, so it is replaced rather than truncated.
+    let _ = std::fs::remove_file(&file);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&file)
+        .and_then(|mut out| out.write_all(lines.as_bytes()))
+        .map_err(|error| format!("{}: {error}", file.display()))?;
+    Ok(Some(file))
 }
 
 /// The header lines `curl --header @file` reads, from OTLP's `key1=value1,key2=value2` with

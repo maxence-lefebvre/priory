@@ -910,6 +910,31 @@
             "null"
           ]
         },
+        "metrics": {
+          "default": [],
+          "description": "The metric groups each process sends to the endpoint's `/v1/metrics`; none sends no metric.",
+          "items": {
+            "enum": [
+              "process"
+            ]
+          },
+          "type": "array"
+        },
+        "metrics_cap": {
+          "description": "The data points a process sends per minute at most, over a rolling minute; 1000 when unset.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "metrics_every": {
+          "default": null,
+          "description": "How often a process samples its groups and sends one request, at least 10s; 60s when unset.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        },
         "otlp": {
           "description": "The OTLP/HTTP base URL, such as `http://127.0.0.1:4318`; spans go to its `/v1/traces`.",
           "type": "string"
