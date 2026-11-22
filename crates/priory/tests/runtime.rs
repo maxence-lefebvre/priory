@@ -929,6 +929,39 @@ fn a_codex_run_starts_on_its_own_with_the_steps_prompt_as_its_last_argument() {
 }
 
 #[test]
+fn a_run_with_no_session_start_hides_a_secret_that_wraps_across_its_panes_rows() {
+    let mut setup = Setup::new("untrusted-wrapped");
+    setup.publish(&requested(42));
+    let secret = "wrapped-webhook-value-0123456789abcdef";
+    // 181 columns before it, so the 200-column pane breaks the secret over two rows.
+    fs::write(
+        setup.dir.join("fake/silent"),
+        format!("{} {secret} end\n  Trust this folder?\n", "a".repeat(180)),
+    )
+    .unwrap();
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_GITHUB_WEBHOOK_SECRET", secret)],
+    );
+    setup.until("runs", |rows| rows.len() == 1);
+
+    let tasks = setup.within(75, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+
+    let reason = &tasks[0][7];
+    assert!(
+        reason.ends_with("[redacted] end | Trust this folder?"),
+        "{reason}"
+    );
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    for part in ["wrapped-webhook", "0123456789abcdef", "value-01"] {
+        assert!(!reason.contains(part), "the reason shows {part}: {reason}");
+        assert!(!log.contains(part), "the log shows {part}: {log}");
+    }
+}
+
+#[test]
 fn a_codex_run_with_no_session_start_names_the_codex_command_whose_hooks_to_trust() {
     let mut setup = Setup::new("codex-untrusted");
     fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
