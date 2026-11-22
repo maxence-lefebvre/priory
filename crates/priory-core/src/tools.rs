@@ -248,7 +248,7 @@ pub(crate) fn call(
         // A result, ask or wait is progress: the task may be stopped for an urgent wake again.
         if call.tool != "compact" {
             tx.execute(
-                "UPDATE tasks SET preempted = NULL WHERE id = ?1",
+                "UPDATE tasks SET preempted = NULL WHERE id = ?1 AND preempted IS NOT NULL",
                 [run.task],
             )?;
         }
