@@ -14,7 +14,7 @@ cp "$here/prices.toml" "$dir/factory/prices.toml"
 runners="$dir/factory/runners"
 mv "$runners/my-machine.toml" "$runners/workstation.toml"
 cp "$runners/workstation.toml" "$runners/laptop.toml"
-cp "$runners/workstation.toml" "$runners/xps13.toml"
+cp "$runners/workstation.toml" "$runners/desktop.toml"
 sed -i 's/^name = .*/name = "shop"/' "$dir/factory/factory.toml"
 # the memory a seeded candidate replaces
 mkdir -p "$dir/factory/memories"
