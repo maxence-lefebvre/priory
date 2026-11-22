@@ -28,8 +28,8 @@ did not. Priory has since built parts of all five, and this list says what remai
    trigger or a lane ([spend caps](daemon/spend.md)). A reached cap keeps new runs from starting.
    A task cap, or a factory or trigger day or week cap, also holds a running task with one ask.
    The daemon checks a running task's caps only between two turns, so one long turn can pass a
-   cap. Only a step's own [`budget`](daemon/health.md#budget) is checked inside a turn, once a
-   minute. With several runners, each daemon counts only its own spend.
+   cap. Only a step's own [`budget`](daemon/health.md#budget) is checked inside a turn, at most
+   once a minute. With several runners, each daemon counts only its own spend.
 2. **Graduated approval.** A trigger's [`intervention`](concepts.md) lets a person approve every
    plan, or a lead agent answer asks, and a workflow can route a plan by its grade. A
    [critic](daemon/score.md#gates) can refuse a plan no person reads, and a

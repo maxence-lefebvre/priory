@@ -33,7 +33,8 @@ every poll:
   checks, and goes to sleep. The daemon resumes its session when that event arrives.
 - Every question an agent asks lands on one list, the desk, with options and a recommendation.
   You answer it from the command line, or a [trigger](docs/concepts.md) hands its tasks'
-  questions to a lead agent and keeps only the irreversible ones for you.
+  questions to a lead agent and keeps only the irreversible ones for you. A
+  [Claude Code plugin](docs/adapters/claude-plugin.md) brings the desk into your own session.
 - Every workflow step declares who decides it (a model, a person or code) and what it changes. So
   `priory check` can refuse a workflow before it runs, for example one that pushes code with no
   person's approval. `priory check --explain` lists what a person approves before each
@@ -47,14 +48,16 @@ every poll:
 - Every step's outcome, tokens and time are recorded, so you can measure a workflow and its cost.
 - Spend caps per task, day or week stop a factory that overspends: past a cap, a task waits for
   you to raise the cap or stop it. See [docs/daemon/spend.md](docs/daemon/spend.md).
-- Agents share [skills and memories](docs/daemon/skills.md) kept in git, and one that names the
-  files it is about reaches only the runs that touch them. An agent proposes a memory, or a
-  nightly dream proposes memories from the day's tasks, and a person accepts each one.
+- Agents share [skills and memories](docs/daemon/skills.md) kept in git, in the factory, a kit
+  repository or a memories repository. One that names the files it is about joins a Claude Code
+  run's context when the run touches such a file. An agent proposes a memory, or a nightly dream
+  proposes memories from the day's tasks, and a person accepts each one.
 - [Scorers](docs/daemon/score.md) grade finished runs, and a step can use one as a gate that
   refuses a result. A judge scorer counts only once it agrees with a person's labels, and a
   [benchmark](docs/daemon/bench.md) replays past tasks to compare a change to the factory.
-- A trigger can run a [`pre` script](docs/intake/pre.md) that filters or changes its events, run
-  its tasks [staged](docs/daemon/tools.md#staged-tasks) as a trial that writes nothing, and let
+- A trigger can run a [`pre` script](docs/intake/pre.md) that drops or changes its task requests,
+  run its tasks [staged](docs/daemon/tools.md#staged-tasks) as a trial in which no irreversible
+  step runs, and let
   the daemon [answer](docs/daemon/waits.md#answered-by-auto) a reversible ask when the agent
   states enough confidence.
 - A [debate step](docs/daemon/debates.md) has two agents answer one question in turns, and ends
@@ -66,8 +69,8 @@ every poll:
   [review](docs/daemon/runs.md#review-limit), lets a blocker task
   [stop a lower band's run](docs/daemon/room.md#urgent-wakes) at the end of its turn, and asks you
   when a fix [fails the same checks](docs/daemon/waits.md#a-fix-that-fails-the-same-way) twice.
-- A repository's [setup, resume and teardown recipes](docs/daemon/runs.md#recipes) prepare each
-  worktree, so no run has to find out how to install and build it.
+- A repository's [setup, resume and teardown recipes](docs/daemon/runs.md#recipes) prepare and
+  clean up its worktrees, so no run has to find out how to install and build it.
 
 ## The web view
 

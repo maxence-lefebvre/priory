@@ -47,7 +47,7 @@ looked. See [docs/daemon/waits.md](daemon/waits.md#answered-by-auto).
 **Task and run.** A task is one unit of work, from its event to `done`, `failed` or `dropped`. A run
 is one agent process working on a task's step. A task can have many runs, and its agent's session
 carries over between them. A repository's [recipes](daemon/runs.md#recipes) are the commands
-that prepare its worktree before a run. See [docs/daemon/runs.md](daemon/runs.md).
+that prepare and clean up its worktrees. See [docs/daemon/runs.md](daemon/runs.md).
 
 **Inbox and routing.** Every event the intake publishes lands in the daemon's inbox before anything
 acts on it. The daemon then finds the task the event concerns, such as the task that owns the pull
@@ -69,9 +69,8 @@ your own session read the desk, ask you a question and add a task.
 **Queue, bands and room.** Tasks start in band order (`blocker`, `now`, `today`, `later` by
 default), then in an order you set, then oldest first.
 A task's lane, such as `core/intake`, groups tasks by team and theme for `priory tasks --lane`
-and `priory report --by lane`. Without a lane or a matching rule of
-[`lanes.toml`](reference/lanes.md), it is `<team>/misc`, or
-`none/misc` for a task with no team. A run starts only when the machine has room for the memory
+and `priory report --by lane`. A trigger or a request names it, or
+[`lanes.toml`](reference/lanes.md) derives it. A run starts only when the machine has room for the memory
 and disk its agent declares. See [docs/daemon/room.md](daemon/room.md). Two settings change who
 starts. A [review limit](daemon/runs.md#review-limit) holds new starts while too many pull requests
 wait for a person. An [urgent wake](daemon/room.md#urgent-wakes) lets a task in a band you name
@@ -79,7 +78,7 @@ stop a lower band's run at the end of its turn.
 
 **Health.** Every second, the daemon checks each run for an unexpected exit, a timeout or a
 permission prompt. It never approves a permission prompt. A crashed run gets one repair attempt.
-A step's `budget` ends a run that spends more dollars than the step allows. When a fix fails the
+A step's `budget` limits the dollars a task may spend at that step. When a fix fails the
 same checks as the commit before it, the daemon asks a person instead of waking the agent again.
 See [docs/daemon/health.md](daemon/health.md) and
 [a fix that fails the same way](daemon/waits.md#a-fix-that-fails-the-same-way).
@@ -89,14 +88,15 @@ in dollars, per task, day or week. Past a cap, new runs wait, and a held task as
 the cap or stop it. See [docs/daemon/spend.md](daemon/spend.md).
 
 **Skills and memories.** A skill is a folder of instructions an agent follows when its description
-fits the task. A memory is one fact in one file. Every run gets the factory's skills and memories,
-and those of two optional git repositories: a kit of skills and a memories repository. A skill or
-memory that names `paths` reaches a run only when the run touches a matching file. An agent
+fits the task. A memory is one fact in one file. A run gets the factory's skills and memories,
+and those of two optional git repositories: a kit of skills and a memories repository. An agent
+can name the skills its runs get. When a Claude Code run touches a file that matches the `paths`
+of a skill or memory, Priory adds that skill or memory to the run's context. An agent
 proposes a memory with `remember`, a [nightly dream](setting-up-a-nightly-dream.md) proposes
 memories from the day's tasks, and a person accepts each one before other tasks get it. See
 [docs/daemon/skills.md](daemon/skills.md).
 
-**Scorers, gates and benchmarks.** A scorer grades a finished run with a command or a question.
+**Scorers, gates and benchmarks.** A scorer grades a finished run.
 A `judge` scorer asks a model, and counts only once its answers agree with a person's labels. A
 gate is a scorer that refuses a step's result when it fails. A benchmark replays past tasks to
 compare two commits of the factory. See [docs/daemon/score.md](daemon/score.md) and
