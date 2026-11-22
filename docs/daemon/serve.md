@@ -310,10 +310,16 @@ to the push services that browsers use, Apple's, Google's, Mozilla's and Microso
 subscription cannot aim it at this machine or its network. A daemon that cannot make or read its
 key logs it, sends no notification, and runs tasks as usual.
 
-A daemon stopped mid-send sends that notification again on its next start, and a retry after an
-answer that got lost sends it twice too. The service worker keeps the ids of the last 50
-notifications and shows a repeated id silently, in place of the first one, so it never alerts
-twice. A browser that subscribed with `userVisibleOnly` must show something for every push, and
+The daemon records each send to a browser in the state file before `curl` starts, as the outbox
+records a prompt before it types it. So a daemon stopped mid-send never sends that notification to
+that browser again: the push service may already hold it. The next daemon still sends it to the
+browsers it never reached. A retry that waited because the push service answered `429` or a `5xx`
+goes out from the next daemon too, since that service never took the notification. A retry that
+waited because `curl` failed does not, since the request may have reached the service.
+
+A retry after an answer that got lost can still send a notification twice. The service worker
+keeps the ids of the last 50 notifications and shows a repeated id silently, in place of the first
+one, so it never alerts twice. A browser that subscribed with `userVisibleOnly` must show something for every push, and
 Safari drops a subscription that shows nothing, so the worker does not skip the copy. The id is the
 time the notification was queued and its row in the queue, so a new state file, whose rows start
 at 1 again, does not repeat an old id.

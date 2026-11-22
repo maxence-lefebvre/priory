@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 87;
+const VERSION: i64 = 88;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1574,6 +1574,20 @@ CREATE TABLE IF NOT EXISTS replay (
 PRAGMA user_version = 87;
 ";
 
+// Each subscription a queued notification was handed to, recorded before its `curl` starts, so a
+// daemon stopped mid-send does not send it there again, as the outbox does for a prompt.
+const SCHEMA_88: &str = "
+CREATE TABLE IF NOT EXISTS push_sent (
+  row      INTEGER NOT NULL,
+  endpoint TEXT NOT NULL,
+  PRIMARY KEY (row, endpoint)
+);
+CREATE TRIGGER IF NOT EXISTS push_sent_leaves_with_its_row AFTER DELETE ON push_queue BEGIN
+  DELETE FROM push_sent WHERE row = OLD.id;
+END;
+PRAGMA user_version = 88;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1586,7 +1600,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
-    SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87,
+    SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
