@@ -205,7 +205,10 @@ workflow, band, lane and title come from the task's request, and its `generation
 held message.
 
 Only the owner and hold cross. The task's state, steps, runs and terminal stay on its runner, so its
-`id` is null and the row opens no page here: open that runner's own view for them. A task whose hold
+`id` is null and the row opens no page here: open that runner's own view for them. The row does not
+link there either. A runner file names no view address, and each machine's `priory serve` listens on
+its own loopback address by default, so Priory does not know where the owner's view is. Open the
+address you set up for that machine, such as the one `tailscale serve` gives it. A task whose hold
 is `ended` leaves the list. Tasks of this runner carry its `runner` and `hold` too. Every row lists
 the actions sent to it from other machines under `submissions`, as below. The Herdr Tasks
 panel lists them as well, and both panels offer a Runner facet that marks this runner `(here)`.
@@ -388,8 +391,10 @@ Every runner also refuses a claim for a runner without a runner file.
 - Each ask change adds one post to `factory.intake`.
 - Snoozes stay on their machine: another runner's ask cannot be snoozed here.
 - A machine without a runner file serves the asks and tasks only with `priory daemon --view-only`.
-- Another runner's task shows its hold, not its state. Its actions are sent through the log, and
-  hold has no remote form: hold it on its runner.
+- Another runner's task shows its hold, not its state. Its detail page and runs show only on its
+  runner, and its row links to no other machine's view.
+- Actions on another runner's task are sent through the log, and hold has no remote form: hold it
+  on its runner.
 - A key's newer task starts at generation 1 again. An action sent to the old task and read after
   the key's new task started can apply to the new one.
 - Each runner adds one alive message a minute to `factory.intake`.
