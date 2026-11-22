@@ -10,8 +10,8 @@ config page gives a field table, a complete example and the errors `priory check
 | [workflows.md](workflows.md) | `workflows/<name>.toml`: steps, deciders, effects, outcomes and `priory check --explain` |
 | [agents.md](agents.md) | `agents/<name>/agent.md`: harness, model, session and permissions |
 | [triggers.md](triggers.md) | `triggers/<name>.toml`: one section per source, and `hold` |
+| [lanes.md](lanes.md) | `lanes.toml`: the rules that derive a task's lane, and each lane's `max_running` |
 | [runners.md](runners.md) | `runners/<hostname>.toml`: platform and share of the machine |
-| [lanes.md](lanes.md) | `lanes.toml`: the rules that give a task its lane |
 | [views.md](views.md) | `views/<name>.toml`: the web view's layouts |
 | [memories.md](memories.md) | `memories/<name>.md`: the facts every run gets, and the index of them |
 | [scorers.md](scorers.md) | `scorers/<name>.toml`: the questions that grade a finished run |

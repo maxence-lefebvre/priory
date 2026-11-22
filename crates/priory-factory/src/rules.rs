@@ -1013,6 +1013,18 @@ fn check_lanes(lanes: &Loaded<Lanes>, problems: &mut Vec<Problem>) {
             problems.push(problem(lanes, at, not_a_lane(&rule.lane)));
         }
     }
+    for name in lanes
+        .value
+        .lane
+        .keys()
+        .filter(|name| !lanes::well_formed(name))
+    {
+        problems.push(problem(
+            lanes,
+            lanes.lines.field("lane"),
+            format!("`[lane]` `{name}` is not a lane such as `team/theme`"),
+        ));
+    }
 }
 
 fn check_band<T>(

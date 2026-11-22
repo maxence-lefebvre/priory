@@ -1495,6 +1495,78 @@ fn review_limit_takes_a_positive_number() {
 }
 
 #[test]
+fn fair_lanes_and_max_running_pass_and_a_bad_one_names_its_line() {
+    let settings = "name = \"demo\"\n\n[queue]\nfair = \"lane\"\n";
+    let lanes = format!("{LANES}\n[lane.\"3D/mobile\"]\nmax_running = 2\n");
+    let trigger = format!("{TRIGGER}max_running = 3\n");
+    let files = |settings: &str, lanes: &str, trigger: &str| -> Vec<(String, String)> {
+        let mut files: Vec<_> = valid()
+            .into_iter()
+            .filter(|(file, _)| !["factory.toml", "triggers/agent-label.toml"].contains(file))
+            .map(|(file, content)| (file.to_owned(), content.to_owned()))
+            .collect();
+        files.push(("factory.toml".into(), settings.into()));
+        files.push(("lanes.toml".into(), lanes.into()));
+        files.push(("triggers/agent-label.toml".into(), trigger.into()));
+        files
+    };
+    let run = |name: &str, files: Vec<(String, String)>| {
+        let files: Vec<_> = files
+            .iter()
+            .map(|(file, content)| (file.as_str(), content.as_str()))
+            .collect();
+        check(&factory(name, &files))
+    };
+
+    let ok = run("fair-ok", files(settings, &lanes, &trigger));
+    let unknown = run(
+        "fair-unknown",
+        files(
+            &settings.replace("\"lane\"", "\"trigger\""),
+            &lanes,
+            &trigger,
+        ),
+    );
+    let zero = run(
+        "max-running-zero",
+        files(settings, &lanes, &trigger.replace("= 3", "= 0")),
+    );
+    let bad_lane = run(
+        "max-running-lane",
+        files(
+            settings,
+            &lanes.replace("\"3D/mobile\"]", "\"mobile\"]"),
+            &trigger,
+        ),
+    );
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(unknown.code, 1);
+    assert!(
+        unknown.stderr.starts_with("factory.toml:4:")
+            && unknown
+                .stderr
+                .contains("unknown variant `trigger`, expected `lane`"),
+        "{}",
+        unknown.stderr
+    );
+    assert_eq!(zero.code, 1);
+    assert!(
+        zero.stderr.starts_with("triggers/agent-label.toml:8:")
+            && zero
+                .stderr
+                .contains("`max_running` is 0: give at least 1, or hold the tasks instead"),
+        "{}",
+        zero.stderr
+    );
+    assert_eq!(bad_lane.code, 1);
+    assert_eq!(
+        bad_lane.stderr,
+        "lanes.toml:11: `[lane]` `mobile` is not a lane such as `team/theme`\n"
+    );
+}
+
+#[test]
 fn a_sweep_table_passes_and_a_bad_one_names_its_line() {
     let good = "name = \"demo\"\n\n[sweep]\nevery = \"5m\"\nafter = \"30m\"\nagent = \"implementer\"\nrepo = \"owner/priory\"\nscripts = [{ run = \"docker system prune -f\", when = \"disk\", timeout = \"2m\" }]\n";
     let ok = check(&factory("sweep-ok", &with("factory.toml", good)));

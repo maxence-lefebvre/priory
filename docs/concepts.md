@@ -67,14 +67,15 @@ or stopped. See
 your own session read the desk, ask you a question and add a task.
 
 **Queue, bands and room.** Tasks start in band order (`blocker`, `now`, `today`, `later` by
-default), then in an order you set, then oldest first.
-A task's lane, such as `core/intake`, groups tasks by team and theme for `priory tasks --lane`
-and `priory report --by lane`. A trigger or a request names it, or
-[`lanes.toml`](reference/lanes.md) derives it. A run starts only when the machine has room for the memory
-and disk its agent declares. See [docs/daemon/room.md](daemon/room.md). Two settings change who
-starts. A [review limit](daemon/runs.md#review-limit) holds new starts while too many pull requests
-wait for a person. An [urgent wake](daemon/room.md#urgent-wakes) lets a task in a band you name
-stop a lower band's run at the end of its turn.
+default), then in an order you set, then oldest first, or in turns between lanes with
+`[queue] fair = "lane"`. A task's lane, such as `core/intake`, groups tasks by team and theme for
+`priory tasks --lane` and `priory report --by lane`. A trigger or a request names it, or
+[`lanes.toml`](reference/lanes.md) derives it. A lane or a trigger can cap how many of its tasks
+run at once. A run starts only when the machine has room for the memory and disk its agent
+declares. See [docs/daemon/room.md](daemon/room.md) and [docs/daemon/runs.md](daemon/runs.md#queue).
+Two more settings change who starts. A [review limit](daemon/runs.md#review-limit) holds new starts
+while too many pull requests wait for a person. An [urgent wake](daemon/room.md#urgent-wakes) lets a
+task in a band you name stop a lower band's run at the end of its turn.
 
 **Health.** Every second, the daemon checks each run for an unexpected exit, a timeout or a
 permission prompt. It never approves a permission prompt. A crashed run gets one repair attempt.

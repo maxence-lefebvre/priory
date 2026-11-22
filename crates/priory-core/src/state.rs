@@ -3,7 +3,7 @@ use crate::route::{self, Decision};
 use crate::trace::Trace;
 use herdr_bus::Message;
 use priory_factory::explain;
-use priory_factory::factory::{Factory, Loaded, Session, Workflow};
+use priory_factory::factory::{Factory, Fair, Loaded, Session, Workflow};
 use priory_factory::lanes::{Lanes, Subject};
 use priory_intake::intake::{CHECKED, ISSUE_CLOSED, PR_CLOSED as CLOSED};
 use priory_runtime::room::Room;
@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 100;
+const VERSION: i64 = 101;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1839,6 +1839,17 @@ END;
 PRAGMA user_version = 100;
 ";
 
+/// What the queue takes turns between inside a band, from `[queue] fair`: a row only when set.
+const SCHEMA_101: &str = "
+CREATE TABLE IF NOT EXISTS fairness (
+  id  INTEGER PRIMARY KEY CHECK (id = 1),
+  key TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tasks_by_lane ON tasks (band, lane);
+CREATE INDEX IF NOT EXISTS runs_of_task ON runs (task);
+PRAGMA user_version = 101;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1853,13 +1864,25 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
-    SCHEMA_98, SCHEMA_99, SCHEMA_100,
+    SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
-/// no longer has comes after the last one.
+/// no longer has comes after the last one. With `[queue] fair = "lane"`, the tasks a person has not
+/// ordered take turns between lanes before age: the oldest of each lane first, and among those the
+/// lane whose last run started longest ago, so a lane that never ran comes first.
 pub const START_ORDER: &str = "coalesce((SELECT rank FROM bands WHERE bands.name = tasks.band),
-  (SELECT count(*) FROM bands)), tasks.position IS NULL, tasks.position, tasks.id";
+  (SELECT count(*) FROM bands)), tasks.position IS NULL, tasks.position,
+  CASE WHEN tasks.position IS NULL AND tasks.state IN ('queued', 'ready')
+    AND EXISTS (SELECT 1 FROM fairness WHERE fairness.key = 'lane')
+  THEN (SELECT count(*) FROM tasks AS ahead WHERE ahead.band IS tasks.band
+    AND ahead.lane IS tasks.lane AND ahead.state IN ('queued', 'ready')
+    AND ahead.position IS NULL AND ahead.id < tasks.id) END,
+  CASE WHEN tasks.position IS NULL AND tasks.state IN ('queued', 'ready')
+    AND EXISTS (SELECT 1 FROM fairness WHERE fairness.key = 'lane')
+  THEN (SELECT max(runs.id) FROM tasks AS served JOIN runs ON runs.task = served.id
+    WHERE served.band IS tasks.band AND served.lane IS tasks.lane) END,
+  tasks.id";
 
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
@@ -2682,6 +2705,20 @@ pub(crate) fn bands(db: &mut Connection, bands: &[&str]) -> rusqlite::Result<()>
     tx.commit()
 }
 
+/// Records `[queue] fair`, so listings show the order the daemon starts tasks in without the
+/// factory.
+pub(crate) fn fairness(db: &Connection, fair: Option<Fair>) -> rusqlite::Result<()> {
+    match fair {
+        Some(Fair::Lane) => db.execute(
+            "INSERT INTO fairness (id, key) VALUES (1, 'lane')
+             ON CONFLICT (id) DO UPDATE SET key = 'lane'",
+            [],
+        ),
+        None => db.execute("DELETE FROM fairness", []),
+    }
+    .map(drop)
+}
+
 /// Records each workflow's human steps whose answer lets an irreversible step run, so listings
 /// read an ask's risk without the factory.
 pub(crate) fn irreversible_asks(
@@ -3068,6 +3105,8 @@ pub(crate) struct Admission {
     pub fresh: bool,
     /// The head task this task's last run was stopped for, until its next result, ask or wait.
     pub preempted: Option<i64>,
+    /// The task's lane, whose `max_running` may hold its start.
+    pub lane: Option<String>,
 }
 
 /// The first queued or ready task at a model step, in start order, that fits in the runner's room.
@@ -3081,7 +3120,7 @@ pub(crate) fn admissible<'r>(
     watched: &dyn Fn(&str) -> bool,
 ) -> rusqlite::Result<Option<Admission>> {
     let mut statement = db.prepare(&format!(
-        "SELECT id, workflow, step, trigger, state = 'queued', repo, preempted FROM tasks
+        "SELECT id, workflow, step, trigger, state = 'queued', repo, preempted, lane FROM tasks
              WHERE state IN ('queued', 'ready')
              -- A task waits while a recipe runs in its worktree, or a teardown is owed there.
              AND NOT EXISTS (SELECT 1 FROM recipes WHERE recipes.task = tasks.id
@@ -3104,6 +3143,7 @@ pub(crate) fn admissible<'r>(
                 fresh: row.get(4)?,
                 repo: row.get(5)?,
                 preempted: row.get(6)?,
+                lane: row.get(7)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -3155,6 +3195,10 @@ pub(crate) fn admissible<'r>(
                 crate::review::waits(db, factory.review_limit(), first_band, admission.task)?
             }
             None => None,
+        };
+        let busy = match busy {
+            Some(reason) => Some(reason),
+            None => crowded(db, factory, &admission)?,
         };
         let waits = match (busy, head) {
             (Some(reason), _) => Some(reason),
@@ -3230,6 +3274,41 @@ pub(crate) fn admissible<'r>(
         crate::preempt::withdraw(db)?;
     }
     crate::stall::record(db, stall.as_ref().map(|(task, short)| (*task, short)))?;
+    Ok(None)
+}
+
+/// Why a task waits for its lane's or trigger's `max_running`: `waits: lane core/intake has 2
+/// running tasks, its max_running`. A run counts from its start to its end.
+fn crowded(
+    db: &Connection,
+    factory: &Factory,
+    admission: &Admission,
+) -> rusqlite::Result<Option<String>> {
+    let lane = admission.lane.as_deref().and_then(|lane| {
+        let max = factory.lanes().lane.get(lane)?.max_running?;
+        Some(("lane", lane, "tasks.lane", max))
+    });
+    let trigger = factory
+        .triggers
+        .get(&admission.trigger)
+        .and_then(|trigger| trigger.value.max_running)
+        .map(|max| ("trigger", admission.trigger.as_str(), "tasks.trigger", max));
+    for (kind, name, column, max) in lane.into_iter().chain(trigger) {
+        let running: i64 = db.query_row(
+            &format!(
+                "SELECT count(*) FROM runs JOIN tasks ON tasks.id = runs.task
+                 WHERE runs.ended IS NULL AND {column} = ?1"
+            ),
+            [name],
+            |row| row.get(0),
+        )?;
+        if running >= i64::from(max) {
+            let tasks = if running == 1 { "task" } else { "tasks" };
+            return Ok(Some(format!(
+                "waits: {kind} {name} has {running} running {tasks}, its max_running"
+            )));
+        }
+    }
     Ok(None)
 }
 

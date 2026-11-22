@@ -2959,6 +2959,119 @@ fn a_renamed_band_set_orders_the_queue_and_moves() {
     );
 }
 
+fn requested_lane(issue: u64, lane: &str) -> Message {
+    let mut message = requested(issue);
+    message.data["lane"] = json!(lane);
+    message
+}
+
+/// A factory whose queue takes turns between lanes, with three tasks in lane a/x, then two in b/y.
+fn fair(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    let settings = "name = \"demo\"\n\n[queue]\nfair = \"lane\"\n";
+    fs::write(setup.dir.join("factory/factory.toml"), settings).unwrap();
+    for (issue, lane) in [
+        (42, "a/x"),
+        (43, "a/x"),
+        (44, "a/x"),
+        (45, "b/y"),
+        (46, "b/y"),
+    ] {
+        setup.publish(&requested_lane(issue, lane));
+    }
+    setup
+}
+
+#[test]
+fn a_fair_queue_takes_turns_between_lanes_inside_a_band() {
+    let mut setup = fair("fair-lanes");
+    // Room for one run, so the runs start one after another.
+    setup.memory(12);
+    route(&setup);
+    let places: Vec<_> = queue(&setup)
+        .into_iter()
+        .map(|[id, _, _, place]| format!("{id} {place}"))
+        .collect();
+    assert_eq!(places, ["1 1", "4 2", "2 3", "5 4", "3 5"]);
+    setup.calls(&vec![result("passed"); 5]);
+
+    setup.start();
+
+    setup.until("tasks", |rows| with(rows, 4, "done") == 5);
+    let started: Vec<_> = setup
+        .rows("runs")
+        .into_iter()
+        .map(|row| row[1].clone())
+        .collect();
+    assert_eq!(started, ["1", "4", "2", "5", "3"]);
+}
+
+#[test]
+fn a_person_order_beats_a_fair_queue() {
+    let setup = fair("fair-person");
+    route(&setup);
+
+    moved(&setup, &["3", "--top"]);
+    setup.publish(&requested_lane(47, "a/x"));
+    setup.publish(&requested_lane(48, "b/y"));
+    route(&setup);
+
+    let places: Vec<_> = queue(&setup)
+        .into_iter()
+        .map(|[id, _, _, place]| format!("{id} {place}"))
+        .collect();
+    // The move numbers the band in its fair order; later tasks take turns behind it.
+    assert_eq!(places, ["3 1", "1 2", "4 3", "2 4", "5 5", "6 6", "7 7"]);
+}
+
+#[test]
+fn a_lane_max_running_holds_its_new_starts_while_other_lanes_start() {
+    let mut setup = Setup::new("lane-max-running");
+    fs::write(
+        setup.dir.join("factory/lanes.toml"),
+        "[lane.\"a/x\"]\nmax_running = 1\n",
+    )
+    .unwrap();
+    setup.hold("hold-stop");
+    setup.calls(&vec![result("passed"); 3]);
+    setup.publish(&requested_lane(42, "a/x"));
+    setup.publish(&requested_lane(43, "a/x"));
+    setup.publish(&requested_lane(44, "b/y"));
+
+    setup.start();
+
+    let reason = "waits: lane a/x has 1 running task, its max_running";
+    let tasks = setup.until("tasks", |rows| {
+        with(rows, 4, "running") == 2 && rows.iter().any(|row| row[7] == reason)
+    });
+    let states: Vec<_> = tasks
+        .iter()
+        .map(|row| format!("{} {} {}", row[0], row[4], row[6]))
+        .collect();
+    assert_eq!(states, ["1 running a/x", "2 queued a/x", "3 running b/y"]);
+    setup.release("hold-stop");
+    setup.until("tasks", |rows| with(rows, 4, "done") == 3);
+}
+
+#[test]
+fn a_trigger_max_running_holds_its_new_starts() {
+    let mut setup = Setup::new("trigger-max-running");
+    let trigger = format!("{TRIGGER}max_running = 1\n");
+    fs::write(setup.dir.join("factory/triggers/agent-label.toml"), trigger).unwrap();
+    setup.hold("hold-stop");
+    setup.calls(&vec![result("passed"); 2]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+
+    setup.start();
+
+    let reason = "waits: trigger agent-label has 1 running task, its max_running";
+    let tasks = setup.until("tasks", |rows| rows.iter().any(|row| row[7] == reason));
+    assert_eq!(with(&tasks, 4, "running"), 1, "{tasks:?}");
+    setup.release("hold-stop");
+    setup.until("tasks", |rows| with(rows, 4, "done") == 2);
+}
+
 /// The state revision once the daemon has left it unchanged for over a tick.
 fn settled(setup: &Setup) -> i64 {
     let deadline = Instant::now() + Duration::from_secs(60);

@@ -163,6 +163,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     tools::backfill_endings(&mut db, &factory.workflows)?;
     let bus = log::open(factory.log())?;
     state::bands(&mut db, &factory.bands())?;
+    state::fairness(&db, factory.fair())?;
     state::irreversible_asks(&mut db, &factory.workflows)?;
     for error in sections::dispatch(&db, factory, None)? {
         eprintln!("priory daemon: {error}");
