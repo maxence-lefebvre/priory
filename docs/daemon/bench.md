@@ -144,7 +144,7 @@ It prints, for example:
 
 ```text
 estimate: $0.4100 of a $5.0000 budget, plus at most $0.9000 if it ends inside a turn of 30m
-scratch: /tmp/priory-replay-41022-9f2c4e1a7b3d4c5e8a6b0d1f2e3c4b5a
+scratch: /tmp/priory-replay-41022-9f2c4e1a7b3d
 answer: approve-plan approved
 ending: reached open-pr
 spent: $0.4700 of $5.0000 in 612s

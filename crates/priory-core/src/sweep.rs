@@ -92,9 +92,11 @@ pub fn run(db: &Connection, home: &Path) -> rusqlite::Result<()> {
 /// What starts the name of a replay's scratch folder in the temporary folder, before its pid.
 pub(crate) const REPLAY: &str = "priory-replay-";
 
-/// The name of a scratch folder that dies with this process: its pid, then a random part.
+/// The name of a scratch folder that dies with this process: its pid, then a random part, short
+/// so a tmux socket inside it stays under the 108-byte limit.
 pub(crate) fn scratch_name() -> String {
-    format!("{}-{}", std::process::id(), uuid::Uuid::new_v4().simple())
+    let random = uuid::Uuid::new_v4().simple().to_string();
+    format!("{}-{}", std::process::id(), &random[..12])
 }
 
 /// Removes what an interrupted `priory bench`, `priory score` or judge left: each folder under
