@@ -28014,7 +28014,7 @@ fn a_nightly_dream_proposes_candidates_that_reach_other_tasks_only_once_accepted
 
 /// The factory's triage decision model: the fake `decision`, reading the key from
 /// `TYPESAFE_API_KEY`, with ten labeled cases beside it.
-const DECISIONS: &str = "name = \"demo\"\n\n[decisions.triage]\nrun = \"decision\"\nkey_env = \"TYPESAFE_API_KEY\"\nevaluation = \"triage.eval.toml\"\ntimeout = \"1s\"\n";
+const DECISIONS: &str = "name = \"demo\"\n\n[decisions.triage]\nrun = \"decision\"\nkey_env = \"TYPESAFE_API_KEY\"\nevaluation = \"triage.eval.toml\"\ntimeout = \"10s\"\n";
 
 /// Ten feedback items a person sorted: four thanks, three renames and three questions.
 fn triage_cases() -> String {
@@ -28070,6 +28070,19 @@ impl Setup {
             .map(|record| record["data"].clone())
             .collect()
     }
+
+    /// Polls until the trace holds `count` `factory.decision.answered` records, and returns them.
+    fn until_decided(&self, count: usize) -> Vec<serde_json::Value> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let decided = self.decided();
+            if decided.len() >= count {
+                return decided;
+            }
+            assert!(Instant::now() < deadline, "{decided:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
 }
 
 /// Task 1, asleep on a `review` wait of pull request 7, in a factory whose triage decision model
@@ -28121,6 +28134,8 @@ fn a_thanks_a_calibrated_model_sorts_as_nothing_to_do_wakes_no_one() {
 
     setup.publish(&pull_comment("Thanks, looks good."));
 
+    // The daemon records the decision before it routes the comment, so the wait starts after it.
+    setup.until_decided(1);
     stays_asleep(&setup);
     let decided = setup.decided();
     assert_eq!(decided.len(), 1, "{decided:?}");
@@ -28237,7 +28252,15 @@ fn a_failing_slow_or_malformed_call_wakes_the_task_as_today() {
             "answered by jev-1.15.0, calibrated on jev-1.14.0",
         ),
     ] {
-        let setup = asleep_with_decisions(name, answers, true);
+        // Only the slow call gets a short limit, so load cannot push a fast call past it.
+        let limit = |factory: &Path| {
+            if name == "decision-slow" {
+                let file = factory.join("factory.toml");
+                let text = fs::read_to_string(&file).unwrap();
+                fs::write(file, text.replace("timeout = \"10s\"", "timeout = \"1s\"")).unwrap();
+            }
+        };
+        let setup = asleep_deciding(name, answers, true, limit, &[KEY]);
         wakes_as_today(&setup, why);
     }
 }
@@ -28438,6 +28461,7 @@ fn a_settled_comment_on_a_subscribed_issue_wakes_no_one() {
 
     setup.publish(&thanks);
 
+    setup.until_decided(1);
     stays_asleep(&setup);
     assert_eq!(setup.decided()[0]["acted"], true);
 }
