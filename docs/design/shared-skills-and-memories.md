@@ -181,7 +181,7 @@ own prompt together.
 3. `ClaudeCode::args` adds `--plugin-dir` when the factory has skills, and passes the instructions
    and the agent's body through `--append-system-prompt-file`. `Codex::args` puts the instructions
    before the body in `developer_instructions`, and `priory check` refuses instructions over the
-   limit. Codex skills wait for the open question below.
+   limit. Codex skills waited for the open question below (later slice 5).
 4. The run records the hash of the skills and instructions it got, so two runners whose factory
    checkouts differ show it in the run's record. That hash is how a person sees that a runner needs
    a pull.
@@ -235,7 +235,12 @@ Tests:
    claim needs push rights, since no trigger names a runner; the pull request opens on the
    trigger's `repo`, the kit's GitHub owner/name, since a kit's `repo` can be any git URL; and a
    runner does not yet drop a candidate once the kit commit it fetched holds the candidate's result.
-5. Codex skills, once the open question is settled.
+5. Codex skills, as open question 4 answers. This slice is built:
+   [skills.md](../daemon/skills.md#a-codex-run) describes it. A Codex run gets the same sealed
+   plugin folder as a Claude Code run, and an index of its skills in `developer_instructions`,
+   after the memory index: the folder, then each skill's `SKILL.md` path and description.
+   `priory check` counts the index toward the 8192-byte limit. Since both harnesses now get the
+   skills, their runs record the same `kit_hash`.
 
 ## Open questions
 
@@ -254,5 +259,11 @@ Tests:
 4. **How do Codex runs get skills?** Codex reads skills from its own home folder. Recommendation:
    check whether a `-c` override can add a skills folder. If none can, list the skill names and
    paths in `developer_instructions`, and leave `CODEX_HOME` alone, for the reason in question 1.
+   Answered for Codex 0.170.0: no override can. Codex reads skills from the config folders of its
+   user and system layers (`$CODEX_HOME/skills`, `/etc/codex/skills`), `~/.agents/skills`, the
+   repository's `.agents/skills`, installed plugins, whose store is under `CODEX_HOME`, and roots
+   that an app-server client sets. The layer that `-c` writes adds no skill folder. Writing
+   `.agents/skills` into the task's worktree would work, but the agent could commit it. So a run
+   gets the index, as recommended.
 5. **Per person or per factory?** Recommendation: per factory, as above. A person who wants their
    own kit in runs names it as the factory's kit, which is Max's case with abbey.

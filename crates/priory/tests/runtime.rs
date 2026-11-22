@@ -20112,7 +20112,7 @@ fn a_run_that_edits_its_skills_or_memories_changes_nothing_a_later_run_reads() {
 }
 
 #[test]
-fn a_codex_run_gets_the_factorys_instructions_before_its_prompt_and_each_run_records_what_it_got() {
+fn a_codex_run_gets_the_factorys_instructions_and_an_index_of_its_skills_before_its_prompt() {
     let mut setup = Setup::with_workflow("kit-mixed", TWO_AGENTS);
     fs::write(setup.dir.join("factory/agents/reviewer/agent.md"), CODEX).unwrap();
     setup.kit("Run the gate before every result.\n");
@@ -20124,18 +20124,36 @@ fn a_codex_run_gets_the_factorys_instructions_before_its_prompt_and_each_run_rec
     setup.until("tasks", |rows| {
         rows.first().is_some_and(|row| row[4] == "done")
     });
-    assert_eq!(
-        codex_config(&setup)["developer_instructions"],
-        "Run the gate before every result.\n\nYou review one change."
-    );
+    let config = codex_config(&setup);
+    let instructions = config["developer_instructions"].as_str().unwrap();
+    let folder = instructions
+        .split_once("skills are in ")
+        .and_then(|(_, rest)| rest.split_once(", one folder"))
+        .map(|(folder, _)| folder)
+        .unwrap_or_else(|| panic!("no folder in {instructions}"));
     assert!(
-        !codex_args(&setup).iter().any(|arg| arg.contains("plugin")),
-        "Codex skills wait for a later slice"
+        Path::new(folder).starts_with(setup.dir.join("home/kit")),
+        "{folder}"
+    );
+    assert_eq!(
+        tree(&Path::new(folder).join("release-notes")),
+        tree(&setup.dir.join("factory/skills/release-notes")),
+        "byte for byte"
+    );
+    assert_eq!(
+        instructions,
+        format!(
+            "Run the gate before every result.\n\n# Skills\n\nThe factory's skills are in \
+             {folder}, one folder per skill. Read a skill's SKILL.md when its description \
+             fits your task, and follow it. Never edit these files.\n\n\
+             - release-notes/SKILL.md: Writes release notes from merged pull requests.\n\n\
+             You review one change."
+        )
     );
     let runs = setup.rows("runs");
     let (claude, codex) = (&runs[0][8], &runs[1][8]);
     assert_eq!([claude.len(), codex.len()], [32, 32], "{runs:?}");
-    assert_ne!(claude, codex, "the Codex run got no skills");
+    assert_eq!(claude, codex, "both harnesses get the skills");
     let traced: Vec<serde_json::Value> = String::from_utf8(setup.priory(&["trace"]).stdout)
         .unwrap()
         .lines()

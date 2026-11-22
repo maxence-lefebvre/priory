@@ -1580,6 +1580,9 @@ pub const MEMORY_LIMIT: usize = 4096;
 /// The folder each run's memory index names when `priory check` counts it, as Priory home holds it.
 pub const MEMORY_FOLDER: &str = "$PRIORY_HOME/kit/<hash>/memories";
 
+/// The folder a Codex run's skill index names when `priory check` counts it, as Priory home holds it.
+pub const SKILL_FOLDER: &str = "$PRIORY_HOME/kit/<hash>/plugin/skills";
+
 /// A skill: `skills/<name>/SKILL.md` and the files beside it.
 #[derive(Debug)]
 pub struct Skill {
@@ -1859,6 +1862,15 @@ impl Factory {
         join_instructions(self.instructions(), &self.memory_index(folder))
     }
 
+    /// `run_instructions`, then the index of the skills, as a Codex run gets them.
+    pub fn codex_instructions(&self) -> String {
+        let skills = self.skills.iter().map(|(n, s)| (n.as_str(), &s.value));
+        join_instructions(
+            &self.run_instructions(MEMORY_FOLDER),
+            &skill_index(SKILL_FOLDER, skills),
+        )
+    }
+
     pub fn bands(&self) -> Vec<&str> {
         match self
             .settings
@@ -1889,6 +1901,29 @@ pub fn memory_index<'a>(
         let description = memory.description.split_whitespace();
         index.push_str(&format!(
             "\n- {name}.md: {}",
+            description.collect::<Vec<_>>().join(" ")
+        ));
+    }
+    index
+}
+
+/// The index of `skills`, whose folders are in `folder`, or nothing without any.
+pub fn skill_index<'a>(
+    folder: &str,
+    skills: impl IntoIterator<Item = (&'a str, &'a Skill)>,
+) -> String {
+    let mut skills = skills.into_iter().peekable();
+    if skills.peek().is_none() {
+        return String::new();
+    }
+    let mut index = format!(
+        "# Skills\n\nThe factory's skills are in {folder}, one folder per skill. Read a skill's \
+         SKILL.md when its description fits your task, and follow it. Never edit these files.\n"
+    );
+    for (name, skill) in skills {
+        let description = skill.description.split_whitespace();
+        index.push_str(&format!(
+            "\n- {name}/SKILL.md: {}",
             description.collect::<Vec<_>>().join(" ")
         ));
     }

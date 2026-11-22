@@ -1899,7 +1899,7 @@ fn start(
             definition: &definition.to_string(),
             changed: changed.filter(|_| resume.is_some()).as_deref(),
             lanes: factory.lanes(),
-            kit_hash: sources.hash(&agent.value.harness).as_deref(),
+            kit_hash: sources.hash().as_deref(),
             kit_commit: sources.commit,
         },
     )?;
@@ -1955,7 +1955,7 @@ fn definition(
     let permissions = &agent.permissions;
     serde_json::json!({
         // Without the factory's skills or instructions, the digest is the one sessions stored before them.
-        "prompt": match sources.hash(&agent.harness) {
+        "prompt": match sources.hash() {
             None => digest(serde_json::json!(factory.prompt(agent))),
             Some(kit) => digest(serde_json::json!([factory.prompt(agent), kit])),
         },
@@ -2005,17 +2005,18 @@ fn launch(
     started: &Started,
 ) -> Result<(), String> {
     let permissions = serde_json::to_value(&agent.permissions).expect("permissions serialize");
-    let plugin = match agent.harness {
-        Harness::ClaudeCode => sources.plugin(home)?,
-        Harness::Codex => None,
-    };
+    let plugin = sources.plugin(home)?;
     let memories = sources.memories(home)?;
-    let instructions = sources.run_instructions(
+    let mut instructions = sources.run_instructions(
         &memories
             .as_deref()
             .map(|folder| folder.display().to_string())
             .unwrap_or_default(),
     );
+    if let (Harness::Codex, Some(plugin)) = (&agent.harness, &plugin) {
+        let index = sources.skill_index(&plugin.join("skills").display().to_string());
+        instructions = factory::join_instructions(&instructions, &index);
+    }
     runtime::launch(
         harness(&agent.harness),
         &Launch {
