@@ -547,8 +547,8 @@ DESIGN.md's "Costs panel" section holds its visual rules; this section says how 
 - **Views.** From 1024 px Costs and Attention sit side by side, with a hairline between them.
   Below, the header's Costs and Attention chips pick one.
 - **Costs.** This week's cost, merges and cost per merge against last week, what is not in the
-  cost, one bar per day of both weeks, and this week split by workflow, agent, model, machine or
-  repo. A split chip reads the costs again with that `--by`. While priory is unreachable, the
+  cost, one bar per day of both weeks, and this week split by workflow, agent, model, machine,
+  repo or lane. A split chip reads the costs again with that `--by`. While priory is unreachable, the
   chips are disabled. When the window has scores, each scorer's pass rate and verdict counts by the
   same split follow, from the `scores` of `priory costs --json`. With no cost, the scores still
   show, with the split chips beside their title.

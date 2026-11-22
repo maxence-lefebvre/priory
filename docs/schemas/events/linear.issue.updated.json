@@ -5,7 +5,7 @@
   "definitions": {
     "LinearIssueUpdated": {
       "additionalProperties": false,
-      "description": "An entry of a Linear issue's history that edits its title, description, labels, assignee or\npriority, for an issue a task owns or subscribes to. It never names a trigger.",
+      "description": "An entry of a Linear issue's history that edits its title, description, labels, assignee or\npriority, or moves it to another team, for an issue a task owns or subscribes to. It never\nnames a trigger.",
       "properties": {
         "actor": {
           "description": "The Linear display name of who edited it.",
@@ -19,7 +19,7 @@
           "type": "boolean"
         },
         "changed": {
-          "description": "The fields the entry changed, of `title`, `description`, `labels`, `assignee` and\n`priority`.",
+          "description": "The fields the entry changed, of `title`, `description`, `labels`, `assignee` and\n`priority`, or `identifier` alone when it moved the issue to another team.",
           "items": {
             "type": "string"
           },
@@ -46,6 +46,13 @@
         "linear_id": {
           "description": "Linear's id of what the event is about: the issue, history entry or comment. A webhook's\nstate change has no history entry, so it holds the issue's id.",
           "type": "string"
+        },
+        "previous_issue": {
+          "description": "The identifier the issue had before it moved to another team, which a task watched it by,\nwhen `changed` is `identifier`; absent otherwise.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "project": {
           "description": "The issue's project name; null without one.",
@@ -128,7 +135,7 @@
       "type": "object"
     }
   },
-  "description": "An entry of a Linear issue's history that edits its title, description, labels, assignee or\npriority, for an issue a task owns or subscribes to. It never names a trigger.",
+  "description": "An entry of a Linear issue's history that edits its title, description, labels, assignee or\npriority, or moves it to another team, for an issue a task owns or subscribes to. It never\nnames a trigger.",
   "properties": {
     "data": {
       "$ref": "#/definitions/LinearIssueUpdated"

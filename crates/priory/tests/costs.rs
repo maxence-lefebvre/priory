@@ -505,3 +505,43 @@ fn costs_count_each_scorers_verdicts_in_the_window_by_the_split() {
         "{text}"
     );
 }
+
+#[test]
+fn costs_by_lane_split_by_each_tasks_lane() {
+    let setup = Setup::new("by-lane");
+    let db = setup.db();
+    for (id, lane) in [(1, Some("web")), (2, None)] {
+        db.execute(
+            "INSERT INTO tasks (id, key, workflow, step, state, lane, trigger, source)
+             VALUES (?1, 'cli:' || ?1, 'implement', 'implement', 'done', ?2, 'cli', '-')",
+            rusqlite::params![id, lane],
+        )
+        .unwrap();
+    }
+    setup.step("2026-11-16T09:00:00.000Z", "m1", Some([1_000_000, 0, 0, 0]));
+    db.execute(
+        "UPDATE trace SET event = json_set(event, '$.data.task', '2')
+         WHERE time = '2026-11-16T09:00:00.000Z'",
+        [],
+    )
+    .unwrap();
+    setup.step("2026-11-16T10:00:00.000Z", "m1", Some([0, 1_000_000, 0, 0]));
+
+    let costs = setup.costs_json(&["--by", "lane"]);
+
+    let split: Vec<_> = costs["split"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| (row["lane"].clone(), row["cost_usd"].clone()))
+        .collect();
+    assert_eq!(
+        split,
+        [(json!("-"), json!(1.0)), (json!("web"), json!(2.0))]
+    );
+    let text = setup.costs(&["--by", "lane"]);
+    assert!(
+        text.contains("lane\tcost\tnotes\n-\t$1.000000\t-\nweb\t$2.000000\t-\n"),
+        "{text}"
+    );
+}

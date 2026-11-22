@@ -9733,6 +9733,100 @@ fn an_issue_that_leaves_the_view_before_its_task_ran_asks_to_drop_or_keep_it() {
 }
 
 #[test]
+fn an_issue_that_enters_the_view_again_answers_keep_for_its_task() {
+    let mut setup = Setup::new("left-view-entered");
+    setup.memory(0);
+    let source = linear_7("linear.issue.entered", &[]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    request.data["source"] = json!(source.id.to_string());
+    setup.publish(&source);
+    setup.publish(&request);
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 1);
+    setup.publish(&left_view());
+    setup.until("asks", |rows| rows.len() == 1);
+
+    let mut entered = linear_7("linear.issue.entered", &[]);
+    entered.data["view"] = json!("My loop backlog");
+    setup.publish(&entered);
+
+    setup.until("tasks", |rows| rows[0][4] == "queued");
+    assert!(setup.rows("asks").is_empty());
+    let (answer, met): (String, String) = rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row(
+            "SELECT asks.answer, holds.met_as FROM holds JOIN asks ON asks.id = holds.ask",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        [answer.as_str(), &met],
+        ["keep", "ENG-7 entered the view My loop backlog again"]
+    );
+}
+
+#[test]
+fn an_issue_moved_to_another_team_keeps_its_task_and_events() {
+    let mut setup = Setup::new("linear-team-move");
+    setup.memory(0);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    setup.publish(&request);
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 1);
+
+    let mut moved = Message::new(
+        "linear.issue.updated",
+        json!({ "issue": "OPS-3", "linear_id": "history-1", "team": "OPS", "state": "Todo",
+                "changed": ["identifier"], "previous_issue": "ENG-7" }),
+    )
+    .subject("OPS-3");
+    moved.data["description"] = json!(null);
+    setup.publish(&moved);
+    setup.publish(
+        &Message::new(
+            "linear.comment.created",
+            json!({ "issue": "OPS-3", "linear_id": "comment-1", "body": "Not before Monday" }),
+        )
+        .subject("OPS-3"),
+    );
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 3);
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let routed: Vec<(String, Option<i64>)> = db
+        .prepare("SELECT type, task FROM inbox ORDER BY seq")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        routed[1..],
+        [
+            ("linear.issue.updated".to_owned(), Some(1)),
+            ("linear.comment.created".to_owned(), Some(1)),
+        ],
+        "{inbox:?}"
+    );
+    let resources = |table: &str| -> Vec<String> {
+        db.prepare(&format!("SELECT resource FROM {table} WHERE task = 1"))
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let key: String = db
+        .query_row("SELECT key FROM tasks WHERE id = 1", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(key, "linear:OPS-3");
+    assert_eq!(resources("owns"), ["linear:OPS-3"]);
+    assert_eq!(resources("subscriptions"), ["linear:OPS-3"]);
+}
+
+#[test]
 fn an_issue_that_leaves_the_view_wakes_its_asleep_task() {
     let mut setup = Setup::new("left-view-asleep");
     setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
@@ -11484,6 +11578,37 @@ fn a_reply_with_a_file_or_also_sent_to_the_channel_wakes_the_task_with_its_file_
 }
 
 #[test]
+fn a_wait_on_a_replys_ts_fails_the_poll_as_not_a_threads_first_message() {
+    let reply = "1763500001.000001";
+    let setup = asleep_on(
+        "slack-thread-reply-ts",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": reply }),
+    );
+    setup.answer_curl(&[
+        (
+            "auth.test",
+            json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }),
+        ),
+        (
+            "conversations.replies",
+            json!({ "ok": true, "has_more": false,
+                    "messages": [slack_message(reply, "U0PERSON")] }),
+        ),
+    ]);
+
+    let output = setup.poll(&[]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "thread C0123:{reply}: not a thread's first message"
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn a_thread_the_intake_cannot_read_fails_the_poll_and_reaches_the_desk() {
     let setup = asleep_on(
         "slack-thread-fails",
@@ -11848,6 +11973,63 @@ fn an_edit_of_a_linear_tasks_issue_wakes_it_with_the_changed_fields() {
         ["ENG-7"],
         "an issue no task watches publishes none"
     );
+}
+
+#[test]
+fn a_linear_tasks_issue_moved_to_another_team_wakes_it_under_its_new_identifier() {
+    let mut setup = Setup::new("linear-moved");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    setup.publish(&request.subject("linear:ENG-7"));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let mut moved = linear_edited(
+        "OPS-3",
+        json!({ "fromTeam": { "key": "ENG" }, "toTeam": { "key": "OPS" } }),
+    );
+    moved["team"] = json!({ "key": "OPS" });
+    moved["previousIdentifiers"] = json!(["ENG-7"]);
+    let mut elsewhere = linear_edited(
+        "OPS-4",
+        json!({ "fromTeam": { "key": "ENG" }, "toTeam": { "key": "OPS" } }),
+    );
+    elsewhere["previousIdentifiers"] = json!(["ENG-8"]);
+    setup.answer_curl(&[
+        (
+            "query Issues",
+            linear_page("issues", json!([elsewhere, moved])),
+        ),
+        ("query Comments", linear_page("comments", json!([]))),
+    ]);
+
+    setup.intake();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let typed = setup.typed();
+    assert!(
+        typed[1].starts_with("linear.issue.updated OPS-3 {")
+            && typed[1].contains(r#""changed":["identifier"]"#)
+            && typed[1].contains(r#""previous_issue":"ENG-7""#),
+        "{typed:?}"
+    );
+    let updated: Vec<String> = setup
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 100,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .filter(|stored| stored.message.kind == "linear.issue.updated")
+        .inspect(|stored| conform::conforms(&serde_json::to_value(&stored.message).unwrap()))
+        .map(|stored| stored.message.subject.unwrap_or_default())
+        .collect();
+    assert_eq!(updated, ["OPS-3"], "a move no task watches publishes none");
+    assert_eq!(setup.rows("tasks")[0][1], "linear:OPS-3");
 }
 
 #[test]

@@ -705,6 +705,39 @@ pub(crate) fn left(tx: &Transaction, resource: &str, view: Option<&str>) -> rusq
     Ok(())
 }
 
+/// Answers `keep` for each open "left the view" hold of a task keyed by the Linear issue
+/// `resource`, which entered `view` again, so the person need not also answer the ask.
+pub(crate) fn entered(
+    tx: &Transaction,
+    resource: &str,
+    view: Option<&str>,
+) -> rusqlite::Result<()> {
+    let holds: Vec<i64> = tx
+        .prepare(
+            "SELECT holds.id FROM holds JOIN tasks ON tasks.id = holds.task
+             WHERE (tasks.key = ?1 OR substr(tasks.key, 1, length(?1) + 1) = ?1 || '.')
+             AND holds.kind = 'person' AND holds.released IS NULL AND holds.met IS NULL
+             AND holds.ask IS NOT NULL AND holds.reason LIKE 'left the view%'
+             ORDER BY holds.id",
+        )?
+        .query_map([resource], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let issue = resource.trim_start_matches("linear:");
+    let view = view.map_or_else(|| "the view".to_owned(), |view| format!("the view {view}"));
+    for id in holds {
+        tx.execute(
+            &format!(
+                "UPDATE asks SET answer = 'keep', answered = {NOW}
+                 WHERE id = (SELECT ask FROM holds WHERE id = ?1)
+                 AND answer IS NULL AND withdrawn IS NULL"
+            ),
+            [id],
+        )?;
+        meet(tx, id, &format!("{issue} entered {view} again"))?;
+    }
+    Ok(())
+}
+
 /// Judges the condition `id` on the newest event in the inbox about its resource: a merge meets it,
 /// and a close without one does what the hold says; an issue with no open blocker, or one Done or
 /// Canceled, meets it.

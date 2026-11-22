@@ -159,7 +159,7 @@ price changes past costs too. A task's handler calls show as one more row per mo
 
 ## Costs
 
-`priory costs [DIR] [--since <window>] [--by workflow|agent|model|machine|repo] [--json]` prints what
+`priory costs [DIR] [--since <window>] [--by workflow|agent|model|machine|repo|lane] [--json]` prints what
 the factory spent in the current window against the window before it, then each day, then the
 current window split by one dimension, then each scorer's verdicts by the same split:
 
@@ -192,7 +192,8 @@ prices them from the same `prices.toml` in `DIR` (default: the current folder).
   has the current window's length and ends where the current one starts.
 - Days are local dates. A day appears once it has a record or a merge.
 - `--by` defaults to `workflow`. `agent` is the run's agent, `handler` for a handler call and
-  `summarizer` for a summarizer call. `repo` is the task's repository. A record with no value reads
+  `summarizer` for a summarizer call. `repo` is the task's repository. `lane` is
+  the lane its task has now. A record with no value reads
   `-`.
 - A model with no price keeps its tokens apart, as `price missing for <model>`. A row whose records
   were all unpriced or had no tokens has no cost, `-`, never `$0`. A model step with no `tokens`

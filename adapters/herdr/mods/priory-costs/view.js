@@ -55,7 +55,7 @@ export function dayBars(costs) {
   });
 }
 
-export const SPLITS = ["workflow", "agent", "model", "machine", "repo"];
+export const SPLITS = ["workflow", "agent", "model", "machine", "repo", "lane"];
 const tokenCount = (/** @type {any} */ tokens) => grouped(String(tokens.input + tokens.output + tokens.cache_read + tokens.cache_write));
 const records = (/** @type {number} */ n) => `${n} record${n === 1 ? "" : "s"}`;
 

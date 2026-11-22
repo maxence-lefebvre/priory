@@ -106,6 +106,9 @@ process list or an error.
   `thread <channel>:<thread_ts>`. The desk then shows the Slack intake as failing until the
   thread reads again or no wait or subscription names it. A rate limit alone fails the poll only
   once a thread falls behind, as above.
+- A `thread_ts` that is the `ts` of a reply, not of a thread's first message, fails the poll the
+  same way, with `thread <channel>:<ts>: not a thread's first message`. Slack answers such a read
+  with that reply alone, so a wait on it would never fire.
 
 ## Message shortcut
 

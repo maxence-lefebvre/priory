@@ -1807,6 +1807,44 @@ pub(crate) fn handle_in(
     route_in(tx, message, trace, counter)
 }
 
+/// Moves what names a Linear issue moved to another team onto its new identifier `to`: the keys
+/// of its tasks and their batch entries, what they own and subscribe to, and open waits and holds.
+fn renamed(tx: &Transaction, message: &Message, to: Option<&String>) -> rusqlite::Result<()> {
+    let (Some(to), Some(previous)) = (to, message.data["previous_issue"].as_str()) else {
+        return Ok(());
+    };
+    let moved = message.kind == "linear.issue.updated"
+        && message.data["changed"]
+            .as_array()
+            .is_some_and(|changed| changed.iter().any(|field| field == "identifier"));
+    let from = format!("linear:{previous}");
+    if !moved || from == *to {
+        return Ok(());
+    }
+    tx.execute(
+        "UPDATE OR IGNORE tasks SET key = ?2 || substr(key, length(?1) + 1)
+         WHERE key = ?1 OR substr(key, 1, length(?1) + 1) = ?1 || '.'",
+        params![from, to],
+    )?;
+    for table in ["owns", "subscriptions", "closed_subscriptions"] {
+        tx.execute(
+            &format!("UPDATE OR IGNORE {table} SET resource = ?2 WHERE resource = ?1"),
+            params![from, to],
+        )?;
+        // What is left already names the new identifier too.
+        tx.execute(&format!("DELETE FROM {table} WHERE resource = ?1"), [&from])?;
+    }
+    tx.execute(
+        "UPDATE waits SET resource = ?2 WHERE resource = ?1 AND fired IS NULL",
+        params![from, to],
+    )?;
+    tx.execute(
+        "UPDATE holds SET resource = ?2 WHERE resource = ?1 AND released IS NULL",
+        params![from, to],
+    )
+    .map(drop)
+}
+
 /// Routes `message` in `tx` and records it, or records its new route when the inbox holds it.
 /// Returns the tmux session of each run it ended, to kill once it commits.
 pub(crate) fn route_in(
@@ -1829,6 +1867,7 @@ pub(crate) fn route_in(
         return Ok(kill);
     }
     let resources = route::resources(message);
+    renamed(tx, message, resources.first())?;
     claim_pull_request(tx, message)?;
     // The intake publishes no reopen, so a later event of an open pull request or issue tells it,
     // and gives back the subscriptions its close ended.
@@ -1987,6 +2026,11 @@ pub(crate) fn route_in(
         && let Some(resource) = resources.first()
     {
         crate::hold::left(tx, resource, message.data["view"].as_str())?;
+    }
+    if message.kind == "linear.issue.entered"
+        && let Some(resource) = resources.first()
+    {
+        crate::hold::entered(tx, resource, message.data["view"].as_str())?;
     }
     if message.kind == priory_intake::intake::PR_CLOSED && message.data["merged"] == true {
         crate::tools::restack_stacked(tx, trace, seq, &message.data)?;

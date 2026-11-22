@@ -518,15 +518,20 @@ pub struct LinearStateChanged {
 }
 
 /// An entry of a Linear issue's history that edits its title, description, labels, assignee or
-/// priority, for an issue a task owns or subscribes to. It never names a trigger.
+/// priority, or moves it to another team, for an issue a task owns or subscribes to. It never
+/// names a trigger.
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LinearIssueUpdated {
     #[serde(flatten)]
     pub issue: LinearIssue,
     /// The fields the entry changed, of `title`, `description`, `labels`, `assignee` and
-    /// `priority`.
+    /// `priority`, or `identifier` alone when it moved the issue to another team.
     pub changed: Vec<String>,
+    /// The identifier the issue had before it moved to another team, which a task watched it by,
+    /// when `changed` is `identifier`; absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_issue: Option<String>,
     /// The first 200 characters of the issue's description when the entry changed it, as the
     /// intake read it, not as the entry left it: Linear records no description text in history.
     /// Null otherwise.

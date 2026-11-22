@@ -225,7 +225,7 @@ pub fn cost(
 }
 
 /// What `priory costs` can split the current window's cost by.
-pub const BY: [&str; 5] = ["workflow", "agent", "model", "machine", "repo"];
+pub const BY: [&str; 6] = ["workflow", "agent", "model", "machine", "repo", "lane"];
 
 /// The cost of a set of records: priced tokens in dollars, the tokens of models without a price
 /// apart, and the records whose tokens are unknown.
@@ -405,6 +405,7 @@ pub fn costs(
         "model" => "coalesce(json_extract(trace.event, '$.data.model'), '-')",
         "machine" => "coalesce(json_extract(trace.event, '$.data.machine'), '-')",
         "repo" => "coalesce(tasks.repo, '-')",
+        "lane" => "coalesce(tasks.lane, '-')",
         _ => return Err(format!("--by {by:?} is none of {}", BY.join(", "))),
     };
     let error = |error: rusqlite::Error| error.to_string();

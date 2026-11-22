@@ -60,6 +60,12 @@ pull request from a fork, or from a branch someone else pushed under a task's na
 A fork's branch is not a resource of the event at all, so its events reach no task by branch. A
 task whose worktree the sweep removed claims no new pull request.
 
+When a Linear issue moves to another team, the intake publishes a `linear.issue.updated` with
+`changed: ["identifier"]` and `previous_issue` (see [linear.md](../intake/linear.md#team-moves)).
+Before it routes that event, the daemon renames every task key `linear:<previous_issue>`, and the
+keys of its batch entries, to the new identifier. It moves owned and subscribed resources, open
+waits and open holds the same way. So the event and every later one of the issue reach the task.
+
 ### Stacks
 
 A task's stack is every pull request its `open-pr` opened or the claim gave it. Each one is based on
