@@ -196,6 +196,10 @@ too. A [view-only machine](runners.md#a-machine-that-only-views) records them as
 there can accept or drop one. A runner refuses a candidate that breaks the rules of `remember`, since anyone who can publish
 on the log can write one.
 
+The daemon writes one kind of candidate itself: a lesson, when a person rejects an approval with
+a note. A lesson names its approval step in `step`, and the factory's pre-review reads it before
+that step asks a person (see [score.md](score.md#pre-review)).
+
 ### Which run gets which candidate
 
 A run gets the kit's memories, then the memories repository's, then the factory's, then, in log

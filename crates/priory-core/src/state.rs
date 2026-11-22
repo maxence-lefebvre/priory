@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 102;
+const VERSION: i64 = 103;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1857,6 +1857,14 @@ ALTER TABLE tasks ADD COLUMN noop TEXT;
 PRAGMA user_version = 102;
 ";
 
+// A lesson: a memory candidate scoped to the approval step a person rejected, and the lessons a
+// gate's pre-review reads, as JSON.
+const SCHEMA_103: &str = "
+ALTER TABLE memory_candidates ADD COLUMN step TEXT;
+ALTER TABLE gates ADD COLUMN lessons TEXT;
+PRAGMA user_version = 103;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1871,7 +1879,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
-    SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102,
+    SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

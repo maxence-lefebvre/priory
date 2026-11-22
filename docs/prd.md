@@ -576,6 +576,10 @@ Priory serves these as MCP tools.
   at one step for the same reason. Its count grows as new tasks match, the desk shows it, and a
   person closes or dismisses it or captures its tasks as benchmark cases, so a factory change can
   be compared on the failures it means to end. M4
+- R10.9 A person's rejection of an approval, with why, becomes a lesson for that step, which other
+  tasks get once a person accepts it. A pre-review judge reads the step's lessons before the step
+  asks a person, and sends a result that repeats one back to the agent once. It never approves
+  anything. M4
 
 ### R11. Sharing between machines
 

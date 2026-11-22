@@ -22,12 +22,27 @@ fn named(name: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
-/// The file a candidate's memory is, as the run's snapshot holds it.
-fn file(name: &str, description: &str, text: &str) -> String {
+/// The file a candidate's memory is, as the run's snapshot holds it. A lesson names its step.
+fn file(name: &str, description: &str, step: Option<&str>, text: &str) -> String {
+    let quoted = |text: &str| serde_json::to_string(text).expect("a string serializes");
+    let step = step
+        .map(|step| format!("step: {}\n", quoted(step)))
+        .unwrap_or_default();
     format!(
-        "---\nname: {name}\ndescription: {}\n---\n{text}\n",
-        serde_json::to_string(description).expect("a string serializes")
+        "---\nname: {name}\ndescription: {}\n{step}---\n{text}\n",
+        quoted(description)
     )
+}
+
+/// Whether `step` reads as a lesson's scope, `<workflow>/<step>`, on one line.
+fn scoped(step: &str) -> bool {
+    step.split_once('/').is_some_and(|(workflow, at)| {
+        !workflow.is_empty()
+            && !at.is_empty()
+            && !at.contains('/')
+            && step.len() <= 200
+            && !step.chars().any(|c| c.is_whitespace() || c.is_control())
+    })
 }
 
 /// Why a candidate is refused, if it is: the rules of `remember` and `forget`, which a runner also
@@ -48,7 +63,7 @@ fn refused(name: &str, kept: Option<(&str, &str)>) -> Option<String> {
     if text.trim().is_empty() {
         return Some("a memory needs a text: the fact itself".to_owned());
     }
-    let bytes = file(name, description, text).len();
+    let bytes = file(name, description, None, text).len();
     if bytes > MEMORY_LIMIT {
         return Some(format!(
             "a memory holds one fact in at most {MEMORY_LIMIT} bytes: this one is {bytes} bytes"
@@ -118,37 +133,8 @@ pub(crate) fn write(
     {
         return Ok(Err(why));
     }
-    let mut data = json!({ "name": name, "task": key, "runner": trace.runner });
-    match &kept {
-        Some((description, text)) => {
-            data["description"] = json!(description);
-            data["text"] = json!(text);
-        }
-        None => data["forget"] = json!(true),
-    }
-    let time = intake::now().unwrap_or_else(|_| jiff::Timestamp::now());
-    let message = Message::new(MEMORY_WRITTEN, data)
-        .subject(name.clone())
-        .time(time);
-    let id = message.id.to_string();
-    tx.execute(
-        "INSERT INTO memory_candidates (id, name, description, text, key, runner, task, written)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            id,
-            name,
-            kept.as_ref().map(|(description, _)| description),
-            kept.as_ref().map(|(_, text)| text),
-            key,
-            trace.runner,
-            task,
-            time.to_string()
-        ],
-    )?;
-    tx.execute(
-        "INSERT INTO sends (message) VALUES (?1)",
-        [serde_json::to_string(&message).expect("a message serializes")],
-    )?;
+    let kept = kept.as_ref().map(|(d, t)| (d.as_str(), t.as_str()));
+    let id = queue(&tx, trace, task, &key, &name, kept, None)?;
     tx.commit()?;
     let what = if kept.is_some() {
         format!("remembered {name}")
@@ -158,6 +144,107 @@ pub(crate) fn write(
     Ok(Ok(format!(
         "{what} as candidate {id}: your task's later runs see it now, and other tasks' runs once a person accepts it"
     )))
+}
+
+/// Stores a candidate of `task` for `name`, a forget without `kept`, and queues its
+/// `priory.memory.written` for the log. Returns the candidate's id.
+fn queue(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    key: &str,
+    name: &str,
+    kept: Option<(&str, &str)>,
+    step: Option<&str>,
+) -> rusqlite::Result<String> {
+    let mut data = json!({ "name": name, "task": key, "runner": trace.runner });
+    match kept {
+        Some((description, text)) => {
+            data["description"] = json!(description);
+            data["text"] = json!(text);
+        }
+        None => data["forget"] = json!(true),
+    }
+    if let Some(step) = step {
+        data["step"] = json!(step);
+    }
+    let time = intake::now().unwrap_or_else(|_| jiff::Timestamp::now());
+    let message = Message::new(MEMORY_WRITTEN, data)
+        .subject(name.to_owned())
+        .time(time);
+    let id = message.id.to_string();
+    tx.execute(
+        "INSERT INTO memory_candidates (id, name, description, text, key, runner, task, written, step)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            id,
+            name,
+            kept.map(|(description, _)| description),
+            kept.map(|(_, text)| text),
+            key,
+            trace.runner,
+            task,
+            time.to_string(),
+            step
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO sends (message) VALUES (?1)",
+        [serde_json::to_string(&message).expect("a message serializes")],
+    )?;
+    Ok(id)
+}
+
+/// Proposes a lesson from a person's rejection at the approval step `at` of `workflow`: a candidate
+/// scoped to that step, with the person's `note` as its text, which waits for a person's accept as
+/// any candidate does. A note the rules of `remember` refuse proposes none.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn propose_lesson(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    workflow: &str,
+    at: &str,
+    ask: i64,
+    chosen: &str,
+    note: &str,
+) -> rusqlite::Result<()> {
+    let key: String = tx.query_row("SELECT key FROM tasks WHERE id = ?1", [task], |row| {
+        row.get(0)
+    })?;
+    let runner = trace
+        .runner
+        .as_deref()
+        .map(|runner| format!("{runner}-"))
+        .unwrap_or_default();
+    // A runner's ask ids are its own, so a lesson's name carries the runner's.
+    let name: String = format!("lesson-{at}-{runner}{ask}")
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let description = format!(
+        "What a person rejected at step {at} of workflow {workflow}, and why. Read it before you send work to that step."
+    );
+    let text = format!("A person answered {chosen} at step {at}: {note}");
+    let step = format!("{workflow}/{at}");
+    let bytes = file(&name, &description, Some(&step), &text).len();
+    if refused(&name, Some((&description, &text))).is_some()
+        || !scoped(&step)
+        || bytes > MEMORY_LIMIT
+    {
+        return Ok(());
+    }
+    queue(
+        tx,
+        trace,
+        task,
+        &key,
+        &name,
+        Some((&description, &text)),
+        Some(&step),
+    )
+    .map(drop)
 }
 
 /// Why a `remember` of `name` repeats what exists, if it does: the memory the task sees under that
@@ -223,13 +310,18 @@ pub(crate) fn handle(tx: &Transaction, message: &Message) -> rusqlite::Result<Op
         let forget = data["forget"] == true;
         let kept = text("description").zip(text("text"));
         let name = text("name").unwrap_or_default();
-        let well_formed =
-            text("task").is_some() && forget == kept.is_none() && refused(name, kept).is_none();
+        let step = data
+            .get("step")
+            .map(|step| step.as_str().filter(|step| scoped(step)));
+        let well_formed = text("task").is_some()
+            && forget == kept.is_none()
+            && refused(name, kept).is_none()
+            && step.is_none_or(|step| step.is_some());
         if well_formed {
             let seq = crate::state::record(tx, message, None, "noted", None)?;
             tx.execute(
-                "INSERT INTO memory_candidates (id, name, description, text, key, runner, written, logged)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                "INSERT INTO memory_candidates (id, name, description, text, key, runner, written, logged, step)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT (id) DO UPDATE SET logged = excluded.logged WHERE logged IS NULL",
                 params![
                     message.id.to_string(),
@@ -239,7 +331,8 @@ pub(crate) fn handle(tx: &Transaction, message: &Message) -> rusqlite::Result<Op
                     text("task"),
                     text("runner"),
                     message.time.to_string(),
-                    seq
+                    seq,
+                    step.flatten()
                 ],
             )?;
             return Ok(Some(()));
@@ -281,21 +374,23 @@ pub(crate) fn layer(
     task: Option<i64>,
 ) -> rusqlite::Result<Vec<(String, Option<Memory>)>> {
     db.prepare(
-        "SELECT name, description, text FROM (
-           SELECT name, description, text, accepted AS at, rowid AS written
+        "SELECT name, description, text, step FROM (
+           SELECT name, description, text, step, accepted AS at, rowid AS written
            FROM memory_candidates WHERE accepted IS NOT NULL AND dropped IS NULL
            UNION ALL
-           SELECT name, description, text, coalesce(logged, 9223372036854775807), rowid
+           SELECT name, description, text, step, coalesce(logged, 9223372036854775807), rowid
            FROM memory_candidates WHERE task = ?1 AND dropped IS NULL)
          ORDER BY at, written",
     )?
     .query_map([task], |row| {
         let name: String = row.get(0)?;
         let kept: Option<(String, String)> = row.get::<_, Option<String>>(1)?.zip(row.get(2)?);
+        let step: Option<String> = row.get(3)?;
         let memory = kept.map(|(description, text)| Memory {
-            bytes: file(&name, &description, &text).into_bytes(),
+            bytes: file(&name, &description, step.as_deref(), &text).into_bytes(),
             description,
             paths: Vec::new(),
+            step,
         });
         Ok((name, memory))
     })?
@@ -333,7 +428,7 @@ const STATE: &str = "CASE WHEN accepted IS NOT NULL AND dropped IS NOT NULL THEN
 /// every one.
 pub fn list(db: &Connection, all: bool) -> rusqlite::Result<Vec<Value>> {
     db.prepare(&format!(
-        "SELECT id, name, description, text, key, runner, written, decided, {STATE}
+        "SELECT id, name, description, text, key, runner, written, decided, {STATE}, step
          FROM memory_candidates WHERE ?1 OR (logged IS NOT NULL AND accepted IS NULL
            AND dropped IS NULL)
          ORDER BY coalesce(logged, 9223372036854775807), rowid"
@@ -351,6 +446,7 @@ pub fn list(db: &Connection, all: bool) -> rusqlite::Result<Vec<Value>> {
             "written": row.get::<_, String>(6)?,
             "decided": row.get::<_, Option<String>>(7)?,
             "state": row.get::<_, String>(8)?,
+            "step": row.get::<_, Option<String>>(9)?,
         }))
     })?
     .collect()
@@ -544,15 +640,18 @@ fn winners(db: &Connection) -> rusqlite::Result<(Vec<Winner>, Option<String>)> {
     let mut last = None;
     let rows = db
         .prepare(
-            "SELECT id, name, description, text, key, runner, decided FROM memory_candidates
+            "SELECT id, name, description, text, key, runner, decided, step FROM memory_candidates
              WHERE accepted IS NOT NULL AND dropped IS NULL ORDER BY accepted",
         )?
         .query_map([], |row| {
             let name: String = row.get(1)?;
             let kept: Option<(String, String)> = row.get::<_, Option<String>>(2)?.zip(row.get(3)?);
+            let step: Option<String> = row.get(7)?;
             Ok(Winner {
                 id: row.get(0)?,
-                file: kept.map(|(description, text)| file(&name, &description, &text).into_bytes()),
+                file: kept.map(|(description, text)| {
+                    file(&name, &description, step.as_deref(), &text).into_bytes()
+                }),
                 name,
                 key: row.get(4)?,
                 runner: row.get(5)?,

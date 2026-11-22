@@ -55,6 +55,9 @@ pub struct Settings {
     /// The scorer that grades a plan no person reads: a grade that leads to a model or code step
     /// of a task without `intervention = "plan"`. It can only refuse the grade.
     pub critic: Option<String>,
+    /// The judge that reads a step's lessons before an approval step asks a person: a result that
+    /// repeats one goes back to the agent once. It can only send the result back.
+    pub pre_review: Option<String>,
     /// A writing guide, as a path relative to the factory folder. Priory appends its text to the
     /// system prompt of every agent it starts.
     pub writing: Option<String>,
@@ -2347,6 +2350,9 @@ pub struct Memory {
     pub description: String,
     /// The globs whose files bring the memory into a run's context when it reads or edits one.
     pub paths: Vec<String>,
+    /// The approval step the memory is a lesson for, as `<workflow>/<step>`: a pre-review reads it
+    /// before that step asks a person.
+    pub step: Option<String>,
     /// The file as it is on disk.
     pub bytes: Vec<u8>,
 }
@@ -2372,6 +2378,9 @@ pub struct MemoryFrontmatter {
     /// Globs relative to the repository root, such as `src/**/*.rs`: a run that reads, edits or
     /// creates a matching file gets the memory's file in its context, once per run.
     pub paths: Option<crate::paths::Globs>,
+    /// The approval step the memory is a lesson for, as `<workflow>/<step>`: a human step with
+    /// `approves`. The factory's pre-review reads its lessons before that step asks a person.
+    pub step: Option<String>,
 }
 
 /// The size past which `priory check` refuses a memory, so the index stays one look.
@@ -2570,6 +2579,13 @@ impl Factory {
         self.settings
             .as_ref()
             .and_then(|settings| settings.value.critic.as_deref())
+    }
+
+    /// The judge that reads an approval step's lessons before it asks a person, from `factory.toml`.
+    pub fn pre_review(&self) -> Option<&str> {
+        self.settings
+            .as_ref()
+            .and_then(|settings| settings.value.pre_review.as_deref())
     }
 
     /// The command `priory gate` runs, from `factory.toml`.
@@ -3360,6 +3376,7 @@ impl Loader<'_> {
         let memory = Memory {
             description,
             paths,
+            step: front.step.map(|step| step.trim().to_owned()),
             bytes: source.into_bytes(),
         };
         Some((memory, lines))

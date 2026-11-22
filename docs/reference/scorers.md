@@ -4,9 +4,10 @@ A scorer grades one finished run: a run whose turn ended with a result or an ask
 grades a merged task instead, once a delay after its merge has passed. Each file
 `scorers/<name>.toml`, `.yaml` or `.yml` holds one, named by its file. A scorer answers `pass`,
 `fail`, `not applicable` or `error`. `priory score` runs them on demand, except a `held` scorer. A step's
-[`gate`](workflows.md#step-keys) and the factory's [`critic`](factory.md#top-level-keys) run them on
-a result before the daemon stores it (see [score.md](../daemon/score.md#gates)). The daemon runs
-each `held` scorer by itself (see [score.md](../daemon/score.md#held-scorers)).
+[`gate`](workflows.md#step-keys), the factory's [`critic`](factory.md#top-level-keys) and its
+[`pre_review`](factory.md#top-level-keys) run them on a result before the daemon stores it (see
+[score.md](../daemon/score.md#gates)). The daemon runs each `held` scorer by itself (see
+[score.md](../daemon/score.md#held-scorers)).
 
 Schema: [`config/scorer.json`](../schemas/config/scorer.json).
 
@@ -74,6 +75,7 @@ Schema: [`config/judge-cases.json`](../schemas/config/judge-cases.json).
 | `request` | string | yes | What the task was asked |
 | `result` | table | no | The run's result, such as `outcome` and `summary` |
 | `diff` | string | no | The change, as `git diff` prints it |
+| `lessons` | list of strings | no | The lessons kept for the step the result goes to, as a [pre-review](../daemon/score.md#pre-review) reads them, such as `"lesson-tests: Every pull request needs a test."` |
 | `verdict` | `pass` or `fail` | yes | The right verdict, which a person gives |
 | `why` | string | no | Why the person gave it, for a reader |
 

@@ -50,6 +50,13 @@
             "null"
           ]
         },
+        "step": {
+          "description": "A lesson's approval step, as `<workflow>/<step>`. Present only on a lesson, which the daemon\nproposes when a person rejects an approval with a note.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "task": {
           "description": "The key of the task whose run wrote it.",
           "type": "string"

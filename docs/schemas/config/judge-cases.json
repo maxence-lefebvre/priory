@@ -20,6 +20,14 @@
           "description": "The change, as `git diff` prints it.",
           "type": "string"
         },
+        "lessons": {
+          "default": [],
+          "description": "The lessons kept for the step the result goes to, as a pre-review reads them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "name": {
           "description": "A name, unique in the file.",
           "type": "string"

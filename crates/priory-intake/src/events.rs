@@ -1120,6 +1120,10 @@ pub struct MemoryWritten {
     pub task: String,
     /// The runner that wrote it, or null in a factory of one runner.
     pub runner: Option<String>,
+    /// A lesson's approval step, as `<workflow>/<step>`. Present only on a lesson, which the daemon
+    /// proposes when a person rejects an approval with a note.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
 }
 
 /// A person accepts a memory candidate with `priory memories accept`. Every runner gives it to
