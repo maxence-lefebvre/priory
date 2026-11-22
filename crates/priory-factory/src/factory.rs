@@ -1368,6 +1368,9 @@ pub struct Trigger {
     pub lead: Option<String>,
     /// Spend caps in dollars for the trigger's tasks.
     pub caps: Option<Limits>,
+    /// Whether its tasks are a trial: each stops before its first irreversible step, records what
+    /// that step would have done, and writes nothing.
+    pub staged: Option<bool>,
     /// A script of the factory that runs on each matching event before it becomes a task request,
     /// and can drop the request or change it.
     pub pre: Option<Pre>,
@@ -2163,6 +2166,13 @@ pub const MEMORY_INDEX: &str = "MEMORY.md";
 pub const CODEX_PROMPT_LIMIT: usize = 8192;
 
 impl Factory {
+    /// Whether the tasks of `trigger` are staged, so no irreversible step of theirs runs.
+    pub fn staged(&self, trigger: &str) -> bool {
+        self.triggers
+            .get(trigger)
+            .is_some_and(|trigger| trigger.value.staged == Some(true))
+    }
+
     /// The factory's lanes, or the built-in ones: no rules and the `{team}/misc` fallback.
     pub fn lanes(&self) -> &Lanes {
         static BUILT_IN: Lanes = Lanes {

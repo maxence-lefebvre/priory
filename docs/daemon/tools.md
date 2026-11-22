@@ -368,3 +368,34 @@ the task ran.
 
 `priory actions` prints each action run: id, task, step, action, status, pull request, pushed commit,
 error, stdout and stderr. A `run` action's status is `running` until its command ends.
+
+### Staged tasks
+
+A trigger with [`staged = true`](../reference/triggers.md#keys-every-trigger-takes) runs its tasks
+as a trial. Its model steps run with the real harness on the real event, but no irreversible step
+runs. Use it for a new trigger, to see what it does before it can write anywhere.
+
+The daemon checks the step's approval first, as for any task. Then, at an irreversible step:
+
+| Step | What the daemon does |
+| ---- | -------------------- |
+| A code step | It records an action with status `staged`, whose stdout says what the action would have done, and blocks the task |
+| A model step | It starts no run, and blocks the task with `staged: step <id> is irreversible, so its run did not start` |
+
+A code step's task blocks with `staged: step <id> would run <action>, and wrote nothing: priory
+actions shows what it would do`, so it shows on the desk. The stdout of the `staged` action holds:
+
+| Action | Stdout |
+| ------ | ------ |
+| `open-pr` | One `would open a pull request on <repo> from <branch> into <base>` line per branch of the stack, bottom first, then `at: <commit>`, `title:` and `body:`, as `open-pr` would build them. Nothing is pushed |
+| `open-issue` | `would open an issue on <repo>`, then `title:` and `body:` |
+| `run` | `would run: <command>` |
+| any other | `would run the <action> action` |
+
+When a result is missing, or the task names no repository, the stdout starts with `would fail:` and
+the reason.
+
+The daemon reads `staged` from the trigger file each time it reaches such a step. To promote the
+trigger, remove `staged`. Then `priory resume <task>` runs a blocked trial task's step for real,
+once its approval still holds, and `priory cancel <task>` drops it (see
+[desk.md](desk.md#resume)). While the trigger stays staged, a resumed task blocks at the step again.

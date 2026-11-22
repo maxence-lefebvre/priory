@@ -1400,6 +1400,11 @@ fn act(
     if !tools::approved(db, due.task, step, head.as_deref())? {
         return Ok(false);
     }
+    if step.effect == factory::Effect::Irreversible && factory.staged(&due.trigger) {
+        let preview = preview(db, factory, due, step, head.as_deref())?;
+        tools::staged(db, due.task, step, &preview)?;
+        return Ok(false);
+    }
     let done = match step.action.as_deref().unwrap_or_default() {
         "open-pr" => open_pr(db, factory, due, head.as_deref())?,
         "open-issue" => open_issue(db, factory, due)?,
@@ -1748,11 +1753,7 @@ fn open_pr(
                     due.workflow
                 )));
             }
-            let title = summary.lines().next().unwrap_or_default();
-            let body = match evidence {
-                Some(evidence) => format!("{summary}\n\n{evidence}"),
-                None => summary.clone(),
-            };
+            let (title, body) = titled(&summary, evidence.as_deref());
             let base = base_branch(db, due.task)?;
             let stack = Stack {
                 branches: &branches,
@@ -1772,6 +1773,70 @@ fn open_pr(
         },
         Err(error) => failed(error),
     })
+}
+
+/// The title and body of the pull request or issue a result describes: the first line of its
+/// summary, then the summary and its evidence.
+fn titled<'s>(summary: &'s str, evidence: Option<&str>) -> (&'s str, String) {
+    let title = summary.lines().next().unwrap_or_default();
+    let body = match evidence {
+        Some(evidence) => format!("{summary}\n\n{evidence}"),
+        None => summary.to_owned(),
+    };
+    (title, body)
+}
+
+/// What the irreversible code step `step` of a staged task would do, without doing it: the pull
+/// requests or issue it would open with their title and body, or the command it would run.
+fn preview(
+    db: &Connection,
+    factory: &Factory,
+    due: &state::Due,
+    step: &factory::Step,
+    commit: Option<&str>,
+) -> Result<String, Error> {
+    let action = step.action.as_deref().unwrap_or_default();
+    let repo = repo_of(factory, &due.trigger, due.repo.as_deref());
+    let described = state::last_result(db, due.task)?;
+    let text = match (action, repo, described) {
+        ("run", ..) => format!("would run: {}", step.run.as_deref().unwrap_or_default()),
+        ("open-pr" | "open-issue", None, _) => {
+            format!("would fail: task {} names no repo", due.task)
+        }
+        ("open-pr" | "open-issue", _, None) => {
+            "would fail: no result describes what it opens".to_owned()
+        }
+        ("open-pr" | "open-issue", Some(repo), Some(described)) => {
+            let (title, body) = titled(&described.summary, described.evidence.as_deref());
+            let mut lines = Vec::new();
+            if action == "open-issue" {
+                lines.push(format!("would open an issue on {repo}"));
+            } else {
+                let own = due.branch.clone().unwrap_or_default();
+                let branches = described.branches.unwrap_or_else(|| vec![own]);
+                let mut below = match base_branch(db, due.task)? {
+                    Some(base) => base,
+                    None => due
+                        .worktree
+                        .as_deref()
+                        .and_then(|worktree| runtime::default_branch(Path::new(worktree)).ok())
+                        .unwrap_or_else(|| "the default branch".to_owned()),
+                };
+                for branch in branches {
+                    lines.push(format!(
+                        "would open a pull request on {repo} from {branch} into {below}"
+                    ));
+                    below = branch;
+                }
+                lines.push(format!("at: {}", commit.unwrap_or("no commit yet")));
+            }
+            lines.push(format!("title: {title}"));
+            lines.push(format!("body:\n{body}"));
+            lines.join("\n")
+        }
+        (other, ..) => format!("would run the {other} action"),
+    };
+    Ok(text)
 }
 
 pub(crate) fn failed(error: String) -> Done {
@@ -1845,11 +1910,7 @@ fn open_issue(db: &Connection, factory: &Factory, due: &state::Due) -> Result<Do
                 summary, evidence, ..
             }),
         ) => {
-            let title = summary.lines().next().unwrap_or_default();
-            let body = match evidence {
-                Some(evidence) => format!("{summary}\n\n{evidence}"),
-                None => summary.clone(),
-            };
+            let (title, body) = titled(&summary, evidence.as_deref());
             let source: String = db.query_row(
                 "SELECT source FROM tasks WHERE id = ?1",
                 [due.task],
@@ -1942,6 +2003,12 @@ fn start(
     let head = runtime::head(&worktree, &branch);
     if !tools::approved(db, admission.task, step, head.as_deref())? {
         return Ok(Ok(()));
+    }
+    if step.effect == factory::Effect::Irreversible && factory.staged(&admission.trigger) {
+        return Ok(Err(format!(
+            "staged: step {} is irreversible, so its run did not start",
+            step.id
+        )));
     }
     let turn = match &step.debate {
         Some(debate) => Some(crate::debate::turn(

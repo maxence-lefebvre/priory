@@ -4988,6 +4988,30 @@ fn answer_ran(
     .map(drop)
 }
 
+/// Records what the irreversible code step `at` of a staged task would have done, as an action
+/// whose status is `staged`, and blocks the task there, so a person reads it on the desk.
+pub(crate) fn staged(
+    db: &mut Connection,
+    task: i64,
+    at: &Step,
+    preview: &str,
+) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute(
+        "INSERT INTO actions (task, step, action, status, stdout, result, inbox)
+         VALUES (?1, ?2, ?3, 'staged', ?4,
+           (SELECT max(run) FROM results WHERE task = ?1), (SELECT max(seq) FROM inbox))",
+        params![task, at.id, at.action, preview],
+    )?;
+    let reason = format!(
+        "staged: step {} would run {}, and wrote nothing: priory actions shows what it would do",
+        at.id,
+        at.action.as_deref().unwrap_or_default()
+    );
+    set(&tx, task, "blocked", None, Some(&reason))?;
+    tx.commit()
+}
+
 /// Records the run of the code step `at`'s action, makes the task own the pull request it opened,
 /// and moves the task by `next[status]`.
 pub(crate) fn performed(

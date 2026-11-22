@@ -361,6 +361,13 @@
       "description": "`github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `intercom`, `cloudwatch`, `figma`, `slack` or `schedule`.",
       "type": "string"
     },
+    "staged": {
+      "description": "Whether its tasks are a trial: each stops before its first irreversible step, records what\nthat step would have done, and writes nothing.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "teams": {
       "description": "The GitHub teams, as `org/team`, whose review requests start tasks for `reviewer` too.",
       "items": {
