@@ -26646,3 +26646,416 @@ fn a_trigger_day_cap_holds_its_running_task_after_the_turn_that_crossed_it() {
     );
     assert_eq!(setup.open_asks().len(), 1);
 }
+
+/// One model step whose run may spend `budget` dollars.
+fn budgeted(budget: &str) -> String {
+    format!(
+        r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+budget = "{budget}"
+next = {{ passed = "done", failed = "stop" }}
+"#
+    )
+}
+
+/// Each turn n of the fake `claude` costs (111 + 2n) * $0.0001 at this price.
+const DEAR: &str =
+    "[claude-fake-5]\ninput = 100.0\noutput = 100.0\ncache_read = 0.0\ncache_write = 0.0\n";
+
+impl Setup {
+    /// A task at a step with `budget`, priced by `prices`, whose turns take `calls`.
+    fn spend(name: &str, budget: &str, prices: &str, calls: &[serde_json::Value]) -> Self {
+        Self::spend_held(name, budget, prices, calls, &[])
+    }
+
+    /// As `spend`, with the fake's `holds` in place before the daemon starts.
+    fn spend_held(
+        name: &str,
+        budget: &str,
+        prices: &str,
+        calls: &[serde_json::Value],
+        holds: &[&str],
+    ) -> Self {
+        let mut setup = Setup::with_workflow(name, &budgeted(budget));
+        fs::write(setup.dir.join("factory/prices.toml"), prices).unwrap();
+        setup.calls(calls);
+        for hold in holds {
+            setup.hold(hold);
+        }
+        setup.publish(&requested(42));
+        setup.start();
+        setup
+    }
+
+    /// Waits until task 1 is `state`, and returns its reason.
+    fn until_task(&self, state: &str) -> String {
+        self.until("tasks", |rows| {
+            rows.first().is_some_and(|row| row[4] == state)
+        })[0][7]
+            .clone()
+    }
+}
+
+#[test]
+fn a_turn_over_its_steps_budget_with_no_result_fails_the_task_and_one_under_it_goes_on() {
+    let over = Setup::spend("budget-over", "0.01", DEAR, &[json!(null)]);
+    assert_eq!(
+        over.until_task("failed"),
+        "step implement spent $0.011200, over its budget of $0.01"
+    );
+    assert_eq!(over.rows("runs")[0][7], "budget");
+
+    let under = Setup::spend(
+        "budget-under",
+        "1.00",
+        DEAR,
+        &[json!(null), result("passed")],
+    );
+    under.until_task("done");
+    assert_eq!(under.rows("runs").len(), 1, "the nudged run went on");
+}
+
+#[test]
+fn a_turn_over_its_budget_that_sent_its_result_moves_the_task_and_its_record_carries_the_overrun() {
+    let setup = Setup::spend("budget-result", "0.01", DEAR, &[result("passed")]);
+    setup.until_task("done");
+    let ended: Vec<serde_json::Value> = setup
+        .trace()
+        .into_iter()
+        .filter(|record| record["type"] == "factory.step.ended")
+        .collect();
+    assert_eq!(ended.len(), 1, "{ended:?}");
+    assert_eq!(ended[0]["data"]["outcome"], "passed");
+    assert_eq!(
+        ended[0]["data"]["overrun"],
+        json!({ "budget_usd": 0.01, "spent_usd": 0.0112 })
+    );
+}
+
+#[test]
+fn a_budget_whose_cost_is_unknown_fails_the_task() {
+    let missing = Setup::spend_held(
+        "budget-no-transcript",
+        "1.00",
+        DEAR,
+        &[result("passed")],
+        &["no-transcript"],
+    );
+    let reason = missing.until_task("failed");
+    assert!(reason.contains("cost is unknown"), "{reason}");
+    assert_eq!(
+        reason,
+        "step implement has a budget, and run 1's cost is unknown: its transcript gave no tokens"
+    );
+
+    let other = "[other-model]\ninput = 1.0\noutput = 1.0\ncache_read = 1.0\ncache_write = 1.0\n";
+    let unpriced = Setup::spend("budget-unpriced", "1.00", other, &[result("passed")]);
+    assert_eq!(
+        unpriced.until_task("failed"),
+        "step implement has a budget, and run 1's cost is unknown: price missing for claude-fake-5"
+    );
+}
+
+#[test]
+fn a_resumed_run_counts_the_steps_earlier_turns_toward_its_budget() {
+    let setup = Setup::spend("budget-resumed", "0.02", DEAR, &[ask(), json!(null)]);
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    assert_eq!(
+        setup.until_task("failed"),
+        "step implement spent $0.022600, over its budget of $0.02"
+    );
+    assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn remember_refuses_an_exact_repeat_of_a_memory_a_pending_and_a_dropped_candidate() {
+    let mut setup = Setup::with_workflow("remember-repeat", STEPS);
+    let memories = setup.dir.join("factory/memories");
+    fs::create_dir_all(&memories).unwrap();
+    fs::write(
+        memories.join("deploys.md"),
+        "---\nname: deploys\ndescription: What deploys says.\n---\nDeploys need the VPN.\n",
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+    let (first, second) = (runs[0][4].clone(), runs[1][4].clone());
+    let call = |session: &str, call| reply(&setup.mcp(session, &[mcp_call(call)])[0]);
+
+    assert_eq!(
+        call(&first, remember("deploys", "Deploys need the VPN.")),
+        ("deploys already holds this text".to_owned(), true)
+    );
+    assert!(!call(&first, remember("release-day", "Tuesdays.")).1);
+    assert_eq!(
+        call(&first, remember("release-day", "Tuesdays.")),
+        ("release-day already holds this text".to_owned(), true),
+        "its own task sees it"
+    );
+    let candidates = setup.until_candidates(|candidates| {
+        candidates.len() == 1 && candidates[0]["state"] == "pending"
+    });
+    let id = candidates[0]["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        call(&second, remember("release-day", "Tuesdays.")),
+        (
+            format!(
+                "candidate {id} already proposes this text for release-day, and waits for a person"
+            ),
+            true
+        )
+    );
+
+    setup.decide("drop", &id);
+    let decided = setup.candidates()[0]["decided"].as_str().unwrap()[..10].to_owned();
+    assert_eq!(
+        call(&second, remember("release-day", "Tuesdays.")),
+        (
+            format!(
+                "a person dropped this text for release-day on {decided}: propose it again only with new evidence"
+            ),
+            true
+        )
+    );
+    assert!(
+        !call(&second, remember("release-day", "Wednesdays.")).1,
+        "a changed text is a correction"
+    );
+    setup.until_candidates(|candidates| candidates.len() == 2);
+}
+
+#[test]
+fn a_recap_prints_the_days_results_answers_says_and_stuck_tasks_and_nothing_else() {
+    let mut setup = Setup::with_workflow("recap", STEPS);
+    let token = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123";
+    setup.calls(&[
+        json!([
+            { "name": "Bash", "arguments": { "command": "env" }, "output": "TRANSCRIPT-ONLY" },
+            ask()
+        ]),
+        result("unsure"),
+        json!({ "name": "result", "arguments": {
+            "outcome": "passed", "summary": format!("Shipped with {token}.") } }),
+        json!({ "name": "Write", "arguments": { "file_path": "x" } }),
+    ]);
+    setup.hold("undecided");
+    let mut first = requested(42);
+    first.data["prompt"] = json!("ISSUE-BODY-ONLY");
+    setup.publish(&first);
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    let answered = setup.priory(&["answer", "1", "postgres", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("asks", |rows| rows.iter().any(|row| row[0] == "2"));
+    let said = setup.priory(&["say", "1", "Prefer Postgres from now on."]);
+    assert!(said.status.success(), "{said:?}");
+    let answered = setup.priory(&["answer", "2", "approved", "--revision", "2"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until_task("done");
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "blocked");
+
+    let recap = setup.priory(&["recap"]);
+    assert!(recap.status.success(), "{recap:?}");
+    let recap = String::from_utf8(recap.stdout).unwrap();
+    for absent in [token, "TRANSCRIPT-ONLY", "ISSUE-BODY-ONLY"] {
+        assert!(!recap.contains(absent), "{absent} in {recap}");
+    }
+    let at = |text: &str| {
+        recap
+            .find(text)
+            .unwrap_or_else(|| panic!("no {text:?} in {recap}"))
+    };
+    let order = [
+        at("## Answer on task 1 (github:owner/repo#42)"),
+        at("A person said to task 1"),
+        at("Shipped with [redacted]."),
+        at("## task 2 (github:owner/repo#43) is blocked"),
+    ];
+    assert!(order.is_sorted(), "{order:?} in {recap}");
+    at("Recommended: sqlite: one file. The answer went against it.");
+    at("``` task 1 (github:owner/repo#42), by agent implementer\nWhich database?\n```");
+    at("``` task 1 (github:owner/repo#42), by a person\nPrefer Postgres from now on.\n```");
+    at("Workflow implement, step plan, outcome unsure");
+
+    let bounded = setup.priory(&["recap", "--max-bytes", "900"]);
+    let bounded = String::from_utf8(bounded.stdout).unwrap();
+    assert!(bounded.len() <= 900, "{} bytes: {bounded}", bounded.len());
+    assert!(
+        bounded.contains("is blocked"),
+        "the newest stays: {bounded}"
+    );
+    assert!(!bounded.contains("## Answer on"), "{bounded}");
+    assert!(
+        bounded
+            .trim_end()
+            .ends_with("records to stay under 900 bytes."),
+        "{bounded}"
+    );
+}
+
+#[test]
+fn a_recap_names_pending_and_recently_dropped_candidates_and_nothing_of_their_text() {
+    let mut setup = Setup::with_workflow("recap-names", STEPS);
+    setup.publish(&requested(42));
+    setup.start();
+    let session = setup.until("runs", |rows| rows.len() == 1)[0][4].clone();
+    for (name, text) in [
+        ("old-drop", "OLD-DROP-TEXT"),
+        ("new-drop", "NEW-DROP-TEXT"),
+        ("pending-one", "PENDING-TEXT"),
+    ] {
+        let (text, failed) = reply(&setup.mcp(&session, &[mcp_call(remember(name, text))])[0]);
+        assert!(!failed, "{text}");
+    }
+    let candidates = setup.until_candidates(|candidates| {
+        candidates.len() == 3 && candidates.iter().all(|c| c["state"] == "pending")
+    });
+    for (name, text) in [("old-drop", "OLD-DROP-TEXT"), ("new-drop", "NEW-DROP-TEXT")] {
+        setup.decide("drop", &candidate(&candidates, name, Some(text)));
+    }
+    let decided = setup.candidates()[0]["decided"]
+        .as_str()
+        .unwrap()
+        .parse::<jiff::Timestamp>()
+        .unwrap();
+    let recap = |days: i64| {
+        let now = decided + jiff::SignedDuration::from_hours(24 * days);
+        let output = setup
+            .command(env!("CARGO_BIN_EXE_priory"))
+            .arg("recap")
+            .env("PRIORY_NOW", now.to_string())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+
+    let soon = recap(3);
+    assert!(soon.contains("- `old-drop`: dropped on "), "{soon}");
+    assert!(soon.contains("- `new-drop`: dropped on "), "{soon}");
+    assert!(soon.contains("- `pending-one`: pending since "), "{soon}");
+    for text in [
+        "OLD-DROP-TEXT",
+        "NEW-DROP-TEXT",
+        "PENDING-TEXT",
+        "What old-drop says",
+    ] {
+        assert!(!soon.contains(text), "{text} in {soon}");
+    }
+    let later = recap(31);
+    assert!(!later.contains("drop`"), "{later}");
+    assert!(later.contains("- `pending-one`"), "{later}");
+}
+
+const DREAMER: &str = include_str!("../../../examples/dreaming/agents/dreamer/agent.md");
+const DREAM: &str = include_str!("../../../examples/dreaming/workflows/dream.toml");
+
+/// A firing of the nightly `dream` schedule, at `scheduled`.
+fn dream_night(scheduled: &str) -> Message {
+    let key = "schedule:dream";
+    Message::new(
+        "factory.task.requested",
+        json!({
+            "workflow": "dream",
+            "repo": "owner/repo",
+            "key": key,
+            "band": "later",
+            "lane": null,
+            "trigger": "nightly",
+            "source": format!("source-{scheduled}"),
+            "scheduled": scheduled,
+            "prompt": null
+        }),
+    )
+    .subject(key)
+}
+
+#[test]
+fn a_nightly_dream_proposes_candidates_that_reach_other_tasks_only_once_accepted() {
+    let mut setup = Setup::new("dream");
+    for (path, content) in [
+        ("factory/agents/dreamer/agent.md", DREAMER),
+        ("factory/workflows/dream.toml", DREAM),
+        (
+            "factory/prices.toml",
+            "[claude-fake-5]\ninput = 1.0\noutput = 1.0\ncache_read = 0.0\ncache_write = 0.0\n",
+        ),
+    ] {
+        let file = setup.dir.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, content).unwrap();
+    }
+    let checked = setup.priory(&["check", setup.dir.join("factory").to_str().unwrap()]);
+    assert!(checked.status.success(), "{checked:?}");
+    setup.calls(&[json!([
+        remember("release-day", "Releases go out on Tuesdays."),
+        remember("staging-vpn", "The staging database needs the VPN."),
+        { "name": "result", "arguments": { "outcome": "proposed", "summary": "Two memories." } }
+    ])]);
+    setup.hold("hold-call");
+    setup.publish(&dream_night("2026-11-22T03:00:00Z"));
+    setup.start();
+
+    let args = setup.claude_args(0);
+    let settings: serde_json::Value =
+        serde_json::from_str(&arg(&args, "--settings").unwrap()).unwrap();
+    let deny = &settings["permissions"]["deny"];
+    for tool in ["mcp__priory__ask", "mcp__priory__wait"] {
+        assert!(
+            deny.as_array().unwrap().contains(&json!(tool)),
+            "{settings}"
+        );
+    }
+    assert_eq!(arg(&args, "--permission-mode").as_deref(), Some("dontAsk"));
+
+    setup.publish(&dream_night("2026-11-23T03:00:00Z"));
+    setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(
+        setup.rows("tasks").len(),
+        1,
+        "the second firing joins the first task"
+    );
+    setup.release("hold-call");
+    setup.until_task("done");
+    let candidates = setup.until_candidates(|candidates| {
+        candidates.len() == 2 && candidates.iter().all(|c| c["state"] == "pending")
+    });
+    let desk = setup.priory(&["desk", "--json"]);
+    let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+    let rows: Vec<&serde_json::Value> = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["kind"] == "memories")
+        .collect();
+    assert_eq!(rows.len(), 1, "{desk}");
+    assert_eq!(rows[0]["candidates"].as_array().unwrap().len(), 2, "{desk}");
+
+    setup.publish(&requested(1));
+    assert_eq!(remembered(&setup.claude_args(1)), [], "no accept yet");
+    for candidate in &candidates {
+        setup.decide("accept", candidate["id"].as_str().unwrap());
+    }
+    setup.publish(&requested(2));
+    assert_eq!(
+        remembered(&setup.claude_args(2))
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>(),
+        ["release-day.md", "staging-vpn.md"]
+    );
+}

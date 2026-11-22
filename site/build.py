@@ -29,6 +29,7 @@ GROUPS = [
         "docs/sharing-build-caches.md",
         "docs/sending-traces-to-opentelemetry.md",
         "docs/evaluating-a-prompt.md",
+        "docs/setting-up-a-nightly-dream.md",
     ]),
     ("Reference", "docs/reference", ["docs/reference/README.md", "docs/reference/cli.md"]),
     ("How it works", "docs/daemon", [

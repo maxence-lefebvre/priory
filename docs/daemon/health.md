@@ -26,12 +26,32 @@ These ends make a task `failed`:
   it stays failed.
 - A second unexpected exit of the run its repair restarted, before that run stored a result, ask or
   wait.
+- A turn over its step's `budget`, or one whose cost Priory cannot price, as Budget says.
 
 Everything else that stops a task needs a person and makes it `blocked`: no `SessionStart`, an exit
 before `SessionStart`, a permission prompt, a timeout, a run lost twice, a code step's action that
 is not built, a step with no known agent, a task with no repo, and a git or tmux error at the
 start of a run. `open-pr`'s own failure is not an end. It is the `failed` outcome, which the
 workflow routes like any other.
+
+## Budget
+
+A model step's [`budget`](../reference/workflows.md#step-keys) is the dollars the task may spend at
+that step. At each `Stop`, the daemon has just added the turn's tokens to the step's count, which
+holds every run of the step since the task entered it, a resumed run's earlier turns included. It
+prices that count with `prices.toml`, by the model the transcript names, before the turn's result
+moves the task, since a move resets the count. Then:
+
+| At the turn end | The daemon |
+| --------------- | ---------- |
+| Under the budget | Goes on as without one |
+| Over it, and the turn sent a result | Moves the task by the result. The step's `factory.step.ended` record carries `overrun`, with `budget_usd` and `spent_usd` |
+| Over it, and the turn sent no result | Ends the run as `budget` and fails the task: `step <id> spent $<n>, over its budget of $<b>` |
+| The transcript gave no tokens, or `prices.toml` has no price for its model | Ends the run as `budget` and fails the task: `step <id> has a budget, and run <n>'s cost is unknown: price missing for <model>`, or `: its transcript gave no tokens` |
+
+The amount shows cents, or six decimals when cents would hide that it passed the budget. A failed
+task gets no repair: the budget would stop the restarted run too. The check runs at turn ends, so
+one turn can pass the budget before the daemon sees it. The step's `timeout` bounds that turn.
 
 ## Repair
 

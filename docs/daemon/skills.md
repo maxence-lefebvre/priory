@@ -119,6 +119,14 @@ claim, so a runner cut off from the log publishes it once the link is back. The 
 candidate's id. A later write of the same name is a new candidate, never an edit. A forget is a
 candidate too: a tombstone for its name.
 
+`remember` refuses an exact repeat: a name, description and text equal to the memory the task
+sees under that name, to a candidate of that name that waits for a person, or to one a person
+dropped. The reply says which, and a dropped one's names the drop's date. A changed text under the
+same name is a correction and is stored. The runner that serves the call applies this rule, and
+only to its own writes: two runners can write the same text before either reads the other, so a
+candidate read from the log is recorded as before (see
+[memories.md](../reference/memories.md#errors-from-the-tools)).
+
 Every runner records each candidate as it reads the log, in log order, in a factory of one runner
 too. A [view-only machine](runners.md#a-machine-that-only-views) records them as well, and a person
 there can accept or drop one. A runner refuses a candidate that breaks the rules of `remember`, since anyone who can publish

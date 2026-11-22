@@ -144,6 +144,44 @@ reaches runs again. An open pull request that still holds the retired text is no
 | `a memory needs a text: the fact itself` | A blank `text` |
 | `a memory holds one fact in at most 4096 bytes: this one is <n> bytes` | The candidate's file, as above, is over 4096 bytes |
 | `the text looks like it holds a credential: a memory reaches every later run, so keep secrets out of it` | The name, description or text matches a GitHub, Anthropic, OpenAI, AWS, Slack or Linear key, or a PEM private key. A secret with no known shape, such as a webhook secret, passes |
+| `<name> already holds this text` | `remember` with the name, description and text of the memory the task sees under that name, its own candidates included |
+| `candidate <id> already proposes this text for <name>, and waits for a person` | `remember` equal to a `sending` or `pending` candidate of that name, from any task |
+| `a person dropped this text for <name> on <date>: propose it again only with new evidence` | `remember` equal to a `dropped` candidate of that name |
+
+A changed description or text under the same name is not a repeat: it is how a memory is
+corrected. The runner that serves the call applies the repeat rule. A candidate read from the log
+is recorded as before, since two runners can write the same text before either reads the other.
+
+### `priory recap`
+
+```sh
+priory recap [--since <instant-or-duration>] [--max-bytes N]
+```
+
+`priory recap` prints what a nightly dream reads: the records of the window, `24h` back from now by
+default, oldest first, as Markdown. It reads the state file `PRIORY_DB`, so it covers the runner it
+runs on.
+
+| Part | What it shows |
+| ---- | ------------- |
+| Memory names not to propose again | The name of each `pending` candidate and each candidate dropped in the last 30 days, with the date. No description or text |
+| Result | Each result's task, workflow, step, outcome and time, with its summary and evidence |
+| Answer | Each answered ask's step, options and recommendation, whether the answer went against it, then the question and the answer with its note |
+| A person said | Each line of a prompt that starts with `A person says: `, as `priory say` and the desk's say queue them |
+| Step ended | Each `factory.step.ended` record's workflow, step, outcome and token counts |
+| Failed or blocked | Each task that became `failed` or `blocked` in the window, with its reason |
+
+Each quoted text sits in a fenced block whose info string names its task and its author, such as
+`task 7 (github:owner/repo#12), by agent implementer` or `by a person`. The fence is longer than any
+run of backticks in the text.
+
+It never prints a transcript, a run's screen, a prompt file, an outside event's body, a worktree's
+file or an environment variable. It replaces each credential shape that `remember` refuses with
+`[redacted]`.
+
+The output is at most `--max-bytes` bytes, `200000` by default. When the window holds more, it keeps
+the candidate names and the newest records, and ends with `Left out the <n> oldest of <total>
+records to stay under <N> bytes.`
 | `no memory <name> reaches your task: your instructions' index lists those that do` | `memory` names a memory the caller's task does not see |
 
 A runner applies the same rules to each `priory.memory.written` it reads, since anyone who can

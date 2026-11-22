@@ -1,0 +1,6 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "schedule"
+repo = "owner/abbey"           # the kit's GitHub owner/name, where the pull request opens
+at = "06:00"
+key = "kit-memories"
+workflow = "memories"

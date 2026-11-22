@@ -302,6 +302,21 @@ repositories.
 
 ## The first slice: a nightly dream behind the existing gate
 
+This slice is built. [memories.md](../reference/memories.md#priory-recap) describes `priory recap`
+and the repeat rule, [health.md](../daemon/health.md#budget) the budget, and
+[How to set up a nightly dream](../setting-up-a-nightly-dream.md) the starter. It differs from this
+section in four ways:
+
+- Item 3 was on `main` already: `memories accept` and `memories drop` were person verbs before this
+  note, so "What existed" is wrong on that point. The slice only adds the listing to the guard's
+  tests.
+- The starter's agent has no `skills = []`, since an agent's `skills` list
+  ([agent-skills.md](agent-skills.md)) is not built.
+- `priory recap` finds a person's `say` as a prompt line that starts with `A person says: `, since
+  Priory keeps no other record of it. A `say` of several lines shows its first.
+- A budget failure ends the run as `budget`. A missing transcript reads `its transcript gave no
+  tokens`, and the repeat rule counts a `sending` candidate as waiting for a person.
+
 1. `priory recap [--since D] [--max-bytes N]`, in `priory-core` beside `report.rs`, with the parts,
    the redaction and the limit of [What it may read](#what-it-may-read).
 2. `budget` on a model step, checked at each turn end, with the two `priory check` rules of
