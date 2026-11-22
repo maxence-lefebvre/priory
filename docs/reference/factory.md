@@ -560,7 +560,14 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `[decisions.triage] timeout` is <n>s: give at most 30s `` | `timeout` is over 30 seconds |
 | `` `[decisions.triage] daily_calls` is 0: give at least 1 `` | `daily_calls = 0` |
 | `` `[decisions.triage] evaluation` <file>: <why> `` | The labeled cases cannot be read, or hold fewer than 10 cases or fewer than 3 of a class |
+| `` `[caps]` needs prices.toml, which turns the steps' tokens into dollars `` | `[caps]` in a factory without `prices.toml` |
 | `invalid socket address syntax` | `listen` is not an IP address and port, such as `127.0.0.1:7340` |
 
 Each line starts with the file and line, such as `factory.toml:3:1:`. A file that does not parse
 reports only its parse error, so fix those first.
+
+In a factory with a spend cap and `prices.toml`, `priory check` also warns, and passes, for the
+agent of a model step whose spend no cap counts:
+`` warning: agents/<name>/agent.md:<line>: the spend caps count nothing for agent `<name>`: <why> ``,
+where `<why>` is `` prices.toml has no price for its model `<model>` `` or
+`Priory reads no Codex tokens`.

@@ -38,7 +38,9 @@ records the window holds, from the start of the local day or Monday 00:00 local 
 current steps of the active tasks the cap covers.
 
 A model with no price counts nothing toward a cap. Price every model your agents use, or its spend
-goes unseen.
+goes unseen. `priory check` refuses a cap in a factory with no `prices.toml`. It warns for the agent
+of a model step whose `model` has no price, and for a Codex agent, since Priory reads no Codex
+tokens.
 
 ## Past a cap
 
