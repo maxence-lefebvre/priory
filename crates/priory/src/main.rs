@@ -3,7 +3,7 @@ use priory_core::{
     daemon, deliver, embed, evidence, grades, label, listing, post, progress, proof, relate,
     report, risk, runners, search, sections, serve, snooze, state, subscribe, todo, tools,
 };
-use priory_factory::{explain, factory, readiness, rules};
+use priory_factory::{explain, factory, plural, readiness, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{eval, mcp, runtime};
 use serde_json::{Value, json};
@@ -3079,7 +3079,7 @@ fn print_outsider(events: &serde_json::Value) {
     };
     println!(
         "from outside the repository: {}",
-        priory_factory::plural(events.len(), "event", "events")
+        plural(events.len(), "event", "events")
     );
     for event in events {
         println!(
@@ -3540,7 +3540,7 @@ fn check(args: Vec<OsString>) -> ExitCode {
     }
     let skills = match factory.skills.len() {
         0 => String::new(),
-        n => format!(", {}", count(n, "skill")),
+        n => format!(", {}", plural(n, "skill", "skills")),
     };
     let memories = match factory.memories.len() {
         0 => String::new(),
@@ -3549,18 +3549,18 @@ fn check(args: Vec<OsString>) -> ExitCode {
     };
     let scorers = match factory.scorers.len() {
         0 => String::new(),
-        n => format!(", {}", count(n, "scorer")),
+        n => format!(", {}", plural(n, "scorer", "scorers")),
     };
     let benchmarks = match factory.benchmarks.len() {
         0 => String::new(),
-        n => format!(", {}", count(n, "benchmark")),
+        n => format!(", {}", plural(n, "benchmark", "benchmarks")),
     };
     println!(
         "ok: {}, {}, {}, {}{skills}{memories}{scorers}{benchmarks}",
-        count(factory.agents.len(), "agent"),
-        count(factory.triggers.len(), "trigger"),
-        count(factory.workflows.len(), "workflow"),
-        count(factory.runners.len(), "runner"),
+        plural(factory.agents.len(), "agent", "agents"),
+        plural(factory.triggers.len(), "trigger", "triggers"),
+        plural(factory.workflows.len(), "workflow", "workflows"),
+        plural(factory.runners.len(), "runner", "runners"),
     );
     ExitCode::SUCCESS
 }
@@ -3812,14 +3812,6 @@ fn draw(dir: &Path, workflow: &std::ffi::OsStr) -> ExitCode {
             ExitCode::SUCCESS
         }
         None => exit("draw", Err(format!("unknown workflow `{name}`"))),
-    }
-}
-
-fn count(n: usize, noun: &str) -> String {
-    if n == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{n} {noun}s")
     }
 }
 

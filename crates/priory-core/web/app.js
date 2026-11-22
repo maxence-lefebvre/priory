@@ -838,7 +838,7 @@ const itemActs = (item) => (["blocked", "failed"].includes(item.kind) ? taskActs
 function deskTable(model, selected) {
   if (!model.open.length && !model.stopped.length && !model.todos.length && !model.other.length) return "";
   const itemLine = (item) => item.kind === "memories" ? html`<tr>
-    <td>${stateWord("memories")}</td><td class="mono"></td><td></td><td class="q full"><span>${item.candidates?.length ?? 0} memory candidates: ${(item.candidates || []).map((candidate) => candidate.name).join(", ")}</span>${fold(review)}</td>
+    <td>${stateWord("memories")}</td><td class="mono"></td><td></td><td class="q full"><span>${plural(item.candidates?.length ?? 0, "memory candidate")}: ${(item.candidates || []).map((candidate) => candidate.name).join(", ")}</span>${fold(review)}</td>
     <td class="recw">${review}</td><td class="r">${timeTag(item.since)}</td></tr>` : html`<tr>
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${item.kind === "batch" ? html`<a href="/batches/${item.id}">${taskLabel(item.key)}</a>` : ["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}" title="task ${item.task}">${taskLabel(item.key)}</a>` : taskLabel(item.key)}</td><td>${item.step || ""}</td>
     <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span>${fold(itemActs(item))}</td><td class="recw">${itemActs(item)}</td><td class="r">${timeTag(item.since)}</td></tr>`;

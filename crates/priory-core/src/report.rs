@@ -293,8 +293,12 @@ impl Total {
             .iter()
             .map(|(model, tokens)| {
                 format!(
-                    "price missing for {model}: {} tokens",
-                    tokens.0.iter().sum::<i64>()
+                    "price missing for {model}: {}",
+                    priory_factory::plural(
+                        tokens.0.iter().sum::<i64>() as usize,
+                        "token",
+                        "tokens"
+                    )
                 )
             })
             .collect();
