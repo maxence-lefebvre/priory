@@ -105,4 +105,6 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [search.md](search.md): TL;DRs, the summarizer, `priory search`, and the optional embeddings.
 - [load.md](load.md): the load test, how to rerun it and the limits it measured.
 - [serve.md](serve.md): the HTTP server over the state, its token and its limits.
-- [services.md](services.md): running Priory as systemd user services, and the listing commands.
+- To run Priory as systemd user services, follow
+  [How to run Priory as services](../running-as-services.md). The listing commands, such as
+  `priory runs`, are in [the command reference](../reference/cli.md).

@@ -235,7 +235,7 @@ To queue a Slack thread from Slack itself, set up the "Queue in Priory" message 
 [docs/intake/slack.md](docs/intake/slack.md#message-shortcut).
 
 To keep both processes running, install them as systemd user services. See
-[docs/daemon/services.md](docs/daemon/services.md).
+[How to run Priory as services](docs/running-as-services.md).
 
 ## What happens to a task
 
@@ -263,40 +263,19 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | Command | What it does |
 | ------- | ------------ |
 | `priory desk` | Lists what waits on you: asks, blocked and failed tasks, held tasks, the queue |
-| `priory answer ASK OPTION --revision N` | Answers an ask. `--expected N` is the same flag. `priory answer [DIR] RUNNER:ASK ...` answers another runner's ask (see [runners.md](docs/daemon/runners.md)) |
-| `priory daemon --view-only [DIR]` | On a machine with no runner file, such as a laptop, serves every runner's asks and tasks, sends answers and task actions to their runners, and runs nothing (see [runners.md](docs/daemon/runners.md#a-machine-that-only-views)) |
-| `priory give [DIR] KEY RUNNER [--force]` | Moves a task to another runner of a factory of several, once its runner's lease ends or with `--force` (see [runners.md](docs/daemon/runners.md)) |
-| `priory dismiss [--expected N] ASK` | Closes an ask with no answer. `priory dismiss --revision N [DIR] RUNNER:ASK` dismisses another runner's ask |
-| `priory deliver ASK (--retry \| --clear)` | Sends a failed answer delivery again, or clears it from the desk |
-| `priory snooze KIND ID --for 2h`, `--until TIME`, `--clear` | Hides a desk item until then, or brings it back |
-| `priory memories [--all]`, `priory memories (accept \| drop) [DIR] ID` | Lists the memories agents saved that wait for you, and accepts or drops one, on every runner |
-| `priory todo add TEXT [--band B] [--due TIME]`, `priory todo done ID`, `priory todo list` | Adds a to-do of your own to the desk, marks it done, or lists them |
-| `priory tasks [--lane LANE] [--grade GRADE]` | Lists tasks in start order, with their grade, and other runners' tasks in a factory of several |
-| `priory runs [--json]` | Lists every run; `--json` adds its task key, outcome, model and tokens |
-| `priory batch add [DIR] ISSUE...`, `priory batch show [BATCH] [--json]`, `priory batch edit BATCH --expected N ...` | Hands several issues to a planner that orders them under one go, shows each batch and its entries, and drops or moves an entry before the go (see [batches.md](docs/daemon/batches.md)) |
-| `priory tasks --graph [TASK] [--mermaid]` | Draws how tasks relate, as a tree or a Mermaid flowchart |
-| `priory relate TASK KIND OTHER [--remove]` | Records that a task `builds-on`, `fixes`, `takes-up` or `relates` to another, or removes it |
+| `priory answer ASK OPTION --revision N` | Answers an ask, at the revision `priory asks` prints for it |
+| `priory tasks` | Lists tasks in start order |
 | `priory task TASK --json` | Prints one task with its brief, plan, pull request, runs and asks |
+| `priory actions` | Lists each code step's action with its error and output: read it when a code step failed |
 | `priory attach TASK [--read-only]` | Attaches your terminal to a task's agent |
-| `priory screen [DIR] TASK [--history N] [--json]` | Prints what a task's agent shows now, in colour on a terminal, with secrets hidden: the factory's secret variables when you name its `DIR`, and `N` rows of scrollback above. The task's page in the web view shows the same screen, with Load earlier for scrollback and Type to say a line to the agent |
-| `priory resume TASK` | Resumes a blocked task |
 | `priory say TASK TEXT` | Sends a task's agent a message, waking it if it sleeps |
-| `priory subscribe TASK RESOURCE [--expected REVISION]`, `priory unsubscribe TASK RESOURCE` | Routes a pull request's, Linear issue's or Slack thread's events to a task until it closes, or stops routing them. Every task already subscribes to its own key, such as the Slack thread that started it. `--expected` refuses the subscribe once the state moved past that revision |
+| `priory resume TASK` | Resumes a blocked task |
+| `priory cancel TASK` | Drops an active task and ends its run |
+| `priory revive TASK` | Restarts a failed or dropped task |
 | `priory pause [REASON]`, `priory unpause` | Stops new tasks from starting, then lets them start again |
-| `priory cancel TASK [--expected N]` | Drops an active task and ends its run |
-| `priory revive TASK [--step STEP]` | Restarts a failed or dropped task |
-| `priory (resume \| cancel \| release \| revive \| say) [DIR] RUNNER:KEY` | Sends the action to another runner's task, which applies it if the task is still at the generation this machine saw. Takes `--generation N` (see [runners.md](docs/daemon/runners.md#acting-on-another-runners-task)) |
-| `priory hold TASK --reason TEXT`, `priory release TASK` | Holds a task back, then lets it go. Both take `--expected N` |
-| `priory move TASK --band BAND [--expected N]` | Moves a task to another priority band. `--expected N` refuses the move once the state's revision differs from `N` |
-| `priory search QUERY` | Finds tasks by what they are about |
-| `priory report DIR --workflow NAME [--cost]` | Prints outcome rates, or tokens and cost, per step |
-| `priory report attention [--by workflow\|lane\|kind] [--json]` | Prints this week's person-minutes per merged pull request, how long asks waited on you, and where each task's time went |
-| `priory costs DIR [--by workflow\|agent\|model\|machine\|repo] [--json]` | Prints this week's cost against last week's, per day with merges, and split by one dimension |
-| `priory grades [--since WINDOW] [--by lane] [--json]` | Prints how each grade's tasks turned out, headed by green's one-shot rate against 90 % |
-| `priory report risk [DIR] [--workflow NAME] [--by lane] [--json]` | Prints, for each irreversible step, the share of tasks through it judged wrong and landed wrong within 30 days |
-| `priory label [DIR] TASK wrong --evidence URL`, `--clear` | Marks a task's work wrong for the risk report, then withdraws the mark |
 
-Run `priory` with no arguments to print its usage.
+[The command reference](docs/reference/cli.md) lists every command with its flags. Run `priory`
+with no arguments to print its usage.
 
 If you work in [Herdr](docs/adapters/herdr.md), its Desk panel shows the same desk, and its Asks
 panel lists the same asks and answers them through these verbs. `priory views --json |

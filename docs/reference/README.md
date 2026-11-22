@@ -5,6 +5,7 @@ config page gives a field table, a complete example and the errors `priory check
 
 | Page | Covers |
 | ---- | ------ |
+| [cli.md](cli.md) | Every `priory` command, with its flags and the page that describes it |
 | [factory.md](factory.md) | `factory.toml`: the factory's name and the daemon's settings |
 | [workflows.md](workflows.md) | `workflows/<name>.toml`: steps, deciders, effects, outcomes and `priory check --explain` |
 | [agents.md](agents.md) | `agents/<name>/agent.md`: harness, model, session and permissions |
@@ -20,6 +21,7 @@ config page gives a field table, a complete example and the errors `priory check
 | [e2e-scenarios.md](e2e-scenarios.md) | The scenario file of the end-to-end factory test |
 | [prompt-evals.md](prompt-evals.md) | `priory eval`, its evaluation file and the fake MCP server |
 | [label.md](label.md) | `priory label`: a person's `marked-wrong` mark, its flags and errors |
+| [trace-schema.md](../trace-schema.md) | Every trace record, with its fields |
 
 The examples are files of a complete factory in [`examples/factory/`](examples/factory/), and the
 example payloads are in [`examples/events/`](examples/events/). A test runs `priory check` on that
@@ -63,6 +65,10 @@ or the Red Hat YAML extension:
 | `scorers/*.toml` | `config/scorer.json` |
 | `agents/*/agent.md` | `config/agent.json`, for tools that read frontmatter; editors do not |
 | `memories/*.md` | `config/memory.json`, for tools that read frontmatter; editors do not |
+| `benchmarks/*.toml` | `config/benchmark.json` |
+| A case folder's `case.toml`, `gh/<n>.toml` and `answers.toml` | `config/case.json`, `config/case-gh.json`, `config/case-answers.json` |
+| A judge scorer's labeled cases | `config/judge-cases.json` |
+| A report a workflow writes | `report.json`, beside the two folders (see [reports.md](../daemon/reports.md)) |
 
 A schema checks each file alone. Rules across files, such as a trigger naming a workflow that
 exists, need `priory check`. Patterns for durations, sizes and shares accept the usual forms, such
