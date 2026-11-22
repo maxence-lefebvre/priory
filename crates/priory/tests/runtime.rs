@@ -30526,6 +30526,32 @@ fn a_result_that_repeats_a_lesson_goes_back_to_the_agent_once_before_the_approva
 }
 
 #[test]
+fn an_agent_that_forgets_a_lesson_still_gets_its_pre_review() {
+    let mut setup = Setup::with_workflow("pre-review-forgotten", LESSONED);
+    pre_review(
+        &setup,
+        LESSON_TESTS,
+        &["fail\nIt adds no test, which the lesson asks for."],
+    );
+    setup.calls(&[
+        json!([forget("lesson-tests"), passed_with_evidence()]),
+        passed_with_evidence(),
+    ]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("asks", |rows| rows.len() == 1);
+    let prompts = judge_prompts(&setup);
+    assert_eq!(prompts.len(), 11, "the pre-review read the lesson");
+    assert!(
+        prompts[10].contains("- lesson-tests: Every pull request needs a test."),
+        "{}",
+        prompts[10]
+    );
+}
+
+#[test]
 fn a_step_with_no_lesson_gets_no_pre_review() {
     let mut setup = Setup::with_workflow("pre-review-none", LESSONED);
     pre_review(

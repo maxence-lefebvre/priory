@@ -334,8 +334,9 @@ When a model step sends a result whose outcome leads to an approval step, the da
 result for the `pre_review` judge, as for any gate, when all of these hold:
 
 - `factory.toml` names `pre_review`;
-- the task sees at least one lesson for that approval step: the kit's, the memories repository's,
-  the factory's, or a candidate the task sees, as a run gets them;
+- at least one lesson exists for that approval step: the kit's, the memories repository's, the
+  factory's, an accepted one, or one proposed from this task's own rejection. A `forget` or
+  `remember` by the task's own agent hides none of them, since the pre-review checks that agent;
 - no pre-review refused a result of this run before.
 
 The judge reads the request, the result and, on `diff`, the diff, as any judge does. After them,

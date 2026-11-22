@@ -88,7 +88,13 @@ pub(crate) fn pre_review(
     if refused {
         return Ok(None);
     }
-    let layer = crate::memories::layer(tx, Some(task))?;
+    // The task's own lessons count, but never its forgets nor rewrites: its agent writes those.
+    let mut layer = crate::memories::layer(tx, None)?;
+    layer.extend(
+        crate::memories::layer(tx, Some(task))?
+            .into_iter()
+            .filter(|(_, memory)| memory.as_ref().is_some_and(|memory| memory.step.is_some())),
+    );
     let lessons =
         crate::kit::sources(factory, kit, &layer, None).lessons(&format!("{workflow}/{target}"));
     Ok((!lessons.is_empty()).then(|| (name.to_owned(), lessons)))
