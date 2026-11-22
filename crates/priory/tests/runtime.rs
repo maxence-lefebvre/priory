@@ -10694,6 +10694,38 @@ fn a_comment_kept_during_the_turn_refuses_the_result_until_the_agent_read_it() {
 }
 
 #[test]
+fn a_comment_kept_during_the_turn_refuses_a_wait_until_the_agent_read_it() {
+    let mut setup = Setup::new("kept-before-wait");
+    let wait =
+        json!({ "name": "wait", "arguments": { "on": { "type": "time", "until": "1 hour" } } });
+    let read = json!({ "name": "result", "arguments": { "outcome": "passed", "summary": "passed it",
+                                                      "feedback": { "u": "trivial" } } });
+    setup.calls(&[wait, read]);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/submitted");
+    setup.publish(&issue_commented(803));
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "kept");
+
+    setup.release("hold-call");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "feedback for this run is queued: end your turn to read it"
+    );
+    assert!(
+        setup.typed()[1].contains("\ngithub.issues.comment owner/repo#42 {"),
+        "{:?}",
+        setup.typed()
+    );
+    assert!(setup.rows("waits").is_empty(), "{:?}", setup.rows("waits"));
+}
+
+#[test]
 fn a_comment_on_a_dropped_tasks_own_issue_posts_a_report_that_names_its_revive() {
     let mut setup = Setup::new("dropped-comment");
     setup.calls(&[result("failed")]);

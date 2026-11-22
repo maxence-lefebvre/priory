@@ -198,8 +198,8 @@ pub(crate) fn call(
         ("ask" | "wait", ..) if woken(&tx, &run)? => {
             Some("an answer or event for this run is queued: end your turn to read it".to_owned())
         }
-        // A result or ask would end or sleep the task over feedback it has not read yet.
-        ("result" | "ask", ..) if kept(&tx, run.task)? => {
+        // A result, ask or wait would end or sleep the task over feedback it has not read yet.
+        ("result" | "ask" | "wait", ..) if kept(&tx, run.task)? => {
             Some("feedback for this run is queued: end your turn to read it".to_owned())
         }
         // Its end would wake the task at whatever step the result moved it to.

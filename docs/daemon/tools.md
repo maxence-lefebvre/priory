@@ -23,7 +23,7 @@ beside a wait in [waits.md](waits.md)).
 Feedback the task kept while the agent ran waits in a queued prompt (see
 [routing.md](routing.md#what-a-kept-message-does)). Feedback is a person's comment, reply or review
 that asks for something, as [routing.md](routing.md#feedback-reopens-a-done-task) lists it, and not
-Priory's own comment. Until that prompt is typed, `result` and `ask` are refused with
+Priory's own comment. Until that prompt is typed, `result`, `ask` and `wait` are refused with
 `feedback for this run is queued: end your turn to read it`. So a review comment read during the
 turn reaches the agent before the task ends or sleeps. Other kept events, such as check runs, do
 not refuse them.
