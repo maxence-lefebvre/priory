@@ -5,6 +5,7 @@ mod partition;
 mod preempt;
 #[cfg(feature = "postgres")]
 mod proxy;
+mod review_limit;
 mod tmux_dir;
 
 use herdr_bus::{Bus, Message, Output};

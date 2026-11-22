@@ -1686,6 +1686,9 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                 for cap in value["caps"].as_array().into_iter().flatten() {
                     state::emit(cap.as_str().unwrap_or_default());
                 }
+                for review in value["reviews"].as_array().into_iter().flatten() {
+                    state::emit(review.as_str().unwrap_or_default());
+                }
                 if let Some(banner) = value["banner"].as_str() {
                     state::emit(banner);
                 }

@@ -887,6 +887,10 @@ pub struct Queue {
     /// when unset.
     #[serde(default)]
     pub preempt: Vec<String>,
+    /// How many pull requests of a lane, or of a batch, may wait for a person before its new tasks
+    /// wait to start; no limit when unset.
+    #[serde(default)]
+    pub review_limit: Option<std::num::NonZeroU32>,
 }
 
 fn on() -> bool {
@@ -898,6 +902,7 @@ impl Default for Queue {
         Queue {
             overlap: true,
             preempt: Vec::new(),
+            review_limit: None,
         }
     }
 }
@@ -2461,6 +2466,13 @@ impl Factory {
         self.settings
             .as_ref()
             .map_or(&[], |settings| settings.value.queue.preempt.as_slice())
+    }
+
+    /// How many pull requests of a lane or a batch may wait for a person before its new tasks wait.
+    pub fn review_limit(&self) -> Option<std::num::NonZeroU32> {
+        self.settings
+            .as_ref()
+            .and_then(|settings| settings.value.queue.review_limit)
     }
 
     /// The agent's own prompt, then the factory's writing guide.

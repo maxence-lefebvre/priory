@@ -37,13 +37,15 @@ A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m
 
 ## `[queue]`
 
-See [runs.md](../daemon/runs.md#overlapping-files) for how the overlap hold works, and
-[room.md](../daemon/room.md#urgent-wakes) for how `preempt` stops a run.
+See [runs.md](../daemon/runs.md#overlapping-files) for how the overlap hold works,
+[room.md](../daemon/room.md#urgent-wakes) for how `preempt` stops a run, and
+[runs.md](../daemon/runs.md#review-limit) for how `review_limit` holds new starts.
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `overlap` | boolean | no | `true` | Whether a task waits for an earlier active task whose branch changes the same files | `false` |
 | `preempt` | list of bands | no | `[]` | The bands whose task at the head of the queue, waiting for memory or disk, may stop runs of a lower band at the end of their turn | `["blocker"]` |
+| `review_limit` | integer, at least 1 | no | no limit | How many pull requests of a lane, or of a batch, may wait for a person before its new tasks wait to start | `5` |
 
 ## `[sweep]`
 
@@ -539,6 +541,7 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `bands` needs at least one band, each named once `` | `bands` is empty or names a band twice |
 | `` `preempt` names band `<band>`, which is not one of <bands> `` | `[queue] preempt` names a band the factory lacks |
 | `` `preempt` names band `<band>`, the last band, which has no band below it `` | `[queue] preempt` names the last band, which has no lower band to stop |
+| ``invalid value: integer `0`, expected a nonzero u32`` | `[queue] review_limit` is 0 |
 | `` `[kit]` `<key>` is empty `` | `[kit] repo` or `ref` is blank |
 | `` `[kit]` `<key>` is `<value>`: it cannot start with `-` `` | `repo` or `ref` starts with `-`, which git would read as an option |
 | `` `[kit]` `<key>` is `<path>`: a kit path is relative and stays inside the repository `` | `skills`, `instructions` or `memories` is empty, absolute, or holds `.` or `..` |

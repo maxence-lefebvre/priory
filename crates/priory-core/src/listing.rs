@@ -1497,6 +1497,7 @@ pub fn desk(
     Ok(json!({
         "paused": state::pause_banner(db)?,
         "caps": crate::spend::desk_lines(db)?,
+        "reviews": crate::review::desk_lines(db)?,
         "banner": stall::banner(db)?,
         "intake": outside,
         "counts": {

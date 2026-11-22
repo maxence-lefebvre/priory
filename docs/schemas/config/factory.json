@@ -479,6 +479,16 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "review_limit": {
+          "default": null,
+          "description": "How many pull requests of a lane, or of a batch, may wait for a person before its new tasks\nwait to start; no limit when unset.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       },
       "type": "object"

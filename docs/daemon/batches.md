@@ -150,6 +150,10 @@ An issue that an active task took since the plan fails the whole start, and noth
 back to the go, whose question starts with that error, and the batch is `asked` again. A batch whose
 tasks exist starts nothing again.
 
+With `[queue] review_limit`, an entry with no edge, or one whose hold released, waits to start
+while that many of the batch's pull requests wait for a person. So a large batch opens its pull
+requests as its person reviews them. See [runs.md](runs.md#review-limit).
+
 ## The `merged` condition
 
 An entry's `merged` condition on another task is met when:
