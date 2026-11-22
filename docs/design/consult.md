@@ -10,10 +10,21 @@ cap. The asking run never gets those servers. Claude Code's own subagents cannot
 brief for this note: a subagent inherits its parent's MCP servers, so it reaches nothing the
 worker lacks.
 
-Three facts about the harness carry this design, and this note did not test them: that
-`--strict-mcp-config` limits a run to the servers Priory names, that `dontAsk` denies every tool
-call no `allow` rule names, and the inheritance above. The first slice proves each with a real
-run before it builds on it.
+Three facts about the harness carry this design: that `--strict-mcp-config` limits a run to the
+servers Priory names, that `dontAsk` denies every tool call no `allow` rule names, and the
+inheritance above. The first slice checked each against Claude Code's own help and docs on
+2026-11-22, not with a real run:
+
+- `claude --help` of Claude Code 2.1.330 says `--strict-mcp-config` will "Only use MCP servers
+  from --mcp-config, ignoring all other MCP configurations".
+- The permissions page (code.claude.com/docs/en/permissions) says `dontAsk` "Auto-denies every
+  call that would otherwise prompt", while reads in the working directories, calls that need no
+  approval and calls an `allow` rule names still run. It adds that "a mod you installed can still
+  approve some of those calls": Priory's own hooks approve none.
+- The subagents page (code.claude.com/docs/en/sub-agents) says a subagent "Inherits every tool
+  available to subagents" when its `tools` field is unset, and that its own `mcpServers` field can
+  name an already configured server or define one inline. So a worker's subagent reaches its
+  parent's servers, and could define its own: a consult does not rely on subagents for the wall.
 
 ## What existed when this note was written
 
@@ -242,6 +253,26 @@ Use `consult` when the worker needs a fact it has no tool to read.
 
 ## The first slice: one investigator, one hop
 
+Built. A run of an agent in `[consult.allow]` gets `consult`, an investigator's fresh run answers
+it, and the report wakes the asking task ([tools.md](../daemon/tools.md#consulting-an-investigator)).
+It took every open-question recommendation below. Where it differs from the model above:
+
+- `cap` is a number of dollars, `cap = 0.50`, as `[caps]` takes, not a `"$0.50"` string.
+- A consult past `per_task` or after one over its cap is refused as the tool's error, so the run
+  carries on in its turn. No `consult 4 was refused` line wakes it, and no `refused` record is
+  written.
+- A consult that ends as `unknown` wakes the worker with `consult 4 got no report: sentry could not
+  answer, and said:` and the investigator's summary, quoted.
+- No `push` key exists yet, so `priory check` refuses `session = "shared"` and `connectorSignIn` on
+  an investigator, and not `push = true`.
+- The investigator's narrowed server serves `result`, `memory` and `search`.
+- A consult's cost counts toward the asking task's lane, since the investigator's task takes that
+  lane, but `[caps] task` counts it on the investigator's own task, not on the asking one.
+
+Not built in this slice: the proof with a real harness run (the facts above were checked in the
+harness's help and docs), the consult as a span under the asking step in the OpenTelemetry export,
+and consults per step in `priory report`. They are later slices 8 and 9.
+
 1. The proof of the three harness facts, and a run's MCP servers made real: the daemon passes
    the servers its agent lists, with `--strict-mcp-config`, so a run gets those and no others.
    Without this, a worker may already hold the server and an investigator may hold the worker's.
@@ -310,6 +341,10 @@ Tests, through the CLI with the fake harness the daemon tests use:
 6. Codex investigators, once a Codex run can be limited to named MCP tools.
 7. `priory report consults`: per investigator, the count, the share `unknown`, the time and the
    cost, with counts beside every rate.
+8. The proof of the three harness facts with a real run of Claude Code, which the first slice
+   checked in its help and docs only.
+9. The consult as a span under the step that asked in a task's exported trace, and consults per
+   step in `priory report`.
 
 ## Open questions
 

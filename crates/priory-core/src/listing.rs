@@ -1619,6 +1619,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         [id],
     )?;
     task["asks"] = asks_of(db, Some(id), None, None)?;
+    task["consults"] = Value::from(crate::consult::of_task(db, id)?);
     task["stack"] = crate::stack::json(db, id)?;
     task["relations"] = crate::relate::json(db, id)?;
     for run in task["runs"].as_array_mut().expect("rows are an array") {

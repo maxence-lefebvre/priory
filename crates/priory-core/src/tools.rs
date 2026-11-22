@@ -205,21 +205,36 @@ pub(crate) fn call(
         )
         .optional()?;
     let open_wait = open_wait(&tx, run.id)?;
+    // A consult ends the turn as an ask does: nothing else may end it or sleep it meanwhile.
+    if let Some(consult) = crate::consult::open(&tx, run.task)?
+        && matches!(
+            call.tool.as_str(),
+            "result" | "compact" | "ask" | "wait" | "consult"
+        )
+    {
+        return Ok((
+            Err(format!(
+                "run {} already waits on consult {consult}: end your turn; the report arrives as your next prompt",
+                run.id
+            )),
+            None,
+        ));
+    }
     let refused = match (call.tool.as_str(), open_ask, open_wait) {
-        ("result" | "ask" | "wait", ..) if run.debate.is_some() => {
+        ("result" | "ask" | "wait" | "consult", ..) if run.debate.is_some() => {
             Some(crate::debate::ENDS_WITH_POSITION.to_owned())
         }
-        ("ask", Some(ask), _) | ("result" | "compact", Some(ask), _) => {
+        ("ask" | "consult", Some(ask), _) | ("result" | "compact", Some(ask), _) => {
             Some(format!("run {} already waits on ask {ask}", run.id))
         }
-        ("wait", _, Some(wait)) | ("result" | "compact", _, Some(wait)) => {
+        ("wait" | "consult", _, Some(wait)) | ("result" | "compact", _, Some(wait)) => {
             Some(format!("run {} already waits on wait {wait}", run.id))
         }
-        ("ask" | "wait", ..) if woken(&tx, &run)? => {
+        ("ask" | "wait" | "consult", ..) if woken(&tx, &run)? => {
             Some("an answer or event for this run is queued: end your turn to read it".to_owned())
         }
         // A result, ask or wait would end or sleep the task over feedback it has not read yet.
-        ("result" | "ask" | "wait", ..) if kept(&tx, run.task)? => {
+        ("result" | "ask" | "wait" | "consult", ..) if kept(&tx, run.task)? => {
             Some("feedback for this run is queued: end your turn to read it".to_owned())
         }
         // Its end would wake the task at whatever step the result moved it to.
@@ -251,10 +266,25 @@ pub(crate) fn call(
                 .to_owned(),
         ),
         "result" => match lead_answer(&tx, &run, &call.arguments, trace, head)? {
-            Ok(()) => result(&tx, &run, &call.arguments, factory, head, true)?,
+            Ok(()) => match result(&tx, &run, &call.arguments, factory, head, true)? {
+                Ok(stored) => {
+                    crate::consult::answer(&tx, run.task, run.id, &call.arguments, trace)?
+                        .map(|()| stored)
+                }
+                Err(refused) => Err(refused),
+            },
             Err(refused) => Err(refused),
         },
         "ask" => ask(&tx, &run, &call.arguments, trace, head)?,
+        "consult" => {
+            let asker = crate::consult::Asker {
+                task: run.task,
+                run: run.id,
+                step: &run.step,
+                agent: run.agent.as_deref(),
+            };
+            crate::consult::ask(&tx, &asker, &call.arguments, trace)?
+        }
         "wait" => {
             let (stored, ended) = wait(&tx, &run, &call.arguments, factory)?;
             kill = ended;
@@ -2433,7 +2463,7 @@ pub(crate) fn wake_on(
     set_ready(tx, task)
 }
 
-fn set_ready(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+pub(crate) fn set_ready(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
     tx.execute(
         "UPDATE tasks SET state = 'ready', reason = NULL WHERE id = ?1 AND state = 'asleep'",
         [task],
@@ -2841,6 +2871,10 @@ pub(crate) fn settle(
         "UPDATE waits SET run = ?2 WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND NOT daemon",
         params![run.task, run.id],
     )?;
+    tx.execute(
+        "UPDATE consults SET run = ?2 WHERE task = ?1 AND outcome IS NULL",
+        params![run.task, run.id],
+    )?;
     // An answer whose command still runs wakes the task with its outcome; until then the task stays
     // `running`, so the sweep leaves its worktree alone.
     if commanding(tx, run.task)? {
@@ -2854,7 +2888,10 @@ pub(crate) fn settle(
             |_| Ok(()),
         )
         .optional()?;
-    if asked.is_none() && open_wait(tx, run.id)?.is_none() {
+    if asked.is_none()
+        && open_wait(tx, run.id)?.is_none()
+        && crate::consult::open(tx, run.task)?.is_none()
+    {
         return Ok(None);
     }
     // A person's `say` that beat the Stop is the run's next prompt, as an answer would be.
@@ -3065,7 +3102,7 @@ fn unresume(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
 
 /// Queues `text` as a wake prompt: `text`, then how to end the step the task is in, if it is a
 /// model step and no queued prompt says so already.
-fn wake(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64> {
+pub(crate) fn wake(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64> {
     let ending: Option<String> = tx
         .query_row(
             "SELECT ending FROM tasks WHERE id = ?1 AND NOT EXISTS (

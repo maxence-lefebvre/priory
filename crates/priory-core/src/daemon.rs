@@ -1057,6 +1057,12 @@ fn take(
             "ok".to_owned(),
             state::signal(db, &signal, trace, &watched)?,
         )),
+        Ok(Input::Call(call))
+            if let Some(refused) =
+                crate::consult::unserved(db, &call.session, &call.tool, trace.factory)? =>
+        {
+            Ok((replied(Err(refused)), None))
+        }
         Ok(Input::Call(call)) if call.tool == "progress" => {
             Ok((replied(progress::tool(db, &call, trace)?), None))
         }
@@ -1202,6 +1208,10 @@ fn tend(
     let now: String = db.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
         row.get(0)
     })?;
+    // Before admission, so an investigator past its deadline never starts.
+    for tmux in crate::consult::tick(db, trace)? {
+        runtime::kill(&tmux);
+    }
     // Before the outbox types, so a run between turns is held before its next prompt.
     for tmux in crate::spend::tick(db, trace, &now, &watched)? {
         runtime::kill(&tmux);
@@ -2143,6 +2153,7 @@ fn start(
         .chain(crate::todo::connectors_env(db)?)
         .collect();
     let started = Started {
+        name,
         tmux: &tmux,
         dir: &worktree,
         session: &session,
@@ -2209,6 +2220,8 @@ fn changed(stored: &str, definition: &serde_json::Value) -> Option<String> {
 
 /// Where and as what a harness starts.
 struct Started<'a> {
+    /// The agent's name.
+    name: &'a str,
     tmux: &'a str,
     dir: &'a Path,
     session: &'a str,
@@ -2255,6 +2268,14 @@ fn launch(
         let index = sources.skill_index(&plugin.join("skills").display().to_string());
         instructions = factory::join_instructions(&instructions, &index);
     }
+    instructions = factory::join_instructions(&instructions, &factory.consult_index(started.name));
+    let tools = if agent.investigator {
+        priory_runtime::mcp::Tools::Investigator
+    } else if factory.consultable(started.name).is_empty() {
+        priory_runtime::mcp::Tools::Worker
+    } else {
+        priory_runtime::mcp::Tools::Asker
+    };
     let mut env = env.to_vec();
     if let Some(scoped) = sources.scoped(home, plugin.as_deref(), memories.as_deref())? {
         env.push(format!("PRIORY_PATHS={}", scoped.display()));
@@ -2284,6 +2305,7 @@ fn launch(
             env: &env,
             debate: started.debate,
             servers: started.servers,
+            tools,
         },
     )
     .map_err(|failed| {
@@ -2372,6 +2394,7 @@ fn compact_idle(
             }
         };
         let started = Started {
+            name,
             tmux: &tmux,
             dir,
             session: &due.session,

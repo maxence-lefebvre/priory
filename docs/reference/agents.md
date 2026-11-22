@@ -27,6 +27,7 @@ against it, but `priory check` applies the same rules.
 | `mcpServers` | array of strings | no | `[]` | The MCP servers the run gets beside `priory`, and no others, by their names in the person's own harness config. See [mcpServers](#mcpservers) | `["github"]` |
 | `skills` | array of strings | no | every skill | The skills the run gets, by name, from the factory's `skills/` or the kit's. `[]` gives none. See [skills.md](../daemon/skills.md#skills-per-agent) | `["review-comments"]` |
 | `connectorSignIn` | boolean | no | `false` | Lets the run call an MCP server's `authenticate` and `complete_authentication` tools. Off by default: an unattended run that signs in clears the stored token every later run needs. See [guard.md](../daemon/guard.md#connector-sign-in) | `true` |
+| `investigator` | boolean | no | `false` | Makes the agent an investigator: a read-only agent that answers other agents' consults, one question each, in a fresh run. See [Investigators](#investigators) | `true` |
 | `permissions` | table | no | | Claude Code's own `permissions` settings, so rules copy across. See below | |
 
 A size is a number followed by `KB`, `MB`, `GB` or `TB`, such as `"512MB"` or `"1.5TB"`. Units are
@@ -68,6 +69,37 @@ run instead, and blocks its task with one of the errors below.
 | `agent <agent> names MCP server priory, which Priory serves to every run itself; remove it from mcpServers` | An agent names `priory` |
 | `agent <agent> cannot read its MCP servers: <path> is not valid JSON at line <n> column <m>` | The Claude Code config does not parse. The message never quotes the file, which can hold tokens |
 | `agent <agent> cannot read its MCP servers: <path> is not valid TOML at line <n>` | A Codex config does not parse. A file that cannot be read gives `<path>: <error>` after the colon |
+
+### Investigators
+
+An investigator answers a `consult` from a run of another agent (see
+[tools.md](../daemon/tools.md#consulting-an-investigator)). It only reads, so `priory check`
+refuses one that could write:
+
+| Rule | Why |
+| ---- | --- |
+| `harness = "claude-code"` | Only Claude Code takes per-tool rules |
+| `permissions.defaultMode = "dontAsk"` | Claude Code denies every call that would prompt, so the run can call only what `allow` names, and reads in its worktree |
+| No `allow` rule names `Edit`, `Write`, `NotebookEdit` or `Bash`, holds a `*`, or names a whole MCP server such as `mcp__sentry` | Each MCP tool is written out by its exact name, so a tool the server adds later is denied until a person adds it |
+| Each of its `mcpServers` has a `read_only` sentence under [`[mcp.<name>]`](factory.md#mcpname) | The person states where the service enforces that the server only reads. Priory cannot check it |
+| No `session = "shared"` and no `connectorSignIn` | Each consult starts a fresh session, and an unattended run never signs in |
+| A `model` that `prices.toml` prices | The daemon prices the run's tokens each second against `[consult] cap` |
+| No workflow step and no trigger's `lead` names it | It only answers consults |
+
+```toml
++++
+description = "Reads Sentry issues, events and releases, and answers questions about them."
+harness = "claude-code"
+model = "claude-haiku-5-5"
+investigator = true
+mcpServers = ["sentry"]
+permissions = { defaultMode = "dontAsk", allow = ["mcp__sentry__search_issues", "mcp__sentry__get_issue_details", "Read", "Grep"] }
++++
+You read Sentry and answer one question.
+```
+
+`priory check --explain` prints each investigator's `allow` rules and each server's `read_only`
+sentence, so a person can review both.
 
 ## Examples
 
@@ -129,7 +161,18 @@ Answer in one short paragraph.
 | `` `skills` names `<name>` twice `` | A name repeated in `skills` |
 | `` `skills` holds an empty name `` | `""` in `skills` |
 | `` a codex agent takes its own prompt on its command line, as `developer_instructions`: it is <n> bytes, over the limit of 8192 `` | A Codex agent whose prompt and writing guide pass 8192 bytes. With instructions, memories or skills the run gets, the message names them too. See [skills.md](../daemon/skills.md#a-codex-run) |
+| `` investigator `<name>` needs harness = "claude-code": only Claude Code takes per-tool rules `` | A Codex investigator |
+| `` investigator `<name>` needs permissions.defaultMode = "dontAsk", so every tool it may call is named in `allow` `` | An investigator in another mode |
+| `` investigator `<name>` may not allow `<rule>`: it names a tool that writes `` | An `allow` rule of `Edit`, `Write`, `NotebookEdit` or `Bash` |
+| `` investigator `<name>` may not allow `<rule>`: it holds a `*`: write out each tool by its exact name `` | A pattern in `allow`, such as `mcp__sentry__get_*` |
+| `` investigator `<name>` may not allow `<rule>`: it names a whole MCP server: write out each of its tools by its exact name `` | A rule such as `mcp__sentry` |
+| `` investigator `<name>` names MCP server `<server>`, which needs a `read_only` sentence under [mcp.<server>] in factory.toml: where the service enforces that it only reads `` | A server with no `read_only` sentence |
+| `` investigator `<name>` cannot take session = "shared": each consult starts a fresh session, so no task's data reaches another's report `` | A shared investigator |
+| `` investigator `<name>` cannot take `connectorSignIn`: an unattended investigator never signs in `` | `connectorSignIn = true` on an investigator |
+| `` investigator `<name>` needs a `model` with a price in prices.toml, so its cap can be enforced `` | No `model`. With a model `prices.toml` lacks: `` runs model `<model>`, which prices.toml does not price, so its cap cannot be enforced `` |
 | `invalid value: integer `0`, expected a nonzero u64` | `compactAt = 0` or `idleCompactAt = 0`. A negative or non-integer value gets serde's matching message |
 
-Other files name agents too: a workflow's model steps, and `handler`, `[search] tldr` and
-`[sweep] agent` in `factory.toml`. Their pages list those errors.
+Other files name agents too: a workflow's model steps, a trigger's `lead`, and `handler`,
+`[search] tldr`, `[sweep] agent` and `[consult.allow]` in `factory.toml`. Their pages list those
+errors. A workflow step or a `lead` that names an investigator gets `` agent `<name>` is an
+investigator, which only answers consults ``.

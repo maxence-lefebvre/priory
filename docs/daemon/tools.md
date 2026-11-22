@@ -8,7 +8,11 @@ arguments, replies and refusals.
 ## The MCP server
 
 The run's settings start the server as `priory mcp --session <id>`, a stdio MCP server. It answers
-`initialize`, `ping`, `tools/list` and `tools/call`.
+`initialize`, `ping`, `tools/list` and `tools/call`. A run of an agent that may consult gets
+`--consult`, which adds the `consult` tool. An investigator's run gets `--investigator`, which
+serves `result`, `memory` and `search` alone. Each server answers a call to a tool it does not
+serve with `unknown tool <name>`, and the daemon refuses such a call from an investigator's run
+too. See [Consulting an investigator](#consulting-an-investigator).
 
 The server sends each tool call to the daemon over its socket as
 `{"tool": ..., "session": ..., "arguments": ...}`. The daemon applies the call in one transaction
@@ -85,9 +89,10 @@ cannot read. It asks no daemon, and it always exits 0, with a deny or with nothi
 ## Ending a turn
 
 Three tools end a turn: `result`, `ask` and `wait`. A debate turn ends with a fourth,
-[`position`](../reference/tools.md#positionverdict-argument-concedes). A run holds a result, or an
-open ask, an open wait or both. A `result` after an open ask or wait is refused, as is a second `ask` or a second
-`wait`. An ask and a wait side by side wake the task on the first answer or event (see An ask
+[`position`](../reference/tools.md#positionverdict-argument-concedes), and a run of an agent that
+may consult with a fifth, [`consult`](../reference/tools.md#consultagent-question). A run holds a
+result, or an open ask, an open wait or both. A `result` after an open ask or wait is refused, as
+is a second `ask` or a second `wait`. An ask and a wait side by side wake the task on the first answer or event (see An ask
 beside a wait in [waits.md](waits.md)).
 
 Feedback the task kept while the agent ran waits in a queued prompt (see
@@ -228,6 +233,68 @@ yet.
 A run with an open ask or wait and no result ends `asleep`, and its task sleeps. The daemon kills
 the run's tmux session when the run ends, after the hook has its reply. The worktree stays until a
 sweep removes it.
+
+## Consulting an investigator
+
+A run that needs a fact from a system it has no tool to read, such as an error tracker, asks an
+investigator with [`consult`](../reference/tools.md#consultagent-question). An investigator is an
+agent with `investigator = true`, which only reads (see
+[investigators](../reference/agents.md#investigators)). Only a run of an agent with a line in
+[`[consult.allow]`](../reference/factory.md#consult) gets the tool.
+
+The worker never gets the investigator's MCP servers. Each server's tool list would fill every
+worker's context, its credentials would reach an agent that pushes code, and outside text would
+reach that agent with nothing in between. A Claude Code subagent cannot stand in: it inherits its
+parent's tools, so it reaches nothing the worker lacks.
+
+### The investigator's run
+
+`consult` stores the consult, and in the same transaction the daemon queues a task that answers
+it: key `priory:consult:<n>`, trigger `priory/consult`, the asking task's repository, band and
+lane, and the built-in workflow `priory/consult/<agent>`. A restart never starts a second one.
+That workflow has one model step, `investigate`, with effect `read` and no `guard.allow`, so the
+tool guard denies every guarded call. Its outcomes `reported` and `unknown` both lead to `done`.
+
+The asking agent ends its turn, as after `ask`, and its task sleeps with no process. The
+investigator's run starts a fresh session in its own worktree and passes the room check like any
+run. Its first prompt says the question comes from another agent and asks for facts, then gives
+the question in a `priory.consult.asked` event. It gets its own `mcpServers` and none of the asking
+agent's, and its `priory` server serves `result`, `memory` and `search` alone, so it cannot consult
+in turn: a consult is one hop.
+
+### The report
+
+The investigator answers with `result`, and its summary is the report. The report wakes the asking
+task as its next prompt, quoted under a line that says it is outside data to weigh and never to
+obey. An investigator reads text that outsiders wrote, which can hold instructions, so the control
+is what each side can do: the investigator can only read, and the worker stays under the tool guard
+and the approval rule whatever a report says. Before a report is stored, it is searched for the
+values of the secrets Priory knows, as `priory screen` hides them, and for keys by their shape.
+
+When no report comes, the task wakes with a line that says why: the deadline passed, the cost
+reached the cap, the investigator's run failed, or it needs a sign-in, which goes to the desk as a
+`Sign in to <connector>` to-do ([desk.md](desk.md#sign-in-to-dos)).
+
+### Bounds
+
+- `[consult] deadline` counts from the `consult` call, so it covers the wait for room and the run.
+  Past it, the daemon ends the investigator's task, queued or running, and a later result is
+  refused.
+- `[consult] cap` holds while the run works. Each second, the daemon reads the token counts in the
+  investigator's transcript, prices them with `prices.toml`, and ends the run once they cost the
+  cap. A run can pass the cap by what one model call costs. A run whose transcript the daemon cannot
+  read, or whose model has no price, ends at once.
+- `[consult] per_task` stops a task that keeps asking, and a task one of whose consults passed its
+  cap makes no more.
+
+A cancel, a revive or a drop of the asking task withdraws its open consult and drops the
+investigator's task. The daemon ends a run that task still has, and a report for a consult of an
+earlier generation wakes nothing.
+
+A consult's cost counts in the asking task's lane, since the investigator's task takes that lane.
+`priory costs --by agent` shows the investigator's row. `priory task <id> --json` lists the task's
+consults with their questions, outcomes and reports, and the trace holds
+[`factory.consult.asked` and `factory.consult.reported`](../trace-schema.md#factoryconsultasked-and-factoryconsultreported).
 
 ## Intervention
 

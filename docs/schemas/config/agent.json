@@ -132,6 +132,11 @@
         "null"
       ]
     },
+    "investigator": {
+      "default": false,
+      "description": "Makes the agent an investigator: a read-only agent that only answers other agents'\nconsults, one question each, in a fresh run.",
+      "type": "boolean"
+    },
     "mcpServers": {
       "default": [],
       "description": "The MCP servers the run gets, by name.",
