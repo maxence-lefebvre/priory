@@ -92,7 +92,7 @@ Priory never records the decision as a person's. The ask's `answered_by` is `ses
 session's name, as [The asking session](#the-asking-session) names it, or `session:outside` without
 an hc terminal. A dismissed ask keeps it too, and its `withdrawn_why` reads `dismissed by session
 <session>`. The daemon appends `factory.ask.session_answered` or `factory.ask.session_dismissed` to
-the trace (see [trace-schema.md](../trace-schema.md#factoryasksession_answered)), the desk's Since
+the trace (see [trace-schema.md](../trace-schema.md#factoryasksession_answered-and-factoryasksession_dismissed)), the desk's Since
 you looked lists `ask 14 answered "ship" by session t9 8f3c2a10`, and the web view and the Herdr
 panels show "by session t9 8f3c2a10". The reply says so: `ask 14 answered; Priory records that
 session t9 8f3c2a10 decided it, not a person`.
