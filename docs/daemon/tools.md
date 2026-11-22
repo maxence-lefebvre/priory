@@ -295,6 +295,15 @@ the question in a `priory.consult.asked` event. It gets its own `mcpServers` and
 agent's, and its `priory` server serves `result`, `memory` and `search` alone, so it cannot consult
 in turn: a consult is one hop.
 
+Claude Code merges `permissions.allow` across the person's settings, the repository's settings and
+the `--settings` flag, and `dontAsk` denies only a call that no rule allows. So the daemon starts an
+investigator's `claude` with `--setting-sources ""`, which loads no settings file but Priory's
+`--settings`, and with `--disallowedTools` for `Edit`, `MultiEdit`, `Write`, `NotebookEdit`,
+`Bash`, `Agent` and `Task`. A rule such as `Bash(git:*)` in `~/.claude/settings.json` or in the
+repository's `.claude/settings.json` never reaches the run, and no subagent with its own permission
+mode can start. The run calls only what its agent's `allow` names, and reads in its worktree (see
+[investigators](../reference/agents.md#investigators)).
+
 ### The report
 
 The investigator answers with `result`, and its summary is the report. The report wakes the asking

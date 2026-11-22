@@ -4130,6 +4130,22 @@ fn each_investigator_rule_fails_with_its_line() {
             "agents/sentry/agent.md:7: investigator `sentry` may not allow `Write`: it names a tool that writes",
         ),
         (
+            "investigator-agent",
+            (
+                "agents/sentry/agent.md",
+                investigator("\"Read\"", "\"Agent(Explore)\""),
+            ),
+            "agents/sentry/agent.md:7: investigator `sentry` may not allow `Agent(Explore)`: it starts a subagent, which can carry its own permission mode",
+        ),
+        (
+            "investigator-task",
+            (
+                "agents/sentry/agent.md",
+                investigator("\"Read\"", "\"Task\""),
+            ),
+            "agents/sentry/agent.md:7: investigator `sentry` may not allow `Task`: it starts a subagent, which can carry its own permission mode",
+        ),
+        (
             "investigator-pattern",
             (
                 "agents/sentry/agent.md",

@@ -101,15 +101,23 @@ permissions = { defaultMode = "dontAsk", allow = ["mcp__sentry__search_issues", 
 
 - its harness is not `claude-code`, since only Claude Code has per-tool rules;
 - its `defaultMode` is not `dontAsk`: every tool it may call must be named;
-- an `allow` rule names `Edit`, `Write`, `NotebookEdit` or `Bash`, or holds a `*`. Each MCP tool
-  it may call is written out by its exact name, so a tool the server adds later is denied until
-  a person adds it;
+- an `allow` rule names `Edit`, `MultiEdit`, `Write`, `NotebookEdit` or `Bash`, which write,
+  `Agent` or `Task`, which start a subagent that can carry its own permission mode, or holds a
+  `*`. Each MCP tool it may call is written out by its exact name, so a tool the server adds
+  later is denied until a person adds it;
 - one of its `mcpServers` has no `[mcp.<name>]` table in `factory.toml` with a `read_only`
   sentence, such as `read_only = "The token has the org:read and event:read scopes only."`. It
   is a person's statement of where the limit is enforced, and Priory cannot check it;
 - it sets `session = "shared"`, `connectorSignIn` or `push = true`
   ([agent-credentials.md](agent-credentials.md));
 - a workflow step or a trigger's `lead` names it. An investigator only answers consults.
+
+Claude Code merges `permissions.allow` across the user's, the project's and the flag's
+settings, and `dontAsk` denies only a call that no rule allows. A person's `Bash(git:*)` in
+`~/.claude/settings.json`, or a rule the repository commits in `.claude/settings.json`, would
+reach the investigator. So the daemon starts it with `--setting-sources ""`, which loads only
+Priory's `--settings`, and `--disallowedTools` for every tool above that writes or starts a
+subagent. A denied tool beats any `allow`.
 
 So "cannot write" rests on four layers: exact tool names a person reviewed, a credential the
 person states is read-only at the service, the tool guard, which grants an investigator's run no
@@ -266,6 +274,11 @@ It took every open-question recommendation below. Where it differs from the mode
 - No `push` key exists yet, so `priory check` refuses `session = "shared"` and `connectorSignIn` on
   an investigator, and not `push = true`.
 - The investigator's narrowed server serves `result`, `memory` and `search`.
+- Built after a cross-review: the investigator's `claude` gets `--setting-sources ""` and
+  `--disallowedTools` for `Edit`, `MultiEdit`, `Write`, `NotebookEdit`, `Bash`, `Agent` and
+  `Task`, and `priory check` refuses `Agent` and `Task` in its `allow`. Before, a `Bash` rule in
+  the person's or the repository's settings reached it. A test runs the real `claude`, when a
+  person runs the ignored tests, and shows that such a rule no longer lets `touch` run.
 - A consult's cost counts toward the asking task's lane, since the investigator's task takes that
   lane, but `[caps] task` counts it on the investigator's own task, not on the asking one.
 
@@ -322,8 +335,8 @@ Tests, through the CLI with the fake harness the daemon tests use:
 - The trace holds one `asked`, one `step.ended` with `consult`, and one `reported`, and
   `priory costs --by agent` shows the investigator's row.
 - Each check rule fails with its line: a Codex investigator, a mode other than `dontAsk`, an
-  `allow` of `Bash`, of `Write` and of `mcp__sentry__get_*`, a server with no `read_only`
-  sentence, an unpriced model, an investigator in a workflow step, an
+  `allow` of `Bash`, of `Write`, of `Agent(Explore)`, of `Task` and of `mcp__sentry__get_*`, a
+  server with no `read_only` sentence, an unpriced model, an investigator in a workflow step, an
   investigator as an asker, and an unknown name in `[consult.allow]`.
 - A `proptest` feeds `consult` random and mutated arguments and asserts it returns or refuses
   without panicking.
@@ -342,7 +355,7 @@ Tests, through the CLI with the fake harness the daemon tests use:
 7. `priory report consults`: per investigator, the count, the share `unknown`, the time and the
    cost, with counts beside every rate.
 8. The proof of the three harness facts with a real run of Claude Code, which the first slice
-   checked in its help and docs only.
+   checked in its help and docs only. The settings an investigator loads have that proof.
 9. The consult as a span under the step that asked in a task's exported trace, and consults per
    step in `priory report`.
 

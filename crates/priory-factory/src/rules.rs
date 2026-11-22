@@ -1269,8 +1269,13 @@ fn file_name_of(agent: &Loaded<Agent>) -> String {
         .unwrap_or_default()
 }
 
-/// The tools an investigator's `allow` may never name: each one writes.
-const WRITING_TOOLS: [&str; 4] = ["Edit", "Write", "NotebookEdit", "Bash"];
+/// The tools an investigator's `allow` may never name: each one writes. Its run's `claude` gets
+/// them, and [`SUBAGENT_TOOLS`], in `--disallowedTools` too.
+const WRITING_TOOLS: [&str; 5] = ["Edit", "MultiEdit", "Write", "NotebookEdit", "Bash"];
+
+/// The tools that start a Claude Code subagent, whose own `permissionMode` an investigator's
+/// rules would not bind.
+const SUBAGENT_TOOLS: [&str; 2] = ["Agent", "Task"];
 
 /// An investigator reads and never writes: every tool it may call is named, none of them writes,
 /// and each MCP server it names carries a person's statement of where its limit is enforced.
@@ -1313,6 +1318,8 @@ fn check_investigator(
         let tool = rule.split('(').next().unwrap_or_default().trim();
         let why = if WRITING_TOOLS.contains(&tool) {
             "names a tool that writes"
+        } else if SUBAGENT_TOOLS.contains(&tool) {
+            "starts a subagent, which can carry its own permission mode"
         } else if rule.contains('*') {
             "holds a `*`: write out each tool by its exact name"
         } else if tool.starts_with("mcp__") && !tool["mcp__".len()..].contains("__") {
