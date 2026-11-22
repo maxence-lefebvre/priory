@@ -20,6 +20,7 @@ config page gives a field table, a complete example and the errors `priory check
 | [events.md](events.md) | Every message type on `factory.intake`, with an example payload |
 | [e2e-scenarios.md](e2e-scenarios.md) | The scenario file of the end-to-end factory test |
 | [prompt-evals.md](prompt-evals.md) | `priory eval`, its evaluation file and the fake MCP server |
+| [readiness.md](readiness.md) | `priory check --repo`: what an unattended agent needs from a repository |
 | [label.md](label.md) | `priory label`: a person's `marked-wrong` mark, its flags and errors |
 | [trace-schema.md](../trace-schema.md) | Every trace record, with its fields |
 
@@ -69,6 +70,7 @@ or the Red Hat YAML extension:
 | A case folder's `case.toml`, `gh/<n>.toml` and `answers.toml` | `config/case.json`, `config/case-gh.json`, `config/case-answers.json` |
 | A judge scorer's labeled cases | `config/judge-cases.json` |
 | A report a workflow writes | `report.json`, beside the two folders (see [reports.md](../daemon/reports.md)) |
+| What `priory check --repo PATH --json` prints | `readiness.json` (see [readiness.md](readiness.md)) |
 
 A schema checks each file alone. Rules across files, such as a trigger naming a workflow that
 exists, need `priory check`. Patterns for durations, sizes and shares accept the usual forms, such

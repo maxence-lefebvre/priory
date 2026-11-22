@@ -35,6 +35,8 @@ every poll:
   `priory check` can refuse a workflow before it runs, for example one that pushes code with no
   person's approval. `priory check --explain` lists what a person approves before each
   irreversible step.
+- `priory check --repo PATH` scores what an unattended agent needs from a repository, such as one
+  test command and required checks on the default branch, and prints how to fix each gap.
 - A step can refuse an agent's `passed` until the project's gate, such as its tests, passed at the
   branch's head. `priory check --explain` lists the outcomes the daemon verifies.
 - A workflow can be a runbook of human steps only, where an answer runs a step's command once.
