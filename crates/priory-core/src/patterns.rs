@@ -77,19 +77,24 @@ struct Evidence {
     source: String,
 }
 
-/// `text` on one line with each credential shape replaced by `[redacted]`.
-fn redacted(text: &str) -> String {
+/// `text` on one line with each credential shape and each of `secrets` replaced by `[redacted]`.
+fn redacted(text: &str, secrets: &[String]) -> String {
     let line = text
         .lines()
         .find(|line| !line.trim().is_empty())
         .unwrap_or_default();
-    crate::screen::redact(line, &[], None)
+    crate::screen::redact(line, secrets, None)
         .map_or_else(|| "[redacted]".to_owned(), |(line, _)| line)
         .replace(['\n', '\r', '\t'], " ")
 }
 
 /// The window's evidence, oldest first.
-fn evidence(db: &Connection, start: &str, now: &str) -> rusqlite::Result<Vec<Evidence>> {
+fn evidence(
+    db: &Connection,
+    start: &str,
+    now: &str,
+    secrets: &[String],
+) -> rusqlite::Result<Vec<Evidence>> {
     let within = |time: &str| {
         format!("julianday(?1) <= julianday({time}) AND julianday({time}) <= julianday(?2)")
     };
@@ -121,7 +126,7 @@ fn evidence(db: &Connection, start: &str, now: &str) -> rusqlite::Result<Vec<Evi
         // A stop is the same evidence until the task's next generation or another reason.
         let source = format!(
             "task {task} generation {generation} {kind} at {step}: {}",
-            signature(&redacted(&reason))
+            signature(&redacted(&reason, secrets))
         );
         found.push(Evidence {
             task,
@@ -232,7 +237,8 @@ pub fn find(db: &mut Connection, trace: &Trace, start: &str, now: &str) -> Resul
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(error)?;
     let mut matched = BTreeMap::new();
-    for found in evidence(&tx, start, now).map_err(error)? {
+    let secrets = crate::screen::secrets(&trace.factory.secret_envs());
+    for found in evidence(&tx, start, now, &secrets).map_err(error)? {
         let known = tx
             .query_row(
                 "SELECT 1 FROM trace WHERE type = 'factory.pattern.matched'
@@ -246,7 +252,7 @@ pub fn find(db: &mut Connection, trace: &Trace, start: &str, now: &str) -> Resul
             continue;
         }
         // The trace keeps the signature, so it takes the redacted line, as `text` does.
-        let shape = signature(&redacted(&found.text));
+        let shape = signature(&redacted(&found.text, &secrets));
         let pattern = id(&found.workflow, &found.step, &shape);
         let data = json!({
             "factory": trace.factory.name,
@@ -256,7 +262,7 @@ pub fn find(db: &mut Connection, trace: &Trace, start: &str, now: &str) -> Resul
             "workflow": found.workflow,
             "step": found.step,
             "signature": shape,
-            "text": redacted(&found.text),
+            "text": redacted(&found.text, &secrets),
             "task": found.task.to_string(),
             "key": found.key,
             "generation": found.generation,
