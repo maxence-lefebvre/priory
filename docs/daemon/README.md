@@ -97,6 +97,8 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [waits.md](waits.md): asks and answers, wait conditions, and the checks gate before `done`.
 - [decisions.md](decisions.md): decision models, the triage model that settles feedback which asks
   the agent for nothing, `priory calibrate`, and the fallback.
+- [debates.md](debates.md): debate steps: two agents' turns, when the debate ends, the result or
+  the ask it leaves, and its cost.
 - [asks.md](asks.md): delivering an outside ask's answer to the session that asked.
 - [outbox.md](outbox.md): prompt states and how the daemon types a prompt.
 - [reports.md](reports.md): reports of sections that a workflow writes, and the picks a person

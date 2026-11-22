@@ -1146,6 +1146,13 @@ fn tend(
             };
             tools::fail(db, trace, run.task, run.id, &reason, repair.as_ref())?;
         } else if let Some((ended_as, reason)) = verdict(&run, factory) {
+            // A debate turn past its timeout goes to the person, as a debate that did not converge.
+            if ended_as == "timeout"
+                && let Some(tmux) = crate::debate::timed_out(db, trace, &run.session, &reason)?
+            {
+                runtime::kill(&tmux);
+                continue;
+            }
             // Committed first, so a crash before the kill leaves an ended run, not a lost one.
             state::block(db, trace, run.task, ended_as, &reason)?;
             runtime::kill(&run.tmux);
@@ -1876,9 +1883,13 @@ fn start(
         .value
         .step(&admission.step)
         .expect("admissible checked the step");
-    let Some((name, agent)) = step
-        .agent
+    let speaker = match &step.debate {
+        Some(debate) => Some(crate::debate::speaker_of(db, admission.task, step, debate)?),
+        None => None,
+    };
+    let Some((name, agent)) = speaker
         .as_ref()
+        .or(step.agent.as_ref())
         .and_then(|name| Some((name, factory.agents.get(name)?)))
     else {
         return Ok(Err(format!("step {} names no known agent", step.id)));
@@ -1927,15 +1938,25 @@ fn start(
     if !tools::approved(db, admission.task, step, head.as_deref())? {
         return Ok(Ok(()));
     }
+    let turn = match &step.debate {
+        Some(debate) => Some(crate::debate::turn(
+            db,
+            admission.task,
+            step,
+            debate,
+            head.as_deref(),
+        )?),
+        None => None,
+    };
     let servers = match servers(name, &agent.value, &worktree) {
         Ok(servers) => servers,
         Err(reason) => return Ok(Err(reason)),
     };
     let shared = matches!(agent.value.session, Session::Shared);
-    let resumed = if shared {
-        state::shared(db, name)?
-    } else {
-        state::resumable(db, admission.task, name)?
+    let resumed = match &turn {
+        Some(turn) => turn.resume.clone(),
+        None if shared => state::shared(db, name)?,
+        None => state::resumable(db, admission.task, name)?,
     };
     let definition = definition(factory, &agent.value, &sources);
     let changed = match &resumed {
@@ -1958,7 +1979,10 @@ fn start(
         .filter(|_| resume.is_some())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let tmux = format!("priory-{}", admission.task);
-    let prompt = tools::step_prompt(step);
+    let prompt = match &turn {
+        Some(turn) => turn.prompt.clone(),
+        None => tools::step_prompt(step),
+    };
     let run = state::start(
         db,
         &NewRun {
@@ -1970,7 +1994,7 @@ fn start(
             repo,
             branch: &branch,
             worktree: &worktree.to_string_lossy(),
-            prompt: admission.fresh.then_some(prompt.as_str()),
+            prompt: (admission.fresh || turn.is_some()).then_some(prompt.as_str()),
             ending: &tools::ending(step),
             shared,
             definition: &definition.to_string(),
@@ -1978,6 +2002,7 @@ fn start(
             lanes: factory.lanes(),
             kit_hash: sources.hash().as_deref(),
             kit_commit: sources.commit,
+            debate: turn.as_ref().map(|turn| turn.debate),
             memories_commit: sources.memories_commit,
         },
     )?;
@@ -2006,6 +2031,7 @@ fn start(
         session: &session,
         resume: resume.as_deref(),
         prompt: first.as_deref(),
+        debate: turn.is_some(),
         servers: &servers,
     };
     Ok(launch(
@@ -2071,6 +2097,7 @@ struct Started<'a> {
     session: &'a str,
     resume: Option<&'a str>,
     prompt: Option<&'a str>,
+    debate: bool,
     servers: &'a priory_runtime::servers::Servers,
 }
 
@@ -2138,6 +2165,7 @@ fn launch(
                 .map_or("manual", PermissionMode::as_str),
             scope,
             env: &env,
+            debate: started.debate,
             servers: started.servers,
         },
     )
@@ -2232,6 +2260,7 @@ fn compact_idle(
             session: &due.session,
             resume: Some(&due.session),
             prompt: None,
+            debate: false,
             servers: &servers,
         };
         let env: Vec<String> = guard_env(trace.factory).into_iter().collect();

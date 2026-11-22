@@ -23,7 +23,9 @@ pub struct Usage {
 
 /// Sums the usage of the assistant messages in the transcript at `path` from byte `from`. Claude
 /// writes one line per content block, each with its message's usage, so a message id counts once.
-/// A missing file reads as empty; `None` when the file cannot be read.
+/// A Codex session file counts each `token_count` event's last usage instead, and takes its model
+/// from the latest `turn_context`. A missing file reads as empty; `None` when the file cannot be
+/// read.
 pub fn usage(path: &Path, from: u64) -> Option<Usage> {
     let mut bytes = Vec::new();
     match File::open(path) {
@@ -41,10 +43,14 @@ pub fn usage(path: &Path, from: u64) -> Option<Usage> {
     let mut messages = BTreeMap::new();
     let mut model = None;
     let mut context = None;
+    let mut codex = Codex::default();
     for line in bytes[..whole].split(|&byte| byte == b'\n') {
         let Ok(entry) = serde_json::from_slice::<Value>(line) else {
             continue;
         };
+        if codex.read(&entry, &mut model, &mut context) {
+            continue;
+        }
         let message = &entry["message"];
         if entry["type"] != "assistant" || !message["usage"].is_object() {
             continue;
@@ -73,10 +79,13 @@ pub fn usage(path: &Path, from: u64) -> Option<Usage> {
     }
     let mut usage = Usage {
         end: from + whole as u64,
-        messages: messages.len(),
+        messages: messages.len() + codex.events,
         model,
         context,
-        ..Usage::default()
+        input: codex.input,
+        output: codex.output,
+        cache_read: codex.cache_read,
+        cache_write: codex.cache_write,
     };
     for tokens in messages.values() {
         let tokens = |name: &str| tokens[name].as_u64().unwrap_or(0);
@@ -86,6 +95,63 @@ pub fn usage(path: &Path, from: u64) -> Option<Usage> {
         usage.cache_write += tokens("cache_creation_input_tokens");
     }
     Some(usage)
+}
+
+/// The tokens of a Codex session file's `token_count` events read so far.
+#[derive(Default)]
+struct Codex {
+    events: usize,
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_write: u64,
+    /// The last cumulative usage counted, so an event that repeats it counts once.
+    total: Option<Value>,
+}
+
+impl Codex {
+    /// Counts `entry` when it is a Codex `token_count` event, or takes its model when it is a
+    /// `turn_context`. Codex writes an event either under `payload` or flat. Says whether `entry`
+    /// was one of the two.
+    fn read(
+        &mut self,
+        entry: &Value,
+        model: &mut Option<String>,
+        context: &mut Option<u64>,
+    ) -> bool {
+        let payload = match &entry["payload"] {
+            Value::Object(_) => &entry["payload"],
+            _ => entry,
+        };
+        if entry["type"] == "turn_context" {
+            if let Some(name) = payload["model"].as_str() {
+                *model = Some(name.to_owned());
+            }
+            return true;
+        }
+        if payload["type"] != "token_count" {
+            return false;
+        }
+        let info = &payload["info"];
+        let last = &info["last_token_usage"];
+        if !last.is_object()
+            || (info["total_token_usage"].is_object()
+                && self.total.as_ref() == Some(&info["total_token_usage"]))
+        {
+            return true;
+        }
+        self.total = Some(info["total_token_usage"].clone());
+        let tokens = |name: &str| last[name].as_u64().unwrap_or(0);
+        // Codex's input counts its cached input too.
+        let cached = tokens("cached_input_tokens").min(tokens("input_tokens"));
+        self.events += 1;
+        self.input += tokens("input_tokens") - cached;
+        self.cache_read += cached;
+        self.cache_write += tokens("cache_write_input_tokens");
+        self.output += tokens("output_tokens");
+        *context = Some(tokens("input_tokens") + tokens("output_tokens"));
+        true
+    }
 }
 
 /// A Bash call in a Claude Code session transcript, with what it printed.
@@ -193,6 +259,38 @@ mod tests {
 
         assert_eq!(read.context, Some(200 + 1000 + 50 + 10));
         assert_eq!(read.messages, 3);
+    }
+
+    #[test]
+    fn a_codex_session_file_counts_each_token_count_once_with_cached_input_apart() {
+        let path = std::env::temp_dir().join(format!("priory-codex-{}.jsonl", std::process::id()));
+        let count = |input: u64, cached: u64, output: u64, total: u64| {
+            serde_json::json!({"timestamp": "2026-11-22T10:00:00.000Z", "type": "event_msg",
+                "payload": {"type": "token_count", "info": {
+                    "total_token_usage": {"input_tokens": total, "cached_input_tokens": 0, "output_tokens": 0, "reasoning_output_tokens": 0, "total_tokens": total},
+                    "last_token_usage": {"input_tokens": input, "cached_input_tokens": cached, "output_tokens": output, "reasoning_output_tokens": 0, "total_tokens": input + output},
+                    "model_context_window": 200000}}})
+            .to_string()
+        };
+        let lines = [
+            serde_json::json!({"type": "turn_context", "payload": {"model": "gpt-fake-5", "cwd": "/w"}}).to_string(),
+            count(1000, 800, 50, 1050),
+            // A repeated event, as when only the rate limits changed, counts once.
+            count(1000, 800, 50, 1050),
+            serde_json::json!({"type": "event_msg", "payload": {"type": "token_count", "info": null}}).to_string(),
+            count(2000, 1500, 70, 3120),
+        ];
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        let read = usage(&path, 0).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(read.messages, 2);
+        assert_eq!(read.input, 200 + 500);
+        assert_eq!(read.cache_read, 800 + 1500);
+        assert_eq!(read.output, 50 + 70);
+        assert_eq!(read.model.as_deref(), Some("gpt-fake-5"));
+        assert_eq!(read.context, Some(2070));
     }
 
     fn bash(id: &str, command: &str) -> String {

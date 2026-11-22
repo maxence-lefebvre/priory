@@ -22,6 +22,8 @@ does and the page that describes it.
 - `priory check [DIR] [--explain [--json]]`: checks the factory's files and prints each problem with
   its file and line. `--explain` lists each irreversible step with what approves it, and the
   outcomes the daemon verifies. See [workflows.md](workflows.md#irreversible-steps-and-their-gates).
+  A factory with a debate step gets a last table, each debate's worst case. See
+  [workflows.md](workflows.md#debate-steps).
 - `priory check [DIR] --repo PATH [--json]`: scores what an unattended agent needs from the
   repository at `PATH`, and prints each criterion missing with its fix. It only reads. `DIR` adds the
   factory's `gate`. See [readiness.md](readiness.md).
@@ -206,7 +208,8 @@ See [Columns](#columns).
 
 An agent's settings and its shell call these. A person rarely does.
 
-- `priory mcp --session ID`: the MCP server of one run, on stdio. See
+- `priory mcp --session ID [--debate]`: the MCP server of one run, on stdio. `--debate` adds the
+  `position` tool, for a debate turn's run. See
   [tools.md](../daemon/tools.md#the-mcp-server).
 - `priory mcp --eval LOG [--describe TOOL TEXT]`: the fake MCP server of `priory eval`. See
   [prompt-evals.md](prompt-evals.md#priory-mcp---eval).

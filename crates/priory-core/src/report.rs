@@ -152,9 +152,11 @@ pub fn cost(
                sum(json_extract(event, '$.data.tokens.cache_write')),
                count(json_extract(event, '$.data.tokens')) = count(*)
              FROM trace WHERE json_extract(event, '$.data.workflow') = ?1 AND time >= ?2
-             AND (type IN ('factory.handler.called', 'factory.summarizer.called')
+             AND (type IN ('factory.handler.called', 'factory.summarizer.called',
+                 'factory.debate.turn_ended')
                OR (type = 'factory.step.ended'
-               AND json_extract(event, '$.data.decider') = 'model'))
+               AND json_extract(event, '$.data.decider') = 'model'
+               AND json_extract(event, '$.data.debate') IS NULL))
              GROUP BY task, step, model ORDER BY CAST(task AS INTEGER), min(seq)",
         )
         .map_err(|error| error.to_string())?;
@@ -453,9 +455,11 @@ pub fn costs(
              LEFT JOIN tasks ON tasks.id = CAST(json_extract(trace.event, '$.data.task') AS INTEGER)
              LEFT JOIN runs ON runs.id = CAST(json_extract(trace.event, '$.data.run') AS INTEGER)
              WHERE trace.time >= ?1 AND trace.time < ?3
-             AND (trace.type IN ('factory.handler.called', 'factory.summarizer.called')
+             AND (trace.type IN ('factory.handler.called', 'factory.summarizer.called',
+                 'factory.debate.turn_ended')
                OR (trace.type = 'factory.step.ended'
-               AND json_extract(trace.event, '$.data.decider') = 'model'))"
+               AND json_extract(trace.event, '$.data.decider') = 'model'
+               AND json_extract(trace.event, '$.data.debate') IS NULL))"
         ))
         .map_err(error)?;
     let mut rows = statement.query([previous, start, until]).map_err(error)?;

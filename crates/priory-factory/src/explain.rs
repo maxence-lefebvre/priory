@@ -60,6 +60,47 @@ pub fn tools(factory: &Factory) -> Vec<Reach> {
     reach.into_iter().collect()
 }
 
+/// Each debate step of the workflow and its worst case, as (step, line): `2 agents, up to 8
+/// turns, cap $3.00`, with a note when both agents run the same harness and model.
+pub fn debates<'w>(factory: &Factory, workflow: &'w Workflow) -> Vec<(&'w str, String)> {
+    workflow
+        .steps
+        .iter()
+        .filter_map(|step| {
+            let debate = step.debate.as_ref()?;
+            let mut line = format!(
+                "{} agents, up to {} turns, cap ${:.2}",
+                debate.agents.len(),
+                debate.turns(),
+                debate.cap
+            );
+            let runs: Vec<_> = debate
+                .agents
+                .iter()
+                .filter_map(|name| factory.agents.get(name))
+                .map(|agent| (harness_name(&agent.value.harness), &agent.value.model))
+                .collect();
+            if let [first, second] = runs.as_slice()
+                && first == second
+            {
+                line.push_str(&format!(
+                    "; both agents run {} with model {}, so the debate mostly agrees with itself",
+                    first.0,
+                    first.1.as_deref().unwrap_or("default")
+                ));
+            }
+            Some((step.id.as_str(), line))
+        })
+        .collect()
+}
+
+fn harness_name(harness: &Harness) -> &'static str {
+    match harness {
+        Harness::ClaudeCode => "claude-code",
+        Harness::Codex => "codex",
+    }
+}
+
 /// An irreversible step and what lets it run: the human steps that approve it and lead to it, or
 /// its `autonomous` reason.
 #[derive(Debug, PartialEq, Eq)]

@@ -1,0 +1,13 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+start = "debate"
+
+# One Claude Code agent and one Codex agent answer the question alone, then answer each other
+# for up to three rounds. Their shared verdict ends the step; a split asks you.
+[[steps]]
+id = "debate"
+decides = "model"
+effect = "read"
+debate = { agents = ["architect", "skeptic"], rounds = 3, cap = "$3.00" }
+prompt = "Read the design the issue links to. Can it be built as written? Answer build if yes, rework if it needs changes first, and undecided if what you can read is not enough to judge."
+timeout = "15m"
+next = { build = "done", rework = "stop", undecided = "stop" }
