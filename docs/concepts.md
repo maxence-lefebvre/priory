@@ -62,8 +62,9 @@ or stopped. See
 **Queue, bands and room.** Tasks start in band order (`blocker`, `now`, `today`, `later` by
 default), then in an order you set, then oldest first.
 A task's lane, such as `core/intake`, groups tasks by team and theme for `priory tasks --lane`
-and `priory report --by lane`. It is `none/misc` when nothing sets one. A run starts only when the
-machine has room for the memory and disk its agent declares. See [docs/daemon/room.md](daemon/room.md).
+and `priory report --by lane`. Without a lane or a matching rule, it is `<team>/misc`, or
+`none/misc` for a task with no team. A run starts only when the machine has room for the memory
+and disk its agent declares. See [docs/daemon/room.md](daemon/room.md).
 
 **Health.** Every second, the daemon checks each run for an unexpected exit, a timeout or a
 permission prompt. It never approves a permission prompt. A crashed run gets one repair attempt.

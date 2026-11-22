@@ -57,7 +57,7 @@ from a phone needs a tunnel, and which one is the owner's call:
 `priory serve` on a demo factory. [views.md](docs/reference/views.md#what-each-panel-shows) shows
 every panel, and [DESIGN.md](DESIGN.md) holds the design rules.
 
-![The desk on a 1440 px screen in light mode. A rail of views on the left, the list of seven open asks, three of them from the runners laptop and desktop with their runner tag, one stopped task and a going batch in the middle. A drawer on the right shows the ask "Open the pull request for ENG-212?", its recommendation to open, the options open and stop, and the agent's reasoning with the checks.](docs/images/web-view-desk-ask-1440-light.png)
+![The desk on a 1440 px screen in light mode. A rail of views on the left, the list of seven open asks, three of them from the machines laptop and desktop with a tag naming the machine, one stopped task and a going batch in the middle. A drawer on the right shows the ask "Open the pull request for ENG-212?", its recommendation to open, the options open and stop, and the agent's reasoning with the checks.](docs/images/web-view-desk-ask-1440-light.png)
 
 On a phone, an ask opens as a page with its recommendation and options. Scrolling keeps an answer
 bar at the bottom.

@@ -1,14 +1,15 @@
 # Getting started
 
-In this tutorial, you build Priory, write a factory with one agent, one workflow and one trigger,
-run it, and answer an agent's first question in the web view on your own machine. By the end, an
-agent has changed a repository of yours and opened a pull request that you approved.
+In this tutorial, you build Priory, write a factory with one agent, one workflow and one
+[trigger](docs/concepts.md), run it, and answer an agent's first question in the web view on your
+own machine. By the end, an agent has changed a repository of yours and opened a pull request
+that you approved.
 
 ## Before you start
 
 You need:
 
-- Linux. Priory is built and tested on Linux only. With a systemd user session, every agent runs
+- Linux. Priory's test suite runs on Linux only. With a systemd user session, every agent runs
   in a slice that caps its CPU and memory; without one, agents still run (see
   [agents-slice.md](docs/daemon/agents-slice.md)).
 - On `PATH`: `git`, `tmux`, `openssl`, `gh` logged in to GitHub, and `claude`, logged in. The agent of this
@@ -240,8 +241,8 @@ revision, 1 for an ask nobody changed.
 Your answer approves the step `open-pr` for the branch's current commit. That step pushes the
 branch and opens a pull request in your repository. The task then waits, with no process, for the
 pull request's checks: `priory tasks` shows it `asleep` at `implement`, the step whose agent
-fixes what the checks find, and `priory waits` lists the checks it waits for. Green checks mark
-it done. A red check wakes the agent with the failure, in the same conversation.
+fixes what the checks find, and `priory waits` shows its `checks` wait on the pull request.
+Green checks mark it done. A red check wakes the agent with the failure, in the same conversation.
 
 When a step fails, `priory actions` shows the error of a code step such as `open-pr`, and
 `priory task 1 --json` prints everything about the task.
