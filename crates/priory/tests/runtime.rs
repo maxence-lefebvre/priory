@@ -13831,6 +13831,26 @@ fn a_chosen_pick_whose_request_the_bus_refused_publishes_it_when_the_daemon_star
 }
 
 #[test]
+fn a_chosen_pick_whose_request_the_bus_refused_publishes_it_once_the_bus_takes_messages_again() {
+    let requests = json!({ "Take": {
+        "workflow": "implement", "key": "fnd-2409", "text": "Fix the DWARF pause", "repo": "owner/repo"
+    } });
+    let setup = asleep_on_a_report("report-retried", &bonjour(requests));
+    let bus = rusqlite::Connection::open(setup.dir.join("bus.db")).unwrap();
+    bus.execute_batch(
+        "CREATE TRIGGER full BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT, 'bus full'); END",
+    )
+    .unwrap();
+
+    let take = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+    bus.execute_batch("DROP TRIGGER full").unwrap();
+
+    assert!(!take.status.success(), "{take:?}");
+    let tasks = setup.until("tasks", |rows| rows.len() == 2);
+    assert_eq!(tasks[1][1], "cli:fnd-2409");
+}
+
+#[test]
 fn a_dispatch_published_before_a_crash_is_published_again_under_the_same_ids() {
     let requests = json!({ "Take": {
         "workflow": "implement", "key": "fnd-2409", "text": "Fix the DWARF pause", "repo": "owner/repo"

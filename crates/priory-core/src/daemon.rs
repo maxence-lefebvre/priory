@@ -35,6 +35,8 @@ const SWEEP: Duration = Duration::from_secs(600);
 const AFTER: Duration = Duration::from_secs(1800);
 /// How long a sweep script may run when it sets no `timeout`.
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long the daemon waits to publish a pick's pending request again after a publish failed.
+const REDISPATCH: Duration = Duration::from_secs(10);
 /// How long a turn may run when its step sets no `timeout`.
 const TIMEOUT: Duration = Duration::from_secs(3 * 3600);
 /// How long a run goes without a hook event or a pane change before it counts as stalled.
@@ -257,6 +259,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut alive = None;
     let mut aged = None;
     let mut link = Link::default();
+    let mut redispatch: Option<Instant> = None;
     loop {
         // A runner back from away reads the log, and so drops the tasks that moved, before any run
         // and before it publishes what it queued meanwhile.
@@ -268,7 +271,16 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         }
         if let Some(drained) = drained {
             let tried = drained.and_then(|()| runners::flush(&db, &*bus));
+            let reached = tried.is_ok();
             link.tried(&db, tried)?;
+            // A pick's request that a lost log refused goes out once the log answers again.
+            if reached && redispatch.is_none_or(|after| Instant::now() >= after) {
+                let failed = sections::dispatch(&db, factory, None)?;
+                for error in &failed {
+                    eprintln!("priory daemon: {error}");
+                }
+                redispatch = (!failed.is_empty()).then(|| Instant::now() + REDISPATCH);
+            }
         }
         while let Ok(line) = listening.lines.try_recv() {
             apply(&mut db, line, &trace, counting.get(&home))?;
