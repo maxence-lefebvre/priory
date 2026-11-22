@@ -1,6 +1,7 @@
 pub mod eval;
 pub mod http;
 pub mod mcp;
+pub mod protection;
 pub mod room;
 pub mod runtime;
 pub mod script;

@@ -1,0 +1,8 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "github"
+repo = "owner/repo"
+on = "issues.labeled"
+filter = { label = "readiness" }
+workflow = "fix"
+key = "issue.number"
+band = "later"

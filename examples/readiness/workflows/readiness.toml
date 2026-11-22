@@ -1,0 +1,29 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+start = "check"
+
+# priory check --repo only reads, and the drafts stay in the result.
+[[steps]]
+id = "check"
+decides = "model"
+agent = "assessor"
+prompt = "Run `priory check --repo . --json`. For each criterion that is missing and that `by` says a pull request fixes, draft one issue: a title, and a body with the detail and the fix. List the other gaps for the person. Put the drafts and the list in your result. End with gaps when you drafted an issue, else with ready."
+effect = "read"
+next = { gaps = "approve-issues", ready = "done" }
+
+[[steps]]
+id = "approve-issues"
+decides = "human"
+effect = "none"
+approves = ["file-issues"]
+options = ["file", "skip"]
+next = { file = "file-issues", skip = "done" }
+
+# A filed issue notifies everyone who watches the repository, and its label starts a fix task.
+[[steps]]
+id = "file-issues"
+decides = "model"
+agent = "assessor"
+prompt = "File each issue you drafted, as approved, with `gh issue create --label readiness`. End with filed and one line per issue, or with failed."
+effect = "irreversible"
+guard = { allow = ["gh-issue-create"] }
+next = { filed = "done", failed = "stop" }
