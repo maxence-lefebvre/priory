@@ -19,6 +19,10 @@ for new messages every second and runs agents, as [runs.md](runs.md) describes.
 `--once` routes what is pending and exits. It starts no runs, since no daemon would stay to hear
 their hooks.
 
+`priory daemon --view-only [DIR]`, on a machine with no runner file in a factory of several,
+mirrors every runner's asks and tasks and serves them, and runs nothing (see
+[runners.md](runners.md#a-machine-that-only-views)).
+
 ## State
 
 The daemon keeps its state in one SQLite file, which `PRIORY_DB` names. It holds the inbox, tasks,

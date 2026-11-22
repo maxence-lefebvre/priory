@@ -104,7 +104,8 @@ candidate's id. A later write of the same name is a new candidate, never an edit
 candidate too: a tombstone for its name.
 
 Every runner records each candidate as it reads the log, in log order, in a factory of one runner
-too. A runner refuses a candidate that breaks the rules of `remember`, since anyone who can publish
+too. A [view-only machine](runners.md#a-machine-that-only-views) records them as well, and a person
+there can accept or drop one. A runner refuses a candidate that breaks the rules of `remember`, since anyone who can publish
 on the log can write one.
 
 ### Which run gets which candidate

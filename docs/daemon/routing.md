@@ -135,12 +135,13 @@ Each inbox entry gets one of these outcomes:
 | A GitHub comment or review whose `association` is not `OWNER`, `MEMBER` or `COLLABORATOR` | `outsider` | none: it wakes, reopens, claims and reaches no task |
 | A task request whose key no runner holds, with several runners | `claiming` | none until this runner's claim wins (see [runners.md](runners.md)) |
 | A task request whose key another runner holds | `elsewhere` | none                                    |
+| Any task request, on a [view-only machine](runners.md#a-machine-that-only-views) | `elsewhere` | none: it claims nothing |
 | `priory.task.claimed` that wins its key   | `claimed` | the task this runner creates, when it is the new owner |
 | `priory.task.claimed` that loses          | `refused` | none; this runner's own losing claim drops its copy of the task, `owned by runner <name>` |
 | `priory.task.held` or `priory.runner.alive` | `noted` | none                                         |
 | `priory.ask.answered` for this runner     | `answered`, or `refused` by the revision check | the ask's task, as a local answer moves it |
 | `priory.ask.answered` for another runner  | `elsewhere` | none                                       |
-| Any other                                 | `ignored` | none                                         |
+| Any other, or any source event on a view-only machine | `ignored` | none                 |
 
 A task request can name a workflow the factory lacks. It still creates its task, `queued` with no
 step, so the daemon keeps serving the other tasks. On each tick, that task gets the reason
