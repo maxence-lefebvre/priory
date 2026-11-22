@@ -4,7 +4,7 @@ This page explains how R11.1 could work: "Skills, instructions and memories live
 to every runner." It builds nothing. It holds the model, the first code slice with its tests, the
 slices after it, and the open questions with a recommendation for each.
 
-## What exists today
+## What existed when this note was written
 
 - The PRD lists `skills/<name>/SKILL.md` in the factory's files, but nothing reads that folder yet.
 - A Claude Code run starts with `--append-system-prompt` (the agent's body), `--settings` (Priory's

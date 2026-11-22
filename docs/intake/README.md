@@ -1,8 +1,9 @@
-# Intake messages
+# The intake
 
 The intake is the process that finds new work. It polls GitHub, Linear and Slack, fires schedules,
 and publishes what it finds as messages. The Priory daemon reads those messages and turns them into
-tasks.
+tasks. Signed webhooks reach the same log without a poll: the daemon's HTTP server takes each
+delivery and publishes it (see [webhooks.md](webhooks.md)).
 
 ```sh
 priory intake [DIR] [--once]
@@ -40,7 +41,8 @@ shows one too: see [desk.md](../daemon/desk.md#intake-banner).
 
 The intake publishes on the output `factory.intake` of [herdr-bus](https://github.com/flupke/herdr-bus),
 a message log in one SQLite file that `HERDR_BUS_DB` names, `~/.local/share/herdr-bus/bus.db` by
-default. Several consumers can read one output,
+default. With [`[log]`](../reference/factory.md#log) in `factory.toml`, the log is a Postgres
+database instead, which several machines can share. Several consumers can read one output,
 each at its own position.
 
 These pages are the contract for every consumer of that output: the Priory daemon, and another

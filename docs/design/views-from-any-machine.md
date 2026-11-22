@@ -4,7 +4,7 @@ This page explains how R8.5 could work: "Any machine of the factory can serve th
 the factory's state." It builds nothing. It holds the model, the first code slice with its tests,
 the slices after it, and the open questions with a recommendation for each.
 
-## What exists today
+## What existed when this note was written
 
 - Each runner keeps only its own tasks, asks and runs in its own state file, `PRIORY_DB`
   ([runners.md](../daemon/runners.md)).

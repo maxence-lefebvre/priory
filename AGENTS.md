@@ -19,10 +19,13 @@ Read it before you change behaviour or name a concept, and use its Concepts tabl
 - `docs/prd.md`: what Priory does and in which milestone.
 - `docs/daemon/`: how the daemon runs tasks, one file per topic. Its `README.md` says which file to read.
 - `docs/intake/`: the intake's message contract, one file per source. Its `README.md` says which file to read.
-- `docs/design/`: explanation notes on work not built yet, one file per topic.
+- `docs/reference/`: lookup pages: every command in `cli.md`, every key of the factory's files, every endpoint and event.
+- `docs/*.md`: how-to guides, one task per file, and `concepts.md`, which explains the terms.
+- `docs/design/`: the design note written before each feature, one file per topic. Its "Later slices" list marks what is built.
+- `site/`: the docs website's builder. `GROUPS` in `site/build.py` places each page in a navigation group.
 - `docs/adr/`: one file per hard-to-reverse decision, `NNNN-<decision-as-a-sentence>.md`.
-- `docs/images/`: the README's screenshots, each PNG under 400 KB.
-- `GETTING_STARTED.md`: build, first factory, first run, day to day commands and concepts.
+- `docs/images/`: the web view's screenshots, each PNG under 400 KB.
+- `GETTING_STARTED.md`: the tutorial, from a build to a first answered ask.
 - `CONTRIBUTING.md`: the development, test and pull request rules.
 
 ## Verify

@@ -5,7 +5,7 @@ irreversible step. Its labels (rejected approval, red CI after merge, revert), e
 assumptions are specified before it ships." It builds nothing. It holds the model, the first code
 slice with its tests, the slices after it, and the open questions with a recommendation for each.
 
-## What exists today
+## What existed when this note was written
 
 - Every step end appends a `factory.step.ended` record with its workflow, step, decider, effect and
   outcome ([trace-schema.md](../trace-schema.md)).
@@ -293,9 +293,10 @@ Tests, through the CLI as `crates/priory/tests/grades.rs` does:
    mark on a task with no pull request, which stays `unjudged`, a mark on a task whose pull request
    never merged, which is `judged wrong` only, and a cleared mark.
    [label.md](../reference/label.md) and [trace.md](../daemon/trace.md#risk) describe it.
-2. The ask's `risk_estimate` and its line in the web view, the Herdr adapter and `priory asks`.
-   The web view part starts from a reviewed design, as `AGENTS.md` asks.
-3. The columns of `priory check --explain`, `priory flows` and the Flows panels.
+2. Built. The ask's `risk_estimate` and its History line in `priory asks`
+   ([trace.md](../daemon/trace.md#risk), [serve.md](../reference/serve.md#asks)).
+3. Built. The columns of `priory check --explain`, and `risk_estimate` in `priory flows --json` and
+   `GET /api/flows` ([workflows.md](../reference/workflows.md#irreversible-steps-and-their-gates)).
 4. Built. `--by lane`, with no partial pooling, as open question 2 recommends. Each lane's block
    has its own counts and rows on the flat prior. A test covers two lanes of one workflow, each with
    its own trials and adverse outcomes. [trace.md](../daemon/trace.md#risk) describes it.

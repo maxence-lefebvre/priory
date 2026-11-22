@@ -16,7 +16,7 @@ regenerate. They differ here: `default` keeps `priory.json`, not `priory-default
 layout name and `keys.json` bindings stay. The Priory bar regenerates with Herdr's file API and the
 installed `priory.json` as the frame, since a copied mod has no `install` to run.
 
-## What exists today
+## What existed when this note was written
 
 - A view is a file in `views/`: a tree of `row`, `column` and `tabs` nodes whose leaves are panels
   ([views.md](../reference/views.md)). Priory ships `default`, a `tabs` root of eight panels. The web

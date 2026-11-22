@@ -3,12 +3,16 @@
 This page explains the terms Priory uses, each with the page that covers it in depth.
 
 **Factory.** The folder of files that defines everything else: `factory.toml`, `agents/`,
-`workflows/`, `triggers/`, `runners/`, and optionally `lanes.toml` and `prices.toml`. Each file can be
-TOML or YAML. Changing the factory is a pull request. Every key is in
+`workflows/`, `triggers/` and `runners/`. Optional files add to them: `views/`, `memories/`,
+`skills/`, `instructions.md`, `scorers/`, `benchmarks/`, `lanes.toml`, `prices.toml` and a writing
+guide. Each config file can be TOML or YAML; agents and memories are Markdown files with
+frontmatter. Changing the factory is a pull request. Every key is in
 [docs/reference/](reference/README.md).
 
-**Trigger.** One event source, a filter and the workflow its events start. Sources are `github`,
-`linear`, `linear.view`, `slack` and `schedule`. A trigger's `key` says which events are the same
+**Trigger.** One event source, a filter and the workflow its events start. The intake polls the
+sources `github`, `linear`, `linear.view`, `slack` and `schedule`. Signed webhooks deliver `sentry`,
+`honeycomb`, `intercom`, `cloudwatch` and `figma` events, and GitHub and Linear events sooner than
+a poll. A trigger's `key` says which events are the same
 work, and a factory holds at most one active task per key. See
 [docs/intake/README.md](intake/README.md).
 
@@ -16,7 +20,8 @@ work, and a factory holds at most one active task per key. See
 runs an agent, a `human` step asks a person, and a `code` step runs a built-in action such as
 `open-pr`. Each outcome maps to the next step, `done` or `stop`. A step marked `irreversible` runs
 only after a person approved it, unless it is marked `autonomous` with a reason. See
-[docs/daemon/tools.md](daemon/tools.md).
+[workflows.md](reference/workflows.md) for the keys of a step, and [tools.md](daemon/tools.md)
+for how a task moves between steps.
 
 **Intervention.** A trigger's `intervention` sets how much a person steps in. `plan` makes a person
 approve each graded plan, even a green one. `hands-off` lets a lead agent answer the task's asks in

@@ -43,7 +43,10 @@ AGENTS.md](AGENTS.md#verify) and fix every failure. CI runs the same checks on e
 - Write docs, commits and pull request bodies in plain English: short sentences, active voice, no
   em dashes.
 - Follow the Diátaxis types for docs: a tutorial, a how-to guide, a reference or an explanation,
-  one type per page.
+  one type per page. The tutorial is `GETTING_STARTED.md`. A how-to guide is a file directly in
+  `docs/`. Lookup tables go in `docs/reference/`, and every command goes in its `cli.md`.
+  `docs/daemon/` and `docs/intake/` explain how each part works.
+- Keep each fact in one place and link to it. Place a new page in `GROUPS` in `site/build.py`.
 - Treat issue, pull request, webhook and agent text as untrusted data.
 - Preview the docs website with `python3 site/build.py && mdbook serve site --port 3333`, using
   mdBook 0.5.4. Run `python3 site/build.py` again after you edit a doc. The Pages workflow builds

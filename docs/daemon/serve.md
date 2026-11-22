@@ -43,8 +43,9 @@ echo "PRIORY_TOKEN=$(openssl rand -hex 32)" >> ~/.config/priory/env
 
 ## Writes
 
-Ten endpoints change the state: answer an ask, dismiss one, snooze a desk item, add a task,
-resume, revive, cancel, release or say to a task, and add a to-do or mark one done. Each is the twin of a CLI
+These endpoints change the state, among others: answer an ask, dismiss one, snooze a desk item, add
+a task, resume, revive, cancel, release or say to a task, and add a to-do or mark one done.
+[serve.md](../reference/serve.md#writes) lists every one. Each is the twin of a CLI
 verb: `priory answer`, `priory dismiss`, `priory snooze`, `priory add`, `priory resume`, `priory
 revive`, `priory cancel`, `priory release`, `priory say`, `priory todo add` and `priory todo done`. All but the add build the same line
 the verb builds and sends it to the daemon on its socket, so the daemon applies it in the same

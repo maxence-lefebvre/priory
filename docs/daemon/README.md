@@ -11,7 +11,8 @@ priory daemon [DIR] [--once]
 `DIR` is the factory folder, `.` by default. The daemon checks the factory first, as `priory check`
 does, and refuses to start while it has problems.
 
-It reads the herdr-bus output `factory.intake` as the consumer `priory`, or `priory.<runner>` in a
+It reads the output `factory.intake` of the event log, herdr-bus by default or Postgres with
+[`[log]`](../reference/factory.md#log), as the consumer `priory`, or `priory.<runner>` in a
 factory of several runners (see [runners.md](runners.md)). It records each message in
 the inbox and routes it to a task (see [routing.md](routing.md)). Without `--once`, the daemon looks
 for new messages every second and runs agents, as [runs.md](runs.md) describes.
@@ -32,8 +33,8 @@ read the same file.
 The daemon refuses to start without `PRIORY_DB`. It also refuses an empty name, `:memory:` or a
 `file:` URI, because SQLite may not keep those on disk.
 
-Clones, worktrees and the daemon's socket live in a separate folder, Priory home (see
-[home.md](home.md)).
+Clones and worktrees live in a separate folder, Priory home. The daemon's socket sits at a short
+path derived from it (see [home.md](home.md#socket-spool-and-lock)).
 
 ## A task's life
 
