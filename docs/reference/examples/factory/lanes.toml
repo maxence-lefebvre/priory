@@ -1,0 +1,15 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/lanes.json
+fallback = "{team}/misc"       # {team} is the task's team, or `none` without one; this is the default
+
+[[rules]]
+key = "linear:ENG-7"           # the task's key, exactly
+lane = "core/intake"
+
+[[rules]]
+team = "ENG"                   # a rule that names several fields needs all of them
+project = "Desktop"
+lane = "core/desktop"
+
+[[rules]]
+branch = "*desktop*"           # a glob on the task's branch; `*` matches any run of characters
+lane = "core/desktop"
