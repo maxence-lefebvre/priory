@@ -90,6 +90,16 @@ pub(crate) fn account(
     Ok(usage.context)
 }
 
+/// The dollars `tokens`, a step's token counts by kind, cost at `price`.
+pub(crate) fn priced(tokens: &Value, price: &priory_factory::factory::Price) -> f64 {
+    let count = |field: &str| tokens[field].as_u64().unwrap_or(0) as f64;
+    (count("input") * price.input
+        + count("output") * price.output
+        + count("cache_read") * price.cache_read
+        + count("cache_write") * price.cache_write)
+        / 1_000_000.0
+}
+
 /// Appends a `factory.step.ended` record, as `docs/trace-schema.md` defines it, for the step `task`
 /// is at, which `outcome` ends. `run` is the run whose result ended a model step. A field Priory
 /// does not know stays absent.
@@ -182,6 +192,17 @@ pub(crate) fn ended(
             .tokens
             .and_then(|tokens| serde_json::from_str(&tokens).ok())
             .unwrap_or(Value::Null);
+        let price = data["model"]
+            .as_str()
+            .and_then(|model| trace.factory.prices.get(model));
+        if let (Some(budget), Some(price)) = (step.budget(), price)
+            && data["tokens"].is_object()
+        {
+            let spent = priced(&data["tokens"], price);
+            if spent > budget {
+                data["overrun"] = json!({ "budget_usd": budget, "spent_usd": spent });
+            }
+        }
     }
     if let Value::Object(fields) = &mut data {
         fields.retain(|_, value| !value.is_null());

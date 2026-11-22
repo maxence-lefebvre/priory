@@ -1378,6 +1378,7 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
             (step.question.is_some(), Decider::Human, "a `question`"),
             (!step.approves.is_empty(), Decider::Human, "`approves`"),
             (step.command.is_some(), Decider::Human, "a `command`"),
+            (step.budget.is_some(), Decider::Model, "a `budget`"),
             (step.action.is_some(), Decider::Code, "an `action`"),
             (step.run.is_some(), Decider::Code, "a `run` command"),
         ];
@@ -1398,6 +1399,30 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
                 }
                 if step.prompt.is_none() {
                     report("a model step needs a `prompt`".into());
+                }
+                if let Some(budget) = &step.budget {
+                    if step.budget().is_none() {
+                        report(format!(
+                            "`budget` {budget:?} is not an amount of dollars above zero, such as \"1.00\""
+                        ));
+                    }
+                    if step
+                        .agent
+                        .as_ref()
+                        .and_then(|agent| factory.agents.get(agent))
+                        .is_some_and(|agent| matches!(agent.value.harness, Harness::Codex))
+                    {
+                        report(
+                            "`budget` needs a Claude Code agent: Priory reads no Codex tokens"
+                                .into(),
+                        );
+                    }
+                    if factory.prices.is_empty() {
+                        report(
+                            "`budget` needs prices.toml, which turns the step's tokens into dollars"
+                                .into(),
+                        );
+                    }
                 }
                 let asked = format!(
                     "{} {}",

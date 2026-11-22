@@ -2811,3 +2811,49 @@ fn spend_caps_pass_and_a_cap_not_above_zero_or_a_malformed_lane_is_refused() {
         "factory.toml:3: `[caps.lanes]` `intake` is not a lane such as `team/theme`\n"
     );
 }
+
+#[test]
+fn a_budget_needs_a_claude_agent_a_price_table_and_an_amount_above_zero() {
+    let budgeted = WORKFLOW.replace(
+        "prompt = \"Implement the issue.\"",
+        "prompt = \"Implement the issue.\"\nbudget = \"1.00\"",
+    );
+    let prices =
+        "[claude-sonnet-5-5]\ninput = 2.0\noutput = 10.0\ncache_read = 0.1\ncache_write = 2.5\n";
+    let mut files = with("workflows/implement.toml", &budgeted);
+    files.push(("prices.toml", prices));
+    assert_eq!(check(&factory("budget", &files)).stderr, "");
+
+    let unpriced = check(&factory(
+        "budget-unpriced",
+        &with("workflows/implement.toml", &budgeted),
+    ));
+    assert_eq!(unpriced.code, 1);
+    assert_eq!(
+        unpriced.stderr,
+        "workflows/implement.toml:4: step `implement`: `budget` needs prices.toml, which turns the step's tokens into dollars\n"
+    );
+
+    let negative = budgeted.replace("\"1.00\"", "\"-1\"");
+    let mut files = with("workflows/implement.toml", &negative);
+    files.push(("prices.toml", prices));
+    let refused = check(&factory("budget-negative", &files));
+    assert_eq!(refused.code, 1);
+    assert_eq!(
+        refused.stderr,
+        "workflows/implement.toml:4: step `implement`: `budget` \"-1\" is not an amount of dollars above zero, such as \"1.00\"\n"
+    );
+
+    let codex =
+        "+++\ndescription = \"Implements one task.\"\nharness = \"codex\"\n+++\nMake the change.\n";
+    let mut files = with("workflows/implement.toml", &budgeted);
+    files.retain(|(path, _)| *path != "agents/implementer/agent.md");
+    files.push(("agents/implementer/agent.md", codex));
+    files.push(("prices.toml", prices));
+    let refused = check(&factory("budget-codex", &files));
+    assert_eq!(refused.code, 1);
+    assert_eq!(
+        refused.stderr,
+        "workflows/implement.toml:4: step `implement`: `budget` needs a Claude Code agent: Priory reads no Codex tokens\n"
+    );
+}

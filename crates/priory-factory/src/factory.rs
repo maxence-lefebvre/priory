@@ -1481,6 +1481,25 @@ pub struct Step {
     #[serde(default, deserialize_with = "duration")]
     #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub timeout: Option<Duration>,
+    /// Model steps only: the dollars the task may spend at this step, such as `"1.00"`, priced
+    /// with `prices.toml` at each turn end.
+    #[schemars(regex(pattern = r"^[0-9]+(\.[0-9]+)?$"))]
+    pub budget: Option<String>,
+}
+
+impl Step {
+    /// The step's `budget` in dollars, or `None` when it has none or it is not an amount above
+    /// zero, which `priory check` refuses.
+    pub fn budget(&self) -> Option<f64> {
+        let budget = self.budget.as_deref()?.trim();
+        let digits = budget
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.');
+        budget
+            .parse::<f64>()
+            .ok()
+            .filter(|dollars| digits && dollars.is_finite() && *dollars > 0.0)
+    }
 }
 
 /// The fields of a task's source event that a human step's `question` and command `argv` may name,

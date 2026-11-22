@@ -1050,9 +1050,10 @@ fn take(
         Ok(Input::Call(call)) if call.tool == "progress" => {
             Ok((replied(progress::tool(db, &call, trace)?), None))
         }
-        Ok(Input::Call(call)) if matches!(call.tool.as_str(), "remember" | "forget") => {
-            Ok((replied(crate::memories::write(db, &call, trace)?), None))
-        }
+        Ok(Input::Call(call)) if matches!(call.tool.as_str(), "remember" | "forget") => Ok((
+            replied(crate::memories::write(db, &call, trace, kit)?),
+            None,
+        )),
         Ok(Input::Call(call)) if call.tool == "memory" => Ok((
             replied(crate::memories::recall(db, &call, trace.factory, kit)?),
             None,

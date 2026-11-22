@@ -62,6 +62,7 @@ such as a revert, arrives as a second record that points at the first. Each reco
 | `started`          | yes      | When the step started                                                 |
 | `duration_ms`      | yes      | Wall time from start to end                                           |
 | `tokens`           | no       | For `model` steps: `input`, `output`, `cache_read`, `cache_write`, summed over the step's turns |
+| `overrun`          | no       | For a `model` step with a `budget` whose turn sent its result over it: `budget_usd` and `spent_usd`, priced with `prices.toml`. See [health.md](daemon/health.md#budget) |
 
 ## `factory.task.repaired`
 
