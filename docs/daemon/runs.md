@@ -164,6 +164,15 @@ task under `conditions`, with `met` and `met_as` once it is met.
 A batch's entry is held on one `merged` condition per entry it starts after, which no flag sets (see
 [batches.md](batches.md)). Its reason reads `held: batch 4, until task 31 merges`.
 
+When a task's Linear issue leaves the watched view before the task's first run, the daemon holds
+the task and asks a person whether to drop or keep it, since the view may have said "not this one":
+`ENG-7 left the view My loop backlog. Drop the task?`, with the options `drop` and `keep`. The
+reason reads `held: left the view My loop backlog, until a person answers whether to keep it`.
+`drop` drops the task with the reason `dropped by a person after its issue left the view`. `keep`
+releases that hold, back to the state it was held from. A task that already ran gets no ask: its
+agent hears `linear.issue.left` as an event of its own key, which wakes it when it sleeps at a model
+step (see [tools.md](tools.md#subscribeon-and-unsubscribeon)). A batch entry gets the same ask.
+
 Events for a held task are kept for its first run, as for a queued one, and a schedule's tick for it
 is coalesced. `priory cancel` drops a held task and ends its hold.
 

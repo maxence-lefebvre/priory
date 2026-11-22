@@ -562,6 +562,9 @@ for a decision. Every ask has its own URL, such as `/asks/42`.
    previous and next buttons.
 2. **Context line**: the ask tile, task key, step, lane, a "Command" tag for a command ask, age
    and revision. It wraps. Tapping it opens the task.
+   An ask whose answer lets an irreversible step run, and that has a `risk_estimate`, adds a
+   **History line** under it: the `lock` icon and the server's `line` in `--type-caption` and
+   `--text-2`. It takes no color, tile or level, so it never reads as a verdict on this change.
 3. **Question** in `--type-question`, or `--type-question-wide` in the drawer.
 4. **Recommendation** on `--action-soft` with `--radius-md`: "Recommended: Merge." in
    `--action-text`, the agent's reason, then a `corner-down-right` line with what the agent does
@@ -926,8 +929,14 @@ The **lane graph** draws a plan, in the batch page and in a go ask.
 
 - Always the `--term-*` tokens, dark in every theme and mode, with `--radius-md`. Mono at 12 / 16
   on compact, 12.5 / 19 on wide.
-- tmux sets the width, so lines never wrap. The pane scrolls sideways inside its own box. A "Fit"
-  toggle scales the text down to fit the width, never below 9 px.
+- tmux sets the width, so lines never wrap. The pane scrolls sideways inside its own box, and its
+  scrollbar takes the `--term-*` colours in every theme. A "Fit" toggle scales the text down to fit
+  the width, never below 9 px.
+- A new screen rewrites only the rows whose text or style changed, so a selection in the other rows
+  stays while the agent writes.
+- The cursor fills its cell with `--term-fg`, its character in `--term-bg`, without blinking. It
+  shows only when the screen carries one, never while earlier rows sit above the screen and never
+  on an ended run. Under forced colours it takes a `CanvasText` outline.
 - Read-only by default. "Type" opens a one-line input at the bottom, with a "Say" button, that
   sends the line on Enter through the task's say verb: it reaches the agent once its run is idle,
   never as a slash command. The header's tag reads `read-only`, or `say` while the input is open.
@@ -1025,7 +1034,7 @@ sits under More.
 ### Flows panel
 
 The web view's `/workflow`, named Flows: each workflow of the factory drawn as a timeline, from
-`GET /api/flows`. It reads the factory once, so it needs no refresh. On a phone it sits under More.
+`GET /api/flows`. It reads the factory once, so it needs no refresh; the history is as of that read. On a phone it sits under More.
 
 - **Key**: a `.sect` under the header with the six node shapes, the four line styles and the
   highlight, in `--type-caption` and `--text-2`, so no reader has to guess a mark.
@@ -1054,6 +1063,14 @@ The web view's `/workflow`, named Flows: each workflow of the factory drawn as a
   `human` edge, the paths `priory check --explain` lists, has a 6 px `--danger-text` halo at 22 %.
   Under the diagram, "Reaches an irreversible step with no person's decision:" lists each path in mono
   in `--danger-text`.
+- **History**: when `GET /api/flows` carries a `risk_estimate`, a `.ctbl` table follows the
+  diagram, under "Tasks through each irreversible step in the last 180 days, judged within 30 days
+  of it." in `--type-caption` and `--text-2`. One row per irreversible step: Step in mono, Caught,
+  Judged wrong and Landed wrong. Each outcome cell holds its count, such as "17 of 53", over "95 %
+  bound 43.4 %" or "needs 20" in caption `--text-3`. Under 600 px of panel width the table stacks:
+  the step and "Caught 4" on one line, then "Judged wrong 17 of 53, 95 % bound 43.4 %" and "Landed
+  wrong 3 of 53, 95 % bound 13.7 %" as two caption lines, so Landed wrong never starts off screen.
+  With no state, the table is left out.
 - **Text alternative**: the SVG has `role="img"` and an `aria-label` that reads each step, its kind
   and where each outcome leads, decided by whom. Each node and edge has a `title`. A "Steps as
   text" disclosure, 44 px tall, lists the same facts as an ordered list.
@@ -1294,7 +1311,7 @@ Every ask, with the web's ask detail fitted to the pane.
   shows the same tag and lines, and offers no snooze on it.
 - A routed ask shows the [routed mark](#routed-ask) as a tag in its row and as a line under the
   question in its detail. An answered row and the history say who answered.
-- The detail keeps the web's order: context line, question, recommendation with what happens next,
+- The detail keeps the web's order: context line, History line, question, recommendation with what happens next,
   options with keys `1` to `9`, write an answer, then the section chips Why, Brief, Plan, PR,
   Trace and History.
 - Once the options scroll out of view, the sticky answer bar shows "3 options", the recommended
@@ -1360,6 +1377,9 @@ The web's [Flows panel](#flows-panel).
   characters, and the drawing keeps 76 px on its right for it.
 - "Steps as text" is a button that shows or hides the list under the drawing. "Read again" in the
   header reads the flows again.
+- The history always takes the web's stacked layout, since gpui-kit draws no table: the step and
+  "Caught 4", then the Judged wrong and Landed wrong lines in caption `--text-2`, each step under a
+  hairline.
 
 ### Task
 

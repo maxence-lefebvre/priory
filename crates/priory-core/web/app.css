@@ -533,6 +533,19 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .ctbl td, .ctbl th[scope="row"] { cursor: default; height: var(--row-wide); padding: 0 8px; border-top: 1px solid var(--line); white-space: nowrap; }
 .ctbl th[scope="row"] { position: sticky; left: 0; background: var(--bg); text-align: left; font-weight: 400; padding-left: 0; }
 .ctbl td.n { color: var(--text-3); font-size: var(--type-caption); }
+.history { display: grid; gap: var(--space-1); }
+.rtbl td[data-label] { height: auto; padding-block: var(--space-2); }
+.rtbl .bound { display: block; font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); }
+@container (max-width: 599px) {
+  .rtbl thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .rtbl tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: var(--space-2) 0; border-top: 1px solid var(--line); }
+  .rtbl th[scope="row"], .rtbl td[data-label] { display: block; height: auto; padding: 0; border: 0; position: static; }
+  .rtbl th[scope="row"] { white-space: normal; overflow-wrap: anywhere; }
+  .rtbl td[data-label]::before { content: attr(data-label) " "; }
+  .rtbl td:not(.r) { grid-column: 1 / -1; font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); white-space: normal; }
+  .rtbl td:not(.r) .bound { display: inline; color: inherit; }
+  .rtbl td:not(.r) .bound::before { content: ", "; }
+}
 .legend { list-style: none; display: flex; flex-wrap: wrap; gap: 4px 14px; font: 400 var(--type-caption) var(--font-ui); color: var(--text-2); }
 .legend li { display: inline-flex; gap: 6px; align-items: center; }
 .tsplit { list-style: none; display: grid; gap: 10px; }
@@ -637,7 +650,8 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 
 /* Terminal pane: dark in every theme, rows never wrap */
 .termbox { display: grid; gap: 8px; min-width: 0; }
-.term { background: var(--term-bg); color: var(--term-fg); border-radius: var(--radius-md); overflow: hidden; display: grid; min-width: 0; container-type: inline-size; }
+.term { background: var(--term-bg); color: var(--term-fg); border-radius: var(--radius-md); overflow: hidden; display: grid; min-width: 0; container-type: inline-size;
+  color-scheme: dark; scrollbar-color: color-mix(in srgb, var(--term-dim) 60%, transparent) var(--term-bg); }
 .term-head { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 2px 4px 2px 12px; color: var(--term-dim); font: 400 var(--type-caption) var(--font-ui); border-bottom: 1px solid color-mix(in srgb, var(--term-dim) 30%, transparent); }
 .term-head > * { white-space: nowrap; }
 .term-head .mono { color: var(--term-fg); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
@@ -676,6 +690,8 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .term :is(.r0, .r1, .r2, .r3, .r4, .r5, .r6, .r7) { color: var(--term-bg); }
 .term .r0 { background: var(--term-black); } .term .r1 { background: var(--term-red); } .term .r2 { background: var(--term-green); } .term .r3 { background: var(--term-yellow); }
 .term .r4 { background: var(--term-blue); } .term .r5 { background: var(--term-magenta); } .term .r6 { background: var(--term-cyan); } .term .r7 { background: var(--term-white); }
+.term :is(.cur, .cur *) { background: var(--term-fg); color: var(--term-bg); }
+@media (forced-colors: active) { .term .cur { outline: 1px solid CanvasText; } }
 .term.ended pre span { color: inherit; background: none; }
 .term-type { display: grid; gap: 6px; padding: 8px 8px 10px 12px; border-top: 1px solid color-mix(in srgb, var(--term-dim) 30%, transparent); }
 .term-type form { display: flex; gap: 8px; align-items: center; }

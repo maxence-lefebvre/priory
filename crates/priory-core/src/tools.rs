@@ -1257,7 +1257,29 @@ pub(crate) fn event(
             .map(|(repo, number)| route::pull_request(repo, number));
         // Each pull request of a stack has its own gate, which only its events decide.
         if daemon && on.as_deref() != Some(resource.as_str()) {
-            continue;
+            // A merged pull request's gate already fired, so a person's feedback on it fires the
+            // lowest open one, which is this one since gates are visited in id order.
+            let Some(on) = on else {
+                continue;
+            };
+            if !merged_in_stack(tx, task, &on)? {
+                continue;
+            }
+            let place = crate::stack::place(tx, task, &on)?;
+            let said = feedback(&on, place.as_deref(), &kind_of_event, &data)
+                .filter(|_| later || kind_of_event == REVIEWED || data["own"] == false)
+                .filter(|_| !settles(&kind_of_event, &data));
+            let Some(said) = said else {
+                continue;
+            };
+            fire(
+                tx,
+                wait,
+                task,
+                &format!("wait {wait} fired: {said}"),
+                Some(seq),
+            )?;
+            return Ok((true, None));
         }
         // A comment written before the wait, such as the agent's own, wakes nothing.
         let place = crate::stack::place(tx, task, &resource)?;
@@ -1302,6 +1324,16 @@ pub(crate) fn event(
         return Ok((true, None));
     }
     Ok((false, None))
+}
+
+/// Whether `resource` is a merged pull request of the stack of `task`.
+fn merged_in_stack(tx: &Transaction, task: i64, resource: &str) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pull_requests WHERE task = ?1 AND resource = ?2
+           AND state = 'merged')",
+        params![task, resource],
+        |row| row.get(0),
+    )
 }
 
 /// The events of a person's feedback on a pull request.
@@ -3615,7 +3647,8 @@ fn regenerate(tx: &Transaction, task: i64, generation: i64) -> rusqlite::Result<
 
 /// The done task that feedback in `message` reopens: the newest that owns the pull request, issue,
 /// Linear issue or Slack thread it is on, done before the feedback was written, with no close of
-/// that pull request in the inbox, no merged pull request and no active task on its key.
+/// that pull request in the inbox since it was last read open, no merged pull request and no
+/// active task on its key. Feedback the intake read on an open pull request is itself that read.
 pub(crate) fn reopenable(
     tx: &Transaction,
     message: &herdr_bus::Message,
@@ -3638,15 +3671,26 @@ pub(crate) fn reopenable(
             "SELECT tasks.id FROM {owner} AS held JOIN tasks ON tasks.id = held.task
              WHERE held.resource = ?1 AND tasks.state = 'done'
              AND julianday(?2) >= julianday(tasks.changed)
-             AND NOT EXISTS (SELECT 1 FROM inbox WHERE type IN (?3, ?4) AND 'github:'
+             AND (?5 OR NOT EXISTS (SELECT 1 FROM inbox AS close WHERE type IN (?3, ?4) AND 'github:'
                || json_extract(data, '$.repo') || '#'
-               || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1)
+               || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1
+               AND NOT EXISTS (SELECT 1 FROM inbox AS open WHERE open.seq > close.seq
+                 AND open.type NOT IN (?3, ?4) AND json_extract(open.data, '$.open') = 1
+                 AND 'github:' || json_extract(open.data, '$.repo') || '#'
+                   || coalesce(json_extract(open.data, '$.pull_request'),
+                     json_extract(open.data, '$.issue')) = ?1)))
              AND NOT EXISTS (SELECT 1 FROM tasks AS other WHERE other.key = tasks.key
                AND other.state NOT IN ('done', 'failed', 'dropped'))
              AND NOT EXISTS (SELECT 1 FROM pull_requests WHERE task = tasks.id AND state = 'merged')
              ORDER BY tasks.id DESC LIMIT 1"
         ),
-        params![resource, message.time.to_string(), CLOSED, ISSUE_CLOSED],
+        params![
+            resource,
+            message.time.to_string(),
+            CLOSED,
+            ISSUE_CLOSED,
+            data["open"] == true
+        ],
         |row| row.get(0),
     )
     .optional()

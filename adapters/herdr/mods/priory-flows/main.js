@@ -4,7 +4,7 @@ import { appHome, exec, home as herdrHome, readTextFile } from "herdr";
 import { labelSpots, pathCalls } from "./path.js";
 import { priory } from "./priory.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
-import { edgeStyle, KINDS, nodeShape, timeline, ungatedPairs } from "./view.js";
+import { edgeStyle, historyRows, KINDS, nodeShape, timeline, ungatedPairs } from "./view.js";
 
 // A drawing is at most this wide (DESIGN.md, Flows panel).
 const MAX_WIDTH = 560;
@@ -126,13 +126,13 @@ export default class PrioryFlows extends View {
         h_flex().child(this.secondary("retry", "Retry", (cx) => this.load(cx), t))];
     }
     if (!this.flows) return [note("Loading the flows.")];
-    const { workflows, paths } = this.flows;
+    const { workflows, paths, irreversible = [] } = this.flows;
     if (!workflows.length) return [note("This factory has no workflows. Add one under workflows/.")];
     const room = this.width - 2 * pad;
     return [
       ...(this.error ? [note(`Could not read the flows again: ${this.error}. This is the last read.`).text_color(t["warn-text"])] : []),
       this.legend(t),
-      ...workflows.map((/** @type {any} */ workflow) => this.workflow(workflow, paths, room, t)),
+      ...workflows.map((/** @type {any} */ workflow) => this.workflow(workflow, paths, historyRows(irreversible, workflow.name), room, t)),
     ];
   }
 
@@ -155,8 +155,8 @@ export default class PrioryFlows extends View {
         "no person's decision before an irreversible step")));
   }
 
-  /** @param {any} workflow @param {{ workflow: string, path: string[] }[]} paths @param {number} room @param {Palette} t */
-  workflow(workflow, paths, room, t) {
+  /** @param {any} workflow @param {{ workflow: string, path: string[] }[]} paths @param {ReturnType<typeof historyRows>} history @param {number} room @param {Palette} t */
+  workflow(workflow, paths, history, room, t) {
     const drawing = timeline(workflow, ungatedPairs(workflow.name, paths));
     const edges = /** @type {Edge[]} */ (drawing.edges);
     const lanes = edges.some((edge) => edge.vertical) ? LABEL_ROOM : 0;
@@ -171,6 +171,13 @@ export default class PrioryFlows extends View {
         .accessibility_label(drawing.text)
         .children(labelSpots(edges, scale).map((spot, index) => this.edge(edges[index], spot, scale, t)))
         .children(drawing.nodes.map((node) => this.node(node, scale, t))))
+      .when(history.length > 0, (el) => el.child(v_flex().gap(S["space-1"]).text_size(S["type-caption"][0]).text_color(t["text-2"])
+        .child(div().whitespace_normal().child("Tasks through each irreversible step in the last 180 days, judged within 30 days of it."))
+        .children(history.map((row) => v_flex().pt(S["space-2"]).border_t(1).border_color(t.line)
+          .child(h_flex().justify_between().text_size(S["type-small"][0]).text_color(t.text)
+            .child(div().font_family(this.font.mono).child(row.step)).child(`Caught ${row.caught}`))
+          .child(div().whitespace_normal().child(`Judged wrong ${row.judged.join(", ")}`))
+          .child(div().whitespace_normal().child(`Landed wrong ${row.landed.join(", ")}`))))))
       .when(open.length > 0, (el) => el.child(v_flex().gap(S["space-1"]).text_size(S["type-small"][0]).text_color(t["danger-text"])
         .child(h_flex().gap(6).items_center().child(svg(ICON("lock")).size(14).flex_none()).child("Reaches an irreversible step with no person's decision:"))
         .children(open.map((entry) => div().pl(20).whitespace_normal().font_family(this.font.mono).text_size(S["type-caption"][0]).child(entry.path.join(" > "))))))

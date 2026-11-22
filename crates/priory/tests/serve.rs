@@ -235,25 +235,33 @@ fn json_of(setup: &Setup, verb: &str) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-/// Whether process `pid` holds a listening TCP socket.
-fn listening(pid: u32) -> bool {
+/// Whether process `pid` holds a listening TCP socket, or `None` when this host's `/proc` shows
+/// neither its descriptors nor a TCP table to read them against.
+fn listening(pid: u32) -> Option<bool> {
     let sockets: Vec<String> = fs::read_dir(format!("/proc/{pid}/fd"))
-        .unwrap()
+        .ok()?
         .filter_map(|fd| fs::read_link(fd.ok()?.path()).ok())
         .filter_map(|link| {
             let link = link.to_string_lossy().into_owned();
             Some(link.strip_prefix("socket:[")?.strip_suffix(']')?.to_owned())
         })
         .collect();
-    ["tcp", "tcp6"].iter().any(|table| {
-        fs::read_to_string(format!("/proc/{pid}/net/{table}"))
-            .unwrap()
+    // A kernel built without IPv6 has no tcp6 table, and so no IPv6 socket to listen on.
+    let tables: Vec<String> = ["tcp", "tcp6"]
+        .iter()
+        .filter_map(|table| fs::read_to_string(format!("/proc/{pid}/net/{table}")).ok())
+        .collect();
+    if tables.is_empty() {
+        return None;
+    }
+    Some(tables.iter().any(|table| {
+        table
             .lines()
             .skip(1)
             .map(|line| line.split_whitespace().collect::<Vec<_>>())
             // State 0A is LISTEN; column 9 is the socket's inode.
             .any(|cells| cells[3] == "0A" && sockets.contains(&cells[9].to_owned()))
-    })
+    }))
 }
 
 #[test]
@@ -455,7 +463,7 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     assert_eq!(queue["running"], json!([]));
     assert_eq!(
         api(&address, "/api/desk")["counts"],
-        json!({ "asleep": 0, "snoozed": 0, "unrouted": 0, "outsider": 0 })
+        json!({ "asleep": 0, "snoozed": 0, "unrouted": 0, "unheard": 0, "outsider": 0 })
     );
     let desk = api(&address, "/api/desk");
     assert_eq!(desk["banner"], Value::Null);
@@ -1743,7 +1751,12 @@ fn the_daemon_listens_nowhere_without_a_serve_table() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    assert!(!listening(pid));
+    match listening(pid) {
+        Some(listens) => assert!(!listens),
+        None => eprintln!(
+            "skipped: this host's /proc shows no descriptors or TCP table for process {pid}"
+        ),
+    }
 }
 
 #[test]
@@ -3883,6 +3896,25 @@ fn move_through_its_endpoint_does_what_priory_move_does_at_the_revision_the_page
     setup.seed();
     succeeded(&setup.priory(&["pause"]));
     let address = setup.start(&["daemon", &setup.factory()]);
+    // The daemon's first pass records a summary per task after it listens, which bumps the revision.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while db
+        .query_row(
+            "SELECT count(*) FROM tasks
+             WHERE id NOT IN (SELECT task FROM summaries WHERE answered IS NOT NULL)",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+        > 0
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the daemon never summarized the tasks"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let queue = || json_of(&setup, "queue");
     let order = || -> Vec<(Value, Value)> {
         queue()["waiting"]
@@ -5756,7 +5788,10 @@ fn an_outsider_comment_is_counted_on_the_desk_and_listed_as_a_group_of_its_own()
 
     assert_eq!(desk["counts"]["outsider"], 1);
     assert_eq!(desk["counts"]["unrouted"], 0);
-    assert_eq!(unrouted["unrouted"], json!({ "owned": [], "other": [] }));
+    assert_eq!(
+        unrouted["unrouted"],
+        json!({ "owned": [], "other": [], "unheard": [] })
+    );
     assert_eq!(unrouted["outsider"][0]["subject"], "owner/repo#7");
     assert_eq!(unrouted["outsider"][0]["actor"], "stranger");
     assert!(

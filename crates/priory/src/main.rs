@@ -229,7 +229,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen (TASK | --run RUN) [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory grades [--since <instant-or-duration>] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--json]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT"
+        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen [DIR] (TASK | --run RUN) [--history N] [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory grades [--since <instant-or-duration>] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--json]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -384,30 +384,48 @@ fn attach(args: Vec<String>) -> ExitCode {
     exit("attach", Err(format!("{}: {error}", command[0])))
 }
 
-/// Prints the screen of a task's live run, or of one run, with the default secret variables' values
-/// and the secret shapes hidden, as `GET /api/runs/{id}/screen` shows it.
+/// Prints the screen of a task's live run, or of one run, after up to `--history` rows of its
+/// scrollback, as `GET /api/runs/{id}/screen` shows it. It hides the secret shapes and the values of
+/// the secret variables of the factory in `DIR`, or the default ones without it.
 fn screen(args: Vec<String>) -> ExitCode {
-    let (mut target, mut json) = (None, false);
+    let (mut run, mut json, mut history, mut positional) = (None, false, 0, Vec::new());
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--json" => json = true,
-            "--run" if target.is_none() => match args.next().map(|run| run.parse()) {
-                Some(Ok(run)) => target = Some(state::Attach::Run(run)),
+            "--history" => match args.next().map(|rows| rows.parse::<usize>()) {
+                Some(Ok(rows)) => history = rows.min(priory_core::screen::HISTORY),
                 _ => return usage(),
             },
-            _ if target.is_none() => match arg.parse() {
-                Ok(task) => target = Some(state::Attach::Task(task)),
-                Err(_) => return usage(),
+            "--run" if run.is_none() => match args.next().map(|run| run.parse()) {
+                Some(Ok(id)) => run = Some(id),
+                _ => return usage(),
             },
-            _ => return usage(),
+            _ if arg.starts_with("--") => return usage(),
+            _ => positional.push(arg),
         }
     }
+    let task = |task: &String| task.parse().ok().map(state::Attach::Task);
+    let (dir, target) = match (run, &positional[..]) {
+        (Some(run), []) => (None, Some(state::Attach::Run(run))),
+        (Some(run), [dir]) => (Some(dir), Some(state::Attach::Run(run))),
+        (None, [one]) => (None, task(one)),
+        (None, [dir, one]) => (Some(dir), task(one)),
+        _ => return usage(),
+    };
     let Some(target) = target else {
         return usage();
     };
-    let secrets = priory_core::screen::secrets(&factory::Factory::default().secret_envs());
-    let read = state::open().and_then(|db| priory_core::screen::read(&db, &target, &secrets, 0));
+    let factory = match dir {
+        Some(dir) => match load(Path::new(dir)) {
+            Some(factory) => factory,
+            None => return ExitCode::FAILURE,
+        },
+        None => factory::Factory::default(),
+    };
+    let secrets = priory_core::screen::secrets(&factory.secret_envs());
+    let read =
+        state::open().and_then(|db| priory_core::screen::read(&db, &target, &secrets, history));
     let colours = std::io::IsTerminal::is_terminal(&std::io::stdout());
     exit(
         "screen",
@@ -985,7 +1003,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             .is_some();
     // Without the factory folder, the queue knows no schedules or workflows, so up next lists none.
     let (mut schedules, mut workflows, mut now) = (Vec::new(), Vec::new(), jiff::Timestamp::now());
-    if ["queue", "desk"].contains(&verb) {
+    if ["queue", "desk"].contains(&verb) || unrouted {
         now = match intake::now() {
             Ok(now) => now,
             Err(error) => return exit(verb, Err(error)),
@@ -1041,7 +1059,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
         let name = if unrouted { "unrouted" } else { verb };
         let value = listing::revised(&db, name, |db| {
             match verb {
-                "inbox" if unrouted => listing::unrouted(db, since.unwrap_or(0)),
+                "inbox" if unrouted => listing::unrouted(db, since.unwrap_or(0), now),
                 "inbox" => listing::inbox(db, since.unwrap_or(0)),
                 "tasks" => listing::tasks(db, lane, grade),
                 "asks" => listing::asks(db, &bands, &risks),
@@ -1148,6 +1166,16 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                     let events = if unrouted == 1 { "event" } else { "events" };
                     state::emit(&format!(
                         "{unrouted} {events} reached no task in the last 24 hours. See them with `priory inbox --unrouted`."
+                    ));
+                }
+                if let Some(unheard) = value["counts"]["unheard"].as_u64().filter(|n| *n > 0) {
+                    let (events, it) = if unheard == 1 {
+                        ("event", "it")
+                    } else {
+                        ("events", "them")
+                    };
+                    state::emit(&format!(
+                        "{unheard} {events} kept by a sleeping task reached no agent. See {it} with `priory inbox --unrouted`."
                     ));
                 }
                 if let Some(outsider) = value["counts"]["outsider"].as_u64().filter(|n| *n > 0) {
@@ -2173,7 +2201,8 @@ fn asking_session() -> Option<String> {
 /// Sets a task's TL;DR by hand.
 /// Prints `priory task TASK --json`: the body `/api/tasks/TASK` returns.
 /// Prints `priory inbox --unrouted`: each group of a resource a task owned, with that task, its
-/// events and the command that routes the next one, then one count per source for the rest.
+/// events and the command that routes the next one, then each task that kept events no agent read,
+/// then one count per source for the rest.
 fn print_unrouted(unrouted: &serde_json::Value) {
     let events = |count: u64, what: &str| {
         format!("{count} {what}event{}", if count == 1 { "" } else { "s" })
@@ -2201,6 +2230,30 @@ fn print_unrouted(unrouted: &serde_json::Value) {
             group["follow_up"]
                 .as_str()
                 .unwrap_or("no command can key a new task by it: start one from its thread")
+        );
+    }
+    for group in unrouted["unheard"].as_array().into_iter().flatten() {
+        let task = &group["task"];
+        println!(
+            "task {} {} kept {} no agent read:",
+            task["id"],
+            task["state"].as_str().unwrap_or_default(),
+            events(group["events"].as_array().map_or(0, Vec::len) as u64, ""),
+        );
+        for event in group["events"].as_array().into_iter().flatten() {
+            println!(
+                "  {}  {}  {}  {}",
+                event["seq"],
+                event["type"].as_str().unwrap_or_default(),
+                event["subject"].as_str().unwrap_or("-"),
+                event["line"].as_str().unwrap_or("")
+            );
+        }
+        println!(
+            "  {}",
+            group["follow_up"]
+                .as_str()
+                .unwrap_or("its next run reads them")
         );
     }
     let other: Vec<String> = unrouted["other"]

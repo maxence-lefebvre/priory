@@ -2059,6 +2059,19 @@ fn teardown_kills_a_tmux_server_that_a_late_child_starts() {
     assert!(!listed.status.success(), "a tmux server outlived its test");
 }
 
+/// Whether process `pid` has exited. An init that reaps late, as in some containers, leaves a dead
+/// process a zombie for a while. Without `/proc`, a zombie counts as alive.
+fn exited(pid: &str) -> bool {
+    if !Path::new("/proc/self/stat").exists() {
+        let alive = Command::new("kill").args(["-0", pid]).output().unwrap();
+        return !alive.status.success();
+    }
+    fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+        stat.rsplit_once(") ")
+            .is_some_and(|(_, rest)| rest.starts_with(['Z', 'X']))
+    })
+}
+
 #[test]
 fn a_test_that_panics_after_its_run_starts_leaves_no_tmux_server() {
     let mut server = None;
@@ -2075,10 +2088,11 @@ fn a_test_that_panics_after_its_run_starts_leaves_no_tmux_server() {
 
     assert!(caught.is_err());
     let (socket, pid) = server.expect("the run never got a tmux session");
-    assert!(
-        !Path::new(&format!("/proc/{pid}")).exists(),
-        "tmux server {pid} outlived its test"
-    );
+    if Path::new("/proc/self/stat").exists() {
+        assert!(exited(&pid), "tmux server {pid} outlived its test");
+    } else {
+        eprintln!("skipped the pid check: this host has no /proc to tell whether {pid} lives");
+    }
     let listed = Command::new("tmux")
         .args(["-S", &socket, "list-sessions"])
         .output()
@@ -6596,11 +6610,15 @@ fn a_merge_that_moves_a_said_run_to_another_agent_kills_its_session_and_starts_t
     let runs = setup.rows("runs");
     assert_eq!(runs.len(), 4, "{runs:?}");
     assert_eq!(runs[3][2], "watch");
-    let alive = Command::new("kill")
-        .args(["-0", said.trim()])
-        .status()
-        .unwrap();
-    assert!(!alive.success(), "the said run's agent {said} still runs");
+    // Killing its session hangs the agent up, and it exits once it is scheduled.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !exited(said.trim()) {
+        assert!(
+            Instant::now() < deadline,
+            "the said run's agent {said} still runs"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]
@@ -6803,6 +6821,33 @@ fn commented() -> Message {
         json!({ "actor": "ana", "body": "One more thing.", "url": "u", "github_id": 701 }),
     )
     .time(herdr_bus::Timestamp::now())
+}
+
+#[test]
+fn a_comment_on_a_pull_request_reopened_after_its_close_reopens_the_done_task() {
+    let setup = gated("reopen-after-close");
+    setup.publish(&check(1, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1100));
+    let mut close = closed().time(herdr_bus::Timestamp::now());
+    close.data["merged"] = json!(false);
+    close.data["open"] = json!(false);
+    setup.publish(&close);
+    setup.until("inbox", |rows| rows.len() == 4);
+    std::thread::sleep(Duration::from_millis(1100));
+
+    let mut comment = commented();
+    comment.data["open"] = json!(true);
+    setup.publish(&comment);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    assert!(
+        setup.typed()[2].starts_with(
+            "Feedback reopened this done task as generation 2: ana commented on github:owner/repo#7"
+        ),
+        "{:?}",
+        setup.typed()
+    );
 }
 
 #[test]
@@ -9588,6 +9633,86 @@ fn a_blockers_hold_releases_the_task_when_its_issue_has_no_open_blocker_left() {
     setup.until("tasks", |rows| rows[0][4] == "running");
 }
 
+fn left_view() -> Message {
+    let mut left = linear_7("linear.issue.left", &[]);
+    left.data["view"] = json!("My loop backlog");
+    left
+}
+
+#[test]
+fn an_issue_that_leaves_the_view_before_its_task_ran_asks_to_drop_or_keep_it() {
+    for (name, answer, state) in [
+        ("left-view-drop", "drop", "dropped"),
+        ("left-view-keep", "keep", "queued"),
+    ] {
+        let mut setup = Setup::new(name);
+        setup.memory(0);
+        let source = linear_7("linear.issue.entered", &[]);
+        let mut request = requested(42);
+        request.data["key"] = json!("linear:ENG-7");
+        request.data["source"] = json!(source.id.to_string());
+        setup.publish(&source);
+        setup.publish(&request);
+        setup.start();
+        setup.until("tasks", |rows| rows.len() == 1);
+
+        setup.publish(&left_view());
+
+        let asks = setup.until("asks", |rows| rows.len() == 1);
+        assert_eq!(
+            [&*asks[0][1], &asks[0][3], &asks[0][4]],
+            [
+                "1",
+                "ENG-7 left the view My loop backlog. Drop the task?",
+                "[\"drop\",\"keep\"]"
+            ],
+            "{name}"
+        );
+        assert_eq!(
+            held_as(&setup, "1"),
+            [
+                "held".to_owned(),
+                "held: left the view My loop backlog, until a person answers whether to keep it"
+                    .to_owned()
+            ],
+            "{name}"
+        );
+
+        person(&setup, "answer", &[&asks[0][0], answer, "--revision", "1"]);
+
+        assert_eq!(held_as(&setup, "1")[0], state, "{name}");
+        if answer == "drop" {
+            assert_eq!(
+                held_as(&setup, "1")[1],
+                "dropped by a person after its issue left the view"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_issue_that_leaves_the_view_wakes_its_asleep_task() {
+    let mut setup = Setup::new("left-view-asleep");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    setup.publish(&request.subject("linear:ENG-7"));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+
+    setup.publish(&left_view().time(herdr_bus::Timestamp::now()));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(inbox[1][4], "woke");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with("linear.issue.left ENG-7 {"),
+        "{:?}",
+        setup.typed()
+    );
+    assert!(setup.rows("asks").is_empty());
+}
+
 #[test]
 fn a_blockers_hold_stays_when_the_newest_blockers_are_unknown() {
     let mut setup = Setup::new("hold-blockers-unknown");
@@ -10883,6 +11008,20 @@ fn wait_since(setup: &Setup) -> herdr_bus::Timestamp {
         .unwrap()
 }
 
+/// A second after the first wait was stored, which the state keeps to the second: the earliest
+/// instant a Slack reply surely counts for it.
+fn after_wait_stored(setup: &Setup) -> herdr_bus::Timestamp {
+    let created: herdr_bus::Timestamp = rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT created FROM waits ORDER BY id LIMIT 1", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap()
+        .parse()
+        .unwrap();
+    created.checked_add(Duration::from_secs(1)).unwrap()
+}
+
 /// Slack's `ts` for `time`: seconds since the epoch, with six decimals.
 fn ts(time: herdr_bus::Timestamp) -> String {
     format!("{}.{:06}", time.as_second(), time.subsec_microsecond())
@@ -10903,7 +11042,8 @@ fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_do
 
     setup.intake();
     stays_asleep(&setup);
-    let person = stored;
+    // A reply counts once the wait is stored.
+    let person = after_wait_stored(&setup);
     setup.answer_slack(&[old, slack_message(&ts(person), "U0PERSON"), mine]);
     setup.intake();
 
@@ -10944,7 +11084,7 @@ fn a_slack_reply_names_its_author_by_display_name_asking_slack_once_per_user() {
         json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
     );
     let stored = wait_since(&setup);
-    let later = stored.checked_add(Duration::from_secs(1)).unwrap();
+    let later = after_wait_stored(&setup);
     let mut messages =
         vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
     messages.extend([
@@ -11203,9 +11343,8 @@ fn a_failing_slack_channel_still_lets_a_watched_thread_publish_its_reply() {
         "source = \"slack\"\nchannel = \"C0999\"\non = \"message.posted\"\nworkflow = \"implement\"\n",
     )
     .unwrap();
-    let stored = wait_since(&setup);
     // The fake answers no `conversations.history`, so the trigger's channel fails.
-    setup.answer_slack(&[slack_message(&ts(stored), "U0PERSON")]);
+    setup.answer_slack(&[slack_message(&ts(after_wait_stored(&setup)), "U0PERSON")]);
 
     let output = setup.poll(&[]);
 
@@ -14165,6 +14304,52 @@ fn unrouted_events_no_task_ever_owned_count_per_source_without_a_tasks_source_ev
 }
 
 #[test]
+fn an_event_an_asleep_task_keeps_and_no_agent_read_is_listed_and_counted_as_unheard() {
+    let mut setup = Setup::new("inbox-unheard");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    let output = setup.priory(&["unsubscribe", "1", "github:owner/repo#42"]);
+    assert!(output.status.success(), "{output:?}");
+    let written = herdr_bus::Timestamp::now() - jiff::SignedDuration::from_mins(10);
+    setup.publish(&issue_commented(902).time(written));
+    let inbox = setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(inbox[1][4], "kept");
+
+    let output = setup.priory(&["inbox", "--unrouted", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let unheard = &listed["unrouted"]["unheard"];
+    assert_eq!(unheard.as_array().map(Vec::len), Some(1), "{listed}");
+    assert_eq!(unheard[0]["task"]["id"], 1);
+    assert_eq!(unheard[0]["task"]["state"], "asleep");
+    assert_eq!(unheard[0]["events"][0]["seq"], 2);
+    assert_eq!(unheard[0]["events"][0]["line"], "Also the empty case.");
+    assert_eq!(
+        unheard[0]["follow_up"],
+        "priory say 1 'Read the events that came while you slept.'"
+    );
+
+    let output = setup.priory(&["inbox", "--unrouted"]);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.contains("task 1 asleep kept 1 event no agent read:\n  2  github.issues.comment  owner/repo#42  Also the empty case.\n  priory say 1 "),
+        "{text}"
+    );
+
+    let desk = setup.priory(&["desk", "--json"]);
+    let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+    assert_eq!(desk["counts"]["unheard"], 1, "{desk}");
+    let desk = setup.priory(&["desk"]);
+    let text = String::from_utf8(desk.stdout).unwrap();
+    assert!(
+        text.contains("1 event kept by a sleeping task reached no agent. See it with `priory inbox --unrouted`."),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_comment_on_a_subscribed_pull_request_reopens_the_done_task() {
     let mut setup = Setup::new("subscribe-done");
     setup.calls(&[json!([subscribe("subscribe"), result("passed")])]);
@@ -14354,6 +14539,29 @@ fn a_closed_pull_request_wakes_its_subscriber_and_ends_its_subscriptions() {
         setup.typed()
     );
     assert_eq!(subscriptions(&setup, "1"), ["github:owner/repo#42"]);
+}
+
+#[test]
+fn a_pull_request_reopened_after_its_close_gives_back_the_subscriptions_the_close_ended() {
+    let setup = subscribed("subscribe-reopened");
+    let mut close = off_branch(closed());
+    close.data["merged"] = json!(false);
+    setup.publish(&close);
+    setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(subscriptions(&setup, "1"), ["github:owner/repo#42"]);
+
+    let mut reopened = off_branch(on_pull(
+        "github.pull_request.synchronize",
+        json!({ "github_id": 702, "open": true }),
+    ));
+    reopened.data["head_sha"] = json!(format!("72{}", "0".repeat(38)));
+    setup.publish(&reopened);
+
+    setup.until("inbox", |rows| rows.len() == 3);
+    assert_eq!(
+        subscriptions(&setup, "1"),
+        ["github:owner/repo#42", "github:owner/repo#7"]
+    );
 }
 
 #[test]
@@ -15493,6 +15701,31 @@ fn a_comment_on_the_middle_pull_request_wakes_the_task_naming_its_place_in_the_s
             .contains("ana commented on github:owner/repo#8 (#8, 2 of 3): One more thing. u"),
         "{outbox:?}"
     );
+}
+
+#[test]
+fn a_comment_on_a_merged_pull_request_of_an_open_stack_wakes_the_task() {
+    let setup = opened_stack("stack-merged-comment");
+    setup.publish(&merged(9));
+    stays_asleep_after(&setup, 1);
+    let comment = on_stack(
+        9,
+        "github.pull_request.comment",
+        json!({ "actor": "ana", "body": "This drops the BOM, fix it in #8.", "url": "u",
+                "github_id": 901, "open": false }),
+    )
+    .time(herdr_bus::Timestamp::now());
+
+    setup.publish(&comment);
+
+    let outbox = setup.until("outbox", |rows| rows.len() == 2);
+    assert!(
+        outbox[1][4].contains(
+            "ana commented on github:owner/repo#9 (#9, 3 of 3): This drops the BOM, fix it in #8. u"
+        ),
+        "{outbox:?}"
+    );
+    setup.until("runs", |rows| rows.len() == 2);
 }
 
 #[test]
@@ -20554,7 +20787,7 @@ fn a_runs_screen_keeps_its_colour_codes_drops_links_and_hides_a_secret_a_code_sp
 }
 
 #[test]
-fn a_runs_screen_takes_earlier_rows_up_to_its_cap_and_hashes_them() {
+fn a_runs_screen_takes_earlier_rows_up_to_its_cap_and_hashes_them_and_the_cli_takes_the_same() {
     let setup = Setup::running("screen-history");
     let (mut server, address) = serving(&setup, WATCH, &[("TEST_TOKEN", SERVE_TOKEN)]);
     // A pane takes the history limit it was made with, so a new one holds more than the cap.
@@ -20619,6 +20852,19 @@ fn a_runs_screen_takes_earlier_rows_up_to_its_cap_and_hashes_them() {
     assert_eq!(capped["lines"].as_array().unwrap().len(), 2000 + height);
     let (status, _) = http(&address, "GET", "/api/runs/1/screen?history=many", "", "");
     assert_eq!(status, 400);
+    let cli = |rows: &str| {
+        let cli = setup.priory(&["screen", "1", "--history", rows, "--json"]);
+        assert!(cli.status.success(), "{cli:?}");
+        serde_json::from_slice::<serde_json::Value>(&cli.stdout).unwrap()
+    };
+    assert_eq!(cli("5")["hash"], five["hash"]);
+    assert_eq!(cli("99999")["hash"], capped["hash"]);
+    assert!(
+        !setup
+            .priory(&["screen", "1", "--history", "many"])
+            .status
+            .success()
+    );
     server.kill().unwrap();
     server.wait().unwrap();
 }
@@ -20689,7 +20935,7 @@ fn a_runs_screen_reads_its_tagged_pane_not_the_active_one_and_refuses_a_run_it_c
 }
 
 #[test]
-fn a_runs_screen_hides_the_factorys_secrets_and_secret_shapes_and_its_hash_ignores_them() {
+fn a_runs_screen_and_priory_screen_dir_hide_the_factorys_secrets_and_the_hash_ignores_them() {
     let setup = Setup::running("screen-secrets");
     let serve = format!(
         "{WATCH}redact_env = [\"TEST_ONE\", \"TEST_TWO\"]\n\n[webhooks.github]\nsecret_env = \"TEST_HOOK\"\n\n\
@@ -20743,6 +20989,23 @@ fn a_runs_screen_hides_the_factorys_secrets_and_secret_shapes_and_its_hash_ignor
     std::thread::sleep(Duration::from_millis(300));
     let again = screen_once(&address, |screen| screen_row(screen, 49) == "[redacted]");
     assert_eq!(again["hash"], shown["hash"]);
+    let cli = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["screen", setup.dir.join("factory").to_str().unwrap(), "1"])
+        .envs(env)
+        .output()
+        .unwrap();
+    assert!(cli.status.success(), "{cli:?}");
+    let rows: Vec<_> = std::str::from_utf8(&cli.stdout).unwrap().lines().collect();
+    assert_eq!(
+        (rows[0], rows[1], rows[2], rows[49]),
+        (
+            "token [redacted] hook [redacted]",
+            "header [redacted] tiny [redacted]",
+            "gh [redacted] and [redacted]",
+            "[redacted]"
+        )
+    );
     server.kill().unwrap();
     server.wait().unwrap();
     let log = fs::read_to_string(setup.dir.join("serve.log")).unwrap();
@@ -21623,6 +21886,31 @@ fn scored_task(name: &str) -> Setup {
         rows.first().is_some_and(|row| row[4] == "done")
     });
     setup
+}
+
+#[test]
+fn priory_score_waits_for_a_write_that_commits_while_it_reads() {
+    let setup = scored_task("score-locked");
+    scorer(&setup, "passed", PASSED_SCORER);
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch("BEGIN IMMEDIATE; UPDATE revision SET value = value + 1;")
+        .unwrap();
+
+    let factory = setup.dir.join("factory");
+    let score = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["score", factory.to_str().unwrap(), "1", "--json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Held while score reads, so its write comes after a commit newer than what it read.
+    std::thread::sleep(Duration::from_millis(1000));
+    db.execute_batch("COMMIT;").unwrap();
+    let output = score.wait_with_output().unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(scored_records(&setup).len(), 2);
 }
 
 #[test]

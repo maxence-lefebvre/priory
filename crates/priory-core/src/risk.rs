@@ -555,7 +555,7 @@ impl Risk {
         let line = match own.n < FLOOR {
             true => format!("{line} Too few to estimate."),
             false => format!(
-                "{line} 95 % posterior upper bounds: {:.1} % and {:.1} %.",
+                "{line} 95\u{a0}% posterior upper bounds: {:.1}\u{a0}% and {:.1}\u{a0}%.",
                 value["judged_wrong"]["p95"].as_f64().unwrap_or_default() * 100.0,
                 value["landed_wrong"]["p95"].as_f64().unwrap_or_default() * 100.0
             ),

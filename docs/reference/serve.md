@@ -39,7 +39,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/costs?since=WINDOW&by=SPLIT` | `priory costs --json --since WINDOW --by SPLIT` | an object: [Costs](#costs) |
 | `/api/grades?since=WINDOW` | `priory grades --json --since WINDOW` | an object: [Grades](#grades) |
 | `/api/attention?since=WINDOW&by=SPLIT` | `priory report attention --json --since WINDOW --by SPLIT` | an object: [Attention](#attention) |
-| `/api/runs/{id}/screen?have=HASH&history=N` | `priory screen --run ID --json` | the run's screen in colour, after up to 2,000 rows of scrollback, with secrets hidden. See [Run screen](#run-screen) |
+| `/api/runs/{id}/screen?have=HASH&history=N` | `priory screen [DIR] --run ID --history N --json` | the run's screen in colour, after up to 2,000 rows of scrollback, with secrets hidden. See [Run screen](#run-screen) |
 | `/api/events?since=REV` | `priory wait --since REV` | `{"revision": N}` once it differs from `REV`. See [below](#apievents) |
 | `/api/push/key` | | `{"key": "<base64url>"}`, the daemon's VAPID public key. See [Notifications](#notifications) |
 | `POST /api/asks/{id}/answer` | `priory answer ID TEXT --revision N` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
@@ -131,11 +131,13 @@ reply carries `Cache-Control: no-store`.
 | `scrollback` | How many rows of scrollback tmux keeps for the pane. The hash leaves it out |
 | `keyboard` | `true` under `[serve] terminal = "type"`, when a token holder may take the run's [keyboard](#keyboard); absent otherwise. The hash leaves it out |
 
-`priory screen (TASK | --run RUN) [--json]` prints the same screen, with no scrollback, as rows of
-text or, with `--json`, as this object. Its rows keep their colours on a terminal and drop them
-when the output goes to a file or a pipe. It hides the values of the default secret variables,
-such as `PRIORY_TOKEN`, from its own environment, and the secret shapes. Like the endpoint, it
-gives tmux 2 seconds.
+`priory screen [DIR] (TASK | --run RUN) [--history N] [--json]` prints the same screen as rows of
+text or, with `--json`, as this object. `--history N` takes `N` rows of scrollback, as `history`
+does, with the same cap of 2,000; without it there is none. Its rows keep their colours on a
+terminal and drop them when the output goes to a file or a pipe. It hides the secret shapes and,
+from its own environment, the values of the secret variables of the factory in `DIR`, as `serve`
+does. Without `DIR` it hides only the default ones, such as `PRIORY_TOKEN`. A factory that fails
+to load prints its problems and exits 1. Like the endpoint, it gives tmux 2 seconds.
 
 ## Keyboard
 
@@ -270,6 +272,7 @@ gets `400`.
 | `counts.asleep` | integer | Tasks asleep on a wait |
 | `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
 | `counts.unrouted` | integer | [Unrouted](#unrouted) events from the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
+| `counts.unheard` | integer | [Unheard](#unrouted) events from the 24 hours before now (`PRIORY_NOW` when set): kept by a task that is not running, and read by no agent. See [desk.md](../daemon/desk.md#unrouted-events) |
 | `counts.outsider` | integer | The comments and reviews from outside the repository in the 24 hours before now (`PRIORY_NOW` when set). See [desk.md](../daemon/desk.md#unrouted-events) |
 | `items` | array | What waits on a person, then the queue, then worktrees that stay. `priory desk --all --json` keeps the snoozed items |
 | `next` | object or null | The item that ranks first, as in `ranked`; null when nothing waits on a person |
@@ -306,7 +309,7 @@ line as `line`, and, once read, when it was read as `read`. Both are null on a m
 ## Unrouted
 
 The events that reached no task and changed nothing (see
-[routing.md](../daemon/routing.md#events-that-reach-no-task)), as an object `unrouted` with two
+[routing.md](../daemon/routing.md#events-that-reach-no-task)), as an object `unrouted` with three
 arrays. `priory inbox --unrouted --since SEQ` keeps the events after sequence number `SEQ`.
 
 `owned` groups the events whose first resource a task owned or subscribed to, in any state, one
@@ -320,6 +323,18 @@ group per resource, the group with the newest event first:
 | `follow_up` | string or null | The command that routes its next event, each argument shell-quoted: `priory revive ID` for a failed or dropped task, `priory add --workflow WORKFLOW 'TEXT'` with the task's workflow and `request_text` for a done one, else `priory subscribe ID RESOURCE`. Null for a done task's resource that `request_text` cannot name, such as a Slack thread |
 | `request_text` | string or null | For a GitHub or Linear resource, the text of a new task keyed by it: `Follow up on URL after event SEQ`, the issue's URL, which `priory add` turns into the resource as key, and the newest event's sequence number, so each follow-up is a new request |
 
+`unheard` groups, one group per task, the newest event first, the events that a task kept and no
+agent read: the outcome `kept`, no prompt carries it, no wait took it, and the task is not
+`running`. Only feedback, closes, Linear state changes and edits, and Slack replies count, the kinds
+a task's own key carries, and not the agent's own. An event shows once it is 5 minutes old, by the
+event's `time` against now (`PRIORY_NOW` when set), so a task about to start or wake is left out:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `task` | object | The task that kept them: `id`, `key`, `state`, `workflow` |
+| `events` | array | Its events, newest first, as in `owned` |
+| `follow_up` | string or null | `priory say ID 'Read the events that came while you slept.'` for an `asleep` or `blocked` task, whose next run carries them. For a done, failed or dropped task, the command `owned` gives for its key. Null for a task whose next run reads them anyway, such as a `queued` or `ready` one |
+
 `outsider`, beside `unrouted`, lists the comments and reviews from someone outside the repository,
 newest first: `seq`, `type`, `subject`, `time` and `actor`. No task takes them, so they come with
 no command.
@@ -329,7 +344,8 @@ no command.
 
 Without `--json`, `priory inbox --unrouted` prints each owned group as its resource, event count
 and task, one line per event, then its follow-up, and last one line such as `No task ever owned: 2
-github events, 1 linear event.` Then it prints the outsider events as a group of their own,
+github events, 1 linear event.` Before that line, it prints each unheard group as `task ID STATE
+kept N events no agent read:`, one line per event, then its follow-up. Then it prints the outsider events as a group of their own,
 `from outside the repository: N events`, one line per event with its author.
 
 ## Asks
@@ -353,7 +369,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `id` | integer or string | The ask: its number, or the id an outside ask was given |
 | `task`, `key`, `step`, `lane`, `band`, `repo` | | The task, its key, the ask's step, and the task's lane, band and repository. An outside ask has no task, so its `lane`, `band` and `repo` are null, and its `key` is the one it sent |
 | `risk` | array of strings | What answering risks, empty for none: `irreversible` when the answer lets an irreversible step run before a person decides again, the rule `priory check --explain` uses, or when it is an agent's or a step's ask whose answer runs a [command](../daemon/tools.md#commands-an-answer-runs); then the task's [merge risk](../daemon/tools.md#merge-risk) verdict, `low`, `medium` or `high`; then the task's grooming grade, `red`, `yellow` or `green`. An outside ask has none. The daemon records its factory's irreversible approvals when it starts |
-| `risk_estimate` | object or null | Null when the trace cannot be read. Only on a step's ask whose answer lets an irreversible step run: that step's own row in [`priory report risk`](../daemon/trace.md#risk), over its default window. `workflow`, `step`, `trials`, `shown` (false under 20 trials), `judged_wrong` and `landed_wrong` (each `k`, `p05`, `median` and `p95`), and `line`, the History line the ask shows, such as `History: 17 of 53 tasks through this step were judged wrong within 30 days, 3 after the merge. 95 % posterior upper bounds: 43.4 % and 13.7 %.` Under 20 trials, `line` ends `Too few to estimate.` It changes no value of `risk`. `/api/desk` items of kind `ask` carry it too |
+| `risk_estimate` | object or null | Null when the trace cannot be read. Only on a step's ask whose answer lets an irreversible step run: that step's own row in [`priory report risk`](../daemon/trace.md#risk), over its default window. `workflow`, `step`, `trials`, `shown` (false under 20 trials), `judged_wrong` and `landed_wrong` (each `k`, `p05`, `median` and `p95`), and `line`, the History line the ask shows, such as `History: 17 of 53 tasks through this step were judged wrong within 30 days, 3 after the merge. 95 % posterior upper bounds: 43.4 % and 13.7 %.` A non-breaking space joins each number to its `%`. Under 20 trials, `line` ends `Too few to estimate.` It changes no value of `risk`. `/api/desk` items of kind `ask` carry it too |
 | `merge_risk` | object or null | The task's latest [merge risk](../daemon/tools.md#merge-risk): `verdict`, then the lines `ask`, `blast_radius`, `verification`, `rollback` and `detection`. Null before a risk step ends |
 | `run` | integer or null | The run that asked |
 | `state` | string | `open`, `answered` or `withdrawn` |

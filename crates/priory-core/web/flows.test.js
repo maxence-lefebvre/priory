@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { KINDS, edgeStyle, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
+import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
 
 // `step` and `workflow` as `GET /api/flows` sends them.
 const edge = (outcome, to, by) => ({ outcome, to, by });
@@ -106,4 +106,21 @@ test("outcomes that share both ends take their own lines and labels", () => {
 
 test("an irreversible step's padlock has a size in the drawing's own units", () => {
   assert.deepEqual(lockBadge(150), { x: 110, y: 6, size: 15 });
+});
+
+test("each irreversible step of a workflow shows its history: counts, then the bound or needs 20", () => {
+  const estimate = (trials, judged, landed, shown) => ({
+    trials, shown, caught: 4,
+    judged_wrong: { k: judged, p95: 0.4344 }, landed_wrong: { k: landed, p95: 0.1371 },
+  });
+  const irreversible = [
+    { workflow: "implement", step: "open-pr", risk_estimate: estimate(53, 17, 3, true) },
+    { workflow: "implement", step: "merge-pr", risk_estimate: estimate(12, 4, 1, false) },
+    { workflow: "other", step: "label", risk_estimate: estimate(30, 0, 0, true) },
+  ];
+  assert.deepEqual(historyRows(irreversible, "implement"), [
+    { step: "open-pr", caught: 4, judged: ["17 of 53", "95 % bound 43.4 %"], landed: ["3 of 53", "95 % bound 13.7 %"] },
+    { step: "merge-pr", caught: 4, judged: ["4 of 12", "needs 20"], landed: ["1 of 12", "needs 20"] },
+  ]);
+  assert.deepEqual(historyRows([{ workflow: "implement", step: "open-pr", risk_estimate: null }], "implement"), []);
 });

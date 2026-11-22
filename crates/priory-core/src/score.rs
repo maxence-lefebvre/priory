@@ -4,7 +4,7 @@
 use crate::trace::{self, Trace};
 use priory_factory::factory::{Factory, Loaded, ScoreKind, Scorer};
 use priory_runtime::{eval, room, runtime, script, transcript};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::Command;
@@ -131,7 +131,10 @@ pub fn score(
         machine,
         usage: transcript::usage,
     };
-    let tx = db.transaction().map_err(error)?;
+    // A deferred transaction that reads first cannot wait for the daemon's write: it fails at once.
+    let tx = db
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(error)?;
     for score in &scores {
         trace::scored(&tx, &trace, task, score).map_err(error)?;
     }
