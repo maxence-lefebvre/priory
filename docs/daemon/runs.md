@@ -41,7 +41,15 @@ Codex). Each step starts its own agent's harness, so one workflow can mix both.
   permission for the `priory` MCP server's tools plus the agent's own `allow` and `deny` rules, in
   Claude Code's syntax; a `PreToolUse` hook that denies `AskUserQuestion` and tells the agent to
   call `ask` instead; and the permission hooks under Health.
-- `--mcp-config`: the `priory` MCP server, `priory mcp --session <id>` (see Tools).
+- `--strict-mcp-config`, so the run loads no MCP server of the person's own Claude config but the
+  ones `--mcp-config` holds.
+- `--mcp-config`: a file, `$PRIORY_HOME/prompts/<session>.mcp.json`, that only its owner may read.
+  It holds the `priory` MCP server, `priory mcp --session <id>` (see Tools), and the servers the
+  agent's `mcpServers` names, copied from the user scope of the person's Claude config as the run
+  starts. A definition can hold tokens, so it never goes on the command line, and no log or block
+  reason quotes it. Each start writes the file again, so a later change to the person's config
+  reaches the next run. A name the config lacks blocks the task before the run starts, with the
+  reason in [agents.md](../reference/agents.md#mcpservers).
 
 The same tmux command tags the new pane with a pane option `@priory` set to the harness session
 id, so a pane is never left untagged. The daemon types only into that pane, even when a person

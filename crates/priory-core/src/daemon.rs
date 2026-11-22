@@ -1879,6 +1879,10 @@ fn start(
     if !tools::approved(db, admission.task, step, head.as_deref())? {
         return Ok(Ok(()));
     }
+    let servers = match servers(name, &agent.value, &worktree) {
+        Ok(servers) => servers,
+        Err(reason) => return Ok(Err(reason)),
+    };
     let shared = matches!(agent.value.session, Session::Shared);
     let resumed = if shared {
         state::shared(db, name)?
@@ -1953,6 +1957,7 @@ fn start(
         session: &session,
         resume: resume.as_deref(),
         prompt: first.as_deref(),
+        servers: &servers,
     };
     Ok(launch(
         factory,
@@ -2017,6 +2022,21 @@ struct Started<'a> {
     session: &'a str,
     resume: Option<&'a str>,
     prompt: Option<&'a str>,
+    servers: &'a priory_runtime::servers::Servers,
+}
+
+/// The MCP servers `agent` names, found in the person's own config of its harness when its run
+/// starts in `dir`, so their tokens never enter the factory or the trace.
+fn servers(
+    name: &str,
+    agent: &factory::Agent,
+    dir: &Path,
+) -> Result<priory_runtime::servers::Servers, String> {
+    match agent.harness {
+        Harness::ClaudeCode => priory_runtime::servers::claude(&agent.mcp_servers),
+        Harness::Codex => priory_runtime::servers::codex(&agent.mcp_servers, dir),
+    }
+    .map_err(|reason| format!("agent {name} {reason}"))
 }
 
 /// Starts `agent`'s harness with the flags every run of it gets, so a resumed session keeps them.
@@ -2064,6 +2084,7 @@ fn launch(
                 .map_or("manual", PermissionMode::as_str),
             scope,
             env,
+            servers: started.servers,
         },
     )
     .map_err(|failed| {
@@ -2143,12 +2164,21 @@ fn compact_idle(
             idle::end(db, id, skipped)?;
             continue;
         }
+        let servers = match servers(name, &agent.value, dir) {
+            Ok(servers) => servers,
+            Err(error) => {
+                eprintln!("priory daemon: compacting {tmux}: {error}");
+                idle::end(db, id, "failed")?;
+                continue;
+            }
+        };
         let started = Started {
             tmux: &tmux,
             dir,
             session: &due.session,
             resume: Some(&due.session),
             prompt: None,
+            servers: &servers,
         };
         let env: Vec<String> = guard_env(trace.factory).into_iter().collect();
         if let Err(error) = launch(

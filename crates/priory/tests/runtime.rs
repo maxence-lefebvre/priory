@@ -188,6 +188,9 @@ impl Setup {
             .env("PRIORY_HOME", self.dir.join("home"))
             .env("FAKE_DIR", self.dir.join("fake"))
             .env("PRIORY_PROC", self.dir.join("proc"))
+            // The person's own harness configs, which a run's MCP servers come from.
+            .env("CLAUDE_CONFIG_DIR", self.dir.join("claude"))
+            .env("CODEX_HOME", self.dir.join("codex"))
             .env("GIT_CONFIG_COUNT", "1")
             .env(
                 "GIT_CONFIG_KEY_0",
@@ -606,8 +609,7 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
     for flag in ["--plugin-dir", "--append-system-prompt-file"] {
         assert!(!args.contains(&flag), "{flag} in {args:?}");
     }
-    let mcp = args.windows(2).find(|w| w[0] == "--mcp-config").unwrap()[1];
-    let mcp: serde_json::Value = serde_json::from_str(mcp).unwrap();
+    let (_, _, mcp) = claude_mcp(&setup);
     assert_eq!(
         mcp["mcpServers"]["priory"]["env"],
         json!({
@@ -825,6 +827,235 @@ fn an_agent_in_auto_mode_gets_a_run_in_auto_mode_and_its_rules_join_priorys_own(
         })
     );
     assert!(settings["hooks"]["PermissionRequest"].is_array());
+}
+
+/// A token in the person's own MCP server definitions, which no argument, log or reason may hold.
+const TOKEN: &str = "sntrys_s3cret-token";
+
+/// Plants the person's Claude Code config with two user-scope MCP servers, `sentry` and `linear`.
+fn plant_claude_servers(setup: &Setup) -> serde_json::Value {
+    let servers = json!({
+        "sentry": {"command": "npx", "args": ["@sentry/mcp-server"], "env": {"SENTRY_TOKEN": TOKEN}},
+        "linear": {"type": "http", "url": "https://mcp.linear.app/mcp"},
+    });
+    fs::create_dir_all(setup.dir.join("claude")).unwrap();
+    fs::write(
+        setup.dir.join("claude/.claude.json"),
+        json!({"numStartups": 3, "mcpServers": servers}).to_string(),
+    )
+    .unwrap();
+    servers
+}
+
+/// Plants the person's Codex config with two MCP servers, `sentry` and `linear`.
+fn plant_codex_servers(setup: &Setup) {
+    fs::create_dir_all(setup.dir.join("codex")).unwrap();
+    fs::write(
+        setup.dir.join("codex/config.toml"),
+        format!(
+            "model = \"gpt-6\"\n\n[mcp_servers.sentry]\ncommand = \"npx\"\nargs = [\"@sentry/mcp-server\"]\nenv = {{ SENTRY_TOKEN = \"{TOKEN}\" }}\n\n[mcp_servers.linear]\nurl = \"https://mcp.linear.app/mcp\"\n"
+        ),
+    )
+    .unwrap();
+}
+
+/// The agent's frontmatter with `mcpServers` set to `servers`.
+fn with_servers(agent: &str, servers: &str) -> String {
+    agent.replacen("+++\n", &format!("+++\nmcpServers = {servers}\n"), 1)
+}
+
+/// The `--mcp-config` the fake `claude` got at its latest launch, read from its file.
+fn claude_mcp(setup: &Setup) -> (Vec<String>, PathBuf, serde_json::Value) {
+    let args = launched(setup);
+    let file = PathBuf::from(&args.windows(2).find(|w| w[0] == "--mcp-config").unwrap()[1]);
+    let config = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    (args, file, config)
+}
+
+fn assert_no_token(setup: &Setup, files: &[&str]) {
+    for file in files {
+        let text = fs::read_to_string(setup.dir.join(file)).unwrap_or_default();
+        assert!(!text.contains(TOKEN), "{file} holds the token: {text}");
+    }
+}
+
+#[test]
+fn a_claude_run_whose_agent_names_no_mcp_server_gets_priorys_alone_with_strict_mcp_config() {
+    let mut setup = Setup::new("mcp-none");
+    plant_claude_servers(&setup);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let (args, file, config) = claude_mcp(&setup);
+    assert_eq!(
+        args[args.len() - 3..],
+        [
+            "--strict-mcp-config",
+            "--mcp-config",
+            &file.display().to_string()
+        ]
+    );
+    let names: Vec<&String> = config["mcpServers"].as_object().unwrap().keys().collect();
+    assert_eq!(names, ["priory"]);
+    assert_no_token(&setup, &["fake/args.log", "daemon.log"]);
+}
+
+#[test]
+fn a_claude_run_gets_the_mcp_servers_its_agent_names_from_the_persons_claude_config() {
+    let mut setup = Setup::new("mcp-named");
+    let servers = plant_claude_servers(&setup);
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        with_servers(AGENT, "[\"sentry\"]"),
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let (args, file, config) = claude_mcp(&setup);
+    assert_eq!(
+        args[args.len() - 3..],
+        [
+            "--strict-mcp-config",
+            "--mcp-config",
+            &file.display().to_string()
+        ]
+    );
+    let names: Vec<&String> = config["mcpServers"].as_object().unwrap().keys().collect();
+    assert_eq!(names, ["priory", "sentry"]);
+    assert_eq!(config["mcpServers"]["sentry"], servers["sentry"]);
+    assert_eq!(
+        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600,
+        "{} holds the person's tokens",
+        file.display()
+    );
+    assert!(
+        file.starts_with(setup.dir.join("home")),
+        "{}",
+        file.display()
+    );
+    assert_no_token(&setup, &["fake/args.log", "daemon.log"]);
+}
+
+#[test]
+fn a_claude_run_whose_agent_names_an_mcp_server_the_person_never_defined_is_blocked() {
+    let mut setup = Setup::new("mcp-unknown");
+    plant_claude_servers(&setup);
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        with_servers(AGENT, "[\"sentry\", \"honeycomb\"]"),
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    assert_eq!(
+        tasks[0][7],
+        format!(
+            "agent implementer names MCP server honeycomb, which the mcpServers of {} do not define; add it with claude mcp add --scope user",
+            setup.dir.join("claude/.claude.json").display()
+        )
+    );
+    assert!(!setup.dir.join("fake/args.log").exists(), "claude started");
+    assert!(setup.rows("runs").is_empty());
+    assert_no_token(&setup, &["daemon.log"]);
+}
+
+#[test]
+fn a_codex_run_turns_off_every_mcp_server_of_the_persons_codex_config_its_agent_does_not_name() {
+    let mut setup = Setup::new("mcp-codex-none");
+    plant_codex_servers(&setup);
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let servers = &codex_config(&setup)["mcp_servers"];
+    let names: Vec<&String> = servers.as_object().unwrap().keys().collect();
+    assert_eq!(names, ["linear", "priory", "sentry"]);
+    assert_eq!(servers["linear"], json!({"enabled": false}));
+    assert_eq!(servers["sentry"], json!({"enabled": false}));
+    let off: Vec<String> = codex_args(&setup)
+        .into_iter()
+        .filter(|arg| arg.starts_with("mcp_servers.") && !arg.starts_with("mcp_servers.priory="))
+        .collect();
+    assert_eq!(
+        off,
+        [
+            "mcp_servers.linear.enabled=false",
+            "mcp_servers.sentry.enabled=false"
+        ]
+    );
+    assert_no_token(&setup, &["fake/codex-args.log", "daemon.log"]);
+}
+
+#[test]
+fn a_codex_run_keeps_the_mcp_server_its_agent_names_from_the_persons_codex_config() {
+    let mut setup = Setup::new("mcp-codex-named");
+    plant_codex_servers(&setup);
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        with_servers(CODEX, "[\"sentry\"]"),
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let servers = &codex_config(&setup)["mcp_servers"];
+    let names: Vec<&String> = servers.as_object().unwrap().keys().collect();
+    assert_eq!(
+        names,
+        ["linear", "priory"],
+        "sentry comes from the person's own config"
+    );
+    assert_eq!(servers["linear"], json!({"enabled": false}));
+    assert_no_token(&setup, &["fake/codex-args.log", "daemon.log"]);
+}
+
+#[test]
+fn a_codex_run_whose_agent_names_an_mcp_server_the_person_never_defined_is_blocked() {
+    let mut setup = Setup::new("mcp-codex-unknown");
+    plant_codex_servers(&setup);
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        with_servers(CODEX, "[\"honeycomb\"]"),
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    assert_eq!(
+        tasks[0][7],
+        format!(
+            "agent implementer names MCP server honeycomb, which neither {} nor {} defines under mcp_servers",
+            setup.dir.join("codex/config.toml").display(),
+            setup
+                .dir
+                .join("home/worktrees/owner/repo/1/.codex/config.toml")
+                .display()
+        )
+    );
+    assert!(
+        !setup.dir.join("fake/codex-args.log").exists(),
+        "codex started"
+    );
+    assert_no_token(&setup, &["daemon.log"]);
 }
 
 const CODEX: &str = "+++\ndescription = \"Reviews one change.\"\nharness = \"codex\"\nmodel = \"gpt-6-astra\"\neffort = \"low\"\n+++\nYou review one change.\n";

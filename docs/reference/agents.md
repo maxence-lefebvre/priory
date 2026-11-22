@@ -24,7 +24,7 @@ against it, but `priory check` applies the same rules.
 | `onChange` | `tell` or `fresh` | no | `"tell"` | What a resumed shared session gets when the agent changed since it started. `tell`: a line naming what changed. `fresh`: a new session. `session = "shared"` only. See [sessions.md](../daemon/sessions.md#when-the-agent-changes) | `"fresh"` |
 | `memory` | size | no | | What a runner must have free to admit a run. See [memory-gate.md](../daemon/memory-gate.md) | `"6GB"` |
 | `disk` | size | no | | Disk a run reserves above the runner's floor | `"20GB"` |
-| `mcpServers` | array of strings | no | `[]` | The MCP servers the run gets, by name | `["github"]` |
+| `mcpServers` | array of strings | no | `[]` | The MCP servers the run gets beside `priory`, and no others, by their names in the person's own harness config. See [mcpServers](#mcpservers) | `["github"]` |
 | `connectorSignIn` | boolean | no | `false` | Lets the run call an MCP server's `authenticate` and `complete_authentication` tools. Off by default: an unattended run that signs in clears the stored token every later run needs. See [guard.md](../daemon/guard.md#connector-sign-in) | `true` |
 | `permissions` | table | no | | Claude Code's own `permissions` settings, so rules copy across. See below | |
 
@@ -44,6 +44,29 @@ A Codex agent takes `defaultMode` only, and not `plan`: Codex has no per-tool ru
 A `deny` rule matches the command's text, so it misses wrapped forms such as `gh -R owner/repo pr
 merge` or `bash -c '...'`. Priory's tool guard denies irreversible calls whatever their wrapper,
 in every mode (see [guard.md](../daemon/guard.md)).
+
+### `mcpServers`
+
+A run gets the `priory` server and the servers its agent names, and no server of the person's
+config that its agent leaves out. The daemon finds each name in the person's own config when the
+run starts, on the runner that starts it, so a definition and its tokens never enter the factory
+or the trace.
+
+| Harness | Where a name is defined | How the run is limited |
+| ------- | ----------------------- | ---------------------- |
+| Claude Code | `mcpServers` of `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json`: the user scope, as `claude mcp add --scope user` writes it | `--strict-mcp-config`, and the definitions in the `--mcp-config` file. See [runs.md](../daemon/runs.md) |
+| Codex | `mcp_servers` of `$CODEX_HOME/config.toml`, else `~/.codex/config.toml`, or of the worktree's `.codex/config.toml` | `-c mcp_servers.<name>.enabled=false` for each other server of those files. See [codex.md](../daemon/codex.md) |
+
+`priory check` does not read these files, since each runner has its own. The daemon refuses the
+run instead, and blocks its task with one of the errors below.
+
+| Message | Cause |
+| ------- | ----- |
+| `agent <agent> names MCP server <name>, which the mcpServers of <path> do not define; add it with claude mcp add --scope user` | A Claude Code agent names a server the person's user scope lacks. A server of the local or project scope does not count |
+| `agent <agent> names MCP server <name>, which neither <user config> nor <worktree>/.codex/config.toml defines under mcp_servers` | A Codex agent names a server neither file defines |
+| `agent <agent> names MCP server priory, which Priory serves to every run itself; remove it from mcpServers` | An agent names `priory` |
+| `agent <agent> cannot read its MCP servers: <path> is not valid JSON at line <n> column <m>` | The Claude Code config does not parse. The message never quotes the file, which can hold tokens |
+| `agent <agent> cannot read its MCP servers: <path> is not valid TOML at line <n>` | A Codex config does not parse. A file that cannot be read gives `<path>: <error>` after the colon |
 
 ## Examples
 
