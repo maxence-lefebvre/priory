@@ -1,9 +1,12 @@
 //! Why and when an ask or wait was withdrawn, kept in `withdrawn_reason` and `withdrawn_at`, and
 //! backfilled from the sentinel values `withdrawn` held before version 58 and the withdrawal log.
 
+#[allow(dead_code)]
+mod harness;
+
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 fn scratch(name: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
@@ -15,7 +18,7 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 fn priory(dir: &Path, args: &[&str]) -> Output {
-    let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let output = harness::priory()
         .args(args)
         .env("PRIORY_DB", dir.join("priory.db"))
         .env("PRIORY_HOME", dir.join("home"))

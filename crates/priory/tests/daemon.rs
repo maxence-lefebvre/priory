@@ -1,8 +1,11 @@
+#[allow(dead_code)]
+mod harness;
+
 use herdr_bus::{Bus, Message, Output};
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output as Exit};
+use std::process::Output as Exit;
 
 const WORKFLOW: &str = r#"
 start = "implement"
@@ -73,7 +76,7 @@ impl Setup {
     }
 
     fn priory(&self, args: &[&str]) -> Exit {
-        Command::new(env!("CARGO_BIN_EXE_priory"))
+        harness::priory()
             .args(args)
             .env("HERDR_BUS_DB", self.dir.join("bus.db"))
             .env("PRIORY_DB", self.dir.join("priory.db"))
@@ -293,7 +296,7 @@ fn a_state_file_that_vanishes_on_exit_is_refused() {
     let setup = Setup::new("memory-db");
     let factory = setup.dir.join("factory");
     for db in ["", ":memory:", "file::memory:"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+        let output = harness::priory()
             .args(["daemon", factory.to_str().unwrap(), "--once"])
             .env("HERDR_BUS_DB", setup.dir.join("bus.db"))
             .env("PRIORY_DB", db)

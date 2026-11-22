@@ -1,7 +1,9 @@
+#[allow(dead_code)]
+mod harness;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::process::Command;
 
 #[test]
 fn the_demo_sends_answers_to_both_other_runners_asks() {
@@ -20,7 +22,7 @@ fn the_demo_sends_answers_to_both_other_runners_asks() {
     fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
     let demo = dir.join("demo");
 
-    let seeded = Command::new("sh")
+    let seeded = harness::command("sh")
         .arg(root.join("scripts/demo/serve.sh"))
         .arg(&demo)
         .arg(&bin)
@@ -29,7 +31,7 @@ fn the_demo_sends_answers_to_both_other_runners_asks() {
     assert!(seeded.status.success(), "{seeded:?}");
 
     // The README's screenshots come from this seed, so it holds only the states R4.1 names.
-    let listed = Command::new(real)
+    let listed = harness::command(real)
         .args(["tasks", "--json"])
         .env("PRIORY_DB", demo.join("state.db"))
         .env("PRIORY_HOME", demo.join("home"))
@@ -52,7 +54,7 @@ fn the_demo_sends_answers_to_both_other_runners_asks() {
         ("laptop:4", "split it", "2", "laptop"),
         ("desktop:12", "approved", "1", "desktop"),
     ] {
-        let sent = Command::new(real)
+        let sent = harness::command(real)
             .args(["answer"])
             .arg(demo.join("factory"))
             .args([ask, option, "--revision", revision])

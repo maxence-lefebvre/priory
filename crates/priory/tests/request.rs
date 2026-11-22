@@ -1,10 +1,13 @@
+#[allow(dead_code)]
+mod harness;
+
 mod conform;
 
 use herdr_bus::{Bus, MessageQuery, Stored};
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 const WORKFLOW: &str = r#"
 start = "implement"
@@ -44,7 +47,7 @@ impl Setup {
     }
 
     fn priory(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_priory"))
+        harness::priory()
             .args(args)
             .env("HERDR_BUS_DB", self.dir.join("bus.db"))
             .env("PRIORY_DB", self.dir.join("priory.db"))
@@ -417,7 +420,7 @@ impl Setup {
         let factory = self.dir.join("factory");
         let mut all = vec!["add", factory.to_str().unwrap()];
         all.extend(args);
-        Command::new(env!("CARGO_BIN_EXE_priory"))
+        harness::priory()
             .args(all)
             .env("HERDR_BUS_DB", self.dir.join("bus.db"))
             .env("PRIORY_DB", self.dir.join("priory.db"))
@@ -794,7 +797,7 @@ impl Setup {
         let factory = self.dir.join("factory");
         let mut all = vec!["batch", "add", factory.to_str().unwrap()];
         all.extend(args);
-        Command::new(env!("CARGO_BIN_EXE_priory"))
+        harness::priory()
             .args(all)
             .env("HERDR_BUS_DB", self.dir.join("bus.db"))
             .env("PRIORY_DB", self.dir.join("priory.db"))

@@ -1,9 +1,11 @@
 //! `priory check --repo PATH`: what an unattended agent needs from a repository.
 
+#[allow(dead_code)]
+mod harness;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde_json::Value;
 
@@ -78,7 +80,7 @@ impl Repo {
             std::iter::once(fake).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
         )
         .unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+        let output = harness::priory()
             .args(args)
             .env("PATH", path)
             .env("FAKE_DIR", self.root.join("fake"))

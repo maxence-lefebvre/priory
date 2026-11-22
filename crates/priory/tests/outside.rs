@@ -1,10 +1,13 @@
 //! `priory hook PreToolUse --outside`, the hook of a person's own session, denies the verbs only a
 //! person runs and nothing else.
 
+#[allow(dead_code)]
+mod harness;
+
 use serde_json::{Value, json};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 fn scratch(name: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
@@ -15,7 +18,7 @@ fn scratch(name: &str) -> PathBuf {
 
 /// Runs the hook on `input` with no daemon to ask, and returns its exit and what it printed.
 fn hook(dir: &Path, input: &[u8]) -> (Option<i32>, String) {
-    let mut hook = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let mut hook = harness::priory()
         .args(["hook", "PreToolUse", "--outside"])
         .env_remove("PRIORY_SESSION")
         .env_remove("PRIORY_GUARD")

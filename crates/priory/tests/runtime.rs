@@ -1,3 +1,6 @@
+#[allow(dead_code)]
+mod harness;
+
 mod auto_answer;
 mod conform;
 mod consult;
@@ -204,7 +207,7 @@ impl Setup {
             std::iter::once(fake).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
         )
         .unwrap();
-        let mut command = Command::new(program);
+        let mut command = harness::command(program);
         command
             .env_remove("TMUX")
             .env_remove("OTEL_RESOURCE_ATTRIBUTES")
@@ -479,7 +482,7 @@ impl Setup {
     fn reboot(&mut self) {
         self.crash();
         let pid = fs::read_to_string(self.dir.join("fake/pid")).unwrap();
-        let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+        let _ = harness::command("kill").args(["-9", pid.trim()]).status();
         self.tmux.kill();
     }
 
@@ -533,7 +536,7 @@ impl Drop for Setup {
 }
 
 fn git(dir: &Path) -> Command {
-    let mut command = Command::new("git");
+    let mut command = harness::command("git");
     command.current_dir(dir);
     command
 }
@@ -2446,7 +2449,7 @@ fn teardown_kills_a_tmux_server_that_a_late_child_starts() {
         return;
     };
     if !left.is_empty() {
-        let _ = Command::new("kill").arg("-9").args(&left).output();
+        let _ = harness::command("kill").arg("-9").args(&left).output();
     }
     assert!(
         left.is_empty(),
@@ -2458,7 +2461,7 @@ fn teardown_kills_a_tmux_server_that_a_late_child_starts() {
 /// process a zombie for a while. Without `/proc`, a zombie counts as alive.
 fn exited(pid: &str) -> bool {
     if !Path::new("/proc/self/stat").exists() {
-        let alive = Command::new("kill").args(["-0", pid]).output().unwrap();
+        let alive = harness::command("kill").args(["-0", pid]).output().unwrap();
         return !alive.status.success();
     }
     fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
@@ -2488,7 +2491,7 @@ fn a_test_that_panics_after_its_run_starts_leaves_no_tmux_server() {
     } else {
         eprintln!("skipped the pid check: this host has no /proc to tell whether {pid} lives");
     }
-    let listed = Command::new("tmux")
+    let listed = harness::command("tmux")
         .args(["-S", &socket, "list-sessions"])
         .output()
         .unwrap();
@@ -6801,7 +6804,7 @@ fn a_codex_run_that_exits_before_its_session_start_after_a_daemon_restart_keeps_
     let pid = fs::read_to_string(setup.dir.join("fake/pid")).unwrap();
     // The restarted daemon checks the panes it found before this one exits.
     std::thread::sleep(Duration::from_millis(1500));
-    let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+    let _ = harness::command("kill").args(["-9", pid.trim()]).status();
     setup.until("tasks", |rows| rows[0][4] == "blocked");
     setup.release("silent");
 
@@ -9348,7 +9351,7 @@ impl Setup {
     /// Makes `branches` in task 1's worktree, as its worker does before it pushes a stack.
     fn made(&self, branches: &[&str]) {
         for branch in branches {
-            let made = Command::new("git")
+            let made = harness::command("git")
                 .arg("-C")
                 .arg(self.worktree(1))
                 .args(["branch", branch])
@@ -9612,7 +9615,7 @@ fn a_sweep_keeps_a_worktree_a_process_runs_in() {
     let mut process = None;
     let (_setup, reason) = kept_by("sweep-process", |setup| {
         process = Some(
-            Command::new("sleep")
+            harness::command("sleep")
                 .arg("60")
                 .current_dir(setup.worktree(2))
                 .spawn()
@@ -13901,7 +13904,7 @@ fn terminating_a_lease_stops_its_command_and_releases_its_grant() {
     setup.written("fake/order");
     let pid = fs::read_to_string(setup.dir.join("fake/pid")).unwrap();
 
-    let terminated = Command::new("kill")
+    let terminated = harness::command("kill")
         .args(["-TERM", &server.id().to_string()])
         .status()
         .unwrap();
@@ -15501,7 +15504,7 @@ impl Setup {
         let factory = setup.dir.join("factory");
         fs::remove_dir_all(&factory).unwrap();
         let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
-        let copied = Command::new("cp")
+        let copied = harness::command("cp")
             .arg("-r")
             .arg(examples.join(starter))
             .arg(&factory)
@@ -17451,7 +17454,7 @@ fn a_push_to_the_default_branch_or_a_force_push_is_denied_and_recorded_on_the_ta
 fn guard_hook(home: &Path, command: &str) -> (String, Duration) {
     use std::io::Write;
     let started = Instant::now();
-    let mut hook = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let mut hook = harness::priory()
         .args(["hook", "PreToolUse"])
         .env("PRIORY_HOME", home)
         .env("XDG_RUNTIME_DIR", home)

@@ -3,7 +3,6 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 /// A test's `TMUX_TMPDIR`, under `/tmp` so the socket path stays within the 108 bytes of a Unix
@@ -49,12 +48,15 @@ impl TmuxDir {
             if found.is_empty() {
                 break;
             }
-            let _ = Command::new("kill").arg("-9").args(&found).output();
+            let _ = crate::harness::command("kill")
+                .arg("-9")
+                .args(&found)
+                .output();
             std::thread::sleep(Duration::from_millis(20));
         }
         // Through the directory's own socket: a bare kill-server can reach the person's server.
         if let Some(socket) = self.socket() {
-            let _ = Command::new("tmux")
+            let _ = crate::harness::command("tmux")
                 .env_remove("TMUX")
                 .arg("-S")
                 .arg(socket)

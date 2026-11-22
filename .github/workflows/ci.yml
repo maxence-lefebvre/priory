@@ -46,6 +46,13 @@ jobs:
       - name: Install tmux for the runtime tests
         run: command -v tmux || (sudo apt-get update && sudo apt-get install -y tmux)
       - run: cargo test --workspace
+      - name: Run CLI tests in a shell that exports Priory's settings
+        env:
+          PRIORY_FACTORY: /nonexistent/factory
+          PRIORY_HOME: /nonexistent/home
+          PRIORY_DB: /nonexistent/priory.db
+          HERDR_BUS_DB: /nonexistent/bus.db
+        run: cargo test -p priory --test readiness --test serve --test factory_folder --test check --test host_env
       - name: Run the event log contract suite, check and the partition tests on Postgres
         env:
           PRIORY_TEST_POSTGRES_URL: postgresql://priory:priory@127.0.0.1:5432/priory?sslmode=disable

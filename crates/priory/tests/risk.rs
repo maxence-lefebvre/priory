@@ -1,10 +1,13 @@
+#[allow(dead_code)]
+mod harness;
+
 mod tmux_dir;
 
 use herdr_bus::{Bus, Message, Output as BusOutput};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 use tmux_dir::TmuxDir;
 
 const WORKFLOW: &str = r#"
@@ -112,7 +115,7 @@ impl Setup {
     }
 
     fn priory(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_priory"))
+        harness::priory()
             .env_remove("TMUX")
             .env("TMUX_TMPDIR", self.tmux.path())
             .env("HERDR_BUS_DB", self.dir.join("bus.db"))
@@ -636,7 +639,7 @@ fn check_explain_shows_each_steps_history_when_it_finds_the_state_file_and_dashe
     );
 
     let missing = setup.dir.join("missing.db");
-    let without = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let without = harness::priory()
         .env("PRIORY_DB", &missing)
         .args(["check", &setup.factory(), "--explain"])
         .output()
@@ -646,7 +649,7 @@ fn check_explain_shows_each_steps_history_when_it_finds_the_state_file_and_dashe
         String::from_utf8(without.stdout).unwrap().lines().nth(1),
         Some("implement\topen-pr\tapprove-pr\t-\t-\t-")
     );
-    let lint = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let lint = harness::priory()
         .env("PRIORY_DB", &missing)
         .args(["check", &setup.factory()])
         .output()
