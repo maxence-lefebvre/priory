@@ -213,8 +213,17 @@ impl<'a> Slack<'a> {
             ("inclusive", "true".into()),
             ("limit", "200".into()),
         ];
+        let messages = self.pages("conversations.replies", query, true)?;
+        // Slack answers a reply's `ts` with that reply alone, so a wait on it would never fire.
+        if messages.first().is_some_and(|first| {
+            first
+                .get("thread_ts")
+                .is_some_and(|parent| text(parent) != thread)
+        }) {
+            return Err("not a thread's first message".into());
+        }
         let mut replies = Vec::new();
-        for message in self.pages("conversations.replies", query, true)? {
+        for message in messages {
             let ts = text(&message["ts"]);
             let time = time(ts)?;
             if ts == thread || time < since || !self.by_someone(&message) {

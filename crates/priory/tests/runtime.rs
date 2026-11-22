@@ -11284,6 +11284,37 @@ fn a_reply_with_a_file_or_also_sent_to_the_channel_wakes_the_task_with_its_file_
 }
 
 #[test]
+fn a_wait_on_a_replys_ts_fails_the_poll_as_not_a_threads_first_message() {
+    let reply = "1763500001.000001";
+    let setup = asleep_on(
+        "slack-thread-reply-ts",
+        json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": reply }),
+    );
+    setup.answer_curl(&[
+        (
+            "auth.test",
+            json!({ "ok": true, "user_id": "U0BOT", "bot_id": "B0BOT" }),
+        ),
+        (
+            "conversations.replies",
+            json!({ "ok": true, "has_more": false,
+                    "messages": [slack_message(reply, "U0PERSON")] }),
+        ),
+    ]);
+
+    let output = setup.poll(&[]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "thread C0123:{reply}: not a thread's first message"
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn a_thread_the_intake_cannot_read_fails_the_poll_and_reaches_the_desk() {
     let setup = asleep_on(
         "slack-thread-fails",
