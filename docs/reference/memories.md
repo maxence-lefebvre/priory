@@ -136,7 +136,7 @@ records a later one as `refused`.
 | `a memory needs a description, which tells an agent when to read it` | A blank `description` |
 | `a memory needs a text: the fact itself` | A blank `text` |
 | `a memory holds one fact in at most 4096 bytes: this one is <n> bytes` | The candidate's file, as above, is over 4096 bytes |
-| `the text looks like it holds a credential: a memory reaches every later run, so keep secrets out of it` | The name, description or text matches a GitHub, Anthropic, OpenAI, AWS, Slack or Linear key, or a PEM private key |
+| `the text looks like it holds a credential: a memory reaches every later run, so keep secrets out of it` | The name, description or text matches a GitHub, Anthropic, OpenAI, AWS, Slack or Linear key, or a PEM private key. A secret with no known shape, such as a webhook secret, passes |
 | `no memory <name> reaches your task: your instructions' index lists those that do` | `memory` names a memory the caller's task does not see |
 
 A runner applies the same rules to each `priory.memory.written` it reads, since anyone who can

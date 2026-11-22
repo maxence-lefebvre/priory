@@ -231,8 +231,10 @@ the claim. A runner without them ends the step `failed`, with git's or gh's erro
 - The kit's `ref` must be a branch, or unset, for the pull request to open onto it.
 - Write access to the log equals a person's accept, as it does an answer (see
   [runners.md](runners.md#every-runner-reads-the-whole-log)).
-- The credential check matches common key shapes only. A memory reaches other tasks only after a
-  person reads it, so read each one for secrets and for instructions an issue may have planted.
+- The credential check matches common key shapes only. It does not compare a memory with the
+  factory's own secret values, so a webhook secret, the serve token or any other value with no
+  known shape passes it. A memory reaches other tasks only after a person reads it, so read each
+  one for secrets and for instructions an issue may have planted.
 
 The plugin folder, the memory snapshot and the kit checkout below are read-only: each file is
 `0444` and each folder `0555`. An agent can still make them writable with a shell, so before each
