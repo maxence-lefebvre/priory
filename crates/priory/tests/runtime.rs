@@ -2314,21 +2314,26 @@ fn teardown_kills_a_tmux_server_that_a_late_child_starts() {
         .process_group(0)
         .spawn()
         .unwrap();
-    let mut listed = setup.command("tmux");
-    listed.arg("list-sessions");
-    let mut killed = setup.command("tmux");
-    killed
-        .arg("-S")
-        .arg(setup.tmux.socket().unwrap())
-        .arg("kill-server");
+    let dir = setup.tmux.path().to_owned();
 
     drop(setup);
+    // Once the child is gone, so is any tmux client it ran: a server it started is running now.
     late.wait().unwrap();
-    std::thread::sleep(Duration::from_millis(1000));
 
-    let listed = listed.output().unwrap();
-    let _ = killed.output();
-    assert!(!listed.status.success(), "a tmux server outlived its test");
+    // With TMUX_TMPDIR gone, tmux falls back to the shared /tmp socket, so look for what it inherited.
+    let Some(left) = tmux_dir::inheriting(&dir) else {
+        eprintln!(
+            "skipped the check: this host has no /proc to find a server that outlived the test"
+        );
+        return;
+    };
+    if !left.is_empty() {
+        let _ = Command::new("kill").arg("-9").args(&left).output();
+    }
+    assert!(
+        left.is_empty(),
+        "processes {left:?} outlived the test, a tmux server among them"
+    );
 }
 
 /// Whether process `pid` has exited. An init that reaps late, as in some containers, leaves a dead

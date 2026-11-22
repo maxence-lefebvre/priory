@@ -7,8 +7,9 @@ use std::process::Command;
 use std::time::Duration;
 
 /// A test's `TMUX_TMPDIR`, under `/tmp` so the socket path stays within the 108 bytes of a Unix
-/// socket wherever the worktree lives. Dropping it kills its tmux server and removes it, so a
-/// server that starts later has no directory to start in.
+/// socket wherever the worktree lives. Dropping it kills every process that inherited it, its tmux
+/// server among them, and removes it. tmux falls back to `/tmp` when `TMUX_TMPDIR` is gone, so a
+/// process that escaped the kill would start its server on the shared default socket.
 pub struct TmuxDir(PathBuf);
 
 impl TmuxDir {
@@ -40,24 +41,11 @@ impl TmuxDir {
     /// server. A child the daemon left in its own process group can start a server after any
     /// `kill-server`, so the processes are found by the `TMUX_TMPDIR` they inherit.
     pub fn kill(&self) {
-        let mut marker = format!("TMUX_TMPDIR={}", self.0.display()).into_bytes();
-        marker.push(0);
         // Bounded, so a process that will not die cannot hang the suite in `Drop`.
         for _ in 0..100 {
-            let Ok(processes) = fs::read_dir("/proc") else {
+            let Some(found) = inheriting(&self.0) else {
                 break;
             };
-            let found: Vec<String> = processes
-                .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-                .filter(|pid| pid.bytes().all(|byte| byte.is_ascii_digit()))
-                .filter(|pid| {
-                    fs::read(format!("/proc/{pid}/environ")).is_ok_and(|environ| {
-                        environ
-                            .split_inclusive(|byte| *byte == 0)
-                            .any(|variable| variable == marker)
-                    })
-                })
-                .collect();
             if found.is_empty() {
                 break;
             }
@@ -80,5 +68,65 @@ impl Drop for TmuxDir {
     fn drop(&mut self) {
         self.kill();
         let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The live processes that inherited `TMUX_TMPDIR` set to `dir`, or `None` without `/proc`. A
+/// process inside `execve` reads an empty environment until its new one is in place, so a scan
+/// that meets one waits and scans again rather than miss it.
+pub fn inheriting(dir: &Path) -> Option<Vec<String>> {
+    let mut marker = format!("TMUX_TMPDIR={}", dir.display()).into_bytes();
+    marker.push(0);
+    let mut found = Vec::new();
+    // Bounded, so a process that clears its own command line cannot hang the suite.
+    for _ in 0..500 {
+        found.clear();
+        let mut starting = false;
+        for entry in fs::read_dir("/proc").ok()? {
+            let Some(pid) = entry
+                .ok()
+                .and_then(|entry| entry.file_name().into_string().ok())
+            else {
+                continue;
+            };
+            if !pid.bytes().all(|byte| byte.is_ascii_digit()) {
+                continue;
+            }
+            match inherits(&pid, &marker) {
+                Some(true) => found.push(pid),
+                Some(false) => {}
+                None => starting = true,
+            }
+        }
+        if !starting {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    Some(found)
+}
+
+/// Whether process `pid` carries `marker` in its environment, or `None` while it is inside
+/// `execve`. A zombie or kernel thread has no executable, so it never reads as inside `execve`.
+fn inherits(pid: &str, marker: &[u8]) -> Option<bool> {
+    let carries = |environ: &[u8]| {
+        environ
+            .split_inclusive(|byte| *byte == 0)
+            .any(|variable| variable == marker)
+    };
+    // Another user's process, or one already gone.
+    let Ok(environ) = fs::read(format!("/proc/{pid}/environ")) else {
+        return Some(false);
+    };
+    if !environ.is_empty() {
+        return Some(carries(&environ));
+    }
+    // Read before the environment again: the kernel fills both in the same step of `execve`.
+    let arguments = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    let program = fs::read_link(format!("/proc/{pid}/exe")).is_ok();
+    match fs::read(format!("/proc/{pid}/environ")) {
+        Ok(environ) if !environ.is_empty() => Some(carries(&environ)),
+        Ok(_) if arguments.is_empty() && program => None,
+        _ => Some(false),
     }
 }
