@@ -44,6 +44,9 @@ secret_env = "CLOUDWATCH_WEBHOOK_SECRET"       # the variable holding the EventB
 [webhooks.honeycomb]
 secret_env = "HONEYCOMB_WEBHOOK_SECRET"        # the variable holding the Honeycomb recipient's Shared Secret
 
+[webhooks.figma]
+secret_env = "FIGMA_WEBHOOK_PASSCODE"          # the variable holding the Figma webhook's passcode
+
 [webhooks.intercom]
 secret_env = "INTERCOM_CLIENT_SECRET"          # the variable holding the Intercom app's client secret
 workspace = "a86dr8yl"                         # the one workspace whose notifications it takes

@@ -5033,7 +5033,8 @@ fn use_factory(setup: &Setup, from: &Path) {
         .replace("SENTRY_CLIENT_SECRET", "TEST_SECRET")
         .replace("HONEYCOMB_WEBHOOK_SECRET", "TEST_SECRET")
         .replace("INTERCOM_CLIENT_SECRET", "TEST_SECRET")
-        .replace("CLOUDWATCH_WEBHOOK_SECRET", "TEST_SECRET");
+        .replace("CLOUDWATCH_WEBHOOK_SECRET", "TEST_SECRET")
+        .replace("FIGMA_WEBHOOK_PASSCODE", "TEST_SECRET");
     if !text.contains("[serve]") {
         text.push_str("\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n");
     }
@@ -6151,6 +6152,199 @@ fn a_sentry_issue_without_its_id_gets_400_and_a_body_over_1_mib_gets_413() {
 
     assert_eq!(status, 400);
     assert_eq!(reply, r#"{"error":"the payload lacks the issue's `id`"}"#);
+    assert_eq!(big, 413);
+    assert!(setup.published().is_empty());
+}
+
+const FIGMA_HOOKS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n\n[webhooks.figma]\nsecret_env = \"TEST_SECRET\"\n";
+
+/// Figma's `FILE_COMMENT` example payload, on file `zH44k2FUM629Fa4EMShiHL`.
+fn figma_comment(passcode: &str, comment_id: &str) -> Value {
+    json!({
+        "event_type": "FILE_COMMENT",
+        "file_key": "zH44k2FUM629Fa4EMShiHL",
+        "file_name": "Mockup library",
+        "comment": [
+            { "text": "TODO: \n" },
+            { "mention": "811724164054158337" },
+            { "text": "Change selection colors" }
+        ],
+        "comment_id": comment_id,
+        "mentions": [{ "id": "811724164054158337", "handle": "Evan Wallace" }],
+        "order_id": "23 ",
+        "parent_id": "",
+        "created_at": "2026-11-17T20:27:16Z",
+        "resolved_at": "",
+        "passcode": passcode,
+        "timestamp": "2026-11-17T20:27:16Z",
+        "triggered_by": { "id": "813845097374535682", "handle": "Dylan Field" },
+        "webhook_id": "22"
+    })
+}
+
+/// POSTs `body` to `/hooks/figma` as Figma would: JSON with the passcode inside, no signature.
+fn deliver_figma(address: &str, body: &str) -> (u16, String) {
+    raw(
+        address,
+        &format!(
+            "POST /hooks/figma HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+impl Setup {
+    /// A factory with `[serve]`, the Figma webhook and a `figma` trigger on one file.
+    fn figma_hooks(name: &str) -> Self {
+        let setup = Setup::new(name, FIGMA_HOOKS);
+        fs::create_dir_all(setup.dir.join("factory/triggers")).unwrap();
+        fs::write(
+            setup.dir.join("factory/triggers/figma-comments.toml"),
+            "source = \"figma\"\non = \"file.comment_created\"\nfilter = { file = \"zH44k2FUM629Fa4EMShiHL\" }\nrepo = \"owner/repo\"\nworkflow = \"implement\"\nkey = \"file.key\"\n",
+        )
+        .unwrap();
+        setup
+    }
+}
+
+#[test]
+fn a_figma_comment_with_the_passcode_publishes_the_event_and_requests_a_task() {
+    let mut setup = Setup::figma_hooks("figma-comment");
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, reply) = deliver_figma(&address, &figma_comment(&setup.secret, "32").to_string());
+
+    assert_eq!(status, 200, "{reply}");
+    assert_eq!(reply, r#"{"outcome":"published"}"#);
+    let published = setup.published();
+    let kinds: Vec<_> = published.iter().map(|m| m.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        ["figma.file.comment_created", "factory.task.requested"]
+    );
+    assert_eq!(published[0].subject.as_deref(), Some("Mockup library"));
+    assert_eq!(
+        published[0].data,
+        json!({
+            "file": "zH44k2FUM629Fa4EMShiHL",
+            "file_name": "Mockup library",
+            "comment": "32",
+            "text": "TODO: \n@Evan Wallace Change selection colors",
+            "parent": null,
+            "author": "Dylan Field",
+            "mentions": ["Evan Wallace"],
+            "url": "https://www.figma.com/file/zH44k2FUM629Fa4EMShiHL",
+            "webhook": "22",
+            "time": "2026-11-17T20:27:16Z",
+            "baseline": false,
+            "triggers": ["figma-comments"]
+        })
+    );
+    assert_eq!(
+        published[1].subject.as_deref(),
+        Some("figma:zH44k2FUM629Fa4EMShiHL")
+    );
+}
+
+#[test]
+fn a_figma_delivery_with_a_wrong_or_missing_passcode_gets_400_and_publishes_nothing() {
+    let mut setup = Setup::figma_hooks("figma-refused");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let wrong = format!("{}x", setup.secret);
+    let mut missing = figma_comment("", "32");
+    missing.as_object_mut().unwrap().remove("passcode");
+    let mut number = figma_comment("", "32");
+    number["passcode"] = json!(42);
+    let bodies = [
+        figma_comment("not-the-passcode", "32").to_string(),
+        figma_comment(&wrong, "32").to_string(),
+        figma_comment("", "32").to_string(),
+        missing.to_string(),
+        number.to_string(),
+        "not json, secret-marker".to_owned(),
+    ];
+    for body in &bodies {
+        let (status, reply) = deliver_figma(&address, body);
+
+        assert_eq!(status, 400, "{body}");
+        assert_eq!(
+            reply,
+            r#"{"error":"the body is not JSON, or its passcode is missing or is not the webhook's"}"#
+        );
+    }
+    assert!(setup.published().is_empty());
+    let log = fs::read_to_string(setup.dir.join("server.log")).unwrap_or_default();
+    assert!(
+        !log.contains("secret-marker") && !log.contains("Change selection colors"),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_retried_figma_comment_publishes_nothing() {
+    let mut setup = Setup::figma_hooks("figma-replay");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let comment = figma_comment(&setup.secret, "32");
+    let (status, _) = deliver_figma(&address, &comment.to_string());
+    assert_eq!(status, 200);
+    let first = setup.published();
+    let mut retried = comment.clone();
+    retried["timestamp"] = json!("2026-11-17T20:32:16Z");
+    retried["webhook_id"] = json!(23);
+
+    for body in [comment, retried] {
+        let (status, reply) = deliver_figma(&address, &body.to_string());
+
+        assert_eq!(status, 200, "{reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    }
+    assert_eq!(setup.published(), first);
+}
+
+#[test]
+fn a_figma_ping_another_event_or_a_comment_no_trigger_matches_gets_200_and_publishes_nothing() {
+    let mut setup = Setup::figma_hooks("figma-dropped");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let passcode = setup.secret.clone();
+    let mut other_file = figma_comment(&passcode, "33");
+    other_file["file_key"] = json!("abc123");
+    let deliveries = [
+        json!({ "event_type": "PING", "passcode": passcode, "timestamp": "2026-11-17T20:27:16Z", "webhook_id": "22" }),
+        json!({ "event_type": "FILE_UPDATE", "passcode": passcode, "file_key": "zH44k2FUM629Fa4EMShiHL", "file_name": "f", "timestamp": "2026-11-17T20:27:16Z", "webhook_id": "22" }),
+        other_file,
+    ];
+
+    for body in deliveries {
+        let (status, reply) = deliver_figma(&address, &body.to_string());
+
+        assert_eq!(status, 200, "{body}: {reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    }
+    assert!(setup.published().is_empty());
+}
+
+#[test]
+fn a_figma_comment_without_its_id_gets_400_and_a_body_over_1_mib_gets_413() {
+    let mut setup = Setup::figma_hooks("figma-invalid");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut nameless = figma_comment(&setup.secret, "32");
+    nameless["comment_id"] = Value::Null;
+
+    let (status, reply) = deliver_figma(&address, &nameless.to_string());
+    let (big, _) = raw(
+        &address,
+        &format!(
+            "POST /hooks/figma HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\n\r\n",
+            1024 * 1024 + 1
+        ),
+    );
+
+    assert_eq!(status, 400);
+    assert_eq!(
+        reply,
+        r#"{"error":"the payload lacks a valid `comment_id`"}"#
+    );
     assert_eq!(big, 413);
     assert!(setup.published().is_empty());
 }

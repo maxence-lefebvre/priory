@@ -236,6 +236,10 @@ does for GitHub: their ids differ.
 
 ## Figma
 
+**Built.** `POST /hooks/figma` publishes `figma.file.comment_created`, keyed by the file and
+deduplicated by the comment id. See [figma.md](../intake/figma.md), which says what the passcode
+does and does not prove. The other events are not mapped.
+
 Figma is the weakest fit, and the only source Max marked "maybe". A task needs something an agent
 can act on, and a Figma comment is that.
 
@@ -268,8 +272,9 @@ per comment is the alternative, from `comment_id`.
 - REST API: Figma limits by endpoint tier, seat type and plan, with a leaky bucket and `429`
   replies. A personal token reading a file in a Starter plan gets 6 requests a month.
 - A forum report from June 2026 says a team FILE_COMMENT webhook silently stopped delivering after
-  1 to 4 hours, with no failure logged. It has no confirmed answer, so the slice needs a check
-  before it trusts the source.
+  1 to 4 hours, with no failure logged. On 2026-07-30 a Figma employee replied that a fix was
+  released for newly created webhooks, which a reporter confirmed on 2026-08-03 (read on
+  2026-11-22).
 
 **Already covered.** The server, the envelope, duplicates, triggers and routing.
 
@@ -280,7 +285,7 @@ webhook receives, the trigger source `figma`, and the schemas.
 [Webhooks](https://developers.figma.com/docs/rest-api/webhooks),
 [Webhook events](https://developers.figma.com/docs/rest-api/webhooks-events),
 [Rate limits](https://developers.figma.com/docs/rest-api/rate-limits),
-[Forum report, seen in a search result only](https://forum.figma.com/report-a-problem-6/rest-v2-team-webhook-file-comment-silently-stops-delivering-after-1-to-4h-status-stays-active-no-failed-attempts-logged-55036).
+[Forum report](https://forum.figma.com/report-a-problem-6/rest-v2-team-webhook-file-comment-silently-stops-delivering-after-1-to-4h-status-stays-active-no-failed-attempts-logged-55036).
 
 ## Suggested order
 

@@ -6,7 +6,7 @@ use crate::{
 };
 use priory_factory::factory::{Factory, Price, Terminal, Trigger};
 use priory_intake::intake::{
-    self, ASK_ANSWERED, ASK_DISMISSED, CloudwatchWebhook, Github, HoneycombWebhook,
+    self, ASK_ANSWERED, ASK_DISMISSED, CloudwatchWebhook, FigmaWebhook, Github, HoneycombWebhook,
     IntercomWebhook, LinearWebhook, SentryWebhook,
 };
 use priory_intake::log;
@@ -24,6 +24,7 @@ use std::time::Duration;
 const GITHUB: &str = "/hooks/github";
 const LINEAR: &str = "/hooks/linear";
 const SENTRY: &str = "/hooks/sentry";
+const FIGMA: &str = "/hooks/figma";
 const CLOUDWATCH: &str = "/hooks/cloudwatch";
 const HONEYCOMB: &str = "/hooks/honeycomb";
 const INTERCOM: &str = "/hooks/intercom";
@@ -187,6 +188,13 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         .map(|secret| SentryWebhook::new(secret, factory))
         .transpose()?
         .map(Arc::new);
+    let figma = factory
+        .figma_webhook()
+        .map(|hook| env(&hook.secret_env, "the Figma webhook's passcode"))
+        .transpose()?
+        .map(|passcode| FigmaWebhook::new(passcode, factory))
+        .transpose()?
+        .map(Arc::new);
     let cloudwatch = factory
         .cloudwatch_webhook()
         .map(|hook| {
@@ -246,6 +254,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         (github.is_some(), GITHUB),
         (linear.is_some(), LINEAR),
         (sentry.is_some(), SENTRY),
+        (figma.is_some(), FIGMA),
         (cloudwatch.is_some(), CLOUDWATCH),
         (honeycomb.is_some(), HONEYCOMB),
         (intercom.is_some(), INTERCOM),
@@ -287,6 +296,12 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
                 log::open(&event_log).map_err(|error| error.to_string()),
             )
         });
+        let mut figma = figma.clone().map(|figma| {
+            (
+                figma,
+                log::open(&event_log).map_err(|error| error.to_string()),
+            )
+        });
         let mut cloudwatch = cloudwatch.clone().map(|cloudwatch| {
             (
                 cloudwatch,
@@ -311,26 +326,30 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
             &mut github,
             &mut linear,
             &mut sentry,
+            &mut figma,
             &mut cloudwatch,
             &mut honeycomb,
             &mut intercom,
         ) {
-            (true, Some(GITHUB), Some((github, bus)), _, _, _, _, _) => {
+            (true, Some(GITHUB), Some((github, bus)), _, _, _, _, _, _) => {
                 github.receive(bus, request)
             }
-            (true, Some(LINEAR), _, Some((linear, bus)), _, _, _, _) => {
+            (true, Some(LINEAR), _, Some((linear, bus)), _, _, _, _, _) => {
                 linear.receive(bus, request)
             }
-            (true, Some(SENTRY), _, _, Some((sentry, bus)), _, _, _) => {
+            (true, Some(SENTRY), _, _, Some((sentry, bus)), _, _, _, _) => {
                 sentry.receive(bus, request)
             }
-            (true, Some(CLOUDWATCH), _, _, _, Some((cloudwatch, bus)), _, _) => {
+            (true, Some(FIGMA), _, _, _, Some((figma, bus)), _, _, _) => {
+                figma.receive(bus, request)
+            }
+            (true, Some(CLOUDWATCH), _, _, _, _, Some((cloudwatch, bus)), _, _) => {
                 cloudwatch.receive(bus, request)
             }
-            (true, Some(HONEYCOMB), _, _, _, _, Some((honeycomb, bus)), _) => {
+            (true, Some(HONEYCOMB), _, _, _, _, _, Some((honeycomb, bus)), _) => {
                 honeycomb.receive(bus, request)
             }
-            (true, Some(INTERCOM), _, _, _, _, _, Some((intercom, bus))) => {
+            (true, Some(INTERCOM), _, _, _, _, _, _, Some((intercom, bus))) => {
                 intercom.receive(bus, request)
             }
             _ if request.method == "POST" => write(&db, &home, &served, &remote, request),

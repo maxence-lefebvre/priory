@@ -295,6 +295,12 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 factory.honeycomb_webhook().is_some(),
                 &mut problems,
             ),
+            "figma" => check_hooked(
+                trigger,
+                &FIGMA,
+                factory.figma_webhook().is_some(),
+                &mut problems,
+            ),
             "cloudwatch" => check_hooked(
                 trigger,
                 &CLOUDWATCH,
@@ -321,6 +327,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             "sentry",
             "cloudwatch",
             "honeycomb",
+            "figma",
             "intercom",
             "slack",
             "schedule",
@@ -880,6 +887,15 @@ const HONEYCOMB: Hooked = Hooked {
     filters: &["environment", "trigger"],
     key: "trigger.id",
     events: "alerts",
+};
+
+const FIGMA: Hooked = Hooked {
+    source: "figma",
+    vendor: "Figma",
+    on: "file.comment_created",
+    filters: &["file"],
+    key: "file.key",
+    events: "comments",
 };
 
 const CLOUDWATCH: Hooked = Hooked {

@@ -1,0 +1,21 @@
+{
+  "id": "9d3c2b1a-7e6f-5a4b-8c3d-2e1f0a9b8c7d",
+  "type": "figma.file.comment_created",
+  "subject": "Mockup library",
+  "time": "2026-11-17T20:27:16Z",
+  "data": {
+    "file": "zH44k2FUM629Fa4EMShiHL",
+    "file_name": "Mockup library",
+    "comment": "32",
+    "text": "TODO: \n@Evan Wallace Change selection colors",
+    "parent": null,
+    "author": "Dylan Field",
+    "mentions": ["Evan Wallace"],
+    "url": "https://www.figma.com/file/zH44k2FUM629Fa4EMShiHL",
+    "webhook": "22",
+    "time": "2026-11-17T20:27:16Z",
+    "baseline": false,
+    "triggers": ["figma-comments"]
+  },
+  "links": [{ "label": "file", "url": "https://www.figma.com/file/zH44k2FUM629Fa4EMShiHL" }]
+}
