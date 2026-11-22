@@ -21,7 +21,7 @@
 
 ## Start in three steps
 
-<p class="sub">Priory needs Linux, git, tmux, gh logged in to GitHub, claude or codex, and the Rust toolchain.</p>
+<p class="sub">Priory needs Linux, git, tmux, gh logged in to GitHub, openssl, claude or codex, and the Rust toolchain.</p>
 
 <ol class="steps">
 <li>
@@ -30,8 +30,8 @@
 
 ```sh
 git clone https://github.com/maxence-lefebvre/priory
-cd priory && cargo build --release
-export PATH="$PWD/target/release:$PATH"
+cd priory
+cargo install --path crates/priory
 ```
 
 Build from source with the pinned Rust toolchain.
@@ -58,18 +58,22 @@ A factory is a folder: one agent, one workflow and one trigger to start.
 ### Run it and answer the first ask
 
 ```sh
+mkdir -p ~/.local/state/priory-oss
 export PRIORY_DB=~/.local/state/priory-oss/priory.db
 export PRIORY_TOKEN=$(openssl rand -hex 32)
+echo "$PRIORY_TOKEN"
 priory daemon example
 ```
+
+In a second terminal:
 
 ```sh
 priory add example --repo owner/name "Fix the typo in the README"
 ```
 
-The daemon runs one agent per task in tmux and a git worktree. Its question lands on the desk, in the web view on `127.0.0.1:7340`.
+The daemon runs one agent per task in tmux and a git worktree. Its question lands on the desk, in the web view on `127.0.0.1:7340`, which asks for the token the `echo` printed.
 
-[Run the daemon](GETTING_STARTED.md#4-run-the-daemon)
+[Run it](GETTING_STARTED.md#4-run-it)
 
 </li>
 </ol>
