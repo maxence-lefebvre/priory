@@ -18,6 +18,10 @@ this machine, `<hostname>`, has no runner file in runners/, and the factory has 
 
 A factory with one runner file or none works as before: its one daemon owns every task.
 
+A [lead task](tools.md#hands-off), which answers an ask of a `hands-off` task, stays on the runner of that
+ask. Its source event exists only in that runner's state file, so the runner claims no key for it,
+starts it at once, and no other runner lists it.
+
 A daemon claims the key of each active task of its own whose key it does not hold, such as a task
 from before the factory got its second runner, or one that feedback reopened. It starts no run of
 that task until it reads its claim back, and the task waits with the reason
@@ -243,7 +247,8 @@ progress. A task can be given back to a runner that had it before.
 
 `priory give` reads this machine's state file to find the owner. It refuses with
 `no runner holds <key>` for a key no runner holds or whose task ended, with
-`runner <runner> holds <key> already`, and with `runner <runner> has no runner file in runners/`.
+`runner <runner> holds <key> already`, with `runner <runner> has no runner file in runners/`, and
+with `<key> is a lead task, which stays on the runner of the ask it answers`.
 Every runner also refuses a claim for a runner without a runner file.
 
 ## Limits

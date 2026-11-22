@@ -606,6 +606,9 @@ pub(crate) const CLAIMING: &str = "waits for its claim to reach the log";
 /// takeover published before then wins, and drops the task here.
 pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Result<Option<bool>> {
     let tx = db.transaction()?;
+    if lead(&tx, task)? {
+        return Ok(Some(true));
+    }
     let claim = tx
         .query_row(
             "SELECT claims.key, claims.hold, claims.published FROM claims
@@ -653,6 +656,16 @@ pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Res
     Ok(Some(false))
 }
 
+/// Whether `task` is a lead task. Its source event and the ask it answers exist only on this
+/// runner, so it never goes on the log and never moves.
+fn lead(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND trigger = ?2)",
+        params![task, crate::tools::LEAD_TRIGGER],
+        |row| row.get(0),
+    )
+}
+
 /// Claims the keys of this runner's active tasks that no runner holds yet, such as the tasks of a
 /// factory that had one runner before or one it reopened, so that another runner does not claim
 /// them too. Until the claim is read back, admission skips the task. A key whose last task ended
@@ -665,13 +678,13 @@ fn adopt(db: &mut Connection, me: &str) -> rusqlite::Result<()> {
             "SELECT tasks.key, inbox.id, tasks.generation,
                tasks.state IN ('done', 'failed', 'dropped') FROM tasks
                JOIN inbox ON inbox.task = tasks.id AND inbox.outcome = 'created'
-             WHERE CASE WHEN tasks.state IN ('done', 'failed', 'dropped')
+             WHERE tasks.trigger IS NOT ?2 AND CASE WHEN tasks.state IN ('done', 'failed', 'dropped')
                THEN tasks.id = (SELECT max(id) FROM tasks AS later WHERE later.key = tasks.key)
                  AND NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key)
                ELSE NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
                  AND claims.runner = ?1) END",
         )?
-        .query_map([me], |row| {
+        .query_map(params![me, crate::tools::LEAD_TRIGGER], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -1017,6 +1030,18 @@ pub fn give(
         return Err(format!("runner {runner} has no runner file in runners/"));
     }
     crate::link::refuse_while_unreachable(db)?;
+    let lead = db
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM tasks WHERE key = ?1 AND trigger = ?2)",
+            params![key, crate::tools::LEAD_TRIGGER],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if lead {
+        return Err(format!(
+            "{key} is a lead task, which stays on the runner of the ask it answers"
+        ));
+    }
     let owned = db
         .query_row(
             "SELECT runner, request, hold FROM claims WHERE key = ?1",
