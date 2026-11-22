@@ -447,6 +447,9 @@ selected row.
 
 - **The desk list ends with bottom padding of `--desk-end`**: the capsule's height plus its gap
   above and below, so the capsule never covers the last row when the list is scrolled to the end.
+- Offline, the capsule leaves the primary look: `--surface` with a `--control-line` edge, `unplug`
+  and `--warn-text`, reading "Read 3 asks, offline". It still opens the ask, whose options stay
+  disabled until the view reconnects.
 - The capsule hides when no ask is open. An empty desk shows: "No open asks. Agents ask here when
   they need you."
 - A round [Add](#add) button, `--capsule` wide and tall, sits at the right of the capsule with
@@ -678,7 +681,9 @@ did not show. Until then the options are disabled under a `layers` note, "Readin
 
 **Answer while reading.** On a phone, once the options scroll out of view:
 
-- The header shrinks to one line: the question, clamped, over the task key, step and revision.
+- The header shrinks to one line: the question, clamped, over the task key, step and revision,
+  such as "ENG-212, approve-pr, revision 1". The back link keeps its chevron and drops its word,
+  and the position leaves. Scrolling the options back into view restores the header.
 - The section chips stick under the header.
 - A **sticky answer bar** on `--bar`, `--answer-bar` tall, holds two buttons with
   `--radius-card`: a secondary "3 options" with `chevron-up`, and the recommended option as a
@@ -850,6 +855,10 @@ open Priory window when there is one.
   title. Line 3 is lane, band and the batch tag; a `blocked`, `held`, `failed` or `dropped` row
   shows its reason there instead of lane and band, in the role's text color, and keeps the batch tag. A run row's line 2 is its agent and
   model, line 3 its run id, outcome, duration and tokens.
+- **The step never truncates.** Line 1 names the step once when it equals the workflow's name,
+  "implement" rather than "implement implement", and "implement, approve-pr" otherwise. A long step
+  wraps its own words. A row with tags on line 1, such as a runner or Command, wraps the tags and
+  the age to a second line before it cuts the step.
 - **Wide**: a table, `--row-wide` (38 px) at least, with columns for state, key, title, workflow
   and step, lane, band and age (tasks), or state, run id, key, step, agent and model, outcome,
   duration, tokens and started (runs). A task's reason sits under its title. Numbers are right
@@ -1279,6 +1288,9 @@ run.
 
 - Touch targets are at least 44 by 44 px on coarse pointers and 24 by 24 px everywhere, with
   8 px between neighbours.
+- A link drawn smaller than that, such as a task key in a row, an ask's or batch's context line or
+  another runner's chevron, keeps its look and takes a transparent hit area of `--control` height
+  on coarse pointers. A chevron button is 24 by 24 px at least everywhere.
 - Put the primary action of a screen in its bottom third on compact screens.
 - Every gesture has a visible button that does the same thing.
 - Allowed gestures: horizontal swipe between asks in an ask's detail and between tabs; pinch and
