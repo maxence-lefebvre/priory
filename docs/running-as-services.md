@@ -31,6 +31,9 @@ HERDR_BUS_DB=/home/me/.local/state/priory-oss/bus.db
 PATH=/home/me/.local/bin:/usr/local/bin:/usr/bin:/bin
 ```
 
+Export the same `PRIORY_FACTORY`, `PRIORY_DB` and `HERDR_BUS_DB` in your shell too. Every command
+that takes a factory folder reads `PRIORY_FACTORY` when you leave the folder out, so `priory
+request` works from any folder (see [the `priory` commands](reference/cli.md)).
 `PRIORY_HOME` is optional (see [Priory home](daemon/home.md)). User services skip your shell profile,
 so `PATH` must reach `claude`, `git`, `gh` and `tmux`. Systemd does not create the parent folders of
 `PRIORY_DB` and `HERDR_BUS_DB`; create them first.

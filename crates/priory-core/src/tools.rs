@@ -1003,6 +1003,16 @@ pub fn ask_named(db: &Connection, name: &str) -> Result<i64, String> {
     .ok_or_else(|| format!("there is no ask {name}"))
 }
 
+/// The revision of ask `id` while it is open: neither answered nor withdrawn.
+pub fn open_revision(db: &Connection, id: i64) -> rusqlite::Result<Option<i64>> {
+    db.query_row(
+        "SELECT revision FROM asks WHERE id = ?1 AND answer IS NULL AND withdrawn_reason IS NULL",
+        [id],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
 /// Whether an answer, dismissal or fired wait of `run` waits in a queued prompt: a new ask or wait
 /// would put the task to sleep over it.
 fn woken(tx: &Transaction, run: &Run) -> rusqlite::Result<bool> {

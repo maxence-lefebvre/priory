@@ -2777,6 +2777,22 @@ pub fn join_instructions(instructions: &str, index: &str) -> String {
         .join("\n\n")
 }
 
+/// The factory folder a command reads: `given`, else `PRIORY_FACTORY` when it is set and not
+/// empty, else the current folder.
+pub fn folder(given: Option<&str>) -> PathBuf {
+    named_folder(given).unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// As `folder`, for a command that loads no factory when none is named: `given`, else
+/// `PRIORY_FACTORY` when it is set and not empty, else none.
+pub fn named_folder(given: Option<&str>) -> Option<PathBuf> {
+    given.map(PathBuf::from).or_else(|| {
+        std::env::var_os("PRIORY_FACTORY")
+            .filter(|env| !env.is_empty())
+            .map(PathBuf::from)
+    })
+}
+
 pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
     let mut factory = Factory {
         dir: dir.to_path_buf(),

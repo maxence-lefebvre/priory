@@ -211,6 +211,12 @@ While the last fetch of the factory's kit failed, the banner ends with `the kit 
 <time>: <error>; runs keep commit <commit>`, or `; runs start without the kit` when the runner has
 no good commit yet. See [skills.md](skills.md#a-kit-repository).
 
+While the sweep cannot fetch a repository that still has worktrees, the banner ends with
+`fetching <owner>/<name> fails since <time>: <error>; the sweep tries it again every hour. If its
+remote is gone, remove <home>/worktrees/<owner>/<name> and <home>/repos/<owner>/<name>`. The
+daemon reads it from Priory home, not the state, so a client sees it at its next read. See
+[sweep.md](sweep.md#a-clone-that-fails-to-fetch).
+
 The banner is `intake` in `priory desk --json` and `/api/desk`. A source that starts failing, or
 recovers, moves the state's revision, so a client that waits on `/api/events` redraws the banner at
 once. A repeated poll with the same outcome moves nothing. The stopped banner comes from time
