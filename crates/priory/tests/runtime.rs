@@ -22005,6 +22005,33 @@ impl Setup {
 }
 
 #[test]
+fn a_run_carried_into_the_next_step_records_the_kit_its_process_got() {
+    let mut setup = Setup::with_workflow("kit-carried", STEPS);
+    let commit = setup.kit_repo();
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let runs: Vec<(String, Option<String>, Option<String>)> = db
+        .prepare("SELECT ended_as, kit_hash, kit_commit FROM runs ORDER BY id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    assert_eq!(runs[0].0, "moved");
+    assert_eq!(runs[0].2.as_deref(), Some(commit.as_str()));
+    assert!(runs[0].1.is_some());
+    assert_eq!((&runs[1].1, &runs[1].2), (&runs[0].1, &runs[0].2));
+}
+
+#[test]
 fn a_run_gets_the_kits_files_before_the_factorys_and_records_the_kit_commit() {
     let mut setup = Setup::new("kit-repo");
     setup.kit("The factory says: write tests first.\n");
