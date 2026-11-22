@@ -265,7 +265,10 @@ fn a_stopped_task_resumes_its_session_in_its_worktree_with_the_stop_prompt_first
 
     let runs = setup.until("runs", |rows| rows.len() == 3);
     assert_eq!([&runs[2][1], &runs[2][4]], ["1", &runs[0][4]], "{runs:?}");
-    assert!(has(&launched(&setup), ["--resume", &runs[0][4]]));
+    // The run is stored before its harness starts and writes its arguments.
+    setup.until("runs", |_| {
+        has(&launched(&setup), ["--resume", &runs[0][4]])
+    });
     assert_eq!(
         fs::read_to_string(worktree.join("draft.txt")).unwrap(),
         "uncommitted\n"
@@ -663,7 +666,8 @@ fn a_task_stopped_once_is_not_marked_again_until_its_next_result() {
     setup.until("runs", |rows| {
         run(rows, "1").is_some_and(|row| row[7] == "preempted")
     });
-    setup.hold("hold-stop");
+    // Every later turn waits before its tool call until the test lets it go on.
+    setup.hold("hold-call");
     setup.until("tasks", |rows| {
         task(rows, "2").is_some_and(|row| row[4] == "running")
     });
@@ -677,11 +681,12 @@ fn a_task_stopped_once_is_not_marked_again_until_its_next_result() {
         format!("{WAITS}; stops no run: task 1 was already stopped once")
     );
     // The resumed turn ends with no tool, the nudge's turn with a result into the next step.
+    setup.calls(&[serde_json::Value::Null, result("passed")]);
+    setup.hold("hold-stop");
+    setup.release("hold-call");
+    setup.calls_left(1);
     setup.hold("hold-call");
-    setup.calls(&[result("passed")]);
     setup.release("hold-stop");
-    setup.until("outbox", |_| nudged(&setup, "1"));
-    setup.written("fake/pending");
     setup.until("outbox", |rows| {
         rows.iter().any(|row| {
             row[1] == "1" && row[3] == "confirmed" && row[4].starts_with("Your last turn")
@@ -689,6 +694,7 @@ fn a_task_stopped_once_is_not_marked_again_until_its_next_result() {
     });
     setup.hold("hold-stop");
     setup.release("hold-call");
+    setup.calls_left(0);
     setup.until_reason("1", |reason| {
         reason == "stops at its next turn end for task 3 (blocker)"
     });
