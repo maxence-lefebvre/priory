@@ -2059,6 +2059,19 @@ fn teardown_kills_a_tmux_server_that_a_late_child_starts() {
     assert!(!listed.status.success(), "a tmux server outlived its test");
 }
 
+/// Whether process `pid` has exited. An init that reaps late, as in some containers, leaves a dead
+/// process a zombie for a while. Without `/proc`, a zombie counts as alive.
+fn exited(pid: &str) -> bool {
+    if !Path::new("/proc/self/stat").exists() {
+        let alive = Command::new("kill").args(["-0", pid]).output().unwrap();
+        return !alive.status.success();
+    }
+    fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+        stat.rsplit_once(") ")
+            .is_some_and(|(_, rest)| rest.starts_with(['Z', 'X']))
+    })
+}
+
 #[test]
 fn a_test_that_panics_after_its_run_starts_leaves_no_tmux_server() {
     let mut server = None;
@@ -2075,10 +2088,11 @@ fn a_test_that_panics_after_its_run_starts_leaves_no_tmux_server() {
 
     assert!(caught.is_err());
     let (socket, pid) = server.expect("the run never got a tmux session");
-    assert!(
-        !Path::new(&format!("/proc/{pid}")).exists(),
-        "tmux server {pid} outlived its test"
-    );
+    if Path::new("/proc/self/stat").exists() {
+        assert!(exited(&pid), "tmux server {pid} outlived its test");
+    } else {
+        eprintln!("skipped the pid check: this host has no /proc to tell whether {pid} lives");
+    }
     let listed = Command::new("tmux")
         .args(["-S", &socket, "list-sessions"])
         .output()
@@ -6596,11 +6610,15 @@ fn a_merge_that_moves_a_said_run_to_another_agent_kills_its_session_and_starts_t
     let runs = setup.rows("runs");
     assert_eq!(runs.len(), 4, "{runs:?}");
     assert_eq!(runs[3][2], "watch");
-    let alive = Command::new("kill")
-        .args(["-0", said.trim()])
-        .status()
-        .unwrap();
-    assert!(!alive.success(), "the said run's agent {said} still runs");
+    // Killing its session hangs the agent up, and it exits once it is scheduled.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !exited(said.trim()) {
+        assert!(
+            Instant::now() < deadline,
+            "the said run's agent {said} still runs"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]
@@ -10883,6 +10901,20 @@ fn wait_since(setup: &Setup) -> herdr_bus::Timestamp {
         .unwrap()
 }
 
+/// A second after the first wait was stored, which the state keeps to the second: the earliest
+/// instant a Slack reply surely counts for it.
+fn after_wait_stored(setup: &Setup) -> herdr_bus::Timestamp {
+    let created: herdr_bus::Timestamp = rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT created FROM waits ORDER BY id LIMIT 1", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap()
+        .parse()
+        .unwrap();
+    created.checked_add(Duration::from_secs(1)).unwrap()
+}
+
 /// Slack's `ts` for `time`: seconds since the epoch, with six decimals.
 fn ts(time: herdr_bus::Timestamp) -> String {
     format!("{}.{:06}", time.as_second(), time.subsec_microsecond())
@@ -10903,7 +10935,8 @@ fn a_reply_posted_before_the_wait_wakes_the_task_and_the_bots_own_reply_never_do
 
     setup.intake();
     stays_asleep(&setup);
-    let person = stored;
+    // A reply counts once the wait is stored.
+    let person = after_wait_stored(&setup);
     setup.answer_slack(&[old, slack_message(&ts(person), "U0PERSON"), mine]);
     setup.intake();
 
@@ -10944,7 +10977,7 @@ fn a_slack_reply_names_its_author_by_display_name_asking_slack_once_per_user() {
         json!({ "type": "slack_reply", "channel": "C0123", "thread_ts": THREAD }),
     );
     let stored = wait_since(&setup);
-    let later = stored.checked_add(Duration::from_secs(1)).unwrap();
+    let later = after_wait_stored(&setup);
     let mut messages =
         vec![json!({ "ts": THREAD, "thread_ts": THREAD, "user": "U0PERSON", "text": "first" })];
     messages.extend([
@@ -11203,9 +11236,8 @@ fn a_failing_slack_channel_still_lets_a_watched_thread_publish_its_reply() {
         "source = \"slack\"\nchannel = \"C0999\"\non = \"message.posted\"\nworkflow = \"implement\"\n",
     )
     .unwrap();
-    let stored = wait_since(&setup);
     // The fake answers no `conversations.history`, so the trigger's channel fails.
-    setup.answer_slack(&[slack_message(&ts(stored), "U0PERSON")]);
+    setup.answer_slack(&[slack_message(&ts(after_wait_stored(&setup)), "U0PERSON")]);
 
     let output = setup.poll(&[]);
 
@@ -21653,6 +21685,31 @@ fn scored_task(name: &str) -> Setup {
         rows.first().is_some_and(|row| row[4] == "done")
     });
     setup
+}
+
+#[test]
+fn priory_score_waits_for_a_write_that_commits_while_it_reads() {
+    let setup = scored_task("score-locked");
+    scorer(&setup, "passed", PASSED_SCORER);
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch("BEGIN IMMEDIATE; UPDATE revision SET value = value + 1;")
+        .unwrap();
+
+    let factory = setup.dir.join("factory");
+    let score = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .args(["score", factory.to_str().unwrap(), "1", "--json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Held while score reads, so its write comes after a commit newer than what it read.
+    std::thread::sleep(Duration::from_millis(1000));
+    db.execute_batch("COMMIT;").unwrap();
+    let output = score.wait_with_output().unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(scored_records(&setup).len(), 2);
 }
 
 #[test]
