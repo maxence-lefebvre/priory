@@ -29895,3 +29895,30 @@ fn a_rejection_becomes_a_lesson_that_the_pre_review_reads_at_the_tasks_next_resu
         setup.typed()
     );
 }
+
+#[test]
+fn an_uncalibrated_pre_review_lets_the_result_reach_the_approval_ask_and_asks_nothing() {
+    let mut setup = Setup::with_workflow("pre-review-uncalibrated", LESSONED);
+    judge_scorer(&setup, "0.8");
+    let file = setup.dir.join("factory/scorers/asked.toml");
+    let toml = fs::read_to_string(&file).unwrap();
+    fs::write(&file, toml.replace("on = \"diff\"", "on = \"result\"")).unwrap();
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\npre_review = \"asked\"\n",
+    )
+    .unwrap();
+    let memories = setup.dir.join("factory/memories");
+    fs::create_dir_all(&memories).unwrap();
+    fs::write(memories.join("lesson-tests.md"), LESSON_TESTS).unwrap();
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    assert!(asks[0][3].starts_with("approve-pr: "), "{asks:?}");
+    let scores = gate_scores(&setup);
+    assert_eq!(scores[0][1], json!("error"), "{scores:?}");
+    assert!(!setup.dir.join("fake/handler-args.log").exists());
+}

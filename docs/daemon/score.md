@@ -259,7 +259,9 @@ between markers of their own, it reads the lessons, one per line as `<name>: <te
 pre-review reads them, not the step's other gate scorers. The judge's prompt says what a repeat
 is. A labeled case gives its own `lessons`, so calibration measures the same question (see
 [scorers.md](../reference/scorers.md#labeled-cases)). Like any judge in a gate, it counts only
-while its calibration passes.
+while its calibration passes. A pre-review that is not calibrated raises no ask, unlike other gate
+judges: its `error: not calibrated: <why>` is recorded, and the result goes on to the approval step,
+where a person reads it anyway.
 
 ### What it does
 
