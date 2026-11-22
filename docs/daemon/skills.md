@@ -2,7 +2,8 @@
 
 A factory's `skills/` folder, `instructions.md` and `memories/` folder reach every run on every
 runner, through the factory checkout each runner already has (R11.1). A kit repository that
-`[kit]` names adds its own, which each runner fetches. This page explains how each harness gets
+`[kit]` names adds its own, and a memories repository that `[memories]` names adds memories. Each
+runner fetches both. This page explains how each harness gets
 them, how a run records what it got, and how memories that agents write reach other runs once a
 person accepts them. The rest of R11.1 is in [the design note](../design/shared-skills-and-memories.md).
 
@@ -190,13 +191,15 @@ on the log can write one.
 
 ### Which run gets which candidate
 
-A run gets the kit's memories, then the factory's, then, in log order:
+A run gets the kit's memories, then the memories repository's, then the factory's, then, in log
+order:
 
 - each accepted candidate, at the place of its accept, and
 - each candidate its own task wrote on this runner and no person dropped, at the place of its
   write. One not read back from the log yet comes last.
 
-A forget removes the memory of its name, whether the kit, the factory or a candidate held it. So:
+A forget removes the memory of its name, whether the kit, the memories repository, the factory or a
+candidate held it. So:
 
 - The task that wrote a candidate gets it at its next run, such as the run an answer resumes.
 - Another task gets it only once a person accepts it, on any runner, since every runner reads the
@@ -237,13 +240,14 @@ wrong accept is not kept for good.
 ### Accepted memories move into the kit
 
 Accepted candidates live in the log and in each state file. A daily pull request moves them into
-the kit repository, where a person merges them. A schedule trigger starts it, and a code step with
+the memories repository, or into the kit repository when `[memories]` is unset, where a person
+merges them. The steps below say "the kit" for whichever of the two it is. A schedule trigger starts it, and a code step with
 the `open-memories-pr` action opens it:
 
 ```toml
 # triggers/kit-memories.toml
 source = "schedule"
-repo = "owner/abbey"           # the kit's GitHub owner/name, where the pull request opens
+repo = "owner/abbey"           # the GitHub owner/name of the memories repository or the kit
 at = "06:00"
 key = "kit-memories"
 workflow = "memories"
@@ -269,14 +273,14 @@ runner runs the step (see [runners.md](runners.md#claims)). That runner:
 2. Takes, for each name, the accepted candidate whose accept came last in log order. A pending,
    dropped or retired candidate never goes in.
 3. On top of the ref's commit, writes each accepted memory as `<memories>/<name>.md`, byte for byte
-   the file runs get, and removes the file of each accepted forget. `<memories>` is the kit's
-   `memories` folder, `memories` by default.
+   the file runs get, and removes the file of each accepted forget. `<memories>` is the memories
+   repository's `path`, or the kit's `memories` folder; `memories` by default.
 4. When that changes no file, ends `unchanged` and pushes nothing. So once the pull request merges,
    the next firing proposes nothing.
 5. Otherwise pushes the commit to the kit's `priory/memories` branch with git's own credentials,
    replacing what the branch held.
 6. Opens a pull request from `priory/memories` onto the kit's `ref`, or onto the default branch when
-   `[kit]` sets no `ref`, with `gh pr create -R <repo>`. When one is open already, it edits that
+   it sets no `ref`, with `gh pr create -R <repo>`. When one is open already, it edits that
    one's title and body with `gh pr edit`.
 
 The body lists each memory the commit adds, changes or removes, with its candidate's id, task,
@@ -356,14 +360,51 @@ The next fetch that works removes the banner.
 
 ### Which file wins
 
-The kit's files come first, then the factory's:
+The kit's files come first, then the memories repository's, then the factory's:
 
-- Skills and memories: a factory skill or memory hides the kit's of the same name. The daemon's log
-  names each one it hides.
+- Skills and memories: a factory skill or memory hides the kit's of the same name. A memory in the
+  memories repository hides the kit's of the same name, and a factory memory hides it in turn. The
+  daemon's log names each repository file the factory hides.
 - Instructions: a run gets the kit's instructions, a blank line, then the factory's
   `instructions.md`.
 
 The run's plugin folder, memory snapshot and `kit_hash` cover the merged files, as above.
+
+## A memories repository
+
+`[memories]` in `factory.toml` names a git repository whose memories every run gets too (see
+[the reference](../reference/factory.md#memories)). A person keeps skills in the kit and memories
+here, so the frequent commits of accepted memories stay out of the skills' history, and the two
+repositories can be shared with different people:
+
+```toml
+[memories]
+repo = "git@github.com:owner/scriptorium.git"
+ref = "main"
+path = "memories"
+every = "5m"
+```
+
+Each runner fetches it as it fetches the kit, at daemon start and every `every`, with git's own
+credentials. Its bare mirror is its own, `$PRIORY_HOME/kit/repos/<hash>.git`, even when it names
+the kit's URL. Each commit is checked out read-only into `$PRIORY_HOME/kit/<commit>/`, and checked
+again each time the runner loads it, as a kit commit is. A commit with a memory that `priory check`
+would refuse is refused whole.
+
+A failed fetch keeps the last good commit, or starts runs without the repository's memories when the
+runner has none, and the desk says so after the kit's banner:
+
+```text
+the memories repository fails to fetch since 2026-11-21T09:00:00Z: git fetch /srv/scriptorium.git main: fatal: '/srv/scriptorium.git' does not appear to be a git repository; runs keep commit 7876b593d4a6
+```
+
+A run gets the kit's memories, then this repository's, then the factory's, then the candidates it
+sees, as [Which run gets which candidate](#which-run-gets-which-candidate) orders them. The kit's
+own `memories` folder still counts. With `[memories]`, the daily pull request of accepted memories
+goes to this repository, onto its `ref`, in place of the kit (see
+[Accepted memories move into the kit](#accepted-memories-move-into-the-kit)).
+
+Without `[memories]`, runs get the kit's memories and the pull request goes to the kit, as above.
 
 ## What a run records
 
@@ -379,7 +420,8 @@ person sees that a runner needs a pull.
 
 With `[kit]`, each run also records `kit_commit`, the kit commit it got, or none when the runner had
 none. `priory runs` shows it in its `commit` column, and the `factory.step.ended` trace record of a
-model step carries it. Two runners may run different commits for up to `every`, and this column
+model step carries it. With `[memories]`, each run records `memories_commit` the same way, which
+`priory runs` shows in its `memories` column. Two runners may run different commits for up to `every`, and this column
 shows it.
 
 A shared session compares its agent's prompt digest with the one it started with (see
@@ -388,9 +430,9 @@ change to any of them reads as a change to the agent's prompt.
 
 ## Known limits
 
-- Priory never removes an old plugin folder, memory snapshot, kit checkout or `.system.md` file.
-  They are small. Since they are read-only, run `chmod -R u+w $PRIORY_HOME/kit` before you remove
-  them yourself.
+- Priory never removes an old plugin folder, memory snapshot, kit or memories repository checkout,
+  or `.system.md` file. They are small. Since they are read-only, run
+  `chmod -R u+w $PRIORY_HOME/kit` before you remove them yourself.
 - `priory check` cannot see a kit's files, so it neither warns about a factory skill that hides a
   kit skill nor counts the kit's instructions or skills toward a Codex agent's 8192-byte limit. A Codex run
   whose merged instructions pass tmux's limit fails to start.

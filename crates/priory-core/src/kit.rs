@@ -1,5 +1,5 @@
-//! The factory's skills, instructions and memories, and its kit repository's, as each run gets
-//! them (R11.1).
+//! The factory's skills, instructions and memories, and those of its kit repository and memories
+//! repository, as each run gets them (R11.1).
 
 use priory_factory::factory::{self, Factory, KitFiles, Memory, Skill};
 use priory_factory::paths::Scoped;
@@ -11,7 +11,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -28,14 +28,22 @@ fn digest<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> String {
         .collect()
 }
 
-/// A kit commit, checked out under Priory home and loaded.
+/// A commit of the kit or the memories repository, checked out under Priory home and loaded.
 pub(crate) struct Fetched {
     pub(crate) commit: String,
     files: KitFiles,
 }
 
-/// What a run gets: the kit's skills, instructions and memories, then the factory's own, the
-/// factory's winning on a name both hold, then the memory candidates the run sees, in order.
+/// The commits runs get now: the kit's and the memories repository's, each when the runner has one.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Current<'a> {
+    pub(crate) kit: Option<&'a Fetched>,
+    pub(crate) memories: Option<&'a Fetched>,
+}
+
+/// What a run gets: the kit's skills, instructions and memories, then the memories repository's
+/// memories, then the factory's own, a later one winning on a name two hold, then the memory
+/// candidates the run sees, in order.
 pub(crate) struct Sources<'a> {
     skills: BTreeMap<&'a str, &'a Skill>,
     instructions: String,
@@ -44,25 +52,30 @@ pub(crate) struct Sources<'a> {
     name: &'a str,
     /// The kit commit, when the runner has one.
     pub(crate) commit: Option<&'a str>,
+    /// The memories repository's commit, when the runner has one.
+    pub(crate) memories_commit: Option<&'a str>,
 }
 
 pub(crate) fn sources<'a>(
     factory: &'a Factory,
-    kit: Option<&'a Fetched>,
+    current: Current<'a>,
     candidates: &'a [(String, Option<Memory>)],
 ) -> Sources<'a> {
     let mut skills = BTreeMap::new();
     let mut memories = BTreeMap::new();
     let mut instructions = "";
-    if let Some(kit) = kit {
+    if let Some(kit) = current.kit {
         skills.extend(kit.files.skills.iter().map(|(n, s)| (n.as_str(), &s.value)));
+        instructions = kit.files.instructions.as_deref().unwrap_or("").trim();
+    }
+    for fetched in [current.kit, current.memories].into_iter().flatten() {
         memories.extend(
-            kit.files
+            fetched
+                .files
                 .memories
                 .iter()
                 .map(|(n, m)| (n.as_str(), &m.value)),
         );
-        instructions = kit.files.instructions.as_deref().unwrap_or("").trim();
     }
     skills.extend(factory.skills.iter().map(|(n, s)| (n.as_str(), &s.value)));
     memories.extend(factory.memories.iter().map(|(n, m)| (n.as_str(), &m.value)));
@@ -77,7 +90,8 @@ pub(crate) fn sources<'a>(
         instructions: factory::join_instructions(instructions, factory.instructions()),
         memories,
         name: &factory.name,
-        commit: kit.map(|kit| kit.commit.as_str()),
+        commit: current.kit.map(|kit| kit.commit.as_str()),
+        memories_commit: current.memories.map(|memories| memories.commit.as_str()),
     }
 }
 
@@ -232,9 +246,121 @@ impl Sources<'_> {
     }
 }
 
-/// How a runner keeps the kit that `[kit]` names: the commit its runs get, and its next fetch.
-pub(crate) struct Fetcher {
-    settings: factory::Kit,
+/// A repository a runner fetches: the kit that `[kit]` names, or the memories repository that
+/// `[memories]` names.
+#[derive(Clone)]
+enum Settings {
+    Kit(factory::Kit),
+    Memories(factory::MemoriesRepo),
+}
+
+impl Settings {
+    fn repo(&self) -> &str {
+        match self {
+            Settings::Kit(kit) => &kit.repo,
+            Settings::Memories(memories) => &memories.repo,
+        }
+    }
+
+    fn reference(&self) -> &str {
+        match self {
+            Settings::Kit(kit) => kit.reference(),
+            Settings::Memories(memories) => memories.reference(),
+        }
+    }
+
+    fn every(&self) -> Duration {
+        match self {
+            Settings::Kit(kit) => kit.every(),
+            Settings::Memories(memories) => memories.every(),
+        }
+    }
+
+    /// What the daemon's log and the desk call it.
+    fn name(&self) -> &'static str {
+        match self {
+            Settings::Kit(_) => "the kit",
+            Settings::Memories(_) => "the memories repository",
+        }
+    }
+
+    /// The state file's table of its commit and last failure, and that commit's column, which the
+    /// runs table shares.
+    fn table(&self) -> (&'static str, &'static str) {
+        match self {
+            Settings::Kit(_) => ("kit", "kit_commit"),
+            Settings::Memories(_) => ("memories_repo", "memories_commit"),
+        }
+    }
+
+    /// The files of the commit checked out in `dir`.
+    fn load(&self, dir: &Path) -> (KitFiles, Vec<factory::Problem>) {
+        match self {
+            Settings::Kit(kit) => factory::load_kit(dir, kit),
+            Settings::Memories(memories) => factory::load_memories_repo(dir, memories),
+        }
+    }
+
+    fn place(&self, factory: &Factory, home: &Path) -> std::io::Result<(String, PathBuf)> {
+        place(
+            self.repo(),
+            matches!(self, Settings::Memories(_)),
+            factory,
+            home,
+        )
+    }
+}
+
+/// How a runner keeps the kit and the memories repository: the commits its runs get, and their
+/// next fetches.
+pub(crate) struct Fetchers {
+    kit: Option<Fetcher>,
+    memories: Option<Fetcher>,
+}
+
+impl Fetchers {
+    /// The fetchers of the factory's `[kit]` and `[memories]`. Without one, it forgets that
+    /// repository's earlier banner.
+    pub(crate) fn new(db: &Connection, factory: &Factory, home: &Path) -> Result<Fetchers, Error> {
+        let settings = factory.settings.as_ref().map(|s| &s.value);
+        let kit = settings.and_then(|s| s.kit.clone()).map(Settings::Kit);
+        let memories = settings
+            .and_then(|s| s.memories.clone())
+            .map(Settings::Memories);
+        Ok(Fetchers {
+            kit: Fetcher::new(db, factory, home, kit, "kit")?,
+            memories: Fetcher::new(db, factory, home, memories, "memories_repo")?,
+        })
+    }
+
+    /// The commits runs get now.
+    pub(crate) fn current(&self) -> Current<'_> {
+        Current {
+            kit: self.kit.as_ref().and_then(Fetcher::current),
+            memories: self.memories.as_ref().and_then(Fetcher::current),
+        }
+    }
+
+    /// Fetches each before any run starts.
+    pub(crate) fn start(&mut self, db: &Connection) -> Result<(), Error> {
+        for fetcher in [&mut self.kit, &mut self.memories].into_iter().flatten() {
+            fetcher.start(db)?;
+        }
+        Ok(())
+    }
+
+    /// Fetches each again every `every`, off the daemon's thread.
+    pub(crate) fn tick(&mut self, db: &Connection) -> Result<(), Error> {
+        for fetcher in [&mut self.kit, &mut self.memories].into_iter().flatten() {
+            fetcher.tick(db)?;
+        }
+        Ok(())
+    }
+}
+
+/// How a runner keeps one repository: the commit its runs get, and its next fetch.
+struct Fetcher {
+    settings: Settings,
     /// The repository as `git fetch` takes it, a relative path made absolute.
     repo: String,
     mirror: PathBuf,
@@ -242,23 +368,25 @@ pub(crate) struct Fetcher {
     current: Option<Arc<Fetched>>,
     tried: Instant,
     fetching: Option<JoinHandle<Result<Fetched, String>>>,
-    /// The names of the factory's own skills and memories, which hide the kit's.
+    /// The names of the factory's own skills and memories, which hide the repository's.
     own: Vec<String>,
 }
 
 impl Fetcher {
-    /// The fetcher of the factory's `[kit]`, or none without one. Without one, it forgets any
-    /// earlier kit's banner.
-    pub(crate) fn new(
+    /// The fetcher of `settings`, or none without them. Without them, it empties `table`, which
+    /// forgets any earlier banner.
+    fn new(
         db: &Connection,
         factory: &Factory,
         home: &Path,
+        settings: Option<Settings>,
+        table: &str,
     ) -> Result<Option<Fetcher>, Error> {
-        let Some(settings) = factory.settings.as_ref().and_then(|s| s.value.kit.clone()) else {
-            db.execute("DELETE FROM kit", [])?;
+        let Some(settings) = settings else {
+            db.execute(&format!("DELETE FROM {table}"), [])?;
             return Ok(None);
         };
-        let (repo, mirror) = place(&settings, factory, home)?;
+        let (repo, mirror) = settings.place(factory, home)?;
         let own = factory
             .skills
             .keys()
@@ -278,24 +406,30 @@ impl Fetcher {
     }
 
     /// The commit runs get now, if any.
-    pub(crate) fn current(&self) -> Option<&Fetched> {
+    fn current(&self) -> Option<&Fetched> {
         self.current.as_deref()
     }
 
     /// Fetches the ref before any run starts. A failed fetch keeps the last good commit, which the
     /// state file holds, and says so on the desk.
-    pub(crate) fn start(&mut self, db: &Connection) -> Result<(), Error> {
+    fn start(&mut self, db: &Connection) -> Result<(), Error> {
         self.tried = Instant::now();
         let fetched = fetch(&self.settings, &self.repo, &self.mirror, &self.home);
         if fetched.is_err() {
+            let (table, column) = self.settings.table();
             let last: Option<String> = db
-                .query_row("SELECT kit_commit FROM kit", [], |row| row.get(0))
+                .query_row(&format!("SELECT {column} FROM {table}"), [], |row| {
+                    row.get(0)
+                })
                 .optional()?
                 .flatten();
             if let Some(last) = last {
                 match load(&self.settings, &self.mirror, &self.home, last) {
                     Ok(kit) => self.current = Some(Arc::new(kit)),
-                    Err(error) => eprintln!("priory daemon: the last kit commit: {error}"),
+                    Err(error) => eprintln!(
+                        "priory daemon: the last commit of {}: {error}",
+                        self.settings.name()
+                    ),
                 }
             }
         }
@@ -303,14 +437,14 @@ impl Fetcher {
     }
 
     /// Fetches again every `every`, off the daemon's thread, and applies a fetch that finished.
-    pub(crate) fn tick(&mut self, db: &Connection) -> Result<(), Error> {
+    fn tick(&mut self, db: &Connection) -> Result<(), Error> {
         if self.fetching.as_ref().is_some_and(JoinHandle::is_finished) {
             let fetched = self
                 .fetching
                 .take()
                 .expect("a fetch runs")
                 .join()
-                .unwrap_or_else(|_| Err("the kit's fetch panicked".into()));
+                .unwrap_or_else(|_| Err(format!("{}'s fetch panicked", self.settings.name())));
             return self.record(db, fetched);
         }
         if self.fetching.is_none() && self.tried.elapsed() >= self.settings.every() {
@@ -327,51 +461,57 @@ impl Fetcher {
     /// Applies a fetch: a new commit applies to runs that start after it, and a failure keeps the
     /// commit runs had.
     fn record(&mut self, db: &Connection, fetched: Result<Fetched, String>) -> Result<(), Error> {
+        let name = self.settings.name();
         let error = match fetched {
             Ok(kit) => {
                 if self
                     .current()
                     .is_none_or(|current| current.commit != kit.commit)
                 {
-                    eprintln!("priory daemon: runs now get kit commit {}", kit.commit);
+                    eprintln!("priory daemon: runs now get {name} commit {}", kit.commit);
                     for hidden in self.own.iter().filter(|own| match own.split_once(' ') {
                         Some(("skill", name)) => kit.files.skills.contains_key(name),
                         Some((_, name)) => kit.files.memories.contains_key(name),
                         None => false,
                     }) {
-                        eprintln!("priory daemon: the factory's {hidden} hides the kit's");
+                        eprintln!("priory daemon: the factory's {hidden} hides {name}'s");
                     }
                     self.current = Some(Arc::new(kit));
                 }
                 None
             }
             Err(error) => {
-                eprintln!("priory daemon: the kit: {error}");
+                eprintln!("priory daemon: {name}: {error}");
                 Some(error)
             }
         };
         let commit = self.current().map(|kit| kit.commit.as_str());
+        let (table, column) = self.settings.table();
         db.execute(
-            "INSERT INTO kit (id, kit_commit, failing_since, error)
-             VALUES (1, ?1, CASE WHEN ?2 IS NOT NULL THEN strftime('%Y-%m-%dT%H:%M:%SZ', 'now') END, ?2)
-             ON CONFLICT (id) DO UPDATE SET kit_commit = excluded.kit_commit,
-               failing_since = CASE WHEN excluded.error IS NULL THEN NULL
-                 ELSE coalesce(kit.failing_since, excluded.failing_since) END,
-               error = excluded.error",
+            &format!(
+                "INSERT INTO {table} (id, {column}, failing_since, error)
+                 VALUES (1, ?1, CASE WHEN ?2 IS NOT NULL THEN strftime('%Y-%m-%dT%H:%M:%SZ', 'now') END, ?2)
+                 ON CONFLICT (id) DO UPDATE SET {column} = excluded.{column},
+                   failing_since = CASE WHEN excluded.error IS NULL THEN NULL
+                     ELSE coalesce({table}.failing_since, excluded.failing_since) END,
+                   error = excluded.error"
+            ),
             params![commit, error],
         )?;
         Ok(())
     }
 }
 
-/// The kit's repository as `git fetch` takes it, a relative path made absolute, and its bare mirror
-/// under Priory home.
+/// A repository as `git fetch` takes it, a relative path made absolute, and its bare mirror under
+/// Priory home. The memories repository's mirror is its own, even at the kit's URL, so the two
+/// fetches never share one.
 pub(crate) fn place(
-    settings: &factory::Kit,
+    repo: &str,
+    memories: bool,
     factory: &Factory,
     home: &Path,
 ) -> std::io::Result<(String, PathBuf)> {
-    let repo = settings.repo.trim();
+    let repo = repo.trim();
     let local = !repo.contains("://") && !repo.contains(':');
     let repo = if local && Path::new(repo).is_relative() {
         std::path::absolute(factory.dir.join(repo))?
@@ -380,19 +520,17 @@ pub(crate) fn place(
     } else {
         repo.to_owned()
     };
-    let mirror = home
-        .join("kit/repos")
-        .join(format!("{}.git", digest([repo.as_bytes()])));
+    let hash = if memories {
+        digest([&b"memories"[..], repo.as_bytes()])
+    } else {
+        digest([repo.as_bytes()])
+    };
+    let mirror = home.join("kit/repos").join(format!("{hash}.git"));
     Ok((repo, mirror))
 }
 
 /// Fetches the ref, then checks out and loads the commit it names.
-fn fetch(
-    settings: &factory::Kit,
-    repo: &str,
-    mirror: &Path,
-    home: &Path,
-) -> Result<Fetched, String> {
+fn fetch(settings: &Settings, repo: &str, mirror: &Path, home: &Path) -> Result<Fetched, String> {
     let commit = runtime::kit_fetch(mirror, repo, settings.reference())?;
     load(settings, mirror, home, commit)
 }
@@ -400,13 +538,13 @@ fn fetch(
 /// Checks `commit` out into `<home>/kit/<commit>`, once, and loads it. A commit whose files
 /// `priory check` would refuse is refused whole.
 fn load(
-    settings: &factory::Kit,
+    settings: &Settings,
     mirror: &Path,
     home: &Path,
     commit: String,
 ) -> Result<Fetched, String> {
     let dir = runtime::kit_checkout(mirror, &home.join("kit"), &commit)?;
-    let (files, problems) = factory::load_kit(&dir, settings);
+    let (files, problems) = settings.load(&dir);
     if let Some(first) = problems.first() {
         let at = first
             .at
@@ -424,15 +562,31 @@ fn load(
     Ok(Fetched { commit, files })
 }
 
-/// `the kit fails to fetch since <time>: <error>; runs ...` while the kit's last fetch failed.
+/// `the kit fails to fetch since <time>: <error>; runs ...` while the kit's last fetch failed, and
+/// the same for the memories repository, joined by `; `.
 pub fn banner(db: &Connection) -> rusqlite::Result<Option<String>> {
-    db.query_row(
-        "SELECT 'the kit fails to fetch since ' || failing_since || ': ' || error || '; '
-           || CASE WHEN kit_commit IS NULL THEN 'runs start without the kit'
-              ELSE 'runs keep commit ' || substr(kit_commit, 1, 12) END
-         FROM kit WHERE error IS NOT NULL",
-        [],
-        |row| row.get(0),
-    )
-    .optional()
+    let mut lines = Vec::new();
+    for (name, table, column) in [
+        ("the kit", "kit", "kit_commit"),
+        (
+            "the memories repository",
+            "memories_repo",
+            "memories_commit",
+        ),
+    ] {
+        let line: Option<String> = db
+            .query_row(
+                &format!(
+                    "SELECT '{name} fails to fetch since ' || failing_since || ': ' || error || '; '
+                       || CASE WHEN {column} IS NULL THEN 'runs start without {name}'
+                          ELSE 'runs keep commit ' || substr({column}, 1, 12) END
+                     FROM {table} WHERE error IS NOT NULL"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        lines.extend(line);
+    }
+    Ok((!lines.is_empty()).then(|| lines.join("; ")))
 }

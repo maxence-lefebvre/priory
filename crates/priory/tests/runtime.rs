@@ -47,7 +47,7 @@ const OUTPUT: &str = "factory.intake";
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
 /// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, 66, which added the step a gate enters after the merge, 70, which added idle compactions and session definitions, and 71, which added cleared deliveries, ended snoozes and withdrawal times. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
@@ -6199,7 +6199,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          ALTER TABLE actions DROP COLUMN stdout; ALTER TABLE actions DROP COLUMN stderr;
          ALTER TABLE actions DROP COLUMN pid; ALTER TABLE actions DROP COLUMN pid_started;
          ALTER TABLE actions DROP COLUMN ended;
-         ALTER TABLE tasks DROP COLUMN progress; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha;
+         ALTER TABLE tasks DROP COLUMN progress; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha;
          ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head;
          DROP TABLE deliveries;
          DROP TABLE reports;
@@ -10592,7 +10592,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     // The state file as version 64 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+        "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
@@ -26427,6 +26427,275 @@ fn the_daily_pull_request_carries_each_accepted_memory_as_a_file_in_the_kit_and_
         b.kit_git(&["rev-parse", "priory/memories"]).unwrap().trim(),
         pushed
     );
+}
+
+const SCRIPTORIUM_FACT: &str = "---\nname: scriptorium-fact\ndescription: What the memories repository knows.\n---\nMemories live apart from skills.\n";
+
+impl Setup {
+    /// A memories repository, `scriptorium.git`, whose `memories` folder holds `kit-fact` and
+    /// `gate-cost`, named like a kit memory and a factory memory, and `scriptorium-fact`; and a
+    /// `[memories]` after the factory.toml there is, which fetches it every second. Returns the
+    /// commit.
+    fn memories_repo(&self) -> String {
+        let work = self.dir.join("scriptorium-work");
+        for (name, content) in [
+            (
+                "kit-fact",
+                "---\nname: kit-fact\ndescription: What the kit knows.\n---\nThe scriptorium says otherwise.\n",
+            ),
+            (
+                "gate-cost",
+                "---\nname: gate-cost\ndescription: How long the gate takes.\n---\nAn hour.\n",
+            ),
+            ("scriptorium-fact", SCRIPTORIUM_FACT),
+        ] {
+            let file = work.join(format!("memories/{name}.md"));
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, content).unwrap();
+        }
+        self.git(&work, &["init", "-q", "-b", "main"]);
+        let commit = self.scriptorium_commit("memories");
+        let bare = self.dir.join("scriptorium.git");
+        self.git(
+            &self.dir,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                work.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        );
+        let toml = self.dir.join("factory/factory.toml");
+        let before = fs::read_to_string(&toml).unwrap_or_else(|_| "name = \"demo\"\n".into());
+        fs::write(
+            &toml,
+            format!(
+                "{before}\n[memories]\nrepo = \"{}\"\nref = \"main\"\nevery = \"1s\"\n",
+                bare.display()
+            ),
+        )
+        .unwrap();
+        commit
+    }
+
+    /// Commits every change in the memories repository's work folder, and returns the commit.
+    fn scriptorium_commit(&self, message: &str) -> String {
+        let work = self.dir.join("scriptorium-work");
+        self.git(&work, &["add", "-A"]);
+        self.git(
+            &work,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                message,
+            ],
+        );
+        self.git(&work, &["rev-parse", "HEAD"]).trim().to_owned()
+    }
+
+    /// Runs git in the memories repository's bare repository and returns its stdout, or none when
+    /// it fails.
+    fn scriptorium_git(&self, args: &[&str]) -> Option<String> {
+        let output = git(&self.dir.join("scriptorium.git"))
+            .args(args)
+            .output()
+            .unwrap();
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8(output.stdout).unwrap())
+    }
+
+    /// Polls the desk until `done` holds for the memories repository's line, and returns it.
+    fn until_memories_banner(&self, done: impl Fn(Option<&str>) -> bool) -> Option<String> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let output = self.priory(&["desk"]);
+            assert!(output.status.success());
+            let banner = String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .find(|line| line.contains("the memories repository"))
+                .map(str::to_owned);
+            if done(banner.as_deref()) {
+                return banner;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out on the memories repository's banner: {banner:?}\ndaemon: {}",
+                fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+#[test]
+fn a_run_gets_the_memories_repositorys_memories_after_the_kits_and_before_the_factorys() {
+    let mut setup = Setup::new("scriptorium-layers");
+    setup.memories();
+    let kit_only = setup.dir.join("kit-work/memories/kit-only.md");
+    fs::create_dir_all(kit_only.parent().unwrap()).unwrap();
+    fs::write(
+        &kit_only,
+        "---\nname: kit-only\ndescription: Only the kit knows.\n---\nThe kit still counts.\n",
+    )
+    .unwrap();
+    let kit = setup.kit_repo();
+    let scriptorium = setup.memories_repo();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let args = setup.claude_args(0);
+    assert_eq!(
+        remembered(&args),
+        [
+            ("gate-cost.md", GATE_COST.trim()),
+            ("kit-fact.md", "The scriptorium says otherwise."),
+            ("kit-only.md", "The kit still counts."),
+            ("release-day.md", "Releases go out on Tuesdays."),
+            ("scriptorium-fact.md", "Memories live apart from skills."),
+        ]
+        .map(|(name, text)| (name.to_owned(), text.to_owned())),
+        "the kit's, then the memories repository's, then the factory's"
+    );
+    assert!(
+        setup
+            .dir
+            .join(format!("home/kit/{scriptorium}/memories"))
+            .is_dir(),
+        "the memories repository's commit is checked out"
+    );
+    assert_read_only(&setup.dir.join(format!("home/kit/{scriptorium}")));
+    let runs = setup.rows("runs");
+    assert_eq!([&runs[0][9], &runs[0][10]], [&kit, &scriptorium]);
+}
+
+#[test]
+fn a_failed_memories_fetch_keeps_the_last_good_commit_and_says_so_on_the_desk() {
+    let mut setup = Setup::new("scriptorium-offline");
+    let good = setup.memories_repo();
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[10] == good)
+    });
+    setup.crash();
+    let bare = setup.dir.join("scriptorium.git");
+    let gone = setup.dir.join("scriptorium-gone.git");
+    fs::rename(&bare, &gone).unwrap();
+
+    setup.start();
+
+    let banner = setup
+        .until_memories_banner(|banner| banner.is_some())
+        .unwrap_or_default();
+    assert!(
+        banner.starts_with("the memories repository fails to fetch since ")
+            && banner.ends_with(&format!("; runs keep commit {}", &good[..12])),
+        "{banner}"
+    );
+    setup.publish(&requested(43));
+    let args = setup.claude_args(1);
+    assert_eq!(setup.rows("runs")[1][10], good);
+    assert!(
+        remembered(&args)
+            .iter()
+            .any(|(name, _)| name == "scriptorium-fact.md"),
+        "{args:?}"
+    );
+
+    fs::rename(&gone, &bare).unwrap();
+    setup.until_memories_banner(|banner| banner.is_none());
+}
+
+#[test]
+fn the_daily_pull_request_goes_to_the_memories_repository_when_the_factory_names_one() {
+    let mut a = runner("scriptorium-pr", "a", None);
+    let mut b = runner("scriptorium-pr", "b", Some(&a));
+    a.kit_repo();
+    b.kit_repo();
+    a.memories_repo();
+    let main = b.memories_repo();
+    a.memories_pr();
+    b.memories_pr();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.calls(&[json!([
+        remember("release-day", "Releases go out on Tuesdays."),
+        forget("scriptorium-fact"),
+        ask()
+    ])]);
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    a.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    a.crash();
+
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let candidates = b.until_candidates(|candidates| {
+        candidates.len() == 2
+            && candidates
+                .iter()
+                .all(|candidate| candidate["state"] == "pending")
+    });
+    b.decide(
+        "accept",
+        &candidate(
+            &candidates,
+            "release-day",
+            Some("Releases go out on Tuesdays."),
+        ),
+    );
+    b.decide("accept", &candidate(&candidates, "scriptorium-fact", None));
+    b.publish(&memories_day("2026-11-22T06:00:00Z"));
+
+    let actions = b.until_actions(1);
+    assert_eq!(
+        actions[0][2..5],
+        ["open", "open-memories-pr", "opened"],
+        "{actions:?}"
+    );
+    assert_eq!(
+        b.scriptorium_git(&["rev-parse", "priory/memories^"])
+            .expect("the branch is pushed to the memories repository")
+            .trim(),
+        main,
+        "the commit sits on the memories repository's ref"
+    );
+    assert_eq!(
+        b.scriptorium_git(&["diff", "--name-status", "main", "priory/memories"])
+            .unwrap(),
+        "A\tmemories/release-day.md\nD\tmemories/scriptorium-fact.md\n"
+    );
+    assert_eq!(
+        b.kit_git(&["rev-parse", "--verify", "-q", "priory/memories"]),
+        None,
+        "the kit gets no branch"
+    );
+    let gh = b.gh();
+    assert_eq!(gh.len(), 2, "{gh:?}");
+    assert_eq!(
+        gh[1][..8],
+        [
+            "pr",
+            "create",
+            "-R",
+            "owner/repo",
+            "--base",
+            "main",
+            "--head",
+            "priory/memories"
+        ]
+    );
+    let body = &gh[1][gh[1].iter().position(|arg| arg == "--body").unwrap() + 1];
+    assert!(body.contains("memories repository"), "{body}");
 }
 
 /// The benchmark starter as a person runs it: its factory folder is a checkout of

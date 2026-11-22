@@ -2786,6 +2786,33 @@ fn a_kit_path_that_leaves_the_repository_or_a_ref_git_reads_as_an_option_fails_t
     );
 }
 
+#[test]
+fn a_memories_repository_takes_a_repository_and_a_path_inside_it() {
+    let toml = "name = \"demo\"\n\n[memories]\nrepo = \"git@github.com:owner/scriptorium.git\"\nref = \"main\"\npath = \"facts\"\nevery = \"10m\"\n";
+
+    let outcome = check(&factory("memories-repo-valid", &with("factory.toml", toml)));
+
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+}
+
+#[test]
+fn a_memories_path_that_leaves_the_repository_or_a_ref_git_reads_as_an_option_fails_the_check() {
+    let toml = "name = \"demo\"\n\n[memories]\nrepo = \"-oProxyCommand=x\"\nref = \"\"\npath = \"../facts\"\n";
+
+    let outcome = check(&factory(
+        "memories-repo-leaves",
+        &with("factory.toml", toml),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "factory.toml:3: `[memories]` `repo` is `-oProxyCommand=x`: it cannot start with `-`\n\
+         factory.toml:3: `[memories]` `ref` is empty\n\
+         factory.toml:3: `[memories]` `path` is `../facts`: a memories path is relative and stays inside the repository\n"
+    );
+}
+
 const MEMORIES_WORKFLOW: &str = "start = \"open\"\n\n[[steps]]\nid = \"open\"\ndecides = \"code\"\naction = \"open-memories-pr\"\neffect = \"irreversible\"\nautonomous = \"a person reviews the pull request before any memory merges\"\nnext = { opened = \"done\", unchanged = \"done\", failed = \"stop\" }\n";
 
 #[test]
@@ -2805,7 +2832,7 @@ fn an_open_memories_pr_step_needs_a_kit() {
     assert_eq!(without.code, 1);
     assert_eq!(
         without.stderr,
-        "workflows/memories.toml:3: step `open`: an `open-memories-pr` action writes to the kit repository, so factory.toml needs a `[kit]`\n"
+        "workflows/memories.toml:3: step `open`: an `open-memories-pr` action writes to the memories repository or the kit, so factory.toml needs a `[memories]` or a `[kit]`\n"
     );
     assert_eq!(with_kit.code, 0, "{}", with_kit.stderr);
 }
@@ -2896,4 +2923,21 @@ fn a_budget_needs_a_claude_agent_a_price_table_and_an_amount_above_zero() {
         refused.stderr,
         "workflows/implement.toml:4: step `implement`: `budget` needs a Claude Code agent: Priory reads no Codex tokens\n"
     );
+}
+
+#[test]
+fn an_open_memories_pr_step_takes_a_memories_repository_in_place_of_a_kit() {
+    let mut files: Vec<_> = valid()
+        .into_iter()
+        .filter(|(file, _)| *file != "factory.toml")
+        .collect();
+    files.push(("workflows/memories.toml", MEMORIES_WORKFLOW));
+    files.push((
+        "factory.toml",
+        "name = \"demo\"\n\n[memories]\nrepo = \"git@github.com:owner/scriptorium.git\"\n",
+    ));
+
+    let outcome = check(&factory("memories-pr-scriptorium", &files));
+
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
 }

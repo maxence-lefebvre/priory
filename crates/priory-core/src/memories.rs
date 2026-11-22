@@ -9,7 +9,7 @@ use priory_intake::intake::{self, MEMORY_ACCEPTED, MEMORY_DROPPED, MEMORY_WRITTE
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// A memory's name has lowercase letters, digits and hyphens, and starts with a letter or a digit,
 /// as `priory check` asks of `memories/<name>.md`.
@@ -89,7 +89,7 @@ pub(crate) fn write(
     db: &mut Connection,
     call: &Call,
     trace: &Trace,
-    kit: Option<&crate::kit::Fetched>,
+    kit: crate::kit::Current<'_>,
 ) -> rusqlite::Result<Result<String, String>> {
     let fields = (|| {
         let name = argument(call, "name")?.trim().to_owned();
@@ -166,7 +166,7 @@ pub(crate) fn write(
 fn repeat(
     tx: &Transaction,
     factory: &Factory,
-    kit: Option<&crate::kit::Fetched>,
+    kit: crate::kit::Current<'_>,
     task: i64,
     name: &str,
     description: &str,
@@ -307,7 +307,7 @@ pub(crate) fn recall(
     db: &Connection,
     call: &Call,
     factory: &Factory,
-    kit: Option<&crate::kit::Fetched>,
+    kit: crate::kit::Current<'_>,
 ) -> rusqlite::Result<Result<String, String>> {
     let name = match argument(call, "name") {
         Ok(name) => name.trim(),
@@ -360,6 +360,8 @@ pub fn list(db: &Connection, all: bool) -> rusqlite::Result<Vec<Value>> {
 pub struct Held<'a> {
     /// The factory's `[kit]`, whose commit the state file names.
     pub kit: Option<&'a Kit>,
+    /// The factory's `[memories]`, whose commit the state file names.
+    pub memories: Option<&'a factory::MemoriesRepo>,
     /// The factory's own memories, each name's text.
     pub factory: BTreeMap<String, String>,
 }
@@ -369,6 +371,10 @@ impl<'a> Held<'a> {
     pub fn of(factory: &'a Factory) -> Self {
         Held {
             kit: factory.settings.as_ref().and_then(|s| s.value.kit.as_ref()),
+            memories: factory
+                .settings
+                .as_ref()
+                .and_then(|s| s.value.memories.as_ref()),
             factory: factory
                 .memories
                 .iter()
@@ -377,31 +383,44 @@ impl<'a> Held<'a> {
         }
     }
 
-    /// Each memory's text by name: the kit's at the commit runs get now, the factory's, then the
-    /// accepted candidates in their order. And whether the kit's are in it: false when the factory
-    /// has a kit whose commit is not checked out here, as on a machine that only views.
+    /// Each memory's text by name: the kit's and the memories repository's at the commits runs get
+    /// now, the factory's, then the accepted candidates in their order. And whether the
+    /// repositories' are in it: false when the factory has a kit or a memories repository whose
+    /// commit is not checked out here, as on a machine that only views.
     fn texts(
         &self,
         db: &Connection,
         home: &Path,
     ) -> rusqlite::Result<(BTreeMap<String, String>, bool)> {
         let mut texts = BTreeMap::new();
-        let commit: Option<String> = db
-            .query_row("SELECT kit_commit FROM kit", [], |row| row.get(0))
-            .optional()?
-            .flatten();
-        let checkout = commit
-            .map(|commit| home.join("kit").join(commit))
-            .filter(|dir| dir.is_dir());
-        let complete = self.kit.is_none() || checkout.is_some();
-        if let Some((kit, dir)) = self.kit.zip(checkout) {
-            let (files, _) = factory::load_kit(&dir, kit);
+        let checkout = |table: &str, column: &str| -> rusqlite::Result<Option<PathBuf>> {
+            let commit: Option<String> = db
+                .query_row(&format!("SELECT {column} FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .optional()?
+                .flatten();
+            Ok(commit
+                .map(|commit| home.join("kit").join(commit))
+                .filter(|dir| dir.is_dir()))
+        };
+        let kit = checkout("kit", "kit_commit")?;
+        let memories = checkout("memories_repo", "memories_commit")?;
+        let complete = (self.kit.is_none() || kit.is_some())
+            && (self.memories.is_none() || memories.is_some());
+        let mut extend = |files: factory::KitFiles| {
             texts.extend(
                 files
                     .memories
                     .iter()
                     .map(|(n, m)| (n.clone(), m.value.text())),
             );
+        };
+        if let Some((settings, dir)) = self.kit.zip(kit) {
+            extend(factory::load_kit(&dir, settings).0);
+        }
+        if let Some((settings, dir)) = self.memories.zip(memories) {
+            extend(factory::load_memories_repo(&dir, settings).0);
         }
         texts.extend(self.factory.clone());
         for (name, memory) in layer(db, None)? {
@@ -504,7 +523,8 @@ pub fn decide(log: &EventLog, db: &Connection, accept: bool, id: &str) -> Result
     ))
 }
 
-/// The kit repository's branch that the daily pull request of accepted memories comes from.
+/// The branch of the memories repository, or of the kit, that the daily pull request of accepted
+/// memories comes from.
 pub(crate) const BRANCH: &str = "priory/memories";
 
 /// An accepted candidate that decides its name: the last accepted in log order.
@@ -548,9 +568,10 @@ fn winners(db: &Connection) -> rusqlite::Result<(Vec<Winner>, Option<String>)> {
 }
 
 /// The `open-memories-pr` action: commits the file of each accepted memory, and removes the file
-/// of each accepted forget, under the kit's memories folder on top of its ref, pushes the commit to
-/// the kit's `priory/memories` branch, and opens or updates one pull request from it on `repo`.
-/// `unchanged` when the kit already holds them.
+/// of each accepted forget, under the memories folder of the memories repository, or of the kit
+/// without one, on top of its ref, pushes the commit to that repository's `priory/memories` branch,
+/// and opens or updates one pull request from it on `repo`. `unchanged` when the repository already
+/// holds them.
 pub(crate) fn open_pull_request(
     db: &Connection,
     factory: &Factory,
@@ -558,19 +579,39 @@ pub(crate) fn open_pull_request(
     repo: Option<&str>,
 ) -> Result<crate::tools::Done, Box<dyn std::error::Error>> {
     let failed = crate::daemon::failed;
-    let Some(settings) = factory.settings.as_ref().and_then(|s| s.value.kit.as_ref()) else {
-        return Ok(failed("the factory names no [kit]".to_owned()));
+    let settings = factory.settings.as_ref().map(|s| &s.value);
+    // (repository, ref, memories folder, whether it is the memories repository, its name)
+    let target = match (
+        settings.and_then(|s| s.memories.as_ref()),
+        settings.and_then(|s| s.kit.as_ref()),
+    ) {
+        (Some(memories), _) => (
+            memories.repo.as_str(),
+            memories.reference(),
+            memories.path(),
+            true,
+            "the memories repository",
+        ),
+        (None, Some(kit)) => {
+            let [_, _, (_, folder)] = kit.paths();
+            (kit.repo.as_str(), kit.reference(), folder, false, "the kit")
+        }
+        (None, None) => {
+            return Ok(failed(
+                "the factory names no [memories] and no [kit]".to_owned(),
+            ));
+        }
     };
+    let (target_repo, reference, folder, memories, name) = target;
     let Some(repo) = repo else {
-        return Ok(failed(
-            "the task names no repo: the kit's GitHub owner/name".to_owned(),
-        ));
+        return Ok(failed(format!(
+            "the task names no repo: {name}'s GitHub owner/name"
+        )));
     };
     let (winners, last) = winners(db)?;
     let Some(last) = last else {
         return Ok(unchanged());
     };
-    let [_, _, (_, folder)] = settings.paths();
     let folder = folder.trim_start_matches("./").trim_end_matches('/');
     let path = |name: &str| match folder {
         "" | "." => format!("{name}.md"),
@@ -584,16 +625,15 @@ pub(crate) fn open_pull_request(
         .parse::<jiff::Timestamp>()
         .map(|time| format!("@{} +0000", time.as_second()))
         .map_err(|error| format!("candidate time {last:?}: {error}"))?;
-    let (url, mirror) = crate::kit::place(settings, factory, home)?;
-    let reference = settings.reference();
-    let message = "Move the memories accepted on Priory into the kit\n";
-    let made =
-        match priory_runtime::runtime::kit_commit(&mirror, &url, reference, &files, message, &date)
-        {
-            Ok(Some(made)) => made,
-            Ok(None) => return Ok(unchanged()),
-            Err(error) => return Ok(failed(error)),
-        };
+    let (url, mirror) = crate::kit::place(target_repo, memories, factory, home)?;
+    let message = format!("Move the memories accepted on Priory into {name}\n");
+    let made = match priory_runtime::runtime::kit_commit(
+        &mirror, &url, reference, &files, &message, &date,
+    ) {
+        Ok(Some(made)) => made,
+        Ok(None) => return Ok(unchanged()),
+        Err(error) => return Ok(failed(error)),
+    };
     let mut lines = Vec::new();
     for (status, changed) in &made.changed {
         let Some(winner) = winners.iter().find(|winner| path(&winner.name) == *changed) else {
@@ -617,10 +657,10 @@ pub(crate) fn open_pull_request(
     let base = (reference != "HEAD").then_some(reference);
     let body = format!(
         "A person accepted these memories on Priory's log, so every run already gets them. Merging \
-         this pull request moves them into the kit's `{folder}` folder.\n\n{}\n\nPriory rebuilds \
+         this pull request moves them into {name}'s `{folder}` folder.\n\n{}\n\nPriory rebuilds \
          this branch from `{}` each day, so a commit pushed to it is lost.",
         lines.join("\n"),
-        base.unwrap_or("the kit's default branch"),
+        base.map_or_else(|| format!("{name}'s default branch"), str::to_owned),
     );
     let pushed =
         priory_runtime::runtime::kit_push(&mirror, &url, &made.commit, BRANCH).and_then(|()| {

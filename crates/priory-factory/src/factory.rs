@@ -77,6 +77,7 @@ pub struct Settings {
     #[schemars(with = "BTreeMap<String, String>", extend("default" = {}))]
     pub links: Vec<Link>,
     pub kit: Option<Kit>,
+    pub memories: Option<MemoriesRepo>,
     /// Spend caps in dollars for every task, and for each lane by its name.
     pub caps: Option<Caps>,
     /// Recipes by repository, each key a GitHub `owner/name`: the commands the daemon runs in a
@@ -256,7 +257,58 @@ pub struct Kit {
     pub every: Option<Duration>,
 }
 
-/// The code step action that opens the pull request of accepted memories to the kit repository.
+/// A memories repository whose memories every run gets, after the kit's and before the factory's
+/// own, and where the daily pull request of accepted memories goes in place of the kit. Each runner
+/// fetches it with git's own credentials.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemoriesRepo {
+    /// The repository, as `git fetch` takes it: a URL, or a path, which a relative one takes from
+    /// the factory folder.
+    #[schemars(length(min = 1))]
+    pub repo: String,
+    /// The branch, tag or commit to fetch; the repository's default branch when unset.
+    #[serde(rename = "ref")]
+    pub reference: Option<String>,
+    /// The memories folder inside the repository; `memories` when unset.
+    pub path: Option<String>,
+    /// How often a runner fetches the ref again; every 5 minutes when unset.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub every: Option<Duration>,
+}
+
+impl MemoriesRepo {
+    /// The ref to fetch: `HEAD`, the remote's default branch, when unset.
+    pub fn reference(&self) -> &str {
+        self.reference.as_deref().unwrap_or("HEAD")
+    }
+
+    /// The memories folder inside the repository.
+    pub fn path(&self) -> &str {
+        self.path.as_deref().unwrap_or("memories")
+    }
+
+    pub fn every(&self) -> Duration {
+        self.every.unwrap_or(KIT_EVERY)
+    }
+}
+
+/// Loads the memories of the memories repository checked out in `dir`, with the problems
+/// `priory check` would report for the same files in a factory.
+pub fn load_memories_repo(dir: &Path, repo: &MemoriesRepo) -> (KitFiles, Vec<Problem>) {
+    let mut files = KitFiles::default();
+    let mut problems = Vec::new();
+    let mut found = Loader {
+        dir,
+        problems: &mut problems,
+    };
+    found.memories(repo.path(), &mut files.memories);
+    (files, problems)
+}
+
+/// The code step action that opens the pull request of accepted memories to the memories
+/// repository, or to the kit repository without one.
 pub const OPEN_MEMORIES_PR: &str = "open-memories-pr";
 
 /// How often a runner fetches the kit when `[kit]` sets no `every`.
