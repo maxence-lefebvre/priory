@@ -1,6 +1,7 @@
 //! Delivers the answer of an ask from a session Priory did not start, through the factory's
 //! `deliver` command. A delivery is a row of `deliveries`, stored with the answer.
 
+use crate::listing::ASK_ID;
 use crate::memory;
 use priory_factory::factory::Factory;
 use priory_runtime::script::{self, Script};
@@ -53,10 +54,12 @@ pub enum Act {
 pub(crate) fn act(db: &Connection, line: &Line) -> rusqlite::Result<Result<String, String>> {
     let found: Option<(String, i64, String, i64, i64)> = db
         .query_row(
-            "SELECT coalesce(asks.name, asks.id), deliveries.id, deliveries.state,
+            &format!(
+                "SELECT {ASK_ID}, deliveries.id, deliveries.state,
                deliveries.revision, asks.revision
              FROM asks JOIN deliveries ON deliveries.ask = asks.id
-             WHERE asks.id = ?1 ORDER BY deliveries.id DESC LIMIT 1",
+             WHERE asks.id = ?1 ORDER BY deliveries.id DESC LIMIT 1"
+            ),
             [line.deliver],
             |row| {
                 Ok((
