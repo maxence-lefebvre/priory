@@ -851,13 +851,14 @@ Schema: [`linear.issue.state_changed.json`](../schemas/events/linear.issue.state
 ### `linear.issue.updated`
 
 One message per history entry that edits an issue's title, description, labels, assignee or
-priority, for an issue a task owns or subscribes to. `linear_id` is the history entry. `title` is the
+priority, or moves it to another team, for an issue a task owns or subscribes to. `linear_id` is the history entry. `title` is the
 title the entry set when it changed the title. It never names a trigger.
 Schema: [`linear.issue.updated.json`](../schemas/events/linear.issue.updated.json).
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
-| `changed` | array of strings | The fields the entry changed, of `title`, `description`, `labels`, `assignee` and `priority` |
+| `changed` | array of strings | The fields the entry changed, of `title`, `description`, `labels`, `assignee` and `priority`, or `identifier` alone for a team move |
+| `previous_issue` | string, absent unless `changed` is `identifier` | The identifier the issue had before the move, which a task watched it by. `issue` is the new one |
 | `description` | string or null | The first 200 characters of the issue's description when `changed` holds `description`; null otherwise. Linear's history records that the description changed, not its text, so this is the description when the intake read it |
 | `actor` | string or null | Who edited it |
 

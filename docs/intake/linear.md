@@ -54,7 +54,7 @@ Their fields and examples are in [events.md](../reference/events.md#linear).
 | `linear.view.changed` | poll that finds a view's filter changed since the previous poll |
 | `linear.issue.created` | issue created |
 | `linear.issue.state_changed` | history entry that moves an issue from one state to another |
-| `linear.issue.updated` | history entry that edits the title, description, labels, assignee or priority of an issue a task owns or subscribes to |
+| `linear.issue.updated` | history entry that edits the title, description, labels, assignee or priority of an issue a task owns or subscribes to, or moves it to another team |
 | `linear.comment.created` | comment on an issue |
 | `linear.issue.blockers` | issue that another issue blocks, each time the blocker changes |
 
@@ -73,6 +73,19 @@ reopens no done task.
 Linear's history records that a description changed, but not its old or new text. So the event
 carries the first 200 characters of the description as the intake reads it, which a later edit may
 already have changed. A webhook delivery publishes no edit: the next poll does.
+
+### Team moves
+
+Moving an issue to another team changes its identifier, such as `ENG-9` to `OPS-3`. Every later
+event names the new one. Linear keeps the old identifiers in `previousIdentifiers`, and records the
+move as a history entry with `fromTeam` and `toTeam`.
+
+When the issues stream reads such an entry for an issue that a wait or a subscription names by an
+old identifier, it publishes one `linear.issue.updated` with `changed: ["identifier"]`, the new
+identifier in `issue` and the watched one in `previous_issue`. The daemon then moves the task's key,
+what it owns and subscribes to, and its open waits and holds onto the new identifier (see
+[routing.md](../daemon/routing.md#resources-what-a-task-owns)). The task hears the move as an event
+of its own key, and later events of the issue reach it.
 
 ### Filter changes
 
@@ -117,7 +130,7 @@ Each message id is a UUIDv5 of a name (see [envelope.md](envelope.md)):
 | `linear.view.changed` | `linear.view:{view}:{position}:changed`, with the view stream's new position |
 | `linear.issue.created` | `linear:issue:{issue id}:created` |
 | `linear.issue.state_changed` | `linear:history:{history id}`; a webhook's is `linear:webhook:state_changed:{issue id}:{state id}:{createdAt}`, and the two match by content (see [webhooks.md](webhooks.md#linear)) |
-| `linear.issue.updated` | `linear:history:{history id}:updated` |
+| `linear.issue.updated` | `linear:history:{history id}:updated`; a team move's is `linear:history:{history id}:moved` |
 | `linear.comment.created` | `linear:comment:{comment id}` |
 | `linear.issue.blockers` | `linear:blockers:{blocked issue id}:{blocker issue id}:{blocker updatedAt}` |
 
@@ -192,8 +205,9 @@ error it prints.
   records the filter and treats the view as unchanged.
 - Start-up recovery never dispatches a baseline event. A crash between a baseline event and the
   task request of a `backfill` trigger loses that request.
-- A task's key names the issue identifier. Moving the issue to another team changes its identifier,
-  so later events of that issue no longer reach the task.
+- A task's key names the issue identifier. A team move renames it only once the issues stream reads
+  the move's history entry. A move past the last 50 history entries of the issue between two polls
+  is missed, and the task no longer hears the issue.
 - A view marker holds every issue of the view and is published whenever one of them changes, so a
   large, busy view grows the output.
 - A state change past the last 50 history entries of an issue between two polls is missed.
