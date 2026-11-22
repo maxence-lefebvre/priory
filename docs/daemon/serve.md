@@ -251,7 +251,10 @@ Shared Secret at `POST /hooks/honeycomb`, with
 [`[webhooks.cloudwatch]`](../reference/factory.md#webhookscloudwatch) CloudWatch alarm state changes
 from EventBridge at `POST /hooks/cloudwatch`, and with
 [`[webhooks.figma]`](../reference/factory.md#webhooksfigma) Figma comments that carry the passcode
-at `POST /hooks/figma`, each with no token. A `HEAD` to a configured hook path gets `200`.
+at `POST /hooks/figma`, each with no token. A `HEAD` to a configured hook path gets `200` with no
+check, since Intercom asks it before it saves a webhook URL. So anyone who can reach the server can
+learn which hooks the factory configured, but not send to one: a `POST` still needs its signature,
+token or passcode.
 [webhooks.md](../intake/webhooks.md), [sentry.md](../intake/sentry.md),
 [honeycomb.md](../intake/honeycomb.md), [intercom.md](../intake/intercom.md),
 [cloudwatch.md](../intake/cloudwatch.md) and [figma.md](../intake/figma.md) explain them.
