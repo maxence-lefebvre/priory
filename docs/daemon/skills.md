@@ -38,7 +38,8 @@ Before the run starts, the daemon writes a plugin folder for the factory's skill
 `$PRIORY_HOME/kit/<hash>/plugin/`, with `.claude-plugin/plugin.json` naming the plugin `priory` and
 each skill under `skills/<name>/`, byte for byte. The hash covers the skills' names, paths and bytes,
 so a later run with the same skills reuses the folder and writes nothing. The folder is written
-under a temporary name and renamed into place, so a crash never leaves half a plugin.
+under a temporary name, made read-only and renamed into place, so a crash never leaves half a
+plugin.
 
 The run gets `--plugin-dir <that folder>`. Claude Code loads it for that session only, and shows its
 skills as `priory:<name>`.
@@ -84,8 +85,15 @@ A Claude Code run gets the index through `--append-system-prompt-file`, as instr
 index in `developer_instructions`, and its sandbox reads any file. `priory check` counts the index
 toward a Codex agent's 8192-byte limit.
 
-No tool writes a memory, and the snapshot is a copy: an agent that edits it changes nothing a later
-run reads. A memory changes only through a pull request to the factory, which a person reviews.
+No tool writes a memory. A memory changes only through a pull request to the factory, which a
+person reviews.
+
+The plugin folder, the memory snapshot and the kit checkout below are read-only: each file is
+`0444` and each folder `0555`. An agent can still make them writable with a shell, so before each
+run the daemon reads its plugin folder and memory snapshot again. A folder whose files, bytes or
+modes differ from what it should hold is written again, so an edit by one run changes nothing a
+later run reads. A kit checkout is checked again the same way each time the runner loads its
+commit. An edit made while a run is live can still reach that run, until it ends.
 
 ## A kit repository
 
@@ -111,7 +119,7 @@ helper. Priory reads no token, and a fetch that would prompt for one fails inste
   session gets the newer commit, since its next run is a new launch.
 
 The fetch goes into a bare mirror under Priory home, `$PRIORY_HOME/kit/repos/<hash>.git`. The runner
-then checks the commit out once, into `$PRIORY_HOME/kit/<commit>/`, and loads its skills,
+then checks the commit out into `$PRIORY_HOME/kit/<commit>/`, read-only, and loads its skills,
 instructions and memories as `priory check` loads a factory's. A symbolic link in the kit becomes a
 file that holds its target.
 
@@ -165,7 +173,8 @@ change to any of them reads as a change to the agent's prompt.
 ## Known limits
 
 - Priory never removes an old plugin folder, memory snapshot, kit checkout or `.system.md` file.
-  They are small.
+  They are small. Since they are read-only, run `chmod -R u+w $PRIORY_HOME/kit` before you remove
+  them yourself.
 - `priory check` cannot see a kit's files, so it neither warns about a factory skill that hides a
   kit skill nor counts the kit's instructions toward a Codex agent's 8192-byte limit. A Codex run
   whose merged instructions pass tmux's limit fails to start.
