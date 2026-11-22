@@ -10,6 +10,11 @@ bin=${2:-$root/target/debug/priory}
 mkdir -p "$dir/home" "$dir/factory"
 cp -R "$root/examples/batches/." "$dir/factory/"
 cp "$here/prices.toml" "$dir/factory/prices.toml"
+# seed.sql's runners: this machine and the two whose tasks and asks it mirrors
+runners="$dir/factory/runners"
+mv "$runners/my-machine.toml" "$runners/workstation.toml"
+cp "$runners/workstation.toml" "$runners/laptop.toml"
+cp "$runners/workstation.toml" "$runners/xps13.toml"
 sed -i 's/^name = .*/name = "shop"/' "$dir/factory/factory.toml"
 printf '\n[serve]\nlisten = "127.0.0.1:7391"\ntoken_env = "PRIORY_TOKEN"\n' >> "$dir/factory/factory.toml"
 export PRIORY_DB="$dir/state.db" PRIORY_HOME="$dir/home" PRIORY_TOKEN=demo-token
