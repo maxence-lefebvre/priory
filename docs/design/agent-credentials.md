@@ -107,7 +107,7 @@ not reach it. The run also gets:
 
 | Setting | Why |
 | ------- | --- |
-| `GH_TOKEN` from its secret | `gh` prefers it over the person's stored login |
+| `GH_TOKEN` from its secret, or unset when it names none | `gh` prefers it over the person's stored login. An agent that needs no GitHub access gets none |
 | `GH_CONFIG_DIR` set to an empty folder | `gh` finds no stored login to fall back on |
 | `SSH_AUTH_SOCK` unset | git finds no agent that holds the person's keys |
 | `GIT_CONFIG_COUNT` pairs that rewrite `git@github.com:` to `https://github.com/` and name `gh` as the credential helper | a push authenticates with the run's token, and GitHub refuses it |
@@ -143,10 +143,9 @@ A review agent is an agent with `push = false`. `priory check` refuses, with fil
 - two secrets of one agent with the same `as`;
 - a `push = false` agent that names a secret with `push = true`:
   `agents/reviewer/agent.md:5: agent reviewer has push = false and names secret github-write, which can push`;
-- a `push = false` agent that names no secret for `GH_TOKEN`, since it would have no token it is
-  allowed to use;
 - a `push = false` agent with `mcpServers`, since an MCP server holds credentials the factory
-  cannot see. Later slice 1 lifts this for servers declared read-only;
+  cannot see, unless each server is declared read-only in `factory.toml`, as
+  [consult.md](consult.md) describes;
 - an agent without `push = false` on a workflow that a `pull_request.review_requested` trigger
   starts, or at a step whose `effect` is `read`: the factory says the work changes no code, so its
   agent must not be able to;
@@ -199,15 +198,15 @@ harness. GitHub is a local HTTP server, the network's stand-in:
 - A second run within the hour asks the server nothing, and a run after it asks again.
 - A missing variable blocks the task with its message, and the message holds no value.
 - Each check rule fails with its line: an undeclared secret, a duplicate `as`, a `push = false`
-  agent with a pushing secret, with no `GH_TOKEN`, with `mcpServers`, on a step that allows
+  agent with a pushing secret, with an undeclared MCP server, on a step that allows
   `git-push-default`, and a review-request workflow whose agent lacks `push = false`.
 - `priory check` passes on every starter in `examples/`.
 - A Codex agent gets the same environment: the handoff happens before the harness starts.
 
 ## Later slices
 
-1. MCP servers. A server gains a declared `writes`, and a `push = false` agent may name a server
-   that does not write.
+1. A check of an MCP server's own credential, where the service has a request that shows what
+   it can do.
 2. Network policy, and with it the wall. On a systemd host, a run starts in its own scope
    ([agents-slice.md](../daemon/agents-slice.md)). An agent gains `network`, a list of hosts. The
    run reaches the network only through a local proxy that allows those hosts, and the same
@@ -235,10 +234,9 @@ harness. GitHub is a local HTTP server, the network's stand-in:
    it can hide two paths. Do not ship a policy that only the well-behaved agent obeys.
 3. **Should every run lose the whole daemon environment?** A short list is safer than the unset
    list. It also breaks factories that rely on `CLAUDE_CODE_USE_BEDROCK` or a proxy setting.
-   Recommendation: the short list for `push = false` agents only, where the proof needs it, with
-   an `env = [...]` key to add a name by hand. `priory check` refuses a name that a declared
-   secret uses, and the `--explain` table lists every added name, since each is a hole a person
-   opened on purpose. Other agents keep the unset list until a factory
+   Recommendation: the short list for `push = false` agents only, where the proof needs it, and
+   no way to add a name to it in the first slice. A variable such an agent needs is a declared
+   secret, which the probe covers. Other agents keep the unset list until a factory
    asks for more.
 4. **Does an implementer need a pushing token at all?** `open-pr` pushes from the daemon. An
    agent that only commits could run with `push = false`, and fixes after a review would need a

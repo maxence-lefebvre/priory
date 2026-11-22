@@ -6,14 +6,25 @@ builds nothing. It holds the model, the first code slice with its tests, the sli
 the open questions with a recommendation for each.
 
 The daemon starts the investigator as a short, read-only run with its own MCP servers and a cost
-cap. The asking run never gets those servers. Claude Code's own subagents cannot do this: a
-subagent inherits its parent's MCP servers, so it reaches nothing the worker lacks.
+cap. The asking run never gets those servers. Claude Code's own subagents cannot do this, by the
+brief for this note: a subagent inherits its parent's MCP servers, so it reaches nothing the
+worker lacks.
+
+Three facts about the harness carry this design, and this note did not test them: that
+`--strict-mcp-config` limits a run to the servers Priory names, that `dontAsk` denies every tool
+call no `allow` rule names, and the inheritance above. The first slice proves each with a real
+run before it builds on it.
 
 ## What existed when this note was written
 
-- An agent lists its `mcpServers`, and a run gets those and no others
-  (`crates/priory-factory/src/factory.rs:776`, [agents.md](../reference/agents.md)). An
-  implementer with no Sentry server cannot read a Sentry issue.
+- An agent lists its `mcpServers` (`crates/priory-factory/src/factory.rs:776`,
+  [agents.md](../reference/agents.md)). From a search of the code, nothing passes that list to
+  the run: the daemon hashes it into the session's identity
+  (`crates/priory-core/src/daemon.rs:1981`), `priory check --explain` reads it, and a Claude Code
+  run gets `--mcp-config` with the `priory` server alone
+  (`crates/priory-runtime/src/runtime.rs:605`), without `--strict-mcp-config`. So a run today has
+  the `priory` server plus whatever the person's own Claude Code configuration holds, whatever
+  its agent lists. Only the headless calls pass `--strict-mcp-config` (`runtime.rs:1367`).
 - Giving every agent every server has a price: each server's tool list fills the context of
   every run, and each server's credentials reach an agent that also pushes code.
 - `finding` hands a problem to a new task and does not wait for it
@@ -72,24 +83,29 @@ harness = "claude-code"
 model = "haiku"
 investigator = true
 mcpServers = ["sentry"]
-permissions = { defaultMode = "dontAsk", allow = ["mcp__sentry__search_*", "mcp__sentry__get_*", "Read", "Grep"] }
+permissions = { defaultMode = "dontAsk", allow = ["mcp__sentry__search_issues", "mcp__sentry__get_issue_details", "Read", "Grep"] }
 ```
 
 `priory check` refuses an investigator, with file and line, when:
 
 - its harness is not `claude-code`, since only Claude Code has per-tool rules;
 - its `defaultMode` is not `dontAsk`: every tool it may call must be named;
-- an `allow` rule names `Edit`, `Write`, `NotebookEdit`, `Bash` or a whole server such as
-  `mcp__sentry__*`. Each MCP tool it may call is written out, or covered by a prefix a person
-  chose, so a tool that writes is not allowed by accident;
+- an `allow` rule names `Edit`, `Write`, `NotebookEdit` or `Bash`, or holds a `*`. Each MCP tool
+  it may call is written out by its exact name, so a tool the server adds later is denied until
+  a person adds it;
+- one of its `mcpServers` has no `[mcp.<name>]` table in `factory.toml` with a `read_only`
+  sentence, such as `read_only = "The token has the org:read and event:read scopes only."`. It
+  is a person's statement of where the limit is enforced, and Priory cannot check it;
 - it sets `session = "shared"`, `connectorSignIn` or `push = true`
   ([agent-credentials.md](agent-credentials.md));
 - a workflow step or a trigger's `lead` names it. An investigator only answers consults.
 
-So "cannot write" rests on three layers: the allow list a person wrote, the tool guard, which
-grants an investigator's run no guard at all, and the absence of any file or shell tool that
-writes. The first layer is a person's judgement about tool names. `priory check --explain` lists
-each investigator's allowed tools so that judgement can be reviewed.
+So "cannot write" rests on four layers: exact tool names a person reviewed, a credential the
+person states is read-only at the service, the tool guard, which grants an investigator's run no
+guard at all, and the absence of any file or shell tool that writes. Priory enforces the first,
+the third and the fourth. The second is the wall, and it is the person's: `priory check
+--explain` prints each investigator's tools and each server's `read_only` sentence so both can
+be reviewed. A service with no read-only credential should not get an investigator.
 
 ### Who may consult whom
 
@@ -97,7 +113,7 @@ each investigator's allowed tools so that judgement can be reviewed.
 
 ```toml
 [consult]
-timeout = "5m"            # one consult's run
+deadline = "15m"          # from the consult's call to its report, the wait for room included
 cap = "$0.50"             # one consult's cost
 per_task = 5              # consults one task may make
 
@@ -167,7 +183,8 @@ The worker never sleeps on a consult forever. It wakes with one of these lines i
 report:
 
 ```text
-consult 4 got no report: sentry ran past 5m
+consult 4 got no report: no report 15m after the question
+consult 4 got no report: sentry passed its cap of $0.50
 consult 4 got no report: sentry's run failed: <reason>
 consult 4 got no report: sentry needs a sign-in, which a person was asked for
 consult 4 was refused: task 12 already made 5 consults
@@ -183,11 +200,14 @@ drops a queued lead task.
 
 Three bounds, all the daemon's:
 
-- `timeout` ends a consult's run. It is the bound that always holds.
-- `cap` is checked when a turn ends, from the same token counts the trace reads. A consult is
-  usually one turn, so the cap mostly refuses the next consult of a task whose last one went
-  over, and blocks nothing mid-turn. The note says so plainly: a consult can cost more than its
-  cap once.
+- `deadline` counts from the `consult` call, so it covers the wait for room and the run. Past
+  it, the daemon ends the investigator's task, queued or running, and wakes the worker with the
+  line above. A result that arrives later is refused.
+- `cap` is enforced while the run works. Each tick, the daemon reads the token counts in the
+  investigator's transcript, as it reads them at a turn's end, prices them, and ends the run once
+  the cost reaches the cap. A run can pass the cap by what one model call costs. `priory check`
+  refuses an investigator whose model has no price, and a run whose transcript the daemon cannot
+  read ends at once with that reason.
 - `per_task` stops a worker that keeps asking.
 
 A consult's cost belongs to the asking task and its lane. `priory costs --by agent` shows the
@@ -199,11 +219,11 @@ investigator's own row, and `priory report` counts consults per step.
 | ------ | ---- | ------ |
 | `factory.consult.asked` | the consult is stored | task, step, run, the asking agent, the investigator, the consult's id, the question's length |
 | `factory.step.ended` | the investigator's step ends | as for any model step, with its tokens, plus `consult`: the consult's id and the asking task |
-| `factory.consult.reported` | the report or the failure line is queued for the worker | the consult's id, outcome (`reported`, `unknown`, `timeout`, `failed`, `refused`), seconds from ask to report, the report's length |
+| `factory.consult.reported` | the report or the failure line is queued for the worker | the consult's id, outcome (`reported`, `unknown`, `deadline`, `cap`, `failed`, `refused`), seconds from ask to report, the report's length, and the run's tokens and model, since a run that ends with no result writes no `factory.step.ended` |
 
-The question and the report are kept in the state file with the consult, not in the trace, and
-the asking task's page lists them. A task's exported trace shows the consult as a span under the
-step that asked.
+The question and the report are kept in the state file with the consult, not in the trace.
+`priory task ID --json` lists them. The task page shows them in later slice 1. A task's exported
+trace shows the consult as a span under the step that asked.
 
 ### How it differs
 
@@ -215,22 +235,25 @@ step that asked.
 | Tools the answerer has | its own MCP servers, read only | a full task's | a person's | the worker's own | the lead's |
 | Can change anything | no | yes, it is a task | yes | what the worker can | no |
 | Who starts it | the daemon | the daemon | the desk | the harness | the daemon |
-| Bounded by | timeout, cap, count per task | the queue | nothing | the worker's turn | the lead's task |
+| Bounded by | deadline, cap, count per task | the queue | nothing | the worker's turn | the lead's task |
 
 Use `finding` when the problem is someone else's work. Use `ask` when the decision is a person's.
 Use `consult` when the worker needs a fact it has no tool to read.
 
 ## The first slice: one investigator, one hop
 
-1. `investigator` on an agent and `[consult]` in `factory.toml`, in the schema and the JSON
-   Schemas, with the check rules above.
-2. The `consult` tool, served only to runs of an agent in `[consult.allow]`.
-3. The built-in workflow and trigger, the investigator's fresh run, and its narrowed MCP server.
-4. The report in the worker's next prompt, the secret search, and the four lines for no report.
-5. `timeout`, `cap` and `per_task`.
-6. The index in a run's prompt.
-7. The three trace records, and the consult on `priory task ID --json`.
-8. [tools.md](../daemon/tools.md), [agents.md](../reference/agents.md),
+1. The proof of the three harness facts, and a run's MCP servers made real: the daemon passes
+   the servers its agent lists, with `--strict-mcp-config`, so a run gets those and no others.
+   Without this, a worker may already hold the server and an investigator may hold the worker's.
+2. `investigator` on an agent, `[consult]` and `[mcp.<name>]` in `factory.toml`, in the schema
+   and the JSON Schemas, with the check rules above.
+3. The `consult` tool, served only to runs of an agent in `[consult.allow]`.
+4. The built-in workflow and trigger, the investigator's fresh run, and its narrowed MCP server.
+5. The report in the worker's next prompt, the secret search, and the four lines for no report.
+6. `deadline`, `cap` read each tick, and `per_task`.
+7. The index in a run's prompt.
+8. The three trace records, and the consult on `priory task ID --json`.
+9. [tools.md](../daemon/tools.md), [agents.md](../reference/agents.md),
    [factory.md](../reference/factory.md), [trace-schema.md](../trace-schema.md), and an
    investigator in one starter.
 
@@ -240,7 +263,8 @@ Tests, through the CLI with the fake harness the daemon tests use:
   run of the investigator. The investigator's `result` wakes the worker with the report under the
   `consult 4 reported by` line.
 - The investigator's run has its own MCP servers in its configuration and none of the worker's.
-  The worker's has none of the investigator's.
+  The worker's has none of the investigator's. Neither has a server from the person's own
+  configuration, which the test plants.
 - The investigator's `tools/list` holds no `consult`, `ask`, `wait`, `finding`, `remember` or
   `add`, and a call to one is an unknown tool.
 - A run of an agent with no line in `[consult.allow]` has no `consult` tool. A `consult` that
@@ -248,7 +272,11 @@ Tests, through the CLI with the fake harness the daemon tests use:
 - The run's prompt lists exactly the investigators its agent may consult.
 - A guarded call in the investigator's run, such as `gh issue comment` or an MCP `update_issue`,
   is denied, and the trace holds the `factory.tool.denied` record.
-- An investigator past `timeout` wakes the worker with the timeout line, and its task ends.
+- An investigator still queued for room at the deadline never starts, and the worker wakes with
+  the deadline line. One that runs past it is ended, and a `result` it sends afterwards is
+  refused.
+- A run whose transcript shows a cost past `cap` is ended within a tick, the worker wakes with
+  the cap line, and `factory.consult.reported` holds its tokens.
 - A sixth consult of one task is refused with the count. A consult after one that went over
   `cap` is refused with the cost.
 - A `result` or a second `consult` while a consult is open is refused.
@@ -261,22 +289,24 @@ Tests, through the CLI with the fake harness the daemon tests use:
 - The trace holds one `asked`, one `step.ended` with `consult`, and one `reported`, and
   `priory costs --by agent` shows the investigator's row.
 - Each check rule fails with its line: a Codex investigator, a mode other than `dontAsk`, an
-  `allow` of `Bash`, of `Write` and of `mcp__sentry__*`, an investigator in a workflow step, an
+  `allow` of `Bash`, of `Write` and of `mcp__sentry__get_*`, a server with no `read_only`
+  sentence, an unpriced model, an investigator in a workflow step, an
   investigator as an asker, and an unknown name in `[consult.allow]`.
 - A `proptest` feeds `consult` random and mutated arguments and asserts it returns or refuses
   without panicking.
 
 ## Later slices
 
-1. No worktree for a consult. The first slice gives the investigator a worktree as a lead task
+1. The question and the report on the task page, from a reviewed design.
+2. No worktree for a consult. The first slice gives the investigator a worktree as a lead task
    has one. An investigator that reads only outside systems needs none.
-2. Several consults in one turn: the worker asks two investigators and wakes when both reported.
-3. A consult from a person: `priory consult AGENT QUESTION` prints the report, for the desk and
+3. Several consults in one turn: the worker asks two investigators and wakes when both reported.
+4. A consult from a person: `priory consult AGENT QUESTION` prints the report, for the desk and
    for a person's own session through [priory-plugin.md](priory-plugin.md).
-4. A report kept for reuse: the same question about the same issue within an hour returns the
+5. A report kept for reuse: the same question about the same issue within an hour returns the
    stored report, marked with its age.
-5. Codex investigators, once a Codex run can be limited to named MCP tools.
-6. `priory report consults`: per investigator, the count, the share `unknown`, the time and the
+6. Codex investigators, once a Codex run can be limited to named MCP tools.
+7. `priory report consults`: per investigator, the count, the share `unknown`, the time and the
    cost, with counts beside every rate.
 
 ## Open questions
@@ -285,11 +315,10 @@ Tests, through the CLI with the fake harness the daemon tests use:
    worker's context warm. It would also hold the worker's process and memory while another run
    works, which Principle 3 forbids, and it would need the two runs to fit in the room together.
    Recommendation: end the turn, as `ask` does. The session resumes with its conversation intact.
-2. **Is a person's allow list enough to call an investigator read-only?** It names tools by what
-   their names suggest. A server can add a tool that writes under a name that matches a prefix.
-   Recommendation: accept it for the first slice, forbid whole-server rules, print the list in
-   `--explain`, and give investigators a read-only token where the service has one. A proxy that
-   enforces reads belongs with the network policy of
+2. **Is a list of exact tool names enough to call an investigator read-only?** No. A name says
+   what a tool is called, not what it does. Recommendation: exact names, no pattern, and a
+   required `read_only` sentence per server that says where the service enforces it. A proxy
+   that enforces reads belongs with the network policy of
    [agent-credentials.md](agent-credentials.md).
 3. **Why not give the worker the server?** It is simpler. It also puts a service's whole tool
    list in every worker's context, gives its credentials to an agent that pushes code, and lets
@@ -305,3 +334,8 @@ Tests, through the CLI with the fake harness the daemon tests use:
 6. **Should the report be checked by code beyond its length and known secrets?** A scorer could
    grade reports, and a schema could force a shape. Recommendation: neither now. Read the
    `unknown` share and a sample of reports after a month, then decide.
+7. **How does this fit `push = false`?** [agent-credentials.md](agent-credentials.md) makes an
+   agent at a `read` step a `push = false` agent, and limits its MCP servers. Recommendation:
+   whichever note is built second adopts the other's rule. An investigator is a `push = false`
+   agent with no GitHub credential, and the `[mcp.<name>]` `read_only` sentence is the
+   declaration that lets such an agent name a server.

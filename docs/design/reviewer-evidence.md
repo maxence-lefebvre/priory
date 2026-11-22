@@ -13,8 +13,8 @@ Factory](https://factory.mastra.ai/llms-full.txt) gives each session an app prev
 a person's attention per merged pull request is Priory's first [success
 measure](../prd.md#success-measures).
 
-Evidence never holds a secret. Most of the model below is about that, and its limits are stated
-where they apply.
+Evidence must never hold a secret. Code can enforce that for text. For pixels it can only
+narrow where a secret could come from, and the model below says where that line is.
 
 ## What existed when this note was written
 
@@ -121,12 +121,18 @@ Then two rules on where an admitted item goes:
    effect. It happens only inside an irreversible step a person approved, for the items that
    existed at the approved commit, which the approving ask lists.
 
-The limits, stated plainly. Rule 2 knows only the secrets the factory names. The recorder is
-the factory's script, and the application it records is the task's committed code, which an
-agent wrote. That code runs as the person's Unix user, so code written to read `~/.ssh` and draw
-it could. Until [agent-credentials.md](agent-credentials.md) hides the person's credentials from
-a run, the guarantee is this: no item holds a secret Priory knows, and every pixel was made by
-the factory's own script, from committed files only, in a process that was given no secret.
+Before the `record` command runs, the daemon searches the checkout's tracked files for the same
+list of values, and refuses to record when one is there: a token committed into a fixture would
+be drawn on the page.
+
+The limits, stated plainly. No check reads pixels, so the text rules do not carry over to an
+image. The search knows only the secrets the factory names. The recorder is the factory's
+script, and the application it records is the task's committed code, which an agent wrote. That
+code runs as the person's Unix user, so code written to read `~/.ssh` and draw it could. So the
+guarantee has two parts. No text item holds a secret Priory knows. And every image and video was
+made by the factory's own script, from a checkout searched for those secrets, in a process that
+was given none. Closing the rest needs the wall of
+[agent-credentials.md](agent-credentials.md).
 
 ### On the task page
 
@@ -181,6 +187,8 @@ Tests, through the CLI and the HTTP server:
 - The `record` command runs in a checkout of the result's commit: an uncommitted file of the
   agent's worktree is absent there. A `record` path that leaves the factory folder fails `priory
   check`.
+- A checkout whose tracked file holds the value of a factory secret is not recorded, and the
+  reason names the file and not the value.
 - A step's `record` command that writes a PNG and a caption gives the run's result one attachment
   in the API, with its caption, commit and SHA-256, and the endpoint returns the same bytes.
 - The `record` command's environment holds no variable of the daemon beyond the short list: a
