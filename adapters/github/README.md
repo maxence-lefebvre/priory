@@ -30,7 +30,7 @@ After a `git pull`, choose the reload button on the extension's card.
 1. Choose Sign in on the strip. The panel opens on its connect form.
 2. Enter the address `priory serve` listens on: `127.0.0.1:7340` on the same machine, or an
    `https://` address beyond it, such as the one `tailscale serve` gives (see
-   [Use it from a phone](../../GETTING_STARTED.md#use-it-from-a-phone)). Plain `http://` is refused
+   [How to use the web view from a phone](../../docs/using-the-web-view.md)). Plain `http://` is refused
    beyond loopback, so the token never travels in clear.
 3. Paste the token: the value of `PRIORY_TOKEN`, or of the variable `[serve] token_env` names.
 4. Choose Connect, and allow the browser to let the extension reach that address.

@@ -85,7 +85,11 @@ Run the intake and the daemon side by side, each in its own terminal with `PRIOR
 
 ## Concepts
 
-<!-- include GETTING_STARTED.md "Concepts" -->
+A factory is a folder of files: agents, workflows and triggers. A trigger turns an event into a task.
+A task goes through its workflow's steps, and each step is decided by a model, a person or code.
+What waits on a person lands on one list, the desk.
+
+[Read the concepts](docs/concepts.md)
 
 </section>
 

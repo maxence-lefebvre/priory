@@ -89,13 +89,15 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [outbox.md](outbox.md): prompt states and how the daemon types a prompt.
 - [reports.md](reports.md): reports of sections that a workflow writes, and the picks a person
   makes on them.
-- [trace.md](trace.md): trace records, token counts, `priory report`, `priory costs`, the attention report, outcome labels, `priory grades`, `priory report risk` and the OpenTelemetry export.
+- [trace.md](trace.md): trace records, token counts, `priory report`, `priory costs`, the attention
+  report, outcome labels, `priory grades`, `priory report risk` and the OpenTelemetry export. To send
+  the export to a backend, follow
+  [How to send traces to an OpenTelemetry backend](../sending-traces-to-opentelemetry.md).
 - [score.md](score.md): `priory score`, which grades a task's finished runs with the factory's
   scorers, and `priory score --calibrate`, which measures a judge scorer against a person's labels.
 - [bench.md](bench.md): `priory bench capture`, which turns a past task into a benchmark case,
   `priory bench replay`, which plays one case under one configuration, and `priory bench` with
   `--base` and `--head`, which compares two commits of the factory on a benchmark.
-- [otel-recipes.md](otel-recipes.md): how to send the export to a local ClickStack, Honeycomb or Grafana Cloud.
 - [batches.md](batches.md): batches, `priory batch add`, `priory batch show` and `priory batch edit`, split issues, the plan a
   planning task sends, the go and the `merged` hold condition.
 - [relations.md](relations.md): how tasks relate, `priory relate`, the relations Priory records

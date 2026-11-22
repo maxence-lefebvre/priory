@@ -91,7 +91,7 @@ task id and generation, run id or record id, so sending a record again gives the
 The resource carries `service.name = priory`, `priory.factory` and `host.name`, the machine.
 
 To send to a local ClickStack, Honeycomb or Grafana Cloud, see
-[otel-recipes.md](otel-recipes.md).
+[How to send traces to an OpenTelemetry backend](../sending-traces-to-opentelemetry.md).
 
 Each tick, the daemon sends up to 200 records and 200 task ends past the endpoint's cursors in one request, through
 `curl`, and moves on without waiting for it. `curl` gives up after `command_timeout`. The cursors, in

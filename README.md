@@ -102,7 +102,7 @@ curl -fsSL https://raw.githubusercontent.com/maxence-lefebvre/priory/main/instal
 - [GETTING_STARTED.md](GETTING_STARTED.md): install or build Priory, write a first factory, run it, and the
   day to day commands and concepts. Once the factory has a `[request]` table,
   `priory add "Fix the typo in the README"`, or `N` in the web view, queues a first task. Its
-  [phone section](GETTING_STARTED.md#use-it-from-a-phone) installs the web view on a phone, with
+  [phone guide](docs/using-the-web-view.md) installs the web view on a phone, with
   notifications for new asks.
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to change Priory, the checks to run, and how pull
   requests work.

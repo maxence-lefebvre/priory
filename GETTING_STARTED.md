@@ -159,33 +159,8 @@ cache, such as sccache, follow [sharing-build-caches.md](docs/sharing-build-cach
 
 ## 4. Pick a starter
 
-The repository's `examples/` folder holds ready-made factories. Each one passes `priory check`, and
-its `README.md` says what it needs and which steps ask you first.
-
-| Starter | What it does |
-| ------- | ------------ |
-| [`bug-investigation`](examples/bug-investigation/README.md) | A `bug` label starts a task. The agent reproduces the bug, finds the root cause, fixes it, and asks before it opens the pull request |
-| [`review`](examples/review/README.md) | A review request starts a task. The agent writes a pending GitHub review, and you submit it |
-| [`ci-failure`](examples/ci-failure/README.md) | Every hour on workdays, the agent fixes a failed check and asks before it opens the pull request |
-| [`triage`](examples/triage/README.md) | A new issue starts a task. The agent labels it, and asks before it posts a comment that asks for what is missing |
-| [`morning-digest`](examples/morning-digest/README.md) | On workday mornings, the agent posts the open asks, stuck tasks and yesterday's merges to your desk |
-| [`release-checklist`](examples/release-checklist/README.md) | A runbook: you start a release with `priory add`, and each step asks you. Answering `run` at the test step runs `cargo test` once |
-| [`groom`](examples/groom/README.md) | A `groom` label starts a task. The agent grades the ticket, writes the brief, and takes it to a pull request you review |
-| [`batches`](examples/batches/README.md) | `priory batch add` hands several issues to a planner, which orders them. After you answer `go`, each issue becomes a task that starts once the ones it needs merged |
-| [`benchmark`](examples/benchmark/README.md) | A `benchmark` label on a pull request of the factory's own repository asks you to compare it. Answering `run` replays past tasks under both commits and posts the table and a status on the pull request |
-| [`ship-and-watch`](examples/ship-and-watch/README.md) | A `ship` label starts a task. After you merge its pull request, the agent watches the release for an hour, then drafts an announcement that posts once you approve it |
-
-Copy one into your working folder, then check it:
-
-```sh
-cp -r <your clone>/examples/review my-factory
-priory check my-factory
-```
-
-Replace the placeholders `owner/repo` and `your-login` in its `triggers/` files, and rename
-`runners/my-machine.toml` after your machine's Tailscale hostname. In the next step, use
-`my-factory` in place of `example`, and the starter's workflow, the file name under its
-`workflows/`, in place of `implement`.
+Start from a ready-made factory instead of writing one: see
+[How to start from a starter factory](docs/starting-from-a-starter.md).
 
 ### Adopt a writing guide
 
@@ -376,101 +351,10 @@ split, and a task's page lists each run's scores under it. Herdr's Costs and Tas
 
 ## Use it from a phone
 
-The web view installs as an app and can notify you of a new ask or a stopped task. A phone reaches
-it over HTTPS only, because a browser offers notifications only on a secure origin. This section
-uses [Tailscale](https://tailscale.com/kb/1242/tailscale-serve), so the daemon stays on loopback
-and only your tailnet can connect. It assumes Tailscale runs on the machine and on the phone.
-
-1. Serve the web view on loopback. In `factory.toml`:
-
-   ```toml
-   [serve]
-   listen = "127.0.0.1:7340"
-   web = true
-   ```
-
-   Set `PRIORY_TOKEN` in the daemon's environment, as [serve.md](docs/daemon/serve.md#the-token)
-   shows, and restart `priory daemon`.
-
-2. Put Tailscale's HTTPS proxy in front of it:
-
-   ```sh
-   tailscale serve --bg 7340
-   ```
-
-   It prints the address, such as `https://runner.example.ts.net`, and keeps serving across
-   reboots. `tailscale serve --bg 7340 off` turns it off. Turning it on exposes the view to every
-   device of your tailnet, so decide it for each machine.
-
-3. On the phone, open that address and paste the token.
-
-4. Install the view:
-   - iPhone or iPad: tap Share, then Add to Home Screen, and open Priory from the Home Screen.
-     iOS lets only the installed view get notifications.
-   - Android: tap Install Priory under More, then Notifications, or Install app in Chrome's menu.
-
-5. Under More, then Notifications, tap Turn on notifications, and allow them.
-
-A new ask now shows its title on the phone, or its task and step, and tapping it opens the ask. A task that turns blocked
-or failed shows `task <key> <state>`, and a failing intake shows `the intake fails to poll <source>`. A snoozed item sends nothing. Turn notifications off on the
-same screen.
-
-On the machine that runs the daemon, `[notify] desktop = true` in `factory.toml` shows the same
-title as a desktop notification, through `notify-send`, for the one next thing on the desk.
+To reach the web view from a phone, install it there and get notifications, follow
+[How to use the web view from a phone](docs/using-the-web-view.md).
 
 ## Concepts
 
-**Factory.** The folder of files that defines everything else: `factory.toml`, `agents/`,
-`workflows/`, `triggers/`, `runners/`, and optionally `lanes.toml` and `prices.toml`. Each file can be
-TOML or YAML. Changing the factory is a pull request. Every key is in
-[docs/reference/](docs/reference/README.md).
-
-**Trigger.** One event source, a filter and the workflow its events start. Sources are `github`,
-`linear`, `linear.view`, `slack` and `schedule`. A trigger's `key` says which events are the same
-work, and a factory holds at most one active task per key. See
-[docs/intake/README.md](docs/intake/README.md).
-
-**Workflow and steps.** A workflow is a graph of steps. Each step has one decider: a `model` step
-runs an agent, a `human` step asks a person, and a `code` step runs a built-in action such as
-`open-pr`. Each outcome maps to the next step, `done` or `stop`. A step marked `irreversible` runs
-only after a person approved it, unless it is marked `autonomous` with a reason. See
-[docs/daemon/tools.md](docs/daemon/tools.md).
-
-**Intervention.** A trigger's `intervention` sets how much a person steps in. `plan` makes a person
-approve each graded plan, even a green one. `hands-off` lets a lead agent answer the task's asks in
-your place, but an ask that lets an irreversible step run still comes to you. A routed ask shows
-"with <lead>" in the web view and the Herdr panels, you can still answer it first, and an answered
-ask says who answered. When the lead ends without answering, the ask comes back to you. See
-[docs/reference/triggers.md](docs/reference/triggers.md#intervention-and-lead).
-
-**Task and run.** A task is one unit of work, from its event to `done`, `failed` or `dropped`. A run
-is one agent process working on a task's step. A task can have many runs, and its agent's session
-carries over between them. See [docs/daemon/runs.md](docs/daemon/runs.md).
-
-**Inbox and routing.** Every event the intake publishes lands in the daemon's inbox before anything
-acts on it. The daemon then finds the task the event concerns, such as the task that owns the pull
-request a check ran on. `priory task ID --json` lists the events routed to a task, and
-`priory inbox --unrouted` lists those that reached none, as the web and Herdr Inbox panels do. It
-also lists the events a sleeping task kept that no agent read yet. See
-[docs/daemon/routing.md](docs/daemon/routing.md).
-
-**Waits and asks.** An agent ends a turn with one of three tools: `result` reports the step's
-outcome, `wait` names an event to sleep until, and `ask` puts a question on the desk. A waiting or
-asking agent has no process. See [docs/daemon/waits.md](docs/daemon/waits.md).
-
-**Desk.** Everything that waits on a person, in one list: asks, blocked and failed tasks, prompts
-Priory could not confirm, a banner when the queue is stalled, and one when the intake fails to poll
-or stopped. See
-[docs/daemon/desk.md](docs/daemon/desk.md).
-
-**Queue, bands and room.** Tasks start in band order (`blocker`, `now`, `today`, `later` by
-default), then in an order you set, then oldest first. A run starts only when the machine has room
-for the memory and disk its agent declares. See [docs/daemon/room.md](docs/daemon/room.md).
-
-**Health.** Every second, the daemon checks each run for an unexpected exit, a timeout or a
-permission prompt. It never approves a permission prompt. A crashed run gets one repair attempt.
-See [docs/daemon/health.md](docs/daemon/health.md).
-
-**Trace and reports.** Each step's end is recorded with its outcome, tokens and time. `priory report`
-reads these records, and the daemon can export them as OpenTelemetry spans. See
-[docs/daemon/trace.md](docs/daemon/trace.md) and [docs/trace-schema.md](docs/trace-schema.md).
+[Concepts](docs/concepts.md) explains each term this guide uses: factory, trigger, workflow, task,
+run, ask, desk and queue.
