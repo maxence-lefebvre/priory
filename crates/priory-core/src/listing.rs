@@ -703,7 +703,7 @@ pub fn holding(db: &Connection, repo: &str, number: u64) -> rusqlite::Result<Val
 }
 
 fn parse_json(task: &mut Value) {
-    for field in ["progress", "conditions", "waits"] {
+    for field in ["progress", "conditions", "waits", "stops", "protected"] {
         if let Some(text) = task[field].as_str() {
             task[field] = serde_json::from_str(text).unwrap_or(Value::Null);
         }
@@ -874,14 +874,17 @@ pub fn queue(
 ) -> rusqlite::Result<Value> {
     let waiting = format!(
         "{} SELECT position, band_position, id, key, title, workflow, step, state, band, lane, reason,
-           since, conditions FROM (
+           since, conditions, stops, protected FROM (
            SELECT 0 AS part, queue.place AS position, queue.band_place AS band_position, id, key,
              {TITLE}, workflow, step, state, band, lane, reason, changed AS since, NULL AS conditions,
+             (SELECT json_group_array(runs.task) FROM runs
+               WHERE runs.preempted_for = tasks.id AND runs.ended IS NULL) AS stops,
+             coalesce(tasks.protected, '[]') AS protected,
              queue.place AS sort
            FROM tasks JOIN queue USING (id)
            UNION ALL
            SELECT 1, NULL, NULL, tasks.id, key, {TITLE}, workflow, step, state, band, lane, tasks.reason,
-             changed, {CONDITIONS},
+             changed, {CONDITIONS}, '[]', '[]',
              (SELECT min(id) FROM holds WHERE holds.task = tasks.id AND holds.released IS NULL)
            FROM tasks WHERE tasks.state = 'held'
          ) ORDER BY part, sort",

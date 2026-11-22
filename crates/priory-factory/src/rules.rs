@@ -24,6 +24,19 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 "`bands` needs at least one band, each named once".into(),
             ));
         }
+        for band in factory.preempt() {
+            let message = if !bands.contains(&band.as_str()) {
+                format!(
+                    "`preempt` names band `{band}`, which is not one of {}",
+                    bands.join(", ")
+                )
+            } else if bands.last() == Some(&band.as_str()) {
+                format!("`preempt` names band `{band}`, the last band, which has no band below it")
+            } else {
+                continue;
+            };
+            problems.push(problem(settings, settings.lines.field("queue"), message));
+        }
         if let Some(agent) = settings
             .value
             .sweep

@@ -393,6 +393,14 @@
           "default": true,
           "description": "Whether a task waits for an earlier active task that changes the same files; true when unset.",
           "type": "boolean"
+        },
+        "preempt": {
+          "default": [],
+          "description": "The bands whose waiting head may stop a run of a lower band at the end of its turn; none\nwhen unset.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "type": "object"

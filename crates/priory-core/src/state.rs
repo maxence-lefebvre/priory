@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 93;
+const VERSION: i64 = 94;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1683,6 +1683,16 @@ CREATE TABLE IF NOT EXISTS pending_requests (
 PRAGMA user_version = 93;
 ";
 
+// Urgent wakes: the head task a live run stops for at its turn end and since when, the head a task
+// was stopped for until its next result, ask or wait, and the runs that protect a head's room.
+const SCHEMA_94: &str = "
+ALTER TABLE runs ADD COLUMN preempted_for INTEGER;
+ALTER TABLE runs ADD COLUMN marked TEXT;
+ALTER TABLE tasks ADD COLUMN preempted INTEGER;
+ALTER TABLE tasks ADD COLUMN protected TEXT;
+PRAGMA user_version = 94;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1696,7 +1706,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
-    SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93,
+    SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -2877,6 +2887,8 @@ pub(crate) struct Admission {
     pub repo: Option<String>,
     /// Queued, not ready: its run is the task's first and gets the step's prompt.
     pub fresh: bool,
+    /// The head task this task's last run was stopped for, until its next result, ask or wait.
+    pub preempted: Option<i64>,
 }
 
 /// The first queued or ready task at a model step, in start order, that fits in the runner's room.
@@ -2887,9 +2899,10 @@ pub(crate) fn admissible<'r>(
     runner: Option<&str>,
     share: &Share,
     room: impl Fn() -> &'r Result<Room, String>,
+    watched: &dyn Fn(&str) -> bool,
 ) -> rusqlite::Result<Option<Admission>> {
     let mut statement = db.prepare(&format!(
-        "SELECT id, workflow, step, trigger, state = 'queued', repo FROM tasks
+        "SELECT id, workflow, step, trigger, state = 'queued', repo, preempted FROM tasks
              WHERE state IN ('queued', 'ready')
              -- A task waits while a recipe runs in its worktree, or a teardown is owed there.
              AND NOT EXISTS (SELECT 1 FROM recipes WHERE recipes.task = tasks.id
@@ -2911,6 +2924,7 @@ pub(crate) fn admissible<'r>(
                 trigger: row.get(3)?,
                 fresh: row.get(4)?,
                 repo: row.get(5)?,
+                preempted: row.get(6)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2920,6 +2934,7 @@ pub(crate) fn admissible<'r>(
     // The first task that waits for room: no task behind it starts, so it is never starved.
     let mut head = None;
     let mut stall = None;
+    let mut planned = false;
     for admission in queued {
         let Some(step) = factory
             .workflows
@@ -2959,7 +2974,7 @@ pub(crate) fn admissible<'r>(
                 match room() {
                     Ok(measured) => {
                         let short = room::wait(measured, share, promised, need);
-                        let reason = short.as_ref().map(|short| short.reason.clone());
+                        let mut reason = short.as_ref().map(|short| short.reason.clone());
                         // A lead that can never fit never answers: dropping it returns its ask.
                         if let Some(reason) = reason.as_ref().filter(|_| {
                             admission.trigger == crate::tools::LEAD_TRIGGER
@@ -2977,6 +2992,21 @@ pub(crate) fn admissible<'r>(
                             // Waiting only for live runs to end is backpressure, not a stall.
                             stall = room::wait(measured, share, room::Need::default(), need)
                                 .map(|short| (admission.task, short));
+                            // Only memory and declared disk are promises a stop gives back.
+                            if short.as_ref().is_some_and(|short| short.resource != "CPU") {
+                                planned = true;
+                                let urgent = crate::preempt::Head {
+                                    task: admission.task,
+                                    need,
+                                    measured,
+                                    promised,
+                                };
+                                if let Some(plan) =
+                                    crate::preempt::plan(db, factory, share, &urgent, watched)?
+                                {
+                                    reason = reason.map(|reason| format!("{reason}; {plan}"));
+                                }
+                            }
                         }
                         reason
                     }
@@ -2987,13 +3017,24 @@ pub(crate) fn admissible<'r>(
                 }
             }
         };
-        let Some(reason) = waits else {
+        let Some(mut reason) = waits else {
             return Ok(Some(admission));
         };
+        // A stopped task waits for the room its stop made; its own plan, if any, says more.
+        if let Some(head) = admission.preempted
+            && (reason.starts_with("waits behind")
+                || reason.starts_with("waits for room") && !reason.contains("; "))
+        {
+            let (band, _) = crate::preempt::prompt(db, factory, head)?;
+            reason = format!("stopped for task {head} ({band}); resumes when there is room");
+        }
         db.execute(
             "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
             params![admission.task, reason],
         )?;
+    }
+    if !planned {
+        crate::preempt::withdraw(db)?;
     }
     crate::stall::record(db, stall.as_ref().map(|(task, short)| (*task, short)))?;
     Ok(None)
@@ -3669,6 +3710,7 @@ pub(crate) fn signal(
     db: &mut Connection,
     signal: &Signal,
     trace: &Trace,
+    watched: &dyn Fn(&str) -> bool,
 ) -> rusqlite::Result<Option<String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(run) = tx
@@ -3708,9 +3750,12 @@ pub(crate) fn signal(
         "Stop" => {
             tx.execute("UPDATE runs SET idle = 1, turn = NULL WHERE id = ?1", [run])?;
             let context = crate::trace::account(&tx, trace, run, signal.transcript.as_deref())?;
+            // A run marked for an urgent wake ends here; its resumed session compacts instead.
+            if let Some(head) = crate::preempt::due(&tx, run, watched)? {
+                kill = crate::tools::preempt(&tx, &signal.session, trace, head)?;
             // The run settles its ask or wait once its compact is typed, so it never sleeps past it.
             // A result carried into the next step on this process compacts there.
-            if !crate::tools::overflow(&tx, &signal.session, context, trace.factory)? {
+            } else if !crate::tools::overflow(&tx, &signal.session, context, trace.factory)? {
                 kill = crate::tools::stop(&tx, &signal.session, trace)?;
                 crate::tools::overflow(&tx, &signal.session, context, trace.factory)?;
             }

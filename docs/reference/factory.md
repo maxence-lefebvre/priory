@@ -36,11 +36,13 @@ A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m
 
 ## `[queue]`
 
-See [runs.md](../daemon/runs.md#overlapping-files) for how the overlap hold works.
+See [runs.md](../daemon/runs.md#overlapping-files) for how the overlap hold works, and
+[room.md](../daemon/room.md#urgent-wakes) for how `preempt` stops a run.
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `overlap` | boolean | no | `true` | Whether a task waits for an earlier active task whose branch changes the same files | `false` |
+| `preempt` | list of bands | no | `[]` | The bands whose task at the head of the queue, waiting for memory or disk, may stop runs of a lower band at the end of their turn | `["blocker"]` |
 
 ## `[sweep]`
 
@@ -488,6 +490,8 @@ day = 10.0                                     # dollars the lane may spend in a
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A duration that is not a whole number and `s`, `m` or `h` |
 | `` `factory` is also defined in factory.toml `` | Both `factory.toml` and `factory.yaml` exist |
 | `` `bands` needs at least one band, each named once `` | `bands` is empty or names a band twice |
+| `` `preempt` names band `<band>`, which is not one of <bands> `` | `[queue] preempt` names a band the factory lacks |
+| `` `preempt` names band `<band>`, the last band, which has no band below it `` | `[queue] preempt` names the last band, which has no lower band to stop |
 | `` `[kit]` `<key>` is empty `` | `[kit] repo` or `ref` is blank |
 | `` `[kit]` `<key>` is `<value>`: it cannot start with `-` `` | `repo` or `ref` starts with `-`, which git would read as an option |
 | `` `[kit]` `<key>` is `<path>`: a kit path is relative and stays inside the repository `` | `skills`, `instructions` or `memories` is empty, absolute, or holds `.` or `..` |
