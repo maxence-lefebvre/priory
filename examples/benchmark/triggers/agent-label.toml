@@ -1,0 +1,8 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+# The work: an issue labeled `agent` in your project.
+source = "github"
+repo = "owner/repo"
+on = "issues.labeled"
+filter = { label = "agent" }
+workflow = "implement"
+key = "issue.number"

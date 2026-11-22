@@ -4055,6 +4055,35 @@ fn a_runbook_steps_command_that_fails_asks_the_step_again_with_its_exit() {
     assert_eq!(setup.rows("actions")[0][3..5], ["answer", "failed"]);
 }
 
+#[test]
+fn a_runbook_steps_timeout_bounds_its_command_in_place_of_command_timeout() {
+    let workflow = runbook(r#"["sleep", "30"]"#).replace(
+        "next = { run = \"done\"",
+        "timeout = \"1s\"\nnext = { run = \"done\"",
+    );
+    let mut setup = Setup::with_workflow("runbook-timeout", &workflow);
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\n\n[asks.targets]\nops = \"ops\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(setup.dir.join("factory/ops")).unwrap();
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    setup.priory(&["answer", "1", "ok", "--revision", "1"]);
+    setup.until("asks", |rows| rows.first().is_some_and(|row| row[0] == "2"));
+
+    setup.priory(&["answer", "--run", "2", "run", "--revision", "1"]);
+
+    let asks = setup.until("asks", |rows| rows.first().is_some_and(|row| row[0] == "3"));
+    assert!(
+        asks[0][3].ends_with(": timed out after 1s."),
+        "{:?}",
+        asks[0][3]
+    );
+}
+
 /// A task whose run asked a command ask and holds its Stop, as an agent still ending its turn.
 fn ending_its_turn_on_a_command_ask(name: &str, command: serde_json::Value) -> Setup {
     let mut setup = Setup::with_workflow(name, STEPS);
@@ -23693,6 +23722,13 @@ fn replayable(name: &str, input: u64) -> (Setup, PathBuf, String) {
         "[haiku]\ninput = 1.0\noutput = 1.0\ncache_read = 1.0\ncache_write = 1.0\n\n[claude-fake-5]\ninput = 1.0\noutput = 1.0\ncache_read = 1.0\ncache_write = 1.0\n",
     )
     .unwrap();
+    let (case, start) = replay_world(&setup, input);
+    (setup, case, start)
+}
+
+/// The world `replayable` describes, around the setup's factory: the case folder and its start
+/// commit.
+fn replay_world(setup: &Setup, input: u64) -> (PathBuf, String) {
     let work = setup.dir.join("work");
     let start = setup.git(&work, &["rev-parse", "HEAD"]).trim().to_owned();
     let clone = setup.dir.join("home/repos/owner/repo");
@@ -23793,7 +23829,7 @@ tokens = {{ input = {input}, output = 0, cache_read = 0, cache_write = 0 }}
     fs::create_dir_all(&bin).unwrap();
     fs::write(bin.join("claude"), wrapper).unwrap();
     fs::set_permissions(bin.join("claude"), fs::Permissions::from_mode(0o755)).unwrap();
-    (setup, case, start)
+    (case, start)
 }
 
 impl Setup {
@@ -24838,4 +24874,364 @@ fn the_daily_pull_request_carries_each_accepted_memory_as_a_file_in_the_kit_and_
         b.kit_git(&["rev-parse", "priory/memories"]).unwrap().trim(),
         pushed
     );
+}
+
+/// The benchmark starter as a person runs it: its factory folder is a checkout of
+/// `owner/factory`, whose origin holds pull request 12, a change to the implement prompt that this
+/// checkout lacks. Its one case replays as `replayable`'s does, and its compare step runs one pair.
+/// A `priory` first on the daemon's `PATH` runs this build with the replay's `claude` and the fake
+/// `gh`. Returns the setup, the base commit and the pull request's head commit.
+fn benchmark_starter(name: &str) -> (Setup, String, String) {
+    let setup = Setup::starter(name, "benchmark");
+    let factory = setup.dir.join("factory");
+    let (case, _) = replay_world(&setup, 1);
+    let cases = factory.join("benchmarks/cases/first");
+    fs::create_dir_all(cases.join("gh")).unwrap();
+    for file in ["case.toml", "answers.toml", "gh/001.toml"] {
+        fs::copy(case.join(file), cases.join(file)).unwrap();
+    }
+    // The fake claude's turns name this model.
+    let prices = fs::read_to_string(factory.join("prices.toml")).unwrap();
+    fs::write(
+        factory.join("prices.toml"),
+        format!("{prices}\n[claude-fake-5]\ninput = 1.0\noutput = 1.0\ncache_read = 1.0\ncache_write = 1.0\n"),
+    )
+    .unwrap();
+    let workflow = factory.join("workflows/benchmark.toml");
+    let one_pair = fs::read_to_string(&workflow)
+        .unwrap()
+        .replace("\"40\",", "\"40\", \"--runs\", \"1\",");
+    fs::write(&workflow, one_pair).unwrap();
+    let commit = |dir: &Path, message: &str| {
+        setup.git(dir, &["add", "-A"]);
+        setup.git(
+            dir,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                message,
+            ],
+        );
+        setup.git(dir, &["rev-parse", "HEAD"]).trim().to_owned()
+    };
+    setup.git(&factory, &["init", "-q", "-b", "main"]);
+    let base = commit(&factory, "base");
+    let origin = setup.dir.join("origin/owner/factory.git");
+    setup.git(
+        &setup.dir,
+        &[
+            "init",
+            "-q",
+            "--bare",
+            "-b",
+            "main",
+            origin.to_str().unwrap(),
+        ],
+    );
+    setup.git(
+        &factory,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/owner/factory.git",
+        ],
+    );
+    setup.git(&factory, &["push", "-q", "origin", "main"]);
+    let head = setup.pushed_to_pull_request(12, "Implement the issue, run the tests twice");
+
+    let bin = setup.dir.join("bench-bin");
+    let gh = setup.dir.join("gh-bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::create_dir_all(&gh).unwrap();
+    std::os::unix::fs::symlink(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake/gh"),
+        gh.join("gh"),
+    )
+    .unwrap();
+    let path = std::env::join_paths(
+        [setup.dir.join("replay-bin"), gh]
+            .into_iter()
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    fs::write(
+        bin.join("priory"),
+        format!(
+            "#!/bin/sh\nPATH='{}' TMPDIR='{}' exec '{}' \"$@\"\n",
+            path.to_string_lossy(),
+            setup.tmux.path().display(),
+            env!("CARGO_BIN_EXE_priory"),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(bin.join("priory"), fs::Permissions::from_mode(0o755)).unwrap();
+    (setup, base, head)
+}
+
+impl Setup {
+    /// Pushes a commit on the origin's pull request `number`, from a clone of `owner/factory`
+    /// whose implement prompt reads `prompt`, and returns it.
+    fn pushed_to_pull_request(&self, number: u64, prompt: &str) -> String {
+        let clone = self
+            .dir
+            .join(format!("contributor-{prompt}").replace([' ', ','], "-"));
+        let origin = self.dir.join("origin/owner/factory.git");
+        let pull = format!("refs/pull/{number}/head");
+        self.git(
+            &self.dir,
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        // A later push builds on the pull request's head, once it has one.
+        let _ = git(&clone)
+            .args(["fetch", "-q", "origin", &format!("{pull}:pull")])
+            .output();
+        let _ = git(&clone).args(["checkout", "-q", "pull"]).output();
+        let workflow = clone.join("workflows/implement.toml");
+        let text = fs::read_to_string(&workflow).unwrap();
+        let line = text
+            .lines()
+            .find(|line| line.starts_with("prompt = "))
+            .unwrap()
+            .to_owned();
+        fs::write(
+            &workflow,
+            text.replace(&line, &format!("prompt = \"{prompt}.\"")),
+        )
+        .unwrap();
+        self.git(&clone, &["add", "-A"]);
+        self.git(
+            &clone,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                prompt,
+            ],
+        );
+        self.git(&clone, &["push", "-q", "origin", &format!("HEAD:{pull}")]);
+        self.git(&clone, &["rev-parse", "HEAD"]).trim().to_owned()
+    }
+
+    /// Starts the daemon with the benchmark starter's `priory` first on its `PATH`.
+    fn start_benchmark(&mut self) {
+        let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake");
+        let path = std::env::join_paths(
+            // The fakes stay first: a fake tmux finds the real one by dropping the first entry.
+            [fake, self.dir.join("bench-bin")]
+                .into_iter()
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let path = path.to_string_lossy().into_owned();
+        self.start_with(
+            Path::new(env!("CARGO_BIN_EXE_priory")),
+            &[("PATH", path.as_str())],
+        );
+    }
+}
+
+/// The intake's event for the label `benchmark` added to pull request `number` of
+/// `owner/factory` at `head` by `actor`, with its head repository when it names one, then its task
+/// request.
+fn benchmark_labeled(
+    number: u64,
+    head: &str,
+    head_repo: Option<&str>,
+    actor: &str,
+) -> [Message; 2] {
+    let mut data = json!({
+        "repo": "owner/factory",
+        "pull_request": number,
+        "url": format!("https://github.com/owner/factory/pull/{number}"),
+        "head_branch": "faster-prompt",
+        "head_sha": head,
+        "base_branch": "main",
+        "title": "Ask the implementer to run the tests twice",
+        "label": "benchmark",
+        "actor": actor,
+        "github_id": null,
+        "baseline": false,
+        "triggers": ["benchmark"]
+    });
+    if let Some(head_repo) = head_repo {
+        data["head_repo"] = json!(head_repo);
+    }
+    let event = Message::new("github.pull_request.labeled", data)
+        .subject(format!("owner/factory#{number}"));
+    let key = format!("github:owner/factory#{number}");
+    let request = Message::new(
+        "factory.task.requested",
+        json!({
+            "workflow": "benchmark",
+            "key": key,
+            "band": null,
+            "lane": null,
+            "trigger": "benchmark",
+            "source": event.id.to_string()
+        }),
+    )
+    .subject(key);
+    [event, request]
+}
+
+#[test]
+fn the_benchmark_starter_waits_for_a_persons_answer_to_a_bots_label_then_posts_on_the_commit_it_asked_about_and_a_second_label_repeats()
+ {
+    let (mut setup, base, head) = benchmark_starter("starter-benchmark");
+    // The one pair runs the base first: it fails, and the head passes.
+    setup.calls(&[result("failed"), result("passed")]);
+    for message in benchmark_labeled(12, &head, Some("owner/factory"), "renovate[bot]") {
+        setup.publish(&message);
+    }
+
+    setup.start_benchmark();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    assert_eq!(tasks[0][3], "compare", "{tasks:?}");
+    let asks = setup.rows("asks");
+    assert_eq!(
+        asks[0][3],
+        format!("Compare pull request 12 at {head} on the implement benchmark, for at most $40?")
+    );
+    assert!(
+        setup.rows("actions").is_empty(),
+        "a bot's label ran the comparison"
+    );
+    let answered = setup.priory(&["answer", "--run", "1", "run", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    let moved = setup.pushed_to_pull_request(12, "Implement the issue, run the tests three times");
+
+    let tasks = setup.within(240, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] != "running")
+    });
+
+    let actions = setup.rows("actions");
+    assert_eq!(
+        [&tasks[0][4], &actions[0][4]],
+        ["done", "done"],
+        "{tasks:?} {actions:?}"
+    );
+    let stdout = actions[0][8].replace("\\n", "\n");
+    let (short_base, short_head) = (&base[..7], &head[..7]);
+    assert!(
+        stdout.contains(&format!(
+            "\nbenchmark implement, base {short_base}, head {short_head}, comparison 1 of this pull request\n"
+        )),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("status: priory/benchmark success on {head}")),
+        "{stdout}"
+    );
+    let calls: Vec<serde_json::Value> = fs::read_to_string(setup.dir.join("fake/gh.log"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            json!([
+                "pr",
+                "comment",
+                "12",
+                "-R",
+                "owner/factory",
+                "--body-file",
+                "-"
+            ]),
+            json!([
+                "api",
+                format!("repos/owner/factory/statuses/{head}"),
+                "--method",
+                "POST",
+                "-f",
+                "state=success",
+                "-f",
+                "context=priory/benchmark",
+                "-f",
+                "description=passed: too few cases"
+            ]),
+        ]
+    );
+    let comment = fs::read_to_string(setup.dir.join("fake/pr-comments")).unwrap();
+    assert!(
+        comment.contains(&format!(
+            "head {short_head}, comparison 1 of this pull request"
+        )) && comment.contains(
+            "\npassed  0/1   0       1/1   0       +100.0     1    0     0     too few cases\n"
+        ),
+        "{comment}"
+    );
+    assert!(!comment.contains(&moved[..7]), "{comment}");
+    let records = compared(&setup);
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["data"]["head"], head);
+    assert_eq!(records[0]["data"]["base"], base);
+    assert_eq!(records[0]["data"]["pull_request"], "owner/factory#12");
+
+    // The label again, on the commit the first comparison measured: a second ask, then a repeat.
+    setup.calls(&[result("failed"), result("passed")]);
+    for message in benchmark_labeled(12, &head, Some("owner/factory"), "octocat") {
+        setup.publish(&message);
+    }
+    let asks = setup.until("asks", |rows| rows.len() == 1);
+    let answered = setup.priory(&["answer", "--run", &asks[0][0], "run", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    let tasks = setup.within(240, "tasks", |rows| {
+        rows.len() == 2 && rows[1][4] != "asleep" && rows[1][4] != "running"
+    });
+
+    assert_eq!(tasks[1][4], "done", "{tasks:?}");
+    let again = setup.rows("actions")[1][8].replace("\\n", "\n");
+    assert!(
+        again.contains("comparison 2 of this pull request, a repeat")
+            && again.ends_with("status: left as it is, since this comparison is a repeat"),
+        "{again}"
+    );
+    let calls = fs::read_to_string(setup.dir.join("fake/gh.log")).unwrap();
+    assert_eq!(calls.lines().count(), 3, "a repeat set a status: {calls}");
+}
+
+#[test]
+fn the_benchmark_starter_drops_a_forks_pull_request_and_one_whose_event_names_no_head_repository() {
+    let (mut setup, _, head) = benchmark_starter("starter-benchmark-fork");
+    for message in benchmark_labeled(12, &head, Some("stranger/factory"), "octocat")
+        .into_iter()
+        .chain(benchmark_labeled(13, &head, None, "octocat"))
+    {
+        setup.publish(&message);
+    }
+
+    setup.start_benchmark();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.len() == 2 && rows.iter().all(|row| row[4] == "dropped")
+    });
+    let reasons: Vec<&str> = tasks.iter().map(|row| row[7].as_str()).collect();
+    assert_eq!(
+        reasons,
+        [
+            "step compare: pull request 12's head is in stranger/factory, a fork: a command never runs a fork's commit",
+            "step compare: the event names no head repository for pull request 13, so its head may be a fork's: a command never runs it",
+        ],
+        "{tasks:?}"
+    );
+    assert!(setup.rows("asks").is_empty());
+    assert!(setup.rows("actions").is_empty());
 }

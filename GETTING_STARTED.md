@@ -171,6 +171,7 @@ its `README.md` says what it needs and which steps ask you first.
 | [`release-checklist`](examples/release-checklist/README.md) | A runbook: you start a release with `priory add`, and each step asks you. Answering `run` at the test step runs `cargo test` once |
 | [`groom`](examples/groom/README.md) | A `groom` label starts a task. The agent grades the ticket, writes the brief, and takes it to a pull request you review |
 | [`batches`](examples/batches/README.md) | `priory batch add` hands several issues to a planner, which orders them. After you answer `go`, each issue becomes a task that starts once the ones it needs merged |
+| [`benchmark`](examples/benchmark/README.md) | A `benchmark` label on a pull request of the factory's own repository asks you to compare it. Answering `run` replays past tasks under both commits and posts the table and a status on the pull request |
 | [`ship-and-watch`](examples/ship-and-watch/README.md) | A `ship` label starts a task. After you merge its pull request, the agent watches the release for an hour, then drafts an announcement that posts once you approve it |
 
 Copy one into your working folder, then check it:

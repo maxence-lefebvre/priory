@@ -90,8 +90,9 @@ The replay makes a scratch folder in `$TMPDIR` and prints its path. It holds:
 
 - A copy of `DIR`, without `.git` and `runners/`, so the replay runs as a factory of one machine.
   Its `factory.toml` leaves out `log`, `telemetry`, `notify`, `serve`, `webhooks`, `slack`,
-  `asks`, `handler`, `search` and `sweep`. A kit repository given as a relative path is made
-  absolute.
+  `asks`, `handler`, `search` and `sweep`. Each name in `[asks.targets]` stays, as an empty
+  folder of the scratch folder, so a workflow whose step names it still checks. A kit repository
+  given as a relative path is made absolute.
 - A bare origin of the case's repository, whose `main` is the case's start commit. The commit comes
   from Priory's clone in `$PRIORY_HOME/repos/<owner>/<name>`, so run one task in that repository on
   this machine first. Git's `insteadOf` serves it for `https://github.com/<owner>/<name>.git`, so a
@@ -182,14 +183,15 @@ Read the ending, the spending against the estimate, and the `gh` calls not recor
 ## Compare
 
 ```sh
-priory bench FILE --base REF --head REF --budget USD [--runs N] [--case NAME] [--turn-timeout DURATION]
+priory bench FILE --base REF --head REF --budget USD [--runs N] [--case NAME] [--turn-timeout DURATION] [--post OWNER/NAME#N]
 ```
 
 `FILE` is a benchmark file, `benchmarks/<name>.toml` in a factory folder inside a Git repository.
 `--base` and `--head` name two commits of that repository, such as `main` and a branch. `--budget`
 is required: the most the comparison may spend, in dollars. `--runs` is the number of pairs each
 case gets, 3 by default. `--case` runs only the case whose folder has that name. `--turn-timeout`
-is as for a replay.
+is as for a replay. `--post` names the pull request the comparison is for, such as
+`owner/factory#12`: see [Post to a pull request](#post-to-a-pull-request).
 
 The only thing that differs between the two sides is the factory's files at each commit. The
 benchmark file, its cases and its scorers come from `--head` for both sides.
@@ -287,9 +289,64 @@ since the change then moved the ruler too, and it names the cases whose capture 
 | `the head commit <sha> has no benchmark <name>` | The head commit lacks `FILE` |
 | `the benchmark <name> has no case <case>` | `--case` names no case of the benchmark |
 | `the case <path>: <why>` | A case folder is missing or does not load |
+| `cannot fetch <ref> from the origin of <repository>: <why>` | With `--post`, the origin lacks `--base` or `--head`, or cannot be reached |
+| `<base> and <head> have no merge base` | With `--post`, the two commits share no history |
+| `the comparison ran, but its comment was not posted: <why>` | With `--post`, `gh pr comment` failed. The table is printed and recorded |
+| `the comparison ran, but its status was not set: <why>` | With `--post`, `gh api` failed to set the status. The comment is posted |
 | `the estimate, $<x>, is over the $<y> budget: give --runs <n>, or --budget <z> or more` | The estimate is over the budget, and fewer runs would fit |
 
 The [replay errors](#replay-errors) apply to each replay, and stop the comparison.
+
+### Post to a pull request
+
+With `--post OWNER/NAME#N`, the comparison is for pull request `N` of `OWNER/NAME`:
+
+1. Before it resolves the commits, it fetches `--base` and `--head` from the `origin` of the
+   factory's repository, so a pull request's head that this clone lacks is found. `--head` names a
+   commit, and the comparison runs from the merge base of `--base` and `--head`, so the changes the
+   base branch got since are not counted as the pull request's.
+2. The header counts the comparisons of this pull request on this machine: `comparison 2 of this
+   pull request`. A repeat is still one of the same two commits and benchmark.
+3. After it prints the table, it writes it as one comment on the pull request with
+   `gh pr comment`, and prints `posted: <url>`.
+4. It sets the commit status `priory/benchmark` on the head commit with `gh api`, and prints
+   `status: priory/benchmark <state> on <commit>`:
+
+| State | When | Description |
+| ----- | ---- | ----------- |
+| `success` | The comparison is complete and the primary scorer does not read `worse` | `<primary>: <verdict>`, such as `gate: better` |
+| `failure` | The primary scorer reads `worse` | `<primary>: worse` |
+| `failure` | The comparison is incomplete | `Incomplete: <why>` |
+
+A repeat writes its comment and leaves the status as it is, and prints `status: left as it is,
+since this comparison is a repeat`.
+
+The status is bound to the head commit, so a push after the comparison leaves the new head with no
+status. A repository that wants a comparison before every merge of the paths it cares about makes
+`priory/benchmark` a required status there. The comparison never merges, and its status never
+approves a pull request.
+
+### Before a change merges
+
+The starter [`examples/benchmark/`](../../examples/benchmark/README.md) compares a pull request on
+the factory's own repository when someone adds the label `benchmark`:
+
+1. Its trigger starts a task on `pull_request.labeled` with the label `benchmark`.
+2. Its workflow is one human step, `compare`. Its ask names the pull request and the head commit of
+   the labeled event, such as `Compare pull request 12 at <full commit> on the implement benchmark,
+   for at most $40?`, with the options `run` and `skip`. The task has no branch and no worktree, and no
+   agent runs.
+3. Answering `run` with `priory answer --run` runs the step's command once, in the factory folder:
+   `priory bench benchmarks/implement.toml --base main --head <commit> --budget 40 --post
+   owner/factory#12`. The step's `timeout` bounds it. A failed command, such as an estimate over
+   the budget, asks the step again with its exit.
+
+A label is text a bot or an agent can add. The answer is a person's, and no run can give one, so
+a label alone runs nothing. The command takes the commit the ask named, so a push after the answer
+changes nothing of what runs. A pull request from a fork, or one whose event does not name its head
+repository, is dropped with the reason: its prompts and scripts would run with your sign-in (see
+[workflows.md](../reference/workflows.md#fields-of-the-tasks-event)). To compare again, remove the
+label and add it again: a new task asks again.
 
 ### Check a comparison with a real agent
 

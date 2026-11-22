@@ -1558,7 +1558,7 @@ fn command_env(
 }
 
 /// Starts the command of each answer stored to run it, in the folder it was asked with, bounded by
-/// `command_timeout`. Its argv is exec'd, never parsed by a shell.
+/// its step's `timeout` or `command_timeout`. Its argv is exec'd, never parsed by a shell.
 fn start_answers(
     db: &mut Connection,
     trace: &Trace,
@@ -1602,7 +1602,9 @@ fn start_answers(
             .chain(ran.argv[1..].iter().map(String::as_str))
             .collect();
         let (out, err) = outputs_of(home, id);
-        let timeout = trace.factory.command_timeout();
+        let timeout = ran
+            .timeout
+            .map_or_else(|| trace.factory.command_timeout(), Duration::from_secs);
         match script::spawn_held(&argv, &env, &ran.dir, &out, &err, timeout) {
             Ok(mut child) => {
                 state::command_spawned(db, id, child.pid(), memory::started(child.pid()))?;

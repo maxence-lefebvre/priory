@@ -753,6 +753,22 @@ pub(crate) fn comparisons(
     )
 }
 
+/// How many earlier comparisons on `benchmark` this machine posted to the pull request `pull`.
+pub(crate) fn comparisons_of(
+    db: &Connection,
+    benchmark: &str,
+    pull: &str,
+) -> rusqlite::Result<usize> {
+    db.query_row(
+        "SELECT count(*) FROM trace
+         WHERE type = 'factory.bench.compared'
+           AND json_extract(event, '$.data.benchmark') = ?1
+           AND json_extract(event, '$.data.pull_request') = ?2",
+        params![benchmark, pull],
+        |row| Ok(row.get::<_, i64>(0)? as usize),
+    )
+}
+
 /// The `source` of every record this factory writes on this machine.
 pub(crate) fn source(trace: &Trace) -> String {
     match &trace.machine {

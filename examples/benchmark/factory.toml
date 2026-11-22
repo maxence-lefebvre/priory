@@ -1,0 +1,7 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/factory.json
+name = "benchmark"
+
+# Where the compare step's command runs: this factory's own checkout, whose origin holds the
+# pull requests it compares.
+[asks.targets]
+factory = "."

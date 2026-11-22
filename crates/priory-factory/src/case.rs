@@ -197,8 +197,10 @@ pub const LEFT_OUT: [&str; 10] = [
 
 /// The text of a replay's `factory.toml`, from the factory folder `dir`: its `factory.toml` or
 /// `factory.yaml` without the keys of `LEFT_OUT`, and with a kit repository given as a relative
-/// path made absolute, since the replay's copy of the factory lives elsewhere.
-pub fn replay_settings(dir: &Path) -> Result<String, String> {
+/// path made absolute, since the replay's copy of the factory lives elsewhere. Each name in
+/// `[asks.targets]` stays, as the folder `targets`, so a step's command still checks and runs
+/// nowhere that matters.
+pub fn replay_settings(dir: &Path, targets: &Path) -> Result<String, String> {
     let found = ["factory.toml", "factory.yaml", "factory.yml"]
         .map(|name| dir.join(name))
         .into_iter()
@@ -212,8 +214,24 @@ pub fn replay_settings(dir: &Path) -> Result<String, String> {
     } else {
         serde_saphyr::from_str(&text).map_err(|error| at(error.to_string()))?
     };
+    let names: Vec<String> = table
+        .get("asks")
+        .and_then(|asks| asks.get("targets"))
+        .and_then(toml::Value::as_table)
+        .map(|named| named.keys().cloned().collect())
+        .unwrap_or_default();
     for key in LEFT_OUT {
         table.remove(key);
+    }
+    if !names.is_empty() {
+        let folder = toml::Value::String(targets.display().to_string());
+        let named: toml::Table = names
+            .into_iter()
+            .map(|name| (name, folder.clone()))
+            .collect();
+        let mut asks = toml::Table::new();
+        asks.insert("targets".to_owned(), toml::Value::Table(named));
+        table.insert("asks".to_owned(), toml::Value::Table(asks));
     }
     if let Some(toml::Value::String(repo)) = table
         .get_mut("kit")
@@ -361,20 +379,26 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join("factory.yaml"),
-            "name: demo\nhandler: reviewer\ngate: cargo test\nlog:\n  backend: postgres\nserve:\n  listen: 127.0.0.1:7340\nkit:\n  repo: ../kit\n",
+            "name: demo\nhandler: reviewer\ngate: cargo test\nlog:\n  backend: postgres\nserve:\n  listen: 127.0.0.1:7340\nkit:\n  repo: ../kit\nasks:\n  deliver: adapters/herdr/deliver\n  targets:\n    factory: .\n    ops: ../ops\n",
         )
         .unwrap();
 
-        let settings = replay_settings(&dir);
+        let settings = replay_settings(&dir, Path::new("/scratch/targets"));
 
         let absolute = std::path::absolute(dir.join("../kit")).unwrap();
         fs::remove_dir_all(&dir).unwrap();
         let settings: toml::Table = toml::from_str(&settings.unwrap()).unwrap();
         let keys: Vec<&str> = settings.keys().map(String::as_str).collect();
-        assert_eq!(keys, ["name", "gate", "kit"]);
+        assert_eq!(keys, ["name", "gate", "kit", "asks"]);
         assert_eq!(
             settings["kit"]["repo"].as_str(),
             Some(absolute.display().to_string().as_str())
         );
+        // A step's command keeps its target's name, so the factory still checks, and runs nowhere.
+        let asks = settings["asks"].as_table().unwrap();
+        assert_eq!(asks.keys().collect::<Vec<_>>(), ["targets"]);
+        for name in ["factory", "ops"] {
+            assert_eq!(asks["targets"][name].as_str(), Some("/scratch/targets"));
+        }
     }
 }

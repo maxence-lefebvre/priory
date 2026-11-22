@@ -660,7 +660,9 @@ pub fn replay(
         }
     }
     let settings = path.join("factory/factory.toml");
-    fs::write(&settings, case::replay_settings(dir)?).map_err(io(&settings))?;
+    let targets = path.join("targets");
+    fs::create_dir(&targets).map_err(io(&targets))?;
+    fs::write(&settings, case::replay_settings(dir, &targets)?).map_err(io(&settings))?;
     fake_gh(&path, &loaded.gh)?;
     let bare = origin(&path, &priory_runtime::runtime::home(), repo, &case.start)?;
     scratch.env = environment(&path, &bare, repo);

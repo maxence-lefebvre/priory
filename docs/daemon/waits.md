@@ -202,6 +202,8 @@ created it. An opened one comes first, then a waited one, then the latest from i
 wait on that pull request, pinned to the `commit` of the task's latest result, else to the commit
 that `open-pr` pushed after that result. The task sleeps with no process, at that result's step, so
 the agent that made it fixes what the checks find. A task with neither commit is blocked instead.
+A task with no result at all changed nothing, such as a runbook a pull request label started, so it
+is done with no gate.
 
 The daemon judges this wait on every event the inbox kept, ignored or woke a task on about the pull
 request. That includes events the agent already read, such as a check that woke it through a

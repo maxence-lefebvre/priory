@@ -31,8 +31,9 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `effect` | `none`, `read`, `reversible` or `irreversible` | yes | | What the step may change | `"reversible"` |
 | `agent` | string | model steps | | The agent that runs the step, by folder name under `agents/` | `"implementer"` |
 | `prompt` | string | model steps | | What the step tells its agent | `"Implement the plan."` |
-| `timeout` | duration | no | none, or `command_timeout` for a `run` action | How long one turn of a model step, or a `run` action's command, may run before Priory ends it | `"30m"` |
+| `timeout` | duration | no | none, or `command_timeout` for a command | How long one turn of a model step, a `run` action's command, or the command a human step's answer runs, may run before Priory ends it | `"30m"` |
 | `options` | array of strings | human steps | `[]` | The answers a person picks from | `["open", "stop"]` |
+| `question` | string | no | the step's id | Human steps only: what the ask says. It may name fields of the task's event, as `command` does. See [Fields of the task's event](#fields-of-the-tasks-event) | `"Compare pull request {pull_request}?"` |
 | `approves` | array of strings | no | `[]` | Human steps only: the irreversible steps this answer approves | `["open-pr"]` |
 | `command` | table | no | none | Human steps only: a command an answer runs once. `argv`, the program and its arguments; `target`, `worktree` or a name in [`[asks.targets]`](factory.md#asks), default `worktree`; `runs`, the options that run it. See [Runbooks](#runbooks) | `{ argv = ["cargo", "test"], target = "repo", runs = ["run"] }` |
 | `action` | string | code steps | | The built-in action: `open-pr`, `open-issue`, `open-memories-pr`, `run` or `start-batch` | `"open-pr"` |
@@ -156,6 +157,42 @@ next = { run = "tag", skip = "tag", abort = "stop" }
 
 `priory add` or `priory request --workflow <runbook>` starts one, and the desk shows its current
 step as an ask.
+
+### Fields of the task's event
+
+A human step's `question` and each word of its command's `argv` may name a field of the event that
+started the task, such as `{pull_request}`. When the task enters the step, Priory fills each field
+from the event, so the ask shows the values that run.
+
+| Field | Holds | Must be |
+| ----- | ----- | ------- |
+| `{repo}` | The event's repository | `owner/name` |
+| `{pull_request}` | The pull request's number | A number |
+| `{head_sha}` | The pull request's head commit | A full commit hash, of a head in `{repo}` itself |
+| `{base_branch}` | The branch the pull request merges into | Printable, not starting with `-` |
+
+The command runs with your sign-in, so `{head_sha}` takes only a head that the event names in its
+own repository. Priory drops the task, with the reason, when the event's `head_repo` names a fork,
+when the event does not name `head_repo`, when the event lacks a field the step names, or when a
+value does not have its shape. `priory check` refuses a name that is not in the table.
+
+A human step's `timeout` bounds its command, in place of `command_timeout`: a command such as
+`priory bench` can run for hours. `examples/benchmark/` compares a pull request this way:
+
+```toml
+[[steps]]
+id = "compare"
+decides = "human"
+effect = "reversible"
+question = "Compare pull request {pull_request} at {head_sha} on the implement benchmark, for at most $40?"
+options = ["run", "skip"]
+command = { argv = ["priory", "bench", "benchmarks/implement.toml", "--base", "{base_branch}", "--head", "{head_sha}", "--budget", "40", "--post", "{repo}#{pull_request}"], target = "factory", runs = ["run"] }
+timeout = "4h"
+next = { run = "done", skip = "stop" }
+```
+
+A task that reaches `done` with no result changed nothing, so it skips the checks gate even when
+its key names a pull request (see [waits.md](../daemon/waits.md)).
 
 ## Batches
 
@@ -283,6 +320,9 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` an `open-memories-pr` action writes to the kit repository, so factory.toml needs a `[kit]` `` | An `open-memories-pr` step in a factory without `[kit]` |
 | `` only a code step has a `run` command `` | `run` on a model or human step |
 | `` only a human step has a `command` `` | `command` on a model or code step |
+| `` only a human step has a `question` `` | `question` on a model or code step |
+| ``question names `{<name>}`, which is not a field of the task's event: use {repo}, {pull_request}, {head_sha} or {base_branch}`` | A `question` names another field |
+| ``command argv names `{<name>}`, which is not a field of the task's event: use {repo}, {pull_request}, {head_sha} or {base_branch}`` | A command's `argv` names another field |
 | `command argv must start with a program` | A `command` with an empty `argv` or an empty first word |
 | `` command target `<target>` is not worktree nor a name in [asks.targets] `` | A `command` names a target the factory lacks |
 | `` command runs `<option>`, which is not an option `` | A `runs` entry the step does not offer |

@@ -756,6 +756,31 @@ fn a_human_steps_command_needs_a_program_a_known_target_and_runs_among_its_optio
 }
 
 #[test]
+fn a_human_steps_question_and_command_name_only_fields_of_the_tasks_event() {
+    let named = workflow_with(
+        "step-fields",
+        "options = [\"open\", \"stop\"]",
+        "options = [\"open\", \"stop\"]\nquestion = \"Compare {pull_request} at {head_sha} by {author}?\"\ncommand = { argv = [\"priory\", \"--head\", \"{head_sha}\", \"--post\", \"{repo}#{pull_request}\", \"{title}\", \"{}\"], target = \"worktree\", runs = [\"open\"] }",
+    );
+    let model = workflow_with(
+        "model-question",
+        "prompt = \"Implement the issue.\"",
+        "prompt = \"Implement the issue.\"\nquestion = \"Implement?\"",
+    );
+
+    assert_eq!(named.code, 1);
+    assert_eq!(
+        named.stderr,
+        "workflows/implement.toml:12: step `approve-pr`: question names `{author}`, which is not a field of the task's event: use {repo}, {pull_request}, {head_sha} or {base_branch}\n\
+         workflows/implement.toml:12: step `approve-pr`: command argv names `{title}`, which is not a field of the task's event: use {repo}, {pull_request}, {head_sha} or {base_branch}\n"
+    );
+    assert_eq!(
+        model.stderr,
+        "workflows/implement.toml:4: step `implement`: only a human step has a `question`\n"
+    );
+}
+
+#[test]
 fn a_step_holds_only_its_deciders_fields() {
     let outcome = workflow_with(
         "foreign-field",
