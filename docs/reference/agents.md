@@ -25,6 +25,7 @@ against it, but `priory check` applies the same rules.
 | `memory` | size | no | | What a runner must have free to admit a run. See [memory-gate.md](../daemon/memory-gate.md) | `"6GB"` |
 | `disk` | size | no | | Disk a run reserves above the runner's floor | `"20GB"` |
 | `mcpServers` | array of strings | no | `[]` | The MCP servers the run gets beside `priory`, and no others, by their names in the person's own harness config. See [mcpServers](#mcpservers) | `["github"]` |
+| `skills` | array of strings | no | every skill | The skills the run gets, by name, from the factory's `skills/` or the kit's. `[]` gives none. See [skills.md](../daemon/skills.md#skills-per-agent) | `["review-comments"]` |
 | `connectorSignIn` | boolean | no | `false` | Lets the run call an MCP server's `authenticate` and `complete_authentication` tools. Off by default: an unattended run that signs in clears the stored token every later run needs. See [guard.md](../daemon/guard.md#connector-sign-in) | `true` |
 | `permissions` | table | no | | Claude Code's own `permissions` settings, so rules copy across. See below | |
 
@@ -85,6 +86,7 @@ compactAt = 150000             # compact between turns once the context reaches 
 memory = "6GB"                 # what a runner must have free to admit a run
 disk = "20GB"                  # disk a run reserves above the runner's floor
 mcpServers = ["github"]
+skills = ["review-comments"]   # unset: every skill; []: none
 permissions = { defaultMode = "auto", allow = ["Bash(cargo test:*)"], deny = ["Bash(git push:*)"] }
 +++
 # Implementation
@@ -124,6 +126,10 @@ Answer in one short paragraph.
 | `` a codex agent cannot take `idleCompactAt`: Priory reads no Codex tokens, so it never knows the context size `` | A Codex agent with `idleCompactAt` |
 | `` a codex agent takes its own prompt on its command line, as `developer_instructions`: it is <n> bytes, over the limit of 8192 `` | A Codex agent's prompt and the writing guide pass 8192 bytes. With `instructions.md`, memories or skills, the message names each part it counts and says `together they are` (see [skills.md](../daemon/skills.md#a-codex-run)) |
 | `` `idleCompactAt` needs `session = "shared"`: only a shared session is resumed across tasks `` | `idleCompactAt` on a `per-task` agent. The same for `onChange = "fresh"` |
+| `` `skills` names `<name>`, which is not a skill of this factory: <names> `` | A name in `skills` with no folder in `skills/`, in a factory without `[kit]`. With `[kit]`, the kit may hold it, and `priory check` accepts it |
+| `` `skills` names `<name>` twice `` | A name repeated in `skills` |
+| `` `skills` holds an empty name `` | `""` in `skills` |
+| `` a codex agent takes its own prompt on its command line, as `developer_instructions`: it is <n> bytes, over the limit of 8192 `` | A Codex agent whose prompt and writing guide pass 8192 bytes. With instructions, memories or skills the run gets, the message names them too. See [skills.md](../daemon/skills.md#a-codex-run) |
 | `invalid value: integer `0`, expected a nonzero u64` | `compactAt = 0` or `idleCompactAt = 0`. A negative or non-integer value gets serde's matching message |
 
 Other files name agents too: a workflow's model steps, and `handler`, `[search] tldr` and

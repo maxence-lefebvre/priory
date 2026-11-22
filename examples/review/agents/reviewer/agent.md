@@ -3,6 +3,7 @@ description = "Reviews a pull request and leaves a pending review for a person t
 harness = "claude-code"
 model = "sonnet"
 memory = "6GB"
+skills = ["review-comments"]
 permissions = { defaultMode = "auto", deny = ["Edit", "Write", "Bash(git push:*)", "Bash(gh pr review:*)", "Bash(gh pr merge:*)"] }
 +++
 # Review

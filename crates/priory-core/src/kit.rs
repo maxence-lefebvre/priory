@@ -1,7 +1,7 @@
 //! The factory's skills, instructions and memories, and those of its kit repository and memories
 //! repository, as each run gets them (R11.1).
 
-use priory_factory::factory::{self, Factory, KitFiles, Memory, Skill};
+use priory_factory::factory::{self, Agent, Factory, KitFiles, Memory, Skill};
 use priory_factory::paths::Scoped;
 use priory_runtime::runtime;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -43,9 +43,11 @@ pub(crate) struct Current<'a> {
 
 /// What a run gets: the kit's skills, instructions and memories, then the memories repository's
 /// memories, then the factory's own, a later one winning on a name two hold, then the memory
-/// candidates the run sees, in order.
+/// candidates the run sees, in order. The skills are those its agent names, or every one.
 pub(crate) struct Sources<'a> {
     skills: BTreeMap<&'a str, &'a Skill>,
+    /// The skills the agent names that neither the factory nor the kit holds.
+    pub(crate) missing: Vec<&'a str>,
     instructions: String,
     memories: BTreeMap<&'a str, &'a Memory>,
     /// The factory's name, which the plugin's manifest shows.
@@ -60,6 +62,7 @@ pub(crate) fn sources<'a>(
     factory: &'a Factory,
     current: Current<'a>,
     candidates: &'a [(String, Option<Memory>)],
+    agent: Option<&'a Agent>,
 ) -> Sources<'a> {
     let mut skills = BTreeMap::new();
     let mut memories = BTreeMap::new();
@@ -78,6 +81,16 @@ pub(crate) fn sources<'a>(
         );
     }
     skills.extend(factory.skills.iter().map(|(n, s)| (n.as_str(), &s.value)));
+    let mut missing = Vec::new();
+    if let Some(named) = agent.and_then(|agent| agent.skills.as_ref()) {
+        skills.retain(|name, _| named.iter().any(|skill| skill == name));
+        missing.extend(
+            named
+                .iter()
+                .map(String::as_str)
+                .filter(|name| !skills.contains_key(name)),
+        );
+    }
     memories.extend(factory.memories.iter().map(|(n, m)| (n.as_str(), &m.value)));
     for (name, memory) in candidates {
         match memory {
@@ -87,6 +100,7 @@ pub(crate) fn sources<'a>(
     }
     Sources {
         skills,
+        missing,
         instructions: factory::join_instructions(instructions, factory.instructions()),
         memories,
         name: &factory.name,

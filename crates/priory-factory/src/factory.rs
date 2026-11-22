@@ -979,6 +979,9 @@ pub struct Agent {
     /// The MCP servers the run gets, by name.
     #[serde(default)]
     pub mcp_servers: Vec<String>,
+    /// The skills the run gets, by name, from the factory or the kit. Unset, it gets every skill;
+    /// empty, none.
+    pub skills: Option<Vec<String>>,
     /// Lets the run call an MCP server's `authenticate` tools. Off by default: an unattended run
     /// that signs in clears the stored token every later run needs.
     #[serde(default)]
@@ -988,6 +991,15 @@ pub struct Agent {
     /// The Markdown after the frontmatter: the agent's instructions.
     #[serde(skip)]
     pub body: String,
+}
+
+impl Agent {
+    /// Whether a run of the agent gets the skill `name`, if the factory or the kit holds it.
+    pub fn gets_skill(&self, name: &str) -> bool {
+        self.skills
+            .as_ref()
+            .is_none_or(|skills| skills.iter().any(|skill| skill == name))
+    }
 }
 
 /// Claude Code's own `permissions` settings, so a person can copy rules across.
@@ -2311,9 +2323,13 @@ impl Factory {
         join_instructions(self.instructions(), &self.memory_index(folder))
     }
 
-    /// `run_instructions`, then the index of the skills, as a Codex run gets them.
-    pub fn codex_instructions(&self) -> String {
-        let skills = self.skills.iter().map(|(n, s)| (n.as_str(), &s.value));
+    /// `run_instructions`, then the index of the skills `agent` gets, as a Codex run gets them.
+    pub fn codex_instructions(&self, agent: &Agent) -> String {
+        let skills = self
+            .skills
+            .iter()
+            .filter(|(name, _)| agent.gets_skill(name))
+            .map(|(n, s)| (n.as_str(), &s.value));
         join_instructions(
             &self.run_instructions(MEMORY_FOLDER),
             &skill_index(SKILL_FOLDER, skills),
