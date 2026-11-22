@@ -43,7 +43,7 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
 | `subject` | string | A short line for listings; each type below gives its own |
 | `time` | RFC 3339 | When the event happened |
 | `data` | object | The fields below, by type |
-| `links` | array | GitHub and Linear events carry one `{ "label", "url" }` to the event's page; others carry none |
+| `links` | array | GitHub, Linear and Sentry events carry one `{ "label", "url" }` to the event's page; others carry none |
 
 Every GitHub, Linear and Slack event ends its `data` with the same three fields:
 
