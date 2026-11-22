@@ -11,6 +11,8 @@ const READ_EVERY_MS = 60_000;
 // Below this width the line drops cents and Claude's figure, which the detail still shows.
 const NARROW = 520;
 const WARN = 0.8;
+// The mean width of a 12 px UI character on the approved board, with a little margin.
+const CHAR = 5.6;
 const CLAUDE = ".cache/over9k/usage/claude.json";
 
 /** @typedef {Record<string, import("gpui-kit").Color>} Palette */
@@ -137,11 +139,12 @@ export default class PrioryUsage extends View {
     /** @type {Held[]} */
     const held = costs.held ?? [];
     return body
+      .when(Boolean(this.error), (el) => el.child(div().id("usage-stale").whitespace_normal().text_color(t["warn-text"]).child(`Could not read costs: ${this.error}. This is the last read.`)))
       .when(caps.length > 0, (el) => el.child(v_flex().id("usage-caps").gap(S["space-2"]).child(heading("Spend caps"))
         .children(caps.map((cap, at) => {
           const fraction = share(cap.spent_usd, cap.cap_usd);
           const spent = cap.period === "task"
-            ? (cap.task == null ? "no active task" : `task ${cap.task} ${money(cap.spent_usd)} of ${money(cap.cap_usd)}`)
+            ? (cap.task == null ? `no active task, cap ${money(cap.cap_usd)}` :`task ${cap.task} ${money(cap.spent_usd)} of ${money(cap.cap_usd)}`)
             : `${money(cap.spent_usd)} of ${money(cap.cap_usd)}`;
           const note = fraction >= 1 && cap.period !== "task" ? `Reached: new runs wait for the next ${cap.period}`
             : cap.period === "task" && cap.task != null ? "The active task under it that spent most" : null;
@@ -177,7 +180,7 @@ export default class PrioryUsage extends View {
   }
 
   open() {
-    openOverlay({ mod: "priory-usage", props: { detail: true }, kind: "popup", width: 380, height: 560 });
+    openOverlay({ mod: "priory-usage", kind: "popup", width: 380, height: 560 });
   }
 
   /** @param {Palette} t */
@@ -187,7 +190,8 @@ export default class PrioryUsage extends View {
     const parts = [];
     if (this.costs) {
       const day = this.factoryCap("day"), week = this.factoryCap("week");
-      const todaySpent = day ? day.spent_usd : this.costs.days.find((/** @type {any} */ entry) => entry.day === today(this.costs))?.cost_usd ?? 0;
+      const entry = this.costs.days.find((/** @type {any} */ row) => row.day === today(this.costs));
+      const todaySpent = day ? day.spent_usd : entry ? entry.cost_usd : 0;
       const weekSpent = week ? week.spent_usd : this.costs.current.cost_usd;
       const spend = (/** @type {number | null} */ spent, /** @type {Cap | null} */ cap, /** @type {string} */ when, /** @type {string} */ short) => (narrow
         ? `${money(spent, false)}${cap ? ` of ${money(cap.cap_usd, false)}` : ""} ${short}`
@@ -197,6 +201,9 @@ export default class PrioryUsage extends View {
       const held = this.costs.held?.length ?? 0;
       if (held) parts.push({ id: "usage-held", text: narrow ? `${held} held` : `${held} held at a cap`, color: t.text });
       if (this.claude && !narrow) parts.push({ id: "usage-claude", text: `Claude 7d ${Math.round(this.claude.used)}%`, color: this.tone(t, this.claude.used / 100) });
+      // shortcut: gpui-kit gives no text width, so an estimate drops whole parts; measure if one ever shows cut.
+      const width = () => 12 * 2 + 6 * CHAR + parts.reduce((sum, part, at) => sum + part.text.length * CHAR + 8 + (at ? CHAR + 8 : 0), 0);
+      while (parts.length > 1 && width() > this.width) parts.pop();
     }
     const status = this.error ? { text: "Could not read costs", color: t["warn-text"] } : !this.costs ? { text: "Reading costs…", color: t["text-3"] } : null;
     return h_flex().id("usage-line").size_full().px(12).gap(8).items_center().overflow_hidden().whitespace_nowrap()

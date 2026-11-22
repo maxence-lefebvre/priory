@@ -96,6 +96,25 @@ test("a held task opens in the Task panel and closes the popup", async () => {
   assert.equal(herdr.overlays.length, 0);
 });
 
+test("when whole parts cannot fit, the line leaves the last ones out rather than cut a number", async () => {
+  const caps = [
+    { scope: "factory", period: "day", cap_usd: 2000, spent_usd: 1234.5, task: null },
+    { scope: "factory", period: "week", cap_usd: 20000, spent_usd: 12345, task: null },
+  ];
+  const held = Array.from({ length: 12 }, (_, at) => ({ task: at, key: `PRI-${at}`, scope: "factory", period: "task", cap_usd: 5, spent_usd: 6 }));
+  const { view, cx } = await drawn({ costs: { ...COSTS, caps, held } });
+  view.width = 320;
+  assert.equal(text(find(draw(view, cx), "usage-line")), "Priory $1235 of $2000 today · $12345 of $20000 wk");
+});
+
+test("an unpriced day reads -, never $0, and an idle task cap keeps its limit", async () => {
+  const days = [{ day: "2026-11-17", cost_usd: null }];
+  const { tree } = await drawn({ costs: { ...COSTS, days, caps: [{ scope: "factory", period: "task", cap_usd: 5, spent_usd: null, task: null }] } });
+  assert.match(text(find(tree, "usage-line")), /^Priory - today · /);
+  const detail = (await drawn({ costs: { ...COSTS, caps: [{ scope: "factory", period: "task", cap_usd: 5, spent_usd: null, task: null }] }, props: { overlay: "overlay-1" } })).tree;
+  assert.equal(text(find(detail, "usage-caps")), "Spend caps Factory, task no active task, cap $5.00");
+});
+
 test("with no cap and no Over9k file, the line shows the spend alone, today's from the days", async () => {
   const { tree } = await drawn({ costs: { ...COSTS, caps: [], held: [] } });
   assert.equal(text(find(tree, "usage-line")), "Priory $12.40 today · $171.20 this week");

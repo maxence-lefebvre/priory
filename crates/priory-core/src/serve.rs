@@ -1708,7 +1708,7 @@ fn costs(db: &Connection, served: &Served, query: &str) -> Reply {
         Err(error) => return Reply::error(500, &error),
     };
     let spend = crate::spend::report(db, &served.book, &now)
-        .and_then(|caps| Ok((caps, crate::spend::held(db)?)));
+        .and_then(|caps| crate::spend::held(db).map(|held| (caps, held)));
     let (caps, held) = match spend {
         Ok(spend) => spend,
         Err(error) => return Reply::error(500, &error.to_string()),
