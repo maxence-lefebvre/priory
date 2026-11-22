@@ -308,10 +308,9 @@ fn the_cli_page_lists_every_usage_line_and_nothing_else() {
 
     for command in documented {
         let verb = words(command).nth(1).unwrap();
-        // A verb's lines include the lines that only mention it, which keeps the check lenient.
         let lines: Vec<_> = usage
             .iter()
-            .filter(|line| words(line).skip(1).any(|word| word == verb))
+            .filter(|line| verbs(line).any(|word| word == verb))
             .collect();
         assert!(
             !lines.is_empty(),
@@ -326,6 +325,16 @@ fn the_cli_page_lists_every_usage_line_and_nothing_else() {
             );
         }
     }
+}
+
+/// The verbs a usage line is for: its first word, or each word of a leading `(a | b)` group.
+fn verbs(line: &str) -> impl Iterator<Item = &str> {
+    let rest = line.trim_start_matches("priory ");
+    let verbs = match rest.strip_prefix('(') {
+        Some(group) => group.split(')').next().unwrap(),
+        None => rest.split(' ').next().unwrap(),
+    };
+    words(verbs)
 }
 
 /// The words of a command, without its brackets, bars and placeholders' punctuation.

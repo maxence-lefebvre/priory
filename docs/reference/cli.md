@@ -69,12 +69,12 @@ does and the page that describes it.
   [waits.md](../daemon/waits.md#asks-and-answers).
 - `priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT`:
   answers an ask. `--run` confirms an answer that runs the ask's command. `RUNNER:ASK` answers
-  another runner's ask. Without `--revision N`, it says the ask needs the revision `priory asks`
-  prints, and exits 2. See [waits.md](../daemon/waits.md#asks-and-answers),
+  another runner's ask. Without a revision (`--revision N` or `--expected N`), it says the ask
+  needs the one `priory asks` prints, and exits 2. See [waits.md](../daemon/waits.md#asks-and-answers),
   [tools.md](../daemon/tools.md#commands-an-answer-runs) and
   [runners.md](../daemon/runners.md#answering-another-runners-ask).
 - `priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK`: closes an ask with no answer.
-  `RUNNER:ASK` needs `--revision N`, and exits 2 without it, as `answer` does.
+  `RUNNER:ASK` needs a revision too, and exits 2 without it, as `answer` does.
 - `priory deliver ASK (--retry | --clear)`: sends a failed answer delivery again, or clears it from
   the desk. See [asks.md](../daemon/asks.md).
 - `priory ask ID JSON`: stores an ask from a session Priory did not start. See
