@@ -1,6 +1,6 @@
 // The Queue panel's view model: `priory queue DIR --json` in, rows and states out. No drawing, no IO.
 
-import { autolink, prStack } from "./priory.js";
+import { age, autolink, prStack } from "./priory.js";
 
 const title = (/** @type {string} */ name) => name.charAt(0).toUpperCase() + name.slice(1);
 const clock = (/** @type {string} */ iso) => new Date(iso).toLocaleTimeString("en", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
@@ -8,14 +8,6 @@ const clock = (/** @type {string} */ iso) => new Date(iso).toLocaleTimeString("e
 const sameDay = (/** @type {string} */ iso, /** @type {number} */ now) => new Date(iso).toDateString() === new Date(now).toDateString();
 /** A time of day today, else its weekday and time. @param {string} iso @param {number} now */
 const when = (iso, now) => (sameDay(iso, now) ? clock(iso) : `${new Date(iso).toLocaleDateString("en", { weekday: "short" })} ${clock(iso)}`);
-
-/** Relative under 24 h, then a date (DESIGN.md, Copy). @param {string} iso @param {number} now */
-function age(iso, now) {
-  const minutes = Math.max(0, Math.round((now - Date.parse(iso)) / 60_000));
-  if (minutes < 60) return `${minutes} min`;
-  if (minutes < 1440) return `${Math.floor(minutes / 60)} h`;
-  return new Date(iso).toLocaleString("en", { month: "short", day: "numeric" });
-}
 
 /** @typedef {{ paused?: string | null, banner?: string | null }} Room `paused` and `banner` from `priory desk --json` */
 /** @typedef {{ pattern: string, url: string }[]} Links the rules `priory links` lists */

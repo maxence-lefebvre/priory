@@ -1,4 +1,4 @@
-use crate::factory::{By, Decider, Effect, Factory, Harness, Proof, Step, Workflow};
+use crate::factory::{By, Confidence, Decider, Effect, Factory, Harness, Proof, Step, Workflow};
 use std::collections::BTreeSet;
 
 /// A guarded call an agent can make with no human decision, in a workflow, and why.
@@ -177,6 +177,32 @@ fn unattended_targets(step: &Step) -> BTreeSet<&str> {
         .collect()
 }
 
+/// Whether an ask made at step `at` may be answered by anyone but a person: a lead under
+/// `hands-off`, or the daemon under `auto_answer`. Never an ask that runs a command, an ask at a
+/// step that `approves`, or an ask whose answer can let an irreversible step run.
+pub fn delegable(workflow: &Workflow, at: &str, command: bool) -> bool {
+    let approves = workflow
+        .step(at)
+        .is_some_and(|step| !step.approves.is_empty());
+    !command && !approves && !answer_lets_irreversible_run(workflow, at)
+}
+
+/// Whether the daemon answers an agent's ask at step `at`, stated at `confidence`, with its
+/// recommendation, for a task whose `auto_answer` is `level`. The workflow's shape decides first,
+/// through `delegable`, so the stated confidence never widens what a lead may answer.
+pub fn auto_answerable(
+    workflow: &Workflow,
+    at: &str,
+    command: bool,
+    level: Option<Confidence>,
+    confidence: Option<Confidence>,
+) -> bool {
+    let (Some(level), Some(confidence)) = (level, confidence) else {
+        return false;
+    };
+    level != Confidence::Low && confidence >= level && delegable(workflow, at, command)
+}
+
 /// Whether answering the ask of human step `ask` can let an irreversible step run before a
 /// person decides again.
 pub fn answer_lets_irreversible_run(workflow: &Workflow, ask: &str) -> bool {
@@ -286,5 +312,120 @@ next = { opened = "done", failed = "stop" }
                 .unwrap();
 
         assert!(answer_lets_irreversible_run(&workflow, "approve-plan"));
+    }
+
+    mod generated {
+        use super::*;
+        use proptest::prelude::*;
+
+        const DECIDERS: [&str; 3] = ["model", "human", "code"];
+        const EFFECTS: [&str; 4] = ["none", "read", "reversible", "irreversible"];
+        const BY: [&str; 4] = ["code", "model", "human", "asleep"];
+
+        /// One step: its decider, effect, outcomes with their target and `by`, and the steps it
+        /// approves, each an index into the workflow's steps or past its end for `stop`.
+        type Drawn = (usize, usize, Vec<(usize, Option<usize>)>, Vec<usize>);
+
+        fn workflow(steps: &[Drawn]) -> String {
+            let id = |index: usize| match index < steps.len() {
+                true => format!("s{index}"),
+                false => "stop".to_owned(),
+            };
+            let mut toml = "start = \"s0\"\n".to_owned();
+            for (index, (decides, effect, next_by, approves)) in steps.iter().enumerate() {
+                let next: Vec<String> = next_by
+                    .iter()
+                    .enumerate()
+                    .map(|(outcome, (target, _))| format!("o{outcome} = \"{}\"", id(*target)))
+                    .collect();
+                let by: Vec<String> = next_by
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(outcome, (_, by))| {
+                        by.map(|by| format!("o{outcome} = \"{}\"", BY[by]))
+                    })
+                    .collect();
+                let approves: Vec<String> = approves
+                    .iter()
+                    .filter(|step| **step < steps.len())
+                    .map(|step| format!("\"s{step}\""))
+                    .collect();
+                toml += &format!(
+                    "\n[[steps]]\nid = \"s{index}\"\ndecides = \"{}\"\neffect = \"{}\"\nnext = {{ {} }}\nby = {{ {} }}\napproves = [{}]\n",
+                    DECIDERS[*decides],
+                    EFFECTS[*effect],
+                    next.join(", "),
+                    by.join(", "),
+                    approves.join(", ")
+                );
+            }
+            toml
+        }
+
+        fn drawn() -> impl Strategy<Value = Vec<Drawn>> {
+            proptest::collection::vec(
+                (
+                    0..DECIDERS.len(),
+                    0..EFFECTS.len(),
+                    proptest::collection::vec((0usize..8, proptest::option::of(0..BY.len())), 1..4),
+                    proptest::collection::vec(0usize..8, 0..2),
+                ),
+                1..7,
+            )
+        }
+
+        /// Whether a person decides before any irreversible step after `at`, read without
+        /// `irreversible_step_after`.
+        fn guarded(workflow: &Workflow, at: &str) -> bool {
+            let Some(step) = workflow.step(at) else {
+                return true;
+            };
+            let mut seen: BTreeSet<String> = BTreeSet::new();
+            let mut pending: Vec<String> = step.next.values().cloned().collect();
+            while let Some(id) = pending.pop() {
+                if !seen.insert(id.clone()) {
+                    continue;
+                }
+                let Some(step) = workflow.step(&id) else {
+                    continue;
+                };
+                if step.effect == Effect::Irreversible {
+                    return false;
+                }
+                for (outcome, target) in &step.next {
+                    if step.by(outcome) != By::Human {
+                        pending.push(target.clone());
+                    }
+                }
+            }
+            true
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(512))]
+
+            #[test]
+            fn every_auto_answerable_ask_is_one_a_lead_may_answer(
+                steps in drawn(),
+                command in any::<bool>(),
+                level in proptest::option::of(0..3usize),
+                confidence in proptest::option::of(0..3usize),
+            ) {
+                let workflow: Workflow = toml::from_str(&workflow(&steps)).unwrap();
+                let words = [Confidence::Low, Confidence::Medium, Confidence::High];
+                let level = level.map(|level| words[level]);
+                let confidence = confidence.map(|confidence| words[confidence]);
+                for step in &workflow.steps {
+                    let at = step.id.as_str();
+                    if auto_answerable(&workflow, at, command, level, confidence) {
+                        prop_assert!(delegable(&workflow, at, command));
+                        prop_assert!(!command && step.approves.is_empty());
+                        prop_assert!(guarded(&workflow, at), "{at} can let an irreversible step run");
+                        prop_assert!(level != Some(Confidence::Low));
+                        prop_assert!(confidence >= level);
+                    }
+                }
+            }
+        }
     }
 }

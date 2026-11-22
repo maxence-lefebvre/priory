@@ -679,6 +679,50 @@ appends none. The record holds no text of the item: the inbox holds the event.
 | `probability`  | no       | The probability it gave its choice                                           |
 | `input_tokens` | no       | The input tokens the answer reported                                         |
 
+## `factory.ask.auto_answered`
+
+The daemon answered an agent's ask with its recommendation, since the confidence the agent stated
+met its task's `auto_answer` level (see [waits.md](daemon/waits.md#answered-by-auto)). It shares
+`factory`, `factory_revision`, `workflow`, `task`, `key`, `generation`, `step` and `machine` with
+`factory.step.ended`, and `run` names the run that asked.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-00000000000e",
+  "source": "factory://example/desktop",
+  "type": "factory.ask.auto_answered",
+  "time": "2026-11-22T10:08:41Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "14",
+    "key": "github:example/app#42",
+    "run": "31",
+    "generation": 1,
+    "step": "implement",
+    "machine": "desktop",
+    "ask": "14",
+    "revision": 1,
+    "option": "document --format",
+    "confidence": "high",
+    "rationale": "the flag duplicates --format",
+    "level": "high"
+  }
+}
+```
+
+| Field        | Required | Meaning                                                          |
+| ------------ | -------- | ---------------------------------------------------------------- |
+| `ask`        | yes      | The ask the daemon answered                                      |
+| `revision`   | yes      | The revision it answered                                         |
+| `option`     | yes      | The recommended option, which became the answer                  |
+| `confidence` | yes      | The confidence the agent stated: `high` or `medium`              |
+| `rationale`  | yes      | The agent's one-line reason                                      |
+| `level`      | yes      | The task's `auto_answer` level when the ask was stored           |
+
 ## `factory.bench.compared`
 
 A comparison of two commits of the factory on a benchmark ended (see

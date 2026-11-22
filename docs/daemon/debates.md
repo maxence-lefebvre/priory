@@ -28,8 +28,11 @@ ends with it.
 
 A debater resumes its own session from its earlier turn in the same debate. A new debate, and any
 later step, starts it fresh, so each debate's openings are independent and a later step does not
-read the losing argument. A debate turn's prompt carries no event the task kept; the next step
-reads those.
+read the losing argument.
+
+No debater reads what arrives for the task during the debate. An event the task keeps stays
+unread, even while a turn runs, and a person's `say` is held ([desk.md](desk.md#say)). The first
+run after the debate reads them all with the next step's prompt.
 
 When the task enters the step, the daemon records a debate with the head of the task's branch, read
 when the first opening starts. A restarted daemon counts the positions stored, so it starts the

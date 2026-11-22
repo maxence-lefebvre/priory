@@ -165,6 +165,17 @@ pub fn person_verb(args: &[String]) -> bool {
     }
 }
 
+/// The hits of the `priory-person` and `unreadable` guards alone in the shell command `command`,
+/// for a person's own session: every other guard is that person's business.
+pub fn person(command: &str) -> Vec<Hit> {
+    let no_git = |_: Option<&str>, _: &[&str]| None;
+    Guards::default()
+        .hits("Bash", Some(command), &no_git)
+        .into_iter()
+        .filter(|hit| hit.guard == PERSON || hit.guard == UNREADABLE)
+        .collect()
+}
+
 /// Runs git with these arguments, in the `-C` directory if any, and returns its trimmed output.
 pub type Git<'a> = &'a dyn Fn(Option<&str>, &[&str]) -> Option<String>;
 

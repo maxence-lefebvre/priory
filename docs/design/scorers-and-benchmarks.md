@@ -435,11 +435,12 @@ Tests:
    code step outside `intervention = "plan"`. A judge may now read `on = "result"`, with no diff.
    The daemon holds the result, grades it on a thread of its own after the turn ends, and stores
    it only when no scorer refuses it. A `fail` or an `error` refuses; a judge whose calibration
-   does not pass does not count. The first refusal in a run reaches the agent as a prompt, and a
+   does not pass does not count, and holds the result on an ask to a person: `grade again` or
+   `let it through`. The first refusal in a run reaches the agent as a prompt, and a
    second one blocks the task for a person. A gate never approves: a pass only lets the task go
    on as it would without the gate. Tests use the fake `claude` and a `command` scorer, and cover
    one refusal then a pass, two refusals, a scorer error, an event held while the gate grades, an
-   uncalibrated judge, a calibrated judge within its per-call budget, the critic on a green plan,
+   uncalibrated judge's ask and both its answers, a calibrated judge within its per-call budget, the critic on a green plan,
    and no critic under `plan` or before a human step.
 
 ## Open questions

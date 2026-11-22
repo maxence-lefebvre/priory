@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 96;
+const VERSION: i64 = 99;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1749,6 +1749,57 @@ CREATE INDEX IF NOT EXISTS gates_grading ON gates (run) WHERE state = 'grading';
 PRAGMA user_version = 96;
 ";
 
+// The outside session that added a task through `priory mcp --outside`.
+const SCHEMA_97: &str = "ALTER TABLE tasks ADD COLUMN added_by TEXT;
+PRAGMA user_version = 97;
+";
+
+// The confidence and rationale an agent states on its ask, and the lowest confidence at which the
+// daemon answers a task's asks with their recommendation.
+const SCHEMA_98: &str = "
+ALTER TABLE asks ADD COLUMN confidence TEXT CHECK (confidence IN ('high', 'medium', 'low'));
+ALTER TABLE asks ADD COLUMN rationale TEXT;
+ALTER TABLE tasks ADD COLUMN auto_answer TEXT CHECK (auto_answer IN ('high', 'medium'));
+PRAGMA user_version = 98;
+";
+
+// Evidence: each file a run's result carries, never changed; each step's `record` command the
+// daemon owes or ran after a result; and the last item each approval covers.
+const SCHEMA_99: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS evidence (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  task       INTEGER NOT NULL REFERENCES tasks (id),
+  run        INTEGER NOT NULL REFERENCES runs (id),
+  kind       TEXT NOT NULL CHECK (kind IN ('image', 'cast', 'video')),
+  media      TEXT NOT NULL,
+  caption    TEXT NOT NULL,
+  commit_sha TEXT NOT NULL,
+  bytes      INTEGER NOT NULL,
+  sha256     TEXT NOT NULL,
+  created    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE TRIGGER IF NOT EXISTS evidence_is_never_changed BEFORE UPDATE ON evidence
+  BEGIN SELECT RAISE(ABORT, 'evidence is never changed'); END;
+CREATE TABLE IF NOT EXISTS evidence_records (
+  run        INTEGER PRIMARY KEY REFERENCES runs (id),
+  task       INTEGER NOT NULL REFERENCES tasks (id),
+  command    TEXT NOT NULL,
+  commit_sha TEXT,
+  state      TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'recorded', 'refused', 'failed')),
+  reason     TEXT,
+  created    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  ended      TEXT
+);
+CREATE TABLE IF NOT EXISTS approval_evidence (
+  approval INTEGER PRIMARY KEY REFERENCES approvals (id),
+  evidence INTEGER NOT NULL
+);
+",
+    bumps!("evidence", "evidence_records"),
+    "PRAGMA user_version = 99;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1762,7 +1813,8 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
-    SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96,
+    SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
+    SCHEMA_98, SCHEMA_99,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -2084,9 +2136,9 @@ pub(crate) fn route_in(
             tx.execute(
                 "INSERT INTO tasks
                    (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, repo, entered, tldr, intervention, lead,
-                    pre_title, pre_text, pre_context, pre_script)
+                    pre_title, pre_text, pre_context, pre_script, added_by, auto_answer)
                  VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?12, ?13, ?14,
-                   ?15, ?16, ?17, ?18)",
+                   ?15, ?16, ?17, ?18, ?19, ?20)",
                 params![
                     new.key,
                     new.workflow,
@@ -2109,7 +2161,9 @@ pub(crate) fn route_in(
                     new.title,
                     new.text,
                     new.context,
-                    new.pre.as_ref().map(|pre| &pre.script)
+                    new.pre.as_ref().map(|pre| &pre.script),
+                    new.session,
+                    new.auto_answer.map(|level| level.as_str())
                 ],
             )?;
             let id = tx.last_insert_rowid();
@@ -2168,7 +2222,12 @@ pub(crate) fn route_in(
             .is_some(),
         None => false,
     };
-    let outbox = if let Some(task) = task.filter(|_| running && outcome == "kept") {
+    // A debater never reads what the task keeps: the step after the debate reads it unread.
+    let debating = match task {
+        Some(id) if running => crate::debate::open(tx, id)?,
+        _ => false,
+    };
+    let outbox = if let Some(task) = task.filter(|_| running && !debating && outcome == "kept") {
         let text = line(
             &message.kind,
             message.subject.as_deref(),
@@ -2277,7 +2336,7 @@ pub(crate) fn route_in(
                 kill.extend(crate::tools::event(tx, task, seq, factory)?.1);
             } else {
                 tx.execute(
-                    "UPDATE inbox SET outbox = (SELECT max(id) FROM outbox WHERE task = ?2 AND state = 'queued')
+                    "UPDATE inbox SET outbox = (SELECT max(id) FROM outbox WHERE task = ?2 AND state IN ('queued', 'held'))
                      WHERE seq = ?1",
                     [seq, task],
                 )?;
@@ -2477,7 +2536,8 @@ fn delivered(
     }
     if kept.is_none()
         && tx.execute(
-            "INSERT INTO outbox (task, text) SELECT id, ?2 FROM tasks WHERE id = ?1 AND state = 'running'",
+            "INSERT INTO outbox (task, text) SELECT id, ?2 FROM tasks WHERE id = ?1 AND state = 'running'
+             AND NOT EXISTS (SELECT 1 FROM debates WHERE task = ?1 AND ended IS NULL)",
             params![task, placed(tx, task, resources, &line)?],
         )? == 1
     {
@@ -3535,18 +3595,68 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
     if crate::triage::any(&tx, &events)? {
         text = format!("{text}\n{}", crate::triage::RULE);
     }
+    let held = match run.debate {
+        Some(_) => Vec::new(),
+        None => held(&tx, run.task)?,
+    };
+    for (_, said) in &held {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(said);
+    }
+    // The step after a debate reads what came during it with the entry prompt the debate queued.
+    let entry: Option<i64> = match run.prompt {
+        None if !text.is_empty() => tx.query_row(
+            "SELECT min(outbox.id) FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0
+                 AND (SELECT debate FROM runs WHERE task = ?1 AND id < ?2 ORDER BY id DESC LIMIT 1)
+                   IS NOT NULL",
+            params![run.task, id],
+            |row| row.get(0),
+        )?,
+        _ => None,
+    };
     if !text.is_empty() {
-        tx.execute(
-            "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
-            params![run.task, text],
-        )?;
-        carry(&tx, run.task, tx.last_insert_rowid(), &unread)?;
+        let prompt = match entry {
+            Some(entry) => {
+                tx.execute(
+                    "UPDATE outbox SET text = text || char(10) || ?2 WHERE id = ?1",
+                    params![entry, text],
+                )?;
+                entry
+            }
+            None => {
+                tx.execute(
+                    "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
+                    params![run.task, text],
+                )?;
+                tx.last_insert_rowid()
+            }
+        };
+        carry(&tx, run.task, prompt, &unread)?;
+        for (id, _) in &held {
+            tx.execute(
+                "UPDATE inbox SET outbox = ?1 WHERE outbox = ?2",
+                params![prompt, id],
+            )?;
+            tx.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
+        }
     }
     if run.shared {
         share(&tx, run)?;
     }
     tx.commit()?;
     Ok(id)
+}
+
+/// The texts a person said to `task` during a debate, by outbox id, which its next run after the
+/// debate reads with its first prompt.
+fn held(tx: &Transaction, task: i64) -> rusqlite::Result<Vec<(i64, String)>> {
+    let mut statement =
+        tx.prepare("SELECT id, text FROM outbox WHERE task = ?1 AND state = 'held' ORDER BY id")?;
+    statement
+        .query_map([task], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect()
 }
 
 /// Each event `task` kept that no prompt carries, by seq, with whether a subscription delivered it

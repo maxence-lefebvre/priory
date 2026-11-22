@@ -170,14 +170,36 @@ overrun stands, and a cost that cannot be read fails the task, as for a stored r
 | `pass` or `not applicable` | Lets the result through |
 | `fail` | Refuses it |
 | `error` | Refuses it: a scorer that cannot grade the change cannot let it through |
-| A judge whose calibration does not pass | Does not count. Its `error: not calibrated: <why>` is recorded, and the gate goes on without it |
+| The grading crashed | Refuses it, recorded as scorer `gate` with `error: the gate's grading crashed` |
+| A judge whose calibration does not pass | Holds the result on an ask (see [A judge that lost its calibration](#a-judge-that-lost-its-calibration)), unless another scorer refuses it. Its `error: not calibrated: <why>` is recorded |
 
 A judge gates only while its latest calibration, for its current prompt, model and labeled cases,
 is at or above its `agreement` ([Calibration](#calibration)). One gated call may spend five times
 what one call cost on average when the judge was calibrated, at least $0.01.
 
-When no scorer refuses, the daemon stores the result, checking it again first, and the task moves
-on as its `Stop` would have moved it.
+When no scorer refuses and every judge counts, the daemon stores the result, checking it again
+first, and the task moves on as its `Stop` would have moved it.
+
+### A judge that lost its calibration
+
+Editing a judge's prompt or cases, or changing its model, leaves it not calibrated. A gate does not
+pass a result that no calibrated judge read, and a judge that is not calibrated cannot refuse one.
+So when no scorer refuses the result and a judge did not count, the daemon keeps the result held
+and asks a person one question, on the Desk like any ask:
+
+```text
+The gate of step implement holds outcome passed of task 1: does-what-was-asked is not calibrated: <why>. Calibrate it with priory score --calibrate, then answer grade again, or answer let it through to store the result this once.
+```
+
+Its title is `gate held: <scorer> is not calibrated: <why>`, and its options are:
+
+- `grade again`: the scorers grade the held result again. A judge calibrated since then counts.
+  One that is still not calibrated asks again.
+- `let it through`: the daemon stores the result as if the gate passed, this once. The next gated
+  result asks again until the judge is calibrated.
+
+While the ask is open, the run stays live and idle as during grading, and no scorer runs. A run
+that ends while the ask is open drops the result, as for any gate, and withdraws the ask.
 
 When a scorer refuses, the result is never stored. The first refusal in a run reaches the agent as
 its next prompt, followed by how to end the step:

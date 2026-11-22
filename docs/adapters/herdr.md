@@ -14,7 +14,8 @@ how it delivers answers, and how another front end would write its own adapter.
 The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo workspace:
 
 - `adapters/herdr/lib/priory.js`: the module every mod uses to read and act. It is the only code
-  that runs `priory`.
+  that runs `priory`. It also holds the words the panels share with the web view, such as `age`
+  and `ago` for times and `eventWords` for event types.
 - `adapters/herdr/mods/priory-tabs/`: the Priory bar. It sits left of Herdr's own tab bar, shows
   one button per aside and center tab in the layout, opens the Task tab, and attaches to a task's
   terminal. See [The layout](../reference/herdr-panels.md#the-layout).
@@ -56,8 +57,8 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
 Herdr loads a mod's imports only from the mod's own folder, and it resolves symbolic links before it
 checks. So each mod keeps a copy of `lib/priory.js` as its own `priory.js`, and a mod that draws
 with Priory's colors keeps a copy of `lib/tokens.js`. The Desk and Queue panels also keep
-`lib/add.js`, the Add action's view model, and `lib/add-form.js`, its form. The Desk and the
-Priory bar keep `lib/layout.js`. A test fails when a copy differs from the
+`lib/add.js`, the Add action's view model, and `lib/add-form.js`, its form. The Desk, the Task
+panel and the Priory bar keep `lib/layout.js`, whose `showAsks` opens the Asks panel to answer. A test fails when a copy differs from the
 library. After you change a file in `lib/`, copy it into every mod that carries it.
 
 The Costs, Flows, Inbox, Tasks and Runs panels keep the web view's own view models: `mods/priory-costs/view.js` is a
@@ -186,6 +187,6 @@ The core serves every field that
   and `cancel`; see [serve.md](../reference/serve.md#queue) and [runs.md](../daemon/runs.md#queue).
 - Reports, picks and comments on rows: [reports.md](../daemon/reports.md).
 - Ask fields: `what_waits`, `next_action`, `title` and a Markdown `text`, in
-  [tools.md](../reference/tools.md#askquestion-options-recommendation-tradeoff-title-text-whatwaits-nextaction-command).
+  [tools.md](../reference/tools.md#askquestion-options-recommendation-tradeoff-confidence-rationale-title-text-whatwaits-nextaction-command).
 - Ask history: each ask's `revisions` and `refused` answers, in `priory asks --json`.
 - Task detail: `priory task ID --json` prints a task's `brief`, `plan`, `pull_request` and runs.

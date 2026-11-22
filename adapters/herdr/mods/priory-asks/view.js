@@ -1,6 +1,6 @@
 // The Asks panel's view model: `priory asks --all --json` in, rows and states out. No drawing, no IO.
 
-import { answeredBy, autolink, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
+import { age, ago, answeredBy, autolink, checkState, stateWords, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
 
 /** @typedef {{ pattern: string, url: string }[]} Links the rules `priory links` lists */
 
@@ -12,13 +12,7 @@ const date = (/** @type {string} */ iso) => new Date(iso).toLocaleString("en", {
 /** A time of day today, else a date. @param {string} iso @param {number} now */
 const when = (iso, now) => (sameDay(iso, now) ? clock(iso) : date(iso));
 
-/** Relative under 24 h, then a date (DESIGN.md, Copy). @param {string} iso @param {number} now */
-export function age(iso, now) {
-  const minutes = Math.max(0, Math.round((now - Date.parse(iso)) / 60_000));
-  if (minutes < 60) return `${minutes} min`;
-  if (minutes < 1440) return `${Math.floor(minutes / 60)} h`;
-  return date(iso);
-}
+const sentence = (/** @type {string} */ text) => text.charAt(0).toUpperCase() + text.slice(1);
 
 /** @param {any} ask @param {number} now */
 function row(ask, now) {
@@ -64,8 +58,10 @@ export function asksList(all, { view, now, bands = [], facets = {} }) {
   const asks = all.filter((ask) => (!facets.command || ask.command) && (!facets.lane || ask.lane === facets.lane)
     && (!facets.band || band(ask) === facets.band) && (!facets.risk || risks(ask).includes(facets.risk))
     && (!facets.task || ask.key === facets.task) && (!facets.runner || ask.runner === facets.runner));
-  const open = asks.filter((ask) => ask.state === "open" && !snoozed(ask, now));
-  const asleep = asks.filter((ask) => snoozed(ask, now));
+  // `since` may carry any offset, and other runners' asks come last, so sort by instant as the web's askGroups.
+  const unanswered = asks.filter((ask) => ask.state === "open").sort((a, b) => (Date.parse(a.since) || 0) - (Date.parse(b.since) || 0));
+  const open = unanswered.filter((ask) => !snoozed(ask, now));
+  const asleep = unanswered.filter((ask) => snoozed(ask, now));
   const backToday = open.filter((ask) => ask.back_early && sameDay(ask.back_early.at, now));
   const answered = asks.filter((ask) => ask.state === "answered").sort((a, b) => (b.answered_at ?? "").localeCompare(a.answered_at ?? ""));
   const answeredToday = answered.filter((ask) => ask.answered_at && sameDay(ask.answered_at, now));
@@ -84,7 +80,7 @@ export function asksList(all, { view, now, bands = [], facets = {} }) {
     snoozed: [section("snoozed", "Snoozed", asleep), section("back", "Back early today", backToday)],
     answered: [section("today", "Answered today", answeredToday), section("earlier", "Answered earlier", answeredEarlier)],
     all: [
-      section("open", "Open", asks.filter((ask) => ask.state === "open"), `${open.length + asleep.length}, oldest first`),
+      section("open", "Open", unanswered, `${unanswered.length}, oldest first`),
       section("today", "Answered today", answeredToday),
       section("earlier", "Answered earlier", answeredEarlier),
       section("withdrawn", "Withdrawn", withdrawn),
@@ -186,8 +182,8 @@ function pullRequest(pull, stack) {
   return {
     title: `#${pull.number} ${pull.title ?? ""}`.trim(),
     line: `${pull.branch} into ${pull.base}, head ${String(pull.head_sha).slice(0, 7)}, ${pull.state}`,
-    checks: pull.checks.map((/** @type {any} */ check) => ({ name: check.name, ok: check.conclusion === "success", text: check.conclusion })),
-    review: pull.review,
+    checks: pull.checks.map((/** @type {any} */ check) => ({ name: check.name, state: checkState(check.conclusion), text: check.conclusion ? stateWords(check.conclusion) : "running" })),
+    review: pull.review ? stateWords(pull.review) : null,
     ...(label ? { prs: label, stack: entries } : {}),
   };
 }
@@ -259,7 +255,7 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
       sent: open || sentNote(ask)?.refused ? sentNote(ask) : null,
       elsewhere: `This ask belongs to ${owner}. Your answer goes there through the log, and ${owner} applies it when it reads it. Snooze stays on ${owner}.`,
     }),
-    decided: ask.state === "answered" ? `Answered: ${ask.answer}.${ask.answered_at ? ` ${age(ask.answered_at, now)} ago.` : ""}${answeredBy(ask.answered_by) ? ` By ${answeredBy(ask.answered_by)}.` : ""}`
+    decided: ask.state === "answered" ? `Answered: ${ask.answer}.${ask.answered_at ? ` ${sentence(ago(ask.answered_at, now))}.` : ""}${answeredBy(ask.answered_by) ? ` By ${answeredBy(ask.answered_by)}.` : ""}`
       : ask.state === "withdrawn" ? `Withdrawn${ask.withdrawn_why ? `: ${ask.withdrawn_why}` : ""}.` : null,
     ran: ask.ran ? { text: ask.ran.status === "failed" ? `${RAN.failed}: ${ask.ran.error}.` : RAN[ask.ran.status] ?? ask.ran.status, warn: ask.ran.status === "uncertain" } : null,
     history: history(ask),
@@ -277,7 +273,7 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
  * @param {any} sent @param {any} fresh @param {string} error @param {number} now
  */
 export function refusal(sent, fresh, error, now) {
-  if (fresh?.state === "answered") return `Already answered ${age(fresh.answered_at, now)} ago: ${fresh.answer}.`;
+  if (fresh?.state === "answered") return `Already answered ${ago(fresh.answered_at, now)}: ${fresh.answer}.`;
   if (fresh?.state === "withdrawn") return `Withdrawn: ${fresh.withdrawn_why}.`;
   if (fresh && fresh.revision !== sent.revision) return `The question changed. Read revision ${fresh.revision} and answer again.`;
   return `Not sent: ${error}. The draft stays here.`;

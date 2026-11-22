@@ -33,6 +33,12 @@ your place, but an ask that lets an irreversible step run still comes to you. A 
 ask says who answered. When the lead ends without answering, the ask comes back to you. See
 [docs/reference/triggers.md](reference/triggers.md#intervention-and-lead).
 
+**Auto-answer.** A trigger's `auto_answer`, `high` or `medium`, lets the daemon answer an agent's ask
+with its own recommendation when the agent states that confidence or more, with a one-line
+rationale. It never answers an ask whose answer lets an irreversible step run, an approval, or an
+ask that runs a command. Each such answer is marked `by auto` and listed in the desk's Since you
+looked. See [docs/daemon/waits.md](daemon/waits.md#answered-by-auto).
+
 **Task and run.** A task is one unit of work, from its event to `done`, `failed` or `dropped`. A run
 is one agent process working on a task's step. A task can have many runs, and its agent's session
 carries over between them. See [docs/daemon/runs.md](daemon/runs.md).
@@ -54,8 +60,11 @@ or stopped. See
 [docs/daemon/desk.md](daemon/desk.md).
 
 **Queue, bands and room.** Tasks start in band order (`blocker`, `now`, `today`, `later` by
-default), then in an order you set, then oldest first. A run starts only when the machine has room
-for the memory and disk its agent declares. See [docs/daemon/room.md](daemon/room.md).
+default), then in an order you set, then oldest first.
+A task's lane, such as `core/intake`, groups tasks by team and theme for `priory tasks --lane`
+and `priory report --by lane`. Without a lane or a matching rule, it is `<team>/misc`, or
+`none/misc` for a task with no team. A run starts only when the machine has room for the memory
+and disk its agent declares. See [docs/daemon/room.md](daemon/room.md).
 
 **Health.** Every second, the daemon checks each run for an unexpected exit, a timeout or a
 permission prompt. It never approves a permission prompt. A crashed run gets one repair attempt.

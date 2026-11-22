@@ -501,9 +501,9 @@ pub(crate) fn start(
         // An entry takes the planning task's place and who answers its asks.
         tx.execute(
             "INSERT INTO tasks (key, workflow, step, state, band, lane, lane_derived, trigger,
-               source, repo, intervention, lead, entered, batch, batch_entry)
+               source, repo, intervention, lead, auto_answer, entered, batch, batch_entry)
              SELECT ?1, ?2, ?3, 'queued', band, lane, 0, trigger, ?4, repo, intervention, lead,
-               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?5, ?6
+               auto_answer, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?5, ?6
              FROM tasks WHERE id = ?7",
             params![key, workflow, flow.value.start, source, id, entry.id, task],
         )?;

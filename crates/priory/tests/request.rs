@@ -671,6 +671,83 @@ fn an_unknown_intervention_is_a_usage_error() {
     assert!(setup.published().is_empty());
 }
 
+#[test]
+fn a_requests_auto_answer_level_reaches_its_task() {
+    let setup = Setup::new("auto-answer");
+    succeeded(&setup.request(&[
+        "--workflow",
+        "implement",
+        "--key",
+        "docs-1",
+        "--auto-answer",
+        "medium",
+        "Fix the docs",
+    ]));
+    assert_eq!(setup.published()[1].message.data["auto_answer"], "medium");
+
+    let factory = setup.dir.join("factory");
+    succeeded(&setup.priory(&["daemon", factory.to_str().unwrap(), "--once"]));
+
+    let task: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["task", "1", "--json"]).stdout).unwrap();
+    assert_eq!(task["auto_answer"], "medium", "{task}");
+}
+
+#[test]
+fn add_takes_an_auto_answer_level() {
+    let setup = Setup::with("add-auto-answer", DEFAULTS);
+
+    succeeded(&setup.add(&[
+        "--repo",
+        "owner/repo",
+        "--auto-answer",
+        "high",
+        "Fix the docs",
+    ]));
+
+    assert_eq!(setup.published()[1].message.data["auto_answer"], "high");
+}
+
+#[test]
+fn a_low_auto_answer_level_exits_non_zero_and_publishes_nothing() {
+    let setup = Setup::new("auto-answer-low");
+
+    let output = setup.request(&[
+        "--workflow",
+        "implement",
+        "--key",
+        "docs-1",
+        "--auto-answer",
+        "low",
+        "Fix the docs",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory request: --auto-answer low would answer every ask an agent makes: use high or medium\n"
+    );
+    assert!(setup.published().is_empty());
+}
+
+#[test]
+fn an_unknown_auto_answer_level_is_a_usage_error() {
+    let setup = Setup::new("auto-answer-unknown");
+
+    let output = setup.request(&[
+        "--workflow",
+        "implement",
+        "--key",
+        "docs-1",
+        "--auto-answer",
+        "always",
+        "Fix the docs",
+    ]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(setup.published().is_empty());
+}
+
 const PLAN_BATCH: &str = r#"
 start = "plan"
 

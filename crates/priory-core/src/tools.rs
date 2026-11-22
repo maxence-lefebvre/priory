@@ -3,7 +3,7 @@ use crate::route;
 use crate::trace::{self, Trace};
 use priory_factory::explain;
 use priory_factory::factory::{
-    Decider, Effect, Factory, Harness, Intervention, Loaded, Step, StepAfter, Workflow,
+    Confidence, Decider, Effect, Factory, Harness, Intervention, Loaded, Step, StepAfter, Workflow,
     lead_workflow,
 };
 use priory_intake::intake::{
@@ -254,7 +254,7 @@ pub(crate) fn call(
             Ok(()) => result(&tx, &run, &call.arguments, factory, head, true)?,
             Err(refused) => Err(refused),
         },
-        "ask" => ask(&tx, &run, &call.arguments, factory)?,
+        "ask" => ask(&tx, &run, &call.arguments, trace, head)?,
         "wait" => {
             let (stored, ended) = wait(&tx, &run, &call.arguments, factory)?;
             kill = ended;
@@ -388,6 +388,19 @@ fn result(
         ],
     )?;
     crate::triage::store(tx, run.task, run.id, &triage)?;
+    if let Some(record) = step.record.as_deref() {
+        let worktree: Option<String> = tx.query_row(
+            "SELECT worktree FROM tasks WHERE id = ?1",
+            [run.task],
+            |row| row.get(0),
+        )?;
+        let at = commit.clone().or_else(|| {
+            worktree
+                .zip(own.as_deref())
+                .and_then(|(worktree, branch)| head(Path::new(&worktree), branch))
+        });
+        crate::evidence::owe(tx, run.id, run.task, record, at.as_deref())?;
+    }
     for ((_, column), value) in PLAN_FIELDS.iter().zip(&plan) {
         tx.execute(
             &format!("UPDATE tasks SET {column} = coalesce(?2, {column}) WHERE id = ?1"),
@@ -680,16 +693,60 @@ pub(crate) fn compacted(tx: &Transaction, run: i64) -> rusqlite::Result<()> {
     .map(drop)
 }
 
+/// The longest `rationale` an ask takes, in characters.
+const RATIONALE_LIMIT: usize = 200;
+
+/// An ask's stated confidence and its rationale, refused unless the confidence comes with a
+/// one-line rationale and a recommendation that is one of the options.
+fn confidence(
+    arguments: &Value,
+    options: &[&str],
+    recommendation: &str,
+) -> Result<(Option<Confidence>, Option<String>), String> {
+    let confidence = match &arguments["confidence"] {
+        Value::Null => None,
+        Value::String(word) => {
+            Some(Confidence::parse(word).ok_or("confidence must be high, medium or low")?)
+        }
+        _ => return Err("confidence must be high, medium or low".to_owned()),
+    };
+    let rationale = optional(arguments, "rationale")?
+        .map(|rationale| rationale.trim().to_owned())
+        .filter(|rationale| !rationale.is_empty());
+    if let Some(rationale) = &rationale {
+        if rationale.contains(['\n', '\r']) {
+            return Err("rationale must be one line".to_owned());
+        }
+        if rationale.chars().count() > RATIONALE_LIMIT {
+            return Err(format!(
+                "rationale must be at most {RATIONALE_LIMIT} characters"
+            ));
+        }
+    }
+    if confidence.is_some() && rationale.is_none() {
+        return Err("a confidence needs a rationale: one line on why".to_owned());
+    }
+    if confidence.is_some() && !options.contains(&recommendation) {
+        return Err(format!(
+            "a confidence needs a recommendation that is one of the options: {}",
+            options.join(", ")
+        ));
+    }
+    Ok((confidence, rationale))
+}
+
 fn ask(
     tx: &Transaction,
     run: &Run,
     arguments: &Value,
-    factory: &Factory,
+    trace: &Trace,
+    head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<Result<String, String>> {
-    let worktree: Option<String> = tx.query_row(
-        "SELECT worktree FROM tasks WHERE id = ?1",
+    let factory = trace.factory;
+    let (worktree, level): (Option<String>, Option<String>) = tx.query_row(
+        "SELECT worktree, auto_answer FROM tasks WHERE id = ?1",
         [run.task],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let fields = (|| {
         let options = arguments["options"]
@@ -702,6 +759,7 @@ fn ask(
             })
             .ok_or("options must be an array of strings")?;
         let recommendation = text(arguments, "recommendation")?;
+        let stated = confidence(arguments, &options, &recommendation)?;
         let command = match &arguments["command"] {
             Value::Null => None,
             command => {
@@ -717,24 +775,34 @@ fn ask(
             text(arguments, "tradeoff")?,
             described(arguments)?,
             command,
+            stated,
         ))
     })();
-    let (question, options, recommendation, tradeoff, described, command) = match fields {
+    let (question, options, recommendation, tradeoff, described, command, stated) = match fields {
         Ok(fields) => fields,
         Err(error) => return Ok(Err(error)),
     };
     let [title, body, what_waits, next_action] = described;
-    let lead = lead_of(
-        tx,
-        run.task,
-        &run.step,
-        command.is_some(),
-        &factory.workflows,
-    )?;
+    let (confidence, rationale) = stated;
+    let level = level.as_deref().and_then(Confidence::parse);
+    let auto = factory.workflows.get(&run.workflow).is_some_and(|flow| {
+        explain::auto_answerable(&flow.value, &run.step, command.is_some(), level, confidence)
+    });
+    // A low confidence is the agent saying it does not know: a lead's guess is no person's answer.
+    let lead = match auto || confidence == Some(Confidence::Low) {
+        true => None,
+        false => lead_of(
+            tx,
+            run.task,
+            &run.step,
+            command.is_some(),
+            &factory.workflows,
+        )?,
+    };
     tx.execute(
         "INSERT INTO asks (task, run, step, kind, question, options, recommendation, tradeoff,
-           title, text, what_waits, next_action, command, routed)
-         VALUES (?1, ?2, ?3, 'agent', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+           title, text, what_waits, next_action, command, routed, confidence, rationale)
+         VALUES (?1, ?2, ?3, 'agent', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         params![
             run.task,
             run.id,
@@ -748,12 +816,45 @@ fn ask(
             what_waits,
             next_action,
             command,
-            lead
+            lead,
+            confidence.map(Confidence::as_str),
+            rationale
         ],
     )?;
     let id = tx.last_insert_rowid();
     if let Some(lead) = &lead {
         call_lead(tx, id, lead)?;
+    }
+    if let (true, Some(level), Some(confidence)) = (auto, level, confidence) {
+        let revision: i64 =
+            tx.query_row("SELECT revision FROM asks WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })?;
+        let answer = Answer {
+            ask: id,
+            text: recommendation.clone(),
+            revision,
+            run: false,
+            by: AUTO.to_owned(),
+        };
+        // The agent is never told its ask was answered this way until the answer arrives.
+        if answer_in(tx, &answer, trace, head)?.is_ok() {
+            // An auto-answered ask never notifies: the push its insert queued is dropped.
+            tx.execute(
+                "DELETE FROM push_queue WHERE kind = 'ask' AND item = ?1",
+                [id],
+            )?;
+            trace::auto_answered(
+                tx,
+                trace,
+                run.id,
+                id,
+                revision,
+                &recommendation,
+                [confidence, level],
+                rationale.as_deref().unwrap_or_default(),
+            )?;
+        }
     }
     Ok(Ok(format!(
         "ask {id} stored: end your turn now; the answer arrives as your next prompt"
@@ -2775,6 +2876,10 @@ pub(crate) fn settle(
 /// The trigger a lead task names. No trigger file has a `/` in its name, so none collides.
 pub const LEAD_TRIGGER: &str = "priory/lead";
 
+/// Who answers an ask the daemon answered with its recommendation, at or above its task's
+/// `auto_answer` level.
+pub const AUTO: &str = "auto";
+
 /// The lead a new ask of `task` at step `at` goes to: a `hands-off` task's lead, unless the ask
 /// runs a command, its answer can let an irreversible step run, or its step approves one.
 fn lead_of(
@@ -2802,14 +2907,7 @@ fn lead_of(
     {
         return Ok(None);
     }
-    let approves = flow
-        .value
-        .step(at)
-        .is_some_and(|step| !step.approves.is_empty());
-    if approves || explain::answer_lets_irreversible_run(&flow.value, at) {
-        return Ok(None);
-    }
-    Ok(lead)
+    Ok(lead.filter(|_| explain::delegable(&flow.value, at, false)))
 }
 
 /// Queues a lead task that answers `ask` in the person's place. Its source event carries the ask,
@@ -3425,6 +3523,9 @@ fn answer_in(
         Err(error) => return Ok(Err(error)),
     };
     let options: Vec<String> = serde_json::from_str(&options).expect("options are stored as JSON");
+    if let Some(applied) = crate::gates::answered(tx, answer.ask, &answer.text, &answer.by)? {
+        return Ok(applied);
+    }
     let hold = crate::hold::of_ask(tx, answer.ask)?;
     let (chosen, note) = match answer.text.split_once(':') {
         Some((option, note))
@@ -4048,6 +4149,16 @@ pub(crate) fn say(
             "task {task} has no run yet: say it once its agent started"
         )));
     }
+    // A debater never reads it: the step after the debate does, with its first prompt.
+    if crate::debate::open(tx, task)? {
+        tx.execute(
+            "INSERT INTO outbox (task, text, state) VALUES (?1, ?2, 'held')",
+            params![task, text],
+        )?;
+        return Ok(Ok(format!(
+            "task {task} is in a debate at step {at}: the step after the debate reads it"
+        )));
+    }
     let prompt = wake(tx, task, text)?;
     tx.execute("UPDATE outbox SET wakes = 1 WHERE id = ?1", [prompt])?;
     if state == "asleep" {
@@ -4239,7 +4350,7 @@ fn regenerate(tx: &Transaction, task: i64, generation: i64) -> rusqlite::Result<
         [task],
     )?;
     tx.execute(
-        "UPDATE outbox SET state = 'withdrawn' WHERE task = ?1 AND state = 'queued'",
+        "UPDATE outbox SET state = 'withdrawn' WHERE task = ?1 AND state IN ('queued', 'held')",
         [task],
     )?;
     tx.execute(
@@ -4575,6 +4686,7 @@ fn approve(
              VALUES (?1, ?2, ?3, ?4, ?5, (SELECT generation FROM tasks WHERE id = ?1))",
             params![task, step, answer.ask, answer.revision, commit],
         )?;
+        crate::evidence::approved(tx, task, tx.last_insert_rowid())?;
     }
     Ok(())
 }
@@ -4986,6 +5098,30 @@ fn answer_ran(
         [task],
     )
     .map(drop)
+}
+
+/// Records what the irreversible code step `at` of a staged task would have done, as an action
+/// whose status is `staged`, and blocks the task there, so a person reads it on the desk.
+pub(crate) fn staged(
+    db: &mut Connection,
+    task: i64,
+    at: &Step,
+    preview: &str,
+) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute(
+        "INSERT INTO actions (task, step, action, status, stdout, result, inbox)
+         VALUES (?1, ?2, ?3, 'staged', ?4,
+           (SELECT max(run) FROM results WHERE task = ?1), (SELECT max(seq) FROM inbox))",
+        params![task, at.id, at.action, preview],
+    )?;
+    let reason = format!(
+        "staged: step {} would run {}, and wrote nothing: priory actions shows what it would do",
+        at.id,
+        at.action.as_deref().unwrap_or_default()
+    );
+    set(&tx, task, "blocked", None, Some(&reason))?;
+    tx.commit()
 }
 
 /// Records the run of the code step `at`'s action, makes the task own the pull request it opened,

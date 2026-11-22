@@ -1,7 +1,7 @@
 use crate::intake::{self, OUTPUT, TASK_REQUESTED};
 use crate::log::{self, Log};
 use herdr_bus::{Message, Timestamp};
-use priory_factory::factory::{Factory, Hold, Intervention};
+use priory_factory::factory::{Confidence, Factory, Hold, Intervention};
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -64,16 +64,23 @@ pub struct Request {
     /// Who answers the task's asks; `triggers/cli.toml`'s when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     intervention: Option<Intervention>,
+    /// The lowest confidence at which the daemon answers the task's asks; `triggers/cli.toml`'s
+    /// when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auto_answer: Option<Confidence>,
     /// What the task is about.
     text: String,
     /// A planning task's batch: its issues and its entries' workflow.
     #[serde(skip)]
     batch: Option<crate::events::BatchRequest>,
+    /// The outside session that added the task.
+    #[serde(skip)]
+    session: Option<String>,
 }
 
 pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
     let (mut workflow, mut key, mut band, mut lane, mut repo) = (None, None, None, None, None);
-    let (mut tldr, mut intervention) = (None, None);
+    let (mut tldr, mut intervention, mut auto_answer) = (None, None, None);
     let (mut reason, mut until, mut if_closed) = (None, None, None);
     let (mut after, mut merge, mut relates) = (vec![], vec![], vec![]);
     let mut blockers = false;
@@ -92,6 +99,7 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
             "--repo" => &mut repo,
             "--tldr" => &mut tldr,
             "--intervention" => &mut intervention,
+            "--auto-answer" => &mut auto_answer,
             "--hold" => &mut reason,
             "--until" if until.is_none() => &mut until,
             "--after" => {
@@ -142,8 +150,10 @@ pub fn parse(args: Vec<String>) -> Option<(PathBuf, Request)> {
         tldr,
         relates,
         intervention: intervention_of(intervention)?,
+        auto_answer: auto_answer_of(auto_answer)?,
         text,
         batch: None,
+        session: None,
     };
     Some((dir, request))
 }
@@ -153,6 +163,11 @@ fn intervention_of(level: Option<String>) -> Option<Option<Intervention>> {
     level.map_or(Some(None), |level| {
         serde_json::from_value(json!(level)).ok().map(Some)
     })
+}
+
+/// The confidence `--auto-answer` names, or `None` for an unknown one.
+fn auto_answer_of(level: Option<String>) -> Option<Option<Confidence>> {
+    level.map_or(Some(None), |level| Confidence::parse(&level).map(Some))
 }
 
 /// `[DIR] TEXT`, with the factory folder `.` by default.
@@ -184,16 +199,23 @@ pub struct Add {
     pub relates: Vec<Relation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intervention: Option<Intervention>,
+    /// The outside session that asked for the task through `priory mcp --outside`. Only the
+    /// daemon sets it, so neither a flag nor a request body can.
+    #[serde(skip)]
+    pub session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_answer: Option<Confidence>,
 }
 
 pub fn parse_add(args: Vec<String>) -> Option<(PathBuf, Add)> {
     let (mut workflow, mut band, mut lane, mut repo) = (None, None, None, None);
     let (mut positional, mut relates) = (vec![], vec![]);
-    let mut intervention = None;
+    let (mut intervention, mut auto_answer) = (None, None);
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let flag = match arg.as_str() {
             "--intervention" => &mut intervention,
+            "--auto-answer" => &mut auto_answer,
             "--" => {
                 positional.extend(args);
                 break;
@@ -222,6 +244,8 @@ pub fn parse_add(args: Vec<String>) -> Option<(PathBuf, Add)> {
         repo,
         relates,
         intervention: intervention_of(intervention)?,
+        session: None,
+        auto_answer: auto_answer_of(auto_answer)?,
     };
     Some((dir, add))
 }
@@ -394,6 +418,8 @@ pub fn add_batch(factory: &Factory, batch: &Batch) -> Result<String, Refused> {
         repo: batch.repo.clone(),
         relates: Vec::new(),
         intervention: None,
+        session: None,
+        auto_answer: None,
     };
     let mut request = quick(factory, &add, repo)?;
     request.batch = Some(crate::events::BatchRequest {
@@ -494,8 +520,10 @@ fn quick(factory: &Factory, add: &Add, repo: Option<String>) -> Result<Request, 
         tldr: None,
         relates: add.relates.clone(),
         intervention: add.intervention,
+        auto_answer: add.auto_answer,
         text: add.text.clone(),
         batch: None,
+        session: add.session.clone(),
     };
     check(factory, &request)?;
     Ok(request)
@@ -600,8 +628,11 @@ impl Request {
                 serde_json::to_string(hold).expect("a hold serializes")
             )
         });
+        let auto_answer = self.auto_answer.map_or(String::new(), |level| {
+            format!(", auto-answer {}", level.as_str())
+        });
         format!(
-            "task cli:{} in workflow {} on {repo}, {intervention} intervention{hold}: {}",
+            "task cli:{} in workflow {} on {repo}, {intervention} intervention{auto_answer}{hold}: {}",
             self.key, self.workflow, self.text
         )
     }
@@ -622,6 +653,12 @@ pub fn check(factory: &Factory, request: &Request) -> Result<(), String> {
     {
         return Err(
             "--intervention hands-off needs a lead; set lead in triggers/cli.toml".to_owned(),
+        );
+    }
+    if request.auto_answer == Some(Confidence::Low) {
+        return Err(
+            "--auto-answer low would answer every ask an agent makes: use high or medium"
+                .to_owned(),
         );
     }
     let trigger_repo = trigger.and_then(|trigger| trigger.repo.as_ref());
@@ -699,8 +736,14 @@ fn task(request: &Request, key: &str, source: &Message) -> Message {
     if let Some(intervention) = request.intervention {
         data["intervention"] = json!(intervention);
     }
+    if let Some(level) = request.auto_answer {
+        data["auto_answer"] = json!(level);
+    }
     if let Some(batch) = &request.batch {
         data["batch"] = json!(batch);
+    }
+    if let Some(session) = &request.session {
+        data["session"] = json!(session);
     }
     Message::new(TASK_REQUESTED, data)
         .id(intake::id(&format!(
@@ -740,6 +783,7 @@ mod tests {
             Just("--relates".to_owned()),
             Just("--if-closed".to_owned()),
             Just("--intervention".to_owned()),
+            Just("--auto-answer".to_owned()),
             Just("--blockers".to_owned()),
             Just("--".to_owned()),
             Just("99999999999999999999".to_owned()),

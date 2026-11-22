@@ -165,6 +165,14 @@ test("a task page lists its task's open asks, snoozed ones too, oldest first", (
   assert.deepEqual(openAsksOf(asks, 9), []);
 });
 
+test("a task page leaves out another runner's ask on a task of the same id", () => {
+  const asks = [
+    { id: 5, task: 4, runner: "desk", state: "open", since: "2026-11-20T10:00:00Z" },
+    { id: "laptop:2", task: 4, runner: "laptop", state: "open", since: "2026-11-20T09:00:00Z", submissions: [] },
+  ];
+  assert.deepEqual(openAsksOf(asks, 4).map((ask) => ask.id), [5]);
+});
+
 test("the shrunk header names the question over the task key, step and revision", () => {
   assert.deepEqual(shrunkHead({ key: "linear:ENG-212", step: "approve-pr", revision: 2, title: "Open the pull request", question: "Open the pull request for ENG-212?" }), { question: "Open the pull request for ENG-212?", place: "ENG-212, approve-pr, revision 2" });
   assert.deepEqual(shrunkHead({ key: null, step: "deploy", revision: 1, title: "Deploy", question: null }), { question: "Deploy", place: "deploy, revision 1" });

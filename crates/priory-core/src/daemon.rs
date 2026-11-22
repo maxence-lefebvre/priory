@@ -327,6 +327,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut scripts = Vec::new();
     let mut commands = Vec::new();
     let mut recipes = crate::recipe::Running::default();
+    let mut records = crate::evidence::Records::default();
     let mut deliveries = deliver::adopt(&db)?;
     let mut pushing = push::Sending::default();
     let mut desktop = factory
@@ -371,6 +372,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         if crate::recipe::tick(&mut db, &trace, &home, &mut recipes)? {
             swept = None;
         }
+        crate::evidence::tick(&mut db, factory, &home, &mut records)?;
         kit.tick(&db)?;
         let fetched = kit.current();
         tend(
@@ -795,6 +797,7 @@ fn apply(
 #[serde(untagged)]
 enum Input {
     Guard(crate::guard::Line),
+    Evidence(crate::evidence::AddLine),
     Connector(crate::todo::ConnectorLine),
     Scoped(crate::scoped::Line),
     Todo(crate::todo::Line),
@@ -803,6 +806,7 @@ enum Input {
     Label(crate::label::Line),
     Deliver(deliver::Line),
     Add(AddLine),
+    Outside(crate::outside::Line),
     Signal(Signal),
     Call(Call),
     Answer(Answer),
@@ -978,6 +982,17 @@ fn take(
         Ok(Input::Guard(line)) => {
             Ok((replied(crate::guard::decide(db, &line.guard, trace)?), None))
         }
+        Ok(Input::Evidence(line)) => Ok((
+            replied(crate::evidence::add(
+                db,
+                &line.evidence,
+                trace.factory,
+                &runtime::home(),
+                &|worktree, branch| runtime::kept_head(&runtime::home(), worktree, branch),
+                &runtime::checked_out,
+            )?),
+            None,
+        )),
         Ok(Input::Connector(line)) => {
             crate::todo::connector_used(db, &line.connector_used)?;
             Ok((replied(Ok(String::new())), None))
@@ -1027,6 +1042,17 @@ fn take(
         )),
         Ok(Input::Deliver(line)) => Ok((replied(deliver::act(db, &line)?), None)),
         Ok(Input::Add(line)) => Ok((replied(add(db, &line.add, trace, counter)?), None)),
+        Ok(Input::Outside(line)) => {
+            let call = &line.outside;
+            let reply = match call.tool.as_str() {
+                "add" => match crate::outside::request(call) {
+                    Ok(request) => add(db, &request, trace, counter)?,
+                    Err(refused) => Err(refused),
+                },
+                _ => crate::outside::apply(db, call, trace.factory, &runtime::home())?,
+            };
+            Ok((replied(reply), None))
+        }
         Ok(Input::Signal(signal)) => Ok((
             "ok".to_owned(),
             state::signal(db, &signal, trace, &watched)?,
@@ -1400,6 +1426,11 @@ fn act(
     if !tools::approved(db, due.task, step, head.as_deref())? {
         return Ok(false);
     }
+    if step.effect == factory::Effect::Irreversible && factory.staged(&due.trigger) {
+        let preview = preview(db, factory, due, step, head.as_deref())?;
+        tools::staged(db, due.task, step, &preview)?;
+        return Ok(false);
+    }
     let done = match step.action.as_deref().unwrap_or_default() {
         "open-pr" => open_pr(db, factory, due, head.as_deref())?,
         "open-issue" => open_issue(db, factory, due)?,
@@ -1748,11 +1779,8 @@ fn open_pr(
                     due.workflow
                 )));
             }
-            let title = summary.lines().next().unwrap_or_default();
-            let body = match evidence {
-                Some(evidence) => format!("{summary}\n\n{evidence}"),
-                None => summary.clone(),
-            };
+            let (title, body) = titled(&summary, evidence.as_deref());
+            let body = with_evidence(db, factory, due.task, body)?;
             let base = base_branch(db, due.task)?;
             let stack = Stack {
                 branches: &branches,
@@ -1772,6 +1800,88 @@ fn open_pr(
         },
         Err(error) => failed(error),
     })
+}
+
+/// The title and body of the pull request or issue a result describes: the first line of its
+/// summary, then the summary and its evidence.
+fn titled<'s>(summary: &'s str, evidence: Option<&str>) -> (&'s str, String) {
+    let title = summary.lines().next().unwrap_or_default();
+    let body = match evidence {
+        Some(evidence) => format!("{summary}\n\n{evidence}"),
+        None => summary.to_owned(),
+    };
+    (title, body)
+}
+
+/// `body` with the task's Evidence section after it, when the task has items to list.
+fn with_evidence(
+    db: &Connection,
+    factory: &Factory,
+    task: i64,
+    body: String,
+) -> Result<String, Error> {
+    let url = factory.serve().and_then(|serve| serve.url.as_deref());
+    Ok(match crate::evidence::section(db, task, url)? {
+        Some(section) => format!("{body}\n\n{section}"),
+        None => body,
+    })
+}
+
+/// What the irreversible code step `step` of a staged task would do, without doing it: the pull
+/// requests or issue it would open with their title and body, or the command it would run.
+fn preview(
+    db: &Connection,
+    factory: &Factory,
+    due: &state::Due,
+    step: &factory::Step,
+    commit: Option<&str>,
+) -> Result<String, Error> {
+    let action = step.action.as_deref().unwrap_or_default();
+    let repo = repo_of(factory, &due.trigger, due.repo.as_deref());
+    let described = state::last_result(db, due.task)?;
+    let text = match (action, repo, described) {
+        ("run", ..) => format!("would run: {}", step.run.as_deref().unwrap_or_default()),
+        ("open-pr" | "open-issue", None, _) => {
+            format!("would fail: task {} names no repo", due.task)
+        }
+        ("open-pr" | "open-issue", _, None) => {
+            "would fail: no result describes what it opens".to_owned()
+        }
+        ("open-pr" | "open-issue", Some(repo), Some(described)) => {
+            let (title, body) = titled(&described.summary, described.evidence.as_deref());
+            let body = match action {
+                "open-pr" => with_evidence(db, factory, due.task, body)?,
+                _ => body,
+            };
+            let mut lines = Vec::new();
+            if action == "open-issue" {
+                lines.push(format!("would open an issue on {repo}"));
+            } else {
+                let own = due.branch.clone().unwrap_or_default();
+                let branches = described.branches.unwrap_or_else(|| vec![own]);
+                let mut below = match base_branch(db, due.task)? {
+                    Some(base) => base,
+                    None => due
+                        .worktree
+                        .as_deref()
+                        .and_then(|worktree| runtime::default_branch(Path::new(worktree)).ok())
+                        .unwrap_or_else(|| "the default branch".to_owned()),
+                };
+                for branch in branches {
+                    lines.push(format!(
+                        "would open a pull request on {repo} from {branch} into {below}"
+                    ));
+                    below = branch;
+                }
+                lines.push(format!("at: {}", commit.unwrap_or("no commit yet")));
+            }
+            lines.push(format!("title: {title}"));
+            lines.push(format!("body:\n{body}"));
+            lines.join("\n")
+        }
+        (other, ..) => format!("would run the {other} action"),
+    };
+    Ok(text)
 }
 
 pub(crate) fn failed(error: String) -> Done {
@@ -1845,11 +1955,7 @@ fn open_issue(db: &Connection, factory: &Factory, due: &state::Due) -> Result<Do
                 summary, evidence, ..
             }),
         ) => {
-            let title = summary.lines().next().unwrap_or_default();
-            let body = match evidence {
-                Some(evidence) => format!("{summary}\n\n{evidence}"),
-                None => summary.clone(),
-            };
+            let (title, body) = titled(&summary, evidence.as_deref());
             let source: String = db.query_row(
                 "SELECT source FROM tasks WHERE id = ?1",
                 [due.task],
@@ -1942,6 +2048,12 @@ fn start(
     let head = runtime::head(&worktree, &branch);
     if !tools::approved(db, admission.task, step, head.as_deref())? {
         return Ok(Ok(()));
+    }
+    if step.effect == factory::Effect::Irreversible && factory.staged(&admission.trigger) {
+        return Ok(Err(format!(
+            "staged: step {} is irreversible, so its run did not start",
+            step.id
+        )));
     }
     let turn = match &step.debate {
         Some(debate) => Some(crate::debate::turn(

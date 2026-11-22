@@ -271,6 +271,10 @@ prompts.
   next agent run, after that step's prompt, and the task stays asleep. It replies `task <id> waits
   at step <step>: its ask shows it, and its next agent run reads it`.
 
+- A task in a debate ([debates.md](debates.md)) holds TEXT for the step after the debate, so no
+  debater reads it. It replies `task <id> is in a debate at step <step>: the step after the debate
+  reads it`.
+
 Otherwise it replies `task <id> will hear it`. It refuses a `done`, `failed` or `dropped` task, a
 task at a human or code step with no open ask, and a task that has neither a run nor a queued
 prompt, such as a `queued` one, since its first run builds the step's prompt then.
@@ -386,7 +390,11 @@ each step that ended, repair, snooze or label, and each message and report the i
 message routed to no task, `ignored`, is left out, so a busy repository does not fill the list
 (the Desk counts those as unrouted events, see [Unrouted events](#unrouted-events)). Each has
 its `time`, its `task` and the task's `key`, and `what`: the record's type, step and outcome, the
-message's type, subject and outcome, or a report's `<source>: <line>`. `priory desk` without
+message's type, subject and outcome, or a report's `<source>: <line>`. A task request that an
+outside session added ends with `, added by session <session>` (see
+[tools.md](tools.md#the-outside-server)). An ask the daemon answered
+at the task's `auto_answer` level reads `ask <id> answered "<option>" by auto (<confidence>):
+<rationale>` (see [waits.md](waits.md#answered-by-auto)). `priory desk` without
 `--json` lists the events after its items, under a `since you looked` header with the columns
 `time`, `task` and `what`, newest first. It prints no `last_visit` and, with no events, no list.
 

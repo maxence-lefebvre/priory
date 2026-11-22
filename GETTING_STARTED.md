@@ -1,30 +1,33 @@
 # Getting started
 
-In this tutorial, you build Priory, write a factory with one agent, one workflow and one trigger,
-run it, and answer an agent's first question in the web view on your own machine. By the end, an
-agent has changed a repository of yours and opened a pull request that you approved.
+In this tutorial, you build Priory, write a factory with one agent, one workflow and one
+[trigger](docs/concepts.md), run it, and answer an agent's first question in the web view on your
+own machine. By the end, an agent has changed a repository of yours and opened a pull request
+that you approved.
 
 ## Before you start
 
 You need:
 
-- Linux. Priory is built and tested on Linux only. With a systemd user session, every agent runs
+- Linux. Priory's test suite runs on Linux only. With a systemd user session, every agent runs
   in a slice that caps its CPU and memory; without one, agents still run (see
   [agents-slice.md](docs/daemon/agents-slice.md)).
 - On `PATH`: `git`, `tmux`, `openssl`, `gh` logged in to GitHub, and `claude`, logged in. The agent of this
-  tutorial runs Claude Code. To run Codex instead, set `harness = "codex"` in step 2 and read
+  tutorial runs Claude Code, its harness. To run Codex instead, set `harness = "codex"` in step 2 and read
   [codex.md](docs/daemon/codex.md).
 - The Rust toolchain, to build from source. `rust-toolchain.toml` pins the version, and `rustup` installs it on the first
   build.
-- A GitHub repository you can push to, for the agent to work in. This page calls it `owner/name`.
+- A GitHub repository you can push to, for the agent to work in, and a checkout of it on this
+  machine. This page calls the repository `owner/name`.
 
-Five words come back on every page. [Concepts](docs/concepts.md) explains them in full.
+Six words come back on every page. [Concepts](docs/concepts.md) explains them in full.
 
 - A **factory** is a folder of files that says which agents exist and what they do.
 - A **task** is one unit of work, such as one issue to fix.
 - A **step** is one stage of a task. A model, a person or code decides its outcome.
 - An **ask** is a question an agent, or a step, puts to a person.
 - The **desk** is the one list of everything that waits on a person.
+- A **trigger** says which events, such as a label added to an issue, start a workflow.
 
 ## 1. Build Priory
 
@@ -139,9 +142,10 @@ Flows draws the workflow like this:
 
 ![The implement workflow. The model step implement leads to the human step approve-pr on passed, and to stop on failed. A person answers open, which leads to the code step open-pr, or stop. open-pr carries a padlock: it is irreversible and runs only after a person approved it. It leads to done on opened, and to stop on failed. A model's decisions are dashed arrows, a person's are thick solid arrows, and code's are thin dashed arrows.](docs/images/diagrams/workflow.svg)
 
-`priory check --explain example` lists the irreversible step `open-pr` and the human step
-`approve-pr` that approves it. `priory check` refuses a workflow that reaches an irreversible step
-with no person's approval.
+`priory check --explain example` prints four tables. The first lists the irreversible step
+`open-pr`, with the human step `approve-pr` that approves it in the `gate` column. The other
+three are empty for this factory. `priory check` refuses a workflow that reaches an irreversible
+step with no person's approval.
 
 Then check your repository's checkout, here `../my-project`:
 
@@ -197,11 +201,13 @@ priory tasks
 
 `priory add` prints the task's key, such as `cli:2026-11-20-1`. Within a second the daemon makes
 task 1 from it, and `priory tasks` lists it at the step `implement`. Its state is `queued` until
-the machine has room for the agent (see [room.md](docs/daemon/room.md)), then `running`.
+the machine has room for the agent (see [room.md](docs/daemon/room.md)), then `running`. Ignore
+the `band` and `lane` columns for now: they order and group tasks, and [Concepts](docs/concepts.md)
+explains them.
 
-The daemon clones your repository under `~/.local/state/priory-oss/repos/`, adds a worktree on the
-branch `priory/1`, and starts `claude` in the tmux session `priory-1`. To watch the agent work,
-open the task in the web view, or run `priory attach 1 --read-only`.
+The daemon clones your repository under `~/.local/state/priory-oss/repos/`, adds a git worktree, a
+folder of its own, on the branch `priory/1`, and starts `claude` in the tmux session `priory-1`.
+To watch the agent work, open the task in the web view, or run `priory attach 1 --read-only`.
 
 ### Trust the clone, once
 
@@ -234,8 +240,9 @@ revision, 1 for an ask nobody changed.
 
 Your answer approves the step `open-pr` for the branch's current commit. That step pushes the
 branch and opens a pull request in your repository. The task then waits, with no process, for the
-pull request's checks. Green checks mark it done. A red check wakes the agent with the failure, in
-the same conversation.
+pull request's checks: `priory tasks` shows it `asleep` at `implement`, the step whose agent
+fixes what the checks find, and `priory waits` shows its `checks` wait on the pull request.
+Green checks mark it done. A red check wakes the agent with the failure, in the same conversation.
 
 When a step fails, `priory actions` shows the error of a code step such as `open-pr`, and
 `priory task 1 --json` prints everything about the task.

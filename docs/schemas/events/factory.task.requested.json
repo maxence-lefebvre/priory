@@ -37,6 +37,15 @@
       ],
       "type": "object"
     },
+    "Confidence": {
+      "description": "How sure an agent is that its recommendation is what the person would pick, and the lowest\nsuch confidence a task's `auto_answer` lets the daemon act on.",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "type": "string"
+    },
     "FromTo": {
       "additionalProperties": false,
       "description": "A value before and after a `pre` script.",
@@ -348,6 +357,17 @@
       "additionalProperties": false,
       "description": "A request for a task. Only this message creates a task.",
       "properties": {
+        "auto_answer": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Confidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The lowest confidence at which the daemon answers the task's asks with their\nrecommendation, from `priory request` or `priory add --auto-answer`: `high` or `medium`;\nthe trigger's when unset."
+        },
         "band": {
           "description": "The trigger's or the request's band.",
           "type": [
@@ -451,6 +471,13 @@
         "scheduled": {
           "description": "When the firing was due. Schedule sources only.",
           "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session": {
+          "description": "The outside session that added the task through `priory mcp --outside`: its hc terminal,\nthen its Claude session id, or `outside` without an hc terminal. CLI sources only.",
           "type": [
             "string",
             "null"

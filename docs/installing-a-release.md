@@ -1,8 +1,9 @@
 # How to install Priory
 
 This guide shows how to install `priory` without a clone: the release binary with `install.sh`,
-or a build with Nix. It assumes Linux on x86_64 or aarch64, or macOS on Apple silicon. To build
-from a clone instead, see [Getting started](../GETTING_STARTED.md#1-build-priory).
+or a build with Nix. It assumes Linux on x86_64 or aarch64, or macOS on Apple silicon. Each release builds the macOS binary and checks that it installs and
+prints its version. The test suite runs on Linux only. To build from a clone instead, see
+[Getting started](../GETTING_STARTED.md#1-build-priory).
 
 ## With the install script
 
@@ -31,8 +32,9 @@ Run `sh install.sh --prefix /usr/local` from a clone to install to `/usr/local/b
 
 ### What a release holds
 
-Each release also holds `priory-herdr.tar.gz`, the [Herdr adapter](../adapters/herdr/), and
-`priory-github-extension.zip`, the [GitHub extension](adapters/github.md).
+Each release also holds `priory-herdr.tar.gz`, the [Herdr adapter](adapters/herdr.md),
+`priory-github-extension.zip`, the [GitHub extension](adapters/github.md), and
+`priory-claude-plugin.tar.gz`, the [Claude Code plugin](adapters/claude-plugin.md).
 
 The release binaries leave out the cargo features. A build from source can add them: the
 in-process embedding model for search with `--features model`, and the Postgres event log, which

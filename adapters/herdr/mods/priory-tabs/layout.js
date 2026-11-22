@@ -111,6 +111,19 @@ export function reveal(root, id) {
   return commands;
 }
 
+/**
+ * The Herdr commands that show the Asks panel, the one place to answer: its block in the layout,
+ * else an Asks tab, selected or new.
+ * @param {any} root the layout Herdr shows @param {{ mod: string, tab: string }[]} panes @param {string | undefined} space
+ * @returns {[string, object][]}
+ */
+export function showAsks(root, panes, space) {
+  const block = panelBlock(root, "asks");
+  if (block) return reveal(root, block.id);
+  const tab = panes.find((pane) => pane.mod === "priory-asks");
+  return [...reveal(root, "main"), tab ? ["tab.select", { id: tab.tab }] : ["tab.new", { space, name: "Asks", mod: "priory-asks" }]];
+}
+
 /** What `install` and the Priory bar own: the root id of a layout this adapter wrote, with or without the views' hash. */
 export const OWN_ID = /^priory-generated(-[0-9a-f]{12})?$/;
 

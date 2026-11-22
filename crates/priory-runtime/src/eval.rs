@@ -513,7 +513,9 @@ pub fn serve(log: &Path, describe: Option<(&str, &str)>) -> Result<(), String> {
             .ok_or_else(|| format!("no tool {name}"))?;
         tool["description"] = text.into();
     }
-    mcp::serve_with(&tools, &|params| mcp::content(record(log, params)))
+    mcp::serve_with(&tools, &mcp::instructions(), &|params| {
+        Ok(mcp::content(record(log, params)))
+    })
 }
 
 fn record(log: &Path, params: &Value) -> Result<String, String> {

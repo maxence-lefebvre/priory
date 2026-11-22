@@ -93,8 +93,12 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
   pause, and `priory seen` for Since you looked.
 - [sweep.md](sweep.md): worktree removal, retiring asleep tasks, sweep scripts and the sweeper.
 - [tools.md](tools.md): how a run uses the MCP tools: ending a turn, subscriptions, proofs and
-  `priory gate`, moving between steps, intervention, code steps, the `run` action and approvals.
+  `priory gate`, moving between steps, intervention, code steps, the `run` action, approvals and
+  staged tasks, which a `staged` trigger runs as a trial that writes nothing.
   [MCP tools](../reference/tools.md) lists each tool.
+- [evidence.md](evidence.md): evidence items, a step's `record` command, `priory evidence add`,
+  the admission checks that keep secrets out, the pull request's Evidence section and how long
+  items stay.
 - [waits.md](waits.md): asks and answers, wait conditions, and the checks gate before `done`.
 - [decisions.md](decisions.md): decision models, the triage model that settles feedback which asks
   the agent for nothing, `priory calibrate`, and the fallback.

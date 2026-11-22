@@ -1867,6 +1867,52 @@ fn a_hands_off_trigger_with_a_shared_lead_passes() {
 }
 
 #[test]
+fn a_low_auto_answer_level_fails_with_its_line() {
+    let trigger = format!("{TRIGGER}auto_answer = \"low\"\n");
+
+    let outcome = check(&factory(
+        "auto-answer-low",
+        &with("triggers/agent-label.toml", &trigger),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/agent-label.toml:8: `auto_answer = \"low\"` would answer every ask an agent makes: use `high` or `medium`, or leave it unset\n"
+    );
+}
+
+#[test]
+fn an_unknown_auto_answer_level_fails_with_its_line() {
+    let trigger = format!("{TRIGGER}auto_answer = \"always\"\n");
+
+    let outcome = check(&factory(
+        "auto-answer-unknown",
+        &with("triggers/agent-label.toml", &trigger),
+    ));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/agent-label.toml:8:15: unknown variant `always`, expected one of `low`, `medium`, `high`\n"
+    );
+}
+
+#[test]
+fn a_high_or_medium_auto_answer_level_passes() {
+    for level in ["high", "medium"] {
+        let trigger = format!("{TRIGGER}auto_answer = \"{level}\"\n");
+
+        let outcome = check(&factory(
+            &format!("auto-answer-{level}"),
+            &with("triggers/agent-label.toml", &trigger),
+        ));
+
+        assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+    }
+}
+
+#[test]
 fn telemetry_headers_env_names_a_variable_and_never_holds_the_headers() {
     let telemetry = "name = \"demo\"\n\n[telemetry]\notlp = \"http://127.0.0.1:4318\"\n";
     let named = format!("{telemetry}headers_env = \"OTEL_EXPORTER_OTLP_HEADERS\"\n");
@@ -3687,6 +3733,107 @@ fn a_spend_cap_warns_for_an_agent_whose_model_has_no_price_or_that_runs_codex() 
         (
             0,
             "warning: agents/implementer/agent.md:3: the spend caps count nothing for agent `implementer`: Priory reads no Codex tokens\n"
+        )
+    );
+}
+
+/// `WORKFLOW` with `record = <path>` on its model step.
+fn recording(path: &str) -> String {
+    WORKFLOW.replace(
+        "prompt = \"Implement the issue.\"\n",
+        &format!("prompt = \"Implement the issue.\"\nrecord = {path:?}\n"),
+    )
+}
+
+#[test]
+fn a_record_command_is_an_executable_file_inside_the_factory_folder() {
+    use std::os::unix::fs::PermissionsExt;
+    let outside = recording("../record");
+    let mut files = with("workflows/implement.toml", &outside);
+    files.push(("bin/record", "#!/bin/sh\nexit 0\n"));
+    let dir = factory("record-outside", &files);
+    fs::write(dir.join("../record"), "#!/bin/sh\nexit 0\n").unwrap();
+    let leaves = check(&dir);
+    let inside = recording("bin/record");
+    let mut files = with("workflows/implement.toml", &inside);
+    files.push(("bin/record", "#!/bin/sh\nexit 0\n"));
+    let dir = factory("record-inside", &files);
+    std::os::unix::fs::symlink(dir.join("../record"), dir.join("bin/linked")).unwrap();
+    let plain = check(&dir);
+    fs::set_permissions(dir.join("bin/record"), fs::Permissions::from_mode(0o755)).unwrap();
+    let runnable = check(&dir);
+    fs::write(
+        dir.join("workflows/implement.toml"),
+        recording("bin/linked"),
+    )
+    .unwrap();
+    let linked = check(&dir);
+
+    assert_eq!(leaves.code, 1);
+    assert!(
+        leaves
+            .stderr
+            .ends_with("step `implement`: `record`: ../record leads outside the factory folder\n"),
+        "{}",
+        leaves.stderr
+    );
+    assert!(
+        plain
+            .stderr
+            .ends_with("step `implement`: `record`: bin/record is not executable: chmod +x it\n"),
+        "{}",
+        plain.stderr
+    );
+    assert_eq!((runnable.code, runnable.stderr.as_str()), (0, ""));
+    assert!(
+        linked
+            .stderr
+            .ends_with("step `implement`: `record`: bin/linked leads outside the factory folder\n"),
+        "{}",
+        linked.stderr
+    );
+}
+
+#[test]
+fn only_a_model_step_has_a_record_command() {
+    let on_code = WORKFLOW.replace(
+        "action = \"open-pr\"\n",
+        "action = \"open-pr\"\nrecord = \"bin/record\"\n",
+    );
+
+    let refused = check(&factory(
+        "record-code-step",
+        &with("workflows/implement.toml", &on_code),
+    ));
+
+    assert_eq!(refused.code, 1);
+    assert!(
+        refused
+            .stderr
+            .contains("step `open-pr`: only a model step has a `record` command\n"),
+        "{}",
+        refused.stderr
+    );
+}
+
+#[test]
+fn the_servers_url_is_an_http_address() {
+    let toml = |url: &str| format!("name = \"demo\"\n\n[serve]\nurl = {url:?}\n");
+    let ok = check(&factory(
+        "serve-url",
+        &with("factory.toml", &toml("https://runner.example.ts.net:7390")),
+    ));
+    let bad = check(&factory(
+        "serve-url-bad",
+        &with("factory.toml", &toml("runner:7390")),
+    ));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (bad.code, bad.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[serve] url` \"runner:7390\" is not an address: write it as https://host:port\n"
         )
     );
 }

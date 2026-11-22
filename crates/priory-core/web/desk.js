@@ -165,13 +165,15 @@ export function arrivalAsk({ from, list, view, asks }) {
 
 /**
  * The Desk's banners, each the daemon's sentence: the pause, the room, the intake, then one per
- * day or week spend cap reached, as `priory desk` prints them.
- * @param {any} desk `/api/desk`
+ * day or week spend cap reached, as `priory desk` prints them. The pause and the stall say when
+ * they began in the page's words: "stalled 12 min ago", not "stalled since <time>".
+ * @param {any} desk `/api/desk` @param {(iso: string) => string} ago
  */
-export function deskBanners(desk) {
+export function deskBanners(desk, ago) {
+  const began = (/** @type {string | null | undefined} */ text) => text?.replace(/^(paused|stalled) since (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)/, (_, what, iso) => `${what} ${ago(iso)}`);
   return [
-    { text: desk.paused, icon: "pause", intake: false },
-    { text: desk.banner, icon: "hard-drive", intake: false },
+    { text: began(desk.paused), icon: "pause", intake: false },
+    { text: began(desk.banner), icon: "hard-drive", intake: false },
     { text: desk.intake, icon: "unplug", intake: true },
     ...(desk.caps ?? []).map((/** @type {string} */ text) => ({ text, icon: "hourglass", intake: false })),
   ].filter((banner) => banner.text);

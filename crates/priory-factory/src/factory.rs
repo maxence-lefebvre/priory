@@ -574,6 +574,9 @@ pub struct Serve {
     /// More environment variables whose values the terminal hides, besides the factory's secrets.
     #[serde(default)]
     pub redact_env: Vec<String>,
+    /// The address a person opens the server at, such as `https://runner.example.ts.net:7390`,
+    /// which links in a pull request body start with.
+    pub url: Option<String>,
 }
 
 /// What the HTTP server lets a token holder do with a run's terminal.
@@ -612,6 +615,19 @@ impl Serve {
                     id.len() == 32 && id.bytes().all(|byte| (b'a'..=b'p').contains(&byte))
                 })
         };
+        if let Some(url) = &self.url {
+            let host = url
+                .strip_prefix("https://")
+                .or_else(|| url.strip_prefix("http://"));
+            if host.is_none_or(|host| {
+                host.is_empty()
+                    || host.contains(|c: char| c.is_whitespace() || "?#\"<>".contains(c))
+            }) {
+                return Err(format!(
+                    "`[serve] url` {url:?} is not an address: write it as https://host:port"
+                ));
+            }
+        }
         if let Some(bad) = self.extension_origins.iter().find(|origin| !id(origin)) {
             return Err(format!(
                 "`[serve] extension_origins` {bad} is not a Chromium extension's origin, \
@@ -1178,6 +1194,38 @@ impl Intervention {
     }
 }
 
+/// How sure an agent is that its recommendation is what the person would pick, and the lowest
+/// such confidence a task's `auto_answer` lets the daemon act on.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Confidence {
+    Low,
+    Medium,
+    High,
+}
+
+impl Confidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Confidence::Low => "low",
+            Confidence::Medium => "medium",
+            Confidence::High => "high",
+        }
+    }
+
+    /// The confidence a word names, or `None` for any other word.
+    pub fn parse(word: &str) -> Option<Self> {
+        match word {
+            "low" => Some(Confidence::Low),
+            "medium" => Some(Confidence::Medium),
+            "high" => Some(Confidence::High),
+            _ => None,
+        }
+    }
+}
+
 /// `scorers/<name>.toml` or `.yaml`: a question that grades one finished run with `pass` or
 /// `fail`. The file name is the scorer's name.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -1366,8 +1414,14 @@ pub struct Trigger {
     /// The agent that answers asks of a `hands-off` task: a `claude-code` agent with a `shared`
     /// session.
     pub lead: Option<String>,
+    /// The lowest confidence at which the daemon answers an agent's ask with its own
+    /// recommendation: `high` or `medium`; no ask is answered this way when unset.
+    pub auto_answer: Option<Confidence>,
     /// Spend caps in dollars for the trigger's tasks.
     pub caps: Option<Limits>,
+    /// Whether its tasks are a trial: each stops before its first irreversible step, records what
+    /// that step would have done, and writes nothing.
+    pub staged: Option<bool>,
     /// A script of the factory that runs on each matching event before it becomes a task request,
     /// and can drop the request or change it.
     pub pre: Option<Pre>,
@@ -1676,6 +1730,9 @@ pub struct Step {
     /// with `prices.toml` at each turn end.
     #[schemars(regex(pattern = r"^[0-9]+(\.[0-9]+)?$"))]
     pub budget: Option<String>,
+    /// Model steps only: the factory's command that records evidence after the step's result, in a
+    /// checkout of the result's commit, relative to the factory folder.
+    pub record: Option<PathBuf>,
 }
 
 impl Step {
@@ -2163,6 +2220,13 @@ pub const MEMORY_INDEX: &str = "MEMORY.md";
 pub const CODEX_PROMPT_LIMIT: usize = 8192;
 
 impl Factory {
+    /// Whether the tasks of `trigger` are staged, so no irreversible step of theirs runs.
+    pub fn staged(&self, trigger: &str) -> bool {
+        self.triggers
+            .get(trigger)
+            .is_some_and(|trigger| trigger.value.staged == Some(true))
+    }
+
     /// The factory's lanes, or the built-in ones: no rules and the `{team}/misc` fallback.
     pub fn lanes(&self) -> &Lanes {
         static BUILT_IN: Lanes = Lanes {

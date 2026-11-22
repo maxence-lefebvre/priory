@@ -170,6 +170,38 @@ fn an_autonomous_step_lists_its_reason_and_the_path_with_no_human_decision() {
 }
 
 #[test]
+fn an_auto_answer_level_changes_no_irreversible_step_or_path_with_no_human_decision() {
+    let trigger = "source = \"github\"\nrepo = \"owner/repo\"\non = \"issues.labeled\"\nworkflow = \"draft\"\n";
+    let without = factory(
+        "auto-answer-unset",
+        &[("implement", IMPLEMENT), ("draft", DRAFT)],
+    );
+    fs::create_dir_all(without.join("triggers")).unwrap();
+    fs::write(without.join("triggers/agent-label.toml"), trigger).unwrap();
+    let with = factory(
+        "auto-answer-set",
+        &[("implement", IMPLEMENT), ("draft", DRAFT)],
+    );
+    fs::create_dir_all(with.join("triggers")).unwrap();
+    fs::write(
+        with.join("triggers/agent-label.toml"),
+        format!("{trigger}auto_answer = \"medium\"\n"),
+    )
+    .unwrap();
+
+    let (before, after) = (explain(&without), explain(&with));
+
+    assert_eq!((before.code, before.stderr.as_str()), (0, ""));
+    assert_eq!((after.code, after.stderr.as_str()), (0, ""));
+    assert_eq!(after.stdout, before.stdout);
+    assert!(
+        after.stdout.contains("draft\tplan -> open-pr"),
+        "{}",
+        after.stdout
+    );
+}
+
+#[test]
 fn json_holds_the_same_rows_as_the_table() {
     let dir = factory("json", &[("implement", IMPLEMENT), ("draft", DRAFT)]);
     let table = explain(&dir).stdout;

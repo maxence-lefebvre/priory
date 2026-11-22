@@ -359,6 +359,13 @@ pub fn head(worktree: &Path, branch: &str) -> Option<String> {
         .map(|head| head.trim().to_owned())
 }
 
+/// The commit checked out in `dir`, or `None` outside git or before any commit.
+pub fn checked_out(dir: &Path) -> Option<String> {
+    run(git(dir).args(["rev-parse", "--verify", "--quiet", "HEAD"]))
+        .ok()
+        .map(|head| head.trim().to_owned())
+}
+
 /// The last commit that changed the files under `dir`, or `None` outside git or before any commit.
 pub fn revision(dir: &Path) -> Option<String> {
     run(git(dir).args(["log", "-1", "--format=%H", "--", "."]))
@@ -407,10 +414,7 @@ pub fn open_pull_request(
     }
     let base = match base {
         Some(base) => base.to_owned(),
-        None => run(git(worktree).args(["rev-parse", "--abbrev-ref", "origin/HEAD"]))?
-            .trim()
-            .trim_start_matches("origin/")
-            .to_owned(),
+        None => default_branch(worktree)?,
     };
     let url = run(Command::new("gh").args([
         "pr", "create", "-R", repo, "--base", &base, "--head", branch, "--title", title, "--body",
@@ -422,6 +426,16 @@ pub fn open_pull_request(
         .and_then(|number| number.parse().ok())
         .map(|number| (number, base))
         .ok_or_else(|| format!("gh pr create printed {url:?}, not a pull request URL"))
+}
+
+/// The default branch of `origin`, in the repository of `worktree`.
+pub fn default_branch(worktree: &Path) -> Result<String, String> {
+    Ok(
+        run(git(worktree).args(["rev-parse", "--abbrev-ref", "origin/HEAD"]))?
+            .trim()
+            .trim_start_matches("origin/")
+            .to_owned(),
+    )
 }
 
 /// Whether commit `below` is `commit` or one of its ancestors, in the repository of `worktree`.

@@ -476,6 +476,9 @@ fn route(
     {
         return terminal(db, served, run, query);
     }
+    if let Some(id) = path.strip_prefix("/api/evidence/") {
+        return evidence(db, home, id);
+    }
     let read = match path {
         "/api/events" => return events(db, query, waiters),
         "/api/batches" => return batches(db, None),
@@ -611,6 +614,31 @@ fn route(
         Ok(Some(body)) => Reply::json(200, body.to_string()),
         Ok(None) if path.starts_with("/api/reports/") => Reply::error(404, "no such report"),
         Ok(None) => Reply::error(404, "no such task"),
+        Err(error) => Reply::error(500, &error.to_string()),
+    }
+}
+
+/// What every evidence file is served with: never sniffed, and sandboxed when opened alone.
+const EVIDENCE: &str = "X-Content-Type-Options: nosniff\r\nContent-Security-Policy: sandbox\r\n";
+/// The same, for an image or a video, which a browser shows in place.
+const EVIDENCE_INLINE: &str = "Content-Disposition: inline\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: sandbox\r\n";
+
+/// `GET /api/evidence/{id}`: the item's bytes with the fixed content type of its kind.
+fn evidence(db: &Connection, home: &Path, id: &str) -> Reply {
+    let Ok(id) = id.parse() else {
+        return Reply::error(404, "no such path");
+    };
+    match crate::evidence::served(db, home, id) {
+        Ok(Some((sniffed, body))) => Reply {
+            status: 200,
+            kind: sniffed.media,
+            headers: match sniffed.kind {
+                "cast" => EVIDENCE,
+                _ => EVIDENCE_INLINE,
+            },
+            body,
+        },
+        Ok(None) => Reply::error(404, "no such evidence"),
         Err(error) => Reply::error(500, &error.to_string()),
     }
 }

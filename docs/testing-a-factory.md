@@ -11,7 +11,8 @@ host. It then starts this build's daemon with the fake `claude`, `codex` and `gh
 asks for one task, plays your scenario, and checks where the task ended. `gh`, `claude`, `codex`
 and Git's GitHub remotes go to fakes, and every process starts with a cleared environment, a
 scratch home and a scratch Priory home. Your factory's own scripts still run as written, so read
-what a `run` step calls before you play it.
+what a `run` step calls before you play it. The fakes serve tests such as this one only.
+Each script's opening comments list its options. Keep them off the `PATH` of a real run.
 
 ## 1. Write a scenario
 
@@ -100,5 +101,7 @@ so the harness itself stays covered.
 - The turns form one queue, so a scenario follows one task whose agent runs at a time. A firing
   that also starts a code-step task, such as a poll, is fine; name the task to follow with
   `workflow`.
+- The fakes test the graph, not what a real model does on a real event. To see that before a new
+  trigger can write anywhere, set [`staged = true`](daemon/tools.md#staged-tasks) on the trigger.
 - A Linear or Slack source has no fake answers. Its poll fails, and a `[fire]` scenario still fires
   its schedule triggers.

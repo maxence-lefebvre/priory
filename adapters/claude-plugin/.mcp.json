@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "priory": {
+      "command": "priory",
+      "args": ["mcp", "--outside"]
+    }
+  }
+}

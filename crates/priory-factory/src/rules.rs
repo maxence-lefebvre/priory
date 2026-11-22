@@ -1,6 +1,6 @@
 use crate::factory::{
-    ASK_SHAPE, Agent, Backend, Benchmark, CODEX_PROMPT_LIMIT, Debate, Decider, Effect, Factory,
-    Harness, INSTRUCTIONS, Intervention, Loaded, Moment, OPEN_MEMORIES_PR, OnChange,
+    ASK_SHAPE, Agent, Backend, Benchmark, CODEX_PROMPT_LIMIT, Confidence, Debate, Decider, Effect,
+    Factory, Harness, INSTRUCTIONS, Intervention, Loaded, Moment, OPEN_MEMORIES_PR, OnChange,
     PermissionMode, Problem, Proof, Recipe, ScoreKind, ScoreOn, Scorer, Session, Step, Trigger,
     Until, Workflow, join_instructions,
 };
@@ -373,6 +373,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             ));
         }
         check_lead(factory, trigger, &mut problems);
+        check_auto_answer(trigger, &mut problems);
         check_pre(factory, trigger, &mut problems);
         match trigger.value.source.as_str() {
             "github" => check_github(trigger, &mut problems),
@@ -1067,6 +1068,17 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
     }
 }
 
+/// `auto_answer = "low"` would accept every ask an agent makes, which is `hands-off` with no reader.
+fn check_auto_answer(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
+    if trigger.value.auto_answer == Some(Confidence::Low) {
+        problems.push(problem(
+            trigger,
+            trigger.lines.field("auto_answer"),
+            "`auto_answer = \"low\"` would answer every ask an agent makes: use `high` or `medium`, or leave it unset".into(),
+        ));
+    }
+}
+
 /// A `hands-off` trigger names a lead, and a lead is a Claude Code agent with a shared session.
 fn check_lead(factory: &Factory, trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     let Some(lead) = &trigger.value.lead else {
@@ -1661,6 +1673,7 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
             (!step.approves.is_empty(), Decider::Human, "`approves`"),
             (step.command.is_some(), Decider::Human, "a `command`"),
             (step.budget.is_some(), Decider::Model, "a `budget`"),
+            (step.record.is_some(), Decider::Model, "a `record` command"),
             (step.action.is_some(), Decider::Code, "an `action`"),
             (step.run.is_some(), Decider::Code, "a `run` command"),
         ];
@@ -1692,6 +1705,11 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
                 }
                 if step.prompt.is_none() {
                     report("a model step needs a `prompt`".into());
+                }
+                if let Some(record) = &step.record
+                    && let Err(refused) = recorder(&factory.dir, record)
+                {
+                    report(format!("`record`: {refused}"));
                 }
                 if let Some(budget) = &step.budget {
                     if step.budget().is_none() {
@@ -2074,4 +2092,28 @@ fn path_problems(table: &str, what: &str, paths: &[(&str, &str)]) -> Vec<String>
         }
     }
     problems
+}
+
+/// Why the `record` command `record` is not an executable file inside the factory folder `dir`, as
+/// through `..` or a symbolic link that leads out.
+pub fn recorder(dir: &Path, record: &Path) -> Result<std::path::PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let shown = record.display();
+    let folder = dir
+        .canonicalize()
+        .map_err(|why| format!("cannot read the factory folder: {why}"))?;
+    let program = dir
+        .join(record)
+        .canonicalize()
+        .map_err(|_| format!("{shown} is not a file in the factory folder"))?;
+    if !program.starts_with(&folder) {
+        return Err(format!("{shown} leads outside the factory folder"));
+    }
+    match std::fs::metadata(&program) {
+        Ok(file) if file.is_file() && file.permissions().mode() & 0o111 == 0 => {
+            Err(format!("{shown} is not executable: chmod +x it"))
+        }
+        Ok(file) if file.is_file() => Ok(program),
+        _ => Err(format!("{shown} is not a file in the factory folder")),
+    }
 }

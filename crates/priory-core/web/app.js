@@ -360,7 +360,7 @@ function deskModel() {
   const other = items.filter((item) => !["ask", "blocked", "failed", "prompt", "command", "report", "todo"].includes(item.kind));
   // The capsule opens the ask that ranks first, not only the oldest one.
   const first = desk.ranked?.find((item) => item.kind === "ask");
-  return { next: desk.next, open, first: first ? byId.get(first.id) || open[0] : open[0], stopped, todos, reports, other, asleep: desk.counts.asleep, asleepTasks: queue.asleep, banners: deskBanners(desk), intake: desk.intake, running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length };
+  return { next: desk.next, open, first: first ? byId.get(first.id) || open[0] : open[0], stopped, todos, reports, other, asleep: desk.counts.asleep, asleepTasks: queue.asleep, banners: deskBanners(desk, ago), intake: desk.intake, running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length };
 }
 const openAsks = () => deskModel().open;
 // The open asks the list shows, so previous, next and the ask after an answer stay in its facets.
@@ -2976,6 +2976,9 @@ function page() {
   }
   state.drawn = routeKey();
   if (["desk", "asks"].includes(here) && !selectedAsk()) Object.assign(state, { list: here, listUrl: routeKey() });
+  // An ask keeps the list it was opened from in its history entry, so Back to it restores that list.
+  else if (selectedAsk() && history.state?.listUrl) Object.assign(state, { list: history.state.list, listUrl: history.state.listUrl });
+  else if (selectedAsk()) history.replaceState({ ...history.state, list: state.list, listUrl: state.listUrl }, "");
   const taskId = here === "tasks" && /^\d+$/.test(route()[1] || "") ? Number(route()[1]) : null;
   const batchId = here === "batches" && /^\d+$/.test(route()[1] || "") ? route()[1] : null;
   if (PANELS[here] && !selectedAsk() && !taskId) state.from = routeKey();
