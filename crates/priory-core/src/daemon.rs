@@ -1054,6 +1054,11 @@ fn take(
                     Ok(request) => add(db, &request, trace, counter)?,
                     Err(refused) => Err(refused),
                 },
+                "answer" | "dismiss" => {
+                    crate::outside::decide(db, call, trace, &|worktree, branch| {
+                        runtime::kept_head(&runtime::home(), worktree, branch)
+                    })?
+                }
                 _ => crate::outside::apply(db, call, trace.factory, &runtime::home())?,
             };
             Ok((replied(reply), None))

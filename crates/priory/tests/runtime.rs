@@ -2,6 +2,7 @@ mod auto_answer;
 mod conform;
 mod debate;
 mod evidence;
+mod outside_answer;
 #[cfg(feature = "postgres")]
 mod partition;
 mod preempt;
@@ -5319,7 +5320,7 @@ fn the_outside_server_lists_its_tools_only_and_a_person_verb_is_an_unknown_tool(
     setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
 
     let mut lines = vec![json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})];
-    for tool in ["answer", "dismiss", "result", "wait"] {
+    for tool in ["result", "wait", "resume", "cancel"] {
         lines.push(outside_call(
             tool,
             json!({"ask": "cache.ship", "answer": "ship", "outcome": "passed", "summary": "x"}),
@@ -5334,10 +5335,13 @@ fn the_outside_server_lists_its_tools_only_and_a_person_verb_is_an_unknown_tool(
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["desk", "asks", "task", "ask", "add"]);
+    assert_eq!(
+        names,
+        ["desk", "asks", "task", "ask", "add", "answer", "dismiss"]
+    );
     for (reply, tool) in replies[1..]
         .iter()
-        .zip(["answer", "dismiss", "result", "wait"])
+        .zip(["result", "wait", "resume", "cancel"])
     {
         assert_eq!(reply["error"]["code"], -32602, "{reply}");
         assert_eq!(reply["error"]["message"], format!("unknown tool {tool}"));
@@ -5598,6 +5602,8 @@ fn with_no_daemon_each_outside_tool_fails_with_the_reason_and_stores_nothing() {
             "add",
             json!({"text": "Fix the typo.", "workflow": "implement", "repo": "owner/repo"}),
         ),
+        ("answer", json!({"ask": 1, "revision": 1, "answer": "ship"})),
+        ("dismiss", json!({"ask": 1, "revision": 1})),
     ] {
         let (text, failed) = setup.outside_call(&[], tool, arguments);
 
@@ -5667,6 +5673,9 @@ fn the_outside_tools_take_any_arguments_without_panicking() {
             Just("all".to_owned()),
             Just("workflow".to_owned()),
             Just("session".to_owned()),
+            Just("ask".to_owned()),
+            Just("revision".to_owned()),
+            Just("answer".to_owned()),
             "[a-z_]{1,10}",
         ];
         prop_oneof![
@@ -5682,6 +5691,7 @@ fn the_outside_tools_take_any_arguments_without_panicking() {
         Just("ask"),
         Just("add"),
         Just("answer"),
+        Just("dismiss"),
     ];
     let calls = proptest::collection::vec((tool, value), 1..12);
     let mut runner = TestRunner::new(Config::with_cases(16));

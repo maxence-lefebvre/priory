@@ -367,7 +367,7 @@ fn apply(
         };
         match ask {
             Some(_) => {
-                crate::tools::dismiss_in_tx(tx, &dismiss, trace.factory)?.map(|_| "dismissed")
+                crate::tools::dismiss_in_tx(tx, &dismiss, trace.factory, None)?.map(|_| "dismissed")
             }
             None => Err("a malformed dismiss: it names no ask".to_owned()),
         }

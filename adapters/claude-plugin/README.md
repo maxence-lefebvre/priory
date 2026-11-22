@@ -1,7 +1,9 @@
 # Priory plugin for Claude Code
 
 This folder is a Claude Code plugin. It lets your own Claude Code session read the Priory desk,
-ask you a question through the desk, and add a task. It never answers an ask for you.
+ask you a question through the desk, and add a task. It answers or dismisses an ask only when you
+tell it to, only an ask a lead could answer, and Priory records your session, not you, as the
+decider.
 
 To install it, follow
 [How to use Priory from your own Claude Code session](../../docs/using-priory-from-your-own-session.md).

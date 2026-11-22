@@ -219,7 +219,10 @@ fn asks_query() -> String {
      CASE asks.withdrawn_reason WHEN 'sibling-fired' THEN 'a wait of its run fired first'
        WHEN 'moved-on' THEN 'a later run called another tool'
        WHEN 'revived' THEN 'its task was revived'
-       WHEN 'predecessor-revived' THEN 'the task it waits on was revived' ELSE asks.withdrawn_reason END AS withdrawn_why,
+       WHEN 'predecessor-revived' THEN 'the task it waits on was revived'
+       WHEN 'dismissed' THEN 'dismissed' || coalesce(' by session ' || CASE WHEN asks.answered_by LIKE 'session:%'
+         THEN substr(asks.answered_by, 9) END, '')
+       ELSE asks.withdrawn_reason END AS withdrawn_why,
      asks.revision, asks.question, asks.options, asks.recommendation, asks.tradeoff, asks.answer,
      asks.answered AS answered_at, asks.answered_by, asks.routed AS routed_to, asks.created AS since, asks.title, asks.text,
      asks.confidence, asks.rationale,
@@ -1276,6 +1279,11 @@ fn since_you_looked(db: &Connection, person: &str) -> rusqlite::Result<Value> {
                    || ' answered ' || json_quote(json_extract(event, '$.data.option')) || ' by auto ('
                    || json_extract(event, '$.data.confidence') || '): '
                    || json_extract(event, '$.data.rationale')
+                 WHEN 'factory.ask.session_answered' THEN 'ask ' || json_extract(event, '$.data.ask')
+                   || ' answered ' || json_quote(json_extract(event, '$.data.option'))
+                   || ' by session ' || json_extract(event, '$.data.session')
+                 WHEN 'factory.ask.session_dismissed' THEN 'ask ' || json_extract(event, '$.data.ask')
+                   || ' dismissed by session ' || json_extract(event, '$.data.session')
                  ELSE type || coalesce(' ' || json_extract(event, '$.data.step'), '')
                    || coalesce(': ' || json_extract(event, '$.data.outcome'), '') END AS what,
                0 AS source, seq

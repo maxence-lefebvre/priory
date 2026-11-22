@@ -49,8 +49,11 @@ test("the detail says the lead is answering and that the first answer stands", (
   assert.equal(routedNote(ask(2)), null);
 });
 
-test("answeredBy names a person for the CLI and the server, the lead as agent:<lead>, and nobody when unrecorded", () => {
-  assert.deepEqual(["cli", "serve", "agent:lead", null].map(answeredBy), ["a person", "a person", "agent:lead", null]);
+test("answeredBy names a person for the CLI and the server, the lead as agent:<lead>, auto, a session by its name, and nobody when unrecorded", () => {
+  assert.deepEqual(
+    ["cli", "serve", "agent:lead", "auto", "session:t9 8f3c2a10", null].map(answeredBy),
+    ["a person", "a person", "agent:lead", "auto", "session t9 8f3c2a10", null],
+  );
 });
 
 test("an armed command option runs on the second tap only at the revision and within the window it was armed in", () => {

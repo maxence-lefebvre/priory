@@ -381,7 +381,9 @@ message's type, subject and outcome, or a report's `<source>: <line>`. A task re
 outside session added ends with `, added by session <session>` (see
 [tools.md](tools.md#the-outside-server)). An ask the daemon answered
 at the task's `auto_answer` level reads `ask <id> answered "<option>" by auto (<confidence>):
-<rationale>` (see [waits.md](waits.md#answered-by-auto)). `priory desk` without
+<rationale>` (see [waits.md](waits.md#answered-by-auto)). An ask a person's own session decided
+reads `ask <id> answered "<option>" by session <session>` or `ask <id> dismissed by session
+<session>` (see [tools.md](tools.md#answers-from-the-session)). `priory desk` without
 `--json` lists the events after its items, under a `since you looked` header with the columns
 `time`, `task` and `what`, newest first. It prints no `last_visit` and, with no events, no list.
 
