@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 101;
+const VERSION: i64 = 102;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1850,6 +1850,13 @@ CREATE INDEX IF NOT EXISTS runs_of_task ON runs (task);
 PRAGMA user_version = 101;
 ";
 
+// A trigger's intent and no-op cases, as the task's trigger had them when it created the task.
+const SCHEMA_102: &str = "
+ALTER TABLE tasks ADD COLUMN intent TEXT;
+ALTER TABLE tasks ADD COLUMN noop TEXT;
+PRAGMA user_version = 102;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1864,7 +1871,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
-    SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101,
+    SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -2198,9 +2205,9 @@ pub(crate) fn route_in(
             tx.execute(
                 "INSERT INTO tasks
                    (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, repo, entered, tldr, intervention, lead,
-                    pre_title, pre_text, pre_context, pre_script, added_by, auto_answer)
+                    pre_title, pre_text, pre_context, pre_script, added_by, auto_answer, intent, noop)
                  VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?12, ?13, ?14,
-                   ?15, ?16, ?17, ?18, ?19, ?20)",
+                   ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
                 params![
                     new.key,
                     new.workflow,
@@ -2225,7 +2232,9 @@ pub(crate) fn route_in(
                     new.context,
                     new.pre.as_ref().map(|pre| &pre.script),
                     new.session,
-                    new.auto_answer.map(|level| level.as_str())
+                    new.auto_answer.map(|level| level.as_str()),
+                    new.intent,
+                    (!new.noop.is_empty()).then(|| serde_json::json!(new.noop).to_string())
                 ],
             )?;
             let id = tx.last_insert_rowid();
@@ -3857,6 +3866,33 @@ fn requested(
         said.push_str(&format!(
             "\nContext from the trigger's pre script {by}:\n{context}"
         ));
+    }
+    said.push_str(&intent(tx, task)?);
+    Ok(said)
+}
+
+/// The lines of the brief that carry the intent and the no-op cases of `task`'s trigger, if it
+/// named any.
+fn intent(tx: &Transaction, task: i64) -> rusqlite::Result<String> {
+    let (intent, noop): (Option<String>, Option<String>) = tx.query_row(
+        "SELECT intent, noop FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let mut said = String::new();
+    if let Some(intent) = intent {
+        said.push_str(&format!("\nThe trigger's intent: {intent}"));
+    }
+    let noop: Vec<String> = noop
+        .and_then(|noop| serde_json::from_str(&noop).ok())
+        .unwrap_or_default();
+    if !noop.is_empty() {
+        said.push_str(
+            "\nIf one of these cases holds, raise no ask and write nothing: end the step with a result that names the case.",
+        );
+        for case in noop {
+            said.push_str(&format!("\n- {case}"));
+        }
     }
     Ok(said)
 }

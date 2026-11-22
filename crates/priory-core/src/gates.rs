@@ -192,6 +192,7 @@ fn joined(thread: std::thread::Result<Graded>, run: i64, step: &str) -> Graded {
             reason: "the gate's grading crashed".to_owned(),
             cost: 0.0,
             judged: None,
+            intent: None,
         };
         vec![(score, true)]
     })
@@ -226,6 +227,10 @@ fn prepare(
         repo: None,
         base: None,
         request: String::new(),
+        intent: None,
+        noop: Vec::new(),
+        asked: false,
+        wrote: false,
     });
     Ok(Job {
         dir: factory.dir.clone(),
@@ -235,6 +240,7 @@ fn prepare(
             step: result["step"].as_str().unwrap_or_default().to_owned(),
             result: Some(result),
             asks: Some(Vec::new()),
+            latest: true,
         },
         gauges,
         lost,
@@ -274,6 +280,7 @@ fn grade(home: &Path, job: Job) -> Graded {
             reason: format!("no scorer {name} in scorers/"),
             cost: 0.0,
             judged: None,
+            intent: None,
         };
         graded.push((score, true));
     }

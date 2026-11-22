@@ -41,6 +41,11 @@ pub(crate) struct NewTask {
     pub intervention: Option<priory_factory::factory::Intervention>,
     #[serde(skip)]
     pub lead: Option<String>,
+    /// The trigger's intent and no-op cases, which the task keeps for its brief and triage.
+    #[serde(skip)]
+    pub intent: Option<String>,
+    #[serde(skip)]
+    pub noop: Vec<String>,
     #[serde(default)]
     pub auto_answer: Option<priory_factory::factory::Confidence>,
     #[serde(default)]
@@ -176,8 +181,8 @@ pub(crate) fn tick(message: &Message, factory: &Factory) -> bool {
 /// workflow the factory lacks creates its task with no step, which waits until the workflow is back.
 /// A request with no lane gets the one `lanes.toml` derives; no branch exists yet to match.
 /// A new task's band is its request's, else its trigger's, else its workflow's, else the last one.
-/// Its intervention and `auto_answer` level are its request's, else its trigger's, and its lead its
-/// trigger's.
+/// Its intervention and `auto_answer` level are its request's, else its trigger's, and its lead,
+/// intent and no-op cases its trigger's.
 pub(crate) fn route(message: &Message, owner: Option<&Task>, factory: &Factory) -> Decision {
     if let Some(task) = owner {
         return Decision::Keep(task.id);
@@ -213,6 +218,8 @@ pub(crate) fn route(message: &Message, owner: Option<&Task>, factory: &Factory) 
         .auto_answer
         .or_else(|| trigger.and_then(|trigger| trigger.value.auto_answer))
         .filter(|level| *level != priory_factory::factory::Confidence::Low);
+    task.intent = trigger.and_then(|trigger| trigger.value.intent.clone());
+    task.noop = trigger.map_or_else(Vec::new, |trigger| trigger.value.noop.clone());
     if task.lane.is_none() {
         task.lane = Some(factory.lanes().lane(&Subject {
             key: &task.key,

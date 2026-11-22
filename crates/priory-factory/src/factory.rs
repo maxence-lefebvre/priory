@@ -1334,19 +1334,24 @@ pub struct Scorer {
     pub description: String,
     /// What it reads: `result`, `diff`, `ask` or `merge`.
     pub on: ScoreOn,
-    /// How it answers: `outcome`, `command`, `ask-shape`, `judge` or `held`.
+    /// How it answers: `outcome`, `command`, `ask-shape`, `judge`, `held` or `intent`.
     pub kind: ScoreKind,
     /// For `outcome`, the outcomes that pass. For `ask-shape`, what every ask must show: `short`,
     /// `whatWaits` and `nextAction`.
     #[serde(default)]
     pub expect: Vec<String>,
     /// For `command`, an executable in the factory folder: exit 0 passes, 1 fails, any other
-    /// ending is an error.
+    /// ending is an error. For `intent`, a decision model in the factory folder: it reads the
+    /// questions as JSON on stdin and prints the answers as JSON.
     pub run: Option<PathBuf>,
-    /// For `command`, how long it may run before Priory kills it; 20 minutes when unset.
+    /// For `command` and `intent`, how long it may run before Priory kills it; 20 minutes for
+    /// `command` and 30 seconds for `intent` when unset.
     #[serde(default, deserialize_with = "duration")]
     #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub timeout: Option<Duration>,
+    /// For `intent`, the environment variable that holds the decision model's key, never the key
+    /// itself. `run` sees it, `PATH` and `HOME`, and no other variable.
+    pub key_env: Option<String>,
     /// For `judge`, the model that grades, such as `opus`.
     pub model: Option<String>,
     /// For `judge`, the file beside the scorer that holds the judge's whole prompt.
@@ -1427,7 +1432,11 @@ pub const AGREEMENT: f64 = 0.8;
 
 impl Scorer {
     pub fn timeout(&self) -> Duration {
-        self.timeout.unwrap_or(Duration::from_secs(20 * 60))
+        let default = match self.kind {
+            ScoreKind::Intent => 30,
+            _ => 20 * 60,
+        };
+        self.timeout.unwrap_or(Duration::from_secs(default))
     }
 
     pub fn agreement(&self) -> f64 {
@@ -1474,6 +1483,9 @@ pub enum ScoreKind {
     Judge,
     /// Grades a merged task when `after` comes: fails when a signal of `fails` happened by then.
     Held,
+    /// Asks the decision model `run` yes or no questions drawn from the trigger's intent and
+    /// no-op cases.
+    Intent,
 }
 
 impl ScoreKind {
@@ -1484,6 +1496,7 @@ impl ScoreKind {
             ScoreKind::AskShape => "ask-shape",
             ScoreKind::Judge => "judge",
             ScoreKind::Held => "held",
+            ScoreKind::Intent => "intent",
         }
     }
 }
@@ -1596,6 +1609,15 @@ pub struct Trigger {
     /// A script of the factory that runs on each matching event before it becomes a task request,
     /// and can drop the request or change it.
     pub pre: Option<Pre>,
+    /// One sentence on the outcome the trigger exists for. Its tasks' brief and the decision
+    /// model at triage read it.
+    #[schemars(length(min = 1))]
+    pub intent: Option<String>,
+    /// The cases that must create no ask and no write, each one line. Its tasks' brief and the
+    /// decision model at triage read them.
+    #[serde(default)]
+    #[schemars(extend("items" = { "minLength": 1 }))]
+    pub noop: Vec<String>,
 }
 
 /// A trigger's `[pre]` script. Priory execs `argv` with no shell, writes the event and the request

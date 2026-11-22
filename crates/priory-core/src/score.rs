@@ -44,6 +44,8 @@ pub struct Score {
     pub cost: f64,
     /// For a calibrated judge, its model and the calibration its verdict rests on.
     pub judged: Option<Judged>,
+    /// For an intent scorer that called its decision model, what the trace record keeps.
+    pub intent: Option<Value>,
 }
 
 /// The model and calibration behind a judge's verdict.
@@ -99,6 +101,13 @@ pub struct Task {
     pub base: Option<String>,
     /// The data of the message that asked for it, as JSON, which a judge reads.
     pub request: String,
+    /// The intent and no-op cases it kept from its trigger, which an intent scorer reads.
+    pub intent: Option<String>,
+    pub noop: Vec<String>,
+    /// Whether it raised an ask, and whether it wrote: a result that names a commit, or a pull
+    /// request.
+    pub asked: bool,
+    pub wrote: bool,
 }
 
 /// A finished run: one whose turn ended with a result or an ask.
@@ -109,6 +118,8 @@ pub struct Run {
     /// The asks it made, as an `ask-shape` scorer reads them: each id and shape. `None` when they
     /// were not read, as for a result a gate holds.
     pub asks: Option<Vec<(i64, String)>>,
+    /// Whether it is the task's latest finished run, the only one an intent scorer grades.
+    pub latest: bool,
 }
 
 /// Scores the latest finished run of each step of `task` with every scorer, or only `only`, then
@@ -236,20 +247,27 @@ pub fn gauges(
 
 /// The task as a scorer reads it, from `db`.
 pub fn task_of(db: &Connection, task: i64) -> rusqlite::Result<Option<Task>> {
-    let found = db
+    let found: Option<(_, _, _, Option<String>)> = db
         .query_row(
-            "SELECT repo, base_sha FROM tasks WHERE id = ?1",
+            "SELECT repo, base_sha, intent, noop FROM tasks WHERE id = ?1",
             [task],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()?;
-    let Some((repo, base)) = found else {
+    let Some((repo, base, intent, noop)) = found else {
         return Ok(None);
     };
+    let (asked, wrote) = crate::intent::attention(db, task)?;
     Ok(Some(Task {
         repo,
         base,
         request: request(db, task)?,
+        intent,
+        noop: noop
+            .and_then(|noop| serde_json::from_str(&noop).ok())
+            .unwrap_or_default(),
+        asked,
+        wrote,
     }))
 }
 
@@ -262,7 +280,7 @@ pub fn measure(
     run: &Run,
     judging: &mut Judging,
 ) -> Score {
-    let (mut cost, mut judged) = (0.0, None);
+    let (mut cost, mut judged, mut intent) = (0.0, None, None);
     let (verdict, reason) = match gauge.scorer.kind {
         ScoreKind::Outcome => outcome(&gauge.scorer, run),
         ScoreKind::AskShape => run.asks.clone().map_or_else(
@@ -277,6 +295,11 @@ pub fn measure(
             judged = graded.judged;
             (graded.verdict, graded.reason)
         }
+        ScoreKind::Intent => {
+            let graded = crate::intent::grade(dir, &gauge.scorer, task, run);
+            intent = graded.record;
+            (graded.verdict, graded.reason)
+        }
     };
     Score {
         run: run.id,
@@ -287,6 +310,7 @@ pub fn measure(
         reason,
         cost,
         judged,
+        intent,
     }
 }
 
@@ -312,9 +336,14 @@ fn finished(db: &Connection, task: i64) -> rusqlite::Result<Vec<Run>> {
                 step: row.get(1)?,
                 result: result.and_then(|text| serde_json::from_str(&text).ok()),
                 asks: None,
+                latest: false,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut runs = runs;
+    if let Some(last) = runs.last_mut() {
+        last.latest = true;
+    }
     runs.into_iter()
         .map(|mut run| {
             run.asks = Some(asks_of(db, run.id)?);
@@ -515,7 +544,7 @@ fn diff(home: &Path, repo: &str, base: &str, head: &str) -> Result<String, Strin
 }
 
 /// The data of the message that asked for task `id`, as JSON, or a line that says it is gone.
-fn request(db: &Connection, id: i64) -> rusqlite::Result<String> {
+pub(crate) fn request(db: &Connection, id: i64) -> rusqlite::Result<String> {
     let data: Option<String> = db
         .query_row(
             "SELECT data FROM inbox WHERE task = ?1 ORDER BY seq LIMIT 1",
@@ -627,7 +656,7 @@ fn run_command(
 
 /// `run` resolved in the factory folder `dir`, refused when it leads outside it, as through `..`
 /// or a symbolic link.
-fn inside(dir: &Path, run: &Path) -> Result<std::path::PathBuf, String> {
+pub(crate) fn inside(dir: &Path, run: &Path) -> Result<std::path::PathBuf, String> {
     let shown = run.display();
     let folder = dir
         .canonicalize()

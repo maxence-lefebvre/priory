@@ -2455,7 +2455,7 @@ fn an_unknown_scorer_kind_names_its_file_and_line() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "scorers/guess.toml:3:8: unknown variant `vibes`, expected one of `outcome`, `command`, `ask-shape`, `judge`, `held`\n"
+        "scorers/guess.toml:3:8: unknown variant `vibes`, expected one of `outcome`, `command`, `ask-shape`, `judge`, `held`, `intent`\n"
     );
 }
 
@@ -2499,7 +2499,7 @@ fn an_expect_that_does_not_fit_the_kind_and_a_missing_run_name_their_lines() {
          scorers/c.toml:3: a `command` scorer needs `run`: an executable in the factory folder\n\
          scorers/d.toml:4: `run` names scripts/gone.sh, which is missing from the factory folder\n\
          scorers/e.toml:2: kind `outcome` reads on = \"result\", not \"diff\"\n\
-         scorers/e.toml:5: `run` is for kind `command`, not `outcome`\n\
+         scorers/e.toml:5: `run` is for kind `command` or `intent`, not `outcome`\n\
          scorers/f.toml:4: `run` names scripts/score-gate.sh, which is not executable: chmod +x it\n"
     );
 }
@@ -4169,5 +4169,104 @@ fn a_lead_cannot_be_an_investigator() {
     assert_eq!(
         outcome.stderr,
         "triggers/agent-label.toml:9: lead `sentry` is an investigator, which only answers consults\n"
+    );
+}
+
+#[test]
+fn a_trigger_with_an_intent_and_noop_cases_passes() {
+    let trigger = format!(
+        "{TRIGGER}intent = \"Fix each labeled bug with a reviewed pull request.\"\nnoop = [\"The issue is a question, not a bug.\", \"A pull request already fixes it.\"]\n"
+    );
+
+    let outcome = check(&factory(
+        "intent-ok",
+        &with("triggers/agent-label.toml", &trigger),
+    ));
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn an_intent_is_one_line_and_each_noop_case_says_something() {
+    let blank = format!("{TRIGGER}intent = \"  \"\n");
+    let lines = format!("{TRIGGER}intent = \"\"\"\nFix bugs.\nAnd more.\"\"\"\n");
+    let empty = format!("{TRIGGER}intent = \"Fix bugs.\"\nnoop = [\"A question.\", \"\"]\n");
+
+    let blank = check(&factory(
+        "intent-blank",
+        &with("triggers/agent-label.toml", &blank),
+    ));
+    let lines = check(&factory(
+        "intent-lines",
+        &with("triggers/agent-label.toml", &lines),
+    ));
+    let empty = check(&factory(
+        "noop-empty",
+        &with("triggers/agent-label.toml", &empty),
+    ));
+
+    assert_eq!(
+        (blank.code, blank.stderr.as_str()),
+        (
+            1,
+            "triggers/agent-label.toml:8: `intent` is empty: say in one sentence the outcome the trigger exists for\n"
+        )
+    );
+    assert_eq!(
+        (lines.code, lines.stderr.as_str()),
+        (
+            1,
+            "triggers/agent-label.toml:8: `intent` is one sentence on one line, not 2 lines\n"
+        )
+    );
+    assert_eq!(
+        (empty.code, empty.stderr.as_str()),
+        (
+            1,
+            "triggers/agent-label.toml:9: `noop` case 2 is empty: say which case must create no ask and no write\n"
+        )
+    );
+}
+
+#[test]
+fn an_intent_scorer_reads_results_with_a_decision_model_in_the_factory_folder() {
+    use std::os::unix::fs::PermissionsExt;
+    let good = "description = \"I.\"\non = \"result\"\nkind = \"intent\"\nrun = \"scripts/decide\"\nkey_env = \"TYPESAFE_API_KEY\"\ntimeout = \"10s\"\n";
+    let mut files = valid();
+    files.extend_from_slice(&[
+        ("scorers/intent.toml", good),
+        ("scripts/decide", "#!/bin/sh\nexit 0\n"),
+    ]);
+    let ok = factory("intent-scorer-ok", &files);
+    fs::set_permissions(ok.join("scripts/decide"), fs::Permissions::from_mode(0o755)).unwrap();
+    let mut files = valid();
+    files.extend_from_slice(&[
+        (
+            "scorers/a.toml",
+            "description = \"A.\"\non = \"diff\"\nkind = \"intent\"\nexpect = [\"YES\"]\n",
+        ),
+        (
+            "scorers/b.toml",
+            "description = \"B.\"\non = \"result\"\nkind = \"intent\"\nrun = \"scripts/gone\"\nkey_env = \"sk-123 secret\"\n",
+        ),
+        (
+            "scorers/c.toml",
+            "description = \"C.\"\non = \"result\"\nkind = \"outcome\"\nexpect = [\"passed\"]\nkey_env = \"TYPESAFE_API_KEY\"\n",
+        ),
+    ]);
+
+    let ok = check(&ok);
+    let bad = check(&factory("intent-scorer-bad", &files));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(bad.code, 1);
+    assert_eq!(
+        bad.stderr,
+        "scorers/a.toml:2: kind `intent` reads on = \"result\", not \"diff\"\n\
+         scorers/a.toml:4: an `intent` scorer takes no `expect`: its questions come from the trigger\n\
+         scorers/a.toml:3: an `intent` scorer needs `run`: a decision model in the factory folder\n\
+         scorers/b.toml:5: `key_env` names the environment variable that holds the model's key, such as TYPESAFE_API_KEY, never the key itself\n\
+         scorers/b.toml:4: `run` names scripts/gone, which is missing from the factory folder\n\
+         scorers/c.toml:5: `key_env` is for kind `intent`, not `outcome`\n"
     );
 }
