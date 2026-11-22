@@ -119,6 +119,7 @@ as a website, with search, built from `main`.
   [start from a starter](docs/starting-from-a-starter.md),
   [install Priory](docs/installing-a-release.md),
   [use the web view, on a phone too](docs/using-the-web-view.md),
+  [install the Herdr adapter](docs/installing-the-herdr-adapter.md),
   [run Priory as services](docs/running-as-services.md),
   [test a factory with fake agents](docs/testing-a-factory.md),
   [add a second machine](docs/adding-a-second-machine.md),

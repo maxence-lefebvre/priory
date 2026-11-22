@@ -3,7 +3,7 @@
 A debate step has two agents answer one question, take turns answering each other for a fixed
 number of rounds, and end with their shared verdict or a person's pick. This page explains how the
 daemon runs one. The keys are in [workflows.md](../reference/workflows.md#debate-steps), the
-`position` tool in [tools.md](tools.md#positionverdict-argument-concedes), and why it is built this
+`position` tool in [tools.md](../reference/tools.md#positionverdict-argument-concedes), and why it is built this
 way in [the design note](../design/debate-step.md).
 
 The daemon owns the rounds, the turn order and the cost cap. No agent can post to the other, wait on

@@ -332,6 +332,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             problems.push(problem(settings, settings.lines.field("guard"), message));
         }
     }
+    check_caps(factory, &mut problems);
     for trigger in factory.triggers.values() {
         check_band(
             trigger,
@@ -786,6 +787,89 @@ pub fn warnings(factory: &Factory) -> Vec<Problem> {
                 ),
             ));
         }
+    }
+    warnings.extend(caps_warnings(factory));
+    warnings
+}
+
+/// Claude Code's model aliases: a transcript names the full model, which no price key can predict.
+const CLAUDE_ALIASES: &[&str] = &[
+    "default",
+    "sonnet",
+    "opus",
+    "haiku",
+    "opusplan",
+    "sonnet[1m]",
+];
+
+const CAPS_PRICED: &str = "needs prices.toml, which turns the steps' tokens into dollars";
+
+/// A spend cap counts dollars, so a factory with a cap and no `prices.toml` would never reach it.
+fn check_caps(factory: &Factory, problems: &mut Vec<Problem>) {
+    if !factory.prices.is_empty() {
+        return;
+    }
+    if let Some(settings) = &factory.settings
+        && settings.value.caps.is_some()
+    {
+        let message = format!("`[caps]` {CAPS_PRICED}");
+        problems.push(problem(settings, settings.lines.field("caps"), message));
+    }
+    for trigger in factory.triggers.values() {
+        if trigger.value.caps.is_some() {
+            let message = format!("`caps` {CAPS_PRICED}");
+            problems.push(problem(trigger, trigger.lines.field("caps"), message));
+        }
+    }
+}
+
+/// The agents of model steps whose spend no cap can count: a Codex agent, or one whose model
+/// `prices.toml` does not price. Only for a factory with a cap and a price table.
+fn caps_warnings(factory: &Factory) -> Vec<Problem> {
+    let capped = factory
+        .settings
+        .as_ref()
+        .is_some_and(|settings| settings.value.caps.is_some())
+        || factory
+            .triggers
+            .values()
+            .any(|trigger| trigger.value.caps.is_some());
+    if !capped || factory.prices.is_empty() {
+        return Vec::new();
+    }
+    let named: BTreeSet<&str> = factory
+        .workflows
+        .values()
+        .flat_map(|workflow| &workflow.value.steps)
+        .filter(|step| step.decides == Decider::Model)
+        .filter_map(|step| step.agent.as_deref())
+        .collect();
+    let mut warnings = Vec::new();
+    for name in named {
+        let Some(agent) = factory.agents.get(name) else {
+            continue;
+        };
+        let (field, why) = if matches!(agent.value.harness, Harness::Codex) {
+            ("harness", "Priory reads no Codex tokens".to_owned())
+        } else if let Some(model) = agent
+            .value
+            .model
+            .as_deref()
+            .filter(|model| !CLAUDE_ALIASES.contains(model))
+            .filter(|model| !factory.prices.contains_key(*model))
+        {
+            (
+                "model",
+                format!("prices.toml has no price for its model `{model}`"),
+            )
+        } else {
+            continue;
+        };
+        warnings.push(problem(
+            agent,
+            agent.lines.field(field),
+            format!("the spend caps count nothing for agent `{name}`: {why}"),
+        ));
     }
     warnings
 }

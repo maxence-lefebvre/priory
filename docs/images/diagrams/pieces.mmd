@@ -1,0 +1,20 @@
+---
+title: Priory's pieces and where they run
+---
+flowchart TD
+  sources["GitHub, Linear, Slack: issues, reviews, messages"] --> intake
+  webhooks["Webhooks: Sentry, Figma and others"] --> daemon
+  subgraph one["One machine"]
+    intake["The intake: polls them and your schedules"] --> log["The log: herdr-bus, one SQLite file"]
+    log <--> daemon["The daemon: routes events, runs tasks, serves views"]
+    daemon <--> agents["Agents: Claude Code or Codex, in tmux and a worktree"]
+  end
+  daemon -- views read the state and send answers --- web["Web view: served over HTTP, also to a phone"]
+  daemon --- extension["GitHub extension: on a pull request's page, over HTTP"]
+  daemon --- herdr["Herdr panels: run the priory commands"]
+  daemon --- cli["Command line: priory desk, priory answer"]
+  subgraph several["Several machines, one shared log"]
+    a["Runner a: a daemon, its agents and its own state file"] <--> shared["The log: Postgres, reached by every machine"]
+    shared <--> b["Runner b: a daemon, its agents and its own state file"]
+    shared <--> view["A view-only machine: lists every runner's asks and tasks, and runs nothing"]
+  end

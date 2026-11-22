@@ -21,7 +21,7 @@ a person approved that step, unless the factory marks it autonomous with a reaso
 
 - The `ask` tool takes `question`, `options`, `recommendation` and `tradeoff`
   (`crates/priory-core/src/tools.rs:636`, `:657`, `:670`). It has no confidence and no reason for
-  the recommendation beyond the trade-off ([tools.md](../daemon/tools.md)).
+  the recommendation beyond the trade-off ([tools.md](../reference/tools.md#askquestion-options-recommendation-tradeoff-title-text-whatwaits-nextaction-command)).
 - A trigger's `intervention` has two values, `plan` and `hands-off`
   (`crates/priory-factory/src/factory.rs:872`, `:1074`). Unset, every ask goes to a person
   ([triggers.md](../reference/triggers.md#intervention-and-lead)).

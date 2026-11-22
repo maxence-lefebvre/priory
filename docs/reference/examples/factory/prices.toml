@@ -1,0 +1,12 @@
+# Dollars per million tokens of each kind, by the model name the transcript gives.
+["claude-sonnet-5-5"]
+input = 3.0
+output = 15.0
+cache_read = 0.3
+cache_write = 3.75
+
+["claude-haiku-5-5"]
+input = 1.0
+output = 5.0
+cache_read = 0.1
+cache_write = 1.25

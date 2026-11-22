@@ -139,7 +139,7 @@ Each inbox entry gets one of these outcomes:
 | `priory.task.requested.cli`, with an active task owning its key, at a model step whose agent started or waiting on a step's ask | `said` | that task, which hears the text as `priory say` sends it |
 | `priory.task.requested.cli`, with an active task owning its key whose agent has not started | `kept` | that task, which reads the text in its first prompt |
 | `github.pull_request.review_request_removed` with `reviewed: false`, with an active task whose key is its review key | `withdrew` | that task, now `dropped`, its live run ended |
-| Any other, with an active task asleep at a model step subscribing to a resource it names, that fires no wait | `woke` | that task, now `ready` (see [tools.md](tools.md#subscribeon-and-unsubscribeon)) |
+| Any other, with an active task asleep at a model step subscribing to a resource it names, that fires no wait | `woke` | that task, now `ready` (see [Subscriptions in tools.md](tools.md#subscriptions)) |
 | Any other, with an active task owning a resource it names | `kept` | that task                   |
 | `factory.task.requested`, no active task  | `created` | a new task, `queued` at its workflow's start |
 | `factory.task.requested`, malformed       | `ignored` | none                                         |
@@ -260,7 +260,7 @@ What happens to a `kept` message depends on the task's state:
 
 - For a `running` task, the daemon also queues an outbox prompt with the message, so the agent reads
   it after its current turn. Until then, for feedback, the agent's `result`, `ask` and `wait` are
-  refused (see [tools.md](tools.md#the-tools)).
+  refused (see [Ending a turn](tools.md#ending-a-turn)).
 - If the message satisfies the task's open wait, the wait fires in any active state (see
   [waits.md](waits.md)). An asleep task wakes. A ready, blocked or held task keeps its state, and
   its next run gets the prompt.
@@ -268,11 +268,11 @@ What happens to a `kept` message depends on the task's state:
   task at a model step wakes with it, and the outcome becomes `woke`. The subscription to the task's
   own key takes only feedback, closes, Linear state changes, `linear.issue.updated` edits and
   `linear.issue.left` (see
-  [tools.md](tools.md#subscribeon-and-unsubscribeon)).
+  [Subscriptions in tools.md](tools.md#subscriptions)).
   Another active task that subscribes to
   it gets it too: a prompt of its own while it runs, a wake while it sleeps at a model step, or
   else the event kept for its next run, as this list says for the first task (see
-  [tools.md](tools.md#subscribeon-and-unsubscribeon)).
+  [Subscriptions in tools.md](tools.md#subscriptions)).
 - For a task that waits on a step's ask, where a person decides and no agent runs, a message of
   the kinds the task's own key takes, and not the agent's own, is added to that ask as its next
   revision: `While this waited: <who> on <subject>: <first line> <url>`, each part cut at 200
@@ -347,7 +347,7 @@ The task is `ready`, so its next run resumes the session of the step's agent. Th
 
 A prompt that carries feedback, on a reopen or any wake, ends with the rule to sort each item as
 `trivial`, `nothing-to-do` or `persons-call`, and the result records the classes (see [Review
-feedback](tools.md#review-feedback)).
+feedback](../reference/tools.md#review-feedback)).
 
 Limits:
 

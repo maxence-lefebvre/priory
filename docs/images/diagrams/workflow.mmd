@@ -1,0 +1,16 @@
+---
+title: The implement workflow of GETTING_STARTED.md, as priory draw and Flows show it
+---
+flowchart TD
+  %% The SVG draws open-pr as an octagon with a padlock, a model's edges dashed, a person's thick and solid, and code's thin and dashed, as Flows does.
+  implement["implement: model step"]
+  approve[/"approve-pr: human step"/]
+  open{{"open-pr: code step, irreversible, runs only after a person approved it"}}
+  done(["done"])
+  stop(["stop"])
+  implement -. "passed (a model decides)" .-> approve
+  implement -. "failed (a model decides)" .-> stop
+  approve == "open (a person decides)" ==> open
+  approve == "stop (a person decides)" ==> stop
+  open -- "opened (code decides)" --> done
+  open -- "failed (code decides)" --> stop

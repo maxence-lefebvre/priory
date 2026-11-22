@@ -86,7 +86,8 @@ any task: a stop never admits a run into room the machine lacks.
 
 ### What is never stopped
 
-The daemon never marks these runs, and withdraws a mark it finds on one at the turn end:
+The daemon never marks these runs, and withdraws a mark it finds on one at the turn end. A
+[spend cap](spend.md#held-with-one-ask) never ends a run of the first four rows either:
 
 | The run | Why |
 | ------- | --- |

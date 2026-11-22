@@ -24,6 +24,13 @@ their hooks.
 mirrors every runner's asks and tasks and serves them, and runs nothing (see
 [runners.md](runners.md#a-machine-that-only-views)).
 
+## The pieces
+
+The drawing shows the intake, the log, the daemon, the agents and the views on one machine. Under
+them, it shows several machines that share one log, which [runners.md](runners.md) explains.
+
+![Priory's pieces. On one machine, the intake polls GitHub, Linear, Slack and schedules and publishes on the log, one SQLite file. The daemon reads the log, takes webhooks and starts agents, Claude Code or Codex, in tmux and a git worktree. Four views read the state and send answers: the web view, the GitHub extension, the Herdr panels and the command line. On several machines, runner a and runner b each hold a daemon, its agents and its own state file, and share one Postgres log with a view-only machine that runs nothing.](../images/diagrams/pieces.svg)
+
 ## State
 
 The daemon keeps its state in one SQLite file, which `PRIORY_DB` names. It holds the inbox, tasks,
@@ -85,8 +92,9 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [desk.md](desk.md): `priory desk`, reports and `priory post`, resume, cancel, revive, snooze, say,
   pause, and `priory seen` for Since you looked.
 - [sweep.md](sweep.md): worktree removal, retiring asleep tasks, sweep scripts and the sweeper.
-- [tools.md](tools.md): the MCP tools, proofs and `priory gate`, moving between steps, code steps,
-  the `run` action and approvals.
+- [tools.md](tools.md): how a run uses the MCP tools: ending a turn, subscriptions, proofs and
+  `priory gate`, moving between steps, intervention, code steps, the `run` action and approvals.
+  [MCP tools](../reference/tools.md) lists each tool.
 - [waits.md](waits.md): asks and answers, wait conditions, and the checks gate before `done`.
 - [decisions.md](decisions.md): decision models, the triage model that settles feedback which asks
   the agent for nothing, `priory calibrate`, and the fallback.

@@ -120,7 +120,7 @@ main { min-width: 0; padding: var(--space-6) var(--space-8) var(--space-8); outl
 /* Reading */
 .prose { max-width: var(--measure); font: var(--type-read) var(--font-ui); color: var(--text); }
 .prose:has(.tbl) { max-width: none; }
-.prose:has(.tbl) > :not(.tbl, pre, h2, h3) { max-width: var(--measure); }
+.prose:has(.tbl) > :not(.tbl, pre, h2, h3, p:has(img[src*="images/diagrams/"])) { max-width: var(--measure); }
 .prose > * + * { margin-top: var(--space-4); }
 .prose p, .prose ul, .prose ol { margin-bottom: 0; }
 .prose h1 { font: 700 var(--type-doc-title) var(--font-display); font-stretch: var(--display-stretch); letter-spacing: -0.02em; margin: var(--space-3) 0 var(--space-4); text-wrap: balance; }
@@ -143,8 +143,12 @@ main pre .copy { position: absolute; top: var(--space-1); right: var(--space-1);
 main pre .copy:hover { background: rgb(255 255 255 / 0.08); color: var(--term-fg); }
 .prose blockquote { margin-left: 0; padding: var(--space-3) var(--space-4); background: var(--action-soft); border-radius: var(--radius-md); }
 .prose img { max-width: 100%; height: auto; border-radius: var(--radius-md); }
+/* A diagram keeps its drawn size so its labels stay legible: a narrow screen scrolls it sideways. */
+.diagram, .prose p:has(img[src*="images/diagrams/"]) { overflow-x: auto; max-width: none; }
+.home .sec .diagram img, .prose img[src*="images/diagrams/"] { vertical-align: top; width: 680px; max-width: none; height: auto; border: 0; border-radius: var(--radius-md); }
+@media (min-width: 1280px) { .prose p:has(img[src*="images/diagrams/"]) { margin-right: min(0px, var(--measure) - 680px); } }
 /* mdBook wraps each image in a zoom checkbox with a second copy; the design shows the image once. */
-.checkbox-img, .checkbox-label img + img { display: none; }
+.checkbox-img, .checkbox-label .img-wrapper { display: none; }
 .checkbox-label { display: block; }
 .prose hr { border: 0; border-top: 1px solid var(--line); }
 

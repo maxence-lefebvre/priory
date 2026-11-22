@@ -81,6 +81,13 @@ class Chapters(unittest.TestCase):
         adapters = dict(build.chapters())["Adapters"]
         self.assertEqual(adapters, ["docs/adapters/herdr.md", "docs/adapters/github.md"])
 
+    def test_the_split_pages_sit_in_their_diataxis_groups(self):
+        groups = dict(build.chapters())
+        self.assertIn("docs/installing-the-herdr-adapter.md", groups["How-to guides"])
+        self.assertIn("docs/reference/herdr-panels.md", groups["Reference"])
+        self.assertIn("docs/reference/tools.md", groups["Reference"])
+        self.assertIn("docs/daemon/tools.md", groups["How it works"])
+
     def test_home_includes_every_section_it_names(self):
         home = build.home(PAGES)
         self.assertNotIn("<!-- include", home)

@@ -12,7 +12,7 @@ that come next.
 Before the daemon routes an event, it removes any `decided` field the event arrived with: only
 the daemon marks an item. Then it asks the triage model when all of these hold:
 
-- the event is a feedback item the agent would sort (see [tools.md](tools.md)): a review that is
+- the event is a feedback item the agent would sort (see [Review feedback](../reference/tools.md#review-feedback)): a review that is
   not an approval or a dismissal, a pull request comment, a review thread comment, an issue
   comment or a Linear comment, not written by the factory's own login;
 - its author is not an outsider (see [routing.md](routing.md));
