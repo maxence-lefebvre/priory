@@ -49,6 +49,10 @@ moves the task, since a move resets the count. Then:
 | Over it, and the turn sent no result | Ends the run as `budget` and fails the task: `step <id> spent $<n>, over its budget of $<b>` |
 | The transcript gave no tokens, or `prices.toml` has no price for its model | Ends the run as `budget` and fails the task: `step <id> has a budget, and run <n>'s cost is unknown: price missing for <model>`, or `: its transcript gave no tokens` |
 
+A budget bounds one step and fails the task, so nothing waits on a person at night. A
+[spend cap](spend.md) bounds a task, a trigger, a lane or the factory, and holds the task with an
+ask. Both can apply: the budget is checked at the turn end, and the caps between turns.
+
 The amount shows cents, or six decimals when cents would hide that it passed the budget. A failed
 task gets no repair: the budget would stop the restarted run too. The check runs at turn ends, so
 one turn can pass the budget before the daemon sees it. The step's `timeout` bounds that turn.
