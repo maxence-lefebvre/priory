@@ -24,20 +24,25 @@ fn waiting(db: &Connection, scope: &str, value: &dyn ToSql) -> rusqlite::Result<
 }
 
 /// Why the review limit holds `task`, a task whose first run has not started, if it does: its
-/// batch's pull requests count first, then its lane's.
+/// batch's pull requests count first, then its lane's. A task of `first_band` never waits.
 pub(crate) fn waits(
     db: &Connection,
     limit: Option<NonZeroU32>,
+    first_band: Option<&str>,
     task: i64,
 ) -> rusqlite::Result<Option<String>> {
     let Some(limit) = limit else {
         return Ok(None);
     };
-    let (lane, batch): (Option<String>, Option<i64>) = db.query_row(
-        "SELECT lane, batch FROM tasks WHERE id = ?1",
+    let (lane, batch, band): (Option<String>, Option<i64>, Option<String>) = db.query_row(
+        "SELECT lane, batch, band FROM tasks WHERE id = ?1",
         params![task],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
+    // An incident fix does not wait for unrelated reviews.
+    if band.is_some() && band.as_deref() == first_band {
+        return Ok(None);
+    }
     if let Some(batch) = batch {
         let count = waiting(db, "tasks.batch = ?1", &batch)?;
         if count >= limit.get() {

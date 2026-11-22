@@ -214,6 +214,9 @@ of another lane or batch starts as usual. It starts on the first tick after a me
 woken task brings the count under the limit. A batch's entries are thus spread over the days its
 person takes to review, instead of all waiting at once.
 
+A task of the factory's first band, `blocker` unless `factory.toml` names its own `bands`, starts
+whatever the count. An incident fix does not wait for an unrelated review. Lower bands still wait.
+
 The limit holds only a task's first run, as a pause does. A `ready` task, woken by an answer, a
 fired wait or a `say`, or resumed, revived or stopped for room, starts whatever the count, since it
 works on a pull request that already exists. A running task carries on.
