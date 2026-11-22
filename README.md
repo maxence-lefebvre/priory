@@ -50,7 +50,7 @@ every poll:
   you to raise the cap or stop it. See [docs/daemon/spend.md](docs/daemon/spend.md).
 - Agents share [skills and memories](docs/daemon/skills.md) kept in git, in the factory, a kit
   repository or a memories repository. One that names the files it is about joins a Claude Code
-  run's context when the run touches such a file. An agent proposes a memory, or a nightly dream
+  run's context when the run reads, edits or creates such a file. An agent proposes a memory, or a nightly dream
   proposes memories from the day's tasks, and a person accepts each one.
 - [Scorers](docs/daemon/score.md) grade finished runs, and a step can use one as a gate that
   refuses a result. A judge scorer counts only once it agrees with a person's labels, and a

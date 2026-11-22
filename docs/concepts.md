@@ -90,8 +90,9 @@ the cap or stop it. See [docs/daemon/spend.md](daemon/spend.md).
 **Skills and memories.** A skill is a folder of instructions an agent follows when its description
 fits the task. A memory is one fact in one file. A run gets the factory's skills and memories,
 and those of two optional git repositories: a kit of skills and a memories repository. An agent
-can name the skills its runs get. When a Claude Code run touches a file that matches the `paths`
-of a skill or memory, Priory adds that skill or memory to the run's context. An agent
+can name the skills its runs get. When a Claude Code run reads, edits or creates a file that
+matches the `paths` of a skill or memory, Priory adds that skill or memory to the run's context.
+An agent
 proposes a memory with `remember`, a [nightly dream](setting-up-a-nightly-dream.md) proposes
 memories from the day's tasks, and a person accepts each one before other tasks get it. See
 [docs/daemon/skills.md](daemon/skills.md).
