@@ -186,8 +186,13 @@ it answers, the server replaces with `[redacted]`:
 The server looks for secrets in the text without its colour codes, so a code inside a secret does
 not split it; a code that sat inside a hidden secret moves after `[redacted]`. A replacement can
 join its neighbours into a secret again, so the server repeats until no secret shows. When one still shows after 8 passes, it sends no screen. Like every reply, a screen carries
-`Cache-Control: no-store`, and the server writes no screen to its log or the trace. Redaction is best effort: a secret split across two rows, a token in another shape or a
-password in plain words gets through. Whoever holds the token may read what the agent's screen
+`Cache-Control: no-store`, and the server writes no screen to its log or the trace.
+
+A row exactly as wide as the pane wrapped onto the next one, so the server also looks for secrets
+with that row joined to the next, and a secret that wraps is hidden whole. Rows stay rows.
+
+Redaction is best effort: a secret the application itself broke across two rows, a wrapped row
+that holds wide characters, a token in another shape or a password in plain words gets through. Whoever holds the token may read what the agent's screen
 shows. A factory that does not want that sets [`[serve] terminal = "off"`](../reference/factory.md#serve).
 
 tmux can hang. So each screen has its own 2 second deadline, and at most 2 are read at once,

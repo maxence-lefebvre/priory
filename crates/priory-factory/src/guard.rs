@@ -1202,16 +1202,23 @@ fn unwrap(words: &[String], depth: usize, found: &mut Vec<Vec<String>>) {
             "env" => {
                 let mut index = 0;
                 while let Some(arg) = rest.get(index) {
-                    if arg == "-S" || arg == "--split-string" {
-                        let mut script = rest.get(index + 1).cloned().unwrap_or_default();
-                        for word in rest.iter().skip(index + 2) {
+                    let (value, after) = if arg == "-S" || arg == "--split-string" {
+                        (rest.get(index + 1).map(String::as_str), index + 2)
+                    } else if let Some(value) = arg
+                        .strip_prefix("--split-string=")
+                        .or_else(|| arg.strip_prefix("-S").filter(|value| !value.is_empty()))
+                    {
+                        (Some(value), index + 1)
+                    } else {
+                        (None, 0)
+                    };
+                    if after > 0 {
+                        let mut script = value.unwrap_or_default().to_owned();
+                        for word in rest.iter().skip(after) {
                             script.push(' ');
-                            script.push_str(word);
+                            script.push_str(&single_quoted(word));
                         }
                         return parse(&script, depth + 1, found);
-                    }
-                    if let Some(script) = arg.strip_prefix("--split-string=") {
-                        return parse(script, depth + 1, found);
                     }
                     if ["-u", "-C", "--unset", "--chdir"].contains(&arg.as_str()) {
                         index += 2;
@@ -1281,6 +1288,11 @@ fn unwrap(words: &[String], depth: usize, found: &mut Vec<Vec<String>>) {
 }
 
 /// How many leading words of `args` are options, counting the values of those in `values`.
+/// `word` as one shell word, so `env -S` hands it on as the separate argument it was.
+fn single_quoted(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
+}
+
 fn options(args: &[String], values: &[&str]) -> usize {
     let mut index = 0;
     while let Some(arg) = args.get(index) {
@@ -1351,6 +1363,9 @@ mod tests {
             "eval 'gh pr merge 12'",
             "sh -ec \"gh pr merge 12\"",
             "env -S 'gh pr merge 12'",
+            "env --split-string=gh pr merge 12",
+            "env --split-string='gh pr' merge 12",
+            "env -Sgh pr merge 12",
             "if true; then gh pr merge 12; fi",
         ] {
             assert_eq!(hit(command).as_deref(), Some("gh-pr-merge"), "{command}");
@@ -1982,10 +1997,6 @@ mod tests {
     }
 
     use proptest::prelude::*;
-
-    fn single_quoted(script: &str) -> String {
-        format!("'{}'", script.replace('\'', "'\\''"))
-    }
 
     fn double_quoted(script: &str) -> String {
         let escaped: String = script

@@ -830,18 +830,23 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
     }))
 }
 
-/// Writes `files`, by their paths inside the plugin, into `<dir>/plugin` unless that folder exists,
-/// and returns it.
+/// Writes `files`, by their paths inside the plugin, into `<dir>/plugin` unless that folder holds
+/// them already, and returns it.
 pub fn plugin(dir: &Path, files: &[(PathBuf, &[u8])]) -> Result<PathBuf, String> {
     write_once(dir, "plugin", files)
 }
 
-/// Writes `files`, by their paths inside `folder`, into `<dir>/<folder>` unless that folder exists,
-/// and returns it. The files go to a staging folder renamed into place, so a crash never leaves a
-/// half-written snapshot for a later run.
+/// Writes `files`, by their paths inside `folder`, into `<dir>/<folder>` unless that folder holds
+/// exactly them, read-only, and returns it. The files go to a staging folder renamed into place,
+/// so a crash never leaves a half-written snapshot for a later run, and a snapshot a run edited is
+/// replaced before another run reads it.
 pub fn write_once(dir: &Path, folder: &str, files: &[(PathBuf, &[u8])]) -> Result<PathBuf, String> {
     let target = dir.join(folder);
-    if target.is_dir() {
+    let wanted: Files = files
+        .iter()
+        .map(|(path, bytes)| (Path::new(folder).join(path), bytes.to_vec()))
+        .collect();
+    if sealed(dir).as_ref() == Some(&wanted) {
         return Ok(target);
     }
     let name = dir
@@ -852,7 +857,7 @@ pub fn write_once(dir: &Path, folder: &str, files: &[(PathBuf, &[u8])]) -> Resul
         name.unwrap_or_default(),
         std::process::id()
     ));
-    let _ = fs::remove_dir_all(&staging);
+    remove_sealed(&staging);
     let written = files
         .iter()
         .try_for_each(|(path, bytes)| {
@@ -860,13 +865,89 @@ pub fn write_once(dir: &Path, folder: &str, files: &[(PathBuf, &[u8])]) -> Resul
             fs::create_dir_all(file.parent().expect("the file has a parent"))?;
             fs::write(file, bytes)
         })
-        .and_then(|()| fs::rename(&staging, dir));
-    let _ = fs::remove_dir_all(&staging);
+        .and_then(|()| seal(&staging))
+        .and_then(|()| replace(&staging, dir));
+    remove_sealed(&staging);
     match written {
         Ok(()) => Ok(target),
-        Err(_) if target.is_dir() => Ok(target),
+        Err(_) if sealed(dir).as_ref() == Some(&wanted) => Ok(target),
         Err(error) => Err(format!("{}: {error}", target.display())),
     }
+}
+
+/// Every file under a folder, by its path inside it, with its bytes.
+type Files = std::collections::BTreeMap<PathBuf, Vec<u8>>;
+
+/// The files under `dir`, or none when `dir`, a folder or a file under it has a write bit, or
+/// it holds anything but folders and files.
+fn sealed(dir: &Path) -> Option<Files> {
+    let mut files = Files::new();
+    let mut folders = vec![dir.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        let meta = fs::symlink_metadata(&folder).ok()?;
+        if !meta.is_dir() || meta.permissions().mode() & 0o222 != 0 {
+            return None;
+        }
+        for entry in fs::read_dir(&folder).ok()? {
+            let path = entry.ok()?.path();
+            let meta = fs::symlink_metadata(&path).ok()?;
+            if meta.is_dir() {
+                folders.push(path);
+            } else if meta.is_file() && meta.permissions().mode() & 0o222 == 0 {
+                let inside = path.strip_prefix(dir).ok()?.to_path_buf();
+                files.insert(inside, fs::read(&path).ok()?);
+            } else {
+                return None;
+            }
+        }
+    }
+    Some(files)
+}
+
+/// Makes every file under `dir` 0444 and every folder 0555, `dir` included, so a run's tools
+/// cannot write to it without changing its mode first.
+fn seal(dir: &Path) -> std::io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        if fs::symlink_metadata(&path)?.is_dir() {
+            seal(&path)?;
+        } else {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o444))?;
+        }
+    }
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o555))
+}
+
+/// Removes `dir` and everything under it, a sealed folder included.
+fn remove_sealed(dir: &Path) {
+    let mut folders = vec![dir.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        if !fs::symlink_metadata(&folder).is_ok_and(|meta| meta.is_dir()) {
+            continue;
+        }
+        let _ = fs::set_permissions(&folder, fs::Permissions::from_mode(0o755));
+        if let Ok(entries) = fs::read_dir(&folder) {
+            folders.extend(entries.filter_map(|entry| entry.ok().map(|entry| entry.path())));
+        }
+    }
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// Renames `staging` to `target`, and moves aside and removes what `target` held before.
+fn replace(staging: &Path, target: &Path) -> std::io::Result<()> {
+    if fs::symlink_metadata(target).is_err() {
+        return fs::rename(staging, target);
+    }
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let old = target.with_file_name(format!(".{name}.{}.old", std::process::id()));
+    remove_sealed(&old);
+    fs::rename(target, &old)?;
+    let renamed = fs::rename(staging, target);
+    remove_sealed(&old);
+    renamed
 }
 
 /// Runs git `args` and returns its stdout, or an error naming `what` with git's first line of
@@ -909,17 +990,15 @@ pub fn kit_fetch(mirror: &Path, repo: &str, reference: &str) -> Result<String, S
     )
 }
 
-/// Checks `commit` of the bare mirror `mirror` out into `<dir>/<commit>` unless that folder
-/// exists, and returns it. It goes to a staging folder renamed into place, so a crash never leaves
-/// half a checkout, and a symbolic link becomes a file that holds its target.
+/// Checks `commit` of the bare mirror `mirror` out into `<dir>/<commit>`, read-only, unless that
+/// folder holds the commit's files already, and returns it. It goes to a staging folder renamed
+/// into place, so a crash never leaves half a checkout, and a symbolic link becomes a file that
+/// holds its target. An edited checkout is replaced before its files are read again.
 pub fn kit_checkout(mirror: &Path, dir: &Path, commit: &str) -> Result<PathBuf, String> {
     let target = dir.join(commit);
-    if target.is_dir() {
-        return Ok(target);
-    }
     let staging = dir.join(format!(".{commit}.{}", std::process::id()));
     let index = dir.join(format!(".{commit}.{}.index", std::process::id()));
-    let _ = fs::remove_dir_all(&staging);
+    remove_sealed(&staging);
     fs::create_dir_all(&staging).map_err(|error| format!("{}: {error}", staging.display()))?;
     let git = |args: &[&str]| {
         let mut command = Command::new("git");
@@ -933,6 +1012,7 @@ pub fn kit_checkout(mirror: &Path, dir: &Path, commit: &str) -> Result<PathBuf, 
             .env("GIT_INDEX_FILE", &index);
         command
     };
+    let at = |error: std::io::Error| format!("{}: {error}", target.display());
     let written = kit_git("git read-tree", &mut git(&["read-tree", commit]))
         .and_then(|_| {
             kit_git(
@@ -940,14 +1020,19 @@ pub fn kit_checkout(mirror: &Path, dir: &Path, commit: &str) -> Result<PathBuf, 
                 &mut git(&["checkout-index", "-a", "-f"]),
             )
         })
-        .and_then(|_| {
-            fs::rename(&staging, &target).map_err(|error| format!("{}: {error}", target.display()))
+        .and_then(|_| seal(&staging).map_err(at))
+        .and_then(|()| {
+            let kept = sealed(&target);
+            if kept.is_some() && kept == sealed(&staging) {
+                return Ok(());
+            }
+            replace(&staging, &target).map_err(at)
         });
     let _ = fs::remove_file(&index);
-    let _ = fs::remove_dir_all(&staging);
+    remove_sealed(&staging);
     match written {
         Ok(()) => Ok(target),
-        Err(_) if target.is_dir() => Ok(target),
+        Err(_) if sealed(&target).is_some() => Ok(target),
         Err(error) => Err(error),
     }
 }

@@ -1168,8 +1168,8 @@ Schema: [`factory.intake.baseline.json`](../schemas/events/factory.intake.baseli
 
 A factory with two or more runner files has its daemons publish these on `factory.intake` too.
 `priory give`, `priory answer RUNNER:ASK`, `priory dismiss RUNNER:ASK` and the answer and dismiss
-endpoints of `priory serve` publish three of them. Every runner reads them all. See
-[runners.md](../daemon/runners.md).
+endpoints of `priory serve` publish three of them. Every runner reads them all, and records one
+whose `runner` has no file in `runners/` as `refused`. See [runners.md](../daemon/runners.md).
 
 ### `priory.task.claimed`
 
