@@ -88,7 +88,13 @@ pub(crate) fn pre_review(
     if refused {
         return Ok(None);
     }
-    let layer = crate::memories::layer(tx, Some(task))?;
+    // The task's own lessons count, but never its forgets nor rewrites: its agent writes those.
+    let mut layer = crate::memories::layer(tx, None)?;
+    layer.extend(
+        crate::memories::layer(tx, Some(task))?
+            .into_iter()
+            .filter(|(_, memory)| memory.as_ref().is_some_and(|memory| memory.step.is_some())),
+    );
     let lessons =
         crate::kit::sources(factory, kit, &layer, None).lessons(&format!("{workflow}/{target}"));
     Ok((!lessons.is_empty()).then(|| (name.to_owned(), lessons)))
@@ -416,7 +422,8 @@ fn apply(
         .map(|(score, _)| format!("{}: {}", score.scorer, score.reason))
         .collect();
     // A person reads the approval ask after a pre-review anyway, so an uncalibrated one asks nothing.
-    let reviewer = trace.factory.pre_review();
+    // Only a gate that holds lessons is a pre-review: the same judge in another gate still holds.
+    let reviewer = lessons.as_ref().and(trace.factory.pre_review());
     let uncalibrated: Vec<String> = graded
         .iter()
         .filter(|(score, counts)| !counts && reviewer != Some(score.scorer.as_str()))

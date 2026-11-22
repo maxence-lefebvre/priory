@@ -409,10 +409,10 @@ fn result(
             &outcome,
             factory,
             kit,
-        )?;
-        if let Some((name, _)) = &lessons
-            && !scorers.contains(name)
-        {
+        )?
+        // A step's own gate on the judge keeps its ordinary role, and so its calibration ask.
+        .filter(|(name, _)| !scorers.contains(name));
+        if let Some((name, _)) = &lessons {
             scorers.push(name.clone());
         }
         if !scorers.is_empty() {
