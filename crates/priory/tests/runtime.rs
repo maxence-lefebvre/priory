@@ -28325,7 +28325,17 @@ fn a_turn_over_its_steps_budget_with_no_result_fails_the_task_and_one_under_it_g
 
 #[test]
 fn a_turn_over_its_budget_that_sent_its_result_moves_the_task_and_its_record_carries_the_overrun() {
-    let setup = Setup::spend("budget-result", "0.01", DEAR, &[result("passed")]);
+    // The turn's tokens arrive after its result, and the daemon reads them while its turn holds:
+    // a run that sent its result is left to its turn end.
+    let setup = Setup::spend_held(
+        "budget-result",
+        "0.01",
+        DEAR,
+        &[result("passed")],
+        &["late-tokens", "hold-stop"],
+    );
+    setup.written("fake/transcript.jsonl");
+    setup.release("hold-stop");
     setup.until_task("done");
     let ended: Vec<serde_json::Value> = setup
         .trace()
@@ -28377,6 +28387,55 @@ fn a_resumed_run_counts_the_steps_earlier_turns_toward_its_budget() {
         "step implement spent $0.022600, over its budget of $0.02"
     );
     assert_eq!(setup.rows("runs").len(), 2);
+}
+
+#[test]
+fn a_turn_that_passes_its_steps_budget_ends_before_its_turn_does() {
+    // The fake writes the turn's tokens, then holds before its tool call: the turn never ends.
+    let over = Setup::spend_held(
+        "budget-in-turn",
+        "0.01",
+        DEAR,
+        &[result("passed")],
+        &["hold-call"],
+    );
+    assert_eq!(
+        over.until_task("failed"),
+        "step implement spent $0.011200, over its budget of $0.01"
+    );
+    assert_eq!(over.rows("runs")[0][7], "budget");
+    assert_eq!(
+        fs::read_to_string(over.dir.join("fake/calls"))
+            .unwrap()
+            .lines()
+            .count(),
+        1,
+        "the turn never reached its result"
+    );
+
+    let other = "[other-model]\ninput = 1.0\noutput = 1.0\ncache_read = 1.0\ncache_write = 1.0\n";
+    let unpriced = Setup::spend_held(
+        "budget-in-turn-unpriced",
+        "1.00",
+        other,
+        &[result("passed")],
+        &["hold-call"],
+    );
+    assert_eq!(
+        unpriced.until_task("failed"),
+        "step implement has a budget, and run 1's cost is unknown: price missing for claude-fake-5"
+    );
+
+    let under = Setup::spend_held(
+        "budget-in-turn-under",
+        "1.00",
+        DEAR,
+        &[result("passed")],
+        &["hold-call"],
+    );
+    under.written("fake/submitted");
+    under.release("hold-call");
+    under.until_task("done");
 }
 
 #[test]

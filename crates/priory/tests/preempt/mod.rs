@@ -781,8 +781,13 @@ fn a_marked_run_over_its_steps_budget_fails_rather_than_stopping() {
     let mut setup = Setup::urgent("preempt-budget");
     setup.workflow("budgeted", &budgeted("0.01"));
     fs::write(setup.dir.join("factory/prices.toml"), DEAR).unwrap();
-    marked_with(&mut setup, on("budgeted", later(42)));
-
+    // The daemon reads the turn's tokens before its end, so the budget may end the run before
+    // the urgent wake marks it: either way it fails.
+    setup.hold("hold-stop");
+    setup.publish(&on("budgeted", later(42)));
+    setup.go();
+    setup.written("fake/submitted");
+    setup.publish(&blocker(43));
     setup.release("hold-stop");
 
     setup.until("tasks", |rows| {
