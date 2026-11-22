@@ -1,0 +1,25 @@
+---
+title: Two runners sharing one log
+---
+sequenceDiagram
+  participant A as Runner a
+  participant L as The log
+  participant B as Runner b
+  Note over A,B: Claiming a task
+  Note over L: A task request lands. Both runners read it.
+  A->>L: claims the key
+  B->>L: claims the key
+  Note over L: The first claim in the log wins: runner a owns the task.
+  Note over A,B: Holding it
+  A->>L: alive, once a minute
+  A->>L: hold: waiting, no run started yet
+  A->>L: hold: kept, before the first run
+  Note over A: a starts the run once it reads kept back from the log.
+  Note over A,B: Runner a is cut off
+  Note over A: Its kept tasks go on. Its waiting tasks stay unstarted.
+  Note over L: The lease of a ends 30 minutes after its last alive message.
+  B->>L: claims a's waiting tasks
+  Note over B: b takes them over and runs them. Kept tasks stay with a.
+  Note over A,B: Runner a is back
+  L->>A: reads the log before any run
+  Note over A: a drops each task that moved to runner b.

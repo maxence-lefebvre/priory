@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 470" width="680" height="470" role="img" aria-labelledby="title desc">
+  <title id="title">The implement workflow, step by step</title>
+  <desc id="desc">Three steps from top to bottom. implement is a model step: its outcome passed leads to approve-pr, and failed leads to stop. approve-pr is a human step: a person answers open, which leads to open-pr, or stop. open-pr is a code step with a padlock, because it is irreversible and runs only after approve-pr approved it: opened leads to done, and failed leads to stop. Dashed arrows are a model's decisions, thick solid arrows a person's, and thin dashed arrows code's.</desc>
+  <style>
+    svg { --surface: #FFFFFF; --raised: #ECECF2; --line: #E3E3EA; --edge: #85858F; --text: #0B0B14; --text-2: #3C3C46; --text-3: #686872; --action: #5856D6; --action-soft: #ECEBFC; --action-text: #4F4DC9; --danger: #C4161C; }
+    @media (prefers-color-scheme: dark) {
+      svg { --surface: #1C1C1E; --raised: #2C2C2E; --line: #2C2C30; --edge: #6E6E78; --text: #FFFFFF; --text-2: #D1D1D6; --text-3: #98989F; --action: #5E5CE6; --action-soft: #24234A; --action-text: #9D9BFF; --danger: #FF6961; }
+    }
+    text { font: 12px "Mona Sans", system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--text-2); }
+    .id { font: 500 14px "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace; fill: var(--text); }
+    .mid { text-anchor: middle; }
+    .bg { fill: var(--surface); stroke: var(--line); }
+    .box { fill: var(--surface); stroke: var(--edge); stroke-width: 1.5; }
+    .person { fill: var(--action-soft); stroke: var(--edge); stroke-width: 1.5; }
+    .locked { fill: var(--surface); stroke: var(--danger); stroke-width: 2; }
+    .end { fill: var(--raised); stroke: var(--edge); stroke-width: 1.5; }
+    .lock { fill: none; stroke: var(--danger); stroke-width: 1.5; stroke-linecap: round; }
+    .edge { fill: none; stroke-linejoin: round; }
+    .model { stroke: var(--action); stroke-width: 2; stroke-dasharray: 9 5; }
+    .human { stroke: var(--text); stroke-width: 3.5; }
+    .code { stroke: var(--edge); stroke-width: 1.5; stroke-dasharray: 6 2; }
+    #tip-model { fill: var(--action); } #tip-human { fill: var(--text); } #tip-code { fill: var(--edge); }
+  </style>
+  <defs>
+    <marker id="tip-model" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="11" markerHeight="11" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="tip-human" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="13" markerHeight="13" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="tip-code" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto"><path d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="679" height="469" rx="12"/>
+
+  <path class="edge model" marker-end="url(#tip-model)" d="M250,88 V157"/>
+  <text x="262" y="128">passed</text>
+  <path class="edge model" marker-end="url(#tip-model)" d="M350,58 H548 Q560,58 560,70 V293"/>
+  <text x="370" y="49">failed</text>
+  <path class="edge human" marker-end="url(#tip-human)" d="M250,218 V287"/>
+  <text x="264" y="258">open</text>
+  <path class="edge human" marker-end="url(#tip-human)" d="M346,188 H508 Q520,188 520,200 V293"/>
+  <text x="370" y="178">stop</text>
+  <path class="edge code" marker-end="url(#tip-code)" d="M250,348 V403"/>
+  <text x="262" y="381">opened</text>
+  <path class="edge code" marker-end="url(#tip-code)" d="M350,318 H469"/>
+  <text x="388" y="309">failed</text>
+
+  <rect class="box" x="150" y="28" width="200" height="60"/>
+  <text class="id mid" x="250" y="55">implement</text>
+  <text class="mid" x="250" y="74">model step</text>
+
+  <path class="person" d="M166,158 H358 L334,218 H142 Z"/>
+  <text class="id mid" x="250" y="185">approve-pr</text>
+  <text class="mid" x="250" y="204">human step</text>
+
+  <path class="locked" d="M164,288 H336 L350,302 V334 L336,348 H164 L150,334 V302 Z"/>
+  <text class="id mid" x="250" y="315">open-pr</text>
+  <text class="mid" x="250" y="334">code step, irreversible</text>
+  <g class="lock" transform="translate(316,299)">
+    <rect x="0" y="6" width="12" height="9" rx="2"/>
+    <path d="M3,6 V4 a3,3 0 0 1 6,0 V6"/>
+  </g>
+
+  <rect class="end" x="180" y="404" width="140" height="48" rx="24"/>
+  <text class="id mid" x="250" y="433">done</text>
+  <rect class="end" x="470" y="294" width="140" height="48" rx="24"/>
+  <text class="id mid" x="540" y="323">stop</text>
+
+  <path class="edge model" d="M400,384 H440"/>
+  <text x="452" y="388">a model decides</text>
+  <path class="edge human" d="M400,406 H440"/>
+  <text x="452" y="410">a person decides</text>
+  <path class="edge code" d="M400,428 H440"/>
+  <text x="452" y="432">code decides</text>
+  <g class="lock" transform="translate(414,440)">
+    <rect x="0" y="6" width="12" height="9" rx="2"/>
+    <path d="M3,6 V4 a3,3 0 0 1 6,0 V6"/>
+  </g>
+  <text x="452" y="454">runs only after a person approved it</text>
+</svg>

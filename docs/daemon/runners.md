@@ -6,6 +6,11 @@ owners through the log, what happens while one is away, and how a person moves a
 and its alternatives are in
 [ADR 0003](../adr/0003-runners-own-tasks-through-claims-and-leases-on-the-shared-log.md).
 
+The drawing follows two runners, `a` and `b`: a claim, the holds, a cut, the takeover of `a`'s
+waiting tasks and the return. The sections below explain each part.
+
+![Two runners, a and b, and the log between them. Both read a task request and claim its key, and the first claim in the log wins, so a owns the task. Runner a publishes an alive message once a minute, the hold waiting, then the hold kept, and starts the first run once it reads kept back. When a is cut off, its kept tasks go on and its waiting tasks stay unstarted. Its lease ends 30 minutes after its last alive message, and b claims its waiting tasks and runs them. Back on the log, a reads it before any run and drops each task that moved to b.](../images/diagrams/runners.svg)
+
 ## When ownership applies
 
 Ownership applies when the factory has two or more runner files. A daemon is the runner named by

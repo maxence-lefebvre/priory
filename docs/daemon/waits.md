@@ -7,6 +7,11 @@ its agent fixes what the checks find before the task ends.
 
 ## Asks and answers
 
+The drawing follows one ask, from the agent's `ask` call to the prompt that carries the answer.
+[Snoozing](desk.md#snooze) the ask is optional.
+
+![The life of an ask, between the agent, the daemon and a person. The agent calls ask with a question, options and a recommendation, and the task sleeps with no process. The desk lists the ask in the web view, Herdr and priory desk. The person can snooze it, say for an hour, and it comes back when the time is up. The person answers with an option or a text at the ask's revision. The first answer stands, and the next run resumes the agent's session and types the answer as a prompt.](../images/diagrams/ask.svg)
+
 `priory asks` prints each open ask: id, task, revision, question, options, then the fields of
 [`ask`](../reference/tools.md#askquestion-options-recommendation-tradeoff-title-text-whatwaits-nextaction-command) and of an outside ask.
 `priory answer <ask> <option-or-text> --revision <n>` sends the answer to the daemon. `--expected`

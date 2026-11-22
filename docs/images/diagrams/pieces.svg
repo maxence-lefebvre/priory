@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 600" width="680" height="600" role="img" aria-labelledby="title desc">
+  <title id="title">Priory's pieces and where they run</title>
+  <desc id="desc">Two drawings. The first shows one machine. GitHub, Linear and Slack feed the intake, which polls them and your schedules. The intake publishes on the log, herdr-bus, one SQLite file. The daemon reads the log, routes events, runs tasks and serves views. Webhooks reach the daemon directly, and it publishes them on the log. The daemon starts agents, Claude Code or Codex, each in tmux and a git worktree. Four views read the daemon's state and send answers: the web view, served over HTTP, also to a phone; the GitHub extension on a pull request's page, over HTTP; the Herdr panels, which run the priory commands; and the command line, with priory desk and priory answer. The second drawing shows several machines sharing one log: runner a and runner b each hold a daemon, its agents and its own state file, and both read and write a Postgres log that every machine reaches. A view-only machine lists every runner's asks and tasks, and runs nothing.</desc>
+  <style>
+    svg { --surface: #FFFFFF; --raised: #ECECF2; --line: #E3E3EA; --edge: #85858F; --text: #0B0B14; --text-2: #3C3C46; --text-3: #686872; --action: #5856D6; --action-soft: #ECEBFC; --action-text: #4F4DC9; --danger: #C4161C; }
+    @media (prefers-color-scheme: dark) {
+      svg { --surface: #1C1C1E; --raised: #2C2C2E; --line: #2C2C30; --edge: #6E6E78; --text: #FFFFFF; --text-2: #D1D1D6; --text-3: #98989F; --action: #5E5CE6; --action-soft: #24234A; --action-text: #9D9BFF; --danger: #FF6961; }
+    }
+    text { font: 12px "Mona Sans", system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--text-2); }
+    .t { font-weight: 600; font-size: 14px; fill: var(--text); }
+    .cap { font-weight: 600; font-size: 13px; fill: var(--text); }
+    .mono { font: 12px "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    .mid { text-anchor: middle; }
+    .end-anchor { text-anchor: end; }
+    .bg { fill: var(--surface); stroke: var(--line); }
+    .box { fill: var(--surface); stroke: var(--edge); stroke-width: 1.5; }
+    .shared { fill: var(--action-soft); stroke: var(--edge); stroke-width: 1.5; }
+    .outside { fill: var(--raised); }
+    .zone { fill: none; stroke: var(--edge); stroke-dasharray: 4 4; }
+    .rule { stroke: var(--edge); stroke-width: 1; }
+    .flow { fill: none; stroke: var(--text-2); stroke-width: 1.5; stroke-linejoin: round; }
+    #tip { fill: var(--text-2); }
+  </style>
+  <defs>
+    <marker id="tip" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+  <rect class="bg" x="0.5" y="0.5" width="679" height="599" rx="12"/>
+
+  <rect class="outside" x="21" y="20" width="180" height="52" rx="8"/>
+  <text class="t mid" x="111" y="42">GitHub, Linear, Slack</text>
+  <text class="mid" x="111" y="60">issues, reviews, messages</text>
+  <rect class="outside" x="318" y="20" width="180" height="52" rx="8"/>
+  <text class="t mid" x="408" y="42">Webhooks</text>
+  <text class="mid" x="408" y="60">Sentry, Figma and others</text>
+  <path class="flow" marker-end="url(#tip)" d="M86,72 V127"/>
+  <path class="flow" marker-end="url(#tip)" d="M408,72 V127"/>
+
+  <rect class="zone" x="8" y="96" width="664" height="118" rx="10"/>
+  <text class="cap end-anchor" x="660" y="116">One machine</text>
+
+  <rect class="box" x="21" y="128" width="130" height="68" rx="8"/>
+  <text class="t mid" x="86" y="152">The intake</text>
+  <text class="mid" x="86" y="170">polls them and</text>
+  <text class="mid" x="86" y="185">your schedules</text>
+  <path class="flow" marker-end="url(#tip)" d="M151,162 H176"/>
+  <rect class="shared" x="177" y="128" width="130" height="68" rx="8"/>
+  <text class="t mid" x="242" y="152">The log</text>
+  <text class="mid" x="242" y="170">herdr-bus: one</text>
+  <text class="mid" x="242" y="185">SQLite file</text>
+  <path class="flow" marker-start="url(#tip)" marker-end="url(#tip)" d="M308,162 H332"/>
+  <rect class="box" x="333" y="128" width="150" height="68" rx="8"/>
+  <text class="t mid" x="408" y="152">The daemon</text>
+  <text class="mid" x="408" y="170">routes events, runs</text>
+  <text class="mid" x="408" y="185">tasks, serves views</text>
+  <path class="flow" marker-start="url(#tip)" marker-end="url(#tip)" d="M484,162 H508"/>
+  <rect class="box" x="509" y="128" width="150" height="68" rx="8"/>
+  <text class="t mid" x="584" y="152">Agents</text>
+  <text class="mid" x="584" y="170">Claude Code or Codex,</text>
+  <text class="mid" x="584" y="185">in tmux and a worktree</text>
+
+  <path class="flow" d="M408,196 V244 M94,262 V252 Q94,244 102,244 H578 Q586,244 586,252 V262 M258,244 V262 M422,244 V262"/>
+  <text x="420" y="234">views read the state and send answers</text>
+
+  <rect class="box" x="20" y="262" width="148" height="76" rx="8"/>
+  <text class="t mid" x="94" y="286">Web view</text>
+  <text class="mid" x="94" y="305">served over HTTP,</text>
+  <text class="mid" x="94" y="321">also to a phone</text>
+  <rect class="box" x="184" y="262" width="148" height="76" rx="8"/>
+  <text class="t mid" x="258" y="286">GitHub extension</text>
+  <text class="mid" x="258" y="305">on a pull request's</text>
+  <text class="mid" x="258" y="321">page, over HTTP</text>
+  <rect class="box" x="348" y="262" width="148" height="76" rx="8"/>
+  <text class="t mid" x="422" y="286">Herdr panels</text>
+  <text class="mid" x="422" y="305">run the priory</text>
+  <text class="mid" x="422" y="321">commands</text>
+  <rect class="box" x="512" y="262" width="148" height="76" rx="8"/>
+  <text class="t mid" x="586" y="286">Command line</text>
+  <text class="mono mid" x="586" y="305">priory desk</text>
+  <text class="mono mid" x="586" y="321">priory answer</text>
+
+  <path class="rule" d="M20,366 H660"/>
+  <text class="cap" x="20" y="392">Several machines, one shared log</text>
+
+  <rect class="box" x="20" y="412" width="200" height="68" rx="8"/>
+  <text class="t mid" x="120" y="436">Runner a</text>
+  <text class="mid" x="120" y="454">a daemon, its agents</text>
+  <text class="mid" x="120" y="469">and its own state file</text>
+  <path class="flow" marker-start="url(#tip)" marker-end="url(#tip)" d="M221,446 H249"/>
+  <rect class="shared" x="250" y="412" width="180" height="68" rx="8"/>
+  <text class="t mid" x="340" y="436">The log</text>
+  <text class="mid" x="340" y="454">Postgres, reached by</text>
+  <text class="mid" x="340" y="469">every machine</text>
+  <path class="flow" marker-start="url(#tip)" marker-end="url(#tip)" d="M431,446 H459"/>
+  <rect class="box" x="460" y="412" width="200" height="68" rx="8"/>
+  <text class="t mid" x="560" y="436">Runner b</text>
+  <text class="mid" x="560" y="454">a daemon, its agents</text>
+  <text class="mid" x="560" y="469">and its own state file</text>
+
+  <path class="flow" marker-start="url(#tip)" marker-end="url(#tip)" d="M340,481 V511"/>
+  <rect class="box" x="230" y="512" width="220" height="68" rx="8"/>
+  <text class="t mid" x="340" y="536">A view-only machine</text>
+  <text class="mid" x="340" y="554">lists every runner's asks and</text>
+  <text class="mid" x="340" y="569">tasks, and runs nothing</text>
+</svg>
