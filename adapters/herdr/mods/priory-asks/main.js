@@ -732,9 +732,9 @@ export default class PrioryAsks extends View {
       .child(svg(ICON(icon)).size(14).flex_none().mt(3)).child(div().flex_1().min_w_0().whitespace_normal().child(selectable(`${icon}-${ask.id}`, `${label} ${text}`)));
     if (id === "history") {
       return v_flex().gap(S["space-2"]).child(head("history", "Answer history"))
-        .children(detail.history.map((item) => h_flex().gap(S["space-2"]).items_center().text_size(TYPE.small[0])
+        .children(detail.history.map((item, index) => h_flex().gap(S["space-2"]).items_center().text_size(TYPE.small[0])
           .child(this.tile(item.tile, t)).child(div().flex_1().min_w_0().whitespace_normal()
-            .text_color(item.tile === "refused" ? t["warn-text"] : t.text).child(selectable(`history-${ask.id}-${item.time}`, item.text)))
+            .text_color(item.tile === "refused" ? t["warn-text"] : t.text).child(selectable(`history-${ask.id}-${index}`, item.text)))
           .child(div().font_family(this.font.mono).text_size(TYPE.caption[0]).text_color(t["text-3"]).child(item.time))));
     }
     /** @param {string} key @param {string} text */
@@ -787,8 +787,8 @@ export default class PrioryAsks extends View {
    */
   commandBlock(command, t, where) {
     return v_flex().gap(S["space-2"]).p(S["space-3"]).rounded(RADIUS.md).bg(t.raised)
-      .child(h_flex().flex_wrap().gap(S["space-1"]).children(command.words.map((word) => div().min_w(14).px(S["space-1"]).rounded(RADIUS.sm).border(1)
-        .border_color(t["control-line"]).bg(t.surface).font_family(this.font.mono).text_size(12.5).whitespace_nowrap().child(word))))
+      .child(h_flex().flex_wrap().gap(S["space-1"]).children(command.words.map((word, index) => div().min_w(14).px(S["space-1"]).rounded(RADIUS.sm).border(1)
+        .border_color(t["control-line"]).bg(t.surface).font_family(this.font.mono).text_size(12.5).whitespace_nowrap().child(selectable(`word-${where}-${index}`, word)))))
       .child(h_flex().gap(S["space-2"]).items_start()
         .child(div().flex_1().min_w_0().whitespace_normal().text_size(TYPE.caption[0]).text_color(t["text-2"]).child(selectable(`command-note-${where}`, command.note)))
         .child(this.secondary(`copy-command-${where}`, this.copied === command.line ? "Copied" : "Copy", (cx) => {

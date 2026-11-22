@@ -47,6 +47,9 @@ const ARM_MS = 4000;
 const linked = (id, spans) => (spans.some((span) => span.url)
   ? div().on_mouse_down("left", (/** @type {unknown} */ _event, /** @type {import("gpui-kit").Context} */ cx) => cx.stop_propagation()).child(TextView.html(id, spansHtml(spans)))
   : spans.map((span) => span.text).join(""));
+// Rows and the next thing select on a press, so selectable text keeps its press to itself.
+/** @param {string} id @param {string | { text: string, url?: string }[]} text */
+const copyable = (id, text) => div().on_mouse_down("left", (/** @type {unknown} */ _event, /** @type {import("gpui-kit").Context} */ cx) => cx.stop_propagation()).child(selectable(id, text));
 const MUTED_TILE = /** @type {[string, string, string]} */ (["tile-muted", "circle-dashed", "text-2"]);
 
 /** @typedef {ReturnType<typeof deskModel>} Model */
@@ -327,7 +330,7 @@ export default class PrioryDesk extends View {
     const failed = this.error
       ? h_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).items_center().border_b(1).border_color(t.line).bg(t.surface)
         .child(div().flex_1().min_w_0().whitespace_normal().text_size(S["type-small"][0]).text_color(t["danger-text"])
-          .child(selectable("desk-error", `Could not read the desk: ${this.error}. Check that priory runs where settings.json's "priory" object says, then retry.`)))
+          .child(copyable("desk-error", `Could not read the desk: ${this.error}. Check that priory runs where settings.json's "priory" object says, then retry.`)))
         .child(ui.button("retry", "Retry", (_e, cx) => {
           if (this.reading) return;
           this.load(cx);
@@ -353,7 +356,7 @@ export default class PrioryDesk extends View {
       .when(this.adding.open, (el) => el.child(this.adding.render(t, ICONS, addChoices(this.data.queue, this.data.tasks.tasks))))
       .when(Boolean(model.next), (el) => el.child(this.next(ui, model, wide)))
       .children(model.banners.map((text, i) => ui.banner(`banner-${i}`, text)))
-      .when(Boolean(this.actionError), (el) => el.child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["danger-text"]).child(selectable("action-error", String(this.actionError)))));
+      .when(Boolean(this.actionError), (el) => el.child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["danger-text"]).child(copyable("action-error", String(this.actionError)))));
     const list = v_flex().gap(S["space-3"]).min_w_0()
       .child(this.views(ui, model))
       .children(model.sections(this.view).map((section) => this.section(ui, section, table)))
@@ -393,15 +396,15 @@ export default class PrioryDesk extends View {
         .child(div().text_color(t["text-2"]).child(next.step ?? ""))
         .child(div().flex_1())
         .child(div().text_color(t["text-3"]).child(`waits ${next.age}`)))
-      .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(selectable("next-why", `First because ${next.why}`)))
+      .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(copyable("next-why", `First because ${next.why}`)))
       .when(Boolean(next.routed), (el) => el.child(routed(ui, next.routed)))
       .when(Boolean(next.runner), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(next.away ? t["warn-text"] : t["text-2"]).child([next.runner, next.away].filter(Boolean).join(", "))))
       .when(Boolean(next.sent), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(next.sent?.refused ? t["warn-text"] : t["action-text"]).child(next.sent?.text ?? "")))
-      .child(div().whitespace_normal().font_family(ui.fonts.display).text_size(S["type-pane-question"][0]).line_height(S["type-pane-question"][1] / S["type-pane-question"][0]).font_weight(650).child(selectable("next-question", next.questionSpans)))
+      .child(div().whitespace_normal().font_family(ui.fonts.display).text_size(S["type-pane-question"][0]).line_height(S["type-pane-question"][1] / S["type-pane-question"][0]).font_weight(650).child(copyable("next-question", next.questionSpans)))
       .when(Boolean(next.recommendation || next.tradeoff), (el) => el.child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-2"])
-        .child(selectable("next-recommendation", next.recommendation ? `Recommends ${next.recommendation}. ${next.tradeoff ?? ""}` : String(next.tradeoff)))))
+        .child(copyable("next-recommendation", next.recommendation ? `Recommends ${next.recommendation}. ${next.tradeoff ?? ""}` : String(next.tradeoff)))))
       .when(Boolean(next.progress?.nextAction), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"])
-        .child(selectable("next-action", `Next: ${next.progress?.nextAction}`))))
+        .child(copyable("next-action", `Next: ${next.progress?.nextAction}`))))
       .child(h_flex().gap(S["space-2"]).flex_wrap().items_center()
         .when(next.ask != null, (el) => el.child(ui.button("next-answer", "Answer…", () => this.answer(/** @type {number | string} */ (next.ask)), { primary: true })))
         .when(next.todo != null, (el) => el.child(ui.button("next-done", "Done", (_e, cx) => this.done(cx, /** @type {number} */ (next.todo)), { disabled: this.busy })))
@@ -446,7 +449,7 @@ export default class PrioryDesk extends View {
     const meta = row.recommends ? `Recommends ${row.recommends}` : null;
     const snoozed = row.snoozed;
     // The selected row's text selects and copies; another row's is a label, so a press selects the row.
-    const text = selected ? selectable(`text-${row.id}`, row.textSpans) : linked(`text-${row.id}`, row.textSpans);
+    const text = selected ? copyable(`text-${row.id}`, row.textSpans) : linked(`text-${row.id}`, row.textSpans);
     const note = row.note
       ? h_flex().gap(S["space-1"]).items_center().text_size(S["type-caption"][0]).text_color(snoozed ? t["text-3"] : t["action-text"])
         .child(svg(`${ICONS}/${snoozed ? "clock" : "rotate-ccw"}.svg`).size(13).flex_none().text_color(snoozed ? t["text-3"] : t["action-text"])).child(row.note)
@@ -519,7 +522,7 @@ export default class PrioryDesk extends View {
           (_e, cx) => this.snooze(cx, /** @type {NonNullable<Row["snooze"]>} */ (item), { until: tomorrowAt(9, Date.now()) }), { icon: "moon", disabled: this.busy })));
     return v_flex().gap(S["space-2"]).pl(S["pane-tile"] + S["space-3"])
       .children((row.memories ?? []).map((/** @type {any} */ memory) => this.memory(ui, memory)))
-      .children((row.progress ?? []).map((/** @type {string} */ line, /** @type {number} */ i) => div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(selectable(`progress-${row.id}-${i}`, String(line)))))
+      .children((row.progress ?? []).map((/** @type {string} */ line, /** @type {number} */ i) => div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(copyable(`progress-${row.id}-${i}`, String(line)))))
       .child(actions);
   }
 
@@ -530,12 +533,12 @@ export default class PrioryDesk extends View {
     const armed = this.memoryArmed?.id === memory.id;
     const sent = this.memorySent.get(memory.id);
     const shown = this.currentShown.has(memory.id);
-    const text = (/** @type {string} */ id, /** @type {string} */ body) => div().whitespace_normal().px(S["space-3"]).py(S["space-2"]).rounded(S["radius-md"]).bg(t.raised).text_size(S["type-small"][0]).child(selectable(id, body));
+    const text = (/** @type {string} */ id, /** @type {string} */ body) => div().whitespace_normal().px(S["space-3"]).py(S["space-2"]).rounded(S["radius-md"]).bg(t.raised).text_size(S["type-small"][0]).child(copyable(id, body));
     return v_flex().id(`memory-${memory.id}`).gap(S["space-2"]).pt(S["space-2"]).border_t(1).border_color(t.line)
       .child(h_flex().gap(S["space-2"]).items_center().text_size(S["type-caption"][0])
-        .child(div().font_family(ui.fonts.mono).text_color(t.text).child(selectable(`memory-name-${memory.id}`, String(memory.name))))
+        .child(div().font_family(ui.fonts.mono).text_color(t.text).child(copyable(`memory-name-${memory.id}`, String(memory.name))))
         .child(div().px(S["space-1"]).rounded(S["radius-sm"]).border(1).border_color(memory.warn ? t["warn-text"] : t["control-line"]).text_color(memory.warn ? t["warn-text"] : t["text-2"]).child(String(memory.tag))))
-      .when(Boolean(memory.description), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(selectable(`memory-description-${memory.id}`, String(memory.description)))))
+      .when(Boolean(memory.description), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(copyable(`memory-description-${memory.id}`, String(memory.description)))))
       .child(text(`memory-text-${memory.id}`, String(memory.text)))
       .when(memory.current != null, (el) => el
         .child(ui.button(`current-${memory.id}`, shown ? "Hide current text" : "Current text", (_e, cx) => {
@@ -577,7 +580,7 @@ export default class PrioryDesk extends View {
       .children(model.since.rows.map((/** @type {Model["since"]["rows"][number]} */ event, /** @type {number} */ i) => h_flex().id(`since-${i}`).gap(S["space-2"]).py(S["space-1"]).items_start().text_size(S["type-caption"][0])
         .border_t(1).border_color(t.line)
         .child(div().flex_none().child(ui.mono(event.key ?? "")))
-        .child(div().flex_1().min_w_0().whitespace_normal().text_color(t["text-2"]).child(selectable(`since-what-${i}`, event.what)))
+        .child(div().flex_1().min_w_0().whitespace_normal().text_color(t["text-2"]).child(copyable(`since-what-${i}`, event.what)))
         .child(div().flex_none().font_family(ui.fonts.mono).text_color(t["text-3"]).child(event.time))));
   }
 }
@@ -620,7 +623,7 @@ class Ui {
     return h_flex().id(id).gap(S["space-2"]).px(S["space-3"]).py(S["space-2"]).items_start().rounded(S["radius-md"]).bg(this.t.surface)
       .border(1).border_color(this.t["warn-text"]).text_size(S["type-small"][0])
       .child(svg(`${ICONS}/${/memory/.test(text) ? "memory-stick" : "hard-drive"}.svg`).size(16).flex_none().text_color(this.t["warn-text"]))
-      .child(div().flex_1().min_w_0().whitespace_normal().child(selectable(`${id}-text`, text)));
+      .child(div().flex_1().min_w_0().whitespace_normal().child(copyable(`${id}-text`, text)));
   }
 
   /** @param {string[][]} hints @param {boolean} [inline] */

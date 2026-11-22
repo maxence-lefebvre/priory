@@ -206,7 +206,7 @@ export default class PrioryTasks extends View {
     if (this.open !== target) return row;
     return v_flex().w_full().child(row).child(v_flex().pl(S["pane-tile"] + S["space-3"] + S["space-2"]).pr(S["space-2"]).pb(S["space-2"]).gap(S["space-2"])
       .child(h_flex().gap(S["space-2"]).flex_wrap().children(remoteActs(task).map((act) => this.remoteButton(task, target, act, t, now))))
-      .when(this.sendError?.target === target, (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["warn-text"]).child(this.sendError?.text ?? "")))
+      .when(this.sendError?.target === target, (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["warn-text"]).child(selectable(`send-error-${target}`, this.sendError?.text ?? ""))))
       .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"])
         .child(`This task runs on ${task.runner}. An action goes there through the log, and ${task.runner} applies it when it reads it.`)));
   }

@@ -485,7 +485,7 @@ export default class PrioryBonjour extends View {
       .when(count != null, (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(String(count))));
     return v_flex().id("bonjour-rail").flex_none().w(RAIL.width).min_h_0().overflow_y_scrollbar().p(S["space-2"]).gap(S["space-1"]).border_r(1).border_color(t.line)
       .children(model.views.map((view) => item(`view-${view.id}`, view.label, view.count, this.view === view.id, (cx) => this.show(view.id, cx))))
-      .child(div().h(1).my(6).bg(t.line))
+      .child(div().h(1).my(S["space-2"]).bg(t.line))
       .children(this.every(model).map((section) => item(`jump-${section.id}`, section.title, section.count, false, (cx) => this.jump(section.id, cx))));
   }
 
@@ -658,7 +658,7 @@ export default class PrioryBonjour extends View {
   threads(model, row, t) {
     const selected = row.id === this.selected && (this.threadable(row) || this.replyTo != null);
     const notice = row.pick ? undefined : this.notices.get(row.id);
-    return v_flex().pl(S["pane-tile"] + 10 + S["space-2"]).pt(S["space-1"]).pb(S["space-2"]).gap(S["space-2"])
+    return v_flex().pl(S["pane-tile"] + S["space-3"] + S["space-2"]).pt(S["space-1"]).pb(S["space-2"]).gap(S["space-2"])
       .children(row.threads.map((thread) => {
         if (thread.resolved) {
           return h_flex().gap(S["space-2"]).items_center().text_size(S["type-caption"][0]).text_color(t["text-3"])
