@@ -374,8 +374,10 @@ question wraps to two lines instead of truncating.
 The desk is the "Needs me" view. It lists, top to bottom:
 
 1. **Count**: the number of open asks in `--type-count` and `--count`, beside "asks need you" in
-   `--type-hero` and a line in `--text-3`: "Oldest waits 42 min. 2 stopped." On wide screens
-   the count sits at the right of the list header in `--type-count-wide`.
+   `--type-hero` and a line in `--text-3`: "Oldest waits 42 min. Also 2 stopped and 1 waiting."
+   The line names every other item the Needs me view counts, stopped, to-dos, reports and also
+   waiting, so the count and the Needs me chip add up. On wide screens the count sits at the
+   right of the list header in `--type-count-wide`.
 2. **The next thing**: a card on `--surface` with `--radius-md` and a `--line` edge, in every
    saved view, with the desk's `next` whatever its kind: an alarm (a blocked or failed task, an
    uncertain prompt or command, a failing intake) or the ask that ranks first. It shows the tile,
@@ -393,7 +395,10 @@ The desk is the "Needs me" view. It lists, top to bottom:
 6. **Stopped**: blocked tasks, uncertain prompts (R5.4) and failed tasks, each with its reason in
    the role's text color. A blocked row carries Resume and Cancel buttons, a failed row Revive, in
    `.btn secondary` under its reason; its key opens the task page. On wide screens the Recommends
-   column holds the same buttons, compact. Then **To-dos**: the person's own items, each with
+   column holds the same buttons, compact. When the list is narrower than 760 px, as beside the
+   drawer at 1440 px, that column folds: its buttons, the recommendation ("Recommends open") and
+   an ask's status, such as "Sent to desktop: approved", move under the question in the same
+   cell, in `--text-2`, as on the phone row. Then **To-dos**: the person's own items, each with
    the `square` tile in the ask role, its text and due time, and a Done button in `.btn
    secondary` that marks it done (`POST /api/todos/{id}/done`). The next thing card offers Done
    for a to-do. Then **Also waiting**: the desk's other items (held tasks, going batches, sweeps,
