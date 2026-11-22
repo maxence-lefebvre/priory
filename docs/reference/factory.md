@@ -31,6 +31,8 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `batch` | table | no | `priory batch add` is refused | How `priory batch add` plans batches. See [`[batch]`](#batch) | |
 | `caps` | table | no | no cap | Spend caps in dollars for every task and each lane. See [`[caps]`](#caps) | |
 | `decisions` | table | no | no decision model | A decision model for each decision point. See [`[decisions.triage]`](#decisionstriage) | |
+| `consult` | table | no | no agent consults | Who may consult which investigator, and the bounds of one consult. See [`[consult]`](#consult) | |
+| `mcp` | table of tables | no | | A person's statement about each MCP server an investigator names. See [`[mcp.<name>]`](#mcpname) | |
 | `guard` | table | no | the built-in guards alone | Irreversible commands and MCP tools the tool guard denies on top of the built-in ones. See [`[guard]`](#guard) | |
 | `repos` | table of tables | no | no recipe runs | The setup, resume and teardown recipes of each repository. See [`[repos]`](#repos) | |
 
@@ -46,7 +48,7 @@ See [runs.md](../daemon/runs.md#overlapping-files) for how the overlap hold work
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `overlap` | boolean | no | `true` | Whether a task waits for an earlier active task whose branch changes the same files | `false` |
 | `preempt` | list of bands | no | `[]` | The bands whose task at the head of the queue, waiting for memory or disk, may stop runs of a lower band at the end of their turn | `["blocker"]` |
-| `review_limit` | integer, at least 1 | no | no limit | How many pull requests of a lane, or of a batch, may wait for a person before its new tasks wait to start | `5` |
+| `review_limit` | integer, at least 1 | no | no limit | How many pull requests of a lane, or of a batch, may wait for a person before its new tasks wait to start. A task of the first band never waits | `5` |
 
 ## `[sweep]`
 
@@ -427,6 +429,39 @@ cache_read = 0.1
 cache_write = 1.25
 ```
 
+## `[consult]`
+
+Who may consult which investigator, and the bounds of one consult. See
+[tools.md](../daemon/tools.md#consulting-an-investigator) and
+[investigators](agents.md#investigators).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `deadline` | duration | no | `"15m"` | How long from the `consult` call to its report, the wait for room included. Past it, the daemon ends the investigator's task, queued or running | `"10m"` |
+| `cap` | number | no | `0.5` | Dollars one consult may cost. The daemon prices the investigator's tokens each second and ends its run once they cost this much | `0.25` |
+| `per_task` | integer | no | `5` | How many consults one task may make | `3` |
+| `allow` | table of arrays | no | nobody consults | Each asking agent's investigators, by the asking agent's name. An agent with no line gets no `consult` tool | `{ implementer = ["sentry"] }` |
+
+```toml
+[consult]
+deadline = "15m"
+cap = 0.50
+per_task = 5
+
+[consult.allow]
+implementer = ["sentry", "honeycomb"]
+triage = ["sentry"]
+```
+
+## `[mcp.<name>]`
+
+A person's statement about one MCP server of their own harness config, by the name agents give it
+in `mcpServers`. An investigator may name a server only with a `read_only` sentence.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `read_only` | string | no | | Where the service enforces that the server only reads. Priory cannot check it; `priory check --explain` prints it for review | `"The token has the org:read and event:read scopes only."` |
+
 ## `[decisions.triage]`
 
 A decision model that sorts a person's feedback on a task's pull request or issue before the
@@ -557,6 +592,7 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `[asks] deliver`: <path> is not executable: chmod +x it `` | The `deliver` file has no execute bit |
 | `` [log] backend = "postgres" needs a priory built with `--features postgres` `` | `[log] backend = "postgres"` in a build without the Postgres adapter |
 | `` `[log] url_env` names the environment variable that holds the connection string, such as PRIORY_LOG_URL, never the string itself `` | `url_env` is not a variable name, such as a pasted URL |
+| `` `headers_env` names the environment variable that holds the headers, such as OTEL_EXPORTER_OTLP_HEADERS, never the headers themselves `` | `[telemetry] headers_env` is not a variable name, such as pasted headers |
 | `` the handler agent `<name>` does not exist `` | `handler` names no agent |
 | `` the handler agent `<name>` needs harness = "claude-code" `` | `handler` names a Codex agent |
 | `` the summarizer agent `<name>` does not exist `` | `[search] tldr` names no agent |
@@ -569,6 +605,7 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `[repos."<repo>"] <recipe>` runs `<command>`, which the guard `<guard>` holds irreversible: a recipe runs with no person's approval `` | A recipe that runs a command the [tool guard](../daemon/guard.md) denies, such as `gh pr merge` |
 | `` `[sweep] repo` needs to be `owner/name` `` | `[sweep] repo` is not a GitHub `owner/name`, such as a path or a name of `..` |
 | `` `[serve] listen` <address> is beyond this machine: set `public = true` to serve it `` | `listen` is not a loopback address and `public` is not set |
+| `` `[serve] extension_origins` <origin> is not a Chromium extension's origin, `chrome-extension://` and its 32-letter id `` | An entry of `extension_origins` that is not `chrome-extension://` and 32 letters |
 | `` `[webhooks]` needs a `[serve]` table to listen on `` | `[webhooks]` is set without `[serve]` |
 | `` `[slack.shortcut] users` is empty, so nobody could use the shortcut `` | `users = []` |
 | `` `[slack.shortcut] users` `<id>` is not a Slack user id such as U0123ABCD `` | A `users` entry that is not `U` or `W` then capital letters and digits, such as a display name |
@@ -586,6 +623,11 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `[decisions.triage] daily_calls` is 0: give at least 1 `` | `daily_calls = 0` |
 | `` `[decisions.triage] evaluation` <file>: <why> `` | The labeled cases cannot be read, or hold fewer than 10 cases or fewer than 3 of a class |
 | `` `[caps]` needs prices.toml, which turns the steps' tokens into dollars `` | `[caps]` in a factory without `prices.toml` |
+| `<rate> is not a price: give dollars per million tokens, zero or more` | A price in `prices.toml` that is negative or not a finite number |
+| `` `[consult.allow]` names `<name>`, which is no agent `` | An asking agent with no folder under `agents/` |
+| `` `[consult.allow]` names investigator `<name>` as an asker: an investigator cannot consult, so a consult is one hop `` | An investigator as a key of `[consult.allow]` |
+| `` `[consult.allow]` lets `<asker>` consult `<name>`, which is no agent `` | A target with no folder under `agents/` |
+| `` `[consult.allow]` lets `<asker>` consult `<name>`, which is no investigator: set `investigator = true` on it `` | A target that is no investigator |
 | `invalid socket address syntax` | `listen` is not an IP address and port, such as `127.0.0.1:7340` |
 
 Each line starts with the file and line, such as `factory.toml:3:1:`. A file that does not parse

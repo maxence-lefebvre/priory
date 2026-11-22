@@ -175,6 +175,9 @@ pub(crate) fn ended_with(
     if let Some(debate) = debate {
         data["debate"] = debate;
     }
+    if let Some((consult, asker)) = crate::consult::of_investigation(tx, task)? {
+        data["consult"] = json!({ "id": consult, "task": asker.to_string() });
+    }
     let agent = step
         .agent
         .as_ref()
@@ -513,6 +516,67 @@ pub(crate) fn auto_answered(
     append(tx, trace, "factory.ask.auto_answered", &time, data)
 }
 
+/// Appends a `factory.ask.session_answered` record, or `factory.ask.session_dismissed` when
+/// `option` is `None`: a person's own session decided ask `ask` at `revision` through `priory mcp
+/// --outside`. An outside ask has no task, so its record has no task fields.
+pub(crate) fn session_decided(
+    tx: &Transaction,
+    trace: &Trace,
+    ask: i64,
+    revision: i64,
+    session: &str,
+    option: Option<&str>,
+) -> rusqlite::Result<()> {
+    type Row = (
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        String,
+    );
+    let (task, workflow, step, key, generation, name, time): Row = tx.query_row(
+        "SELECT tasks.id, tasks.workflow, asks.step, coalesce(tasks.key, asks.key), tasks.generation,
+           asks.name, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         FROM asks LEFT JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
+        [ask],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        },
+    )?;
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "workflow": workflow,
+        "task": task.map(|task| task.to_string()),
+        "key": key,
+        "generation": generation,
+        "step": step,
+        "machine": trace.machine,
+        "ask": name.unwrap_or_else(|| ask.to_string()),
+        "revision": revision,
+        "session": session,
+        "option": option,
+    });
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    let kind = match option {
+        Some(_) => "factory.ask.session_answered",
+        None => "factory.ask.session_dismissed",
+    };
+    append(tx, trace, kind, &time, data)
+}
+
 /// Appends a `factory.task.repaired` record for the repair of `task` after `run` failed.
 pub(crate) fn repaired(
     tx: &Transaction,
@@ -731,6 +795,37 @@ pub(crate) fn labeled(
     evidence: &str,
     happened: Option<&str>,
 ) -> rusqlite::Result<()> {
+    labeled_with(tx, trace, task, label, evidence, happened, json!({}))
+}
+
+/// Appends the `factory.step.labeled` record of a `held` scorer that graded `task`: label `scored`,
+/// with the scorer, its verdict, and its reason as the evidence. `happened` is the moment its
+/// `after` names.
+pub(crate) fn held(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    scorer: &str,
+    verdict: &str,
+    reason: &str,
+    happened: &str,
+) -> rusqlite::Result<()> {
+    let extra = json!({ "scorer": scorer, "kind": "held", "verdict": verdict });
+    labeled_with(tx, trace, task, SCORED, reason, Some(happened), extra)
+}
+
+/// The label of a `held` scorer's record.
+pub(crate) const SCORED: &str = "scored";
+
+fn labeled_with(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    label: &str,
+    evidence: &str,
+    happened: Option<&str>,
+    extra: Value,
+) -> rusqlite::Result<()> {
     let (workflow, key, generation, grade, time): (String, String, i64, Option<String>, String) =
         tx.query_row(
             "SELECT workflow, key, generation, grade, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -786,7 +881,8 @@ pub(crate) fn labeled(
         "evidence": evidence,
         "happened": happened,
     });
-    if let Value::Object(fields) = &mut data {
+    if let (Value::Object(fields), Value::Object(extra)) = (&mut data, extra) {
+        fields.extend(extra);
         fields.retain(|_, value| !value.is_null());
     }
     append(tx, trace, "factory.step.labeled", &time, data)

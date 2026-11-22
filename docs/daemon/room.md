@@ -116,7 +116,7 @@ on, in the transaction that stores the result:
 | A `result` that leads to a model step of the same agent | The process carries on into the next run | The run ends as `preempted`, and the task is `ready` at the next step with that step's prompt |
 | No tool | One nudge | The run ends as `preempted`, with no nudge |
 
-A step over its `budget` fails at its turn end, as it would without a mark.
+A step over its `budget` fails inside its turn or at its end, as it would without a mark.
 
 A marked run that sits idle between turns, with no prompt attempted, ends on the tick that marks
 it. Two cases wait instead:

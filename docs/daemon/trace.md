@@ -10,7 +10,8 @@ result, a human step with its answer, a code step with its action's status (the 
 `outcome`). A run that ends otherwise, such as blocked, lost or cancelled, ends no step and appends
 no record. A repair appends `factory.task.repaired` instead (see Repair), and a reopen appends
 `factory.task.reopened` (see [routing.md](routing.md#feedback-reopens-a-done-task)). A judgement that comes later,
-such as a merge or a revert, appends `factory.step.labeled` (see Outcome labels). Each `priory gate` appends
+such as a merge or a revert, appends `factory.step.labeled` (see Outcome labels), as does a
+`held` scorer's grade (see [score.md](score.md#held-scorers)). Each `priory gate` appends
 `factory.gate.ran`, which a step's `gate-passed` proof reads (see Proofs in
 [tools.md](tools.md#proofs)). Each score of `priory score` appends `factory.run.scored` (see
 [score.md](score.md)), and each complete `priory score --calibrate` of a judge appends
@@ -197,7 +198,7 @@ implement	gate	11	3	1	0
 ```
 
 A `notes` cell names what has no cost, such as `price missing for m2: 1500 tokens` or
-`tokens unknown for 1 records`.
+`tokens unknown for 1 record`.
 
 It reads the same records as `report --cost`: model steps, handler calls and summarizer calls, and
 prices them from the same `prices.toml` in `DIR` (default: the current folder).

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 99;
+const VERSION: i64 = 100;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1800,6 +1800,45 @@ CREATE TABLE IF NOT EXISTS approval_evidence (
 "
 );
 
+// Consults: one question a run asked an investigator, the investigator's task that answers it, and
+// the report or why none came. A task holds one open consult at a time. A done, failed or dropped
+// asking task, or one revived as its next generation, withdraws its open consult and drops the
+// investigator's task; the daemon ends a run that task still has.
+const SCHEMA_100: &str = "
+CREATE TABLE IF NOT EXISTS consults (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  task          INTEGER NOT NULL REFERENCES tasks (id),
+  run           INTEGER NOT NULL REFERENCES runs (id),
+  generation    INTEGER NOT NULL,
+  step          TEXT NOT NULL,
+  agent         TEXT NOT NULL,
+  investigator  TEXT NOT NULL,
+  question      TEXT NOT NULL,
+  asked         TEXT NOT NULL,
+  deadline      TEXT NOT NULL,
+  cap           REAL NOT NULL,
+  investigation INTEGER REFERENCES tasks (id),
+  sign_in       TEXT,
+  outcome       TEXT,
+  report        TEXT,
+  reported      TEXT,
+  cost          REAL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS one_open_consult_per_task ON consults (task)
+  WHERE outcome IS NULL;
+CREATE INDEX IF NOT EXISTS consults_by_investigation ON consults (investigation);
+CREATE TRIGGER IF NOT EXISTS a_consult_ends_with_its_asker AFTER UPDATE OF state, generation ON tasks
+  WHEN NEW.state IN ('done', 'failed', 'dropped') OR NEW.generation IS NOT OLD.generation BEGIN
+  UPDATE tasks SET state = 'dropped', reason = 'its consult was withdrawn: task ' || NEW.id || ' is '
+      || iif(NEW.generation IS NOT OLD.generation, 'generation ' || NEW.generation, NEW.state)
+    WHERE id IN (SELECT investigation FROM consults WHERE task = NEW.id AND outcome IS NULL)
+    AND state NOT IN ('done', 'failed', 'dropped');
+  UPDATE consults SET outcome = 'withdrawn', reported = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE task = NEW.id AND outcome IS NULL;
+END;
+PRAGMA user_version = 100;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1814,7 +1853,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
-    SCHEMA_98, SCHEMA_99,
+    SCHEMA_98, SCHEMA_99, SCHEMA_100,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1980,9 +2019,9 @@ pub fn read_only() -> Result<Connection, String> {
 fn refiltered(data: &serde_json::Value) -> String {
     let count = |field: &str| data[field].as_array().map_or(0, Vec::len);
     format!(
-        "view {} changed its filter: {} issues entered and {} left, with no task requested",
+        "view {} changed its filter: {} entered and {} left, with no task requested",
         data["view"].as_str().unwrap_or_default(),
-        count("entered"),
+        priory_factory::plural(count("entered"), "issue", "issues"),
         count("left")
     )
 }
@@ -3050,7 +3089,7 @@ pub(crate) fn admissible<'r>(
                AND (recipes.started IS NOT NULL OR recipes.moment = 'teardown'))
              -- With several runners, only a task whose key the log gives this one, and not one
              -- whose `kept` it waits to read back. A lead task stays on its ask's runner.
-             AND (?1 IS NULL OR tasks.trigger = ?2 OR EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
+             AND (?1 IS NULL OR tasks.trigger IN (?2, 'priory/consult') OR EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
                AND claims.runner = ?1
                AND NOT (claims.hold != 'kept' AND claims.published IS 'kept')))
              ORDER BY {START_ORDER}"
@@ -3112,7 +3151,8 @@ pub(crate) fn admissible<'r>(
         let busy = match busy {
             Some(reason) => Some(reason),
             None if admission.fresh => {
-                crate::review::waits(db, factory.review_limit(), admission.task)?
+                let first_band = factory.bands().first().copied();
+                crate::review::waits(db, factory.review_limit(), first_band, admission.task)?
             }
             None => None,
         };
@@ -3129,7 +3169,8 @@ pub(crate) fn admissible<'r>(
                         let mut reason = short.as_ref().map(|short| short.reason.clone());
                         // A lead that can never fit never answers: dropping it returns its ask.
                         if let Some(reason) = reason.as_ref().filter(|_| {
-                            admission.trigger == crate::tools::LEAD_TRIGGER
+                            [crate::tools::LEAD_TRIGGER, crate::consult::TRIGGER]
+                                .contains(&admission.trigger.as_str())
                                 && !room::fits_ever(measured, share, need)
                         }) {
                             db.execute(

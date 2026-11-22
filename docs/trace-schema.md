@@ -64,6 +64,7 @@ such as a revert, arrives as a second record that points at the first. Each reco
 | `duration_ms`      | yes      | Wall time from start to end                                           |
 | `tokens`           | no       | For `model` steps: `input`, `output`, `cache_read`, `cache_write`, summed over the step's turns |
 | `overrun`          | no       | For a `model` step with a `budget` whose turn sent its result over it: `budget_usd` and `spent_usd`, priced with `prices.toml`. See [health.md](daemon/health.md#budget) |
+| `consult`          | no       | For an investigator's step: `id`, the consult it answers, and `task`, the asking task's id. See [tools.md](daemon/tools.md#consulting-an-investigator) |
 | `debate`           | no       | For a debate step: the debate, below. Its record has no `harness`, `model` or `tokens`, since each turn's `factory.debate.turn_ended` carries its own |
 
 A debate step's `decider` is `model` when its agents agreed, and `human` when a person picked the
@@ -338,9 +339,12 @@ task's grade when it was labeled. A task no step graded has no `step_event`.
 
 | Field        | Required | Meaning                                                              |
 | ------------ | -------- | -------------------------------------------------------------------- |
-| `label`      | yes      | One of the outcome labels, or `marked-wrong` from `priory label`     |
+| `label`      | yes      | One of the outcome labels, `marked-wrong` from `priory label`, or `scored` from a `held` scorer |
 | `evidence`   | yes      | The event's URL, the human step and its answer, or a mark's URL      |
-| `happened`   | no       | When the event the label reads happened. The record's `time` is when Priory wrote it. A record written before this field has none |
+| `happened`   | no       | When the event the label reads happened. The record's `time` is when Priory wrote it. A record written before this field has none. For `scored`, the moment the scorer's `after` names |
+| `scorer`     | for `scored` | The `held` scorer that graded the task |
+| `kind`       | for `scored` | `held` |
+| `verdict`    | for `scored` | `pass` or `fail`. The `evidence` is its reason. See [Held scorers](daemon/score.md#held-scorers) |
 
 ```json
 {
@@ -723,6 +727,46 @@ met its task's `auto_answer` level (see [waits.md](daemon/waits.md#answered-by-a
 | `rationale`  | yes      | The agent's one-line reason                                      |
 | `level`      | yes      | The task's `auto_answer` level when the ask was stored           |
 
+## `factory.ask.session_answered` and `factory.ask.session_dismissed`
+
+A person's own session answered or dismissed an ask through the `answer` or `dismiss` tool of
+[`priory mcp --outside`](daemon/tools.md#answers-from-the-session). The record names the session,
+never a person. An ask of a task shares `factory`, `factory_revision`, `workflow`, `task`, `key`,
+`generation`, `step` and `machine` with `factory.step.ended`. An outside ask has no task, so its
+record has no `workflow`, `task`, `generation` or `step`.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-00000000000f",
+  "source": "factory://example/desktop",
+  "type": "factory.ask.session_answered",
+  "time": "2026-11-22T10:12:03Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "14",
+    "key": "github:example/app#42",
+    "generation": 1,
+    "step": "implement",
+    "machine": "desktop",
+    "ask": "14",
+    "revision": 1,
+    "session": "t9 8f3c2a10",
+    "option": "sqlite"
+  }
+}
+```
+
+| Field      | Required | Meaning                                                                         |
+| ---------- | -------- | ------------------------------------------------------------------------------- |
+| `ask`      | yes      | The ask: its number, or an outside ask's name                                   |
+| `revision` | yes      | The revision the session decided                                                |
+| `session`  | yes      | The session: its hc terminal, then a space and its Claude session, or `outside` |
+| `option`   | answered | The answer. A `factory.ask.session_dismissed` record has none                   |
+
 ## `factory.bench.compared`
 
 A comparison of two commits of the factory on a benchmark ended (see
@@ -773,6 +817,66 @@ and to mark a repeat. `factory` is the head commit's factory name, and `source` 
 | `budget`    | yes      | The budget, in dollars                                               |
 | `machine`   | no       | The machine's hostname                                               |
 | `pull_request` | no    | The pull request `--post` named, `owner/name#12`. Null without `--post` |
+
+## `factory.consult.asked` and `factory.consult.reported`
+
+A run asked an investigator one question, and the report or the reason none came was queued for
+its task (see [tools.md](daemon/tools.md#consulting-an-investigator)). Both share `factory`,
+`factory_revision`, `workflow`, `task`, `key`, `generation`, `lane` and `machine` with
+`factory.step.ended`, all of the asking task. The question and the report stay in the state file,
+which `priory task <id> --json` reads, and never enter the trace.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d5-0000-7000-8000-000000000011",
+  "source": "factory://example/desktop",
+  "type": "factory.consult.reported",
+  "time": "2026-11-22T10:04:51Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "12",
+    "key": "github:example/app#42",
+    "generation": 1,
+    "machine": "desktop",
+    "consult": 4,
+    "investigation": "13",
+    "outcome": "reported",
+    "seconds": 162.4,
+    "report_length": 412,
+    "model": "claude-haiku-5-5",
+    "tokens": { "input": 20412, "output": 610, "cache_read": 81220, "cache_write": 9120 },
+    "cost_usd": 0.0413
+  }
+}
+```
+
+`factory.consult.asked`, when the consult is stored:
+
+| Field             | Required | Meaning                                         |
+| ----------------- | -------- | ----------------------------------------------- |
+| `run`             | yes      | The run that asked                              |
+| `step`            | yes      | The asking task's step                          |
+| `agent`           | yes      | The asking run's agent                          |
+| `investigator`    | yes      | The investigator asked                          |
+| `consult`         | yes      | The consult's id                                |
+| `question_length` | yes      | The question's length, in characters            |
+
+`factory.consult.reported`, when the report or a line for no report is queued for the asking task,
+or would be for a task that moved on:
+
+| Field           | Required | Meaning |
+| --------------- | -------- | ------- |
+| `consult`       | yes      | The consult's id |
+| `investigation` | no       | The id of the investigator's task |
+| `outcome`       | yes      | `reported`, `unknown`, `deadline`, `cap` or `failed` |
+| `seconds`       | yes      | From the question to this record |
+| `report_length` | yes      | The report's length, in characters; 0 with no report |
+| `tokens`, `model` | no     | What the investigator's run spent so far, since a run ended by its deadline or cap writes no `factory.step.ended` |
+| `cost_usd`      | no       | `tokens` priced with `prices.toml` |
 
 ## `factory.pattern.matched`
 

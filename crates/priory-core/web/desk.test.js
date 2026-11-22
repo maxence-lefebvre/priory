@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, countWords, memoryNote, memoryTag, capsuleWords, countHead, deskBanners, arrivalAsk } from "./desk.js";
+import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, countWords, memoryNote, memoryTag, capsuleWords, countHead, deskBanners, arrivalAsk, plural } from "./desk.js";
 
 const why = "work stopped and waits on a person";
 
@@ -205,4 +205,10 @@ test("the stall and pause banners say when in the page's relative words, not a r
   ]);
   // A pause without a reason ends at its time.
   assert.equal(deskBanners({ paused: "paused since 2026-11-22T14:34:03Z" }, ago)[0].text, "paused 12 min ago");
+});
+
+test("a count names its noun in the singular for one, else in the plural", () => {
+  assert.equal(plural(1, "task"), "1 task");
+  assert.equal(plural(0, "task"), "0 tasks");
+  assert.equal(plural(2, "entry", "entries"), "2 entries");
 });

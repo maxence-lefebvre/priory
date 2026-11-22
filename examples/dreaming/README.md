@@ -25,7 +25,8 @@ rename `runners/my-machine.toml` after your machine's Tailscale hostname.
   Its only writes are candidates, which reach no other task until you accept them.
 - The agent may run one command, `priory recap`. `dontAsk` denies every other call that would need
   a permission, and `deny` takes `ask`, `wait` and the other `priory` tools it has no use for.
-- `budget = "1.00"` fails the task once a turn ends over a dollar. The next night starts a new one.
+- `budget = "1.00"` fails the task once the dream spends over a dollar, read inside a turn at most
+  once a minute and at each turn end. The next night starts a new one.
 - `remember` refuses the text of a candidate you dropped, and the recap names it.
 - `open-memories-pr` is irreversible and `autonomous`: you review its pull request before any
   memory merges.

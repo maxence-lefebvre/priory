@@ -13,7 +13,7 @@ function bar(tree) {
   herdr.layout = layout("default", { layout: tree }, FRAME);
   const panel = new Tabs();
   const cx = context();
-  panel.init(cx);
+  panel.init({}, cx);
   const drawn = () => draw(panel, cx);
   /** @param {string[]} ids @returns {any[]} each button's id, label and whether it is selected, after the bar's whole text */
   const labels = (ids) => [text(drawn()), ...ids.map((id) => [id, text(find(drawn(), id)), find(drawn(), id).calls.selected[0]])];
@@ -75,7 +75,7 @@ test("a layout from before the asides gives a bar that says to run install again
   herdr.layout.children[1].children[1].children.push({ id: "view", type: "stack", active: "view-0", children: [{ id: "view-0", type: "block", content: { mod: "priory-desk", props: { panel: "desk" } } }] });
   const panel = new Tabs();
   const cx = context();
-  panel.init(cx);
+  panel.init({}, cx);
 
   assert.match(text(draw(panel, cx)), /older than this bar.*run install again/);
 });
@@ -97,7 +97,7 @@ async function started(installed, current) {
   herdr.replies.views = current;
   const panel = new Tabs();
   const cx = context();
-  panel.init(cx);
+  panel.init({}, cx);
   draw(panel, cx);
   await settle();
   return panel;

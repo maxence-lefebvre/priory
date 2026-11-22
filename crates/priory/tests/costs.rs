@@ -297,7 +297,7 @@ fn costs_by_model_price_each_model_and_list_unpriced_tokens_apart() {
     );
     let text = setup.costs(&["--by", "model"]);
     assert!(
-        text.contains("model\tcost\tnotes\nm1\t$1.100000\ttokens unknown for 1 records\nm2\t-\tprice missing for m2: 1500 tokens\n"),
+        text.contains("model\tcost\tnotes\nm1\t$1.100000\ttokens unknown for 1 record\nm2\t-\tprice missing for m2: 1500 tokens\n"),
         "{text}"
     );
 }

@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Popover } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
-import { age, follow, priory } from "./priory.js";
+import { age, follow, plural, priory } from "./priory.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { filtered } from "./tasks.js";
 import { duration, RUN_FACETS, RUN_VIEWS, runState, runViews, tokenText } from "./view.js";
@@ -118,7 +118,7 @@ export default class PrioryRuns extends View {
     return [...(rows.length ? rows : note(EMPTY.recent)), Button.new("runs-older").h(S["control-fine"]).px(S["space-2"]).flex().items_center()
       .rounded(S["radius-sm"]).text_size(S["type-small"][0]).text_color(t["action-text"]).hover((s) => s.bg(t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
       .on_click((_event, cx) => { this.older = true; cx.notify(); })
-      .child(`Show ${older} older ${older === 1 ? "run" : "runs"}`)];
+      .child(`Show ${plural(older, "older run")}`)];
   }
 
   /**

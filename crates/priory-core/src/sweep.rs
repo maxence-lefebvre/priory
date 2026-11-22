@@ -41,7 +41,7 @@ fn assess(db: &Connection, home: &Path) -> rusqlite::Result<Vec<Entry>> {
                 ))
             }
             Some(state @ ("queued" | "held" | "ready" | "running" | "asleep" | "blocked")) => {
-                Some(format!("task {} still {state}", found.name))
+                Some(format!("kept while task {} is {state}", found.name))
             }
             Some(_) => {
                 let head: Option<String> = db

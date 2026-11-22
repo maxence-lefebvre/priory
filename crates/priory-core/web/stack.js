@@ -1,3 +1,5 @@
+import { plural } from "./desk.js";
+
 // The same `prStack` as adapters/herdr/lib/priory.js; a test there keeps the two the same.
 
 /** The tile a check draws by its conclusion: one with none has not finished (DESIGN.md, Pull request summary). @param {string | null} conclusion */
@@ -24,9 +26,9 @@ export function prStack(stack, latest = null) {
   const failing = checks.filter((/** @type {any} */ check) => check.conclusion && !["success", "skipped", "neutral"].includes(check.conclusion)).length;
   const running = checks.filter((/** @type {any} */ check) => !check.conclusion).length;
   const known = !checks.length ? null
-    : failing ? `${failing} of ${checks.length} checks failing`
-    : running ? `${running} of ${checks.length} checks running`
-    : `${checks.length} checks pass`;
+    : failing ? `${failing} of ${plural(checks.length, "check")} failing`
+    : running ? `${running} of ${plural(checks.length, "check")} running`
+    : plural(checks.length, "check passes", "checks pass");
   return {
     label: `${stack.length} PRs`,
     entries: stack.map((pull, at) => ({

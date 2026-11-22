@@ -1,24 +1,33 @@
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 /// `lanes.toml`: how a task without a lane of its own gets one. Without the file, every task gets
 /// the `{team}/misc` fallback.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(title = "lanes")]
 pub struct Lanes {
     /// A lane, in which `{team}` stands for the task's team, or `none` without one.
     pub fallback: Option<String>,
+    /// The rules, tried in order: the first that matches gives the lane.
     #[serde(default)]
     pub rules: Vec<Rule>,
 }
 
-#[derive(Debug, Deserialize)]
+/// A rule sets at least one of `key`, `team`, `project` and `branch`, and matches a task that fits
+/// each one it sets.
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
+    /// The task's key, exactly.
     pub key: Option<String>,
+    /// The team of the task's source event, exactly.
     pub team: Option<String>,
+    /// The project of the task's source event, exactly.
     pub project: Option<String>,
-    /// A pattern in which `*` matches any run of characters.
+    /// A pattern for the task's branch, in which `*` matches any run of characters.
     pub branch: Option<String>,
+    /// The lane the rule gives, `<team>/<theme>`.
     pub lane: String,
 }
 

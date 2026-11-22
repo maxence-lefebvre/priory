@@ -93,6 +93,6 @@ To check a fix before it merges, capture the pattern's tasks and compare the fix
 
 - The dream reads the state file of the runner that runs it. In a factory of several runners, it
   covers that runner's tasks.
-- The budget is checked at turn ends, so one turn can pass it. The step's `timeout` bounds that
-  turn.
+- The budget is checked inside a turn at most once a minute, so a turn can pass it by up to a
+  minute of spending. The step's `timeout` bounds that turn.
 - "At most 5" is in the prompt only. A model can write more.

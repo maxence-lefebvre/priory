@@ -579,6 +579,8 @@ pub struct Launch<'a> {
     pub debate: bool,
     /// The MCP servers of the person's config the run gets, or turns off, beside Priory's own.
     pub servers: &'a Servers,
+    /// Which of Priory's own tools its MCP server serves the run.
+    pub tools: crate::mcp::Tools,
 }
 
 /// A coding agent CLI that Priory runs in tmux, with hooks and tools that report to the daemon.
@@ -1353,12 +1355,14 @@ fn write_private(file: &Path, text: &str) -> std::io::Result<()> {
     written.write_all(text.as_bytes())
 }
 
-/// `priory mcp --session <id>`, with `--debate` for a debate turn.
+/// `priory mcp --session <id>`, with `--debate` for a debate turn and the flag of its tool set, if
+/// any.
 fn mcp_args<'a>(launch: &Launch<'a>) -> Vec<&'a str> {
     let mut args = vec!["mcp", "--session", launch.session];
     if launch.debate {
         args.push("--debate");
     }
+    args.extend(launch.tools.flag());
     args
 }
 

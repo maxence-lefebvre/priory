@@ -50,3 +50,9 @@ test("review and check states read in plain words", () => {
   assert.equal(stateWords("approved"), "approved");
   assert.equal(stateWords(null), "");
 });
+
+test("one passing check reads in the singular", () => {
+  const stack = [pull(57, "a", "main", "open"), pull(58, "b", "a", "open")];
+
+  assert.equal(prStack(stack, { number: 58, checks: [{ name: "test", conclusion: "success" }] }).entries[1].checks, "1 check passes");
+});

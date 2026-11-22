@@ -2,7 +2,7 @@ import { Background, PathBuilder, View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile } from "herdr";
 import { labelSpots, pathCalls } from "./path.js";
-import { priory } from "./priory.js";
+import { plural, priory } from "./priory.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { edgeStyle, historyRows, KINDS, nodeShape, timeline, ungatedPairs } from "./view.js";
 
@@ -166,7 +166,7 @@ export default class PrioryFlows extends View {
     return v_flex().gap(S["space-2"])
       .child(h_flex().gap(6).items_baseline().text_size(S["type-small"][0]).font_weight(650)
         .child(div().font_family(this.font.mono).child(workflow.name))
-        .child(div().font_weight(400).text_color(t["text-3"]).child(`${workflow.steps.length} steps`)))
+        .child(div().font_weight(400).text_color(t["text-3"]).child(plural(workflow.steps.length, "step"))))
       .child(div().id(`diagram-${workflow.name}`).relative().flex_none().w(drawing.width * scale + lanes).h(drawing.height * scale)
         .accessibility_label(drawing.text)
         .children(labelSpots(edges, scale).map((spot, index) => this.edge(edges[index], spot, scale, t)))

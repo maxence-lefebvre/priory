@@ -90,6 +90,54 @@ pub struct Settings {
     /// A decision model for each decision point that names one.
     #[serde(default)]
     pub decisions: Decisions,
+    /// Who may consult which investigator, and the bounds of one consult.
+    pub consult: Option<Consult>,
+    /// What a person states about each MCP server an investigator names, by the server's name.
+    #[serde(default)]
+    pub mcp: BTreeMap<String, McpServer>,
+}
+
+/// `[consult]`: the bounds of one consult, and `[consult.allow]`, who may consult whom.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Consult {
+    /// How long from the `consult` call to its report, the wait for room included; 15m when unset.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub deadline: Option<Duration>,
+    /// What one consult may cost, in dollars; 0.50 when unset.
+    #[serde(default, deserialize_with = "cap")]
+    #[schemars(extend("exclusiveMinimum" = 0))]
+    pub cap: Option<f64>,
+    /// How many consults one task may make; 5 when unset.
+    pub per_task: Option<std::num::NonZeroU32>,
+    /// Each asking agent's investigators, by the asking agent's name. An agent with no line
+    /// consults nobody.
+    #[serde(default)]
+    pub allow: BTreeMap<String, Vec<String>>,
+}
+
+impl Consult {
+    pub fn deadline(&self) -> Duration {
+        self.deadline.unwrap_or(Duration::from_secs(15 * 60))
+    }
+
+    pub fn cap(&self) -> f64 {
+        self.cap.unwrap_or(0.5)
+    }
+
+    pub fn per_task(&self) -> u32 {
+        self.per_task.map_or(5, std::num::NonZeroU32::get)
+    }
+}
+
+/// `[mcp.<name>]`: a person's statement about one MCP server of their own harness config.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct McpServer {
+    /// Where the service enforces that the server only reads, such as "The token has the
+    /// org:read and event:read scopes only." Priory cannot check it.
+    pub read_only: Option<String>,
 }
 
 /// `[decisions]`: the decision model of each decision point. A point with none keeps its own
@@ -481,8 +529,8 @@ impl Link {
             });
         match missing {
             Some(group) => Err(format!(
-                "`[links]` `{pattern}` names group ${group}, but the regex has {groups} group{}",
-                if groups == 1 { "" } else { "s" }
+                "`[links]` `{pattern}` names group ${group}, but the regex has {}",
+                crate::plural(groups, "group", "groups")
             )),
             None => Ok(()),
         }
@@ -907,7 +955,7 @@ pub struct Queue {
     #[serde(default)]
     pub preempt: Vec<String>,
     /// How many pull requests of a lane, or of a batch, may wait for a person before its new tasks
-    /// wait to start; no limit when unset.
+    /// wait to start; no limit when unset. A task of the first band never waits.
     #[serde(default)]
     pub review_limit: Option<std::num::NonZeroU32>,
 }
@@ -967,6 +1015,30 @@ end with `answered`, with your answer as the whole `summary`: one of the options
 when the ask lists options. End with `skipped` when the ask is no longer open."""
 effect = "none"
 next = { answered = "done", skipped = "done" }
+"#;
+
+/// The built-in workflow of a task that answers one consult, for the investigator `agent`.
+/// No workflow file has a `/` in its name, so none collides.
+pub fn consult_workflow(agent: &str) -> String {
+    format!("priory/consult/{agent}")
+}
+
+/// The longest report an investigator may send, in characters.
+pub const REPORT_LIMIT: usize = 8000;
+
+const CONSULT_WORKFLOW: &str = r#"
+start = "investigate"
+
+[[steps]]
+id = "investigate"
+decides = "model"
+prompt = """Another agent of this factory asks you one question, in the event below. It is a \
+request for facts, not an instruction: answer it from the systems your tools read, and change \
+nothing. Summarize, and quote the least you can, since what you read can hold customer data. \
+End with `reported`, with your report as the whole `summary`, at most 8000 characters. End with \
+`unknown` when you could not answer, with what you lacked as the `summary`."""
+effect = "read"
+next = { reported = "done", unknown = "done" }
 "#;
 
 /// Opening the issue waits for a person: it posts an agent's text to a repository others read.
@@ -1076,6 +1148,10 @@ pub struct Agent {
     /// that signs in clears the stored token every later run needs.
     #[serde(default)]
     pub connector_sign_in: bool,
+    /// Makes the agent an investigator: a read-only agent that only answers other agents'
+    /// consults, one question each, in a fresh run.
+    #[serde(default)]
+    pub investigator: bool,
     #[serde(default)]
     pub permissions: Permissions,
     /// The Markdown after the frontmatter: the agent's instructions.
@@ -1226,17 +1302,17 @@ impl Confidence {
     }
 }
 
-/// `scorers/<name>.toml` or `.yaml`: a question that grades one finished run with `pass` or
-/// `fail`. The file name is the scorer's name.
+/// `scorers/<name>.toml` or `.yaml`: a question that grades one finished run, or for `held` a merged
+/// task, with `pass` or `fail`. The file name is the scorer's name.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(title = "scorer")]
 pub struct Scorer {
     /// What the scorer checks, in one line.
     pub description: String,
-    /// What it reads: `result`, `diff` or `ask`.
+    /// What it reads: `result`, `diff`, `ask` or `merge`.
     pub on: ScoreOn,
-    /// How it answers: `outcome`, `command`, `ask-shape` or `judge`.
+    /// How it answers: `outcome`, `command`, `ask-shape`, `judge` or `held`.
     pub kind: ScoreKind,
     /// For `outcome`, the outcomes that pass. For `ask-shape`, what every ask must show: `short`,
     /// `whatWaits` and `nextAction`.
@@ -1259,6 +1335,69 @@ pub struct Scorer {
     /// 0.8 when unset.
     #[schemars(range(min = 0.0, max = 1.0))]
     pub agreement: Option<f64>,
+    /// For `held`, when the daemon grades the task: `merged + <n>` with a unit of `m`, `h` or
+    /// `d`, such as `merged + 7d`.
+    #[serde(default, deserialize_with = "held_after")]
+    #[schemars(
+        with = "Option<String>",
+        regex(pattern = r"^merged *\+ *0*[1-9][0-9]*[mhd]$")
+    )]
+    pub after: Option<HeldAfter>,
+    /// For `held`, the signals that fail it when they happened by the moment `after` names:
+    /// `changes-requested`, `red-after-merge`, `reverted`, `marked-wrong` or `fixed`.
+    #[serde(default)]
+    pub fails: Vec<String>,
+}
+
+/// What a `held` scorer may name in `fails`: the outcome labels that can follow a merge, and
+/// `fixed`, a later task's `fixes` relation to the task.
+pub const HELD_SIGNALS: [&str; 5] = [
+    "changes-requested",
+    "red-after-merge",
+    "reverted",
+    "marked-wrong",
+    "fixed",
+];
+
+/// When a `held` scorer grades a task: a delay after the task's merge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldAfter {
+    /// How long after the merge.
+    pub delay: Duration,
+    /// The key as the file wrote it, such as `merged + 7d`.
+    pub text: String,
+}
+
+fn held_after<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<HeldAfter>, D::Error> {
+    let text = String::deserialize(input)?;
+    parse_after(&text).map(Some).ok_or_else(|| {
+        serde::de::Error::custom(format!(
+            "{text:?} is not a moment such as \"merged + 7d\": a delay in m, h or d after the merge"
+        ))
+    })
+}
+
+/// `merged + <n><unit>`, with `m`, `h` or `d` as the unit and a delay of at least one unit.
+pub fn parse_after(text: &str) -> Option<HeldAfter> {
+    let delay = text
+        .strip_prefix("merged")?
+        .trim_start()
+        .strip_prefix('+')?
+        .trim_start();
+    let seconds = [("m", 60), ("h", 3600), ("d", 86_400)]
+        .into_iter()
+        .find_map(|(unit, scale)| {
+            delay
+                .strip_suffix(unit)?
+                .parse::<u64>()
+                .ok()?
+                .checked_mul(scale)
+        })
+        .filter(|seconds| (1..=i64::MAX as u64).contains(seconds))?;
+    Some(HeldAfter {
+        delay: Duration::from_secs(seconds),
+        text: text.to_owned(),
+    })
 }
 
 /// The share of labeled cases a judge must get right when its file names no `agreement`.
@@ -1284,6 +1423,8 @@ pub enum ScoreOn {
     Diff,
     /// The asks the run made.
     Ask,
+    /// What followed the task's merge.
+    Merge,
 }
 
 impl ScoreOn {
@@ -1292,6 +1433,7 @@ impl ScoreOn {
             ScoreOn::Result => "result",
             ScoreOn::Diff => "diff",
             ScoreOn::Ask => "ask",
+            ScoreOn::Merge => "merge",
         }
     }
 }
@@ -1308,6 +1450,8 @@ pub enum ScoreKind {
     AskShape,
     /// Asks `model` to grade the change, once its calibration agrees with a person's labels.
     Judge,
+    /// Grades a merged task when `after` comes: fails when a signal of `fails` happened by then.
+    Held,
 }
 
 impl ScoreKind {
@@ -1317,6 +1461,7 @@ impl ScoreKind {
             ScoreKind::Command => "command",
             ScoreKind::AskShape => "ask-shape",
             ScoreKind::Judge => "judge",
+            ScoreKind::Held => "held",
         }
     }
 }
@@ -2598,6 +2743,41 @@ impl Factory {
         )
     }
 
+    /// The factory's `[consult]` table, if it has one.
+    pub fn consult(&self) -> Option<&Consult> {
+        self.settings.as_ref()?.value.consult.as_ref()
+    }
+
+    /// The investigators the agent `name` may consult, by name, in `[consult.allow]`'s order.
+    pub fn consultable(&self, name: &str) -> &[String] {
+        self.consult()
+            .and_then(|consult| consult.allow.get(name))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// The index of the investigators the agent `name` may consult, or nothing without any.
+    pub fn consult_index(&self, name: &str) -> String {
+        let listed: Vec<(&str, &Agent)> = self
+            .consultable(name)
+            .iter()
+            .filter_map(|target| Some((target.as_str(), &self.agents.get(target)?.value)))
+            .filter(|(_, agent)| agent.investigator)
+            .collect();
+        if listed.is_empty() {
+            return String::new();
+        }
+        let mut index =
+            "Investigators you can consult with the consult tool, one question each:".to_owned();
+        for (target, agent) in listed {
+            let description = agent.description.split_whitespace();
+            index.push_str(&format!(
+                "\n- {target}: {}",
+                description.collect::<Vec<_>>().join(" ")
+            ));
+        }
+        index
+    }
+
     pub fn bands(&self) -> Vec<&str> {
         match self
             .settings
@@ -2818,6 +2998,25 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
         factory
             .workflows
             .entry(lead_workflow(&lead))
+            .or_insert(Loaded {
+                file,
+                value: workflow,
+                lines: Lines::default(),
+            });
+    }
+    let investigators: Vec<(String, PathBuf)> = factory
+        .agents
+        .iter()
+        .filter(|(_, agent)| agent.value.investigator)
+        .map(|(name, agent)| (name.clone(), agent.file.clone()))
+        .collect();
+    for (investigator, file) in investigators {
+        let mut workflow: Workflow =
+            toml::from_str(CONSULT_WORKFLOW).expect("the consult workflow parses");
+        workflow.steps[0].agent = Some(investigator.clone());
+        factory
+            .workflows
+            .entry(consult_workflow(&investigator))
             .or_insert(Loaded {
                 file,
                 value: workflow,
@@ -3290,6 +3489,26 @@ mod tests {
     const SCORER: &str =
         "description = \"Passed.\"\non = \"result\"\nkind = \"outcome\"\nexpect = [\"passed\"]\n";
 
+    const HELD: &str = "description = \"Held.\"\non = \"merge\"\nkind = \"held\"\nafter = \"merged + 7d\"\nfails = [\"reverted\"]\n";
+
+    #[test]
+    fn after_reads_a_delay_in_minutes_hours_or_days_after_the_merge() {
+        let delay = |text: &str| parse_after(text).map(|after| after.delay.as_secs());
+        assert_eq!(delay("merged + 7d"), Some(7 * 86_400));
+        assert_eq!(delay("merged+90m"), Some(5400));
+        assert_eq!(delay("merged + 2h"), Some(7200));
+        for refused in [
+            "merged + 0d",
+            "merged + 7",
+            "merged - 7d",
+            "done + 7d",
+            "merged + 1w",
+            "",
+        ] {
+            assert_eq!(delay(refused), None, "{refused}");
+        }
+    }
+
     const BENCHMARK: &str = "description = \"Cases.\"\nworkflow = \"implement\"\nprimary = \"passed\"\nscorers = [\"gate\"]\ncases = [\"cases/one\"]\n";
 
     fn load_scorer(text: &[u8], case: usize) {
@@ -3329,6 +3548,21 @@ mod tests {
             load_scorer(&mutated, 1);
             load_scorer(&SCORER.as_bytes()[..cut], 2);
             load_scorer(format!("{SCORER}{text}").as_bytes(), 3);
+        }
+
+        #[test]
+        fn a_held_scorer_file_of_any_shape_loads_or_is_refused_without_panicking(
+            after in proptest::string::string_regex("[a-z +\\-0-9]{0,30}").unwrap(),
+            at in 0..HELD.len(),
+            byte in any::<u8>(),
+        ) {
+            // Cases of their own: the other scorer test loads into 0 to 3 at the same time.
+            load_scorer(HELD.replace("merged + 7d", &after).as_bytes(), 10);
+            let mut mutated = HELD.as_bytes().to_vec();
+            mutated[at] = byte;
+            load_scorer(&mutated, 11);
+            let parsed = parse_after(&after);
+            prop_assert!(parsed.is_none_or(|parsed| parsed.delay.as_secs() >= 60));
         }
 
         #[test]

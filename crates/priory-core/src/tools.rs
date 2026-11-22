@@ -37,7 +37,8 @@ pub struct Answer {
     /// The person confirmed that this answer runs the ask's command.
     #[serde(default)]
     pub run: bool,
-    /// Where the answer came from: `cli` or `serve`.
+    /// Where the answer came from: `cli` or `serve`, or `session:<name>` for a person's own
+    /// session through `priory mcp --outside`.
     #[serde(default)]
     pub by: String,
 }
@@ -205,21 +206,36 @@ pub(crate) fn call(
         )
         .optional()?;
     let open_wait = open_wait(&tx, run.id)?;
+    // A consult ends the turn as an ask does: nothing else may end it or sleep it meanwhile.
+    if let Some(consult) = crate::consult::open(&tx, run.task)?
+        && matches!(
+            call.tool.as_str(),
+            "result" | "compact" | "ask" | "wait" | "consult"
+        )
+    {
+        return Ok((
+            Err(format!(
+                "run {} already waits on consult {consult}: end your turn; the report arrives as your next prompt",
+                run.id
+            )),
+            None,
+        ));
+    }
     let refused = match (call.tool.as_str(), open_ask, open_wait) {
-        ("result" | "ask" | "wait", ..) if run.debate.is_some() => {
+        ("result" | "ask" | "wait" | "consult", ..) if run.debate.is_some() => {
             Some(crate::debate::ENDS_WITH_POSITION.to_owned())
         }
-        ("ask", Some(ask), _) | ("result" | "compact", Some(ask), _) => {
+        ("ask" | "consult", Some(ask), _) | ("result" | "compact", Some(ask), _) => {
             Some(format!("run {} already waits on ask {ask}", run.id))
         }
-        ("wait", _, Some(wait)) | ("result" | "compact", _, Some(wait)) => {
+        ("wait" | "consult", _, Some(wait)) | ("result" | "compact", _, Some(wait)) => {
             Some(format!("run {} already waits on wait {wait}", run.id))
         }
-        ("ask" | "wait", ..) if woken(&tx, &run)? => {
+        ("ask" | "wait" | "consult", ..) if woken(&tx, &run)? => {
             Some("an answer or event for this run is queued: end your turn to read it".to_owned())
         }
         // A result, ask or wait would end or sleep the task over feedback it has not read yet.
-        ("result" | "ask" | "wait", ..) if kept(&tx, run.task)? => {
+        ("result" | "ask" | "wait" | "consult", ..) if kept(&tx, run.task)? => {
             Some("feedback for this run is queued: end your turn to read it".to_owned())
         }
         // Its end would wake the task at whatever step the result moved it to.
@@ -251,10 +267,25 @@ pub(crate) fn call(
                 .to_owned(),
         ),
         "result" => match lead_answer(&tx, &run, &call.arguments, trace, head)? {
-            Ok(()) => result(&tx, &run, &call.arguments, factory, head, true)?,
+            Ok(()) => match result(&tx, &run, &call.arguments, factory, head, true)? {
+                Ok(stored) => {
+                    crate::consult::answer(&tx, run.task, run.id, &call.arguments, trace)?
+                        .map(|()| stored)
+                }
+                Err(refused) => Err(refused),
+            },
             Err(refused) => Err(refused),
         },
         "ask" => ask(&tx, &run, &call.arguments, trace, head)?,
+        "consult" => {
+            let asker = crate::consult::Asker {
+                task: run.task,
+                run: run.id,
+                step: &run.step,
+                agent: run.agent.as_deref(),
+            };
+            crate::consult::ask(&tx, &asker, &call.arguments, trace)?
+        }
         "wait" => {
             let (stored, ended) = wait(&tx, &run, &call.arguments, factory)?;
             kill = ended;
@@ -2433,7 +2464,7 @@ pub(crate) fn wake_on(
     set_ready(tx, task)
 }
 
-fn set_ready(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
+pub(crate) fn set_ready(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
     tx.execute(
         "UPDATE tasks SET state = 'ready', reason = NULL WHERE id = ?1 AND state = 'asleep'",
         [task],
@@ -2528,6 +2559,19 @@ fn over_budget(
         [run.task],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
+    let tokens = tokens.and_then(|tokens| serde_json::from_str::<Value>(&tokens).ok());
+    Ok(judged(factory, run, budget, tokens, model))
+}
+
+/// `tokens` of `model`, a step's count, priced against the step's `budget`: `None` under it, else
+/// whether it is over, or its cost unknown, and why.
+fn judged(
+    factory: &Factory,
+    run: &Run,
+    budget: f64,
+    tokens: Option<Value>,
+    model: Option<String>,
+) -> Option<(bool, String)> {
     let unknown = |why: String| {
         Some((
             false,
@@ -2537,27 +2581,141 @@ fn over_budget(
             ),
         ))
     };
-    let Some(tokens) = tokens.and_then(|tokens| serde_json::from_str::<Value>(&tokens).ok()) else {
-        return Ok(unknown("its transcript gave no tokens".to_owned()));
+    let Some(tokens) = tokens else {
+        return unknown("its transcript gave no tokens".to_owned());
     };
     let Some(model) = model else {
-        return Ok(unknown("its transcript named no model".to_owned()));
+        return unknown("its transcript named no model".to_owned());
     };
     let Some(price) = factory.prices.get(&model) else {
-        return Ok(unknown(format!("price missing for {model}")));
+        return unknown(format!("price missing for {model}"));
     };
     let spent = trace::priced(&tokens, price);
     if spent <= budget {
-        return Ok(None);
+        return None;
     }
-    Ok(Some((
+    Some((
         true,
         format!(
             "step {} spent {}, over its budget of ${budget:.2}",
             run.step,
             dollars(spent, budget)
         ),
-    )))
+    ))
+}
+
+/// How often the daemon reads a turning run's transcript for its step's budget.
+pub(crate) const BUDGET_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// When the daemon last read each turning run's transcript for its budget, and its size then.
+#[derive(Default)]
+pub(crate) struct Peeked(std::collections::HashMap<i64, (std::time::Instant, u64)>);
+
+impl Peeked {
+    /// Whether to read the transcript of `run`, `size` bytes long with `read` of them counted: once
+    /// it grew past the count, at once the first time, then at most once per `BUDGET_EVERY`.
+    fn due(&mut self, run: i64, size: u64, read: u64, now: std::time::Instant) -> bool {
+        if size <= read {
+            return false;
+        }
+        match self.0.get(&run) {
+            Some(&(_, seen)) if seen == size => false,
+            Some(&(at, _)) if now.duration_since(at) < BUDGET_EVERY => false,
+            _ => {
+                self.0.insert(run, (now, size));
+                true
+            }
+        }
+    }
+}
+
+/// A run mid-turn, with its transcript, the bytes of it counted, and its task's step count.
+type Turning = (Run, String, i64, Option<String>, Option<String>);
+
+/// Ends each run mid-turn whose step has a budget once its step's tokens, with those its
+/// transcript gained since its last count, pass the budget or cannot be priced, and fails its task
+/// as a turn end would. The read counts nothing: a later read may end inside the message this one
+/// ends in, so the turn end still counts the turn. A run that sent or holds its result is left to
+/// its turn end, where the result stands. Returns the tmux sessions to kill.
+pub(crate) fn over_budget_in_turn(
+    db: &mut Connection,
+    trace: &Trace,
+    peeked: &mut Peeked,
+) -> rusqlite::Result<Vec<String>> {
+    let factory = trace.factory;
+    let turning: Vec<Turning> = db
+        .prepare(
+            "SELECT runs.id, runs.task, runs.step, runs.agent, tasks.workflow, runs.tmux,
+             runs.session, runs.debate, runs.transcript, runs.read, tasks.tokens, tasks.model
+             FROM runs JOIN tasks ON tasks.id = runs.task
+             WHERE runs.ended IS NULL AND runs.ready AND runs.idle = 0
+             AND runs.transcript IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM results WHERE results.run = runs.id)
+             AND NOT EXISTS (SELECT 1 FROM gates WHERE gates.run = runs.id AND gates.state = 'grading')
+             ORDER BY runs.id",
+        )?
+        .query_map([], |row| {
+            Ok((
+                Run {
+                    id: row.get(0)?,
+                    task: row.get(1)?,
+                    step: row.get(2)?,
+                    agent: row.get(3)?,
+                    workflow: row.get(4)?,
+                    tmux: row.get(5)?,
+                    session: row.get(6)?,
+                    debate: row.get(7)?,
+                },
+                row.get(8)?,
+                row.get(9)?,
+                row.get(10)?,
+                row.get(11)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    peeked
+        .0
+        .retain(|id, _| turning.iter().any(|(run, ..)| run.id == *id));
+    let now = std::time::Instant::now();
+    let mut killed = Vec::new();
+    for (run, transcript, read, tokens, model) in turning {
+        let Some(budget) =
+            step(&factory.workflows, &run.workflow, &run.step).and_then(Step::budget)
+        else {
+            continue;
+        };
+        let path = Path::new(&transcript);
+        let size = std::fs::metadata(path).map_or(0, |file| file.len());
+        if !peeked.due(run.id, size, read as u64, now) {
+            continue;
+        }
+        // An unreadable transcript, or one with no whole message yet, waits for the turn end.
+        let Some(usage) = (trace.usage)(path, read as u64).filter(|usage| usage.messages > 0)
+        else {
+            continue;
+        };
+        let counted = tokens
+            .and_then(|tokens| serde_json::from_str::<Value>(&tokens).ok())
+            .unwrap_or_else(|| json!({}));
+        let count = |field: &str| counted[field].as_u64().unwrap_or(0);
+        let tokens = json!({
+            "input": count("input") + usage.input,
+            "output": count("output") + usage.output,
+            "cache_read": count("cache_read") + usage.cache_read,
+            "cache_write": count("cache_write") + usage.cache_write,
+        });
+        let Some((_, reason)) = judged(factory, &run, budget, Some(tokens), usage.model.or(model))
+        else {
+            continue;
+        };
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        trace::account(&tx, trace, run.id, None)?;
+        end(&tx, run.id, "budget")?;
+        set(&tx, run.task, "failed", None, Some(&reason))?;
+        tx.commit()?;
+        killed.push(run.tmux);
+    }
+    Ok(killed)
 }
 
 /// `spent` in dollars, to cents unless cents would hide that it passed `budget`.
@@ -2841,6 +2999,10 @@ pub(crate) fn settle(
         "UPDATE waits SET run = ?2 WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND NOT daemon",
         params![run.task, run.id],
     )?;
+    tx.execute(
+        "UPDATE consults SET run = ?2 WHERE task = ?1 AND outcome IS NULL",
+        params![run.task, run.id],
+    )?;
     // An answer whose command still runs wakes the task with its outcome; until then the task stays
     // `running`, so the sweep leaves its worktree alone.
     if commanding(tx, run.task)? {
@@ -2854,7 +3016,10 @@ pub(crate) fn settle(
             |_| Ok(()),
         )
         .optional()?;
-    if asked.is_none() && open_wait(tx, run.id)?.is_none() {
+    if asked.is_none()
+        && open_wait(tx, run.id)?.is_none()
+        && crate::consult::open(tx, run.task)?.is_none()
+    {
         return Ok(None);
     }
     // A person's `say` that beat the Stop is the run's next prompt, as an answer would be.
@@ -2879,6 +3044,81 @@ pub const LEAD_TRIGGER: &str = "priory/lead";
 /// Who answers an ask the daemon answered with its recommendation, at or above its task's
 /// `auto_answer` level.
 pub const AUTO: &str = "auto";
+
+/// What `answered_by` starts with for an ask a person's own session answered or dismissed through
+/// `priory mcp --outside`: `session:` and the session's name.
+pub const SESSION: &str = "session:";
+
+/// Who decided, at the start of a sentence: `Session <name>` for an outside session, else
+/// `A person`.
+fn decider(by: &str) -> String {
+    match by.strip_prefix(SESSION) {
+        Some(session) => format!("Session {session}"),
+        None => "A person".to_owned(),
+    }
+}
+
+/// Why a person's own session may not answer or dismiss ask `ask`, or `None` when it may. It may
+/// decide only what a lead may: an agent's or outside ask, or a human step's, that
+/// `explain::delegable` allows, and never an outside ask it asked itself. Priory's own asks, such as a hold's, a gate's or a spend cap's, a
+/// graded plan's approval and a debate's pick stay a person's.
+pub(crate) fn outside_refusal(
+    tx: &Transaction,
+    ask: i64,
+    session: Option<&str>,
+    workflows: &Workflows,
+) -> rusqlite::Result<Option<String>> {
+    let found = tx
+        .query_row(
+            "SELECT asks.kind, asks.run IS NOT NULL, coalesce(asks.step, ''), asks.command IS NOT NULL,
+               coalesce(tasks.workflow, ''), coalesce(asks.session, '') = coalesce(?2, '')
+             FROM asks LEFT JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1",
+            params![ask, session],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, bool>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, bool>(5)?,
+                ))
+            },
+        )
+        .optional()?;
+    // A missing ask is refused by `open_ask`, with the same words a person gets.
+    let Some((kind, asked_by_agent, at, command, workflow, own)) = found else {
+        return Ok(None);
+    };
+    if kind == "outside" {
+        return Ok(match (command, own) {
+            (true, _) => Some("it carries a command".to_owned()),
+            // A session that put a question to the person cannot settle it for them.
+            (_, true) => Some("this session asked it".to_owned()),
+            _ => None,
+        });
+    }
+    if crate::hold::of_ask(tx, ask)?.is_some() || (kind == "agent" && !asked_by_agent) {
+        return Ok(Some("Priory asked it, not an agent".to_owned()));
+    }
+    let Some(flow) = workflows.get(&workflow) else {
+        return Ok(Some(format!(
+            "its workflow {workflow} is no longer in the factory"
+        )));
+    };
+    if kind == "step" {
+        match flow.value.step(&at) {
+            Some(step) if step.debate.is_some() => {
+                return Ok(Some("it picks a debate's answer".to_owned()));
+            }
+            Some(step) if step.decides != Decider::Human => {
+                return Ok(Some("it approves a graded plan".to_owned()));
+            }
+            _ => {}
+        }
+    }
+    Ok(explain::undelegable(&flow.value, &at, command))
+}
 
 /// The lead a new ask of `task` at step `at` goes to: a `hands-off` task's lead, unless the ask
 /// runs a command, its answer can let an irreversible step run, or its step approves one.
@@ -3065,7 +3305,7 @@ fn unresume(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
 
 /// Queues `text` as a wake prompt: `text`, then how to end the step the task is in, if it is a
 /// model step and no queued prompt says so already.
-fn wake(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64> {
+pub(crate) fn wake(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64> {
     let ending: Option<String> = tx
         .query_row(
             "SELECT ending FROM tasks WHERE id = ?1 AND NOT EXISTS (
@@ -3679,8 +3919,12 @@ fn answer_in(
             trace::ended(tx, trace, task, &chosen, None)?;
             crate::grades::answered(tx, trace, task, &at, &chosen, &target)?;
         }
-        let note = note
-            .map(|note| format!("A person answered {chosen} on step {at}, with a note: {note}"));
+        let note = note.map(|note| {
+            format!(
+                "{} answered {chosen} on step {at}, with a note: {note}",
+                decider(&answer.by)
+            )
+        });
         let next = step(workflows, &workflow, &target).map(|next| &next.decides);
         if let (Some(note), Some(Decider::Model)) = (&note, next) {
             queue_first(tx, task, note)?;
@@ -3880,6 +4124,15 @@ fn open_ask(
     Ok(Ok(ask))
 }
 
+/// Why ask `id` cannot be answered or dismissed at `revision`, as `priory answer` is told.
+pub(crate) fn still_open(
+    tx: &Transaction,
+    id: i64,
+    revision: i64,
+) -> rusqlite::Result<Result<(), String>> {
+    Ok(open_ask(tx, id, Some(revision))?.map(drop))
+}
+
 /// A person's `priory dismiss`: it closes an open ask with no answer, at `revision` if given.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Dismiss {
@@ -3895,18 +4148,20 @@ pub(crate) fn dismiss(
     factory: &priory_factory::factory::Factory,
 ) -> rusqlite::Result<Result<String, String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let dismissed = dismiss_in_tx(&tx, dismiss, factory)?;
+    let dismissed = dismiss_in_tx(&tx, dismiss, factory, None)?;
     if dismissed.is_ok() {
         tx.commit()?;
     }
     Ok(dismissed)
 }
 
-/// Dismisses an ask in `tx`, writing nothing when it refuses.
+/// Dismisses an ask in `tx`, writing nothing when it refuses. `by` names an outside session that
+/// dismissed it, as `answered_by` does; `None` is a person.
 pub(crate) fn dismiss_in_tx(
     tx: &Transaction,
     dismiss: &Dismiss,
     factory: &priory_factory::factory::Factory,
+    by: Option<&str>,
 ) -> rusqlite::Result<Result<String, String>> {
     let ask = match open_ask(tx, dismiss.dismiss, dismiss.revision)? {
         Ok(ask) => ask,
@@ -3919,8 +4174,8 @@ pub(crate) fn dismiss_in_tx(
         )));
     }
     tx.execute(
-        "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'dismissed' WHERE id = ?1",
-        [dismiss.dismiss],
+        "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'dismissed', answered_by = ?2 WHERE id = ?1",
+        params![dismiss.dismiss, by],
     )?;
     withdraw_waits(tx, dismiss.dismiss, "dismissed")?;
     drop_lead(tx, dismiss.dismiss, &format!("ask {label} was dismissed"))?;
@@ -3929,7 +4184,10 @@ pub(crate) fn dismiss_in_tx(
         wake(
             tx,
             task,
-            &format!("A person dismissed ask {label} without an answer. Continue your task."),
+            &format!(
+                "{} dismissed ask {label} without an answer. Continue your task.",
+                decider(by.unwrap_or_default())
+            ),
         )?;
         if ask.state == "asleep" {
             set(tx, task, "ready", None, None)?;
@@ -5200,6 +5458,23 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use serde_json::json;
+
+    #[test]
+    fn a_turning_runs_transcript_is_read_once_it_grows_then_once_a_minute() {
+        let mut peeked = Peeked::default();
+        let start = std::time::Instant::now();
+        assert!(!peeked.due(1, 100, 100, start), "nothing past the count");
+        assert!(
+            peeked.due(1, 200, 100, start),
+            "the first growth reads at once"
+        );
+        let soon = start + std::time::Duration::from_secs(5);
+        assert!(!peeked.due(1, 300, 100, soon), "a minute has not passed");
+        let later = start + BUDGET_EVERY;
+        assert!(!peeked.due(1, 200, 100, later), "it did not grow since");
+        assert!(peeked.due(1, 300, 100, later));
+        assert!(peeked.due(2, 50, 0, soon), "each run has its own minute");
+    }
 
     /// A state with task 1 waiting on an open step ask at revision 1.
     fn waiting() -> Connection {

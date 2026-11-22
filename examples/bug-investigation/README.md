@@ -48,6 +48,13 @@ client secret in `INTERCOM_CLIENT_SECRET`, and replace `my-workspace` in `factor
 workspace id. Or delete `triggers/intercom-conversation.toml` and the `[webhooks.intercom]` table.
 See [docs/intake/intercom.md](../../docs/intake/intercom.md).
 
+The `sentry` agent answers the investigator's questions about Sentry, such as which release
+introduced an issue. The investigator never gets Sentry's MCP server itself (see
+[consult](../../docs/daemon/tools.md#consulting-an-investigator)). Add the server to your own Claude
+Code config with `claude mcp add --scope user sentry ...`, with a token that has the read scopes
+`[mcp.sentry]` in `factory.toml` states, and check that `prices.toml` prices the agent's model. Or
+delete `agents/sentry/`, `prices.toml` and the `[consult]` and `[mcp.sentry]` tables.
+
 ## Gates
 
 - `fix` takes `passed` only once the trace records a `priory gate` that passed at the branch's

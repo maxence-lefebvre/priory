@@ -15,6 +15,13 @@ posts only after you approve it.
 | `approve-announcement` | You read the draft and pick `post` or `skip`. |
 | `announce` | The agent posts the approved message to Slack. |
 
+## Did the change hold?
+
+`scorers/held-a-week.toml` grades each merged task a week after its merge. It fails when a revert,
+a red check on the merge commit, or a later task that fixes it came within that week. The daemon
+writes the grade to the trace, and `priory task ID --json` lists it in `held_scores`. See
+[score.md](../../docs/daemon/score.md#held-scorers).
+
 ## What it needs
 
 `gh` logged in to GitHub with access to the repository, `claude` on `PATH`, a Slack token or

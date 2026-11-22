@@ -483,7 +483,7 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     assert_eq!(queue["running"], json!([]));
     assert_eq!(
         api(&address, "/api/desk")["counts"],
-        json!({ "asleep": 0, "snoozed": 0, "unrouted": 0, "unheard": 0, "outsider": 0 })
+        json!({ "asleep": 0, "snoozed": 0, "unrouted": 0, "unheard": 0, "dropped": 0, "outsider": 0 })
     );
     let desk = api(&address, "/api/desk");
     assert_eq!(desk["banner"], Value::Null);
@@ -3166,6 +3166,18 @@ fn the_report_endpoints_return_what_report_show_json_prints() {
     assert_eq!(api(&address, "/api/reports/latest")["report"]["task"], 1);
     assert_eq!(api(&address, "/api/reports/2"), setup.shown(&["2"]));
     assert_eq!(get(&address, "/api/reports/3", Some(TOKEN)).0, 404);
+}
+
+#[test]
+fn the_latest_report_of_a_factory_with_none_is_an_empty_state() {
+    let mut setup = Setup::new("report-none", SERVE);
+    setup.seed();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let latest = api(&address, "/api/reports/latest");
+
+    assert_eq!(latest["report"], Value::Null);
+    assert!(latest["revision"].is_i64(), "{latest}");
 }
 
 #[test]
