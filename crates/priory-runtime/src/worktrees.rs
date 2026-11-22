@@ -1,4 +1,4 @@
-use crate::runtime::{clone_of, git, run};
+use crate::runtime::{OWN_GIT, clone_of, git, run};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -136,7 +136,7 @@ fn unsettled(home: &Path, found: &Found) -> Result<Option<String>, String> {
     Ok(None)
 }
 
-/// Whether a process has its working directory inside `path`.
+/// Whether a process other than Priory's own git commands has its working directory inside `path`.
 fn occupied(path: &Path) -> bool {
     let Ok(path) = fs::canonicalize(path) else {
         return false;
@@ -147,7 +147,18 @@ fn occupied(path: &Path) -> bool {
         .flatten()
         .any(|process| {
             fs::read_link(process.path().join("cwd")).is_ok_and(|cwd| cwd.starts_with(&path))
+                && !own(&process.path())
         })
+}
+
+/// Whether the process is a git command Priory runs, or a child of one, which ends on its own.
+fn own(process: &Path) -> bool {
+    let own = format!("{}={}", OWN_GIT.0, OWN_GIT.1);
+    fs::read(process.join("environ")).is_ok_and(|environ| {
+        environ
+            .split(|byte| *byte == 0)
+            .any(|var| var == own.as_bytes())
+    })
 }
 
 /// Removes the worktree and its branch. Git refuses both when anything is left to lose.
