@@ -11,7 +11,7 @@ You need:
 - Linux. Priory is built and tested on Linux only. With a systemd user session, every agent runs
   in a slice that caps its CPU and memory; without one, agents still run (see
   [agents-slice.md](docs/daemon/agents-slice.md)).
-- On `PATH`: `git`, `tmux`, `gh` logged in to GitHub, and `claude`, logged in. The agent of this
+- On `PATH`: `git`, `tmux`, `openssl`, `gh` logged in to GitHub, and `claude`, logged in. The agent of this
   tutorial runs Claude Code. To run Codex instead, set `harness = "codex"` in step 2 and read
   [codex.md](docs/daemon/codex.md).
 - The Rust toolchain. `rust-toolchain.toml` pins the version, and `rustup` installs it on the first
@@ -31,39 +31,16 @@ Five words come back on every page. [Concepts](docs/concepts.md) explains them i
 ```sh
 git clone https://github.com/maxence-lefebvre/priory
 cd priory
-cargo build --release
-export PATH="$PWD/target/release:$PATH"
+cargo install --path crates/priory
 priory --version
 ```
 
-The last command prints the version, such as `priory 0.1.0`.
+`cargo install` builds Priory and puts `priory` in `~/.cargo/bin`, which `rustup` added to your
+`PATH`, so every terminal you open finds it. The last command prints the version, such as
+`priory 0.1.0`.
 
-### Install a release instead
-
-`install.sh` installs the binary of the latest
-[release](https://github.com/maxence-lefebvre/priory/releases) to `~/.local/bin`. When that page
-lists no release, the script fails with a 404: build from source.
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/maxence-lefebvre/priory/main/install.sh | sh
-```
-
-The script takes the binary for Linux x86_64, Linux aarch64 or macOS on Apple silicon, and checks
-it against its `.sha256`. The `.sha256` sits beside the binary in the same release, so it only
-catches a broken download. When [gh](https://cli.github.com/) is on your `PATH` and signed in, the
-script also runs `gh attestation verify`, which proves this repository's release workflow built the
-binary, and refuses a binary it cannot verify. Without gh, it prints a note and skips that check.
-Run `sh install.sh --prefix /usr/local` from a clone to install to `/usr/local/bin`. Set
-`PRIORY_RELEASE_URL` to a release's download address to pick a release other than the latest. With
-[cargo-binstall](https://github.com/cargo-bins/cargo-binstall),
-`cargo binstall --git https://github.com/maxence-lefebvre/priory priory` downloads the same binary.
-Each release also holds `priory-herdr.tar.gz`, the [Herdr adapter](adapters/herdr/), and
-`priory-github-extension.zip`, the [GitHub extension](adapters/github/README.md).
-
-The release binaries leave out the cargo features. A build from source can add them: the
-in-process embedding model for search with `--features model`, and the Postgres event log, which
-lets several machines share one log, with `--features postgres` (see
-[`[log]`](docs/reference/factory.md#log)).
+To install a prebuilt binary instead, once a release exists, see
+[How to install a release](docs/installing-a-release.md).
 
 ## 2. Write a factory
 
@@ -162,10 +139,13 @@ see it drawn, paste it into a Mermaid viewer, or open Flows in the web view afte
 `approve-pr` that approves it. `priory check` refuses a workflow that reaches an irreversible step
 with no person's approval.
 
-## 4. Run the daemon
+## 4. Run it
 
-The daemon turns requests into tasks and runs the agents. In a first terminal, from your working
-folder:
+Priory runs as two processes. The daemon turns requests into tasks and runs the agents. The intake
+polls GitHub every 60 seconds, for the trigger's label and for the checks of the pull requests
+your tasks open.
+
+In a first terminal, from your working folder, start the daemon:
 
 ```sh
 mkdir -p ~/.local/state/priory-oss
@@ -180,12 +160,19 @@ without it. `PRIORY_TOKEN` is the password of the web view: with a `[serve]` tab
 also refuses to start without it. Copy the token the `echo` printed. The daemon prints
 `priory: serving on http://127.0.0.1:7340`. Leave it running.
 
+In a second terminal, from your working folder, start the intake, and leave it running too:
+
+```sh
+export PRIORY_DB=~/.local/state/priory-oss/priory.db
+priory intake example
+```
+
 Open `http://127.0.0.1:7340` in a browser on the same machine and paste the token. The web view
 opens on the Desk, which is empty. The server listens on this machine only.
 
 ## 5. Ask for a first task
 
-In a second terminal, from your working folder, with your repository in place of `owner/name`:
+In a third terminal, from your working folder, with your repository in place of `owner/name`:
 
 ```sh
 export PRIORY_DB=~/.local/state/priory-oss/priory.db
@@ -240,24 +227,19 @@ When a step fails, `priory actions` shows the error of a code step such as `open
 
 ## 7. Let a label start a task
 
-The trigger you wrote starts the same workflow from GitHub. It needs the second process, the
-intake, which polls GitHub every 60 seconds. In a third terminal, from your working folder:
-
-```sh
-export PRIORY_DB=~/.local/state/priory-oss/priory.db
-priory intake example
-```
-
-Add the label `agent` to an issue of your repository. Within a minute, `priory tasks` lists a new
-task with a key such as `github:owner/name#42`, and it goes through the same steps.
+The trigger you wrote starts the same workflow from GitHub. Add the label `agent` to an issue of
+your repository. On its next poll, the intake sees the label, and `priory tasks` lists a new task
+with a key such as `github:owner/name#42`. It goes through the same steps.
 
 ## Next steps
 
 - Start from a ready-made factory: [How to start from a starter factory](docs/starting-from-a-starter.md).
+- Install a prebuilt binary: [How to install a release](docs/installing-a-release.md).
 - Answer asks from a phone, with notifications: [How to use the web view from a phone](docs/using-the-web-view.md).
 - Keep both processes running: [How to run Priory as services](docs/running-as-services.md).
 - Try a factory with fake agents before a real one runs: [How to test a factory end to end](docs/testing-a-factory.md).
-- Look up a command: [the command reference](docs/reference/cli.md). The ones you need most are below.
+- Look up a command: [the command reference](docs/reference/cli.md). `priory` with no arguments
+  prints its usage.
 - Look up a key of a factory file: [the reference](docs/reference/README.md).
 - Understand what the daemon does with a task: [Concepts](docs/concepts.md), then
   [A task's life](docs/daemon/README.md#a-tasks-life).
@@ -269,22 +251,3 @@ task with a key such as `github:owner/name#42`, and it goes through the same ste
 - Work from Herdr or from GitHub's pull request page: [the Herdr adapter](docs/adapters/herdr.md) and
   [the GitHub extension](adapters/github/README.md).
 - Queue a Slack thread from Slack: [the message shortcut](docs/intake/slack.md#message-shortcut).
-
-## Day to day
-
-| Command | What it does |
-| ------- | ------------ |
-| `priory desk` | Lists what waits on you: asks, blocked and failed tasks, held tasks, the queue |
-| `priory answer ASK OPTION --revision N` | Answers an ask, at the revision `priory asks` prints for it |
-| `priory tasks` | Lists tasks in start order |
-| `priory task TASK --json` | Prints one task with its brief, plan, pull request, runs and asks |
-| `priory actions` | Lists each code step's action with its error and output: read it when a code step failed |
-| `priory attach TASK [--read-only]` | Attaches your terminal to a task's agent |
-| `priory say TASK TEXT` | Sends a task's agent a message, waking it if it sleeps |
-| `priory resume TASK` | Resumes a blocked task |
-| `priory cancel TASK` | Drops an active task and ends its run |
-| `priory revive TASK` | Restarts a failed or dropped task |
-| `priory pause [REASON]`, `priory unpause` | Stops new tasks from starting, then lets them start again |
-
-[The command reference](docs/reference/cli.md) lists every command with its flags. Run `priory`
-with no arguments to print its usage.
