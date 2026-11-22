@@ -41,7 +41,7 @@ impl CloudwatchWebhook {
     }
 
     /// Verifies, maps and publishes one delivery. EventBridge waits 5 seconds for the reply, so the
-    /// route makes no network call, and every delivery Priory takes or drops on purpose gets `202`.
+    /// route makes no call to AWS, and every delivery Priory takes or drops on purpose gets `202`.
     pub fn receive(&self, bus: &mut Result<Box<dyn Log>, String>, request: &Request) -> Reply {
         let token = request.header(TOKEN);
         if !token.is_some_and(|token| http::same(token, self.secret.as_bytes())) {

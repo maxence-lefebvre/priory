@@ -18,8 +18,9 @@ Priory never polls CloudWatch and never holds AWS credentials. It only checks th
 API destination's connection sends. `priory check` refuses a `cloudwatch` trigger without
 `[webhooks.cloudwatch]`, since no other path would ever fire it.
 
-EventBridge retries a failed delivery for up to 24 hours by default. A change still lost after
-that, for example while Priory is down for a day, never reaches the factory.
+EventBridge retries a delivery that times out or gets `401`, `407`, `409`, `429` or a `5xx`, by
+default for up to 24 hours and 185 attempts. A change still lost after that, for example while
+Priory is down for a day, never reaches the factory unless the target has a dead-letter queue.
 
 ## The token comes first
 
@@ -40,8 +41,13 @@ anyone who reads one request can replay it or send another body. Keep the endpoi
 as an API destination requires, and keep the secret out of logs. A replay of a known event publishes
 nothing (see [Duplicates](#duplicates)).
 
-EventBridge waits 5 seconds for a reply. The route makes no network call: it checks, maps,
-publishes on the local log and replies.
+EventBridge waits 5 seconds for a reply. The route makes no call to AWS: it checks, maps, publishes
+on the factory's event log and replies.
+
+A `401` makes EventBridge deauthorize an API key connection. Once the secret in Priory and the
+value in the connection differ, the connection stops delivering until you edit it with the right
+value, even after Priory is fixed. EventBridge emits a connection state event that you can alarm
+on.
 
 ## Setting it up
 
@@ -122,6 +128,8 @@ message (see [envelope.md](envelope.md#duplicates)), and the server replies
 
 - A change lost after EventBridge's retries never reaches the factory. Nothing polls CloudWatch to
   recover it.
+- A wrong or rotated secret deauthorizes the connection, and only editing the connection restores
+  it.
 - The token is a shared value, not a signature over the body.
 - Alarm configuration changes publish nothing.
 - A body over 1 MiB is refused. An alarm state change is a few kilobytes.
@@ -133,6 +141,7 @@ Read on 2026-11-22:
 [API destinations](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-api-destinations.html),
 [Connections](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-target-connection.html),
 [Connection authorization methods](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-target-connection-auth.html),
+[De-authorizing connections](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-target-connection-deauthorize.html),
 [Creating a connection](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-target-connection-create.html),
 [Creating an API destination](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-api-destination-create.html),
 [Targets](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-targets.html).
