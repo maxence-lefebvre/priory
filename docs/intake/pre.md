@@ -127,7 +127,11 @@ once for the whole factory, so `pre` runs once per event, not once per runner.
 A webhook sender waits for its reply, and a script may take 60 seconds. So the server still replies
 `202` once it published the source event. In that same step it stores the request in the state
 file, then runs `pre` on the stored requests one at a time, oldest first, and publishes each
-decision. A server that restarts finds the stored requests and runs them.
+decision. A server that restarts finds the stored requests and runs them. It does so even when no
+trigger has a `pre` script any more: a request whose trigger lost its script, or was removed, is
+published as the trigger built it. A stored request that does not parse, such as one an older
+Priory wrote, is deleted and posts one report from `priory`,
+`dropped a stored webhook request that does not parse: <error>`, so the requests behind it run.
 
 Each process runs one script at a time, so a slow script delays the events behind it by at most its
 timeout each.
