@@ -118,7 +118,9 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   History. The Desk panel shows the same mark under a routed ask's question. The helpers
   `routedMark`, `routedNote` and `answeredBy` live in `lib/priory.js`, as in the web view's
   `asks.js`; a test keeps the two word for word.
-- **List.** The saved views are Open, Snoozed, Answered and All, each with its count. The facet
+- **List.** The saved views are Open, Snoozed, Answered and All, each with its count. Open, Snoozed
+  and All's open group list the asks oldest first by `since`, other runners' asks among this
+  runner's. The facet
   chips Command, Lane, Band, Risk and Task narrow every view. Band lists the bands in the factory's
   order from the listing's `bands`, and puts an ask with no band, such as an outside ask, under
   `none`. Risk lists `irreversible`, `red`, `yellow`, `green`, then `none` for an ask whose `risk`
@@ -155,9 +157,12 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
 
 The detail shows the sections Why, Brief, Plan, PR, Trace, History and Command. Brief shows the
 request and the `groom` step's result, Plan the `plan` step's result or else the task's
-`progress`, PR the pull request's title, branches, state and checks, then the task's stack when it
+`progress`, PR the pull request's title, branches, state, review and checks, then the task's stack when it
 has two or more pull requests (see [Stacks](#stacks)), and Trace each run with its
-span, outcome and tokens. A section the task lacks is left out with its chip, as DESIGN.md says.
+span, outcome and tokens. A check shows a check, a cross, a clock while it has no conclusion, or a
+dash when skipped or neutral; review and check states read in plain words, such as "changes
+requested" and "passed", as `checkState` and `stateWords` in `lib/priory.js` say them for the web too.
+A section the task lacks is left out with its chip, as DESIGN.md says.
 History lists every revision and refused answer of the ask, and its answer, newest first. A refused
 answer shows on a warn tile. Briefs, plans and results draw as plain text, like the agent's text.
 

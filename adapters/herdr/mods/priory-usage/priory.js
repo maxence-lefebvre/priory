@@ -270,6 +270,16 @@ export function sinceWords(what) {
   return /^[a-z_]+(\.[a-z_]+)+$/.test(type) ? eventWords(type) + what.slice(type.length) : what;
 }
 
+/** The tile a check draws by its conclusion: one with none has not finished (DESIGN.md, Pull request summary). @param {string | null} conclusion */
+export function checkState(conclusion) {
+  if (!conclusion) return "running";
+  if (conclusion === "success") return "passed";
+  return ["skipped", "neutral"].includes(conclusion) ? "skipped" : "failed";
+}
+
+/** A review or check state in plain words: `changes_requested` reads "changes requested", `success` "passed". @param {string | null} state */
+export const stateWords = (state) => (state === "success" ? "passed" : String(state ?? "").replaceAll("_", " "));
+
 /**
  * A task's `stack` for the views; one pull request keeps the single PR look. Only `latest`, the
  * task's `pull_request`, has known checks.

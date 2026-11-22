@@ -1,6 +1,6 @@
 // The Asks panel's view model: `priory asks --all --json` in, rows and states out. No drawing, no IO.
 
-import { age, ago, answeredBy, autolink, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
+import { age, ago, answeredBy, autolink, checkState, stateWords, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
 
 /** @typedef {{ pattern: string, url: string }[]} Links the rules `priory links` lists */
 
@@ -58,8 +58,10 @@ export function asksList(all, { view, now, bands = [], facets = {} }) {
   const asks = all.filter((ask) => (!facets.command || ask.command) && (!facets.lane || ask.lane === facets.lane)
     && (!facets.band || band(ask) === facets.band) && (!facets.risk || risks(ask).includes(facets.risk))
     && (!facets.task || ask.key === facets.task) && (!facets.runner || ask.runner === facets.runner));
-  const open = asks.filter((ask) => ask.state === "open" && !snoozed(ask, now));
-  const asleep = asks.filter((ask) => snoozed(ask, now));
+  // `since` may carry any offset, and other runners' asks come last, so sort by instant as the web's askGroups.
+  const unanswered = asks.filter((ask) => ask.state === "open").sort((a, b) => (Date.parse(a.since) || 0) - (Date.parse(b.since) || 0));
+  const open = unanswered.filter((ask) => !snoozed(ask, now));
+  const asleep = unanswered.filter((ask) => snoozed(ask, now));
   const backToday = open.filter((ask) => ask.back_early && sameDay(ask.back_early.at, now));
   const answered = asks.filter((ask) => ask.state === "answered").sort((a, b) => (b.answered_at ?? "").localeCompare(a.answered_at ?? ""));
   const answeredToday = answered.filter((ask) => ask.answered_at && sameDay(ask.answered_at, now));
@@ -78,7 +80,7 @@ export function asksList(all, { view, now, bands = [], facets = {} }) {
     snoozed: [section("snoozed", "Snoozed", asleep), section("back", "Back early today", backToday)],
     answered: [section("today", "Answered today", answeredToday), section("earlier", "Answered earlier", answeredEarlier)],
     all: [
-      section("open", "Open", asks.filter((ask) => ask.state === "open"), `${open.length + asleep.length}, oldest first`),
+      section("open", "Open", unanswered, `${unanswered.length}, oldest first`),
       section("today", "Answered today", answeredToday),
       section("earlier", "Answered earlier", answeredEarlier),
       section("withdrawn", "Withdrawn", withdrawn),
@@ -180,8 +182,8 @@ function pullRequest(pull, stack) {
   return {
     title: `#${pull.number} ${pull.title ?? ""}`.trim(),
     line: `${pull.branch} into ${pull.base}, head ${String(pull.head_sha).slice(0, 7)}, ${pull.state}`,
-    checks: pull.checks.map((/** @type {any} */ check) => ({ name: check.name, ok: check.conclusion === "success", text: check.conclusion })),
-    review: pull.review,
+    checks: pull.checks.map((/** @type {any} */ check) => ({ name: check.name, state: checkState(check.conclusion), text: check.conclusion ? stateWords(check.conclusion) : "running" })),
+    review: pull.review ? stateWords(pull.review) : null,
     ...(label ? { prs: label, stack: entries } : {}),
   };
 }

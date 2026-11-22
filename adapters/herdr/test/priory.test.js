@@ -276,11 +276,11 @@ test("spansHtml escapes the text and the URL, keeps line breaks and links only t
   );
 });
 
-test("prStack is the web view's prStack, word for word", () => {
-  const body = (/** @type {string} */ source) => source.slice(source.indexOf("export function prStack"));
+test("checkState, stateWords and prStack are the web view's, word for word", () => {
+  const body = (/** @type {string} */ source) => source.slice(source.indexOf("/** The tile a check draws"));
   const web = readFileSync(new URL("../../../crates/priory-core/web/stack.js", import.meta.url), "utf8");
   const herdr = readFileSync(new URL("../lib/priory.js", import.meta.url), "utf8");
-  assert.equal(body(herdr), body(web), "copy prStack from adapters/herdr/lib/priory.js to crates/priory-core/web/stack.js");
+  assert.equal(body(herdr), body(web), "copy checkState, stateWords and prStack from adapters/herdr/lib/priory.js to crates/priory-core/web/stack.js");
 });
 
 test("routedMark, routedNote, runnerOf, seenAgo, sentNote and answeredBy are the web view's, word for word", () => {
