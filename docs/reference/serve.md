@@ -379,6 +379,7 @@ conversation that lacks its `id` or `created_at`, gets `400`.
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `paused` | string or null | `paused since <time>: <reason>` while admissions are paused |
+| `caps` | array of strings | One line per spend cap reached whose new runs wait, such as `spend cap reached: lane core/intake spent $12.40 of its day cap of $10.00; its new runs wait for the next day` (see [spend.md](../daemon/spend.md)) |
 | `banner` | string or null | The stall banner while the queue is stalled |
 | `intake` | string or null | The intake banner: `the intake has not polled since <time>: ...` when no source polled in the last 5 minutes, else `the intake fails to poll <source> since <time>: <error>` for each failing source, joined by `; `. Null while every source polls. See [desk.md](../daemon/desk.md#intake-banner) |
 | `counts.asleep` | integer | Tasks asleep on a wait |
@@ -729,6 +730,7 @@ one of `workflow` (the default), `agent`, `model`, `machine`, `repo` and `lane`.
 | `days` | One entry per local day of either window with a record or a merge, oldest first: `day` (`YYYY-MM-DD`), a [total](#cost-total) and `merges` |
 | `split` | One entry per value of the current window's records, sorted: the value under the dimension's name, such as `"model": "claude-opus-5-5"`, and a [total](#cost-total) |
 | `scores` | One entry per value and scorer of the current window's scores, sorted: the value under the dimension's name, `scorer`, then the count of each verdict, `pass`, `fail`, `error` and `not_applicable`. A run counts once per scorer, with its latest score in the window |
+| `caps` | One entry per spend cap: `scope` (`factory`, `trigger <name>` or `lane <lane>`), `period` (`task`, `day` or `week`), `cap_usd`, `spent_usd` and `task`. A `day` or `week` cap's `spent_usd` is what its window spent up to now, and `task` is null. A `task` cap's is the most an active task under it spent, and `task` names that task; both are null with no such task. See [spend.md](../daemon/spend.md) |
 
 ### Cost total
 

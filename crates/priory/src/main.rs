@@ -889,7 +889,9 @@ fn costs(args: Vec<String>) -> ExitCode {
         let now = now.to_string();
         let db = state::open()?;
         let window = report::window(&db, since.as_deref(), &now)?;
-        let costs = report::costs(&db, &factory.prices, &window, &by)?;
+        let caps = priory_core::spend::report(&db, &priory_core::spend::Book::new(&factory), &now)
+            .map_err(|error| error.to_string())?;
+        let costs = report::costs(&db, &factory.prices, &window, &by)?.with_caps(caps);
         match json {
             true => state::emit(&costs.json().to_string()),
             false => costs.print(),
@@ -1530,6 +1532,9 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             "desk" => {
                 if let Some(paused) = value["paused"].as_str() {
                     state::emit(paused);
+                }
+                for cap in value["caps"].as_array().into_iter().flatten() {
+                    state::emit(cap.as_str().unwrap_or_default());
                 }
                 if let Some(banner) = value["banner"].as_str() {
                     state::emit(banner);

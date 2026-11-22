@@ -545,3 +545,38 @@ fn costs_by_lane_split_by_each_tasks_lane() {
         "{text}"
     );
 }
+
+#[test]
+fn costs_show_each_spend_cap_with_what_its_window_spent() {
+    let setup = Setup::new("caps");
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        format!("{SERVE}\n[caps]\ntask = 5.0\nday = 1.0\nweek = 100.0\n"),
+    )
+    .unwrap();
+    // Monday morning and last Friday: the week counts Monday's, the day neither.
+    setup.step("2026-11-16T08:00:00Z", "m1", Some([2_000_000, 0, 0, 0]));
+    setup.step("2026-11-14T08:00:00Z", "m1", Some([5_000_000, 0, 0, 0]));
+    setup.step("2026-11-17T08:00:00Z", "m1", Some([500_000, 0, 0, 0]));
+
+    let text = setup.costs(&[]);
+    let json = setup.costs_json(&[]);
+
+    assert!(
+        text.ends_with(
+            "\ncap\tperiod\tlimit\tspent\n\
+             factory\ttask\t$5.00\t-\n\
+             factory\tday\t$1.00\t$0.50\n\
+             factory\tweek\t$100.00\t$2.50\n"
+        ),
+        "{text}"
+    );
+    assert_eq!(
+        json["caps"],
+        json!([
+            { "scope": "factory", "period": "task", "cap_usd": 5.0, "spent_usd": null, "task": null },
+            { "scope": "factory", "period": "day", "cap_usd": 1.0, "spent_usd": 0.5, "task": null },
+            { "scope": "factory", "period": "week", "cap_usd": 100.0, "spent_usd": 2.5, "task": null },
+        ])
+    );
+}

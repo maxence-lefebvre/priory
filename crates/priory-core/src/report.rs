@@ -224,6 +224,11 @@ pub fn cost(
     Ok(())
 }
 
+/// What `tokens`, as input, output, cache read and cache write, cost at `price`.
+pub(crate) fn dollars(tokens: &[i64; 4], price: &Price) -> f64 {
+    Tokens(*tokens).dollars(price)
+}
+
 /// What `priory costs` can split the current window's cost by.
 pub const BY: [&str; 6] = ["workflow", "agent", "model", "machine", "repo", "lane"];
 
@@ -323,6 +328,8 @@ pub struct Costs {
     /// Each split value and scorer with its runs' latest verdicts in the current window: pass, fail,
     /// error and not applicable.
     scores: Vec<(String, String, [i64; 4])>,
+    /// Each spend cap, with what its window spent or the most an active task under it spent.
+    caps: Vec<Value>,
 }
 
 /// The current window, from `start` to `until`, and the previous one, from `previous` to `start`.
@@ -428,6 +435,7 @@ pub fn costs(
         days: BTreeMap::new(),
         split: BTreeMap::new(),
         scores: Vec::new(),
+        caps: Vec::new(),
     };
     let mut statement = db
         .prepare(&format!(
@@ -540,6 +548,12 @@ pub fn costs(
 }
 
 impl Costs {
+    /// Adds each spend cap with what it spent, as `spend::report` reads them.
+    pub fn with_caps(mut self, caps: Vec<Value>) -> Self {
+        self.caps = caps;
+        self
+    }
+
     pub fn json(&self) -> Value {
         let window = |at: usize| {
             let (since, until, total) = &self.windows[at];
@@ -569,6 +583,7 @@ impl Costs {
                 json!({ (&self.by): key, "scorer": scorer, "pass": pass, "fail": fail,
                         "error": error, "not_applicable": not_applicable })
             }).collect::<Vec<_>>(),
+            "caps": self.caps,
         })
     }
 
@@ -599,6 +614,28 @@ impl Costs {
         for (key, scorer, [pass, fail, error, not_applicable]) in &self.scores {
             crate::state::emit(&format!(
                 "{key}\t{scorer}\t{pass}\t{fail}\t{error}\t{not_applicable}"
+            ));
+        }
+        if self.caps.is_empty() {
+            return;
+        }
+        crate::state::emit("");
+        crate::state::emit("cap\tperiod\tlimit\tspent");
+        let usd = |value: &Value| {
+            value
+                .as_f64()
+                .map_or("-".to_owned(), |usd| format!("${usd:.2}"))
+        };
+        for cap in &self.caps {
+            let spent = match cap["task"].as_i64() {
+                Some(task) => format!("{} by task {task}", usd(&cap["spent_usd"])),
+                None => usd(&cap["spent_usd"]),
+            };
+            crate::state::emit(&format!(
+                "{}\t{}\t{}\t{spent}",
+                cap["scope"].as_str().unwrap_or_default(),
+                cap["period"].as_str().unwrap_or_default(),
+                usd(&cap["cap_usd"]),
             ));
         }
     }

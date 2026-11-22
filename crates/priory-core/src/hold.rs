@@ -507,7 +507,7 @@ pub(crate) fn release_task(
 
 /// Meets the condition `id` as `how`, answering its ask, and releases its task once every
 /// condition of its hold is met.
-fn meet(tx: &Transaction, id: i64, how: &str) -> rusqlite::Result<()> {
+pub(crate) fn meet(tx: &Transaction, id: i64, how: &str) -> rusqlite::Result<()> {
     tx.execute(
         &format!("UPDATE holds SET met = {NOW}, met_as = ?2 WHERE id = ?1 AND met IS NULL"),
         params![id, how],
@@ -887,7 +887,7 @@ pub(crate) fn read(db: &mut Connection, id: i64, current: &str) -> rusqlite::Res
 
 /// Ends the open hold of `task` by dropping it, with `why` as its reason, and closes the hold's
 /// open asks.
-fn drop_task(tx: &Transaction, task: i64, why: &str) -> rusqlite::Result<()> {
+pub(crate) fn drop_task(tx: &Transaction, task: i64, why: &str) -> rusqlite::Result<()> {
     close_asks(tx, task)?;
     tx.execute(
         &format!(
@@ -928,6 +928,9 @@ pub(crate) fn of_ask(tx: &Transaction, ask: i64) -> rusqlite::Result<Option<i64>
 
 /// Applies a person's answer to a hold's ask: `release` or `drop`.
 pub(crate) fn answered(tx: &Transaction, id: i64, answer: &str) -> rusqlite::Result<()> {
+    if crate::spend::answered(tx, id, answer)? {
+        return Ok(());
+    }
     match answer {
         "release" => return meet(tx, id, "released by a person"),
         "keep" => return meet(tx, id, "kept by a person"),

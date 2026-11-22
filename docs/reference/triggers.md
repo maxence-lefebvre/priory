@@ -36,6 +36,7 @@ cannot tell which keys a source refuses; `priory check` does.
 | `hold` | table | no | | Files each task held. See [`hold`](#hold) | `{ reason = "triage first" }` |
 | `intervention` | `plan` or `hands-off` | no | a person answers every ask | Who answers its tasks' asks. See [`intervention` and `lead`](#intervention-and-lead) | `"plan"` |
 | `lead` | string | with `hands-off` | | The agent that answers asks of a `hands-off` task | `"lead"` |
+| `caps` | table | no | no cap | Spend caps in dollars for its tasks: `task`, `day` and `week`, each above zero. See [spend.md](../daemon/spend.md) | `{ task = 2.0, day = 10.0 }` |
 
 Without a `repo`, a Linear, Sentry, Honeycomb, Intercom or Slack trigger's tasks block before their first run.
 
@@ -390,6 +391,7 @@ lead = "lead"                  # agents/lead/agent.md, with session = "shared"
 | ------- | ----- |
 | `` unknown field `<key>`, expected one of ... `` | A key no table above lists |
 | `` missing field `workflow` `` | No `workflow` |
+| `<n> is not a spend cap: give dollars above zero` | A `caps` value of zero or less, or not finite |
 | `` workflow `<name>` does not exist `` | `workflow` names no file under `workflows/` |
 | `` band `<band>` is not one of <bands> `` | `band` is not a band of the factory |
 | `` lane `<lane>` is not `<team>/<theme>` `` | A malformed `lane` |

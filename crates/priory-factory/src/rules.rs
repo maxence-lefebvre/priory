@@ -189,6 +189,17 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 problems.push(problem(settings, line, message));
             }
         }
+        if let Some(caps) = &settings.value.caps {
+            let line = settings.lines.field("caps");
+            for lane in caps
+                .lanes
+                .keys()
+                .filter(|lane| !crate::lanes::well_formed(lane))
+            {
+                let message = format!("`[caps.lanes]` `{lane}` is not a lane such as `team/theme`");
+                problems.push(problem(settings, line, message));
+            }
+        }
         if let Some(request) = &settings.value.request {
             let line = settings.lines.field("request");
             if !factory.workflows.contains_key(&request.workflow) {

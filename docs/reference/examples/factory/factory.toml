@@ -58,3 +58,10 @@ targets = { ops = "../ops" }                   # where an answer can run an ask'
 [request]
 workflow = "implement"                         # what priory add starts without --workflow
 band = "today"                                 # its band without --band
+
+[caps]
+task = 5.0                                     # dollars one task may spend
+week = 200.0                                   # dollars the factory may spend from Monday
+
+[caps.lanes."core/intake"]
+day = 10.0                                     # dollars the lane may spend in a day

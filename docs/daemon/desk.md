@@ -1,6 +1,6 @@
 # Desk
 
-`priory desk` prints the pause line first while admissions are paused (see Pause), then the stall banner while the queue is stalled (see Room), then the intake banner while the intake fails or stopped (see Intake banner), then what waits on a person, oldest first: since, kind, id, task, lane, what and the task's generation.
+`priory desk` prints the pause line first while admissions are paused (see Pause), then one line per spend cap reached whose new runs wait (see [spend.md](spend.md)), then the stall banner while the queue is stalled (see Room), then the intake banner while the intake fails or stopped (see Intake banner), then what waits on a person, oldest first: since, kind, id, task, lane, what and the task's generation.
 
 | Kind | Id | What | Since |
 | ---- | -- | ---- | ----- |
