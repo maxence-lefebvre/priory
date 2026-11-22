@@ -775,3 +775,24 @@ fn a_daemon_restart_between_the_mark_and_the_turn_end_keeps_the_mark() {
         run(rows, "1").is_some_and(|row| row[7] == "preempted")
     });
 }
+
+#[test]
+fn a_marked_run_over_its_steps_budget_fails_rather_than_stopping() {
+    let mut setup = Setup::urgent("preempt-budget");
+    setup.workflow("budgeted", &budgeted("0.01"));
+    fs::write(setup.dir.join("factory/prices.toml"), DEAR).unwrap();
+    marked_with(&mut setup, on("budgeted", later(42)));
+
+    setup.release("hold-stop");
+
+    setup.until("tasks", |rows| {
+        task(rows, "1").is_some_and(|row| row[4] == "failed")
+    });
+    assert_eq!(run(&setup.rows("runs"), "1").unwrap()[7], "budget");
+    assert!(
+        setup
+            .prompts("1")
+            .iter()
+            .all(|prompt| !prompt.starts_with("Priory stopped"))
+    );
+}

@@ -2222,25 +2222,39 @@ pub(crate) fn stop(
     let Some(run) = run(tx, session)? else {
         return Ok(None);
     };
-    // Priced before the result moves the task, since a move resets the step's tokens.
-    if let Some((over, reason)) = over_budget(tx, &run, trace)? {
-        let sent = tx
-            .query_row("SELECT 1 FROM results WHERE run = ?1", [run.id], |_| Ok(()))
-            .optional()?
-            .is_some();
-        // The money of a turn that sent its result is spent: the result stands, and its step's
-        // trace record carries the overrun.
-        if !(over && sent) {
-            end(tx, run.id, "budget")?;
-            set(tx, run.task, "failed", None, Some(&reason))?;
-            return Ok(Some(run.tmux.clone()));
-        }
+    if let Some(kill) = over_spent(tx, &run, trace)? {
+        return Ok(kill);
     }
     if let Some(kill) = settle(tx, &run, trace)? {
         return Ok(kill);
     }
     nudge(tx, run.id, run.task)?;
     Ok(None)
+}
+
+/// Fails the run's task when its step went over its budget, before its result moves it. Returns
+/// the tmux session to kill when it did.
+fn over_spent(
+    tx: &Transaction,
+    run: &Run,
+    trace: &Trace,
+) -> rusqlite::Result<Option<Option<String>>> {
+    // Priced before the result moves the task, since a move resets the step's tokens.
+    let Some((over, reason)) = over_budget(tx, run, trace)? else {
+        return Ok(None);
+    };
+    let sent = tx
+        .query_row("SELECT 1 FROM results WHERE run = ?1", [run.id], |_| Ok(()))
+        .optional()?
+        .is_some();
+    // The money of a turn that sent its result is spent: the result stands, and its step's
+    // trace record carries the overrun.
+    if over && sent {
+        return Ok(None);
+    }
+    end(tx, run.id, "budget")?;
+    set(tx, run.task, "failed", None, Some(&reason))?;
+    Ok(Some(Some(run.tmux.clone())))
 }
 
 /// What the task has spent at its current step, priced with `prices.toml`, against the step's
@@ -2312,6 +2326,10 @@ pub(crate) fn preempt(
     let Some(mut run) = run(tx, session)? else {
         return Ok(None);
     };
+    // A step over its budget fails, marked or not.
+    if let Some(kill) = over_spent(tx, &run, trace)? {
+        return Ok(kill);
+    }
     // No process carries on, so a next step of the same agent gets a new run.
     let agent = run.agent.take();
     let settled = settle(tx, &run, trace)?;
