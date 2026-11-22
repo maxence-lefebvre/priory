@@ -267,9 +267,12 @@ What happens to a `kept` message depends on the task's state:
   [tools.md](tools.md#subscribeon-and-unsubscribeon)).
 - For a task that waits on a step's ask, where a person decides and no agent runs, a message of
   the kinds the task's own key takes, and not the agent's own, is added to that ask as its next
-  revision: `While this waited: <who> on <subject>: <first line> <url>`. The new revision pushes,
-  and an answer to the earlier revision is refused, so the person who answers reads it. The answer
-  may lead to `done` with no agent run at all. If a run follows, it reads the message too.
+  revision: `While this waited: <who> on <subject>: <first line> <url>`, each part cut at 200
+  characters. The new revision pushes, and an answer to the earlier revision is refused, so the
+  person who answers reads it. An ask keeps five such lines. After that, a last line counts the
+  rest, `While this waited: and N more.`, with no new revision and no push, so a commenter can
+  neither grow the ask nor keep it unanswerable. The answer may lead to `done` with no agent run
+  at all. If a run follows, it reads the message too.
 - Any other kept message waits for the task's next run, which reads it in its first prompt.
 
 ## Schedule firings

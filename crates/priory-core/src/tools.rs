@@ -3639,17 +3639,64 @@ pub(crate) fn say(
     Ok(Ok(format!("task {task} will hear it")))
 }
 
+/// The most lines an open step ask shows of what came while it waited; later ones are counted.
+const TOLD: usize = 5;
+
+/// What starts each line `tell_ask` adds to an ask.
+const WAITED: &str = "While this waited: ";
+
 /// Adds `line` to the open step ask of `task` as its next revision, which pushes, so the person
-/// who answers reads it. Returns whether the task waits on such an ask.
+/// who answers reads it. Past `TOLD` lines it only counts them on the ask, with no new revision,
+/// so text from outside can neither grow the ask nor keep a person's answer stale. Returns whether
+/// the task waits on such an ask.
 pub(crate) fn tell_ask(tx: &Transaction, task: i64, line: &str) -> rusqlite::Result<bool> {
-    let told = tx.execute(
-        "UPDATE asks SET revision = revision + 1,
-           text = coalesce(text || char(10) || char(10), '') || 'While this waited: ' || ?2
-         WHERE id = (SELECT max(id) FROM asks WHERE task = ?1 AND kind = 'step'
-           AND answer IS NULL AND withdrawn IS NULL)",
-        params![task, line],
+    let open = tx
+        .query_row(
+            "SELECT id, text FROM asks WHERE id = (SELECT max(id) FROM asks WHERE task = ?1
+               AND kind = 'step' AND answer IS NULL AND withdrawn IS NULL)",
+            [task],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()?;
+    let Some((ask, text)) = open else {
+        return Ok(false);
+    };
+    let text = text.unwrap_or_default();
+    let told = text
+        .split("\n\n")
+        .filter(|part| part.starts_with(WAITED) && more(part).is_none())
+        .count();
+    if told < TOLD {
+        let text = if text.is_empty() {
+            format!("{WAITED}{line}")
+        } else {
+            format!("{text}\n\n{WAITED}{line}")
+        };
+        tx.execute(
+            "UPDATE asks SET revision = revision + 1, text = ?2 WHERE id = ?1",
+            params![ask, text],
+        )?;
+        return Ok(true);
+    }
+    let (kept, counted) = match text.rsplit_once("\n\n") {
+        Some((kept, last)) if more(last).is_some() => (kept, more(last).unwrap_or(0)),
+        _ => (text.as_str(), 0),
+    };
+    let text = format!("{kept}\n\n{WAITED}and {} more.", counted + 1);
+    tx.execute(
+        "UPDATE asks SET text = ?2 WHERE id = ?1",
+        params![ask, text],
     )?;
-    Ok(told > 0)
+    Ok(true)
+}
+
+/// The count in an ask's `While this waited: and N more.` line.
+fn more(part: &str) -> Option<u64> {
+    part.strip_prefix(WAITED)?
+        .strip_prefix("and ")?
+        .strip_suffix(" more.")?
+        .parse()
+        .ok()
 }
 
 /// Who said what on which resource in an event, `ana on owner/repo#42: Also the empty case. URL`,
@@ -3665,6 +3712,11 @@ pub(crate) fn heard(kind: &str, subject: Option<&str>, data: &Value) -> String {
         .and_then(|text| text.lines().find(|line| !line.trim().is_empty()))
         .unwrap_or(kind);
     let url = data["url"].as_str().unwrap_or_default();
+    let (who, said, url) = (
+        crate::judge::short(who),
+        crate::judge::short(said),
+        crate::judge::short(url),
+    );
     format!("{who} on {}: {said} {url}", subject.unwrap_or("-"))
         .trim_end()
         .to_owned()
@@ -4582,6 +4634,44 @@ pub(crate) fn performed_in(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use serde_json::json;
+
+    /// A state with task 1 waiting on an open step ask at revision 1.
+    fn waiting() -> Connection {
+        let db = crate::state::memory();
+        db.execute_batch(
+            "INSERT INTO tasks
+               (key, workflow, step, state, band, lane, lane_derived, trigger, source, entered)
+             VALUES ('cli:a', 'build', 'approve', 'asleep', 'now', 'cli', 0, 'cli', 'a',
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+             INSERT INTO asks (task, step, kind, question, options)
+             VALUES (1, 'approve', 'step', 'Merge it?', '[\"yes\",\"no\"]');",
+        )
+        .unwrap();
+        db
+    }
+
+    #[test]
+    fn an_ask_keeps_five_lines_of_what_came_while_it_waited_then_counts_the_rest() {
+        let mut db = waiting();
+        let tx = db.transaction().unwrap();
+        let long = json!({ "actor": "eve", "body": "x".repeat(10_000), "url": "u" });
+        for _ in 0..8 {
+            let line = heard("github.issues.comment", Some("owner/repo#42"), &long);
+            assert!(tell_ask(&tx, 1, &line).unwrap());
+        }
+
+        let (revision, text): (i64, String) = tx
+            .query_row("SELECT revision, text FROM asks WHERE id = 1", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(revision, 6);
+        let parts: Vec<&str> = text.split("\n\n").collect();
+        assert_eq!(parts.len(), 6, "{text}");
+        assert!(parts[0].len() < 300, "{}", parts[0]);
+        assert_eq!(parts[5], "While this waited: and 3 more.");
+    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(512))]
