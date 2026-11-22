@@ -839,11 +839,16 @@ fn woken(tx: &Transaction, run: &Run) -> rusqlite::Result<bool> {
     )
 }
 
-/// Whether a person's feedback the task kept while it ran waits in a queued prompt.
+/// Whether a person's feedback the task kept, itself or through a subscription, waits in a queued
+/// prompt.
 fn kept(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
     let mut statement = tx.prepare(
         "SELECT inbox.type, inbox.data FROM inbox JOIN outbox ON outbox.id = inbox.outbox
-         WHERE inbox.task = ?1 AND inbox.outcome = 'kept' AND outbox.state = 'queued'",
+         WHERE inbox.task = ?1 AND inbox.outcome = 'kept' AND outbox.state = 'queued'
+         UNION ALL
+         SELECT inbox.type, inbox.data FROM subscription_deliveries AS heard
+         JOIN inbox ON inbox.seq = heard.seq JOIN outbox ON outbox.id = heard.outbox
+         WHERE heard.task = ?1 AND heard.outcome = 'kept' AND outbox.state = 'queued'",
     )?;
     let mut rows = statement.query([task])?;
     while let Some(row) = rows.next()? {
@@ -2175,29 +2180,20 @@ pub(crate) fn wake_on(
             text = format!("{text}\n{line}");
         }
     }
-    {
-        let mut statement = tx.prepare(
-            "SELECT seq, type, subject, data FROM inbox
-             WHERE task = ?1 AND outcome = 'kept' AND outbox IS NULL AND seq IS NOT ?2 ORDER BY seq",
-        )?;
-        let mut rows = statement.query(params![task, seq])?;
-        while let Some(row) = rows.next()? {
-            carried.push(row.get(0)?);
-            text.push('\n');
-            text.push_str(&crate::state::line(
-                &row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?.as_deref(),
-                &row.get::<_, String>(3)?,
-            ));
-        }
+    let unread = crate::state::unread(tx, task, false, seq)?;
+    for (seq, _, line) in &unread {
+        carried.push(*seq);
+        text.push('\n');
+        text.push_str(line);
     }
     if crate::triage::any(tx, &carried)? {
         text = format!("{text}\n{}", crate::triage::RULE);
     }
     let id = wake(tx, task, &text)?;
-    for seq in carried {
+    if let Some(seq) = seq.filter(|seq| carried.contains(seq)) {
         tx.execute("UPDATE inbox SET outbox = ?1 WHERE seq = ?2", [id, seq])?;
     }
+    crate::state::carry(tx, task, id, &unread)?;
     set_ready(tx, task)
 }
 

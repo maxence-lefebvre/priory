@@ -178,7 +178,8 @@ state until its next run.
 
 When routing gives an event to one task and a subscription delivers it to a second, the second
 task's inbox lists it with `task` naming the first. Its `outcome` and `prompt` are the second
-task's own: `woke` when the event woke it, or `kept` when it queued a prompt while the task ran.
+task's own: `woke` when the event woke it, or `kept` when it queued a prompt while the task ran or
+kept the event for the task's next run.
 A comment that wakes the second task from its checks gate shows no `wait`, since that delivery
 records the prompt but not the wait.
 
@@ -221,7 +222,7 @@ command, since no task takes them. The Desk counts those of the last 24 hours in
 A `kept` event reaches a task, but a task that is not running reads it only at its next run. An
 asleep task may sleep for hours on a wait that the event does not fire, and a task can end before
 it runs again. So `priory inbox --unrouted` lists a third group, `unheard`: per task, the events it
-kept that no prompt carries and no wait took, once they are 5 minutes old (see
+kept, itself or through a subscription, that no prompt carries and no wait took, once they are 5 minutes old (see
 [serve.md](../reference/serve.md#unrouted)). Only what people say, edit and close counts: the
 kinds a task's own key carries, and not the agent's own comments. Checks and pushes stay with the
 checks gate.
@@ -253,7 +254,8 @@ What happens to a `kept` message depends on the task's state:
   `linear.issue.left` (see
   [tools.md](tools.md#subscribeon-and-unsubscribeon)).
   Another active task that subscribes to
-  it gets it too: a prompt of its own while it runs, or a wake while it sleeps (see
+  it gets it too: a prompt of its own while it runs, a wake while it sleeps at a model step, or
+  else the event kept for its next run, as this list says for the first task (see
   [tools.md](tools.md#subscribeon-and-unsubscribeon)).
 - For a task that waits on a step's ask, where a person decides and no agent runs, a message of
   the kinds the task's own key takes, and not the agent's own, is added to that ask as its next

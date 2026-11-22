@@ -8427,7 +8427,12 @@ fn a_shared_session_whose_tasks_each_end_in_one_result_is_compacted_when_resumed
     fs::write(setup.dir.join("factory/agents/implementer/agent.md"), lead).unwrap();
     setup.contexts(&[6000, 6000, 1000]);
     // Task 2's first result is refused while the compact is queued, so it ends its turn.
-    setup.calls(&[result("passed"), result("passed"), result("passed")]);
+    setup.calls(&[
+        result("passed"),
+        result("passed"),
+        result("passed"),
+        result("passed"),
+    ]);
     setup.publish(&requested(42));
     setup.publish(&requested(43));
 
@@ -10821,6 +10826,71 @@ fn say_while_a_person_decides_joins_the_steps_ask_and_reaches_the_next_agent_run
             && typed[1].contains("\nA person says: Use the v2 API."),
         "{typed:?}"
     );
+}
+
+#[test]
+fn a_second_subscriber_that_cannot_hear_an_event_keeps_it_for_its_next_run() {
+    let mut setup = Setup::with_workflow("kept-by-subscriber", IMPLEMENT_THEN_APPROVE);
+    setup.calls(&[
+        result("passed"),
+        result("passed"),
+        result("passed"),
+        result("passed"),
+    ]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.len() == 2
+            && rows
+                .iter()
+                .all(|row| row[3] == "approve" && row[4] == "asleep")
+    });
+    let subscribed = setup.priory(&["subscribe", "2", "github:owner/repo#7"]);
+    assert!(subscribed.status.success(), "{subscribed:?}");
+    let written = herdr_bus::Timestamp::now() - jiff::SignedDuration::from_mins(10);
+
+    // Task 1 owns the pull request's branch, so routing gives it the comment.
+    setup.publish(&commented().time(written));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 3);
+    assert_eq!([&inbox[2][3], &inbox[2][4]], ["1", "kept"], "{inbox:?}");
+    let heard = task_json(&setup, "2")["inbox"].clone();
+    let comment = heard
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["type"] == "github.pull_request.comment")
+        .unwrap_or_else(|| panic!("{heard}"));
+    assert_eq!(comment["outcome"], "kept", "{heard}");
+    let output = setup.priory(&["inbox", "--unrouted", "--json"]);
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let unheard = listed["unrouted"]["unheard"].as_array().unwrap().clone();
+    assert!(
+        unheard.iter().any(|group| group["task"]["id"] == 2),
+        "{listed}"
+    );
+    let asks = asks_json(&setup);
+    let ask = asks["asks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|ask| ask["key"] == "github:owner/repo#43")
+        .unwrap_or_else(|| panic!("{asks}"));
+    assert_eq!(ask["revision"], 2, "{ask}");
+
+    let id = ask["id"].to_string();
+    let answered = setup.priory(&["answer", &id, "revise", "--revision", "2"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    // Its next run reads the comment after the step's prompt, before its result.
+    setup.until("outbox", |rows| {
+        rows.iter().any(|row| {
+            row[1] == "2"
+                && row[3] == "confirmed"
+                && row[4].contains("github.pull_request.comment owner/repo#7 {")
+        })
+    });
 }
 
 #[test]

@@ -357,7 +357,7 @@ pub fn unrouted(db: &Connection, since: i64, now: Timestamp) -> rusqlite::Result
 const UNHEARD_AFTER: jiff::SignedDuration = jiff::SignedDuration::from_mins(5);
 
 /// Each event after `since`, and within `window` (from, to) when given, newest first, that a task
-/// that is not running kept, that no prompt carries and no wait took, written more than
+/// that is not running kept, itself or through a subscription, that no prompt carries and no wait took, written more than
 /// `UNHEARD_AFTER` before `now` by someone other than the agent, with its task. Only what people
 /// say, edit and close counts: checks and pushes stay with the checks gate. Each comes with whether
 /// its task waits on a step's ask.
@@ -371,18 +371,22 @@ fn unheard_events(
     let before = (now - UNHEARD_AFTER).to_string();
     let (from, to) = window.unzip();
     let mut statement = db.prepare(
-        "SELECT inbox.seq, inbox.type, inbox.subject, inbox.time, inbox.data,
+        "WITH kept (seq, task) AS (
+           SELECT seq, task FROM inbox WHERE outcome = 'kept' AND outbox IS NULL
+           UNION ALL SELECT seq, task FROM subscription_deliveries
+             WHERE outcome = 'kept' AND outbox IS NULL)
+         SELECT inbox.seq, inbox.type, inbox.subject, inbox.time, inbox.data,
            tasks.id, tasks.key, tasks.state, tasks.workflow,
            EXISTS (SELECT 1 FROM asks WHERE asks.task = tasks.id AND kind = 'step'
              AND answer IS NULL AND withdrawn IS NULL)
-         FROM inbox JOIN tasks ON tasks.id = inbox.task
-         WHERE inbox.outcome = 'kept' AND inbox.outbox IS NULL AND tasks.state != 'running'
+         FROM kept JOIN inbox ON inbox.seq = kept.seq JOIN tasks ON tasks.id = kept.task
+         WHERE tasks.state != 'running'
            AND inbox.seq > ?1
            AND (?2 IS NULL OR julianday(inbox.time) BETWEEN julianday(?2) AND julianday(?3))
            AND inbox.type IN (SELECT value FROM json_each(?4))
            AND julianday(inbox.time) <= julianday(?5)
            AND coalesce(json_extract(inbox.data, '$.own'), 0) != 1
-           AND inbox.seq NOT IN (SELECT inbox FROM waits WHERE task = inbox.task
+           AND inbox.seq NOT IN (SELECT inbox FROM waits WHERE task = kept.task
              AND inbox IS NOT NULL)
          ORDER BY inbox.seq DESC",
     )?;

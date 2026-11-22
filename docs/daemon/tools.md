@@ -411,8 +411,11 @@ subscription to its pull request or issue. Linear issues and Slack threads stay 
 after it was done (see [watches.md](../intake/watches.md)).
 
 When another task takes an event on the resource, such as the task keyed by that pull request, the
-subscriber still gets it: a prompt of its own while it runs, or a wake while it sleeps. A close
-reaches the subscribers before it ends their subscriptions.
+subscriber still gets it: a prompt of its own while it runs, or a wake while it sleeps where an
+event can wake it. A subscriber that cannot hear it now, such as a `ready`, `blocked` or `held`
+task, or one at a human step, keeps it for its next run, as the first task does (see
+[routing.md](routing.md#what-a-kept-message-does)). A close reaches the subscribers before it ends
+their subscriptions.
 
 `unsubscribe` ends the subscription. What the task owns otherwise, such as its key, a pull request
 its `open-pr` opened or one it waited on, it still owns. Unsubscribing from a resource the task does

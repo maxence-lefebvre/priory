@@ -431,8 +431,8 @@ group per resource, the group with the newest event first:
 | `request_text` | string or null | For a GitHub or Linear resource, the text of a new task keyed by it: `Follow up on URL after event SEQ`, the issue's URL, which `priory add` turns into the resource as key, and the newest event's sequence number, so each follow-up is a new request |
 
 `unheard` groups, one group per task, the newest event first, the events that a task kept and no
-agent read: the outcome `kept`, no prompt carries it, no wait took it, and the task is not
-`running`. Only feedback, closes, Linear state changes and edits, and Slack replies count, the kinds
+agent read: the outcome `kept`, for the task that routing gave it to or for a second task through
+a subscription, no prompt carries it, no wait took it, and the task is not `running`. Only feedback, closes, Linear state changes and edits, and Slack replies count, the kinds
 a task's own key carries, and not the agent's own. An event shows once it is 5 minutes old, by the
 event's `time` against now (`PRIORY_NOW` when set), so a task about to start or wake is left out:
 

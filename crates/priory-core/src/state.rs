@@ -1997,10 +1997,19 @@ pub(crate) fn route_in(
     for other in owners.iter().filter(|other| Some(other.id) != task) {
         let (fired, ended) = crate::tools::event(tx, other.id, seq, factory)?;
         kill.extend(ended);
-        if !fired
-            && let Some((outcome, prompt)) =
-                delivered(tx, other.id, message, &resources, None, factory)?
-        {
+        if fired {
+            continue;
+        }
+        let heard = match delivered(tx, other.id, message, &resources, None, factory)? {
+            Some(heard) => Some(heard),
+            // A task that cannot hear it now keeps it for its next run, as the first owner does.
+            None if subscribes(tx, other.id, &resources, &message.kind)? => {
+                told(tx, other.id, message)?;
+                Some(("kept", None))
+            }
+            None => None,
+        };
+        if let Some((outcome, prompt)) = heard {
             tx.execute(
                 "INSERT OR IGNORE INTO subscription_deliveries (seq, task, outcome, outbox)
                  VALUES (?1, ?2, ?3, ?4)",
@@ -3209,27 +3218,15 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
         "INSERT OR IGNORE INTO owns (task, resource) VALUES (?1, ?2)",
         params![run.task, route::branch(run.repo, run.branch)],
     )?;
-    let mut events = Vec::new();
     let mut text = run.prompt.unwrap_or_default().to_owned();
-    {
-        let mut statement = tx.prepare(
-            "SELECT seq, type, subject, data FROM inbox WHERE outbox IS NULL
-             AND ((task = ?1 AND outcome = 'kept') OR id = (SELECT source FROM tasks WHERE id = ?1))
-             ORDER BY seq",
-        )?;
-        let mut rows = statement.query([run.task])?;
-        while let Some(row) = rows.next()? {
-            events.push(row.get::<_, i64>(0)?);
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            text.push_str(&line(
-                &row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?.as_deref(),
-                &row.get::<_, String>(3)?,
-            ));
+    let unread = unread(&tx, run.task, true, None)?;
+    for (_, _, line) in &unread {
+        if !text.is_empty() {
+            text.push('\n');
         }
+        text.push_str(line);
     }
+    let events: Vec<i64> = unread.iter().map(|(seq, _, _)| *seq).collect();
     if crate::triage::any(&tx, &events)? {
         text = format!("{text}\n{}", crate::triage::RULE);
     }
@@ -3238,19 +3235,72 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
             "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
             params![run.task, text],
         )?;
-        let outbox = tx.last_insert_rowid();
-        for seq in events {
-            tx.execute(
-                "UPDATE inbox SET outbox = ?1 WHERE seq = ?2",
-                params![outbox, seq],
-            )?;
-        }
+        carry(&tx, run.task, tx.last_insert_rowid(), &unread)?;
     }
     if run.shared {
         share(&tx, run)?;
     }
     tx.commit()?;
     Ok(id)
+}
+
+/// Each event `task` kept that no prompt carries, by seq, with whether a subscription delivered it
+/// (its inbox entry belongs to another task) and its line: its own kept events, those a
+/// subscription kept for it, and with `source` its source event, leaving out `except`.
+pub(crate) fn unread(
+    tx: &Transaction,
+    task: i64,
+    source: bool,
+    except: Option<i64>,
+) -> rusqlite::Result<Vec<(i64, bool, String)>> {
+    let mut statement = tx.prepare(
+        "SELECT seq, 0, type, subject, data FROM inbox WHERE outbox IS NULL AND seq IS NOT ?3
+           AND ((task = ?1 AND outcome = 'kept')
+             OR (?2 AND id = (SELECT source FROM tasks WHERE id = ?1)))
+         UNION ALL
+         SELECT inbox.seq, 1, inbox.type, inbox.subject, inbox.data
+         FROM subscription_deliveries AS heard JOIN inbox ON inbox.seq = heard.seq
+         WHERE heard.task = ?1 AND heard.outcome = 'kept' AND heard.outbox IS NULL
+           AND heard.seq IS NOT ?3
+         ORDER BY 1",
+    )?;
+    let mut rows = statement.query(params![task, source, except])?;
+    let mut events = Vec::new();
+    while let Some(row) = rows.next()? {
+        events.push((
+            row.get(0)?,
+            row.get(1)?,
+            line(
+                &row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?.as_deref(),
+                &row.get::<_, String>(4)?,
+            ),
+        ));
+    }
+    Ok(events)
+}
+
+/// Records that prompt `outbox` carries the `unread` events of `task`.
+pub(crate) fn carry(
+    tx: &Transaction,
+    task: i64,
+    outbox: i64,
+    unread: &[(i64, bool, String)],
+) -> rusqlite::Result<()> {
+    for (seq, heard, _) in unread {
+        if *heard {
+            tx.execute(
+                "UPDATE subscription_deliveries SET outbox = ?1 WHERE seq = ?2 AND task = ?3",
+                params![outbox, seq, task],
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE inbox SET outbox = ?1 WHERE seq = ?2",
+                params![outbox, seq],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Records the run's session as its agent's shared one, and names the task in its first prompt.
