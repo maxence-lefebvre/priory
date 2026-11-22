@@ -27825,11 +27825,12 @@ fn a_recap_prints_the_days_results_answers_says_and_stuck_tasks_and_nothing_else
         at(text);
     }
     // The state keeps whole seconds, so records of one second keep a fixed order among themselves.
-    let times: Vec<jiff::Timestamp> = recap
+    let times: Vec<i64> = recap
         .lines()
         .skip(1)
         .flat_map(|line| line.split(' '))
         .filter_map(|word| word.trim_end_matches(['.', ':']).parse().ok())
+        .map(|time: jiff::Timestamp| time.as_second())
         .collect();
     assert!(times.len() >= 8, "{times:?} in {recap}");
     assert!(times.is_sorted(), "{times:?} in {recap}");
