@@ -330,6 +330,8 @@ pub struct Costs {
     scores: Vec<(String, String, [i64; 4])>,
     /// Each spend cap, with what its window spent or the most an active task under it spent.
     caps: Vec<Value>,
+    /// Each task held at a spend cap now.
+    held: Vec<Value>,
 }
 
 /// The current window, from `start` to `until`, and the previous one, from `previous` to `start`.
@@ -436,6 +438,7 @@ pub fn costs(
         split: BTreeMap::new(),
         scores: Vec::new(),
         caps: Vec::new(),
+        held: Vec::new(),
     };
     let mut statement = db
         .prepare(&format!(
@@ -548,9 +551,11 @@ pub fn costs(
 }
 
 impl Costs {
-    /// Adds each spend cap with what it spent, as `spend::report` reads them.
-    pub fn with_caps(mut self, caps: Vec<Value>) -> Self {
+    /// Adds each spend cap with what it spent, and each task held at one, as `spend::report` and
+    /// `spend::held` read them.
+    pub fn with_caps(mut self, caps: Vec<Value>, held: Vec<Value>) -> Self {
         self.caps = caps;
+        self.held = held;
         self
     }
 
@@ -584,6 +589,7 @@ impl Costs {
                         "error": error, "not_applicable": not_applicable })
             }).collect::<Vec<_>>(),
             "caps": self.caps,
+            "held": self.held,
         })
     }
 

@@ -1363,7 +1363,7 @@ run.
 Priory's panels also ship as Herdr mods (R8.6). A mod renders natively with gpui-kit, in a pane
 beside other panes, with a fine pointer. It keeps this file's structure, tokens, state tiles, copy
 and ask rules. This section lists only what differs, and the panels the adapter ships: Desk, Asks,
-Queue, Bonjour, Costs, Flows, Task, Inbox, Tasks and Runs. Bonjour is also the web view's Reports panel. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
+Queue, Bonjour, Costs, Flows, Task, Inbox, Tasks and Runs, and the usage line. Bonjour is also the web view's Reports panel. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
 the adapter lives, how it reads and acts, and the data each panel needs. The approved boards are in
 `~/shared/priory-round-6/` on the author's machine.
 
@@ -1517,6 +1517,25 @@ The web's [Costs panel](#costs-panel).
 - Scores follow the split as the web's do. From 600 px they are rows of columns, the scorer in
   mono and the pass rate in weight 600. Below, each row stacks, as on the web. With no cost, the
   split chips sit beside the scores' title.
+
+### Usage line
+
+One 30 px line docked at the bottom of every layout, right of Herdr's status line, on `--bar` with a
+`--line` top edge, in UI text at 12 px, as Herdr's own status line. The approved board is
+`~/shared/priory-usage/board.png` on the author's machine.
+
+- **Line.** "Priory" in weight 600, then "$12.40 today of $40", "$171.20 this week of $200",
+  "2 held at a cap" and "Claude 7d 43%", split by `--text-3` dots. Without a factory cap, a spend
+  stands alone; with no held task or no Over9k file, its part is left out. A figure takes
+  `--warn-text` at 80% of its cap or limit and `--danger-text` once reached, else `--text-2`.
+- **Narrow.** Below 520 px the line drops cents and Claude's figure: "$12 of $40 today",
+  "$171 of $200 wk", "2 held". It never cuts a number.
+- **Detail.** A click opens a 380 px popup on `--surface`: Spend caps, each with its label, its
+  spend against the cap and a 6 px bar on `--raised`, filled `--text-2`, `--tile-warn` from 80%
+  and `--tile-danger` once reached, with "Reached: new runs wait for the next day" in
+  `--danger-text`; then "This week by workflow" with each workflow in mono and its cost; then
+  "Held at a cap", each task's key in mono `--action-text` and the cap it reached, which opens the
+  task; then Claude's 7-day limit as a bar with when it resets. Hairlines separate the sections.
 
 ### Flows
 

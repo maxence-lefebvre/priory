@@ -986,7 +986,8 @@ fn costs(args: Vec<String>) -> ExitCode {
         let window = report::window(&db, since.as_deref(), &now)?;
         let caps = priory_core::spend::report(&db, &priory_core::spend::Book::new(&factory), &now)
             .map_err(|error| error.to_string())?;
-        let costs = report::costs(&db, &factory.prices, &window, &by)?.with_caps(caps);
+        let held = priory_core::spend::held(&db).map_err(|error| error.to_string())?;
+        let costs = report::costs(&db, &factory.prices, &window, &by)?.with_caps(caps, held);
         match json {
             true => state::emit(&costs.json().to_string()),
             false => costs.print(),

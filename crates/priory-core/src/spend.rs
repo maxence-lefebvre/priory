@@ -590,3 +590,28 @@ pub fn report(db: &Connection, book: &Book, now: &str) -> rusqlite::Result<Vec<V
     }
     Ok(rows)
 }
+
+/// Each task held at a spend cap now, with the cap it reached and what it had spent, by task.
+pub fn held(db: &Connection) -> rusqlite::Result<Vec<Value>> {
+    db.prepare(
+        "SELECT tasks.id, tasks.key, spend_holds.cap, spend_holds.cap_usd, spend_holds.spent_usd
+         FROM spend_holds JOIN holds ON holds.id = spend_holds.hold
+         JOIN tasks ON tasks.id = spend_holds.task
+         WHERE tasks.state = 'held' AND holds.met IS NULL AND holds.released IS NULL
+         ORDER BY tasks.id, holds.id",
+    )?
+    .query_map([], |row| {
+        let cap: String = row.get(2)?;
+        // The stored id, such as `lane:core/intake.day`, as `report` names its scope and period.
+        let (scope, period) = cap.rsplit_once('.').unwrap_or((&cap, ""));
+        Ok(json!({
+            "task": row.get::<_, i64>(0)?,
+            "key": row.get::<_, String>(1)?,
+            "scope": scope.replacen(':', " ", 1),
+            "period": period,
+            "cap_usd": row.get::<_, f64>(3)?,
+            "spent_usd": row.get::<_, f64>(4)?,
+        }))
+    })?
+    .collect()
+}

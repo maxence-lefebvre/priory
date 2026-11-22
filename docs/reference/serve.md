@@ -731,6 +731,7 @@ one of `workflow` (the default), `agent`, `model`, `machine`, `repo` and `lane`.
 | `split` | One entry per value of the current window's records, sorted: the value under the dimension's name, such as `"model": "claude-opus-5-5"`, and a [total](#cost-total) |
 | `scores` | One entry per value and scorer of the current window's scores, sorted: the value under the dimension's name, `scorer`, then the count of each verdict, `pass`, `fail`, `error` and `not_applicable`. A run counts once per scorer, with its latest score in the window |
 | `caps` | One entry per spend cap: `scope` (`factory`, `trigger <name>` or `lane <lane>`), `period` (`task`, `day` or `week`), `cap_usd`, `spent_usd` and `task`. A `day` or `week` cap's `spent_usd` is what its window spent up to now, and `task` is null. A `task` cap's is the most an active task under it spent, and `task` names that task; both are null with no such task. See [spend.md](../daemon/spend.md) |
+| `held` | One entry per task held at a spend cap now, by task: `task`, its `key`, the cap it reached as `scope` and `period`, `cap_usd`, and `spent_usd`, what the cap counted when the task was held: the task's spend for a `task` cap, its window's for a `day` or `week` cap. See [spend.md](../daemon/spend.md#held-with-one-ask) |
 
 ### Cost total
 

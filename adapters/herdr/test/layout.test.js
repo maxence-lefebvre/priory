@@ -127,6 +127,15 @@ test("every layout keeps the frame's chrome, and a second run gives the same lay
   }
 });
 
+test("every layout docks the usage line at the bottom, beside Herdr's status line", () => {
+  const generated = layout("default", DEFAULT, FRAME);
+  const work = find(generated, "work");
+  const bottom = work.children.at(-1);
+  assert.equal(bottom.type, "row");
+  assert.deepEqual(bottom.children.map((child) => [child.id, child.content?.mod]), [["status", "workspace-status"], ["usage", "priory-usage"]]);
+  assert.equal(bottom.size.px, 30);
+});
+
 test("a view with two terminal panels is refused with its name", () => {
   const view = { layout: { row: [{ panel: "terminal" }, { tabs: [{ panel: "terminal" }] }] } };
 
