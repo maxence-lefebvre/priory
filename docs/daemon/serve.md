@@ -319,9 +319,10 @@ key logs it, sends no notification, and runs tasks as usual.
 The daemon records each send to a browser in the state file before `curl` starts, as the outbox
 records a prompt before it types it. So a daemon stopped mid-send never sends that notification to
 that browser again: the push service may already hold it. The next daemon still sends it to the
-browsers it never reached. A retry that waited because the push service answered `429` or a `5xx`
-goes out from the next daemon too, since that service never took the notification. A retry that
-waited because `curl` failed does not, since the request may have reached the service.
+browsers it never reached. A retry that waited because the push service answered `429` or a `5xx`,
+or because `curl` could not resolve its host or connect to it (exit 6 or 7), goes out from the next
+daemon too, since that service never took the notification. A retry that waited because `curl`
+failed in any other way does not, since the request may have reached the service.
 
 A retry after an answer that got lost can still send a notification twice. The service worker
 keeps the ids of the last 50 notifications and shows a repeated id silently, in place of the first

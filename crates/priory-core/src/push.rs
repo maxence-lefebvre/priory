@@ -242,7 +242,8 @@ enum Outcome {
     Sent,
     /// The push service dropped the subscription (404 or 410).
     Gone,
-    /// It may pass later: the service answered 429 or 5xx, so it did not take the notification.
+    /// It may pass later: the service answered 429 or 5xx, or `curl` could not reach it, so it did
+    /// not take the notification.
     Again(String),
     /// It may pass later, but `curl` failed, so the service may have taken it.
     Lost(String),
@@ -416,6 +417,11 @@ fn finish(db: &Connection, sending: &Sending, mut rows: Vec<i64>) -> rusqlite::R
 /// What a finished `curl` came to, from its exit status and the HTTP code it wrote.
 fn outcome(status: std::process::ExitStatus, code: &str, stderr: &str) -> Outcome {
     if !status.success() {
+        // curl exits 6 when it could not resolve the host and 7 when it could not connect, so
+        // nothing reached the service.
+        if let Some(6 | 7) = status.code() {
+            return Outcome::Again(format!("{status}: {stderr}"));
+        }
         return Outcome::Lost(format!("{status}: {stderr}"));
     }
     match code {
@@ -972,6 +978,26 @@ mod tests {
         let mut sending = Sending::default();
         endpoint.settle(&db, &home, &mut sending, Instant::now());
         assert_eq!(endpoint.posts(), 2);
+        assert!(queued(&db).is_empty());
+        priory_runtime::runtime::remove_sealed(&home);
+    }
+
+    #[test]
+    fn a_send_curl_could_not_connect_for_goes_out_after_a_restart() {
+        let (home, db) = setup("restart-connect", 1);
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut refused = Endpoint::new(&[]);
+        refused.url = format!("http://{}/push", closed.local_addr().unwrap());
+        drop(closed);
+        let mut sending = Sending::default();
+        refused.settle(&db, &home, &mut sending, Instant::now());
+        assert_eq!(queued(&db), vec![1]);
+        stop(sending);
+
+        let endpoint = Endpoint::new(&["201"]);
+        let mut sending = Sending::default();
+        endpoint.settle(&db, &home, &mut sending, Instant::now());
+        assert_eq!(endpoint.posts(), 1);
         assert!(queued(&db).is_empty());
         priory_runtime::runtime::remove_sealed(&home);
     }
