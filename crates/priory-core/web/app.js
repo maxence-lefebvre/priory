@@ -215,8 +215,9 @@ const state = {
 // Times: relative under 24 h, then a date (DESIGN.md, Copy).
 function age(iso) {
   if (!iso) return "";
-  const minutes = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
-  if (minutes < 1) return "just now";
+  const elapsed = Date.now() - Date.parse(iso);
+  if (elapsed < 60000) return "just now";
+  const minutes = Math.round(elapsed / 60000);
   if (minutes < 60) return `${minutes} min`;
   if (minutes < 1440) return `${Math.floor(minutes / 60)} h`;
   return date(iso);
@@ -388,7 +389,7 @@ function askRow(ask, current) {
         : sentNote(ask) ? sentLine(ask)
         : ask.recommendation ? html`<span>Recommends <b>${ask.recommendation}</b></span>` : html`<span>${options.length} options</span>`;
   const when = ask.state === "answered" && ask.answered_at
-    ? timeTag(ask.answered_at, today(ask.answered_at) ? clock(ask.answered_at) : age(ask.answered_at))
+    ? timeTag(ask.answered_at)
     : timeTag(ask.since);
   return html`<a class="row ${ask.state !== "open" ? "past" : ""}" href="/asks/${ask.id}" aria-current="${current ? "true" : "false"}">
     ${tile(ask.state === "open" ? "ask" : ask.state)}
@@ -413,7 +414,7 @@ function itemRow(item) {
   const kind = ["prompt", "command"].includes(item.kind) ? "prompt" : ["blocked", "failed", "held", "batch"].includes(item.kind) ? item.kind : "queued";
   const stopped = ["blocked", "failed"].includes(item.kind);
   const key = item.kind === "batch" ? html`<a class="mono" href="/batches/${item.id}">${taskLabel(item.key)}</a>`
-    : stopped ? html`<a class="mono" href="/tasks/${item.task}">${taskLabel(item.key)}</a>` : html`<span class="mono">${taskLabel(item.key)}</span>`;
+    : stopped ? html`<a class="mono" href="/tasks/${item.task}" title="task ${item.task}">${taskLabel(item.key)}</a>` : html`<span class="mono">${taskLabel(item.key)}</span>`;
   const { line, next } = item.kind === "batch" ? batchParts(item.what) : { line: item.what, next: null };
   return html`<div class="row">
     ${tile(kind)}
@@ -667,7 +668,7 @@ function sinceYouLooked() {
   const [events, from] = state.since.opened ? [state.since.events, state.since.from] : [desk.since_you_looked || [], desk.last_visit];
   const groups = sinceGroups(events);
   const body = groups.length
-    ? groups.map((group) => html`<div class="sgroup">${group.task ? html`<a class="mono" href="/tasks/${group.task}">${taskLabel(group.key)}</a>` : html`<span class="mono">factory</span>`}
+    ? groups.map((group) => html`<div class="sgroup">${group.task ? html`<a class="mono" href="/tasks/${group.task}" title="task ${group.task}">${taskLabel(group.key)}</a>` : html`<span class="mono">factory</span>`}
       <ol>${group.events.map((event) => html`<li>${timeTag(event.time)}<span>${sinceWords(event.what)}</span></li>`)}</ol></div>`)
     : html`<p>Nothing happened since you looked.</p>`;
   return html`<div class="sec">Since you looked<span>${from ? `since ${today(from) ? clock(from) : date(from)}` : "latest 50"}</span></div><div class="strip since" data-since>${body}</div>`;
@@ -735,7 +736,7 @@ function unroutedRows() {
 
 // A group's 5 newest events as history rows, then how many are older.
 function eventRows(events, state) {
-  return html`<ol class="hist">${events.slice(0, 5).map((event) => html`<li>${tile(state, "sm")}<span><b title="${event.type}">${eventWords(event.type)}</b> ${event.subject || ""}${event.line ? html`<span class="meta">${event.line}</span>` : ""}</span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>
+  return html`<ol class="hist">${events.slice(0, 5).map((event) => html`<li>${tile(state, "sm")}<span><b title="${event.type}">${eventWords(event.type)}</b> ${event.subject || ""}${event.line ? html`<span class="meta">${event.line}</span>` : ""}</span>${timeTag(event.time)}</li>`)}</ol>
     ${events.length > 5 ? html`<p class="meta">and ${events.length - 5} older</p>` : ""}`;
 }
 
@@ -747,7 +748,7 @@ function routeButton(group, action) {
     ? html`<button type="button" class="btn secondary" data-action="request-task" data-text="${group.request_text}" data-workflow="${task.workflow}">Request a task</button>`
     : html`<p class="meta">No new task can take this resource from here: start one from its thread.</p>`;
   const busy = state.unrouted.busy === group.resource ? raw('aria-disabled="true"') : "";
-  return html`<button type="button" class="btn secondary" data-action="subscribe-task" data-resource="${group.resource}" data-task="${task.id}" ${busy}>Subscribe task ${task.id}</button>`;
+  return html`<button type="button" class="btn secondary" data-action="subscribe-task" data-resource="${group.resource}" data-task="${task.id}" ${busy}>Subscribe ${taskLabel(task.key)}</button>`;
 }
 
 // One task's unheard events (DESIGN.md, Inbox), with what gets them to an agent.
@@ -788,7 +789,7 @@ async function subscribeTask(resource, task) {
   view.busy = null;
   const { status, body } = reply;
   if (status === 401) return signOut("The daemon refused this token. Paste the current one.");
-  view.notices.set(resource, status === 200 ? `Subscribed: ${body.ok}. Its next event goes to task ${task}.`
+  view.notices.set(resource, status === 200 ? `Subscribed: ${body.ok}. Its next event goes to ${taskName(task)}.`
     : status === 409 ? "The state changed since this page loaded. Check the task, then subscribe again."
       : status === 503 ? "Could not send: no priory daemon runs beside this server. Start priory daemon, then send again."
         : status === 504 || status === 0 ? "The daemon may have applied this but did not confirm it. Check the task before you send again."
@@ -834,7 +835,7 @@ function deskTable(model, selected) {
   const itemLine = (item) => item.kind === "memories" ? html`<tr>
     <td>${stateWord("memories")}</td><td class="mono"></td><td></td><td class="q full"><span>${item.candidates?.length ?? 0} memory candidates: ${(item.candidates || []).map((candidate) => candidate.name).join(", ")}</span></td>
     <td class="recw"><span class="task-acts"><a class="btn secondary act" href="/memories">Review</a></span></td><td class="r">${timeTag(item.since)}</td></tr>` : html`<tr>
-    <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${item.kind === "batch" ? html`<a href="/batches/${item.id}">${taskLabel(item.key)}</a>` : ["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${taskLabel(item.key)}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
+    <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${item.kind === "batch" ? html`<a href="/batches/${item.id}">${taskLabel(item.key)}</a>` : ["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}" title="task ${item.task}">${taskLabel(item.key)}</a>` : taskLabel(item.key)}</td><td>${item.step || ""}</td>
     <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : rowActs(item)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const todoLine = (item) => html`<tr>
     <td>${stateWord("todo")}</td><td class="mono"></td><td></td><td class="q full"><span>${todoText(item)}</span></td><td class="recw">${todoDone(item.id)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
@@ -865,7 +866,7 @@ function askView() {
 
 function askTableRow(ask, selected) {
   const answered = ask.state === "answered";
-  const when = answered && ask.answered_at ? timeTag(ask.answered_at, today(ask.answered_at) ? clock(ask.answered_at) : age(ask.answered_at)) : timeTag(ask.since);
+  const when = timeTag(answered && ask.answered_at ? ask.answered_at : ask.since);
   return html`<tr data-href="/asks/${ask.id}" aria-current="${String(ask.id) === selected ? "true" : "false"}">
     <td>${stateWord(ask.state === "open" ? "ask" : ask.state)}</td><td class="mono">${taskLabel(ask.key)}</td><td>${ask.step}</td><td class="q"><span>${ask.title || ask.question}</span>${runnerTag(ask)}${routedTag(ask)}</td>
     <td class="recw">${answered ? ask.answer + byLine(ask) : ask.state === "withdrawn" ? ask.withdrawn_why || "" : snoozed(ask, Date.now()) ? snoozedUntil(ask) : sentNote(ask) ? sentLine(ask) : ask.recommendation || ""}</td><td class="r">${when}</td></tr>`;
@@ -961,13 +962,13 @@ function taskListRow(task) {
   if (elsewhere(task, ago)) return remoteListRow(task);
   const line3 = reasonShown(task) ? html`<span class="t-${role(task.state)}">${task.reason}</span>${batchTag(task)}` : html`<span>${task.lane || ""}</span><span>${task.band || ""}</span>${batchTag(task)}`;
   return html`<div class="row" data-href="/tasks/${task.id}">${tile(task.state)}
-    <span class="l1"><a class="mono" href="/tasks/${task.id}">${taskLabel(task.key)}</a><span>${task.workflow} ${task.step}</span><span>${task.state}</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
+    <span class="l1"><a class="mono" href="/tasks/${task.id}" title="task ${task.id}">${taskLabel(task.key)}</a><span>${task.workflow} ${task.step}</span><span>${task.state}</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
     <span class="l2 r">${task.title || task.tldr || ""}</span><span class="l3">${line3}</span><span class="chev">${icon("chevron-right", "s15")}</span></div>`;
 }
 
 function taskTableRow(task) {
   if (elsewhere(task, ago)) return remoteTableRow(task);
-  return html`<tr data-href="/tasks/${task.id}"><td>${stateWord(task.state)}</td><td class="mono"><a href="/tasks/${task.id}">${taskLabel(task.key)}</a></td>
+  return html`<tr data-href="/tasks/${task.id}"><td>${stateWord(task.state)}</td><td class="mono"><a href="/tasks/${task.id}" title="task ${task.id}">${taskLabel(task.key)}</a></td>
     <td class="q full"><span>${task.title || task.tldr || ""}${task.batch == null ? "" : " "}${batchTag(task)}</span>${reasonShown(task) ? html`<span class="why t-${role(task.state)}">${task.reason}</span>` : ""}</td>
     <td>${task.workflow} <span class="t3">${task.step}</span></td><td>${task.lane || ""}</td><td>${task.band || ""}</td><td class="r">${timeTag(task.since)}</td></tr>`;
 }
@@ -998,14 +999,14 @@ function tasksBody(wide) {
 function runListRow(run) {
   const tokens = tokenText(run.tokens);
   return html`<div class="row" data-href="/tasks/${run.task}">${tile(runState(run))}
-    <span class="l1"><a class="mono" href="/tasks/${run.task}">${taskLabel(run.key)}</a><span>${run.step}</span><span>${runState(run)}</span><span class="age">${timeTag(run.started)}</span></span>
+    <span class="l1"><a class="mono" href="/tasks/${run.task}" title="task ${run.task}">${taskLabel(run.key)}</a><span>${run.step}</span><span>${runState(run)}</span><span class="age">${timeTag(run.started)}</span></span>
     <span class="l2 r">${[run.agent, run.model].filter(Boolean).join(", ") || "no agent"}</span>
     <span class="l3"><span>run ${run.run}</span>${run.outcome ? html`<span>${run.outcome}</span>` : ""}<span>${duration(run, Date.now())}</span>${tokens ? html`<span>${tokens} tokens</span>` : ""}</span>
     <span class="chev">${icon("chevron-right", "s15")}</span></div>`;
 }
 
 function runTableRow(run) {
-  return html`<tr data-href="/tasks/${run.task}"><td>${stateWord(runState(run))}</td><td class="r">${run.run}</td><td class="mono"><a href="/tasks/${run.task}">${taskLabel(run.key)}</a></td><td>${run.step}</td>
+  return html`<tr data-href="/tasks/${run.task}"><td>${stateWord(runState(run))}</td><td class="r">${run.run}</td><td class="mono"><a href="/tasks/${run.task}" title="task ${run.task}">${taskLabel(run.key)}</a></td><td>${run.step}</td>
     <td>${run.agent || ""} <span class="t3">${run.model || ""}</span></td><td>${run.outcome || ""}</td><td class="r">${duration(run, Date.now())}</td><td class="r">${tokenText(run.tokens)}</td><td class="r">${timeTag(run.started)}</td></tr>`;
 }
 
@@ -1174,11 +1175,11 @@ function askDetail(id, wide) {
   // Every revision and refused answer, newest first; an ask listed before Priory kept them shows its current revision.
   const dated = [
     ...(ask.revisions || [{ revision: ask.revision, at: ask.since, answer: ask.answer, answered_at: ask.answered_at }]).flatMap((revision) => [
-      [revision.at, html`<li>${tile("ask", "sm")}<span>Asked revision <b>${revision.revision}</b>${revision.question ? `: ${revision.question}` : ""}</span>${timeTag(revision.at, clock(revision.at))}</li>`],
-      ...(revision.answer == null ? [] : [[revision.answered_at || revision.at, html`<li>${tile("answered", "sm")}<span>Answered <b>${revision.answer}</b>${ask.state === "answered" && revision.revision === ask.revision ? byLine(ask) : ""}</span>${timeTag(revision.answered_at, clock(revision.answered_at || revision.at))}</li>`]]),
+      [revision.at, html`<li>${tile("ask", "sm")}<span>Asked revision <b>${revision.revision}</b>${revision.question ? `: ${revision.question}` : ""}</span>${timeTag(revision.at)}</li>`],
+      ...(revision.answer == null ? [] : [[revision.answered_at || revision.at, html`<li>${tile("answered", "sm")}<span>Answered <b>${revision.answer}</b>${ask.state === "answered" && revision.revision === ask.revision ? byLine(ask) : ""}</span>${timeTag(revision.answered_at || revision.at)}</li>`]]),
     ]),
-    ...(ask.refused || []).map((refusal) => [refusal.at, html`<li>${tile("refused", "sm")}<span class="t-warn"><b>Refused:</b> ${refusal.answer}, sent for revision ${refusal.revision} from ${refusal.by}: ${refusal.why}</span>${timeTag(refusal.at, clock(refusal.at))}</li>`]),
-    ...submitted(ask).map((sent) => [sent.at, html`<li>${tile(sent.tile, "sm")}<span class="${sent.tile === "refused" ? "t-warn" : ""}">${sent.text}</span>${timeTag(sent.at, clock(sent.at))}</li>`]),
+    ...(ask.refused || []).map((refusal) => [refusal.at, html`<li>${tile("refused", "sm")}<span class="t-warn"><b>Refused:</b> ${refusal.answer}, sent for revision ${refusal.revision} from ${refusal.by}: ${refusal.why}</span>${timeTag(refusal.at)}</li>`]),
+    ...submitted(ask).map((sent) => [sent.at, html`<li>${tile(sent.tile, "sm")}<span class="${sent.tile === "refused" ? "t-warn" : ""}">${sent.text}</span>${timeTag(sent.at)}</li>`]),
   // Built oldest first; reversed, entries of the same second stay newest first through the stable sort.
   ].reverse().sort(([a], [b]) => b.localeCompare(a));
   const historyItems = dated.map(([, item]) => item);
@@ -1289,7 +1290,7 @@ function laneGraph(batch, editable) {
     const after = armed ? successors(entries, entry.entry).map((other) => issueName(entries.find((each) => each.entry === other))) : [];
     return html`<li class="erow ${entry.stage === "dropped" ? "dropped" : ""}" data-lane="${lane}">
       <span class="slot">${node}</span>
-      <span class="l1">${entry.task ? html`<a class="mono" href="/tasks/${entry.task}" title="task ${entry.task}">${taskLabel(issueName(entry))}</a>` : html`<span class="mono">${taskLabel(issueName(entry))}</span>`}${entry.part != null ? html`<span class="tag">split</span>` : ""}${entry.task ? "" : html`<span>${(entry.files || []).join(", ")}</span>`}${entry.state ? html`<span class="sti t-${role(entry.state)}">${entry.state}</span>` : ""}</span>
+      <span class="l1">${entry.task ? html`<a class="mono" href="/tasks/${entry.task}" title="task ${entry.task}">${issueName(entry)}</a>` : html`<span class="mono">${issueName(entry)}</span>`}${entry.part != null ? html`<span class="tag">split</span>` : ""}${entry.task ? "" : html`<span>${(entry.files || []).join(", ")}</span>`}${entry.state ? html`<span class="sti t-${role(entry.state)}">${entry.state}</span>` : ""}</span>
       <span class="l2">${entry.title}</span>
       <span class="l3"><span>${momentWords(entry, entries)}</span>${status ? html`<span>${autolinked(status, batch.repo)}</span>` : ""}</span>
       ${editable ? html`<button class="iconbtn menu" id="${id("menu")}" data-action="entry-menu" data-entry="${entry.entry}" aria-expanded="${open ? "true" : "false"}" aria-label="Edit ${issueName(entry)}">${icon("more", "s20")}</button>` : ""}
@@ -1355,7 +1356,7 @@ function batchPage(id) {
     return html`${back}<p class="empty">${failed ? html`Could not load batch ${id}: ${failed}. <code>priory batch show ${id}</code> shows it.` : `Loading batch ${id}…`}</p>`;
   }
   return html`${back}<div class="scroll"><div class="ask bhead">
-    <p class="ctx">${tile("batch", "sm")}<a class="mono" href="/tasks/${batch.task}">${taskLabel(batch.key)}</a><span>${batch.state}</span><span>${batch.lane || ""}</span>${batch.went ? html`<span>went ${timeTag(batch.went, ago(batch.went))} by ${batch.went_by}</span>` : ""}<span>plan rev ${batch.plan_revision}</span></p>
+    <p class="ctx">${tile("batch", "sm")}<a class="mono" href="/tasks/${batch.task}" title="task ${batch.task}">${taskLabel(batch.key)}</a><span>${batch.state}</span><span>${batch.lane || ""}</span>${batch.went ? html`<span>went ${timeTag(batch.went, ago(batch.went))} by ${batch.went_by}</span>` : ""}<span>plan rev ${batch.plan_revision}</span></p>
     <h2 class="question">${batch.title || taskLabel(batch.key)}</h2>${stageBar(batch)}</div>
     <section class="sect" id="entries"><div class="sh">${icon("layers", "s15")}${batch.entries.length} entries in start order</div>${laneKey()}${laneGraph(batch, false)}</section>
     ${closesSection(batch)}${splitsSection(batch)}</div>`;
@@ -2050,7 +2051,7 @@ function attentionPart(report) {
     <div class="stats">${view.waits.map(statTile)}</div></section>
     <section class="sect" aria-labelledby="attention-tasks"><h2 class="sh" id="attention-tasks">Where each task's time went</h2>
       <ul class="legend">${PART_KEYS.map(([part, label]) => html`<li><svg width="18" height="10" aria-hidden="true"><rect class="p-${part}" x="0.5" y="0.5" width="17" height="9" rx="2"/></svg>${label}</li>`)}</ul>
-      <ol class="tsplit">${view.tasks.map((task) => html`<li><p><a class="mono" href="/tasks/${task.id}">${taskLabel(task.key)}</a><span>${task.workflow}</span><span class="sp"></span><span class="num">${task.wall}</span></p>${taskBar(task)}</li>`)}</ol></section>
+      <ol class="tsplit">${view.tasks.map((task) => html`<li><p><a class="mono" href="/tasks/${task.id}" title="task ${task.id}">${taskLabel(task.key)}</a><span>${task.workflow}</span><span class="sp"></span><span class="num">${task.wall}</span></p>${taskBar(task)}</li>`)}</ol></section>
     <svg width="0" height="0" class="defs" aria-hidden="true"><defs><pattern id="stripe-wait" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect class="stripe" width="3" height="6"/></pattern></defs></svg>`;
 }
 
@@ -2767,12 +2768,12 @@ const moveNote = (task) => (state.moveNotices.has(task.id) ? html`<p class="note
 
 function queueListRow(task, bands) {
   return html`<div class="row qrow" data-href="/tasks/${task.id}">${tile(task.state)}
-    <span class="l1"><span class="num">#${task.band_position}</span><a class="mono" href="/tasks/${task.id}">${taskLabel(task.key)}</a><span>${task.state}</span><span class="age">${timeTag(task.since)}</span></span>
+    <span class="l1"><span class="num">#${task.band_position}</span><a class="mono" href="/tasks/${task.id}" title="task ${task.id}">${taskLabel(task.key)}</a><span>${task.state}</span><span class="age">${timeTag(task.since)}</span></span>
     <span class="l2 r">${task.title || ""}</span><span class="l3 wrap">${waitReason(task, bands)}</span>${moveMenu(task, bands)}${moveNote(task)}</div>`;
 }
 
 function queueTableRow(task, bands) {
-  return html`<tr data-href="/tasks/${task.id}"><td class="r">#${task.band_position}</td><td>${stateWord(task.state)}</td><td class="mono"><a href="/tasks/${task.id}">${taskLabel(task.key)}</a></td>
+  return html`<tr data-href="/tasks/${task.id}"><td class="r">#${task.band_position}</td><td>${stateWord(task.state)}</td><td class="mono"><a href="/tasks/${task.id}" title="task ${task.id}">${taskLabel(task.key)}</a></td>
     <td class="q full"><span>${task.title || ""}</span><span class="why t3">${waitReason(task, bands)}</span>${moveNote(task)}</td><td class="act">${moveMenu(task, bands)}</td></tr>`;
 }
 

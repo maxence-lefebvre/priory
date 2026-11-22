@@ -90,5 +90,7 @@ test("a task is named by its key without its source", () => {
   assert.equal(taskLabel("linear:ENG-245"), "ENG-245");
   assert.equal(taskLabel("github:acme/shop#190"), "acme/shop#190");
   assert.equal(taskLabel("ENG-224"), "ENG-224");
+  assert.equal(taskLabel("cli:PRI-55"), "PRI-55");
+  assert.equal(taskLabel("batch:2026-11-21-1"), "batch:2026-11-21-1");
   assert.equal(taskLabel(null), "");
 });

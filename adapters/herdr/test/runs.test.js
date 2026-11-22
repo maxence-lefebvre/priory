@@ -66,9 +66,9 @@ test("pressing a run opens its task in the Task panel", async () => {
   assert.equal(/** @type {any} */ (herdr.shared.get("priory.task.open")).task, 3);
 });
 
-test("the view models are the web view's runs.js and tasks.js, copied", () => {
+test("the view models are the web view's runs.js, tasks.js and costs.js, copied", () => {
   const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
-  for (const [copy, web] of [["view.js", "runs.js"], ["tasks.js", "tasks.js"]]) {
+  for (const [copy, web] of [["view.js", "runs.js"], ["tasks.js", "tasks.js"], ["costs.js", "costs.js"]]) {
     assert.equal(source(`../mods/priory-runs/${copy}`), source(`../../../crates/priory-core/web/${web}`),
       `cp crates/priory-core/web/${web} adapters/herdr/mods/priory-runs/${copy}`);
   }

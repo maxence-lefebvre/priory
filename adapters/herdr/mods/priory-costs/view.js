@@ -1,11 +1,11 @@
 // The view model of the web view's Costs panel: `/api/costs` and `/api/attention` in, stat tiles,
-// bars and table rows out. No drawing, no IO. adapters/herdr/mods/priory-costs/view.js is a copy; a
-// test keeps the two the same. Herdr's engine has no Intl, so numbers and dates format by hand.
+// bars and table rows out. No drawing, no IO. adapters/herdr/mods/priory-costs/view.js and
+// priory-runs/costs.js are copies; tests keep them the same. Herdr's engine has no Intl, so
+// numbers and dates format by hand.
 
 const grouped = (/** @type {string} */ digits) => digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-// runs.js's tokenText, copied: each Herdr mod carries its own files.
-/** Input, output and cache tokens added up: "640", "1.5k", "312k", "3.3M". @param {any} tokens */
-function tokenText(tokens) {
+/** A run's input, output and cache tokens added up: "640", "1.5k", "312k", "3.3M". @param {any} tokens */
+export function tokenText(tokens) {
   if (!tokens) return "";
   const total = (tokens.input ?? 0) + (tokens.output ?? 0) + (tokens.cache_read ?? 0) + (tokens.cache_write ?? 0);
   const short = (/** @type {number} */ value, /** @type {string} */ unit) => `${value < 10 ? Math.round(value * 10) / 10 : Math.round(value)}${unit}`;

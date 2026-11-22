@@ -29,6 +29,8 @@ test("a skipped or neutral check does not count as failing", () => {
   const checks = [{ name: "test", conclusion: "success" }, { name: "docs", conclusion: "skipped" }, { name: "lint", conclusion: "neutral" }];
   assert.equal(prStack(stack, { number: 59, checks }).entries[1].checks, "3 checks pass");
   assert.equal(prStack(stack, { number: 59, checks: [...checks, { name: "e2e", conclusion: "timed_out" }] }).entries[1].checks, "1 of 4 checks failing");
+  assert.equal(prStack(stack, { number: 59, checks: [...checks, { name: "e2e", conclusion: null }] }).entries[1].checks, "1 of 4 checks running");
+  assert.equal(prStack(stack, { number: 59, checks: [{ name: "e2e", conclusion: null }, { name: "lint", conclusion: "failure" }] }).entries[1].checks, "1 of 2 checks failing");
 });
 
 test("a check draws as passed, running, skipped or failed, never failed while unfinished", () => {
