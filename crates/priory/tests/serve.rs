@@ -5032,6 +5032,7 @@ fn use_factory(setup: &Setup, from: &Path) {
         )
         .replace("SENTRY_CLIENT_SECRET", "TEST_SECRET")
         .replace("HONEYCOMB_WEBHOOK_SECRET", "TEST_SECRET")
+        .replace("INTERCOM_CLIENT_SECRET", "TEST_SECRET")
         .replace("CLOUDWATCH_WEBHOOK_SECRET", "TEST_SECRET");
     if !text.contains("[serve]") {
         text.push_str("\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n");
@@ -6586,6 +6587,255 @@ fn a_honeycomb_payload_without_the_template_gets_400_and_a_body_over_1_mib_gets_
         assert_eq!(status, 400, "{reply}");
         assert!(reply.contains(&format!("lacks `{field}`")), "{reply}");
     }
+    assert!(setup.published().is_empty());
+}
+
+const INTERCOM_HOOKS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n\n[webhooks.intercom]\nsecret_env = \"TEST_SECRET\"\nworkspace = \"a86dr8yl\"\n";
+
+/// An Intercom notification on `topic` from workspace `workspace`, carrying a conversation a
+/// contact started, trimmed to the fields of Intercom's conversation model that Priory reads.
+fn intercom_notification(topic: &str, workspace: &str) -> Value {
+    json!({
+        "type": "notification_event",
+        "app_id": workspace,
+        "id": "notif_78c122d0-23ba-11e4-9464-79b01267cc2e",
+        "topic": topic,
+        "delivery_status": "pending",
+        "delivery_attempts": 1,
+        "delivered_at": 0,
+        "first_sent_at": 1795353700,
+        "created_at": 1795353699,
+        "data": {
+            "type": "notification_event_data",
+            "item": {
+                "type": "conversation",
+                "id": "1295",
+                "title": null,
+                "created_at": 1795353698,
+                "updated_at": 1795353699,
+                "state": "open",
+                "source": {
+                    "type": "conversation",
+                    "id": "3",
+                    "delivered_as": "customer_initiated",
+                    "subject": "",
+                    "body": "The export button does nothing on Firefox.",
+                    "author": { "type": "user", "id": "274", "name": "Jane Doe", "email": "jane@example.com" },
+                    "url": "https://app.example.com/settings"
+                }
+            }
+        }
+    })
+}
+
+/// `sha1=` and the hex HMAC-SHA1 of `body` under `secret`, as Intercom signs.
+fn intercom_signature(secret: &str, body: &str) -> String {
+    use hmac::{Hmac, KeyInit, Mac};
+    let mut mac = Hmac::<sha1::Sha1>::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(body.as_bytes());
+    let digest = mac.finalize().into_bytes();
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("sha1={hex}")
+}
+
+/// POSTs `body` to `/hooks/intercom` as Intercom would, with `signature` in `X-Hub-Signature`
+/// when given.
+fn deliver_intercom(address: &str, signature: Option<&str>, body: &str) -> (u16, String) {
+    let signature = signature.map_or(String::new(), |signature| {
+        format!("X-Hub-Signature: {signature}\r\n")
+    });
+    raw(
+        address,
+        &format!(
+            "POST /hooks/intercom HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\n\
+             User-Agent: intercom-parrot-service-client/1.0\r\n{signature}Content-Length: {}\r\n\
+             Connection: close\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+impl Setup {
+    /// A factory with `[serve]`, the Intercom webhook for workspace `a86dr8yl` and an `intercom`
+    /// trigger.
+    fn intercom_hooks(name: &str) -> Self {
+        let setup = Setup::new(name, INTERCOM_HOOKS);
+        fs::create_dir_all(setup.dir.join("factory/triggers")).unwrap();
+        fs::write(
+            setup.dir.join("factory/triggers/intercom-conversations.toml"),
+            "source = \"intercom\"\non = \"conversation.created\"\nrepo = \"owner/repo\"\nworkflow = \"implement\"\nkey = \"conversation.id\"\n",
+        )
+        .unwrap();
+        setup
+    }
+
+    fn send_intercom(&self, address: &str, body: &Value) -> (u16, String) {
+        let body = body.to_string();
+        let signature = intercom_signature(&self.secret, &body);
+        deliver_intercom(address, Some(&signature), &body)
+    }
+}
+
+#[test]
+fn a_signed_intercom_conversation_from_the_workspace_publishes_the_event_and_requests_a_task() {
+    let mut setup = Setup::intercom_hooks("intercom-created");
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, reply) = setup.send_intercom(
+        &address,
+        &intercom_notification("conversation.user.created", "a86dr8yl"),
+    );
+
+    assert_eq!(status, 202, "{reply}");
+    assert_eq!(reply, r#"{"outcome":"published"}"#);
+    let published = setup.published();
+    let kinds: Vec<_> = published.iter().map(|m| m.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        ["intercom.conversation.created", "factory.task.requested"]
+    );
+    assert_eq!(published[0].subject.as_deref(), Some("conversation 1295"));
+    assert_eq!(
+        published[0].data,
+        json!({
+            "conversation": "1295",
+            "workspace": "a86dr8yl",
+            "title": null,
+            "subject": null,
+            "body": "The export button does nothing on Firefox.",
+            "author": "Jane Doe",
+            "author_type": "user",
+            "page": "https://app.example.com/settings",
+            "delivery": "notif_78c122d0-23ba-11e4-9464-79b01267cc2e",
+            "time": "2026-11-22T13:21:38Z",
+            "baseline": false,
+            "triggers": ["intercom-conversations"]
+        })
+    );
+    assert_eq!(published[1].subject.as_deref(), Some("intercom:1295"));
+}
+
+#[test]
+fn an_intercom_delivery_with_a_wrong_or_missing_signature_gets_401_before_it_is_read() {
+    let mut setup = Setup::intercom_hooks("intercom-refused");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = intercom_notification("conversation.user.created", "a86dr8yl").to_string();
+    let signed = intercom_signature(&setup.secret, &body);
+    let signatures = [
+        Some(intercom_signature("not-the-secret", &body)),
+        None,
+        Some(signed.replace("sha1=", "")),
+        Some(signed.replace("sha1=", "sha256=")),
+        Some("sha1=zz".to_owned()),
+        Some(sign(&setup.secret, body.as_bytes())),
+    ];
+    for signature in &signatures {
+        let (status, reply) = deliver_intercom(&address, signature.as_deref(), &body);
+
+        assert_eq!(status, 401, "{signature:?}");
+        assert_eq!(
+            reply,
+            r#"{"error":"X-Hub-Signature is missing or does not match the body"}"#
+        );
+    }
+    let (status, _) = deliver_intercom(&address, Some("sha1=00"), "not json, secret-marker");
+    assert_eq!(status, 401);
+    assert!(setup.published().is_empty());
+    let log = fs::read_to_string(setup.dir.join("server.log")).unwrap_or_default();
+    assert!(
+        !log.contains("secret-marker") && !log.contains("export button"),
+        "{log}"
+    );
+}
+
+#[test]
+fn the_intercom_signature_covers_the_exact_body_bytes_not_the_parsed_json() {
+    let mut setup = Setup::intercom_hooks("intercom-raw-bytes");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let pretty = serde_json::to_string_pretty(&intercom_notification(
+        "conversation.user.created",
+        "a86dr8yl",
+    ))
+    .unwrap();
+    let signature = intercom_signature(&setup.secret, &pretty);
+    let reformatted = pretty.replacen("\n", "\n ", 1);
+
+    let (altered, _) = deliver_intercom(&address, Some(&signature), &reformatted);
+    let (status, reply) = deliver_intercom(&address, Some(&signature), &pretty);
+
+    assert_eq!(altered, 401);
+    assert_eq!(status, 202, "{reply}");
+    assert_eq!(reply, r#"{"outcome":"published"}"#);
+}
+
+#[test]
+fn a_replayed_intercom_notification_publishes_nothing() {
+    let mut setup = Setup::intercom_hooks("intercom-replay");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let notification = intercom_notification("conversation.user.created", "a86dr8yl");
+    let (status, _) = setup.send_intercom(&address, &notification);
+    assert_eq!(status, 202);
+    let first = setup.published();
+    let mut retried = notification.clone();
+    retried["delivery_attempts"] = json!(2);
+
+    for body in [notification, retried] {
+        let (status, reply) = setup.send_intercom(&address, &body);
+
+        assert_eq!(status, 202, "{reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    }
+    assert_eq!(setup.published(), first);
+}
+
+#[test]
+fn an_intercom_notification_of_another_workspace_or_topic_gets_202_and_publishes_nothing() {
+    let mut setup = Setup::intercom_hooks("intercom-dropped");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let deliveries = [
+        intercom_notification("conversation.user.created", "otherapp"),
+        intercom_notification("conversation.user.replied", "a86dr8yl"),
+        intercom_notification("conversation.admin.replied", "a86dr8yl"),
+        json!({ "type": "notification_event", "app_id": "a86dr8yl", "topic": "ping", "data": {} }),
+    ];
+
+    for body in deliveries {
+        let (status, reply) = setup.send_intercom(&address, &body);
+
+        assert_eq!(status, 202, "{body}: {reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    }
+    assert!(setup.published().is_empty());
+}
+
+#[test]
+fn intercom_gets_200_to_head_and_400_for_a_conversation_without_its_id_and_413_past_1_mib() {
+    let mut setup = Setup::intercom_hooks("intercom-invalid");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut nameless = intercom_notification("conversation.user.created", "a86dr8yl");
+    nameless["data"]["item"]["id"] = Value::Null;
+
+    let (head, _) = raw(
+        &address,
+        &format!("HEAD /hooks/intercom HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"),
+    );
+    let (status, reply) = setup.send_intercom(&address, &nameless);
+    let (big, _) = raw(
+        &address,
+        &format!(
+            "POST /hooks/intercom HTTP/1.1\r\nHost: {address}\r\nX-Hub-Signature: sha1=00\r\n\
+             Content-Length: {}\r\n\r\n",
+            1024 * 1024 + 1
+        ),
+    );
+
+    assert_eq!(head, 200);
+    assert_eq!(status, 400);
+    assert_eq!(
+        reply,
+        r#"{"error":"the payload lacks the conversation's `id`"}"#
+    );
+    assert_eq!(big, 413);
     assert!(setup.published().is_empty());
 }
 

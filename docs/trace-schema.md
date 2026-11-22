@@ -471,6 +471,55 @@ and `time` is when the score was recorded. Scoring a run again appends another r
 | `verdict` | yes      | `pass`, `fail`, `not applicable` or `error`                          |
 | `reason`  | yes      | One line of why                                                      |
 
+## `factory.bench.compared`
+
+A comparison of two commits of the factory on a benchmark ended (see
+[bench.md](daemon/bench.md#compare)). `priory bench` reads these records to number a comparison
+and to mark a repeat. `factory` is the head commit's factory name, and `source` names the machine.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-00000000000a",
+  "source": "factory://example/xps13",
+  "type": "factory.bench.compared",
+  "time": "2026-11-22T15:04:11Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "benchmark": "implement-november",
+    "base": "999daf0c8e1f6a1b2c3d4e5f60718293a4b5c6d7",
+    "head": "4c1e2b7f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d",
+    "number": 1,
+    "complete": true,
+    "repeat": false,
+    "verdict": "better",
+    "primary": "gate",
+    "cases": 12,
+    "runs": 3,
+    "spent": 31.2,
+    "budget": 40.0,
+    "machine": "xps13"
+  }
+}
+```
+
+| Field       | Required | Meaning                                                              |
+| ----------- | -------- | -------------------------------------------------------------------- |
+| `benchmark` | yes      | The benchmark file's name                                            |
+| `base`      | yes      | The base commit, in full                                             |
+| `head`      | yes      | The head commit, in full                                             |
+| `number`    | yes      | This comparison's number among those of the same commits and benchmark on this machine |
+| `complete`  | yes      | Whether every pair ran                                               |
+| `repeat`    | yes      | Whether an earlier complete comparison of the same commits and benchmark gave the verdict |
+| `verdict`   | no       | `better`, `worse`, `no clear difference` or `too few cases`. Null when incomplete or a repeat |
+| `primary`   | yes      | The primary scorer                                                   |
+| `cases`     | yes      | The cases compared, without those a broken scorer dropped            |
+| `runs`      | yes      | The pairs each case was to get                                       |
+| `spent`     | yes      | What the replays spent, in dollars                                   |
+| `budget`    | yes      | The budget, in dollars                                               |
+| `machine`   | no       | The machine's hostname                                               |
+
 ## Spans
 
 A factory that exports OpenTelemetry spans (Priory does: see

@@ -15,6 +15,7 @@ cannot tell which keys a source refuses; `priory check` does.
 - [`sentry`](#sentry)
 - [`cloudwatch`](#cloudwatch)
 - [`honeycomb`](#honeycomb)
+- [`intercom`](#intercom)
 - [`slack`](#slack)
 - [`schedule`](#schedule)
 - [Task requests: `triggers/cli.toml` and `hold`](#task-requests-triggersclitoml-and-hold)
@@ -25,7 +26,7 @@ cannot tell which keys a source refuses; `priory check` does.
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
-| `source` | string | yes | | `github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `cloudwatch`, `slack` or `schedule` | `"github"` |
+| `source` | string | yes | | `github`, `linear`, `linear.view`, `sentry`, `honeycomb`, `intercom`, `cloudwatch`, `slack` or `schedule` | `"github"` |
 | `workflow` | string | yes | | The workflow a matching event starts, by file name | `"implement"` |
 | `repo` | string | per source | | The repository the trigger's tasks work in, a GitHub `owner/name`. `priory check` refuses any other shape, such as `..` or a path | `"owner/name"` |
 | `key` | string | no | per source | Which events are the same work. A factory holds at most one active task per key | `"issue.number"` |
@@ -35,7 +36,7 @@ cannot tell which keys a source refuses; `priory check` does.
 | `intervention` | `plan` or `hands-off` | no | a person answers every ask | Who answers its tasks' asks. See [`intervention` and `lead`](#intervention-and-lead) | `"plan"` |
 | `lead` | string | with `hands-off` | | The agent that answers asks of a `hands-off` task | `"lead"` |
 
-Without a `repo`, a Linear, Sentry, Honeycomb or Slack trigger's tasks block before their first run.
+Without a `repo`, a Linear, Sentry, Honeycomb, Intercom or Slack trigger's tasks block before their first run.
 
 ## `github`
 
@@ -219,6 +220,30 @@ workflow = "implement"
 key = "trigger.id"             # the task key is honeycomb:JwwZxfcP5kH
 ```
 
+## `intercom`
+
+Starts a task when a customer starts an Intercom conversation. Intercom pushes it to
+`POST /hooks/intercom`, so the trigger needs [`[webhooks.intercom]`](factory.md#webhooksintercom),
+whose `workspace` picks the workspace. See [intercom.md](../intake/intercom.md).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `on` | string | yes | | `conversation.created` | `"conversation.created"` |
+| `key` | string | no | the conversation id | `conversation.id`. The task key is `intercom:1295` | `"conversation.id"` |
+
+An `intercom` trigger takes no `filter` and no `backfill`: every conversation of the workspace
+matches, and Intercom sends only new ones.
+
+<!-- example: factory/triggers/intercom-conversations.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "intercom"
+on = "conversation.created"    # a customer started a conversation
+repo = "owner/name"            # where its tasks work; without it they block
+workflow = "implement"
+key = "conversation.id"        # the task key is intercom:1295
+```
+
 ## `slack`
 
 Starts a task when someone posts in a channel, outside a thread. The intake reads a bot token from
@@ -363,10 +388,10 @@ lead = "lead"                  # agents/lead/agent.md, with session = "shared"
 | `` a Slack trigger's `key` is `message.ts` `` | Another `key` |
 | `` a `cloudwatch` trigger needs `[webhooks.cloudwatch]` in factory.toml: CloudWatch alarm state changes arrive only by webhook `` | A `cloudwatch` trigger in a factory without `[webhooks.cloudwatch]` |
 | `` a `cloudwatch` trigger handles `alarm.state_changed`, not `<on>` `` | A bad `on` |
-| `` a `cloudwatch` trigger filters on `name`, `state` or `previous_state` `` | Another `filter` key |
+| `` a `cloudwatch` trigger filters on `name` or `state` or `previous_state` `` | Another `filter` key |
 | `` a CloudWatch trigger's `repo` is `owner/name` `` | A malformed `repo` |
 | `` a CloudWatch trigger's `key` is `alarm.arn` `` | Another `key` |
-| `` only a GitHub, Linear or Slack trigger has `backfill` `` | `backfill` on a schedule, `cli`, `sentry`, `honeycomb` or `cloudwatch` trigger |
+| `` only a GitHub, Linear or Slack trigger has `backfill` `` | `backfill` on a schedule, `cli`, `sentry`, `honeycomb`, `intercom` or `cloudwatch` trigger |
 | `` only a Slack trigger names a `channel` `` | `channel` on another source |
 | `` only a schedule trigger has `<key>` `` | `at`, `days`, `every`, `until`, `timezone` or `prompt` on another source |
 | `` a schedule trigger needs `at = "HH:MM"` `` | A schedule without `at` |

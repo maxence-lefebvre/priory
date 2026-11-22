@@ -1,7 +1,7 @@
 use crate::factory::{
-    ASK_SHAPE, Agent, Backend, CODEX_PROMPT_LIMIT, Decider, Effect, Factory, Harness, INSTRUCTIONS,
-    Intervention, Loaded, OPEN_MEMORIES_PR, OnChange, PermissionMode, Problem, Proof, ScoreKind,
-    ScoreOn, Scorer, Session, Step, Trigger, Until, Workflow,
+    ASK_SHAPE, Agent, Backend, Benchmark, CODEX_PROMPT_LIMIT, Decider, Effect, Factory, Harness,
+    INSTRUCTIONS, Intervention, Loaded, OPEN_MEMORIES_PR, OnChange, PermissionMode, Problem, Proof,
+    ScoreKind, ScoreOn, Scorer, Session, Step, Trigger, Until, Workflow,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
 use crate::lanes::{self, Lanes};
@@ -301,6 +301,12 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 factory.cloudwatch_webhook().is_some(),
                 &mut problems,
             ),
+            "intercom" => check_hooked(
+                trigger,
+                &INTERCOM,
+                factory.intercom_webhook().is_some(),
+                &mut problems,
+            ),
             _ if trigger.value.backfill.is_some() => problems.push(problem(
                 trigger,
                 trigger.lines.field("backfill"),
@@ -315,6 +321,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             "sentry",
             "cloudwatch",
             "honeycomb",
+            "intercom",
             "slack",
             "schedule",
         ];
@@ -391,7 +398,67 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
     for scorer in factory.scorers.values() {
         check_scorer(factory, scorer, &mut problems);
     }
+    for benchmark in factory.benchmarks.values() {
+        check_benchmark(factory, benchmark, &mut problems);
+    }
     problems
+}
+
+fn check_benchmark(factory: &Factory, benchmark: &Loaded<Benchmark>, problems: &mut Vec<Problem>) {
+    let value = &benchmark.value;
+    if !factory.workflows.contains_key(&value.workflow) {
+        problems.push(problem(
+            benchmark,
+            benchmark.lines.field("workflow"),
+            format!("no workflow `{}` in workflows/", value.workflow),
+        ));
+    }
+    match factory.scorers.get(&value.primary) {
+        None => problems.push(problem(
+            benchmark,
+            benchmark.lines.field("primary"),
+            format!("no scorer `{}` in scorers/", value.primary),
+        )),
+        Some(scorer) if scorer.value.on == ScoreOn::Ask => problems.push(problem(
+            benchmark,
+            benchmark.lines.field("primary"),
+            format!(
+                "the primary scorer `{}` reads asks, which not every replay makes: use one on result or diff",
+                value.primary
+            ),
+        )),
+        Some(_) => {}
+    }
+    for name in value
+        .scorers
+        .iter()
+        .filter(|name| !factory.scorers.contains_key(*name))
+    {
+        problems.push(problem(
+            benchmark,
+            benchmark.lines.field("scorers"),
+            format!("no scorer `{name}` in scorers/"),
+        ));
+    }
+    if value.cases.is_empty() {
+        problems.push(problem(
+            benchmark,
+            benchmark.lines.field("cases"),
+            "a benchmark needs `cases`: folders that priory bench capture wrote".to_owned(),
+        ));
+    }
+    for case in &value.cases {
+        if case.is_absolute() || case.components().any(|part| part.as_os_str() == "..") {
+            problems.push(problem(
+                benchmark,
+                benchmark.lines.field("cases"),
+                format!(
+                    "the case {} is not inside the benchmarks folder",
+                    case.display()
+                ),
+            ));
+        }
+    }
 }
 
 fn check_scorer(factory: &Factory, scorer: &Loaded<Scorer>, problems: &mut Vec<Problem>) {
@@ -824,6 +891,15 @@ const CLOUDWATCH: Hooked = Hooked {
     events: "alarm state changes",
 };
 
+const INTERCOM: Hooked = Hooked {
+    source: "intercom",
+    vendor: "Intercom",
+    on: "conversation.created",
+    filters: &[],
+    key: "conversation.id",
+    events: "conversations",
+};
+
 /// A trigger of a webhook-only source takes its one event, its filters and its key, and needs its
 /// `[webhooks.<source>]` table.
 fn check_hooked(
@@ -836,6 +912,11 @@ fn check_hooked(
     let Hooked {
         source, vendor, on, ..
     } = hooked;
+    let a = if source.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    };
     let mut report = |field: &str, message: String| {
         let line = trigger.lines.field(field).or(trigger.lines.field("source"));
         problems.push(problem(trigger, line, message));
@@ -850,7 +931,7 @@ fn check_hooked(
         report(
             "source",
             format!(
-                "a `{source}` trigger needs `[webhooks.{source}]` in factory.toml: {vendor} {} arrive only by webhook",
+                "{a} `{source}` trigger needs `[webhooks.{source}]` in factory.toml: {vendor} {} arrive only by webhook",
                 hooked.events
             ),
         );
@@ -858,7 +939,7 @@ fn check_hooked(
     if value.on != *on {
         report(
             "on",
-            format!("a `{source}` trigger handles `{on}`, not `{}`", value.on),
+            format!("{a} `{source}` trigger handles `{on}`, not `{}`", value.on),
         );
     }
     if value.filter.as_ref().is_some_and(|filter| {
@@ -866,27 +947,25 @@ fn check_hooked(
             .keys()
             .any(|key| !hooked.filters.contains(&key.as_str()))
     }) {
-        let filters: Vec<String> = hooked.filters.iter().map(|f| format!("`{f}`")).collect();
-        let filters = match filters.split_last() {
-            Some((last, [])) => last.clone(),
-            Some((last, others)) => format!("{} or {last}", others.join(", ")),
-            None => String::new(),
+        let message = match hooked.filters {
+            [] => format!("{a} `{source}` trigger takes no `filter`"),
+            filters => format!(
+                "{a} `{source}` trigger filters on `{}`",
+                filters.join("` or `")
+            ),
         };
-        report(
-            "filter",
-            format!("a `{source}` trigger filters on {filters}"),
-        );
+        report("filter", message);
     }
     if value.repo.as_deref().is_some_and(|repo| !owner_name(repo)) {
         report(
             "repo",
-            format!("a {vendor} trigger's `repo` is `owner/name`"),
+            format!("{a} {vendor} trigger's `repo` is `owner/name`"),
         );
     }
     if value.key.as_deref().is_some_and(|key| key != hooked.key) {
         report(
             "key",
-            format!("a {vendor} trigger's `key` is `{}`", hooked.key),
+            format!("{a} {vendor} trigger's `key` is `{}`", hooked.key),
         );
     }
 }

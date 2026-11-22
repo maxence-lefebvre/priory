@@ -1,0 +1,21 @@
+{
+  "id": "ba22da8d-9ef5-5fa3-9a78-7c6ff0bb9dd8",
+  "type": "intercom.conversation.created",
+  "subject": "conversation 1295",
+  "time": "2026-11-22T13:21:38Z",
+  "data": {
+    "conversation": "1295",
+    "workspace": "a86dr8yl",
+    "title": null,
+    "subject": null,
+    "body": "The export button does nothing on Firefox.",
+    "author": "Jane Doe",
+    "author_type": "user",
+    "page": "https://app.example.com/settings",
+    "delivery": "notif_78c122d0-23ba-11e4-9464-79b01267cc2e",
+    "time": "2026-11-22T13:21:38Z",
+    "baseline": false,
+    "triggers": ["intercom-conversations"]
+  },
+  "links": []
+}

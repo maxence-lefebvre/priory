@@ -1,6 +1,6 @@
 use priory_factory::case::{Answers, Case, GhAnswer};
 use priory_factory::factory::{
-    Agent, MemoryFrontmatter, Runner, Scorer, Settings, Trigger, View, Workflow,
+    Agent, Benchmark, MemoryFrontmatter, Runner, Scorer, Settings, Trigger, View, Workflow,
 };
 use priory_intake::events::*;
 use schemars::JsonSchema;
@@ -48,6 +48,7 @@ fn generated() -> Vec<(String, Value)> {
         config::<Runner>("runner"),
         config::<View>("view"),
         config::<Scorer>("scorer"),
+        config::<Benchmark>("benchmark"),
         config::<MemoryFrontmatter>("memory"),
         config::<Case>("case"),
         config::<GhAnswer>("case-gh"),
@@ -78,6 +79,7 @@ fn generated() -> Vec<(String, Value)> {
         event::<SentryIssueCreated>("sentry.issue.created"),
         event::<CloudwatchAlarmStateChanged>("cloudwatch.alarm.state_changed"),
         event::<HoneycombTriggerFired>("honeycomb.trigger.fired"),
+        event::<IntercomConversationCreated>("intercom.conversation.created"),
         event::<SlackPosted>("slack.message.posted"),
         event::<SlackReplied>("slack.thread.replied"),
         event::<ScheduleFired>("schedule.fired"),

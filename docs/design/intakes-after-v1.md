@@ -130,6 +130,10 @@ source `honeycomb`, and the schemas.
 
 ## Intercom
 
+**Built.** `POST /hooks/intercom` publishes `intercom.conversation.created`, and `HEAD` there gets
+`200`. `[webhooks.intercom] workspace` is the workspace filter. See
+[intercom.md](../intake/intercom.md). Replies are not mapped yet.
+
 **Trigger on.** A customer starting a conversation: `intercom.conversation.created`, from the topic
 `conversation.user.created` ("Contact initiated conversations"). A customer reply could be
 `intercom.conversation.replied`, from `conversation.user.replied`. Both need the Read conversations

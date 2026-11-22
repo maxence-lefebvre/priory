@@ -22,7 +22,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `telemetry` | table | no | no export | Where trace records go. See [`[telemetry]`](#telemetry) | |
 | `notify` | table | no | no desktop notification | Notifications besides Web Push. See [`[notify]`](#notify) | |
 | `serve` | table | no | nothing listens | The HTTP server over the factory's state. See [`[serve]`](#serve) | |
-| `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub), [`[webhooks.linear]`](#webhookslinear), [`[webhooks.sentry]`](#webhookssentry), [`[webhooks.honeycomb]`](#webhookshoneycomb) and [`[webhooks.cloudwatch]`](#webhookscloudwatch) | |
+| `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub), [`[webhooks.linear]`](#webhookslinear), [`[webhooks.sentry]`](#webhookssentry), [`[webhooks.honeycomb]`](#webhookshoneycomb), [`[webhooks.intercom]`](#webhooksintercom) and [`[webhooks.cloudwatch]`](#webhookscloudwatch) | |
 | `slack` | table | no | no Slack shortcut | The Slack message shortcut. See [`[slack.shortcut]`](#slackshortcut) | |
 | `asks` | table | no | answers are only stored | What happens to the answer of an ask from outside Priory. See [`[asks]`](#asks) | |
 | `links` | table of strings | no | the built-in `#n` link | Autolinks, each a regex and a URL template. See [`[links]`](#links) | |
@@ -211,6 +211,20 @@ needs it.
 
 `priory serve` and `priory daemon` refuse to start while that variable is unset or empty.
 
+## `[webhooks.intercom]`
+
+See [intercom.md](../intake/intercom.md) for what a notification publishes, and
+[serve.md](serve.md#post-hooksintercom) for the endpoint. With this table, the server takes Intercom
+notifications at `POST /hooks/intercom` and answers `HEAD` there. An
+[`intercom` trigger](triggers.md#intercom) needs it.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `secret_env` | string | no | `"INTERCOM_CLIENT_SECRET"` | The environment variable that holds the Intercom app's client secret. Never the secret itself | `"PRIORY_INTERCOM_SECRET"` |
+| `workspace` | string | yes | | The workspace id whose notifications Priory takes, a notification's `app_id`. Notifications from other workspaces get `202` and publish nothing | `"a86dr8yl"` |
+
+`priory serve` and `priory daemon` refuse to start while that variable is unset or empty.
+
 ## `[slack.shortcut]`
 
 See [slack.md](../intake/slack.md#message-shortcut) for what the shortcut does and how to set up
@@ -364,6 +378,10 @@ secret_env = "CLOUDWATCH_WEBHOOK_SECRET"       # the variable holding the EventB
 
 [webhooks.honeycomb]
 secret_env = "HONEYCOMB_WEBHOOK_SECRET"        # the variable holding the Honeycomb recipient's Shared Secret
+
+[webhooks.intercom]
+secret_env = "INTERCOM_CLIENT_SECRET"          # the variable holding the Intercom app's client secret
+workspace = "a86dr8yl"                         # the one workspace whose notifications it takes
 
 [asks]
 deliver = "bin/deliver"                        # delivers outside answers, from the factory folder

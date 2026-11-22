@@ -5,6 +5,7 @@ use priory_runtime::http::Reply;
 mod cloudwatch;
 mod gh;
 mod honeycomb;
+mod intercom;
 mod issues;
 mod linear;
 mod linear_webhook;
@@ -18,6 +19,7 @@ mod webhook;
 
 pub use cloudwatch::CloudwatchWebhook;
 pub use honeycomb::HoneycombWebhook;
+pub use intercom::IntercomWebhook;
 pub use linear::state as linear_state;
 pub use linear_webhook::LinearWebhook;
 pub use sentry::SentryWebhook;
@@ -114,6 +116,7 @@ pub fn output() -> Output {
             sentry::CREATED,
             cloudwatch::CHANGED,
             honeycomb::FIRED,
+            intercom::CREATED,
             slack::POSTED,
             slack::REPLIED,
             TASK_REQUESTED,
@@ -638,6 +641,10 @@ fn dispatch(bus: &dyn Log, triggers: &[(&str, &Trigger)], source: &Message) -> R
                 _ if source.kind == honeycomb::FIRED => {
                     format!("honeycomb:{}", data["trigger"].as_str().unwrap_or_default())
                 }
+                _ if source.kind == intercom::CREATED => format!(
+                    "intercom:{}",
+                    data["conversation"].as_str().unwrap_or_default()
+                ),
                 _ if source.kind == reviews::REQUESTED => {
                     review_key(repo, number, data["reviewer"].as_str().unwrap_or_default())
                 }
