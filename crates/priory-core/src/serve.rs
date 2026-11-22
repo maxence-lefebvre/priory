@@ -1164,9 +1164,8 @@ fn remote_write(db: &Connection, remote: &Remote, write: &Write, body: &[u8]) ->
             );
             return Err(Reply::error(422, &refused));
         }
-        // Nothing waits on this machine: unpublished, the write is not sent at all.
         let submission = runners::submit(&remote.log, kind, runner, id, data)
-            .map_err(|error| Reply::error(503, &format!("{error}. Nothing was sent: try again")))?;
+            .map_err(|why| unsent(why, "ask"))?;
         let sent = serde_json::json!({ "sent": runner, "submission": submission });
         Ok(Reply::json(202, sent.to_string()))
     })();
@@ -1240,13 +1239,23 @@ fn remote_act(
             step: body.step.as_deref(),
             by: "serve",
         };
-        // Nothing waits on this machine: unpublished, the action is not sent at all.
-        let submission = runners::act(&remote.log, &sent)
-            .map_err(|error| Reply::error(503, &format!("{error}. Nothing was sent: try again")))?;
+        let submission = runners::act(&remote.log, &sent).map_err(|why| unsent(why, "task"))?;
         let sent = serde_json::json!({ "sent": runner, "submission": submission });
         Ok(Reply::json(202, sent.to_string()))
     })();
     Some(reply.unwrap_or_else(|reply| reply))
+}
+
+/// The answer to a write for another runner that may not be on the log: `503` when nothing was
+/// sent, so a retry is safe, else `504`, since a retry would be a second write if the log holds the
+/// first. `what` is what to read before a retry.
+fn unsent(why: runners::Unsent, what: &str) -> Reply {
+    match why {
+        runners::Unsent::Nothing(why) => {
+            Reply::error(503, &format!("{why}. Nothing was sent: try again"))
+        }
+        unconfirmed => Reply::error(504, &unconfirmed.said(what)),
+    }
 }
 
 /// A person's accept or drop of memory candidate `id`, which `priory memories accept|drop` does too:

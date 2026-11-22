@@ -427,7 +427,10 @@ pub fn decide(log: &EventLog, db: &Connection, accept: bool, id: &str) -> Result
         (MEMORY_DROPPED, "dropped")
     };
     let message = Message::new(kind, json!({ "candidate": id })).subject(name.clone());
-    crate::runners::publish(log, &message).map_err(Refused::Unconfirmed)?;
+    crate::runners::publish(log, &message).map_err(|unsent| match unsent {
+        crate::runners::Unsent::Nothing(why) => Refused::Unsent(why),
+        crate::runners::Unsent::Unconfirmed(why) => Refused::Unconfirmed(why),
+    })?;
     Ok(format!(
         "{name} {verb}: every runner applies it as it reads the log"
     ))

@@ -3172,7 +3172,7 @@ fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>) -> ExitCod
                     step: step.as_deref(),
                     by: "cli",
                 };
-                runners::act(factory.log(), &sent)
+                runners::act(factory.log(), &sent).map_err(|why| why.said("task"))
             })
             .map(|submission| {
                 format!(

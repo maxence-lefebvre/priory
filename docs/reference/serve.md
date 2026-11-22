@@ -104,7 +104,7 @@ or a reason, is untrusted: render it as text.
 | `431` | The request head is over 8 KiB or 32 headers |
 | `500` | The state could not be read, a delivery could not be published, or Priory failed while answering. The server keeps serving |
 | `503` | 4 requests already wait on `/api/events` and this one would wait too; or a write found no daemon on its socket, as under `priory serve` alone; or `/api/push/key` before a daemon made the key pair; or 2 run screens are already being read; or a memory verdict could not be published because the log cannot be reached; or a live run's screen whose pane this server cannot find or read within 2 seconds, or that holds a secret redaction cannot hide. It comes with `Retry-After: 1` |
-| `504` | A write reached the daemon, which did not reply within 10 seconds. It may have applied it |
+| `504` | A write reached the daemon, which did not reply within 10 seconds. It may have applied it. Or a write for another runner's ask or task failed as it was published, and the log may hold it |
 
 An error's body is `{"error": "<why>"}`.
 
@@ -255,7 +255,7 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | `409` `{"error", "key", "id"}` | For `/api/request`: the same text already went to `key`, so nothing was added. `id` is the active task that holds `key`, or `null` |
 | `404`, `422` `{"error"}` | The ask, task or pick is gone, or the daemon refused for another reason, such as a resume of a task that is not blocked, a say to a task with no run yet, or a comment on a stale report revision. `error` is the CLI's sentence |
 | `503` `{"error"}` | No daemon listens on the socket, or the log cannot be reached for another runner's ask or task, so nothing was sent. Reads keep working |
-| `504` `{"error"}` | The daemon took the line but did not reply within 10 seconds. It may have applied it: read the state before you retry |
+| `504` `{"error"}` | The daemon took the line but did not reply within 10 seconds, or the publish of a write for another runner's ask or task failed. It may have applied it: read the state before you retry. The error of the second ends `The log may hold it: read the ask before you retry`, or `the task` |
 
 ## `POST /hooks/github`
 

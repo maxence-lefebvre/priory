@@ -21410,6 +21410,46 @@ fn a_stale_answer_to_another_runners_ask_gets_409_and_nothing_is_published() {
 }
 
 #[test]
+fn a_remote_write_whose_publish_fails_says_the_log_may_hold_it_not_that_nothing_was_sent() {
+    let (_a, b, ask, address) = asked_on_a("remote-unconfirmed");
+    let id = format!("a:{ask}");
+    until_ask(&address, &id, |ask| ask["state"] == "open");
+    until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| task["generation"] == 1)
+    });
+    let bus = rusqlite::Connection::open(&b.bus).unwrap();
+    bus.execute_batch(
+        "CREATE TRIGGER lost BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT, 'disk gone'); END",
+    )
+    .unwrap();
+
+    let answered = runner_http(
+        &address,
+        "POST",
+        &format!("/api/asks/{id}/answer"),
+        r#"{"option": "approved", "revision": 1}"#,
+    );
+    let cancelled = runner_http(
+        &address,
+        "POST",
+        &remote_act("a", ASKED_KEY, "cancel"),
+        r#"{"generation": 1}"#,
+    );
+    bus.execute_batch("DROP TRIGGER lost").unwrap();
+
+    for ((status, body), what) in [(answered, "ask"), (cancelled, "task")] {
+        assert_eq!(status, 504, "{body}");
+        let error = body["error"].as_str().unwrap_or_default();
+        assert!(
+            error.ends_with(&format!(
+                ". The log may hold it: read the {what} before you retry"
+            )),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn of_two_answers_to_one_revision_the_first_stands_and_the_other_shows_refused_without_a_new_revision()
  {
     let (a, _b, ask, address) = asked_on_a("remote-twice");

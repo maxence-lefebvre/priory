@@ -1030,14 +1030,14 @@ pub fn answer(
 ) -> Result<String, String> {
     known(factory, runner)?;
     let data = serde_json::to_value(answer).map_err(|error| error.to_string())?;
-    submit(factory.log(), ANSWERED, runner, answer.ask, data)
+    submit(factory.log(), ANSWERED, runner, answer.ask, data).map_err(|why| why.said("ask"))
 }
 
 /// Publishes a person's dismiss of ask `ask` of runner `runner`, read at `revision`.
 pub fn dismiss(factory: &Factory, runner: &str, ask: i64, revision: i64) -> Result<String, String> {
     known(factory, runner)?;
     let data = json!({ "ask": ask, "revision": revision });
-    submit(factory.log(), DISMISSED, runner, ask, data)
+    submit(factory.log(), DISMISSED, runner, ask, data).map_err(|why| why.said("ask"))
 }
 
 /// Refuses a runner the factory has no runner file for.
@@ -1055,7 +1055,7 @@ pub fn submit(
     runner: &str,
     ask: i64,
     data: Value,
-) -> Result<String, String> {
+) -> Result<String, Unsent> {
     send_to(log, kind, runner, &format!("{runner}:{ask}"), data)
 }
 
@@ -1067,10 +1067,10 @@ fn send_to(
     runner: &str,
     subject: &str,
     mut data: Value,
-) -> Result<String, String> {
+) -> Result<String, Unsent> {
     // A machine with no state file of its own runs no daemon to say whether it reaches the log.
     if let Ok(db) = crate::state::read_only() {
-        crate::link::refuse_while_unreachable(&db)?;
+        crate::link::refuse_while_unreachable(&db).map_err(Unsent::Nothing)?;
     }
     let mut message = Message::new(kind, json!({})).subject(subject);
     data["runner"] = json!(runner);
@@ -1320,7 +1320,7 @@ pub struct TaskAct<'a> {
 
 /// Publishes a person's action on runner `act.runner`'s task of `act.key`, which that runner
 /// applies when it reads it. Returns the submission id its `priory.task.applied` names.
-pub fn act(log: &EventLog, act: &TaskAct) -> Result<String, String> {
+pub fn act(log: &EventLog, act: &TaskAct) -> Result<String, Unsent> {
     let mut data = json!({
         "key": act.key, "generation": act.generation, "act": act.act, "by": act.by,
     });
@@ -1455,18 +1455,51 @@ pub fn give(
     ))
 }
 
-pub(crate) fn publish(log: &EventLog, message: &Message) -> Result<(), String> {
-    let log = priory_intake::log::open(log).map_err(|error| error.to_string())?;
+pub(crate) fn publish(log: &EventLog, message: &Message) -> Result<(), Unsent> {
+    let log = priory_intake::log::open(log).map_err(|error| Unsent::Nothing(error.to_string()))?;
     log.declare(&intake::output())
-        .map_err(|error| error.to_string())?;
-    log.publish(OUTPUT, &message.clone().time(intake::now()?))
-        .map(|_| ())
-        .map_err(|error| {
-            if priory_intake::log::unreachable(&*error) {
-                return format!("{error}: try again when it is back");
+        .map_err(|error| Unsent::Nothing(error.to_string()))?;
+    let message = message
+        .clone()
+        .time(intake::now().map_err(Unsent::Nothing)?);
+    // The publish may have reached the log before it failed, such as a commit whose answer the
+    // connection lost.
+    log.publish(OUTPUT, &message).map(|_| ()).map_err(|error| {
+        if priory_intake::log::unreachable(&*error) {
+            return Unsent::Unconfirmed(format!("{error}: try again when it is back"));
+        }
+        Unsent::Unconfirmed(format!("publish on {OUTPUT}: {error}"))
+    })
+}
+
+/// Why a message for the log may not be on it.
+#[derive(Debug)]
+pub enum Unsent {
+    /// It failed before the publish, so the log does not hold it.
+    Nothing(String),
+    /// The publish itself failed, after which the log may still hold it.
+    Unconfirmed(String),
+}
+
+impl Unsent {
+    /// What a person reads: a retry is safe after `Nothing`, and after `Unconfirmed` they first
+    /// read `what` to see whether the log took it.
+    pub fn said(self, what: &str) -> String {
+        match self {
+            Unsent::Nothing(why) => why,
+            Unsent::Unconfirmed(why) => {
+                format!("{why}. The log may hold it: read the {what} before you retry")
             }
-            format!("publish on {OUTPUT}: {error}")
-        })
+        }
+    }
+}
+
+impl From<Unsent> for String {
+    fn from(unsent: Unsent) -> String {
+        match unsent {
+            Unsent::Nothing(why) | Unsent::Unconfirmed(why) => why,
+        }
+    }
 }
 
 /// What another runner may do with a task, as its owner last published it.
