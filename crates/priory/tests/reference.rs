@@ -178,6 +178,7 @@ fn every_example_config_matches_its_schema() {
         let text = fs::read_to_string(dir.join(&file)).unwrap();
         let schema = match file.split('/').next().unwrap() {
             "factory.toml" => "factory",
+            "lanes.toml" => "lanes",
             "agents" => "agent",
             "triggers" => "trigger",
             "workflows" => "workflow",
