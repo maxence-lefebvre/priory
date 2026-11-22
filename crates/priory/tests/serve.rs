@@ -4161,7 +4161,7 @@ fn a_request_through_the_endpoint_queues_the_task_priory_add_does_and_answers_it
     assert_eq!(status, 200, "{body}");
     assert_eq!(
         serde_json::from_str::<Value>(&body).unwrap(),
-        json!({ "key": "github:cli/cli#42", "id": 1 })
+        json!({ "key": "github:cli/cli#42", "id": 1, "outcome": "created" })
     );
     let task = json_of(&setup, "tasks")["tasks"][0].clone();
     assert_eq!(
@@ -4226,6 +4226,33 @@ fn a_repeated_add_of_the_same_linked_text_is_refused_with_the_task_it_reached() 
     assert_eq!(
         json_of(&setup, "tasks")["tasks"].as_array().unwrap().len(),
         1
+    );
+}
+
+#[test]
+fn a_request_onto_a_task_with_no_run_yet_answers_that_the_task_kept_it() {
+    let mut setup = Setup::new("web-request-kept", DEFAULTS);
+    // No run starts, so task 1 has no agent to hear the second text yet.
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let (first, _) = post(
+        &address,
+        "/api/request",
+        "",
+        r#"{"text": "Fix https://github.com/cli/cli/issues/42"}"#,
+    );
+
+    let (status, body) = post(
+        &address,
+        "/api/request",
+        "",
+        r#"{"text": "Also rename the flag https://github.com/cli/cli/issues/42"}"#,
+    );
+
+    assert_eq!((first, status), (200, 200), "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap(),
+        json!({ "key": "github:cli/cli#42", "id": 1, "outcome": "kept" })
     );
 }
 

@@ -243,9 +243,15 @@ prompts.
 - A `ready` or `blocked` task's next run gets TEXT, ahead of the step's prompt when no run took the
   task yet.
 
-It replies `task <id> will hear it`. It refuses a `done`, `failed` or `dropped` task, a task at a
-human or code step, and a task that has neither a run nor a queued prompt, such as a `queued` one,
-since its first run builds the step's prompt then.
+- A task that waits on a step's ask, at a human step or a plan's approval, runs no agent while a
+  person decides. TEXT is added to that ask as its next revision, `While this waited: A person
+  says: TEXT`, which pushes, so the person who answers reads it. TEXT is also queued for the task's
+  next agent run, after that step's prompt, and the task stays asleep. It replies `task <id> waits
+  at step <step>: its ask shows it, and its next agent run reads it`.
+
+Otherwise it replies `task <id> will hear it`. It refuses a `done`, `failed` or `dropped` task, a
+task at a human or code step with no open ask, and a task that has neither a run nor a queued
+prompt, such as a `queued` one, since its first run builds the step's prompt then.
 
 ## Pause
 

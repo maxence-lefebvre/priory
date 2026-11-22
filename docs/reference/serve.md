@@ -45,7 +45,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /api/asks/{id}/answer` | `priory answer ID TEXT --revision N` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
 | `POST /api/asks/{id}/dismiss` | `priory dismiss --expected N ID` | as above |
 | `POST /api/snooze` | `priory snooze KIND ID (--for D \| --until T \| --clear)` | as above |
-| `POST /api/request` | `priory add TEXT` | `{"key": "<task key>", "id": <task id>}`. See [Writes](#writes) |
+| `POST /api/request` | `priory add TEXT` | `{"key": "<task key>", "id": <task id>, "outcome": "<what it did>"}`. See [Writes](#writes) |
 | `POST /api/tasks/{id}/resume` | `priory resume ID` | `{"ok": "<what the CLI prints>"}`. See [Writes](#writes) |
 | `POST /api/tasks/{id}/revive` | `priory revive ID [--step STEP]` | as above |
 | `POST /api/tasks/{id}/cancel` | `priory cancel ID [--expected N]` | as above |
@@ -244,7 +244,7 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | ----- | ---- |
 | `200` `{"ok": "ask 42 answered"}` | The daemon applied it |
 | `202` `{"sent": "xps13", "submission": "<id>"}` | For another runner's ask or task: the write is on the log for that runner, which applies it when it reads it. `submission` names it in the ask's or task's `submissions` |
-| `200` `{"key": "cli:2026-11-20-1", "id": 7}` | For `/api/request`: the daemon published the request and task `id` holds `key`. `id` is `null` when no task took the key |
+| `200` `{"key": "cli:2026-11-20-1", "id": 7, "outcome": "created"}` | For `/api/request`: the daemon published the request and task `id` holds `key`. `id` is `null` when no task took the key. `outcome` is `created` for a new task; `said` when the text joined an active task that hears it now, or that shows it on its open step's ask; `kept` when it joined a task with no run yet, which reads it in its first prompt; `null` while the log has not handed the request back |
 | `409` `{"error", "ask"}` | The ask's revision is no longer the one sent, or it was answered, dismissed or withdrawn. `ask` is its current state |
 | `409` `{"error"}` | Another runner's task is held by a third runner, or is at another generation than the one sent. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report is at another revision than the one sent, or the pick already holds that choice or an applied one: read the report again |
 | `409` `{"error", "key", "id"}` | For `/api/request`: the same text already went to `key`, so nothing was added. `id` is the active task that holds `key`, or `null` |
@@ -431,17 +431,17 @@ group per resource, the group with the newest event first:
 | `request_text` | string or null | For a GitHub or Linear resource, the text of a new task keyed by it: `Follow up on URL after event SEQ`, the issue's URL, which `priory add` turns into the resource as key, and the newest event's sequence number, so each follow-up is a new request |
 
 `unheard` groups, one group per task, the newest event first, the events that a task kept and no
-agent read: the outcome `kept`, no prompt carries it, no wait took it, and the task is not
-`running`. Only feedback, closes, Linear state changes and edits, and Slack replies count, the kinds
-a task's own key carries, and not the agent's own. An event shows once it is 5 minutes old, by the
+agent read: the outcome `kept`, for the task that routing gave it to or for a second task through
+a subscription, no prompt carries it, no wait took it, and the task is not `running`. Only feedback, closes, Linear state changes and edits, Slack replies, the kinds a task's own
+key carries, and a `priory add` that joined the task count, and not the agent's own. An event shows once it is 5 minutes old, by the
 event's `time` against now (`PRIORY_NOW` when set), so a task about to start or wake is left out:
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `task` | object | The task that kept them: `id`, `key`, `state`, `workflow` |
 | `events` | array | Its events, newest first, as in `owned` |
-| `follow_up` | string or null | `priory say ID 'Read the events that came while you slept.'` for an `asleep` or `blocked` task, whose next run carries them. For a done, failed or dropped task, the command `owned` gives for its key. Null for a task whose next run reads them anyway, such as a `queued` or `ready` one |
-| `say_text` | string or null | The text `follow_up` says to an `asleep` or `blocked` task, which the web Inbox's Say sends; null for any other task |
+| `follow_up` | string or null | `priory say ID 'Read the events that came while you slept.'` for an `asleep` or `blocked` task, whose next run carries them. For a done, failed or dropped task, the command `owned` gives for its key. Null for a task whose next run reads them anyway, such as a `queued` or `ready` one, and for a task that waits on a step's ask, which shows them |
+| `say_text` | string or null | The text `follow_up` says to an `asleep` or `blocked` task, which the web Inbox's Say sends; null for any other task, and for a task that waits on a step's ask |
 | `request_text` | string or null | For a done task, the text of a new task keyed by its key, as in `owned`: null when its key is not a GitHub or Linear resource, and for any other task |
 
 `outsider`, beside `unrouted`, lists the comments and reviews from someone outside the repository,
