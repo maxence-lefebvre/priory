@@ -1,7 +1,7 @@
 //! The factory's skills, instructions and memories, and its kit repository's, as each run gets
 //! them (R11.1).
 
-use priory_factory::factory::{self, Factory, Harness, KitFiles, Memory, Skill};
+use priory_factory::factory::{self, Factory, KitFiles, Memory, Skill};
 use priory_runtime::runtime;
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -92,6 +92,11 @@ impl Sources<'_> {
         factory::join_instructions(&self.instructions, &index)
     }
 
+    /// The index of the skills, whose folders are in `folder`, as a Codex run gets it.
+    pub(crate) fn skill_index(&self, folder: &str) -> String {
+        factory::skill_index(folder, self.skills.iter().map(|(n, s)| (*n, *s)))
+    }
+
     /// Each skill's name, then each of its files' paths and bytes, in order.
     fn skill_parts(&self) -> Vec<&[u8]> {
         let mut parts = Vec::new();
@@ -113,10 +118,10 @@ impl Sources<'_> {
         parts
     }
 
-    /// A hash of the skills, instructions and memories that a run of `harness` gets, or none when
-    /// it gets none of them. A Codex run gets no skills.
-    pub(crate) fn hash(&self, harness: &Harness) -> Option<String> {
-        let skills = matches!(harness, Harness::ClaudeCode) && !self.skills.is_empty();
+    /// A hash of the skills, instructions and memories that a run gets, or none when it gets none
+    /// of them.
+    pub(crate) fn hash(&self) -> Option<String> {
+        let skills = !self.skills.is_empty();
         let memories = !self.memories.is_empty();
         if self.instructions.is_empty() && !skills && !memories {
             return None;

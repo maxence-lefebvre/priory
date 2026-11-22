@@ -1,7 +1,7 @@
 use crate::factory::{
     ASK_SHAPE, Agent, Backend, CODEX_PROMPT_LIMIT, Decider, Effect, Factory, Harness, INSTRUCTIONS,
-    Intervention, Loaded, MEMORY_FOLDER, OPEN_MEMORIES_PR, OnChange, PermissionMode, Problem,
-    Proof, ScoreKind, ScoreOn, Scorer, Session, Step, Trigger, Until, Workflow,
+    Intervention, Loaded, OPEN_MEMORIES_PR, OnChange, PermissionMode, Problem, Proof, ScoreKind,
+    ScoreOn, Scorer, Session, Step, Trigger, Until, Workflow,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
 use crate::lanes::{self, Lanes};
@@ -538,14 +538,17 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
     if !matches!(value.harness, Harness::Codex) {
         return;
     }
-    let instructions = factory.run_instructions(MEMORY_FOLDER);
+    let instructions = factory.codex_instructions();
     let size = instructions.len() + "\n\n".len() + factory.prompt(value).len();
     if !instructions.is_empty() && size > CODEX_PROMPT_LIMIT {
-        let parts = if factory.memories.is_empty() {
-            format!("{INSTRUCTIONS} and its own prompt")
-        } else {
-            format!("{INSTRUCTIONS}, the memory index and its own prompt")
-        };
+        let mut parts = vec![INSTRUCTIONS];
+        if !factory.memories.is_empty() {
+            parts.push("the memory index");
+        }
+        if !factory.skills.is_empty() {
+            parts.push("the skill index");
+        }
+        let parts = format!("{} and its own prompt", parts.join(", "));
         problems.push(problem(
             agent,
             agent.lines.field("harness"),

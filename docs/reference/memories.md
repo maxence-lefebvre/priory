@@ -61,7 +61,7 @@ The factory's memories are in <folder>, one fact per file. Read a memory's file 
 | `` a memory's frontmatter needs a `name` `` | No `name` |
 | `` `name` is `<name>`, but the memory's file is memories/<file>.md `` | `name` differs from the file's name |
 | `` a memory's frontmatter needs a `description`, which tells the agent when to read it `` | No `description`, or a blank one |
-| `` a codex agent takes instructions.md, the memory index and its own prompt on its command line, as `developer_instructions`: together they are <n> bytes, over the limit of 8192 `` | Reported on a Codex agent's `agent.md`. The count writes the index's folder as `$PRIORY_HOME/kit/<hash>/memories` |
+| `` a codex agent takes instructions.md, the memory index and its own prompt on its command line, as `developer_instructions`: together they are <n> bytes, over the limit of 8192 `` | Reported on a Codex agent's `agent.md`. The count writes the index's folder as `$PRIORY_HOME/kit/<hash>/memories`. With skills, the message names the skill index after the memory index, and the count writes its folder as `$PRIORY_HOME/kit/<hash>/plugin/skills` |
 | `frontmatter is not closed by ---` | No closing fence. The same with `+++` |
 
 Each line starts with the file and line, such as `memories/release-day.md:2:`. The name and

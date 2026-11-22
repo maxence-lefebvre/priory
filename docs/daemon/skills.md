@@ -63,7 +63,23 @@ Priory's hooks and tools:
 agents/reviewer/agent.md:3: a codex agent takes instructions.md and its own prompt on its command line, as `developer_instructions`: together they are 40995 bytes, over the limit of 8192
 ```
 
-Codex reads skills from its own home folder, so a Codex run gets no skills yet.
+Codex reads skills only from its own home folder, `~/.agents/skills`, the repository's
+`.agents/skills` and its installed plugins. No `-c` override adds a folder, so a Codex run gets an
+index of the skills instead. The daemon writes the same read-only plugin folder as for a Claude Code
+run, and the run gets, after the instructions and the memory index, the folder's `skills/` path,
+then one line per skill with its `SKILL.md` path and its description:
+
+```text
+# Skills
+
+The factory's skills are in /home/max/.local/state/priory/kit/3f2a…/plugin/skills, one folder per skill. Read a skill's SKILL.md when its description fits your task, and follow it. Never edit these files.
+
+- release-notes/SKILL.md: Writes release notes from merged pull requests.
+```
+
+Codex's sandbox reads any file, so the run reads a skill's files where they are. Codex does not
+list these skills in its own skill picker: the agent finds them through the index only.
+`priory check` counts the index toward the 8192-byte limit.
 
 ## Memories
 
@@ -284,8 +300,8 @@ The run's plugin folder, memory snapshot and `kit_hash` cover the merged files, 
 ## What a run records
 
 Each run records `kit_hash`, a hash of the skills, instructions and memories it got, or none when it
-got none of them. A Claude run's hash covers all three. A Codex run's covers the instructions and
-memories only, so the two differ in a factory with skills. `priory runs` shows it in its `kit` column, and the `factory.step.ended`
+got none of them. Both harnesses get all three, so the same files give both the same hash.
+`priory runs` shows it in its `kit` column, and the `factory.step.ended`
 trace record of a model step carries it (see [the trace schema](../trace-schema.md)). A run carried
 into the next step of the same agent keeps its process, so it records the hash and kit commit of
 the run it continues.
@@ -308,8 +324,9 @@ change to any of them reads as a change to the agent's prompt.
   They are small. Since they are read-only, run `chmod -R u+w $PRIORY_HOME/kit` before you remove
   them yourself.
 - `priory check` cannot see a kit's files, so it neither warns about a factory skill that hides a
-  kit skill nor counts the kit's instructions toward a Codex agent's 8192-byte limit. A Codex run
+  kit skill nor counts the kit's instructions or skills toward a Codex agent's 8192-byte limit. A Codex run
   whose merged instructions pass tmux's limit fails to start.
-- No test runs a real Claude Code: that a run lists and uses `priory:<name>` is checked by hand.
+- No test runs a real Claude Code or Codex: that a Claude run lists and uses `priory:<name>`, and
+  that a Codex run reads a skill through its index, is checked by hand.
 - Nothing keeps the runners' factory checkouts at one commit: a person pulls each one. The kit is
   fetched, but the factory itself is not.
