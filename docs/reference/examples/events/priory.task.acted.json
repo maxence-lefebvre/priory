@@ -1,0 +1,16 @@
+{
+  "id": "0196f1c5-3d4e-7f60-8b1c-2d3e4f5a6b7c",
+  "type": "priory.task.acted",
+  "subject": "xps13:github:acme/widgets#42",
+  "time": "2026-11-21T10:22:00Z",
+  "data": {
+    "runner": "xps13",
+    "key": "github:acme/widgets#42",
+    "generation": 1,
+    "act": "say",
+    "text": "Run the integration tests too.",
+    "by": "serve",
+    "submission": "0196f1c5-3d4e-7f60-8b1c-2d3e4f5a6b7c"
+  },
+  "links": []
+}

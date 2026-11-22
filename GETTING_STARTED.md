@@ -300,6 +300,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory pause [REASON]`, `priory unpause` | Stops new tasks from starting, then lets them start again |
 | `priory cancel TASK [--expected N]` | Drops an active task and ends its run |
 | `priory revive TASK [--step STEP]` | Restarts a failed or dropped task |
+| `priory (resume \| cancel \| release \| revive \| say) [DIR] RUNNER:KEY` | Sends the action to another runner's task, which applies it if the task is still at the generation this machine saw. Takes `--generation N` (see [runners.md](docs/daemon/runners.md#acting-on-another-runners-task)) |
 | `priory hold TASK --reason TEXT`, `priory release TASK` | Holds a task back, then lets it go. Both take `--expected N` |
 | `priory move TASK --band BAND [--expected N]` | Moves a task to another priority band. `--expected N` refuses the move once the state's revision differs from `N` |
 | `priory search QUERY` | Finds tasks by what they are about |

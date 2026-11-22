@@ -46,20 +46,21 @@ while the owner routes it as [routing.md](routing.md) says.
 
 The runners publish more message types on the same output, which
 [events.md](../reference/events.md#runners) lists: `priory.task.claimed`, `priory.task.held`,
-`priory.runner.alive`, `priory.ask.posted`, `priory.ask.applied`, `priory.ask.answered` and
-`priory.ask.dismissed`. The daemon stores each claim, hold, alive, post and applied message in its
-state file before it publishes it, so a crash between the two publishes it at the next start. A
-message published twice adds nothing, because the log keeps the first message of each id.
-`priory answer`, `priory dismiss`, `priory give` and the answer and dismiss endpoints publish
-straight to the log.
+`priory.runner.alive`, `priory.ask.posted`, `priory.ask.applied`, `priory.ask.answered`,
+`priory.ask.dismissed`, `priory.task.acted` and `priory.task.applied`. The daemon stores each claim,
+hold, alive, post and applied message in its state file before it publishes it, so a crash between
+the two publishes it at the next start. A message published twice adds nothing, because the log
+keeps the first message of each id. `priory answer`, `priory dismiss`, `priory give`, an action on
+another runner's task and their endpoints publish straight to the log.
 
-A runner refuses an alive, hold, post, applied, answer or dismiss message that names a runner with
-no file in `runners/`, and a claim for one. It records the message as `refused`, so a runner name
-the factory lacks owns no task and shows no ask on any desk.
+A runner refuses an alive, hold, post, applied, answer, dismiss, task action or task applied
+message that names a runner with no file in `runners/`, and a claim for one. It records the message
+as `refused`, so a runner name the factory lacks owns no task and shows no ask or submission on any
+desk.
 
 No runner checks who wrote a message. Write access to the log equals a person's approval on every
 runner: whoever can publish on it can answer any runner's ask, which runs an irreversible step or an
-ask's command, give away any task, or keep a stopped runner's lease alive. Give the log's
+ask's command, resume, revive, cancel, release or say to any task, give away any task, or keep a stopped runner's lease alive. Give the log's
 credentials only to the runners and the people who may approve.
 
 ## Claims
@@ -77,7 +78,7 @@ gets those requests again on its new runner.
 
 ## Holds and leases
 
-The owner publishes each task's hold whenever it changes:
+The owner publishes each task's hold, with the task's generation, whenever either changes:
 
 | Hold | The task | Can another runner take it |
 | ---- | -------- | -------------------------- |
@@ -198,11 +199,13 @@ Herdr Asks panel lists every submission, with its runner, its outcome and when i
 Every runner already stores each claim, hold and alive message it reads. So `priory tasks`,
 `/api/tasks` and the web Tasks panel list each task another runner holds, from its claim: its key,
 its runner, its hold, `waiting` or `kept`, and `last_seen`, when that runner was last alive. The
-workflow, band, lane and title come from the task's request. No new message crosses for this.
+workflow, band, lane and title come from the task's request, and its `generation` from its last
+held message.
 
 Only the owner and hold cross. The task's state, steps, runs and terminal stay on its runner, so its
 `id` is null and the row opens no page here: open that runner's own view for them. A task whose hold
-is `ended` leaves the list. Tasks of this runner carry its `runner` and `hold` too. The Herdr Tasks
+is `ended` leaves the list. Tasks of this runner carry its `runner` and `hold` too. Every row lists
+the actions sent to it from other machines under `submissions`, as below. The Herdr Tasks
 panel lists them as well, and both panels offer a Runner facet that marks this runner `(here)`.
 
 ## Answering another runner's ask
@@ -231,6 +234,50 @@ An ask of this machine whose name is `<runner>:<ask>` is answered here first. `p
 `priory dismiss` refuse a runner without a runner file with
 `runner <runner> has no runner file in runners/`. An ask this runner has no copy of yet goes to its
 runner unchecked from the command line, and gets `404` from the endpoint.
+
+## Acting on another runner's task
+
+```sh
+priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] <runner>:<key>
+priory say [--generation N] [DIR] <runner>:<key> <text>
+```
+
+publish the action on the log of the factory in `DIR`, `.` by default, for runner `<runner>` to
+apply. `POST /api/tasks/<runner>:<key>/<act>` does the same with the key percent-encoded, and
+replies `202` (see [serve.md](../reference/serve.md#writes)). Each names the task by its key and its
+generation, never by its number, which only its runner knows. Without `--generation`, the command
+sends the generation this runner last read for the key. The endpoint always takes it from the page.
+
+The generation tells the task the person saw from its revived or reopened self. A cancel that waits
+in the log could otherwise apply after a revive, to a task that is no longer the one the person
+saw. So each check refuses an action when the key or the generation moved:
+
+1. Here, from this runner's copy of the claims. A key no runner holds is refused with
+   `no runner holds <key>`. A key another runner holds now is refused with
+   `runner <owner> holds <key>, not <runner>`. A generation that is not the one this runner last
+   read is refused with `task <runner>:<key> is at generation <now>, not <sent>`. The endpoint
+   answers `404` for the first and `409` for the others, and nothing is published.
+2. At the named runner, when it reads the action. It refuses it when another runner holds the key
+   now, or when its newest task of the key is at another generation. Otherwise it applies the
+   action through the same checks as the local command, such as `task <n> is running, not blocked`
+   for a resume. Only this check decides.
+
+Each action is a submission, named by its message's id, which the command prints and the endpoint
+returns:
+
+```text
+cancel of task a:github:owner/repo#42 sent to a as submission <id>: it applies when a reads the log
+```
+
+The runner publishes `priory.task.applied` with the submission and its outcome, `applied` or
+`refused` with the reason. Every runner lists each task's submissions, pending until that message
+arrives. A cancel that applies ends the task, so its row leaves the other runners' lists once its
+runner publishes the `ended` hold. A runner that is away applies the actions sent to it when its
+daemon starts again, in log order.
+
+An ended task leaves the list, so a revive names its key from the person's notes or from
+`priory tasks` on its runner. This runner still holds the key's claim and generation, so the command
+needs no `--generation`.
 
 ## Giving a task to another runner
 
@@ -277,6 +324,8 @@ Every runner also refuses a claim for a runner without a runner file.
 - Each ask change adds one post to `factory.intake`.
 - Snoozes stay on their machine: another runner's ask cannot be snoozed here.
 - A machine without a runner file runs no daemon, so it has no copy of the asks or tasks to serve.
-- Another runner's task shows its hold, not its state, and cannot be resumed, cancelled or said to
-  from here.
+- Another runner's task shows its hold, not its state. Its actions are sent through the log, and
+  hold has no remote form: hold it on its runner.
+- A key's newer task starts at generation 1 again. An action sent to the old task and read after
+  the key's new task started can apply to the new one.
 - Each runner adds one alive message a minute to `factory.intake`.

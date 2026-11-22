@@ -25,6 +25,14 @@
       "additionalProperties": false,
       "description": "What another runner may do with a task, as its owner says it each time it changes: `waiting`\n(no run of it started, so it moves once its runner's lease ends), `kept` (started or asleep, so\nit stays) or `ended` (done, failed or dropped).",
       "properties": {
+        "generation": {
+          "description": "The task's generation: 1, then one more at each revive or reopen. A write from another\nmachine names it, so the owner refuses one meant for an earlier generation.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "hold": {
           "description": "`waiting`, `kept` or `ended`.",
           "type": "string"

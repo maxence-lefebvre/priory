@@ -1,0 +1,122 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/events/priory.task.acted.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Link": {
+      "additionalProperties": false,
+      "description": "A link for people.",
+      "properties": {
+        "label": {
+          "description": "`issue` or `pull_request`.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    },
+    "TaskActed": {
+      "additionalProperties": false,
+      "description": "A person on one runner resumes, revives, cancels, releases or says to a task of another, with\n`priory resume RUNNER:KEY` and its siblings or their endpoints. Only that runner applies it, with\nthe checks of a local action, and only while it holds the key at that generation.",
+      "properties": {
+        "act": {
+          "description": "`resume`, `revive`, `cancel`, `release` or `say`.",
+          "type": "string"
+        },
+        "by": {
+          "description": "Where the action came from: `cli` or `serve`.",
+          "type": "string"
+        },
+        "generation": {
+          "description": "The task's generation the person saw.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "key": {
+          "description": "The task's key.",
+          "type": "string"
+        },
+        "runner": {
+          "description": "The runner the person sent it to.",
+          "type": "string"
+        },
+        "step": {
+          "description": "The step `revive` restarts at, instead of the one the task ended on.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "submission": {
+          "description": "The action's own message id, which the runner's `priory.task.applied` names.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "text": {
+          "description": "What `say` tells the task's agent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "runner",
+        "key",
+        "generation",
+        "act",
+        "by",
+        "submission"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "A person on one runner resumes, revives, cancels, releases or says to a task of another, with\n`priory resume RUNNER:KEY` and its siblings or their endpoints. Only that runner applies it, with\nthe checks of a local action, and only while it holds the key at that generation.",
+  "properties": {
+    "data": {
+      "$ref": "#/definitions/TaskActed"
+    },
+    "id": {
+      "description": "A UUIDv5 of the message's name, so a retried publish keeps its id.",
+      "format": "uuid",
+      "type": "string"
+    },
+    "links": {
+      "description": "GitHub and Linear events carry one link to the event's page.",
+      "items": {
+        "$ref": "#/definitions/Link"
+      },
+      "type": "array"
+    },
+    "subject": {
+      "description": "A short line for listings, such as `owner/name#42`.",
+      "type": "string"
+    },
+    "time": {
+      "description": "When the event happened, RFC 3339.",
+      "format": "date-time",
+      "type": "string"
+    },
+    "type": {
+      "const": "priory.task.acted",
+      "description": "The message type, such as `github.issues.labeled`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "type",
+    "subject",
+    "time",
+    "data",
+    "links"
+  ],
+  "title": "priory.task.acted",
+  "type": "object"
+}

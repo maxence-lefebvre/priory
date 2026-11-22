@@ -1167,9 +1167,10 @@ Schema: [`factory.intake.baseline.json`](../schemas/events/factory.intake.baseli
 ## Runners
 
 A factory with two or more runner files has its daemons publish these on `factory.intake` too.
-`priory give`, `priory answer RUNNER:ASK`, `priory dismiss RUNNER:ASK` and the answer and dismiss
-endpoints of `priory serve` publish three of them. Every runner reads them all, and records one
-whose `runner` has no file in `runners/` as `refused`. See [runners.md](../daemon/runners.md).
+`priory give`, `priory answer RUNNER:ASK`, `priory dismiss RUNNER:ASK`, the task actions on
+`RUNNER:KEY` and their endpoints of `priory serve` publish four of them. Every runner reads them
+all, and records one whose `runner` has no file in `runners/` as `refused`. See
+[runners.md](../daemon/runners.md).
 
 ### `priory.task.claimed`
 
@@ -1214,6 +1215,7 @@ key. Schema: [`priory.task.held.json`](../schemas/events/priory.task.held.json).
 | `key` | string | The task's key |
 | `runner` | string | The runner that owns it |
 | `hold` | `waiting`, `kept` or `ended` | `waiting`: no run of it started, so it moves once its runner's lease ends. `kept`: started or asleep, so it stays. `ended`: done, failed or dropped |
+| `generation` | integer, optional | The task's generation: 1, then one more at each revive or reopen. The owner publishes it again when it moves. A write from another machine names it |
 
 <!-- example: events/priory.task.held.json -->
 ```json
@@ -1225,7 +1227,8 @@ key. Schema: [`priory.task.held.json`](../schemas/events/priory.task.held.json).
   "data": {
     "key": "github:acme/widgets#42",
     "runner": "xps13",
-    "hold": "kept"
+    "hold": "kept",
+    "generation": 1
   },
   "links": []
 }
@@ -1397,6 +1400,77 @@ The owner of an ask applied or refused an answer or dismiss another machine sent
     "ask": 7,
     "submission": "0196f1c3-1b2c-7d4e-8f9a-0b1c2d3e4f5a",
     "outcome": "answered"
+  },
+  "links": []
+}
+```
+
+### `priory.task.acted`
+
+One message per resume, revive, cancel, release or say of another runner's task, from
+`priory ACT [DIR] RUNNER:KEY` or `POST /api/tasks/RUNNER:KEY/ACT`. Only that runner applies it, with
+the checks of the same local action, and only while it holds the key and the task is at
+`generation`. It says what became of it in `priory.task.applied`. Subject: `<runner>:<key>`.
+Schema: [`priory.task.acted.json`](../schemas/events/priory.task.acted.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `runner` | string | The runner it is sent to |
+| `key` | string | The task's key |
+| `generation` | integer | The task's generation the person saw |
+| `act` | `resume`, `revive`, `cancel`, `release` or `say` | The action |
+| `text` | string, optional | What `say` tells the task's agent |
+| `step` | string, optional | The step `revive` restarts at |
+| `by` | string | `cli` or `serve` |
+| `submission` | UUID string | The message's own `id`, which `priory.task.applied` names |
+
+<!-- example: events/priory.task.acted.json -->
+```json
+{
+  "id": "0196f1c5-3d4e-7f60-8b1c-2d3e4f5a6b7c",
+  "type": "priory.task.acted",
+  "subject": "xps13:github:acme/widgets#42",
+  "time": "2026-11-21T10:22:00Z",
+  "data": {
+    "runner": "xps13",
+    "key": "github:acme/widgets#42",
+    "generation": 1,
+    "act": "say",
+    "text": "Run the integration tests too.",
+    "by": "serve",
+    "submission": "0196f1c5-3d4e-7f60-8b1c-2d3e4f5a6b7c"
+  },
+  "links": []
+}
+```
+
+### `priory.task.applied`
+
+A runner applied or refused an action that another machine sent to one of its tasks. Subject:
+`<runner>:<key>`. Schema: [`priory.task.applied.json`](../schemas/events/priory.task.applied.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `runner` | string | The runner the action was sent to |
+| `key` | string | The task's key |
+| `generation` | integer | The generation the action named |
+| `submission` | UUID string | The `submission` of the action |
+| `outcome` | `applied` or `refused` | What became of it |
+| `why` | string, optional | Why it was refused: the key is held by another runner, the task moved to another generation, or the local action refused, as the local CLI would say it |
+
+<!-- example: events/priory.task.applied.json -->
+```json
+{
+  "id": "6f3c0d58-9e2b-5a47-c1d3-5b8f0e2a4c69",
+  "type": "priory.task.applied",
+  "subject": "xps13:github:acme/widgets#42",
+  "time": "2026-11-21T10:22:01Z",
+  "data": {
+    "runner": "xps13",
+    "key": "github:acme/widgets#42",
+    "generation": 1,
+    "submission": "0196f1c5-3d4e-7f60-8b1c-2d3e4f5a6b7c",
+    "outcome": "applied"
   },
   "links": []
 }

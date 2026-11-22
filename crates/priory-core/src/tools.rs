@@ -3390,15 +3390,25 @@ pub(crate) fn act(
     if let Err(stale) = crate::state::expect_revision(&tx, act.expected) {
         return Ok((Err(stale), None));
     }
+    let acted = act_in_tx(&tx, act, factory)?;
+    if acted.0.is_ok() {
+        tx.commit()?;
+    }
+    Ok(acted)
+}
+
+/// Applies a desk action in `tx`. A refusal may leave writes in `tx`, which the caller drops.
+pub(crate) fn act_in_tx(
+    tx: &Transaction,
+    act: &Act,
+    factory: &priory_factory::factory::Factory,
+) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
     let held = match (act.act.as_str(), &act.hold) {
-        ("hold", Some(hold)) => Some(crate::hold::hold(&tx, act.task, hold, factory)?),
-        ("release", _) => Some(crate::hold::release_task(&tx, act.task)?),
+        ("hold", Some(hold)) => Some(crate::hold::hold(tx, act.task, hold, factory)?),
+        ("release", _) => Some(crate::hold::release_task(tx, act.task)?),
         _ => None,
     };
     if let Some(reply) = held {
-        if reply.is_ok() {
-            tx.commit()?;
-        }
         return Ok((reply, None));
     }
     let Some((state, reason)) = tx
@@ -3421,8 +3431,7 @@ pub(crate) fn act(
                 |row| row.get(0),
             )?;
             if unstarted {
-                set(&tx, act.task, "queued", None, None)?;
-                tx.commit()?;
+                set(tx, act.task, "queued", None, None)?;
                 return Ok((Ok(format!("task {} is queued", act.task)), None));
             }
             // A reason from a run that never started describes the launch, not the agent's work.
@@ -3435,10 +3444,9 @@ pub(crate) fn act(
                 Some(reason) => format!("{RESUMED} after: {reason}. {CONTINUE}"),
                 None => format!("{RESUMED}. {CONTINUE}"),
             };
-            unresume(&tx, act.task)?;
-            wake(&tx, act.task, &text)?;
-            set(&tx, act.task, "ready", None, None)?;
-            tx.commit()?;
+            unresume(tx, act.task)?;
+            wake(tx, act.task, &text)?;
+            set(tx, act.task, "ready", None, None)?;
             Ok((Ok(format!("task {} is ready", act.task)), None))
         }
         "resume" => Ok((
@@ -3451,27 +3459,16 @@ pub(crate) fn act(
             };
             // A fixed first line keeps a text starting with `/` from running as a slash command.
             let text = format!("{SAYS}{text}");
-            let said = say(&tx, act.task, &text, &state, &factory.workflows)?;
-            if said.is_ok() {
-                tx.commit()?;
-            }
-            Ok((said, None))
+            Ok((say(tx, act.task, &text, &state, &factory.workflows)?, None))
         }
         "cancel" if ["done", "failed", "dropped"].contains(&state.as_str()) => {
             Ok((Err(format!("task {} is already {state}", act.task)), None))
         }
         "cancel" => {
-            let tmux = cancel(&tx, act.task, "cancelled from the desk")?;
-            tx.commit()?;
+            let tmux = cancel(tx, act.task, "cancelled from the desk")?;
             Ok((Ok(format!("task {} dropped", act.task)), tmux))
         }
-        "revive" => {
-            let revived = revive(&tx, act, factory)?;
-            if revived.is_ok() {
-                tx.commit()?;
-            }
-            Ok((revived, None))
-        }
+        "revive" => Ok((revive(tx, act, factory)?, None)),
         other => Ok((Err(format!("unknown action {other}")), None)),
     }
 }

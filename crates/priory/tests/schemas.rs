@@ -88,6 +88,8 @@ fn generated() -> Vec<(String, Value)> {
         event::<AskDismissed>("priory.ask.dismissed"),
         event::<AskPosted>("priory.ask.posted"),
         event::<AskApplied>("priory.ask.applied"),
+        event::<TaskActed>("priory.task.acted"),
+        event::<TaskApplied>("priory.task.applied"),
     ]
 }
 

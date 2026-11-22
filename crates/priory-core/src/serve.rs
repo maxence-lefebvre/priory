@@ -604,9 +604,10 @@ impl<'a> Write<'a> {
         {
             return Some(Write::Label(task));
         }
+        // The last part names the action, so another runner's key may hold an encoded `/`.
         if let Some((task, act)) = path
             .strip_prefix("/api/tasks/")
-            .and_then(|rest| rest.split_once('/'))
+            .and_then(|rest| rest.rsplit_once('/'))
             .filter(|(_, act)| ["resume", "revive", "cancel", "release", "say"].contains(act))
         {
             return Some(Write::Act(task, act));
@@ -965,6 +966,9 @@ fn new_secret() -> Result<String, String> {
 /// apply: it checks the ask against its mirror, publishes the write on the log for that runner and
 /// answers `202` with the submission. `None` for a write to this machine's own ask.
 fn remote_write(db: &Connection, remote: &Remote, write: &Write, body: &[u8]) -> Option<Reply> {
+    if let Write::Act(task, act) = write {
+        return remote_act(db, remote, task, act, body);
+    }
     let (Write::Answer(ask) | Write::Dismiss(ask)) = write else {
         return None;
     };
@@ -1022,6 +1026,82 @@ fn remote_write(db: &Connection, remote: &Remote, write: &Write, body: &[u8]) ->
         }
         // Nothing waits on this machine: unpublished, the write is not sent at all.
         let submission = runners::submit(&remote.log, kind, runner, id, data)
+            .map_err(|error| Reply::error(503, &format!("{error}. Nothing was sent: try again")))?;
+        let sent = serde_json::json!({ "sent": runner, "submission": submission });
+        Ok(Reply::json(202, sent.to_string()))
+    })();
+    Some(reply.unwrap_or_else(|reply| reply))
+}
+
+/// What an action on another runner's task takes: the generation the page drew, and the text or
+/// step the action takes as a local one does.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoteActBody {
+    generation: i64,
+    text: Option<String>,
+    step: Option<String>,
+}
+
+/// An action on `<runner>:<key>`, another runner's task, with the key percent-encoded. It checks
+/// the key's owner and generation against this runner's claims, publishes the action on the log
+/// for that runner and answers `202` with the submission. `None` for a task of this machine, named
+/// by its number.
+fn remote_act(
+    db: &Connection,
+    remote: &Remote,
+    task: &str,
+    act: &str,
+    body: &[u8],
+) -> Option<Reply> {
+    if task.parse::<i64>().is_ok() {
+        return None;
+    }
+    let reply = (|| {
+        let named = decode(task)
+            .ok_or_else(|| Reply::error(400, "the task is not percent-encoded UTF-8"))?;
+        let Some((runner, key)) = named.split_once(':') else {
+            return Err(Reply::error(404, &format!("there is no task {named}")));
+        };
+        if !remote.runners.iter().any(|known| known == runner) {
+            let refused = format!("runner {runner} has no runner file in runners/");
+            return Err(Reply::error(404, &refused));
+        }
+        let body: RemoteActBody =
+            serde_json::from_slice(body).map_err(|error| Reply::error(400, &error.to_string()))?;
+        let takes = match act {
+            "say" => body.text.is_some() && body.step.is_none(),
+            "revive" => body.text.is_none(),
+            _ => body.text.is_none() && body.step.is_none(),
+        };
+        if !takes {
+            let fields = match act {
+                "say" => "a generation and text",
+                "revive" => "a generation and an optional step",
+                _ => "a generation",
+            };
+            return Err(Reply::error(
+                400,
+                &format!("{act} on another runner's task takes {fields}"),
+            ));
+        }
+        let generation = runners::task_generation(db, runner, key, Some(body.generation))
+            .map_err(|error| Reply::error(500, &error.to_string()))?
+            .map_err(|refused| match refused {
+                runners::Refused::Unknown(why) => Reply::error(404, &why),
+                runners::Refused::Stale(why) => Reply::error(409, &why),
+            })?;
+        let sent = runners::TaskAct {
+            act,
+            runner,
+            key,
+            generation,
+            text: body.text.as_deref(),
+            step: body.step.as_deref(),
+            by: "serve",
+        };
+        // Nothing waits on this machine: unpublished, the action is not sent at all.
+        let submission = runners::act(&remote.log, &sent)
             .map_err(|error| Reply::error(503, &format!("{error}. Nothing was sent: try again")))?;
         let sent = serde_json::json!({ "sent": runner, "submission": submission });
         Ok(Reply::json(202, sent.to_string()))

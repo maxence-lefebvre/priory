@@ -47,7 +47,7 @@ const OUTPUT: &str = "factory.intake";
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
 /// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, 66, which added the step a gate enters after the merge, 70, which added idle compactions and session definitions, and 71, which added cleared deliveries, ended snoozes and withdrawal times. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
@@ -5888,7 +5888,8 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+        "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation;
+         ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition;
@@ -10169,7 +10170,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     // The state file as version 64 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+        "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
@@ -18123,6 +18124,55 @@ fn a_message_from_a_runner_without_a_runner_file_is_refused_and_listed_nowhere()
 }
 
 #[test]
+fn a_task_action_or_its_outcome_from_a_runner_without_a_runner_file_is_refused_and_listed_nowhere()
+{
+    let mut a = runner("unknown-runner-task", "a", None);
+    let key = "github:owner/repo#1";
+    for (kind, data) in [
+        (
+            "priory.task.acted",
+            json!({ "runner": "c", "key": key, "generation": 1, "act": "cancel", "submission": "s1" }),
+        ),
+        (
+            "priory.task.applied",
+            json!({ "runner": "c", "key": key, "generation": 1, "submission": "s1", "outcome": "applied" }),
+        ),
+    ] {
+        a.publish(&Message::new(kind, data));
+    }
+    a.publish(&requested(1));
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+
+    let inbox = a.until("inbox", |rows| {
+        rows.iter().any(|row| row[1] == "factory.task.requested")
+    });
+    let outcomes: Vec<(&str, &str)> = inbox
+        .iter()
+        .filter(|row| row[1].starts_with("priory."))
+        .map(|row| (row[1].as_str(), row[4].as_str()))
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ("priory.task.acted", "refused"),
+            ("priory.task.applied", "refused"),
+        ],
+        "{inbox:?}"
+    );
+    let db = rusqlite::Connection::open(a.dir.join("priory.db")).unwrap();
+    let count: i64 = db
+        .query_row("SELECT count(*) FROM remote_task_submissions", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
 fn an_answer_to_the_ask_of_a_runner_without_a_runner_file_is_refused() {
     let b = runner("answer-unknown", "b", None);
     let factory = b.dir.join("factory");
@@ -22104,6 +22154,249 @@ fn another_runners_task_leaves_the_listing_once_it_ends() {
     );
 
     until_task(&address, key, "a", |task| task.is_none());
+}
+
+/// The key of the task `asked_on_a` gives runner `a`.
+const ASKED_KEY: &str = "github:owner/repo#1";
+
+/// `/api/tasks/<runner>:<key>/<act>`, with the key percent-encoded.
+fn remote_act(runner: &str, key: &str, act: &str) -> String {
+    let key = key
+        .replace('%', "%25")
+        .replace(':', "%3A")
+        .replace('/', "%2F")
+        .replace('#', "%23");
+    format!("/api/tasks/{runner}:{key}/{act}")
+}
+
+/// The writes sent to a listed task, from any machine.
+fn submissions_of(task: &serde_json::Value) -> Vec<serde_json::Value> {
+    task["submissions"].as_array().cloned().unwrap_or_default()
+}
+
+#[test]
+fn a_cancel_sent_to_another_runners_task_is_applied_by_its_runner_and_a_revive_brings_it_back_at_its_next_generation()
+ {
+    let (a, b, _ask, address) = asked_on_a("remote-cancel");
+    let listed = until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| task["generation"] == 1)
+    })
+    .unwrap();
+    assert_eq!(listed["submissions"], json!([]), "{listed}");
+
+    let (status, sent) = runner_http(
+        &address,
+        "POST",
+        &remote_act("a", ASKED_KEY, "cancel"),
+        r#"{"generation": 1}"#,
+    );
+
+    assert_eq!(status, 202, "{sent}");
+    assert_eq!(sent["sent"], "a");
+    let submission = sent["submission"].as_str().unwrap().to_owned();
+    a.until("tasks", |rows| rows[0][4] == "dropped");
+    logged(
+        &a,
+        "priory.task.applied",
+        json!({ "submission": submission, "outcome": "applied", "key": ASKED_KEY }),
+    );
+    // A cancel that applies ends the task, so its row leaves the list.
+    until_task(&address, ASKED_KEY, "a", |task| task.is_none());
+
+    let factory = b.dir.join("factory");
+    let revived = b.priory(&[
+        "revive",
+        factory.to_str().unwrap(),
+        &format!("a:{ASKED_KEY}"),
+    ]);
+
+    assert!(
+        revived.status.success(),
+        "{}",
+        String::from_utf8_lossy(&revived.stderr)
+    );
+    let said = String::from_utf8_lossy(&revived.stdout);
+    assert!(
+        said.starts_with(&format!(
+            "revive of task a:{ASKED_KEY} sent to a as submission "
+        )),
+        "{said}"
+    );
+    let back = until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| {
+            task["generation"] == 2
+                && submissions_of(task)
+                    .iter()
+                    .all(|sent| sent["outcome"] == "applied")
+        })
+    })
+    .unwrap();
+    let sent: Vec<(String, i64)> = submissions_of(&back)
+        .iter()
+        .map(|sent| {
+            (
+                sent["act"].as_str().unwrap().to_owned(),
+                sent["generation"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        sent,
+        [("cancel".to_owned(), 1), ("revive".to_owned(), 1)],
+        "{back}"
+    );
+    a.until("tasks", |rows| rows[0][4] == "asleep");
+}
+
+#[test]
+fn a_say_that_another_runner_refuses_comes_back_with_its_reason_on_the_still_listed_task() {
+    let (a, b, _ask, address) = asked_on_a("remote-say");
+    until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| task["generation"] == 1)
+    });
+    let factory = b.dir.join("factory");
+
+    let sent = b.priory(&[
+        "say",
+        factory.to_str().unwrap(),
+        &format!("a:{ASKED_KEY}"),
+        "look at the tests",
+    ]);
+
+    assert!(
+        sent.status.success(),
+        "{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    let refused = until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| task["submissions"][0]["outcome"] == "refused")
+    })
+    .unwrap();
+    let submission = &refused["submissions"][0];
+    assert_eq!(submission["act"], "say", "{refused}");
+    assert_eq!(submission["text"], "look at the tests", "{refused}");
+    assert_eq!(
+        submission["why"], "task 1 is at step approve, which no agent runs",
+        "{refused}"
+    );
+    assert_eq!(a.rows("tasks")[0][4], "asleep");
+}
+
+#[test]
+fn a_write_to_another_runners_task_at_a_stale_generation_is_refused_here_and_nothing_is_published()
+{
+    let (a, b, _ask, address) = asked_on_a("remote-stale-task");
+    until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| task["generation"] == 1)
+    });
+    let factory = b.dir.join("factory");
+
+    let (status, refused) = runner_http(
+        &address,
+        "POST",
+        &remote_act("a", ASKED_KEY, "cancel"),
+        r#"{"generation": 2}"#,
+    );
+    let cli = b.priory(&[
+        "cancel",
+        factory.to_str().unwrap(),
+        &format!("a:{ASKED_KEY}"),
+        "--generation",
+        "2",
+    ]);
+    let (other, elsewhere) = runner_http(
+        &address,
+        "POST",
+        &remote_act("b", ASKED_KEY, "resume"),
+        r#"{"generation": 1}"#,
+    );
+
+    assert_eq!(status, 409, "{refused}");
+    assert_eq!(
+        refused["error"],
+        format!("task a:{ASKED_KEY} is at generation 1, not 2"),
+        "{refused}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&cli.stderr),
+        format!("priory cancel: task a:{ASKED_KEY} is at generation 1, not 2\n")
+    );
+    assert_eq!(other, 409, "{elsewhere}");
+    assert_eq!(
+        elsewhere["error"],
+        format!("runner a holds {ASKED_KEY}, not b"),
+        "{elsewhere}"
+    );
+    assert!(on_log(&a, "priory.task.acted").is_empty());
+}
+
+#[test]
+fn the_owner_refuses_a_write_whose_generation_moved_and_a_runner_refuses_one_for_a_key_it_does_not_hold()
+ {
+    let (a, b, _ask, address) = asked_on_a("remote-moved");
+    until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| task["generation"] == 1)
+    });
+    let acted = |runner: &str, generation: i64| {
+        Message::new(
+            "priory.task.acted",
+            json!({ "runner": runner, "key": ASKED_KEY, "generation": generation, "act": "cancel" }),
+        )
+        .subject(format!("{runner}:{ASKED_KEY}"))
+    };
+    let (moved, elsewhere) = (acted("a", 2), acted("b", 1));
+
+    b.publish(&moved);
+    b.publish(&elsewhere);
+
+    logged(
+        &a,
+        "priory.task.applied",
+        json!({
+            "submission": moved.id.to_string(), "outcome": "refused",
+            "why": format!("task {ASKED_KEY} is at generation 1, not 2"),
+        }),
+    );
+    logged(
+        &b,
+        "priory.task.applied",
+        json!({
+            "submission": elsewhere.id.to_string(), "outcome": "refused", "runner": "b",
+            "why": format!("runner a holds {ASKED_KEY}, not b"),
+        }),
+    );
+    assert_eq!(a.rows("tasks")[0][4], "asleep");
+}
+
+#[test]
+fn a_write_sent_while_the_tasks_runner_is_away_is_applied_once_when_it_starts_again() {
+    let (mut a, _b, _ask, address) = asked_on_a("remote-task-away");
+    until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| task["generation"] == 1)
+    });
+    a.crash();
+
+    let (status, sent) = runner_http(
+        &address,
+        "POST",
+        &remote_act("a", ASKED_KEY, "cancel"),
+        r#"{"generation": 1}"#,
+    );
+    assert_eq!(status, 202, "{sent}");
+    let pending = until_task(&address, ASKED_KEY, "a", |task| {
+        task.is_some_and(|task| !submissions_of(task).is_empty())
+    })
+    .unwrap();
+    assert!(pending["submissions"][0]["outcome"].is_null(), "{pending}");
+
+    a.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_NOW", T0)],
+    );
+
+    a.until("tasks", |rows| rows[0][4] == "dropped");
+    until_task(&address, ASKED_KEY, "a", |task| task.is_none());
+    assert_eq!(on_log(&a, "priory.task.applied").len(), 1);
 }
 
 const RELEASE_DAY: &str = "---\nname: release-day\ndescription: When releases go out.\n---\nReleases go out on Tuesdays.\n";
