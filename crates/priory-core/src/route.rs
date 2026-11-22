@@ -5,7 +5,7 @@ use priory_factory::lanes::Subject;
 use priory_intake::intake::review_key;
 use serde::Deserialize;
 
-const TASK_REQUESTED: &str = "factory.task.requested";
+pub(crate) const TASK_REQUESTED: &str = "factory.task.requested";
 const REVIEW_REQUEST_REMOVED: &str = "github.pull_request.review_request_removed";
 
 /// What the daemon does with one inbox entry.

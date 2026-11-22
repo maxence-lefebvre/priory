@@ -487,6 +487,33 @@ fn two_events_whose_script_prints_the_same_key_create_one_task_and_the_second_ro
         )
         .unwrap();
     assert_eq!(second, (Some(1), "kept".to_owned()));
+
+    // Each merged issue's own later events reach the task, though they name no printed key.
+    setup.answer(&[
+        labeled(104, 42, "bug"),
+        labeled(103, 43, "bug"),
+        labeled(102, 43, "agent"),
+        labeled(101, 42, "agent"),
+        labeled(100, 41, "bug"),
+    ]);
+    succeeded(&setup.intake());
+    setup.route();
+    for id in [103, 104] {
+        let event = setup
+            .of("github.issues.labeled")
+            .into_iter()
+            .find(|event| event.data["github_id"] == id)
+            .unwrap();
+        let routed: Option<i64> = setup
+            .db()
+            .query_row(
+                "SELECT task FROM inbox WHERE id = ?1",
+                [event.id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(routed, Some(1), "event {id}");
+    }
 }
 
 #[test]

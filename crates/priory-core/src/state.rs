@@ -2098,6 +2098,9 @@ pub(crate) fn route_in(
         Decision::Keep(id) => (Some(id), "kept"),
         Decision::Ignore => (None, "ignored"),
     };
+    if let Some(id) = task.filter(|_| ["created", "kept"].contains(&outcome)) {
+        merged(tx, id, message)?;
+    }
     let running = match task {
         Some(id) => tx
             .query_row(
@@ -2712,6 +2715,26 @@ pub(crate) fn taken(
 
 /// Every active task that owns any of `resources`, in the order `owner` ranks them. The oldest
 /// active batch part of a resource, keyed `<resource>.<part>`, owns it too, and only that part.
+/// Subscribes task `id` to the issue, pull request or thread of a request whose `pre` script
+/// printed another `key`, so that resource's own events, which name no printed key, still reach it.
+fn merged(tx: &Transaction, id: i64, message: &Message) -> rusqlite::Result<()> {
+    if message.kind != route::TASK_REQUESTED {
+        return Ok(());
+    }
+    let Some(resource) = message.data["pre"]["key"]["from"]
+        .as_str()
+        .and_then(crate::subscribe::resource)
+    else {
+        return Ok(());
+    };
+    tx.execute(
+        "INSERT OR IGNORE INTO subscriptions (task, resource, created) VALUES (?1, ?2,
+           min(strftime('%Y-%m-%dT%H:%M:%SZ', ?3, 'unixepoch'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))",
+        params![id, resource, message.time.as_second()],
+    )
+    .map(drop)
+}
+
 fn owners(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Vec<Task>> {
     let resources = serde_json::to_string(resources).expect("resources serialize");
     tx.prepare(

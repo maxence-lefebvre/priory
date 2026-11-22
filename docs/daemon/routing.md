@@ -38,6 +38,7 @@ A task gets its resources at these moments:
 | When | Resource | Example |
 | ---- | -------- | ------- |
 | The task is created | its trigger key, and a subscription to it when the key names an issue, a pull request, a Linear issue or a Slack thread | `github:owner/name#42`, `linear:ENG-7`, `cli:docs-1` |
+| A request whose `pre` script printed another `key` creates the task or joins it | a subscription to the issue, pull request or thread the trigger named before the script | `github:owner/name#43` |
 | Its first run starts | its branch | `github:owner/name@priory/3` |
 | A wait of its names a pull request | that pull request | `github:owner/name#57` |
 | A wait of its names a Linear issue or a Slack thread | that issue or thread | `linear:ENG-7`, `slack:C0123:1763500000.000100` |

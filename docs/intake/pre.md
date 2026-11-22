@@ -57,6 +57,11 @@ The object may hold these fields, each a string. Any other field fails the scrip
 The scope means a script cannot name another source's task. `github:owner/name#42` printed by a
 Sentry trigger's script becomes `sentry:github:owner/name#42`, which no GitHub event reaches.
 
+A GitHub, Linear or Slack event names its own issue, pull request or thread, not the printed key.
+So the task the request creates or joins also subscribes to the resource the trigger named before
+the script ran, such as `github:owner/name#43` or `linear:ENG-12`. Each merged issue's comments,
+edits and closes still reach the task (see [routing.md](../daemon/routing.md#resources-what-a-task-owns)).
+
 A script cannot change the workflow, the trigger, the repository, a hold or `intervention`.
 `priory check` reads those from files to say which paths reach an irreversible step and who
 answers asks.
