@@ -1,10 +1,12 @@
 # Scorers
 
-A scorer grades one finished run: a run whose turn ended with a result or an ask. Each file
+A scorer grades one finished run: a run whose turn ended with a result or an ask. A `held` scorer
+grades a merged task instead, once a delay after its merge has passed. Each file
 `scorers/<name>.toml`, `.yaml` or `.yml` holds one, named by its file. A scorer answers `pass`,
-`fail`, `not applicable` or `error`. `priory score` runs them on demand. A step's
+`fail`, `not applicable` or `error`. `priory score` runs them on demand, except a `held` scorer. A step's
 [`gate`](workflows.md#step-keys) and the factory's [`critic`](factory.md#top-level-keys) run them on
-a result before the daemon stores it (see [score.md](../daemon/score.md#gates)).
+a result before the daemon stores it (see [score.md](../daemon/score.md#gates)). The daemon runs
+each `held` scorer by itself (see [score.md](../daemon/score.md#held-scorers)).
 
 Schema: [`config/scorer.json`](../schemas/config/scorer.json).
 
@@ -13,8 +15,8 @@ Schema: [`config/scorer.json`](../schemas/config/scorer.json).
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `description` | string | yes | | What the scorer checks, in one line | `"The step ended as passed."` |
-| `on` | `result`, `diff` or `ask` | yes | | What the scorer reads. Each kind reads one: see below | `"result"` |
-| `kind` | `outcome`, `command`, `ask-shape` or `judge` | yes | | How the scorer answers | `"outcome"` |
+| `on` | `result`, `diff`, `ask` or `merge` | yes | | What the scorer reads. Each kind reads one: see below | `"result"` |
+| `kind` | `outcome`, `command`, `ask-shape`, `judge` or `held` | yes | | How the scorer answers | `"outcome"` |
 | `expect` | list of strings | for `outcome` and `ask-shape` | | The outcomes that pass, or the parts of an ask's shape every ask must show | `["passed"]` |
 | `run` | path | for `command` | | An executable in the factory folder | `"scripts/score-gate.sh"` |
 | `timeout` | duration | no | `"20m"` | For `command`: how long it may run before Priory kills it | `"5m"` |
@@ -22,6 +24,8 @@ Schema: [`config/scorer.json`](../schemas/config/scorer.json).
 | `prompt` | path | for `judge` | | A file beside the scorer that holds the judge's question | `"does-what-was-asked.md"` |
 | `evaluation` | path | for `judge` | | A file beside the scorer that holds its labeled cases, named `*.eval.toml` | `"does-what-was-asked.eval.toml"` |
 | `agreement` | number above 0, at most 1 | no | `0.8` | For `judge`: the least share of labeled cases its calibration must get right before its verdict counts | `0.8` |
+| `after` | `merged + <n><unit>`, with unit `m`, `h` or `d` | for `held` | | When the daemon grades the task: this long after its last pull request merged | `"merged + 7d"` |
+| `fails` | list of `changes-requested`, `red-after-merge`, `reverted`, `marked-wrong`, `fixed` | for `held` | | The signals that fail the task when they happened by the moment `after` names | `["reverted", "fixed"]` |
 
 ## Kinds
 
@@ -30,6 +34,7 @@ Schema: [`config/scorer.json`](../schemas/config/scorer.json).
 | `outcome` | `result` | The result's outcome is one of `expect` |
 | `command` | `diff` | `run` exits 0 in a scratch checkout of the result's commit. Exit 1 fails, and any other ending is an error |
 | `ask-shape` | `ask` | Every ask the run made shows each part `expect` names |
+| `held` | `merge` | None of `fails` happened by the moment `after` names. The first four are [outcome labels](../daemon/trace.md#outcome-labels), judged by when they happened. `fixed` is a later task's `fixes` [relation](../daemon/relations.md) to the task, judged by when it was recorded |
 | `judge` | `diff` or `result` | `model` answers `pass` to the question in `prompt`, about the request, the result and, on `diff`, the diff. On `result` it reads no diff and needs no commit, as a plan's critic does. Its verdict counts only once calibrated: see [score.md](../daemon/score.md#judges) |
 
 An ask's shape is the one `priory eval` reads ([prompt-evals.md](prompt-evals.md)): `short` when
@@ -89,6 +94,16 @@ on = "diff"
 kind = "command"
 run = "scripts/score-gate.sh"  # in the factory folder; exit 0 pass, 1 fail, else error
 timeout = "20m"
+```
+
+<!-- example: factory/scorers/held-a-week.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/scorer.json
+description = "The change held for a week after its merge: no revert and no later task that fixes it."
+on = "merge"
+kind = "held"
+after = "merged + 7d"
+fails = ["reverted", "red-after-merge", "fixed"]
 ```
 
 <!-- example: factory/scripts/score-gate.sh -->

@@ -1609,6 +1609,17 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
                  AND json_extract(event, '$.data.task') = CAST(?1 AS TEXT))
              WHERE latest = 1 ORDER BY CAST(run AS INTEGER), scorer",
         ),
+        (
+            "held_scores",
+            "SELECT json_extract(event, '$.data.scorer') AS scorer,
+               json_extract(event, '$.data.verdict') AS verdict,
+               json_extract(event, '$.data.evidence') AS reason,
+               json_extract(event, '$.data.happened') AS happened, time
+             FROM trace WHERE type = 'factory.step.labeled'
+               AND json_extract(event, '$.data.task') = CAST(?1 AS TEXT)
+               AND json_extract(event, '$.data.label') = 'scored'
+             ORDER BY seq",
+        ),
     ];
     for (name, query) in lists {
         task[name] = rows(db, query, [id])?;
