@@ -394,7 +394,6 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A bad `timeout` |
 | `` step `<id>`: `budget` "<text>" is not an amount of dollars above zero, such as "1.00" `` | A `budget` such as `"-1"`, `"0"` or `"one"` |
 | `` step `<id>`: `budget` needs prices.toml, which turns the step's tokens into dollars `` | A `budget` in a factory without `prices.toml` |
-| `` step `<id>`: `budget` needs a Claude Code agent: Priory reads no Codex tokens `` | A `budget` on a step whose agent is a Codex agent |
 | `` step `<id>`: only a model step has a `budget` `` | A `budget` on a human or code step |
 | `` step `<id>`: only a model step has a `record` command `` | A `record` on a human or code step |
 | `` step `<id>`: `record`: <path> leads outside the factory folder `` | A `record` path through `..` or a symbolic link that leaves the factory folder |

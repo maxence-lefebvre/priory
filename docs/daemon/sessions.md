@@ -70,7 +70,9 @@ result that moves the task to another conversation leaves the crossing to the se
 which checks at its `SessionStart`. Its first `result` is then refused until the compaction, as for
 the `compact` tool.
 
-A Codex agent cannot take `compactAt`: Priory reads no Codex tokens (see [codex.md](codex.md)).
+A Codex agent takes `compactAt` too. Its context size is the input and output of the last model
+call in Codex's session file (see [trace.md](trace.md)), and its compaction ends at Codex's
+`PostCompact` hook (see [codex.md](codex.md)).
 
 Known limit: an answer that reaches a run kept awake for its `/compact` can start its command
 before the compaction, so the continuation may come while the command runs.
@@ -108,7 +110,8 @@ runs, a task that needs the agent stays `queued` or `ready` with the reason
 after 10 minutes is killed. A daemon restart kills the compactions it finds live.
 
 `priory check` refuses `idleCompactAt` on a Codex agent and on an agent whose `session` is not
-`shared`.
+`shared`. A resumed Codex session sends no `SessionStart` before its first prompt, and an idle
+compaction types no prompt, so the daemon would never know when to type `/compact`.
 
 Known limits:
 

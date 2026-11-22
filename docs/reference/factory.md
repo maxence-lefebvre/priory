@@ -639,6 +639,7 @@ reports only its parse error, so fix those first.
 In a factory with a spend cap and `prices.toml`, `priory check` also warns, and passes, for the
 agent of a model step whose spend no cap counts:
 `` warning: agents/<name>/agent.md:<line>: the spend caps count nothing for agent `<name>`: <why> ``,
-where `<why>` is `` prices.toml has no price for its model `<model>` `` or
-`Priory reads no Codex tokens`. A Claude Code alias such as `sonnet` never warns: the transcript
-names the full model, which `priory check` cannot know.
+where `<why>` is `` prices.toml has no price for its model `<model>` ``. A Claude Code agent's
+alias such as `sonnet` never warns: the transcript names the full model, which `priory check`
+cannot know. A Codex agent's `model` always needs its price, since Codex names the model it was
+given.

@@ -40,7 +40,11 @@ current steps of the active tasks the cap covers.
 A model with no price counts nothing toward a cap. Price every model your agents use, or its spend
 goes unseen. `priory check` refuses a cap in a factory with no `prices.toml`. It warns for the agent
 of a model step whose `model` has no price, unless that model is a Claude Code alias such as
-`sonnet`, and for a Codex agent, since Priory reads no Codex tokens.
+`sonnet` on a Claude Code agent.
+
+A Codex run counts like a Claude run. The daemon reads its tokens from Codex's session file (see
+[trace.md](trace.md)) and prices them at the model that file names. Codex names the model it was
+given, so a Codex agent's `model` must be in `prices.toml` exactly as the agent names it.
 
 ## Past a cap
 
