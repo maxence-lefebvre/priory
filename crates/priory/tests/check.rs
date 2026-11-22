@@ -2927,7 +2927,7 @@ fn a_codex_agent_whose_own_prompt_passes_the_limit_fails_the_check_without_instr
     files[1] = ("agents/implementer/agent.md", &agent);
     files.push(("skills/release-notes/SKILL.md", SKILL));
 
-    let outcome = check(&factory("codex-prompt-long", &files));
+    let outcome = check(&factory("codex-skills-none-prompt-long", &files));
 
     assert_eq!(outcome.code, 1, "{}", outcome.stderr);
     assert_eq!(
