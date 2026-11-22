@@ -780,7 +780,7 @@ fn replay(args: &[String]) -> ExitCode {
             &loaded,
             &options,
             &mut |line| println!("{line}"),
-            &mut |_, _, _| Vec::new(),
+            &mut |_, _, _, _| Vec::new(),
         )?;
         if replayed.ending.incomplete() {
             println!("Incomplete");

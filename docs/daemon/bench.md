@@ -220,7 +220,9 @@ benchmark file, its cases and its scorers come from `--head` for both sides.
 6. Once a replay ends, and before its scratch folder goes, the benchmark's scorers grade it. A
    `result` or `diff` scorer takes its verdict on the replay's last finished run. An `ask` scorer
    takes the worst of its verdicts on the runs that asked: an error, then a fail, then a pass. A
-   judge's calls count toward the budget, and the replay's printed cost includes them.
+   judge's calls count toward the budget, and the replay's printed cost includes them. The judges
+   get only what the comparison and that replay left of the budget. After a replay that ended
+   `over budget` or `cost unknown` they get nothing, so they call no model.
 7. It prints the table, and appends a `factory.bench.compared` record to this machine's trace
    ([the trace schema](../trace-schema.md#factorybenchcompared)).
 

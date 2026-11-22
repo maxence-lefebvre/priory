@@ -448,6 +448,12 @@ pub fn table(comparison: &Comparison) -> String {
     text
 }
 
+/// What the judges of a replay may spend: what is left of `budget` once the comparison spent
+/// `spent` and the replay `replayed`, or nothing when the replay's spending is unknown.
+fn judges_budget(budget: f64, spent: f64, replayed: Option<f64>) -> f64 {
+    replayed.map_or(0.0, |replayed| (budget - spent - replayed).max(0.0))
+}
+
 /// One verdict per scorer for one replay, from the scores of its finished runs. A `result` or
 /// `diff` scorer takes its verdict on the replay's last finished run. An `ask` scorer takes the
 /// worst of its verdicts on every run that asked: an error, then a fail, then a pass.
@@ -836,7 +842,7 @@ pub fn compare(
                 };
                 let mut judging = score::Judging {
                     calibrations: calibrations.clone(),
-                    budget: Some(options.budget - spent),
+                    budget: None,
                     spent: 0.0,
                 };
                 let replayed = replay::replay(
@@ -845,7 +851,8 @@ pub fn compare(
                     &case.loaded,
                     &replay_options,
                     &mut |_| {},
-                    &mut |db, home, task| {
+                    &mut |db, home, task, replayed| {
+                        judging.budget = Some(judges_budget(options.budget, spent, replayed));
                         score::grade(db, heads, home, task, &names, &mut judging)
                             .unwrap_or_default()
                     },
@@ -1012,6 +1019,13 @@ fn fetched(top: &Path, reference: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn judges_get_what_the_comparison_and_the_replay_left_and_nothing_after_an_unknown_cost() {
+        assert_eq!(judges_budget(10.0, 1.0, Some(8.0)), 1.0);
+        assert_eq!(judges_budget(10.0, 1.0, Some(9.5)), 0.0);
+        assert_eq!(judges_budget(10.0, 0.0, None), 0.0);
+    }
 
     const RESULT: ScoreOn = ScoreOn::Result;
 

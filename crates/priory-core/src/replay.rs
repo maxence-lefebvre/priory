@@ -113,9 +113,10 @@ pub struct Replayed {
     pub scores: Vec<crate::score::Score>,
 }
 
-/// Grades a replay once it ends, from the scratch state, the scratch Priory home and the task's id,
-/// before the scratch folder goes.
-pub type Grade<'a> = dyn FnMut(&Connection, &Path, i64) -> Vec<crate::score::Score> + 'a;
+/// Grades a replay once it ends, from the scratch state, the scratch Priory home, the task's id and
+/// what the replay spent, `None` when it ended incomplete, before the scratch folder goes.
+pub type Grade<'a> =
+    dyn FnMut(&Connection, &Path, i64, Option<f64>) -> Vec<crate::score::Score> + 'a;
 
 /// The model a replay's run of `spent.step` uses: the configured model of the step's agent, else
 /// the model the case recorded.
@@ -767,7 +768,8 @@ pub fn replay(
         .optional()
         .ok()
         .flatten();
-    let scores = task.map_or_else(Vec::new, |task| grade(&db, &path.join("home"), task));
+    let known = (!ending.incomplete()).then_some(spent);
+    let scores = task.map_or_else(Vec::new, |task| grade(&db, &path.join("home"), task, known));
     let unrecorded = fs::read_to_string(path.join("gh-unrecorded.log"))
         .unwrap_or_default()
         .lines()
