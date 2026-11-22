@@ -129,6 +129,7 @@ reply carries `Cache-Control: no-store`.
 | `redacted` | How many secrets the server replaced |
 | `hash` | 16 hex digits, a hash of the fields above after redaction. A hidden value never changes it |
 | `scrollback` | How many rows of scrollback tmux keeps for the pane. The hash leaves it out |
+| `keyboard` | `true` under `[serve] terminal = "type"`, when a token holder may take the run's [keyboard](#keyboard); absent otherwise. The hash leaves it out |
 
 `priory screen (TASK | --run RUN) [--json]` prints the same screen, with no scrollback, as rows of
 text or, with `--json`, as this object. Its rows keep their colours on a terminal and drop them
