@@ -136,7 +136,7 @@ const state = {
   signInError: null,
   list: "desk",
   listUrl: "/",
-  // The last list the person opened, where a task or batch page goes back to.
+  // The last list the person opened; a task or batch page opened next keeps it in its history entry.
   from: null,
   snapshot: null,
   rendered: 0,
@@ -1082,11 +1082,12 @@ function optionList(ask, wide) {
 function askDetail(id, wide) {
   const ask = state.data.asks.find((candidate) => String(candidate.id) === id);
   const { answered, withdrawn } = state.data.older.asks;
+  const heading = layout() === "compact" ? html`<h1 class="sr">Ask #${id}</h1>` : "";
   if (!ask && answered + withdrawn) {
     loadOlder("asks");
-    return html`<p class="empty">Loading ask ${id}…</p>`;
+    return html`${heading}<p class="empty">Loading ask ${id}…</p>`;
   }
-  if (!ask) return html`<p class="empty">No ask ${id} here. It may belong to another factory. Check <code>priory asks --all</code>.</p>`;
+  if (!ask) return html`${heading}<p class="empty">No ask ${id} here. It may belong to another factory. Check <code>priory asks --all</code>.</p>`;
   const open = listedAsks();
   const at = open.findIndex((candidate) => String(candidate.id) === id);
   const back = [state.listUrl, state.list === "asks" ? "Asks" : "Desk"];
@@ -1336,12 +1337,12 @@ function splitsSection(batch) {
 
 // The batch page (DESIGN.md, Batch page): /batches/<id>.
 function batchPage(id) {
-  const [href, label] = backTo(state.from);
+  const [href, label] = backTo(history.state?.from ?? null);
   const back = html`<div class="top"><a class="back" href="${href}">${icon("chevron-left", "s22")}${label}</a></div>`;
   const batch = batchOf(id);
   if (!batch) {
     const failed = state.batch?.error;
-    return html`${back}<p class="empty">${failed ? html`Could not load batch ${id}: ${failed}. <code>priory batch show ${id}</code> shows it.` : `Loading batch ${id}…`}</p>`;
+    return html`${back}<h1 class="sr">Batch ${id}</h1><p class="empty">${failed ? html`Could not load batch ${id}: ${failed}. <code>priory batch show ${id}</code> shows it.` : `Loading batch ${id}…`}</p>`;
   }
   return html`${back}<div class="scroll"><div class="ask bhead">
     <p class="ctx">${tile("batch", "sm")}<a class="mono" href="/tasks/${batch.task}">${batch.key}</a><span>${batch.state}</span><span>${batch.lane || ""}</span>${batch.went ? html`<span>went ${timeTag(batch.went)} ago by ${batch.went_by}</span>` : ""}<span>plan rev ${batch.plan_revision}</span></p>
@@ -1448,12 +1449,12 @@ async function taskWrite(task, act, body) {
 // A task's page: its state, reason, actions, a box to say something to its agent, then its brief,
 // plan, pull request and trace.
 function taskPage(id) {
-  const [href, label] = backTo(state.from);
+  const [href, label] = backTo(history.state?.from ?? null);
   const back = html`<div class="top"><a class="back" href="${href}">${icon("chevron-left", "s22")}${label}</a></div>`;
   const task = taskOf({ task: id });
   if (!task) {
     const failed = state.task?.error;
-    return html`${back}<p class="empty">${failed ? `Could not load task ${id}: ${failed}.` : `Loading task ${id}…`}</p>`;
+    return html`${back}<h1 class="sr">Task ${id}</h1><p class="empty">${failed ? `Could not load task ${id}: ${failed}.` : `Loading task ${id}…`}</p>`;
   }
   const said = state.taskBusy === task.id ? raw('aria-disabled="true"') : "";
   const say = ENDED.includes(task.state) ? "" : html`<form class="writeform" data-action="say" data-task="${task.id}"><label class="sr" for="say">Say to the agent</label>
@@ -2899,7 +2900,7 @@ function render() {
   if (typeof state.taskArmed?.task === "string" && remoteGeneration(state.taskArmed.task) !== state.taskArmed.generation) disarmTask();
   if (state.memoryArmed && current() !== "memories") disarmMemory();
   app.innerHTML = page().text;
-  document.title = state.token && state.data ? pageTitle(location.pathname, state.data) : "Priory";
+  document.title = state.token && state.data ? pageTitle(location.pathname, { tasks: [...state.data.tasks, state.task?.body].filter(Boolean) }) : "Priory";
   paintTerminal(app, true);
   observeTerminal(app);
   // A render must not restart the countdown; CSP allows no inline style, so it is set here.
@@ -2938,6 +2939,8 @@ function page() {
   const taskId = here === "tasks" && /^\d+$/.test(route()[1] || "") ? Number(route()[1]) : null;
   const batchId = here === "batches" && /^\d+$/.test(route()[1] || "") ? route()[1] : null;
   if (PANELS[here] && !selectedAsk() && !taskId) state.from = routeKey();
+  // A detail page keeps the list it was opened from in its history entry, so Back restores its link.
+  else if ((taskId || batchId) && !history.state?.from) history.replaceState({ ...history.state, from: state.from }, "");
   if (size === "compact") {
     let body;
     if (selectedAsk()) body = askDetail(selectedAsk(), false);

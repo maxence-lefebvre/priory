@@ -32,3 +32,11 @@ test("each page has its own title, a task by its key", () => {
   assert.equal(pageTitle("/more", data), "More · Priory");
   assert.equal(pageTitle("/terminals", data), "Page not found · Priory");
 });
+
+test("a title names the page the address renders", () => {
+  const data = { tasks: [] };
+  assert.equal(pageTitle("/tasks/nope", data), "Tasks · Priory");
+  assert.equal(pageTitle("/batches/nope", data), "Page not found · Priory");
+  assert.equal(pageTitle("/settings", data), "Appearance · Priory");
+  assert.equal(pageTitle("/settings/other", data), "Appearance · Priory");
+});
