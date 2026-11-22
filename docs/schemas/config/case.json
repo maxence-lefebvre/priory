@@ -53,6 +53,78 @@
         "labels"
       ],
       "type": "object"
+    },
+    "Spent": {
+      "additionalProperties": false,
+      "description": "What one model step of the task spent before the first irreversible step.",
+      "properties": {
+        "minutes": {
+          "description": "How long the step took, in whole minutes rounded up, at least 1.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "model": {
+          "description": "The model the run reported, such as `claude-sonnet-5-5`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "step": {
+          "description": "The model step.",
+          "type": "string"
+        },
+        "tokens": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Tokens"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The step's tokens. Absent when Priory could not read them."
+        }
+      },
+      "required": [
+        "step",
+        "minutes"
+      ],
+      "type": "object"
+    },
+    "Tokens": {
+      "additionalProperties": false,
+      "description": "Tokens of each kind.",
+      "properties": {
+        "cache_read": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cache_write": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "input": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "output": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input",
+        "output",
+        "cache_read",
+        "cache_write"
+      ],
+      "type": "object"
     }
   },
   "description": "`case.toml`: the task a case was captured from, what it was asked, where its replay starts and\nends, and what really happened to it.",
@@ -101,6 +173,14 @@
         }
       ],
       "description": "The message that asked for the task, as the inbox recorded it."
+    },
+    "spent": {
+      "default": [],
+      "description": "What each model step before `ends_at` spent, in order, for a replay's estimate.",
+      "items": {
+        "$ref": "#/definitions/Spent"
+      },
+      "type": "array"
     },
     "start": {
       "description": "The commit the task's worktree was created from. A replay clones the repository at it.",

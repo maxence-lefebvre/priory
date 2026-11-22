@@ -1,7 +1,7 @@
 # Benchmark cases
 
 A case is a past task captured into a folder by `priory bench capture`
-([bench.md](../daemon/bench.md)). A replay will play it again under another configuration. Keep
+([bench.md](../daemon/bench.md)). `priory bench replay` plays it again under another configuration. Keep
 each case in `benchmarks/cases/<name>/` of the factory, and commit it with the factory once a
 person has read it.
 
@@ -27,6 +27,11 @@ Each file starts with a `#:schema` line, so an editor validates it as you fill a
 | `request` | table | no | The first message the inbox routed to the task: `type`, `subject` and `data`, with its null fields left out | |
 | `reference.path` | array of strings | yes | Every step the task finished, in order, each as `step:outcome` | `["groom:red", "approve-plan:approved"]` |
 | `reference.labels` | array of strings | yes | The task's outcome labels that no `priory label --clear` withdrew | `["marked-wrong"]` |
+| `spent` | array of tables | no | What each model step before `ends_at` spent, in order. A replay's estimate prices it. Absent in a case captured before Priory recorded it | |
+| `spent[].step` | string | yes | The model step | `"groom"` |
+| `spent[].model` | string | no | The model the run reported | `"claude-sonnet-5-5"` |
+| `spent[].minutes` | integer | yes | How long the step took, in whole minutes rounded up, at least 1 | `4` |
+| `spent[].tokens` | table | no | The step's `input`, `output`, `cache_read` and `cache_write` tokens. Absent when Priory could not read them | `{ input = 3, output = 812, cache_read = 40210, cache_write = 2210 }` |
 
 ## `gh/<n>.toml`
 
@@ -90,4 +95,17 @@ workflow = "groom"
 [reference]
 path = ["groom:red", "approve-plan:approved", "implement:passed", "review:clean", "risk:low", "describe:described", "open-pr:opened"]
 labels = []
+
+[[spent]]
+step = "groom"
+model = "claude-fake-5"
+minutes = 1
+
+[spent.tokens]
+input = 101
+output = 11
+cache_read = 1001
+cache_write = 51
 ```
+
+The file goes on with one `[[spent]]` entry for each of the other model steps.

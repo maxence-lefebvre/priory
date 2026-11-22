@@ -23613,6 +23613,370 @@ fn bench_capture_refuses_a_task_with_no_irreversible_step_or_no_start_commit() {
     assert!(!into.exists(), "a refused capture wrote {}", into.display());
 }
 
+/// A workflow whose human step leads to an irreversible code step, which a replay must never run.
+const REPLAYED: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "approve", failed = "stop" }
+
+[[steps]]
+id = "approve"
+decides = "human"
+effect = "none"
+options = ["approved", "rejected"]
+next = { approved = "publish", rejected = "stop" }
+
+[[steps]]
+id = "publish"
+decides = "code"
+action = "open-pr"
+effect = "irreversible"
+autonomous = "it only opens a pull request"
+next = { opened = "done", failed = "stop" }
+"#;
+
+/// A replayable case: the setup, its case folder and its start commit. The origin and this
+/// machine's clone of `owner/repo` hold a commit newer than the start. The case records one gh
+/// call, one answer and the tokens of its one model step, `input` of them input tokens. A `claude`
+/// first on `PATH` logs where it starts, its environment and what two gh calls print, then runs
+/// the fake.
+fn replayable(name: &str, input: u64) -> (Setup, PathBuf, String) {
+    let setup = Setup::with_workflow(name, REPLAYED);
+    fs::write(
+        setup.dir.join("factory/prices.toml"),
+        "[haiku]\ninput = 1.0\noutput = 1.0\ncache_read = 1.0\ncache_write = 1.0\n\n[claude-fake-5]\ninput = 1.0\noutput = 1.0\ncache_read = 1.0\ncache_write = 1.0\n",
+    )
+    .unwrap();
+    let work = setup.dir.join("work");
+    let start = setup.git(&work, &["rev-parse", "HEAD"]).trim().to_owned();
+    let clone = setup.dir.join("home/repos/owner/repo");
+    fs::create_dir_all(clone.parent().unwrap()).unwrap();
+    let origin = setup.dir.join("origin/owner/repo.git");
+    setup.git(
+        &setup.dir,
+        &[
+            "clone",
+            "-q",
+            "--no-checkout",
+            origin.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    );
+    fs::write(work.join("NEWER.md"), "newer\n").unwrap();
+    setup.git(&work, &["add", "NEWER.md"]);
+    setup.git(
+        &work,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-qm",
+            "newer",
+        ],
+    );
+    setup.git(
+        &work,
+        &["push", "-q", origin.to_str().unwrap(), "HEAD:main"],
+    );
+    setup.git(&clone, &["fetch", "-q", "origin"]);
+
+    let case = setup.dir.join("case");
+    let files = [
+        (
+            "case.toml",
+            format!(
+                r#"workflow = "implement"
+key = "github:owner/repo#42"
+repo = "owner/repo"
+start = "{start}"
+ends_at = "publish"
+partial = false
+gaps = []
+
+[request]
+type = "factory.task.requested"
+subject = "github:owner/repo#42"
+
+[request.data]
+key = "github:owner/repo#42"
+source = "case"
+trigger = "agent-label"
+workflow = "implement"
+
+[reference]
+path = ["implement:passed", "approve:approved", "publish:opened"]
+labels = []
+
+[[spent]]
+step = "implement"
+model = "claude-fake-5"
+minutes = 1
+tokens = {{ input = {input}, output = 0, cache_read = 0, cache_write = 0 }}
+"#
+            ),
+        ),
+        (
+            "gh/001.toml",
+            "run = 1\nstep = \"implement\"\nargs = [\"issue\", \"view\", \"42\", \"--json\", \"title\"]\noutput = '{\"title\":\"Add a widget\"}'\n".to_owned(),
+        ),
+        (
+            "answers.toml",
+            "[[answers]]\nstep = \"approve\"\nanswer = \"approved\"\n".to_owned(),
+        ),
+    ];
+    for (path, text) in files {
+        let file = case.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, text).unwrap();
+    }
+
+    let fake = setup.dir.join("fake");
+    let logs = fake.join("replay");
+    fs::create_dir_all(&logs).unwrap();
+    let wrapper = format!(
+        "#!/bin/sh\nlog='{logs}'\n{{ git rev-parse HEAD; pwd; }} >> \"$log/where\"\nenv | cut -d= -f1 | sort > \"$log/env\"\n{{ gh issue view 42 --json title; echo \" exit $?\"; gh pr list; echo \" exit $?\"; }} > \"$log/gh\" 2>&1\nFAKE_DIR='{fake}' exec '{claude}' \"$@\"\n",
+        logs = logs.display(),
+        fake = fake.display(),
+        claude = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fake/claude")
+            .display(),
+    );
+    let bin = setup.dir.join("replay-bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(bin.join("claude"), wrapper).unwrap();
+    fs::set_permissions(bin.join("claude"), fs::Permissions::from_mode(0o755)).unwrap();
+    (setup, case, start)
+}
+
+impl Setup {
+    /// Runs `priory bench replay` on the factory and `case` with `args`, as a person with a GitHub
+    /// token would, and waits up to two minutes for it.
+    fn replay(&self, case: &Path, args: &[&str]) -> Exit {
+        // Not the shared fakes: a fake tmux or git finds the real one by dropping the first entry
+        // of `PATH`, which the replay's own `bin` takes.
+        let path = std::env::join_paths(
+            std::iter::once(self.dir.join("replay-bin"))
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let factory = self.dir.join("factory");
+        let mut child = self
+            .command(env!("CARGO_BIN_EXE_priory"))
+            .args([
+                "bench",
+                "replay",
+                factory.to_str().unwrap(),
+                case.to_str().unwrap(),
+            ])
+            .args(args)
+            .env("PATH", path)
+            .env("TMPDIR", self.tmux.path())
+            .env("GH_TOKEN", "a-person's-token")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() > deadline {
+                let scratch = fs::read_dir(self.tmux.path())
+                    .unwrap()
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .find(|path| path.to_string_lossy().contains("priory-replay-"));
+                let log = scratch
+                    .and_then(|scratch| fs::read_to_string(scratch.join("daemon.log")).ok())
+                    .unwrap_or_default();
+                let _ = child.kill();
+                panic!(
+                    "the replay ran past two minutes: {:?}\n--- its daemon's log\n{log}",
+                    child.wait_with_output()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        child.wait_with_output().unwrap()
+    }
+
+    /// What the replay's `claude` logged in `file`, one line each.
+    fn replay_log(&self, file: &str) -> Vec<String> {
+        fs::read_to_string(self.dir.join("fake/replay").join(file))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+/// The scratch folder a replay printed.
+fn scratch_of(stdout: &str) -> PathBuf {
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("scratch: "))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("no scratch line in {stdout}"))
+}
+
+#[test]
+fn bench_replay_plays_a_case_from_its_start_commit_to_its_irreversible_step_and_never_runs_it() {
+    let (setup, case, start) = replayable("replay-reached", 1);
+    setup.calls(&[result("passed")]);
+
+    let output = setup.replay(&case, &["--budget", "1"]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines[0],
+        "estimate: $0.0000 of a $1.0000 budget, plus at most $0.0000 if it ends inside a turn of 30m"
+    );
+    assert_eq!(lines[2], "answer: approve approved");
+    assert_eq!(lines[3], "ending: reached publish");
+    // The fake's first turn: 101 input, 11 output, 1001 cache read and 50+1 cache write tokens.
+    assert!(
+        lines[4].starts_with("spent: $0.0012 of $1.0000 in "),
+        "{stdout}"
+    );
+    assert_eq!(lines[5..], ["gh calls not recorded: 1", "  gh pr list"]);
+    let where_ = setup.replay_log("where");
+    let scratch = scratch_of(&stdout);
+    assert_eq!(
+        where_[0], start,
+        "the run did not start from the case's start commit"
+    );
+    assert!(
+        Path::new(&where_[1]).starts_with(&scratch),
+        "the run worked in {}, outside the scratch folder {}",
+        where_[1],
+        scratch.display()
+    );
+    assert!(!scratch.exists(), "the replay left {}", scratch.display());
+    assert_eq!(
+        setup.replay_log("gh"),
+        [
+            "{\"title\":\"Add a widget\"} exit 0",
+            "gh: not recorded in this case: pr list",
+            " exit 1"
+        ]
+    );
+    let env = setup.replay_log("env");
+    for dropped in ["GH_TOKEN", "FAKE_DIR", "PRIORY_FACTORY"] {
+        assert!(
+            !env.iter().any(|name| name == dropped),
+            "{dropped} reached the run: {env:?}"
+        );
+    }
+    assert!(
+        !setup.dir.join("home/worktrees").exists(),
+        "the replay worked in this machine's own worktrees"
+    );
+}
+
+#[test]
+fn bench_replay_cancels_the_task_once_a_turn_spends_past_the_budget() {
+    let (setup, case, _) = replayable("replay-over", 1);
+    setup.calls(&[result("passed")]);
+
+    let output = setup.replay(&case, &["--budget", "0.0005"]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines[2..4],
+        ["Incomplete", "ending: over budget"],
+        "{stdout}"
+    );
+    assert!(
+        lines[4].starts_with("spent: $0.0012 of $0.0005 in "),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("answer:"),
+        "the replay went on past its budget: {stdout}"
+    );
+    assert!(!scratch_of(&stdout).exists());
+}
+
+#[test]
+fn bench_replay_ends_incomplete_on_a_turn_whose_tokens_it_cannot_read() {
+    let (setup, case, _) = replayable("replay-unknown", 1);
+    setup.calls(&[result("passed")]);
+    fs::write(setup.dir.join("fake/no-transcript"), "").unwrap();
+
+    let output = setup.replay(&case, &["--budget", "1"]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines[2..4],
+        [
+            "Incomplete",
+            "ending: cost unknown: step implement ended with no tokens"
+        ],
+        "{stdout}"
+    );
+    assert!(!scratch_of(&stdout).exists());
+}
+
+#[test]
+fn bench_replay_ends_a_turn_past_its_turn_timeout() {
+    let (setup, case, _) = replayable("replay-timeout", 1);
+    setup.calls(&[result("passed")]);
+    setup.hold("hold-call");
+
+    let output = setup.replay(&case, &["--budget", "1", "--turn-timeout", "3s"]);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    assert!(stdout.contains("\nending: timed out\n"), "{stdout}");
+    assert!(stdout.starts_with("estimate: $0.0000 of a $1.0000 budget, plus at most $0.0000 if it ends inside a turn of 3s\n"), "{stdout}");
+    assert!(!scratch_of(&stdout).exists());
+}
+
+#[test]
+fn bench_replay_refuses_an_estimate_over_its_budget_or_a_model_with_no_price() {
+    let (setup, case, _) = replayable("replay-refused", 2_000_000);
+
+    let over = setup.replay(&case, &["--budget", "1"]);
+    fs::write(setup.dir.join("factory/prices.toml"), "").unwrap();
+    let unpriced = setup.replay(&case, &["--budget", "1"]);
+    let unbudgeted = setup.replay(&case, &[]);
+
+    assert!(!over.status.success(), "{over:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&over.stdout),
+        "estimate: $2.0000 of a $1.0000 budget, plus at most $60.0000 if it ends inside a turn of 30m\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&over.stderr),
+        "priory bench replay: the estimate, $2.0000, is over the $1.0000 budget: give --budget 2.00 or more\n"
+    );
+    assert!(!unpriced.status.success(), "{unpriced:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&unpriced.stderr),
+        "priory bench replay: prices.toml has no price for haiku, the model of step implement: a cap in dollars needs every price\n"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&unbudgeted.stderr),
+        "priory bench replay: give --budget USD, the most the replay may spend\n"
+    );
+    assert!(
+        fs::read_dir(setup.tmux.path()).unwrap().next().is_none(),
+        "a refused replay made a scratch folder"
+    );
+}
+
 fn remember(name: &str, text: &str) -> serde_json::Value {
     json!({ "name": "remember", "arguments": {
         "name": name, "description": format!("What {name} says."), "text": text,

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 86;
+const VERSION: i64 = 87;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1565,6 +1565,15 @@ CREATE TABLE IF NOT EXISTS memory_candidates (
 "
 );
 
+// A replay's scratch state: its daemon ends a task before an irreversible step, never running it.
+const SCHEMA_87: &str = "
+CREATE TABLE IF NOT EXISTS replay (
+  id      INTEGER PRIMARY KEY CHECK (id = 1),
+  started TEXT NOT NULL
+);
+PRAGMA user_version = 87;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1577,7 +1586,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
-    SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86,
+    SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1589,6 +1598,20 @@ const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
 
 /// To the millisecond, so a wait's catch-up never takes an event of the prompt's second as later.
 pub(crate) const CONFIRMED: &str = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+
+/// Marks the state as a replay's, whose daemon never runs an irreversible step.
+pub fn mark_replay(db: &Connection) -> rusqlite::Result<()> {
+    db.execute(
+        &format!("INSERT OR IGNORE INTO replay (id, started) VALUES (1, {NOW})"),
+        [],
+    )
+    .map(drop)
+}
+
+/// Whether the state is a replay's.
+pub(crate) fn replaying(db: &Connection) -> rusqlite::Result<bool> {
+    db.query_row("SELECT EXISTS (SELECT 1 FROM replay)", [], |row| row.get(0))
+}
 
 /// Stores `base` as the commit the task started from, unless it already has one.
 pub(crate) fn set_base(db: &Connection, task: i64, base: Option<&str>) -> rusqlite::Result<()> {
@@ -1624,9 +1647,13 @@ pub(crate) struct Task {
 
 /// Opens the state file `PRIORY_DB`, creating its schema on first use.
 pub fn open() -> Result<Connection, String> {
-    let path = path()?;
+    open_at(&path()?)
+}
+
+/// Opens the state file `path`, creating its schema on first use.
+pub fn open_at(path: &std::path::Path) -> Result<Connection, String> {
     let at = |error: rusqlite::Error| format!("{}: {error}", path.display());
-    let mut db = Connection::open(&path).map_err(at)?;
+    let mut db = Connection::open(path).map_err(at)?;
     db.busy_timeout(Duration::from_secs(5)).map_err(at)?;
     // Setting the mode takes a lock that a crashed daemon's WAL recovery can hold past the timeout.
     let mode: String = db

@@ -2,7 +2,7 @@
 //! again. It reads the state and the harness transcripts of the task's runs, and never GitHub.
 
 use jiff::Timestamp;
-use priory_factory::case::{self, Answer, Case, GhAnswer, Message, Reference};
+use priory_factory::case::{self, Answer, Case, GhAnswer, Message, Reference, Spent, Tokens};
 use priory_factory::factory::{Effect, Factory, Harness};
 use priory_factory::guard;
 use priory_runtime::transcript;
@@ -151,6 +151,16 @@ pub fn capture(
         }
     }
     let answers = answers(db, task, &before).map_err(error)?;
+    let spent = ended
+        .iter()
+        .filter(|step| step.decider == "model" && before(&step.started, &step.step))
+        .map(|step| Spent {
+            step: step.step.clone(),
+            model: step.model.clone(),
+            minutes: (step.duration_ms.max(1) as u64).div_ceil(60_000),
+            tokens: step.tokens,
+        })
+        .collect();
     let case = Case {
         workflow,
         key,
@@ -167,6 +177,7 @@ pub fn capture(
                 .collect(),
             labels: labels(db, task).map_err(error)?,
         },
+        spent,
     };
     let files = case::files(task, &case, &gh, &answers)?;
     Ok(Captured {
@@ -193,13 +204,19 @@ struct Ended {
     outcome: String,
     effect: String,
     started: String,
+    decider: String,
+    model: Option<String>,
+    duration_ms: i64,
+    tokens: Option<Tokens>,
 }
 
 /// The steps the task finished, oldest first, from its `factory.step.ended` records.
 fn ended(db: &Connection, task: i64) -> rusqlite::Result<Vec<Ended>> {
     let mut statement = db.prepare(
         "SELECT json_extract(event, '$.data.step'), json_extract(event, '$.data.outcome'),
-           json_extract(event, '$.data.effect'), json_extract(event, '$.data.started')
+           json_extract(event, '$.data.effect'), json_extract(event, '$.data.started'),
+           json_extract(event, '$.data.decider'), json_extract(event, '$.data.model'),
+           json_extract(event, '$.data.duration_ms'), json_extract(event, '$.data.tokens')
          FROM trace WHERE type = 'factory.step.ended' AND json_extract(event, '$.data.task') = ?1
            AND json_extract(event, '$.data.step') IS NOT NULL
            AND json_extract(event, '$.data.outcome') IS NOT NULL
@@ -212,6 +229,12 @@ fn ended(db: &Connection, task: i64) -> rusqlite::Result<Vec<Ended>> {
                 outcome: row.get(1)?,
                 effect: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
                 started: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                decider: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                model: row.get(5)?,
+                duration_ms: row.get::<_, Option<i64>>(6)?.unwrap_or(0),
+                tokens: row
+                    .get::<_, Option<String>>(7)?
+                    .and_then(|tokens| serde_json::from_str(&tokens).ok()),
             })
         })?
         .collect()

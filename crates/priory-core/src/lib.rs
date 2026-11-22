@@ -27,6 +27,7 @@ pub mod progress;
 pub mod proof;
 mod push;
 pub mod relate;
+pub mod replay;
 pub mod report;
 pub mod risk;
 mod room;

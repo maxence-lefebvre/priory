@@ -2049,6 +2049,9 @@ pub(crate) fn enter_queued(db: &mut Connection, factory: &Factory) -> rusqlite::
                 let reason = format!("step {at} is not in workflow {workflow}");
                 set(&tx, task, "blocked", None, Some(&reason))?;
             }
+            Some(step) if step.effect == Effect::Irreversible && crate::state::replaying(&tx)? => {
+                enter(&tx, task, &workflow, &at, None, "", factory)?;
+            }
             Some(step) if step.decides == Decider::Human && !asked => {
                 enter(&tx, task, &workflow, &at, None, "", factory)?;
             }
@@ -2847,6 +2850,11 @@ fn step_in(
         set(tx, task, "blocked", None, Some(&reason))?;
         return finish("blocked");
     };
+    if step.effect == Effect::Irreversible && crate::state::replaying(tx)? {
+        let reason = format!("the replay ends before irreversible step {target}");
+        set(tx, task, "blocked", Some(target), Some(&reason))?;
+        return finish("blocked");
+    }
     drop_ending(tx, task)?;
     drop_nudge(tx, task)?;
     set_ending(tx, task, Some(step))?;
