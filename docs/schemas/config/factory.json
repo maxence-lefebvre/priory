@@ -141,6 +141,18 @@
       },
       "type": "object"
     },
+    "HoneycombWebhook": {
+      "additionalProperties": false,
+      "description": "Honeycomb alert webhooks, at `POST /hooks/honeycomb`.",
+      "properties": {
+        "secret_env": {
+          "default": "HONEYCOMB_WEBHOOK_SECRET",
+          "description": "The environment variable that holds the webhook recipient's Shared Secret, never the secret\nitself.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Kit": {
       "additionalProperties": false,
       "description": "A kit repository whose skills, instructions and memories every run gets, before the factory's\nown. Each runner fetches it with git's own credentials.",
@@ -508,6 +520,16 @@
           "anyOf": [
             {
               "$ref": "#/definitions/GithubWebhook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "honeycomb": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HoneycombWebhook"
             },
             {
               "type": "null"

@@ -96,7 +96,7 @@ impl SentryWebhook {
 
 /// Publishes `message` and its task requests, unless the output holds its id already: a
 /// redelivery or a replay of the same signed body.
-fn publish_new(
+pub(super) fn publish_new(
     bus: &dyn Log,
     triggers: &[(&str, &Trigger)],
     message: &Message,
@@ -202,7 +202,7 @@ fn matching<'a>(triggers: &[(&'a str, &Trigger)], data: &Value) -> Vec<&'a str> 
         .collect()
 }
 
-fn accepted(outcome: &str) -> Reply {
+pub(super) fn accepted(outcome: &str) -> Reply {
     Reply::json(202, json!({ "outcome": outcome }).to_string())
 }
 

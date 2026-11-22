@@ -2,6 +2,7 @@ use crate::log::{self, Log};
 use herdr_bus::{Bus, Message, Output, Timestamp, Uuid};
 use priory_factory::factory::{Factory, Trigger};
 mod gh;
+mod honeycomb;
 mod issues;
 mod linear;
 mod linear_webhook;
@@ -13,6 +14,7 @@ mod shortcut;
 mod slack;
 mod webhook;
 
+pub use honeycomb::HoneycombWebhook;
 pub use linear::state as linear_state;
 pub use linear_webhook::LinearWebhook;
 pub use sentry::SentryWebhook;
@@ -107,6 +109,7 @@ pub fn output() -> Output {
             linear::UPDATED,
             linear::COMMENTED,
             sentry::CREATED,
+            honeycomb::FIRED,
             slack::POSTED,
             slack::REPLIED,
             TASK_REQUESTED,
@@ -593,6 +596,9 @@ fn dispatch(bus: &dyn Log, triggers: &[(&str, &Trigger)], source: &Message) -> R
             let repo = data["repo"].as_str().unwrap_or_default();
             let key = match (number.as_str(), data["channel"].as_str()) {
                 (Some(issue), _) if source.kind == sentry::CREATED => format!("sentry:{issue}"),
+                _ if source.kind == honeycomb::FIRED => {
+                    format!("honeycomb:{}", data["trigger"].as_str().unwrap_or_default())
+                }
                 _ if source.kind == reviews::REQUESTED => {
                     review_key(repo, number, data["reviewer"].as_str().unwrap_or_default())
                 }

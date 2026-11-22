@@ -3,7 +3,7 @@
 The HTTP server's endpoints and the JSON they return. [serve.md](../daemon/serve.md) explains where
 the server runs, its token and its limits.
 
-Every endpoint takes `GET`, except the [writes](#writes), `POST /hooks/github`, `POST /hooks/linear` and `POST /hooks/sentry`, which take
+Every endpoint takes `GET`, except the [writes](#writes), `POST /hooks/github`, `POST /hooks/linear`, `POST /hooks/sentry` and `POST /hooks/honeycomb`, which take
 `POST`. Each one under `/api` needs `Authorization: Bearer <token>`; the web view's files do not.
 Each listing returns the same JSON as
 the CLI command with `--json`, with the state's `revision`, an integer, read in the same
@@ -70,6 +70,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /hooks/github` | | `202` for a signed GitHub delivery, with `[webhooks.github]`. See [below](#post-hooksgithub) |
 | `POST /hooks/linear` | | `200` for a signed Linear delivery, with `[webhooks.linear]`. See [below](#post-hookslinear) |
 | `POST /hooks/sentry` | | `202` for a signed Sentry delivery, with `[webhooks.sentry]`. See [below](#post-hookssentry) |
+| `POST /hooks/honeycomb` | | `202` for a Honeycomb delivery with the Shared Secret, with `[webhooks.honeycomb]`. See [below](#post-hookshoneycomb) |
 | any other path | | the web view, with `web = true`: see [Web view files](#web-view-files) |
 
 Times are RFC 3339 strings in UTC. A field with no value is `null`. Agent text, such as a question
@@ -299,6 +300,23 @@ publishes.
 The reply is `202` with `{"outcome": "published"}`, or `{"outcome": "dropped"}` for a delivery
 Priory does not take or already holds. A body that is not JSON, or an issue that lacks a field its
 event needs, gets `400`.
+
+## `POST /hooks/honeycomb`
+
+Served only with [`[webhooks.honeycomb]`](factory.md#webhookshoneycomb). It takes no token: the
+Shared Secret is its authentication. [honeycomb.md](../intake/honeycomb.md) explains the payload
+template and what a delivery publishes.
+
+| Header | Meaning |
+| ------ | ------- |
+| `X-Honeycomb-Webhook-Token` | The recipient's Shared Secret, as plain text. Missing or wrong: `401`, and the body is never parsed |
+| `X-Honeycomb-Webhook-Delivery-ID` | The delivery's id, the same across retries, copied into `delivery`. Optional |
+| `Content-Length` | Required, at most 1 MiB. Over it: `413` before the body is read |
+
+The reply is `202` with `{"outcome": "published"}`, or `{"outcome": "dropped"}` for an `OK` or
+test alert, one no trigger matches, or one Priory already holds. A body that is not JSON, or a
+payload that lacks a field of the template, gets `400`. When the event log cannot take the
+message, the reply is `503` with `Retry-After`, so Honeycomb retries.
 
 ## Desk
 

@@ -22,7 +22,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `telemetry` | table | no | no export | Where trace records go. See [`[telemetry]`](#telemetry) | |
 | `notify` | table | no | no desktop notification | Notifications besides Web Push. See [`[notify]`](#notify) | |
 | `serve` | table | no | nothing listens | The HTTP server over the factory's state. See [`[serve]`](#serve) | |
-| `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub), [`[webhooks.linear]`](#webhookslinear) and [`[webhooks.sentry]`](#webhookssentry) | |
+| `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub), [`[webhooks.linear]`](#webhookslinear), [`[webhooks.sentry]`](#webhookssentry) and [`[webhooks.honeycomb]`](#webhookshoneycomb) | |
 | `slack` | table | no | no Slack shortcut | The Slack message shortcut. See [`[slack.shortcut]`](#slackshortcut) | |
 | `asks` | table | no | answers are only stored | What happens to the answer of an ask from outside Priory. See [`[asks]`](#asks) | |
 | `links` | table of strings | no | the built-in `#n` link | Autolinks, each a regex and a URL template. See [`[links]`](#links) | |
@@ -185,6 +185,19 @@ deliveries at `POST /hooks/sentry`. A [`sentry` trigger](triggers.md#sentry) nee
 
 `priory serve` and `priory daemon` refuse to start while that variable is unset or empty.
 
+## `[webhooks.honeycomb]`
+
+See [honeycomb.md](../intake/honeycomb.md) for the payload template and what a delivery publishes,
+and [serve.md](serve.md#post-hookshoneycomb) for the endpoint. With this table, the server takes
+Honeycomb deliveries at `POST /hooks/honeycomb`. A [`honeycomb` trigger](triggers.md#honeycomb)
+needs it.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `secret_env` | string | no | `"HONEYCOMB_WEBHOOK_SECRET"` | The environment variable that holds the Honeycomb webhook recipient's Shared Secret. Never the secret itself | `"PRIORY_HONEYCOMB_SECRET"` |
+
+`priory serve` and `priory daemon` refuse to start while that variable is unset or empty.
+
 ## `[slack.shortcut]`
 
 See [slack.md](../intake/slack.md#message-shortcut) for what the shortcut does and how to set up
@@ -332,6 +345,9 @@ secret_env = "PRIORY_LINEAR_WEBHOOK_SECRET"    # the variable holding Linear's s
 
 [webhooks.sentry]
 secret_env = "SENTRY_CLIENT_SECRET"            # the variable holding the Sentry integration's Client Secret
+
+[webhooks.honeycomb]
+secret_env = "HONEYCOMB_WEBHOOK_SECRET"        # the variable holding the Honeycomb recipient's Shared Secret
 
 [asks]
 deliver = "bin/deliver"                        # delivers outside answers, from the factory folder

@@ -5030,7 +5030,8 @@ fn use_factory(setup: &Setup, from: &Path) {
             "[webhooks.linear]\nsecret_env = \"PRIORY_LINEAR_WEBHOOK_SECRET\"",
             "",
         )
-        .replace("SENTRY_CLIENT_SECRET", "TEST_SECRET");
+        .replace("SENTRY_CLIENT_SECRET", "TEST_SECRET")
+        .replace("HONEYCOMB_WEBHOOK_SECRET", "TEST_SECRET");
     if !text.contains("[serve]") {
         text.push_str("\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n");
     }
@@ -6151,6 +6152,201 @@ fn a_sentry_issue_without_its_id_gets_400_and_a_body_over_1_mib_gets_413() {
     assert_eq!(big, 413);
     assert!(setup.published().is_empty());
 }
+
+const HONEYCOMB_HOOKS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n\n[webhooks.honeycomb]\nsecret_env = \"TEST_SECRET\"\n";
+
+/// The body Honeycomb sends for a Trigger through the payload template in
+/// `docs/intake/honeycomb.md`, rendered for one firing in environment `production`.
+fn honeycomb_alert(status: &str, environment: &str) -> Value {
+    json!({
+        "trigger": "JwwZxfcP5kH",
+        "name": "Checkout errors",
+        "description": "More than 10 checkout errors in 15 minutes.",
+        "url": "https://ui.honeycomb.io/acme/environments/production/datasets/checkout/triggers/JwwZxfcP5kH",
+        "environment": environment,
+        "status": status,
+        "summary": "Triggered: Checkout errors",
+        "instance": "c0fd570f-e920-4022-96d2-39e7df3e0621",
+        "test": false,
+        "time": "2026-11-21T16:40:22.896871538Z",
+        "result_url": "https://ui.honeycomb.io/acme/environments/production/datasets/checkout/result/4656626d79"
+    })
+}
+
+/// POSTs `body` to `/hooks/honeycomb` as Honeycomb would, with `token` in
+/// `X-Honeycomb-Webhook-Token` when given.
+fn deliver_honeycomb(
+    address: &str,
+    delivery: &str,
+    token: Option<&str>,
+    body: &str,
+) -> (u16, String) {
+    let token = token.map_or(String::new(), |token| {
+        format!("X-Honeycomb-Webhook-Token: {token}\r\n")
+    });
+    raw(
+        address,
+        &format!(
+            "POST /hooks/honeycomb HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\n\
+             User-Agent: Honeycomb Triggers\r\nX-Honeycomb-Webhook-Delivery-ID: {delivery}\r\n\
+             {token}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+impl Setup {
+    /// A factory with `[serve]`, the Honeycomb webhook and a `honeycomb` trigger on environment
+    /// `production`.
+    fn honeycomb_hooks(name: &str) -> Self {
+        let setup = Setup::new(name, HONEYCOMB_HOOKS);
+        fs::create_dir_all(setup.dir.join("factory/triggers")).unwrap();
+        fs::write(
+            setup.dir.join("factory/triggers/honeycomb-alerts.toml"),
+            "source = \"honeycomb\"\non = \"trigger.fired\"\nfilter = { environment = \"production\" }\nrepo = \"owner/repo\"\nworkflow = \"implement\"\nkey = \"trigger.id\"\n",
+        )
+        .unwrap();
+        setup
+    }
+
+    fn send_honeycomb(&self, address: &str, body: &Value) -> (u16, String) {
+        deliver_honeycomb(address, "d-1", Some(&self.secret), &body.to_string())
+    }
+}
+
+#[test]
+fn a_honeycomb_trigger_firing_with_the_shared_secret_publishes_the_event_and_requests_a_task() {
+    let mut setup = Setup::honeycomb_hooks("honeycomb-fired");
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, reply) =
+        setup.send_honeycomb(&address, &honeycomb_alert("TRIGGERED", "production"));
+
+    assert_eq!(status, 202, "{reply}");
+    assert_eq!(reply, r#"{"outcome":"published"}"#);
+    let published = setup.published();
+    let kinds: Vec<_> = published.iter().map(|m| m.kind.as_str()).collect();
+    assert_eq!(kinds, ["honeycomb.trigger.fired", "factory.task.requested"]);
+    assert_eq!(published[0].subject.as_deref(), Some("Checkout errors"));
+    assert_eq!(
+        published[0].data,
+        json!({
+            "trigger": "JwwZxfcP5kH",
+            "name": "Checkout errors",
+            "description": "More than 10 checkout errors in 15 minutes.",
+            "url": "https://ui.honeycomb.io/acme/environments/production/datasets/checkout/triggers/JwwZxfcP5kH",
+            "environment": "production",
+            "summary": "Triggered: Checkout errors",
+            "instance": "c0fd570f-e920-4022-96d2-39e7df3e0621",
+            "result_url": "https://ui.honeycomb.io/acme/environments/production/datasets/checkout/result/4656626d79",
+            "delivery": "d-1",
+            "time": "2026-11-21T16:40:22.896871538Z",
+            "baseline": false,
+            "triggers": ["honeycomb-alerts"]
+        })
+    );
+    assert_eq!(
+        published[1].subject.as_deref(),
+        Some("honeycomb:JwwZxfcP5kH")
+    );
+}
+
+#[test]
+fn a_honeycomb_delivery_without_the_shared_secret_gets_401_before_it_is_read() {
+    let mut setup = Setup::honeycomb_hooks("honeycomb-refused");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = honeycomb_alert("TRIGGERED", "production").to_string();
+    let prefix = setup.secret[..setup.secret.len() - 1].to_owned();
+    let longer = format!("{}x", setup.secret);
+    for token in [
+        Some("not-the-secret"),
+        None,
+        Some(""),
+        Some(&prefix),
+        Some(&longer),
+    ] {
+        let (status, reply) = deliver_honeycomb(&address, "d-1", token, &body);
+
+        assert_eq!(status, 401, "{token:?}");
+        assert_eq!(
+            reply,
+            r#"{"error":"X-Honeycomb-Webhook-Token is missing or is not the Shared Secret"}"#
+        );
+    }
+    let (status, _) = deliver_honeycomb(&address, "d-1", Some("x"), "not json, secret-marker");
+    assert_eq!(status, 401);
+    assert!(setup.published().is_empty());
+    let log = fs::read_to_string(setup.dir.join("server.log")).unwrap_or_default();
+    assert!(
+        !log.contains("secret-marker") && !log.contains("Checkout errors"),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_replayed_honeycomb_delivery_publishes_nothing_even_under_a_new_delivery_id() {
+    let mut setup = Setup::honeycomb_hooks("honeycomb-replay");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let body = honeycomb_alert("TRIGGERED", "production").to_string();
+    let (status, _) = deliver_honeycomb(&address, "d-1", Some(&setup.secret), &body);
+    assert_eq!(status, 202);
+    let first = setup.published();
+
+    for delivery in ["d-1", "d-forged"] {
+        let (status, reply) = deliver_honeycomb(&address, delivery, Some(&setup.secret), &body);
+
+        assert_eq!(status, 202, "{reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    }
+    assert_eq!(setup.published(), first);
+}
+
+#[test]
+fn a_honeycomb_alert_that_is_ok_a_test_or_matches_no_trigger_gets_202_and_publishes_nothing() {
+    let mut setup = Setup::honeycomb_hooks("honeycomb-dropped");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut test = honeycomb_alert("TRIGGERED", "production");
+    test["test"] = json!(true);
+    let deliveries = [
+        honeycomb_alert("OK", "production"),
+        honeycomb_alert("TRIGGERED", "staging"),
+        test,
+    ];
+
+    for body in deliveries {
+        let (status, reply) = setup.send_honeycomb(&address, &body);
+
+        assert_eq!(status, 202, "{body}: {reply}");
+        assert_eq!(reply, r#"{"outcome":"dropped"}"#);
+    }
+    assert!(setup.published().is_empty());
+}
+
+#[test]
+fn a_honeycomb_payload_without_the_template_gets_400_and_a_body_over_1_mib_gets_413() {
+    let mut setup = Setup::honeycomb_hooks("honeycomb-invalid");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let standard = json!({ "version": "v0.1.0", "name": "Checkout errors", "status": "TRIGGERED" });
+
+    let (status, reply) = setup.send_honeycomb(&address, &standard);
+    let (big, _) = raw(
+        &address,
+        &format!(
+            "POST /hooks/honeycomb HTTP/1.1\r\nHost: {address}\r\nX-Honeycomb-Webhook-Token: x\r\n\
+             Content-Length: {}\r\n\r\n",
+            1024 * 1024 + 1
+        ),
+    );
+
+    assert_eq!(status, 400);
+    assert_eq!(
+        reply,
+        r#"{"error":"the payload lacks `trigger`: give the webhook the payload template in docs/intake/honeycomb.md"}"#
+    );
+    assert_eq!(big, 413);
+    assert!(setup.published().is_empty());
+}
+
 #[test]
 fn the_unsubscribe_endpoint_ends_a_subscription_as_priory_unsubscribe_does() {
     let mut setup = Setup::new("web-unsubscribe", SERVE);
