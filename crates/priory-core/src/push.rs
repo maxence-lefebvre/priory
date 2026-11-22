@@ -242,8 +242,10 @@ enum Outcome {
     Sent,
     /// The push service dropped the subscription (404 or 410).
     Gone,
-    /// It may pass later: `curl` failed, or the service answered 429 or 5xx.
+    /// It may pass later: the service answered 429 or 5xx, so it did not take the notification.
     Again(String),
+    /// It may pass later, but `curl` failed, so the service may have taken it.
+    Lost(String),
     /// It never will, such as a 400 or a 413.
     Refused(String),
 }
@@ -260,9 +262,9 @@ type Post<'a> = dyn Fn(&str, &Path, &Path) -> std::io::Result<Child> + 'a;
 
 /// Sends the queued notifications, one row at a time, as the OTLP exporter sends spans. A try that
 /// may pass later is retried with backoff, up to `TRIES` tries, while later rows go out. A
-/// subscription the push service calls gone (404 or 410) is removed. A row leaves the queue once
-/// every subscription got it or gave up, so a daemon stopped before then sends it again on its next
-/// start, and the service worker drops the copy by its `id`.
+/// subscription the push service calls gone (404 or 410) is removed. Each try is recorded in
+/// `push_sent` before its `curl` starts, so a daemon stopped mid-send never sends that row to that
+/// subscription again; a row leaves the queue once every subscription got it or gave up.
 pub(crate) fn tick(db: &Connection, home: &Path, sending: &mut Sending) -> rusqlite::Result<()> {
     send(db, home, sending, Instant::now(), &runtime::post_push)
 }
@@ -292,12 +294,19 @@ fn send(
                 let stderr = read(request.child.stderr.as_mut().map(|pipe| pipe as _));
                 outcome(status, &code, &stderr)
             }
-            Err(error) => Outcome::Again(error.to_string()),
+            Err(error) => Outcome::Lost(error.to_string()),
         };
         for file in &request.files {
             let _ = fs::remove_file(file);
         }
         let origin = host(&request.endpoint).unwrap_or_default();
+        if let Outcome::Again(_) = outcome {
+            // The service did not take it, so a restarted daemon may send it there again.
+            db.execute(
+                "DELETE FROM push_sent WHERE row = ?1 AND endpoint = ?2",
+                params![request.row, request.endpoint],
+            )?;
+        }
         match outcome {
             Outcome::Sent => {}
             Outcome::Gone => {
@@ -310,7 +319,7 @@ fn send(
             Outcome::Refused(why) => {
                 eprintln!("priory daemon: {origin} refused a notification: {why}");
             }
-            Outcome::Again(why) if request.tries < TRIES => {
+            Outcome::Again(why) | Outcome::Lost(why) if request.tries < TRIES => {
                 let wait = backoff(request.tries);
                 eprintln!(
                     "priory daemon: sending a notification to {origin} failed ({why}); \
@@ -324,7 +333,7 @@ fn send(
                     due: now + wait,
                 });
             }
-            Outcome::Again(why) => {
+            Outcome::Again(why) | Outcome::Lost(why) => {
                 eprintln!(
                     "priory daemon: sending a notification to {origin} failed ({why}) \
                      {TRIES} times, so it is dropped"
@@ -354,7 +363,16 @@ fn send(
             .optional()?;
         if let Some((p256dh, auth)) = keys {
             let to = (retry.endpoint, p256dh, auth);
-            begin(home, sending, retry.row, retry.tries + 1, &notice, to, post);
+            begin(
+                db,
+                home,
+                sending,
+                retry.row,
+                retry.tries + 1,
+                &notice,
+                to,
+                post,
+            )?;
         }
     }
 
@@ -364,13 +382,16 @@ fn send(
         && let Some(row) = next(db, sending)?
     {
         if let Some(notice) = notice(db, row)? {
-            let mut statement =
-                db.prepare("SELECT endpoint, p256dh, auth FROM push_subscriptions")?;
+            // A subscription with a send recorded got it before the daemon stopped, or may have.
+            let mut statement = db.prepare(
+                "SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE endpoint NOT IN
+                   (SELECT endpoint FROM push_sent WHERE row = ?1)",
+            )?;
             let subscriptions = statement
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .query_map([row], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
                 .collect::<rusqlite::Result<Vec<(String, String, String)>>>()?;
             for to in subscriptions {
-                begin(home, sending, row, 1, &notice, to, post);
+                begin(db, home, sending, row, 1, &notice, to, post)?;
             }
         }
         finish(db, sending, vec![row])?;
@@ -395,7 +416,7 @@ fn finish(db: &Connection, sending: &Sending, mut rows: Vec<i64>) -> rusqlite::R
 /// What a finished `curl` came to, from its exit status and the HTTP code it wrote.
 fn outcome(status: std::process::ExitStatus, code: &str, stderr: &str) -> Outcome {
     if !status.success() {
-        return Outcome::Again(format!("{status}: {stderr}"));
+        return Outcome::Lost(format!("{status}: {stderr}"));
     }
     match code {
         _ if code.starts_with('2') => Outcome::Sent,
@@ -405,8 +426,11 @@ fn outcome(status: std::process::ExitStatus, code: &str, stderr: &str) -> Outcom
     }
 }
 
-/// Starts one try of row `row` at the subscription `to`; a failure to start is logged, not retried.
+/// Records then starts one try of row `row` at the subscription `to`; a failure to start is
+/// logged, not retried.
+#[allow(clippy::too_many_arguments)]
 fn begin(
+    db: &Connection,
     home: &Path,
     sending: &mut Sending,
     row: i64,
@@ -414,15 +438,19 @@ fn begin(
     notice: &str,
     (endpoint, p256dh, auth): (String, String, String),
     post: &Post<'_>,
-) {
+) -> rusqlite::Result<()> {
     let origin = host(&endpoint).unwrap_or_default();
     let key = match private_key(home) {
         Ok(key) => key,
         Err(error) => {
             eprintln!("priory daemon: cannot send notifications: {error}");
-            return;
+            return Ok(());
         }
     };
+    db.execute(
+        "INSERT OR IGNORE INTO push_sent (row, endpoint) VALUES (?1, ?2)",
+        params![row, endpoint],
+    )?;
     sending.files += 1;
     let files = [
         folder(home).join(format!("{row}-{}.headers", sending.files)),
@@ -441,8 +469,13 @@ fn begin(
             for file in &files {
                 let _ = fs::remove_file(file);
             }
+            db.execute(
+                "DELETE FROM push_sent WHERE row = ?1 AND endpoint = ?2",
+                params![row, endpoint],
+            )?;
         }
     }
+    Ok(())
 }
 
 /// The oldest queued row with no retry waiting on it.
@@ -810,6 +843,135 @@ mod tests {
             &service,
         );
         assert_eq!(*service.posts.borrow(), 1);
+        assert!(queued(&db).is_empty());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// A push service on 127.0.0.1 that answers each post with the next code, or holds the
+    /// connection open without an answer for `hang`, and counts the posts it read.
+    struct Endpoint {
+        url: String,
+        posts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Endpoint {
+        fn new(codes: &[&'static str]) -> Self {
+            use std::io::BufRead;
+            use std::sync::atomic::Ordering;
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/push", listener.local_addr().unwrap());
+            let posts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counted = posts.clone();
+            let mut codes: Vec<&'static str> = codes.iter().rev().copied().collect();
+            std::thread::spawn(move || {
+                let mut held = Vec::new();
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { continue };
+                    let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                    let mut length = 0;
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                            break;
+                        }
+                        if let Some((name, value)) = line.split_once(':')
+                            && name.eq_ignore_ascii_case("content-length")
+                        {
+                            length = value.trim().parse().unwrap_or(0);
+                        }
+                    }
+                    let mut body = vec![0; length];
+                    let _ = reader.read_exact(&mut body);
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    match codes.pop().unwrap_or("201") {
+                        "hang" => held.push(stream),
+                        code => {
+                            let _ = write!(
+                                stream,
+                                "HTTP/1.1 {code} Push\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                            );
+                        }
+                    }
+                }
+            });
+            Self { url, posts }
+        }
+
+        fn posts(&self) -> usize {
+            self.posts.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        /// Posts as `runtime::post_push` does, but over plain HTTP to this endpoint.
+        fn post(&self, _url: &str, headers: &Path, body: &Path) -> std::io::Result<Child> {
+            Command::new("curl")
+                .args(["--disable", "--silent", "--show-error", "--noproxy", "*"])
+                .args(["--output", "/dev/null", "--write-out", "%{http_code}"])
+                .args(["--max-time", "30", "--header"])
+                .arg(format!("@{}", headers.display()))
+                .arg("--data-binary")
+                .arg(format!("@{}", body.display()))
+                .arg(&self.url)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+        }
+
+        /// Ticks at `now` until no request is in flight.
+        fn settle(&self, db: &Connection, home: &Path, sending: &mut Sending, now: Instant) {
+            let post = |url: &str, headers: &Path, body: &Path| self.post(url, headers, body);
+            send(db, home, sending, now, &post).unwrap();
+            while !sending.requests.is_empty() {
+                std::thread::sleep(Duration::from_millis(5));
+                send(db, home, sending, now, &post).unwrap();
+            }
+        }
+    }
+
+    /// Stops the daemon: its `curl` children die with it, and its retries are forgotten.
+    fn stop(sending: Sending) {
+        for mut request in sending.requests {
+            let _ = request.child.kill();
+            let _ = request.child.wait();
+        }
+    }
+
+    #[test]
+    fn a_daemon_stopped_mid_send_does_not_send_that_notification_again() {
+        let (home, db) = setup("restart", 1);
+        let endpoint = Endpoint::new(&["hang"]);
+        let mut sending = Sending::default();
+        let post = |url: &str, headers: &Path, body: &Path| endpoint.post(url, headers, body);
+        send(&db, &home, &mut sending, Instant::now(), &post).unwrap();
+        let waited = Instant::now();
+        while endpoint.posts() == 0 {
+            assert!(
+                waited.elapsed() < Duration::from_secs(20),
+                "no post arrived"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        stop(sending);
+
+        let mut sending = Sending::default();
+        endpoint.settle(&db, &home, &mut sending, Instant::now());
+        assert_eq!(endpoint.posts(), 1);
+        assert!(queued(&db).is_empty());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_retry_that_waited_when_the_daemon_stopped_goes_out_on_its_next_start() {
+        let (home, db) = setup("restart-retry", 1);
+        let endpoint = Endpoint::new(&["503", "201"]);
+        let mut sending = Sending::default();
+        endpoint.settle(&db, &home, &mut sending, Instant::now());
+        assert_eq!((endpoint.posts(), queued(&db)), (1, vec![1]));
+        stop(sending);
+
+        let mut sending = Sending::default();
+        endpoint.settle(&db, &home, &mut sending, Instant::now());
+        assert_eq!(endpoint.posts(), 2);
         assert!(queued(&db).is_empty());
         let _ = fs::remove_dir_all(&home);
     }
