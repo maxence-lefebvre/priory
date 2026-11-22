@@ -772,14 +772,15 @@ someone closed that pull request meanwhile, a second one opens.
 
 `open-issue` opens an issue the same way; [sweep.md](sweep.md) describes it.
 
-`open-memories-pr` opens the daily pull request of accepted memories to the kit repository.
-[skills.md](skills.md#accepted-memories-move-into-the-kit) describes it. Its status is `opened`,
-`unchanged` when the kit already holds every accepted memory, or `failed`. It records the commit it
-pushed, and its stdout names the pull request. The task owns no pull request, so it waits for no
-checks at `done`. `priory check` refuses the action in a factory without `[kit]`:
+`open-memories-pr` opens the daily pull request of accepted memories to the memories repository,
+or to the kit repository without one. [skills.md](skills.md#accepted-memories-move-into-the-kit)
+describes it. Its status is `opened`, `unchanged` when that repository already holds every accepted
+memory, or `failed`. It records the commit it pushed, and its stdout names the pull request. The
+task owns no pull request, so it waits for no checks at `done`. `priory check` refuses the action
+in a factory with neither `[memories]` nor `[kit]`:
 
 ```text
-workflows/memories.toml:3: step `open`: an `open-memories-pr` action writes to the kit repository, so factory.toml needs a `[kit]`
+workflows/memories.toml:3: step `open`: an `open-memories-pr` action writes to the memories repository or the kit, so factory.toml needs a `[memories]` or a `[kit]`
 ```
 
 ### The `run` action

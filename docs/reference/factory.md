@@ -104,9 +104,28 @@ See [skills.md](../daemon/skills.md#a-kit-repository) for when each runner fetch
 
 A missing folder or file gives nothing. Each path is relative and stays inside the repository.
 
-An `open-memories-pr` code step writes accepted memories to the `memories` folder, on a branch based
-on `ref`, and opens a pull request onto it (see
+Without `[memories]`, an `open-memories-pr` code step writes accepted memories to the `memories`
+folder, on a branch based on `ref`, and opens a pull request onto it (see
 [skills.md](../daemon/skills.md#accepted-memories-move-into-the-kit)).
+
+## `[memories]`
+
+A memories repository whose memories every run gets, after the kit's and before the factory's own.
+It keeps memories apart from the kit's skills, so their frequent commits stay out of the skills'
+history. See [skills.md](../daemon/skills.md#a-memories-repository).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `repo` | string | yes | | The repository, as `git fetch` takes it: a URL or a path. A relative path starts at the factory folder | `"git@github.com:owner/scriptorium.git"` |
+| `ref` | string | no | `"HEAD"`: the default branch | The branch, tag or commit to fetch | `"main"` |
+| `path` | path | no | `"memories"` | The memories folder inside the repository | `"facts"` |
+| `every` | duration | no | `"5m"` | How often each runner fetches the ref again | `"10m"` |
+
+A missing folder gives nothing. The path is relative and stays inside the repository. The kit's own
+`memories` folder still counts.
+
+With `[memories]`, an `open-memories-pr` code step writes accepted memories to `path` in this
+repository, on a branch based on `ref`, and opens a pull request onto it, in place of the kit.
 
 ## `[search]`
 
@@ -472,6 +491,9 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `[kit]` `<key>` is empty `` | `[kit] repo` or `ref` is blank |
 | `` `[kit]` `<key>` is `<value>`: it cannot start with `-` `` | `repo` or `ref` starts with `-`, which git would read as an option |
 | `` `[kit]` `<key>` is `<path>`: a kit path is relative and stays inside the repository `` | `skills`, `instructions` or `memories` is empty, absolute, or holds `.` or `..` |
+| `` `[memories]` `<key>` is empty `` | `[memories] repo` or `ref` is blank |
+| `` `[memories]` `<key>` is `<value>`: it cannot start with `-` `` | `repo` or `ref` starts with `-`, which git would read as an option |
+| `` `[memories]` `path` is `<path>`: a memories path is relative and stays inside the repository `` | `path` is empty, absolute, or holds `.` or `..` |
 | `` the sweeper agent `<name>` does not exist `` | `[sweep] agent` names no folder under `agents/` |
 | `` `[asks] deliver`: <path> is not a file in the factory folder `` | `deliver` names no file under the factory folder |
 | `` `[asks] deliver`: <path> is not executable: chmod +x it `` | The `deliver` file has no execute bit |

@@ -93,9 +93,9 @@ fn main() -> ExitCode {
         Some("serve") => serve_http(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("runs") => match (args.next(), args.next()) {
             (None, _) => list(
-                "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend\tkit\tcommit",
+                "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend\tkit\tcommit\tmemories",
                 "SELECT id, task, step, tmux, coalesce(thread, session), started, ended, ended_as, kit_hash,
-                   kit_commit
+                   kit_commit, memories_commit
                  FROM runs ORDER BY id",
             ),
             (Some(flag), None) if flag == "--json" => runs_json(),

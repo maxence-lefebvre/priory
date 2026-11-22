@@ -252,6 +252,10 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         secrets: screen::secrets(&factory.secret_envs()),
         snapshots: AtomicUsize::new(0),
         kit: factory.settings.as_ref().and_then(|s| s.value.kit.clone()),
+        memories_repo: factory
+            .settings
+            .as_ref()
+            .and_then(|s| s.value.memories.clone()),
         memories: crate::memories::Held::of(factory).factory,
     });
     let hooks: &'static [&'static str] = [
@@ -408,6 +412,8 @@ struct Served {
     snapshots: AtomicUsize,
     /// The factory's `[kit]`, for the memories a candidate on the desk replaces.
     kit: Option<priory_factory::factory::Kit>,
+    /// The factory's `[memories]`, for the same.
+    memories_repo: Option<priory_factory::factory::MemoriesRepo>,
     /// The factory's own memories, each name's text.
     memories: BTreeMap<String, String>,
 }
@@ -490,6 +496,7 @@ fn route(
                 let mut desk = listing::desk(db, home, false, &person, now)?;
                 let held = crate::memories::Held {
                     kit: served.kit.as_ref(),
+                    memories: served.memories_repo.as_ref(),
                     factory: served.memories.clone(),
                 };
                 let item = desk["items"].as_array_mut().into_iter().flatten();

@@ -249,6 +249,13 @@ Tests:
    Code runs get it, through the hook's `additionalContext` on the file tools. The daemon records
    each file a run got in its state file, and the hook counts every match as new when no daemon
    answers.
+7. A memories repository, apart from the kit. A person may keep skills in one repository and
+   memories in another, so the frequent commits of accepted memories stay out of the skills'
+   history and the two can be shared differently. `[memories]` names it, with `repo`, `ref`, `path`
+   and `every`. Each runner fetches it as it fetches the kit, a run gets its memories after the
+   kit's and before the factory's, and each run records its `memories_commit`. The daily pull
+   request goes to it in place of the kit. This slice is built:
+   [skills.md](../daemon/skills.md#a-memories-repository) describes it.
 
 ## Open questions
 

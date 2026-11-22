@@ -122,6 +122,7 @@ Answer in one short paragraph.
 | `` a codex agent cannot take `permissions.allow`: Codex has no per-tool rules, so its sandbox and approvals follow `defaultMode` alone `` | A Codex agent with `allow`. The same for `deny` |
 | `` a codex agent cannot take `compactAt`: Priory reads no Codex tokens, so it never knows the context size `` | A Codex agent with `compactAt` |
 | `` a codex agent cannot take `idleCompactAt`: Priory reads no Codex tokens, so it never knows the context size `` | A Codex agent with `idleCompactAt` |
+| `` a codex agent takes its own prompt on its command line, as `developer_instructions`: it is <n> bytes, over the limit of 8192 `` | A Codex agent's prompt and the writing guide pass 8192 bytes. With `instructions.md`, memories or skills, the message names each part it counts and says `together they are` (see [skills.md](../daemon/skills.md#a-codex-run)) |
 | `` `idleCompactAt` needs `session = "shared"`: only a shared session is resumed across tasks `` | `idleCompactAt` on a `per-task` agent. The same for `onChange = "fresh"` |
 | `invalid value: integer `0`, expected a nonzero u64` | `compactAt = 0` or `idleCompactAt = 0`. A negative or non-integer value gets serde's matching message |
 
