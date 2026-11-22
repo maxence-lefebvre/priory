@@ -68,7 +68,7 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [signals.md](signals.md): the hook signals a run sends, the nudge after a silent turn, and the
   nudge's evaluation.
 - [skills.md](skills.md): how the factory's skills, `instructions.md` and memories reach every
-  run, and the hash each run records.
+  run, the `[kit]` repository each runner fetches, and the hash and commit each run records.
 - [writing.md](writing.md): the factory's writing guide, which every agent's system prompt carries,
   and its evaluation.
 - [guard.md](guard.md): the tool guard, which denies irreversible tool calls no person approved.
@@ -84,6 +84,8 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [reports.md](reports.md): reports of sections that a workflow writes, and the picks a person
   makes on them.
 - [trace.md](trace.md): trace records, token counts, `priory report`, `priory costs`, the attention report, outcome labels, `priory grades`, `priory report risk` and the OpenTelemetry export.
+- [score.md](score.md): `priory score`, which grades a task's finished runs with the factory's
+  scorers.
 - [otel-recipes.md](otel-recipes.md): how to send the export to a local ClickStack, Honeycomb or Grafana Cloud.
 - [batches.md](batches.md): batches, `priory batch add`, `priory batch show` and `priory batch edit`, split issues, the plan a
   planning task sends, the go and the `merged` hold condition.

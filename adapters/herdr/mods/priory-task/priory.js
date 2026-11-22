@@ -47,6 +47,8 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     attention: () => read("report", "attention"),
     // Each workflow's steps and edges, with the irreversible steps and the paths to one with no human decision.
     flows: () => read("flows", ...inFactory),
+    // The views as text, since the Priory bar hashes exactly what `priory views --json` prints.
+    views: () => call(["views", ...inFactory, "--json"]),
     // priory wait gives up after 25 s with the same revision; Herdr's exec would stop it at 30 s.
     wait: async (/** @type {number} */ since) => Number(await call(["wait", "--since", String(since)], 60_000)),
     // `run` confirms an answer that runs the ask's command, as the person's second press does.
@@ -204,6 +206,19 @@ export function sentNote(ask) {
   if (last.outcome === "refused") return { text: `${runner} refused ${what}: ${last.why}`, refused: true };
   if (last.outcome) return null;
   return { text: last.verb === "dismiss" ? `Dismiss sent to ${runner}` : `Sent to ${runner}: ${last.text}`, refused: false };
+}
+
+const SUBMITTED = { answered: "answered", dismissed: "withdrawn", refused: "refused" };
+
+/** Each answer and dismiss sent to another runner's ask as an answer history row, oldest first. @param {any} ask */
+export function submitted(ask) {
+  const runner = runnerOf(ask);
+  if (!runner) return [];
+  return ask.submissions.map((/** @type {any} */ sent) => {
+    const outcome = sent.outcome === "refused" ? `${runner} refused it: ${sent.why}` : sent.outcome ? `${runner} applied it` : "Not applied yet";
+    const what = sent.verb === "dismiss" ? "the dismiss" : sent.text;
+    return { tile: SUBMITTED[sent.outcome] ?? "queued", text: `Sent ${what} to ${runner} for revision ${sent.revision}. ${outcome}`, at: sent.sent };
+  });
 }
 
 /** Who answered, as the views say it: a person, or `agent:<lead>`. Null when unrecorded. @param {string | null | undefined} by */

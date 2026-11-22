@@ -129,6 +129,7 @@ reply carries `Cache-Control: no-store`.
 | `redacted` | How many secrets the server replaced |
 | `hash` | 16 hex digits, a hash of the fields above after redaction. A hidden value never changes it |
 | `scrollback` | How many rows of scrollback tmux keeps for the pane. The hash leaves it out |
+| `keyboard` | `true` under `[serve] terminal = "type"`, when a token holder may take the run's [keyboard](#keyboard); absent otherwise. The hash leaves it out |
 
 `priory screen (TASK | --run RUN) [--json]` prints the same screen, with no scrollback, as rows of
 text or, with `--json`, as this object. Its rows keep their colours on a terminal and drop them
@@ -366,6 +367,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `id` | integer or string | The ask: its number, or the id an outside ask was given |
 | `task`, `key`, `step`, `lane`, `band`, `repo` | | The task, its key, the ask's step, and the task's lane, band and repository. An outside ask has no task, so its `lane`, `band` and `repo` are null, and its `key` is the one it sent |
 | `risk` | array of strings | What answering risks, empty for none: `irreversible` when the answer lets an irreversible step run before a person decides again, the rule `priory check --explain` uses, or when it is an agent's or a step's ask whose answer runs a [command](../daemon/tools.md#commands-an-answer-runs); then the task's [merge risk](../daemon/tools.md#merge-risk) verdict, `low`, `medium` or `high`; then the task's grooming grade, `red`, `yellow` or `green`. An outside ask has none. The daemon records its factory's irreversible approvals when it starts |
+| `risk_estimate` | object or null | Null when the trace cannot be read. Only on a step's ask whose answer lets an irreversible step run: that step's own row in [`priory report risk`](../daemon/trace.md#risk), over its default window. `workflow`, `step`, `trials`, `shown` (false under 20 trials), `judged_wrong` and `landed_wrong` (each `k`, `p05`, `median` and `p95`), and `line`, the History line the ask shows, such as `History: 17 of 53 tasks through this step were judged wrong within 30 days, 3 after the merge. 95 % posterior upper bounds: 43.4 % and 13.7 %.` Under 20 trials, `line` ends `Too few to estimate.` It changes no value of `risk`. `/api/desk` items of kind `ask` carry it too |
 | `merge_risk` | object or null | The task's latest [merge risk](../daemon/tools.md#merge-risk): `verdict`, then the lines `ask`, `blast_radius`, `verification`, `rollback` and `detection`. Null before a risk step ends |
 | `run` | integer or null | The run that asked |
 | `state` | string | `open`, `answered` or `withdrawn` |
@@ -682,12 +684,12 @@ The server reads the links when it starts. `priory links [DIR]` without `--json`
 
 The same object as `priory check --explain --json` (see
 [workflows.md](workflows.md#irreversible-steps-and-their-gates)), with `workflows` added for the
-web view's Flows panel. The server reads it when it starts. `priory flows [DIR] --json` prints the
-same object, for the Herdr adapter's Flows panel.
+web view's Flows panel. The server reads the factory when it starts, and the state on each request.
+`priory flows [DIR] --json` prints the same object, for the Herdr adapter's Flows panel.
 
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
-| `irreversible` | array of objects | Each irreversible step: `workflow`, `step`, `approved_by` (the human steps that approve it) and `autonomous` (its reason, or `null`) |
+| `irreversible` | array of objects | Each irreversible step: `workflow`, `step`, `approved_by` (the human steps that approve it), `autonomous` (its reason, or `null`) and `risk_estimate`: the ask's [`risk_estimate`](#asks) with `caught`, the tasks a person stopped at the step's gate, or `null` when the state cannot be read |
 | `paths` | array of objects | Each path from `start` to an irreversible step that follows no `human` edge: `workflow` and `path`, an array of step ids |
 | `tools` | array of objects | Each guarded call an agent can make with no human decision: `agent`, `guard`, `workflow` and `why` |
 | `proofs` | array of objects | Each outcome the daemon verifies before it accepts it: `workflow`, `step`, `outcome` and `proof` |
@@ -711,7 +713,7 @@ Each of a step's `edges`, in outcome order, has `outcome`, `to` (a step id, `don
 
 ```json
 {
-  "irreversible": [{ "workflow": "implement", "step": "open-pr", "approved_by": ["approve-pr"], "autonomous": null }],
+  "irreversible": [{ "workflow": "implement", "step": "open-pr", "approved_by": ["approve-pr"], "autonomous": null, "risk_estimate": null }],
   "paths": [],
   "tools": [],
   "proofs": [],

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 83;
+const VERSION: i64 = 84;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1492,8 +1492,20 @@ CREATE TABLE IF NOT EXISTS keyboard_keys (
 "
 );
 
-// The subscriptions a close of their resource ended, which a later event of it open again restores.
+// The kit commit this runner gives its runs, why its last fetch failed, and the commit each run got.
 const SCHEMA_83: &str = "
+CREATE TABLE kit (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  kit_commit TEXT,
+  failing_since TEXT,
+  error TEXT
+);
+ALTER TABLE runs ADD COLUMN kit_commit TEXT;
+PRAGMA user_version = 83;
+";
+
+// The subscriptions a close of their resource ended, which a later event of it open again restores.
+const SCHEMA_84: &str = "
 CREATE TABLE IF NOT EXISTS closed_subscriptions (
   task     INTEGER NOT NULL REFERENCES tasks (id),
   resource TEXT NOT NULL,
@@ -1501,7 +1513,7 @@ CREATE TABLE IF NOT EXISTS closed_subscriptions (
   chosen   INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (task, resource)
 );
-PRAGMA user_version = 83;
+PRAGMA user_version = 84;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -1516,7 +1528,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
-    SCHEMA_82, SCHEMA_83,
+    SCHEMA_82, SCHEMA_83, SCHEMA_84,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -2985,6 +2997,8 @@ pub(crate) struct NewRun<'a> {
     pub lanes: &'a Lanes,
     /// A hash of the factory's skills and instructions the run gets, if any.
     pub kit_hash: Option<&'a str>,
+    /// The kit commit the run gets, if any.
+    pub kit_commit: Option<&'a str>,
 }
 
 /// The agent's shared session, once a run of it reached `SessionStart`, which every task resumes.
@@ -3044,8 +3058,17 @@ pub(crate) fn thread(db: &Connection, session: &str) -> rusqlite::Result<Option<
 pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
-        "INSERT INTO runs (task, step, agent, tmux, session, kit_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![run.task, run.step, run.agent, run.tmux, run.session, run.kit_hash],
+        "INSERT INTO runs (task, step, agent, tmux, session, kit_hash, kit_commit)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            run.task,
+            run.step,
+            run.agent,
+            run.tmux,
+            run.session,
+            run.kit_hash,
+            run.kit_commit
+        ],
     )?;
     let id = tx.last_insert_rowid();
     tx.execute(

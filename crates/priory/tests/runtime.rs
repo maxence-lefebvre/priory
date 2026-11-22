@@ -47,7 +47,7 @@ const OUTPUT: &str = "factory.intake";
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
 /// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, 66, which added the step a gate enters after the merge, 70, which added idle compactions and session definitions, and 71, which added cleared deliveries, ended snoozes and withdrawal times. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+const UNDO_SINCE_SEARCH: &str = "ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
@@ -549,12 +549,24 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
     let runs = setup.rows("runs");
-    let [id, task, step, tmux, session, _started, ended, end, kit] = &runs[0][..] else {
+    let [
+        id,
+        task,
+        step,
+        tmux,
+        session,
+        _started,
+        ended,
+        end,
+        kit,
+        commit,
+    ] = &runs[0][..]
+    else {
         panic!("runs: {runs:?}");
     };
     assert_eq!(
-        [id, task, step, tmux, ended, end, kit].map(String::as_str),
-        ["1", "1", "implement", "priory-1", "-", "-", "-"],
+        [id, task, step, tmux, ended, end, kit, commit].map(String::as_str),
+        ["1", "1", "implement", "priory-1", "-", "-", "-", "-"],
         "a factory without skills or instructions gives its runs none"
     );
     assert!(uuid::Uuid::parse_str(session).is_ok(), "session {session}");
@@ -3473,7 +3485,8 @@ fn an_agent_ask_sleeps_the_task_and_the_answer_wakes_it_as_its_prompt() {
             "github:owner/repo#42",
             "-",
             "-",
-            "-"
+            "-",
+            "-",
         ]]
     );
 
@@ -3755,6 +3768,7 @@ fn an_agent_ask_stores_and_lists_its_title_text_what_waits_next_action_and_comma
             "stored",
             "-",
             "github:owner/repo#42",
+            "-",
             "-",
             "-",
             "-",
@@ -4306,6 +4320,7 @@ fn an_outside_ask_takes_fleets_json_shows_on_the_desk_and_a_changed_one_is_a_new
             "cache",
             "run-7",
             "cache-worker",
+            "-",
             "-",
         ]
     };
@@ -5866,7 +5881,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          ALTER TABLE actions DROP COLUMN stdout; ALTER TABLE actions DROP COLUMN stderr;
          ALTER TABLE actions DROP COLUMN pid; ALTER TABLE actions DROP COLUMN pid_started;
          ALTER TABLE actions DROP COLUMN ended;
-         ALTER TABLE tasks DROP COLUMN progress; ALTER TABLE tasks DROP COLUMN base_sha;
+         ALTER TABLE tasks DROP COLUMN progress; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha;
          ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head;
          DROP TABLE deliveries;
          DROP TABLE reports;
@@ -10127,7 +10142,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     // The state file as version 64 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(
-        "ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+        "ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
@@ -13684,7 +13699,7 @@ fn an_agreed_pick_changes_until_the_workflow_applies_it_and_wakes_the_task_with_
         shown(&setup)["sections"][0]["rows"][0]["pick"]["chosen"],
         "Later"
     );
-    // The woken agent can get other prompts, such as a nudge, around the change's line.
+    // A nudge queued before the change can share its prompt, so the line need not come first.
     let line = format!(
         "The person changed their pick on {PICK} in your report from Take to Later: apply Later instead, then write the report again with the pick's applied filled."
     );
@@ -13692,7 +13707,7 @@ fn an_agreed_pick_changes_until_the_workflow_applies_it_and_wakes_the_task_with_
     while !setup
         .typed()
         .iter()
-        .any(|typed| typed.lines().next() == Some(line.as_str()))
+        .any(|typed| typed.lines().any(|typed| typed == line))
     {
         assert!(Instant::now() < deadline, "{:?}", setup.typed());
         std::thread::sleep(Duration::from_millis(50));
@@ -16875,12 +16890,12 @@ fn the_approve_pr_ask_shows_its_tasks_merge_risk_and_asks_filter_by_it() {
     let text = String::from_utf8(setup.priory(&["asks"]).stdout).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(
-        lines[0].split('\t').next_back(),
-        Some("merge_risk"),
+        lines[0].split('\t').rev().take(2).collect::<Vec<_>>(),
+        ["risk_estimate", "merge_risk"],
         "{text}"
     );
     assert!(
-        lines[1].ends_with("\tmedium: does what the issue asks; low: one widget; medium: a test draws the box; low: one revert; low: the widget test fails"),
+        lines[1].contains("\tmedium: does what the issue asks; low: one widget; medium: a test draws the box; low: one revert; low: the widget test fails\tHistory: 0 of 0 tasks"),
         "{text}"
     );
 }
@@ -20680,6 +20695,11 @@ fn a_runs_screen_returns_its_rows_blank_ones_kept_its_size_and_a_hash_that_follo
     );
     assert_eq!(screen["cursor"], json!(null));
     assert_eq!(screen["redacted"], 0);
+    assert_eq!(
+        screen.get("keyboard"),
+        None,
+        "only \"type\" offers the keyboard"
+    );
     let hash = screen["hash"].as_str().unwrap().to_owned();
     let (status, same) = http(
         &address,
@@ -21129,6 +21149,7 @@ fn keys_type_text_as_text_and_send_a_listed_key_as_that_key() {
 
     // `cat` echoes the line as typed, then prints it back once Enter ends it.
     assert_eq!(on_screen(&address, text, 2), 2);
+    assert_eq!(screen_once(&address, |_| true)["keyboard"], json!(true));
     server.kill().unwrap();
     server.wait().unwrap();
 }
@@ -21750,4 +21771,504 @@ fn each_runner_gives_its_runs_the_memories_of_its_own_factory_checkout() {
         b.rows("runs")[0][8],
         "the same memories give the same hash on every runner"
     );
+}
+
+/// Writes `scorers/<name>.toml` into the setup's factory.
+fn scorer(setup: &Setup, name: &str, toml: &str) {
+    let factory = setup.dir.join("factory");
+    fs::create_dir_all(factory.join("scorers")).unwrap();
+    fs::write(factory.join(format!("scorers/{name}.toml")), toml).unwrap();
+}
+
+const PASSED_SCORER: &str =
+    "description = \"Passed.\"\non = \"result\"\nkind = \"outcome\"\nexpect = [\"passed\"]\n";
+const SHORT_ASK_SCORER: &str =
+    "description = \"Short.\"\non = \"ask\"\nkind = \"ask-shape\"\nexpect = [\"short\"]\n";
+
+/// `priory score` on task 1, as rows of run, step, scorer, verdict and reason.
+fn scores(setup: &Setup, args: &[&str]) -> Vec<[String; 5]> {
+    let factory = setup.dir.join("factory");
+    let mut all = vec!["score", factory.to_str().unwrap(), "1", "--json"];
+    all.extend_from_slice(args);
+    let output = setup.priory(&all);
+    assert!(output.status.success(), "{output:?}");
+    let shown: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    shown["scores"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            ["run", "step", "scorer", "verdict", "reason"].map(|field| match &row[field] {
+                serde_json::Value::String(text) => text.clone(),
+                value => value.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn scored_records(setup: &Setup) -> Vec<serde_json::Value> {
+    setup
+        .trace()
+        .into_iter()
+        .filter(|record| record["type"] == "factory.run.scored")
+        .collect()
+}
+
+/// Task 1 runs `plan` to `ready`, then `implement` to `passed`.
+fn scored_task(name: &str) -> Setup {
+    let mut setup = Setup::with_workflow(name, STEPS);
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    setup
+}
+
+#[test]
+fn priory_score_grades_the_latest_finished_run_of_each_step_and_traces_each_score() {
+    let setup = scored_task("score");
+    scorer(&setup, "passed", PASSED_SCORER);
+    scorer(&setup, "short-ask", SHORT_ASK_SCORER);
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(
+        rows,
+        [
+            ["1", "plan", "passed", "fail", "outcome ready, not passed"],
+            [
+                "1",
+                "plan",
+                "short-ask",
+                "not applicable",
+                "the run asked nothing"
+            ],
+            ["2", "implement", "passed", "pass", "outcome passed"],
+            [
+                "2",
+                "implement",
+                "short-ask",
+                "not applicable",
+                "the run asked nothing"
+            ],
+        ]
+        .map(|row| row.map(str::to_owned))
+    );
+    let records = scored_records(&setup);
+    assert_eq!(records.len(), 4);
+    let first = &records[0]["data"];
+    assert_eq!(
+        [
+            &first["task"],
+            &first["run"],
+            &first["generation"],
+            &first["step"]
+        ],
+        [&json!("1"), &json!("1"), &json!(1), &json!("plan")]
+    );
+    assert_eq!(
+        [
+            &first["scorer"],
+            &first["kind"],
+            &first["verdict"],
+            &first["reason"]
+        ],
+        [
+            &json!("passed"),
+            &json!("outcome"),
+            &json!("fail"),
+            &json!("outcome ready, not passed")
+        ]
+    );
+
+    let again = scores(&setup, &["--scorer", "passed"]);
+
+    assert_eq!(again.len(), 2);
+    let later = scored_records(&setup);
+    assert_eq!(later.len(), 6);
+    assert_eq!(later[..4], records[..]);
+    assert_eq!(later[5]["data"]["scorer"], "passed");
+}
+
+#[test]
+fn a_run_that_asked_passes_an_ask_shape_scorer_and_fails_an_outcome_scorer() {
+    let mut setup = Setup::with_workflow("score-ask", STEPS);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+    scorer(&setup, "passed", PASSED_SCORER);
+    scorer(&setup, "short-ask", SHORT_ASK_SCORER);
+    scorer(
+        &setup,
+        "what-waits",
+        "description = \"Says what waits.\"\non = \"ask\"\nkind = \"ask-shape\"\nexpect = [\"short\", \"whatWaits\"]\n",
+    );
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(
+        rows.iter()
+            .map(|row| [row[2].as_str(), row[3].as_str(), row[4].as_str()])
+            .collect::<Vec<_>>(),
+        [
+            ["passed", "fail", "the run asked and sent no result"],
+            ["short-ask", "pass", "1 ask(s) show short"],
+            ["what-waits", "fail", "ask 1 lacks whatWaits"],
+        ]
+    );
+}
+
+#[test]
+fn priory_score_names_a_scorer_the_factory_lacks() {
+    let setup = scored_task("score-unknown");
+    scorer(&setup, "passed", PASSED_SCORER);
+    let factory = setup.dir.join("factory");
+
+    let output = setup.priory(&["score", factory.to_str().unwrap(), "1", "--scorer", "gate"]);
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "priory score: no scorer gate in scorers/\n"
+    );
+}
+
+const KIT_SKILL: &str =
+    "---\nname: kit-notes\ndescription: Takes notes the kit's way.\n---\nOne line per note.\n";
+const KIT_FACT: &str =
+    "---\nname: kit-fact\ndescription: What the kit knows.\n---\nThe kit lives in git.\n";
+
+impl Setup {
+    /// A kit repository, `kit.git`, with a skill, instructions in `claude/CLAUDE.md`, a memory and a
+    /// skill named like the factory's own, and a `[kit]` that fetches it every second. Returns the
+    /// commit.
+    fn kit_repo(&self) -> String {
+        let work = self.dir.join("kit-work");
+        for (path, content) in [
+            ("skills/kit-notes/SKILL.md", KIT_SKILL),
+            (
+                "skills/release-notes/SKILL.md",
+                "---\nname: release-notes\ndescription: The kit's own notes.\n---\nKit.\n",
+            ),
+            ("claude/CLAUDE.md", "The kit says: run the gate.\n"),
+            ("memories/kit-fact.md", KIT_FACT),
+        ] {
+            let file = work.join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, content).unwrap();
+        }
+        assert!(
+            git(&work)
+                .args(["init", "-q", "-b", "main"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let commit = self.kit_commit("kit");
+        let bare = self.dir.join("kit.git");
+        assert!(
+            git(&self.dir)
+                .args(["clone", "-q", "--bare"])
+                .arg(&work)
+                .arg(&bare)
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::write(
+            self.dir.join("factory/factory.toml"),
+            format!(
+                "name = \"demo\"\n\n[kit]\nrepo = \"{}\"\nref = \"main\"\ninstructions = \"claude/CLAUDE.md\"\nevery = \"1s\"\n",
+                bare.display()
+            ),
+        )
+        .unwrap();
+        commit
+    }
+
+    /// Commits every change in the kit's work folder with `message`, and returns the commit.
+    fn kit_commit(&self, message: &str) -> String {
+        let work = self.dir.join("kit-work");
+        for args in [
+            &["add", "-A"][..],
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                message,
+            ],
+        ] {
+            assert!(git(&work).args(args).status().unwrap().success());
+        }
+        let head = git(&work).args(["rev-parse", "HEAD"]).output().unwrap();
+        String::from_utf8(head.stdout).unwrap().trim().to_owned()
+    }
+
+    /// Commits a change to the kit's instructions and pushes it to `kit.git`; returns the commit.
+    fn kit_push(&self, instructions: &str) -> String {
+        let work = self.dir.join("kit-work");
+        fs::write(work.join("claude/CLAUDE.md"), instructions).unwrap();
+        let commit = self.kit_commit("change");
+        assert!(
+            git(&work)
+                .arg("push")
+                .arg("-q")
+                .arg(self.dir.join("kit.git"))
+                .arg("main")
+                .status()
+                .unwrap()
+                .success()
+        );
+        commit
+    }
+
+    /// Waits until the daemon gives its runs the kit commit `commit`.
+    fn until_kit(&self, commit: &str) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let current: Option<String> = rusqlite::Connection::open(self.dir.join("priory.db"))
+                .and_then(|db| db.query_row("SELECT kit_commit FROM kit", [], |row| row.get(0)))
+                .ok()
+                .flatten();
+            if current.as_deref() == Some(commit) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the kit is at {current:?}, not {commit}\ndaemon: {}",
+                fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// The kit's line on the desk, if any.
+    fn kit_banner(&self) -> Option<String> {
+        let output = self.priory(&["desk"]);
+        assert!(output.status.success());
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .find(|line| line.contains("the kit"))
+            .map(str::to_owned)
+    }
+
+    /// Polls the desk until `done` holds for the kit's line, and returns it.
+    fn until_kit_banner(&self, done: impl Fn(Option<&str>) -> bool) -> Option<String> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let banner = self.kit_banner();
+            if done(banner.as_deref()) {
+                return banner;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out on the kit's banner: {banner:?}\ndaemon: {}",
+                fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+#[test]
+fn a_run_gets_the_kits_files_before_the_factorys_and_records_the_kit_commit() {
+    let mut setup = Setup::new("kit-repo");
+    setup.kit("The factory says: write tests first.\n");
+    setup.memories();
+    let first = setup.kit_repo();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let args = setup.claude_args(0);
+    let plugin = PathBuf::from(arg(&args, "--plugin-dir").expect("--plugin-dir"));
+    assert_eq!(
+        tree(&plugin.join("skills/kit-notes")),
+        tree(&setup.dir.join(format!("home/kit/{first}/skills/kit-notes"))),
+        "the kit's skill, from the commit's checkout"
+    );
+    assert_eq!(
+        tree(&plugin.join("skills/release-notes")),
+        tree(&setup.dir.join("factory/skills/release-notes")),
+        "the factory's skill hides the kit's of the same name"
+    );
+    let memories = PathBuf::from(arg(&args, "--add-dir").expect("--add-dir"));
+    let names: Vec<String> = tree(&memories).into_iter().map(|(name, _)| name).collect();
+    assert_eq!(names, ["gate-cost.md", "kit-fact.md", "release-day.md"]);
+    let system = arg(&args, "--append-system-prompt-file").expect("--append-system-prompt-file");
+    let system = fs::read_to_string(system).unwrap();
+    assert!(
+        system.starts_with(
+            "The kit says: run the gate.\n\nThe factory says: write tests first.\n\n# Memories"
+        ),
+        "{system}"
+    );
+    assert_eq!(setup.rows("runs")[0][9], first);
+
+    let second = setup.kit_push("The kit says: run the gate twice.\n");
+    setup.until_kit(&second);
+    setup.publish(&requested(43));
+
+    let args = setup.claude_args(1);
+    let system = arg(&args, "--append-system-prompt-file").expect("--append-system-prompt-file");
+    assert!(
+        fs::read_to_string(system)
+            .unwrap()
+            .starts_with("The kit says: run the gate twice.\n"),
+        "a run that starts after the fetch gets the new commit"
+    );
+    let runs = setup.rows("runs");
+    assert_eq!([&runs[0][9], &runs[1][9]], [&first, &second]);
+    assert_ne!(
+        runs[0][8], runs[1][8],
+        "the kit's files change the run's hash"
+    );
+    assert_eq!(setup.kit_banner(), None);
+}
+
+#[test]
+fn a_failed_fetch_keeps_the_last_good_commit_and_says_so_on_the_desk() {
+    let mut setup = Setup::new("kit-offline");
+    let good = setup.kit_repo();
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[9] == good)
+    });
+    setup.crash();
+    let bare = setup.dir.join("kit.git");
+    let gone = setup.dir.join("kit-gone.git");
+    fs::rename(&bare, &gone).unwrap();
+
+    setup.start();
+
+    let banner = setup
+        .until_kit_banner(|banner| banner.is_some())
+        .unwrap_or_default();
+    assert!(
+        banner.starts_with("the kit fails to fetch since ")
+            && banner.ends_with(&format!("; runs keep commit {}", &good[..12])),
+        "{banner}"
+    );
+    setup.publish(&requested(43));
+    let args = setup.claude_args(1);
+    assert_eq!(setup.rows("runs")[1][9], good);
+    assert!(arg(&args, "--plugin-dir").is_some(), "{args:?}");
+
+    fs::rename(&gone, &bare).unwrap();
+    setup.until_kit_banner(|banner| banner.is_none());
+}
+
+#[test]
+fn a_runner_with_no_good_commit_starts_runs_without_the_kit_until_a_fetch_works() {
+    let mut setup = Setup::new("kit-none");
+    let commit = setup.kit_repo();
+    let bare = setup.dir.join("kit.git");
+    let gone = setup.dir.join("kit-gone.git");
+    fs::rename(&bare, &gone).unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let banner = setup
+        .until_kit_banner(|banner| banner.is_some())
+        .unwrap_or_default();
+    assert!(banner.ends_with("; runs start without the kit"), "{banner}");
+    let args = setup.claude_args(0);
+    assert_eq!(arg(&args, "--plugin-dir"), None, "{args:?}");
+    assert_eq!(setup.rows("runs")[0][9], "-");
+
+    fs::rename(&gone, &bare).unwrap();
+    setup.until_kit(&commit);
+    setup.publish(&requested(43));
+
+    setup.claude_args(1);
+    assert_eq!(setup.rows("runs")[1][9], commit);
+    assert_eq!(setup.kit_banner(), None);
+}
+
+#[test]
+fn each_runner_fetches_the_kit_on_its_own_and_records_the_same_commit() {
+    let mut a = runner("kit", "a", None);
+    let mut b = runner("kit", "b", Some(&a));
+    let commit = a.kit_repo();
+    fs::copy(
+        a.dir.join("factory/factory.toml"),
+        b.dir.join("factory/factory.toml"),
+    )
+    .unwrap();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let on_a = a.claude_args(0);
+    a.crash();
+
+    b.publish(&requested(2));
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let on_b = b.claude_args(0);
+
+    let (plugin_a, plugin_b) = (
+        PathBuf::from(arg(&on_a, "--plugin-dir").unwrap()),
+        PathBuf::from(arg(&on_b, "--plugin-dir").unwrap()),
+    );
+    assert!(plugin_a.starts_with(a.dir.join("home/kit")), "{plugin_a:?}");
+    assert!(plugin_b.starts_with(b.dir.join("home/kit")), "{plugin_b:?}");
+    assert!(b.dir.join(format!("home/kit/{commit}")).is_dir());
+    assert_eq!(tree(&plugin_a), tree(&plugin_b));
+    assert_eq!(
+        [&a.rows("runs")[0][9], &b.rows("runs")[0][9]],
+        [&commit, &commit]
+    );
+}
+
+#[test]
+fn a_kit_commit_that_check_would_refuse_is_refused_whole_and_the_trace_names_the_commit_a_run_got()
+{
+    let mut setup = Setup::with_workflow("kit-refused", TWO_AGENTS);
+    let good = setup.kit_repo();
+    setup.start();
+    setup.until_kit(&good);
+    let work = setup.dir.join("kit-work");
+    fs::write(
+        work.join("skills/kit-notes/SKILL.md"),
+        "---\nname: kit-notes\n---\nNo description.\n",
+    )
+    .unwrap();
+    let bad = setup.kit_push("The kit says: skip the gate.\n");
+
+    let banner = setup
+        .until_kit_banner(|banner| banner.is_some())
+        .unwrap_or_default();
+
+    assert!(
+        banner.contains(&format!(
+            "commit {} has 1 problem(s), the first in skills/kit-notes/SKILL.md:1:",
+            &bad[..12]
+        )) && banner.ends_with(&format!("; runs keep commit {}", &good[..12])),
+        "{banner}"
+    );
+    setup.calls(&[result("passed"), result("approved")]);
+    setup.publish(&requested(42));
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    let runs = setup.rows("runs");
+    assert_eq!([&runs[0][9], &runs[1][9]], [&good, &good]);
+    let traced: Vec<serde_json::Value> = String::from_utf8(setup.priory(&["trace"]).stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .filter(|event| event["type"] == "factory.step.ended")
+        .map(|event| event["data"]["kit_commit"].clone())
+        .collect();
+    assert_eq!(traced, [json!(good), json!(good)]);
 }

@@ -181,6 +181,10 @@ While the daemon cannot reach its log, the banner starts with
 `the log is unreachable since <time>: <error>; <n> messages wait to publish`, joined to the
 intake's own by `; `. See [runners.md](runners.md#a-runner-cut-off-from-the-log).
 
+While the last fetch of the factory's kit failed, the banner ends with `the kit fails to fetch since
+<time>: <error>; runs keep commit <commit>`, or `; runs start without the kit` when the runner has
+no good commit yet. See [skills.md](skills.md#a-kit-repository).
+
 The banner is `intake` in `priory desk --json` and `/api/desk`. A source that starts failing, or
 recovers, moves the state's revision, so a client that waits on `/api/events` redraws the banner at
 once. A repeated poll with the same outcome moves nothing. The stopped banner comes from time
