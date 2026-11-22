@@ -63,7 +63,7 @@ A run with no task step, such as the stall handler, is denied every guarded call
 | `mcp-write` | MCP tools named `add_issue_comment`, `send_message`, `slack_send_message`, `schedule_message`, `slack_schedule_message`, `save_comment`, `create_comment`, `save_issue`, `create_issue` or `update_issue`, on any server but `priory` |
 | `connector-sign-in` | MCP tools named `authenticate` or `complete_authentication`, on any server but `priory`. See [Connector sign-in](#connector-sign-in) |
 | `priory-person` | `priory answer`, `dismiss`, `deliver`, `resume`, `revive`, `cancel`, `release`, `hold`, `move`, `say`, `pause`, `unpause`, `snooze`, `seen`, `subscribe`, `unsubscribe`, `give`, `eval`, `bench`, `label`, `report pick`, `memories accept`, `memories drop`, `batch edit` and `score --calibrate`. `priory add`, `request`, `gate`, `batch add`, `score TASK` and the `memories` listing stay open to agents |
-| `unreadable` | A script nested more than 16 levels deep, through `bash -c`, `$(...)`, `eval`, `find -exec` and the like. The guard cannot read it, so the daemon denies it: "too deeply nested for the guard to read". Nothing grants it |
+| `unreadable` | A script nested more than 16 levels deep, through `bash -c`, `$(...)`, `eval`, `find -exec` and the like. The guard cannot read it, so the daemon denies it: "too deeply nested for the guard to read". It also covers an `env -S` string that expands a variable, such as `${VERB}`, or that `env` refuses, such as one with an unknown escape. Nothing grants it |
 
 An MCP tool's server is the part of its name before the last `__`, so a server named `my__srv`
 cannot hide a tool's name.
@@ -110,7 +110,8 @@ The guard parses the command rather than matching its text:
 3. It drops redirections, with their descriptor numbers, such as `2>/dev/null`.
 4. It drops leading `NAME=value` assignments and shell keywords, then unwraps `env`, `sudo`, `doas`,
    `nice`, `nohup`, `setsid`, `timeout`, `time`, `stdbuf`, `xargs`, `command` and `exec`, with
-   their options. It reads the script that `sh -c`, `bash -c`, `zsh -c`, `env -S` or `eval` runs,
+   their options. It reads the script that `sh -c`, `bash -c`, `zsh -c` or `eval` runs, and splits
+   an `env -S` string as GNU `env` does, its `\_` separators and quotes included,
    `$'...'` quotes with their `\xHH` and octal escapes decoded to a byte as Bash does, the commands
    of `find -exec` as well as `find` itself, the
    body of `function f { ...; }`, and a brace list such as `{gh,pr,merge,12}`.
