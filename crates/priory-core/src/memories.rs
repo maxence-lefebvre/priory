@@ -4,10 +4,12 @@
 use crate::tools::Call;
 use crate::trace::Trace;
 use herdr_bus::Message;
-use priory_factory::factory::{Factory, MEMORY_LIMIT, Memory};
+use priory_factory::factory::{self, EventLog, Factory, Kit, MEMORY_LIMIT, Memory};
 use priory_intake::intake::{self, MEMORY_ACCEPTED, MEMORY_DROPPED, MEMORY_WRITTEN};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::path::Path;
 
 /// A memory's name has lowercase letters, digits and hyphens, and starts with a letter or a digit,
 /// as `priory check` asks of `memories/<name>.md`.
@@ -292,14 +294,114 @@ pub fn list(db: &Connection, all: bool) -> rusqlite::Result<Vec<Value>> {
     .collect()
 }
 
-/// Publishes a person's accept or drop of candidate `id` on the factory's log, once this runner's
-/// copy shows it waiting. Every runner applies it as it reads the log.
-pub fn decide(
-    factory: &Factory,
-    db: &Connection,
-    accept: bool,
-    id: &str,
-) -> Result<String, String> {
+/// The memories a run gets before any candidate of its own task, as `mark` reads them.
+pub struct Held<'a> {
+    /// The factory's `[kit]`, whose commit the state file names.
+    pub kit: Option<&'a Kit>,
+    /// The factory's own memories, each name's text.
+    pub factory: BTreeMap<String, String>,
+}
+
+impl<'a> Held<'a> {
+    /// The kit settings and the memories of `factory`.
+    pub fn of(factory: &'a Factory) -> Self {
+        Held {
+            kit: factory.settings.as_ref().and_then(|s| s.value.kit.as_ref()),
+            factory: factory
+                .memories
+                .iter()
+                .map(|(name, memory)| (name.clone(), memory.value.text()))
+                .collect(),
+        }
+    }
+
+    /// Each memory's text by name: the kit's at the commit runs get now, the factory's, then the
+    /// accepted candidates in their order. And whether the kit's are in it: false when the factory
+    /// has a kit whose commit is not checked out here, as on a machine that only views.
+    fn texts(
+        &self,
+        db: &Connection,
+        home: &Path,
+    ) -> rusqlite::Result<(BTreeMap<String, String>, bool)> {
+        let mut texts = BTreeMap::new();
+        let commit: Option<String> = db
+            .query_row("SELECT kit_commit FROM kit", [], |row| row.get(0))
+            .optional()?
+            .flatten();
+        let checkout = commit
+            .map(|commit| home.join("kit").join(commit))
+            .filter(|dir| dir.is_dir());
+        let complete = self.kit.is_none() || checkout.is_some();
+        if let Some((kit, dir)) = self.kit.zip(checkout) {
+            let (files, _) = factory::load_kit(&dir, kit);
+            texts.extend(
+                files
+                    .memories
+                    .iter()
+                    .map(|(n, m)| (n.clone(), m.value.text())),
+            );
+        }
+        texts.extend(self.factory.clone());
+        for (name, memory) in layer(db, None)? {
+            match memory {
+                Some(memory) => texts.insert(name, memory.text()),
+                None => texts.remove(&name),
+            };
+        }
+        Ok((texts, complete))
+    }
+
+    /// Marks each candidate with `replaces`, whether runs get a memory of its name now, and
+    /// `current_text`, that memory's text or null. `replaces` is null when only the kit, which is
+    /// not checked out here, could hold the name.
+    pub fn mark(
+        &self,
+        db: &Connection,
+        home: &Path,
+        candidates: &mut [Value],
+    ) -> rusqlite::Result<()> {
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        let (texts, complete) = self.texts(db, home)?;
+        for candidate in candidates {
+            let current = candidate["name"].as_str().and_then(|name| texts.get(name));
+            candidate["replaces"] = match current {
+                None if !complete => Value::Null,
+                _ => json!(current.is_some()),
+            };
+            candidate["current_text"] = json!(current);
+        }
+        Ok(())
+    }
+}
+
+/// Why a person's accept or drop of a candidate was not published.
+pub enum Refused {
+    /// This runner never read the candidate.
+    Unknown(String),
+    /// The candidate is not on the log yet, or a person already decided it.
+    Stale(String),
+    /// The log, or the state file, could not be reached.
+    Unsent(String),
+    /// The publish failed, after which the log may still hold the verdict.
+    Unconfirmed(String),
+}
+
+impl From<Refused> for String {
+    fn from(refused: Refused) -> String {
+        match refused {
+            Refused::Unknown(why)
+            | Refused::Stale(why)
+            | Refused::Unsent(why)
+            | Refused::Unconfirmed(why) => why,
+        }
+    }
+}
+
+/// Publishes a person's accept or drop of candidate `id` on `log`, once this runner's copy shows
+/// it waiting. Every runner applies it as it reads the log.
+pub fn decide(log: &EventLog, db: &Connection, accept: bool, id: &str) -> Result<String, Refused> {
     let found = db
         .query_row(
             &format!("SELECT name, {STATE} FROM memory_candidates WHERE id = ?1"),
@@ -307,25 +409,25 @@ pub fn decide(
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| Refused::Unsent(error.to_string()))?;
     let name = match found {
-        None => return Err(format!("no memory candidate {id}")),
+        None => return Err(Refused::Unknown(format!("no memory candidate {id}"))),
         Some((name, state)) if state == "pending" => name,
         Some((_, state)) if state == "sending" => {
-            return Err(format!(
+            return Err(Refused::Stale(format!(
                 "candidate {id} is not on the log yet: try again once its runner reaches the log"
-            ));
+            )));
         }
-        Some((_, state)) => return Err(format!("candidate {id} is {state}")),
+        Some((_, state)) => return Err(Refused::Stale(format!("candidate {id} is {state}"))),
     };
-    crate::link::refuse_while_unreachable(db)?;
+    crate::link::refuse_while_unreachable(db).map_err(Refused::Unsent)?;
     let (kind, verb) = if accept {
         (MEMORY_ACCEPTED, "accepted")
     } else {
         (MEMORY_DROPPED, "dropped")
     };
     let message = Message::new(kind, json!({ "candidate": id })).subject(name.clone());
-    crate::runners::publish(factory.log(), &message)?;
+    crate::runners::publish(log, &message).map_err(Refused::Unconfirmed)?;
     Ok(format!(
         "{name} {verb}: every runner applies it as it reads the log"
     ))

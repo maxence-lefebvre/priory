@@ -1554,6 +1554,13 @@ pub struct Memory {
     pub bytes: Vec<u8>,
 }
 
+impl Memory {
+    /// The fact: the file's text after its frontmatter.
+    pub fn text(&self) -> String {
+        body(&String::from_utf8_lossy(&self.bytes))
+    }
+}
+
 /// The frontmatter of `memories/<name>.md`: one fact every run gets in its index. Priory reads
 /// these keys and ignores any other.
 #[derive(Deserialize, JsonSchema)]
