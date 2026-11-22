@@ -5879,7 +5879,7 @@ fn the_outside_server_refuses_to_start_in_a_run_or_without_the_daemons_home_and_
     assert_eq!(in_run.status.code(), Some(2), "{in_run:?}");
     assert_eq!(
         String::from_utf8_lossy(&in_run.stderr),
-        "priory mcp --outside: this shell is a run's (PRIORY_SESSION is set), and a run has its own server\n"
+        "priory mcp: only a person runs it, and this shell is a run's (PRIORY_SESSION is set)\n"
     );
     for output in [no_home, no_db] {
         assert_eq!(output.status.code(), Some(2), "{output:?}");

@@ -4270,15 +4270,9 @@ fn outside_hook() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `priory mcp --outside`: the MCP server of a session Priory did not start. A run has its own
-/// server, and the daemon's home and state name the factory it reaches.
+/// `priory mcp --outside`: the MCP server of a session Priory did not start, a person verb that
+/// `main` refuses in a run. The daemon's home and state name the factory it reaches.
 fn outside_mcp() -> ExitCode {
-    if std::env::var_os("PRIORY_SESSION").is_some() {
-        eprintln!(
-            "priory mcp --outside: this shell is a run's (PRIORY_SESSION is set), and a run has its own server"
-        );
-        return ExitCode::from(2);
-    }
     let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
     if !set("PRIORY_HOME") || !set("PRIORY_DB") {
         eprintln!(

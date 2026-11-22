@@ -125,7 +125,7 @@ pub const PERSON: &str = "priory-person";
 pub const UNREADABLE: &str = "unreadable";
 
 /// The `priory` verbs only a person runs, as an answer approves a step. `report pick`,
-/// `memories accept`, `memories drop`, `batch edit` and `score --calibrate` are too.
+/// `memories accept`, `memories drop`, `batch edit`, `score --calibrate` and `mcp --outside` are too.
 pub const PERSON_VERBS: &[&str] = &[
     "answer",
     "dismiss",
@@ -161,6 +161,8 @@ pub fn person_verb(args: &[String]) -> bool {
         ["score", ..] => args
             .iter()
             .any(|arg| arg == "--calibrate" || arg.starts_with("--calibrate=")),
+        // A person's own session serves it, and its `answer` and `dismiss` decide asks.
+        ["mcp", ..] => args.iter().any(|arg| arg == "--outside"),
         [verb, ..] => PERSON_VERBS.contains(&verb),
         [] => false,
     }
@@ -1870,6 +1872,7 @@ mod tests {
             "priory score --budget 5 --calibrate review",
             "priory score . --calibrate=review --budget 5",
             "priory batch edit 2 --expected 1 --drop 4",
+            "env -u PRIORY_SESSION priory mcp --outside",
         ] {
             let hits = guards.hits("Bash", Some(command), &git);
             assert_eq!(hits[0].guard, "priory-person", "{command}");
@@ -1885,6 +1888,7 @@ mod tests {
             "priory score 7 --budget 1",
             "priory batch show 2",
             "priory batch add 12 13",
+            "priory mcp --session 3f2a",
         ] {
             assert_eq!(hit(command), None, "{command}");
         }
