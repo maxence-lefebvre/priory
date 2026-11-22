@@ -8,7 +8,8 @@ no record. A repair appends `factory.task.repaired` instead (see Repair), and a 
 `factory.task.reopened` (see [routing.md](routing.md#feedback-reopens-a-done-task)). A judgement that comes later,
 such as a merge or a revert, appends `factory.step.labeled` (see Outcome labels). Each `priory gate` appends
 `factory.gate.ran`, which a step's `gate-passed` proof reads (see Proofs in
-[tools.md](tools.md#proofs)). `priory report` reads only
+[tools.md](tools.md#proofs)). Each score of `priory score` appends `factory.run.scored` (see
+[score.md](score.md)). `priory report` reads only
 `factory.step.ended`.
 
 Records live in the `trace` table of the state file, one CloudEvents JSON object per row. R9.3 keeps
@@ -353,9 +354,20 @@ The estimate rests on these assumptions:
 5. A task is one trial per row, however many steps it revisited or pull requests its stack holds.
 6. The trials passed a person's gates. The rates say nothing of work with no gate.
 
+The target's own row also shows in three places, over the default window:
+
+- An ask whose answer lets an irreversible step run carries it as `risk_estimate` (see
+  [serve.md](../reference/serve.md#asks)). `priory asks` prints its one History line.
+- `priory check --explain` adds `caught`, `judged wrong` and `landed wrong` to its first two tables
+  when it can read the state file `PRIORY_DB` names, and `-` when it cannot (see
+  [workflows.md](../reference/workflows.md#irreversible-steps-and-their-gates)). `priory check`
+  without `--explain` never reads the state.
+- `priory flows --json` and `GET /api/flows` carry it as each irreversible step's `risk_estimate`.
+
 Known limits:
 
 - `--by lane` and `GET /api/risk` come in later slices.
+- An ask whose answer runs a command, and lets no irreversible step run, has no `risk_estimate`.
 
 ## Attention
 

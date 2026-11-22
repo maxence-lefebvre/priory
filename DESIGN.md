@@ -934,10 +934,28 @@ The **lane graph** draws a plan, in the batch page and in a go ask.
   A said line clears and a `--term-green` line under the input says so; a refused line stays in
   the input and a `--term-yellow` line says why. Escape or "Type" again closes it. An ended run
   has no "Type".
-- Header: the `terminal` icon, session name in mono, run id, "Type", "Copy screen", "Fit",
-  "Attach". In the web view "Attach" copies `priory attach N --read-only`, since a page cannot open
-  a tmux client. Under 480 px of pane width the buttons show their icon only, with their name as a
-  label, and under 400 px the run id hides.
+- Header: the `terminal` icon, session name in mono, run id, "Type" with the `message-text` icon,
+  "Copy screen", "Fit", and a menu (`more`). The menu holds "Copy attach command", which copies
+  `priory attach N --read-only`, since a page cannot open a tmux client, and the keyboard rows
+  below. Under 480 px of pane width the buttons show their icon only, with their name as a label,
+  and under 400 px the run id hides.
+- Keys, only when the screen says `keyboard: true` (`[serve] terminal = "type"`). The menu's "Take
+  the keyboard" opens a confirm sheet, a modal `dialog` over `--scrim` like Add's: "Take the
+  keyboard of run N?", then the line "Your keys reach the agent and its shell directly. Priory's
+  guard does not check them." in `--warn-text` with `shield`, then three facts with `clock`,
+  `pause` and `pencil`: 15 minutes, the agent's prompts wait, the trace keeps each key and each
+  text's length, never the text. "Take the keyboard" is the danger button; "Keep watching" closes.
+- While the page holds the keyboard, the pane takes a 2 px `--term-yellow` ring and the tag reads
+  `keys` in `--term-yellow`. A bar at the bottom says "Your keys until 14:32" with "Give back". Its
+  input pastes text without Enter: Return in it sends the text only, and a note says "Sent 15
+  characters. Press ⏎ to submit them." Under it a key row sends one key a tap: Esc and ⌃C first,
+  edged in `--term-red`, then ⏎ Enter, Tab, ⇧Tab, the arrows, PgUp, PgDn, ⌃D, y, n and 1 to 9,
+  scrolling sideways, each `--control` on a coarse pointer. Each send reads the screen at once.
+- "Give back" opens a second sheet that shows the screen's last two rows and says that text typed
+  and not submitted stays in the agent's input box: clear it with ⌃C or submit it with ⏎ first.
+  "Give back" there is primary. When a grant ends on its own (its 15 minutes, another device took
+  it, the run ended), the bar and ring go and a `.note` above the pane says why, with "Take it
+  again". The grant's secret lives in the page's memory only; leaving the page or switching runs gives the keyboard back.
 - SGR colours draw in the eight `--term-*` colours. Bright colours, the 256 palette and RGB take the
   nearest of the eight. A background is its colour at 30 % over `--term-bg`. Reverse video fills the
   cell with the text's colour, solid, in `--term-bg` text. Bold, faint, italic and underline show;
@@ -1200,8 +1218,10 @@ the adapter lives, how it reads and acts, and the data each panel needs. The app
   `--pane-split`, the list and the detail sit side by side.
 - **Selection.** A selected row takes the `--action-soft` fill on its own rounded surface. It has
   no 3 px leading bar: gpui-kit's design guide forbids leading-edge selection bars.
-- **Placement.** The layout follows the `default` view: each `tabs` node is a stack, and the
-  Priory bar shows one button per child of each stack. The Task panel and an Asks panel the view
+- **Placement.** Each view gets its own layout, and the default layout follows the `default`
+  view. Narrow panels open as asides and wide ones as tabs in the center, and the Priory bar shows
+  one button per aside and per center tab. When the view files change, the bar posts one notice,
+  "The view files changed", whose click regenerates the layouts. The Task panel and an Asks panel the view
   lacks open as tabs in the center.
 - **Navigation.** Herdr owns tabs and panes, so a panel has no tab bar, rail or Answer capsule.
   `Enter` opens the selected row.

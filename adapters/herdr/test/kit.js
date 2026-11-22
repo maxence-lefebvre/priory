@@ -1,11 +1,11 @@
 // A stand-in for Herdr's `gpui-kit`, `gpui-base` and `herdr` modules, so a test can load a mod's
-// main.js in Node, draw it to a tree, and press its elements. Importing this file maps the three
-// module names onto it.
+// main.js in Node, draw it to a tree, and press its elements. Importing this file maps those three
+// module names, and Herdr's `fs/promises`, onto it.
 import { registerHooks } from "node:module";
 
 const SELF = import.meta.url;
 registerHooks({
-  resolve: (specifier, context, next) => (["gpui-kit", "gpui-base", "herdr"].includes(specifier) ? { url: SELF, shortCircuit: true } : next(specifier, context)),
+  resolve: (specifier, context, next) => (["gpui-kit", "gpui-base", "herdr", "fs/promises"].includes(specifier) ? { url: SELF, shortCircuit: true } : next(specifier, context)),
 });
 
 const NODE = Symbol("node");
@@ -161,6 +161,16 @@ export const herdr = {
   timers: [],
   /** @type {(() => void)[]} the pending waits, which `wake` ends */
   waiting: [],
+  /** @type {unknown[]} what the mods passed to notify, oldest first */
+  notices: [],
+  /** @type {((command: string) => void)[]} the mods waiting in nextCommand */
+  listening: [],
+  /** Delivers `command` to every mod waiting in nextCommand, as `run("<mod>.<command>")` does. @param {string} command */
+  command(command) {
+    const listening = this.listening;
+    this.listening = [];
+    for (const deliver of listening) deliver(command);
+  },
   /** Ends every pending `priory wait` with the next revision, so each panel reads once more. */
   wake() {
     const waiting = this.waiting;
@@ -176,6 +186,8 @@ export const herdr = {
     this.files = {};
     this.waiting = [];
     this.timers = [];
+    this.notices = [];
+    this.listening = [];
   },
 };
 
@@ -191,8 +203,16 @@ export async function exec(_binary, args) {
 export const appHome = () => "/herdr";
 export const home = () => "/home/me";
 export const readTextFile = async (/** @type {string} */ path) => herdr.files[path] ?? null;
+/** Writes only over the text the caller read, as Herdr's does. @param {string} path @param {string} text @param {string | null} expected */
+export const writeTextFile = async (path, text, expected) => {
+  if ((herdr.files[path] ?? null) !== expected) throw new Error(`${path} changed since it was read`);
+  herdr.files[path] = text;
+  return null;
+};
+export const unlink = async (/** @type {string} */ path) => { delete herdr.files[path]; };
+export const layouts = () => Object.keys(herdr.files).filter((path) => /^\/herdr\/layouts\/[^/]+\.json$/.test(path)).map((path) => path.slice("/herdr/layouts/".length, -".json".length));
 export const checking = () => false;
-export const nextCommand = () => new Promise(() => {});
+export const nextCommand = () => new Promise((resolve) => herdr.listening.push(resolve));
 export const settings = () => ({ zoom: 1 });
 export const run = (/** @type {string} */ command, /** @type {unknown} */ args) => { herdr.runs.push([command, args]); };
 export const setShared = (/** @type {string} */ key, /** @type {unknown} */ value) => { herdr.shared.set(key, value); };
@@ -201,7 +221,7 @@ export const focused = () => ({ space: "space-1", tab: "tab-1" });
 export const panes = () => [];
 export const spaces = () => [{ id: "space-1", active: true, machine: null, folder: "/home/me" }];
 export const layout = () => herdr.layout;
-export const notify = () => {};
+export const notify = (/** @type {unknown} */ notice) => { herdr.notices.push(notice); return "notice"; };
 export const theme = () => ({});
 export const window = () => null;
 

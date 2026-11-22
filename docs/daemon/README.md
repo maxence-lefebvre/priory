@@ -84,6 +84,8 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [reports.md](reports.md): reports of sections that a workflow writes, and the picks a person
   makes on them.
 - [trace.md](trace.md): trace records, token counts, `priory report`, `priory costs`, the attention report, outcome labels, `priory grades`, `priory report risk` and the OpenTelemetry export.
+- [score.md](score.md): `priory score`, which grades a task's finished runs with the factory's
+  scorers.
 - [otel-recipes.md](otel-recipes.md): how to send the export to a local ClickStack, Honeycomb or Grafana Cloud.
 - [batches.md](batches.md): batches, `priory batch add`, `priory batch show` and `priory batch edit`, split issues, the plan a
   planning task sends, the go and the `merged` hold condition.

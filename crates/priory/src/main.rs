@@ -104,6 +104,7 @@ fn main() -> ExitCode {
         Some("report") => report(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("costs") => costs(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("grades") => grades(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("score") => score(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("move") => move_task(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some(verb @ ("resume" | "cancel" | "revive" | "release" | "say")) => act(
             verb,
@@ -227,7 +228,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen (TASK | --run RUN) [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory grades [--since <instant-or-duration>] [--json]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT"
+        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen (TASK | --run RUN) [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo] [--json]\n       priory grades [--since <instant-or-duration>] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--json]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT"
     );
     ExitCode::from(2)
 }
@@ -445,6 +446,46 @@ fn trace() -> ExitCode {
 
 /// Prints `priory costs [DIR] [--since <window>] [--by <split>] [--json]`, priced from the factory's
 /// `prices.toml`.
+/// `priory score [DIR] TASK [--scorer NAME] [--json]`: grades the latest finished run of each step
+/// of the task with the factory's scorers, one row per run and scorer.
+fn score(args: Vec<String>) -> ExitCode {
+    let (mut only, mut json, mut positional) = (None, false, Vec::new());
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--json" => json = true,
+            "--scorer" => match args.next() {
+                Some(name) => only = Some(name),
+                None => return usage(),
+            },
+            _ if arg.starts_with("--") => return usage(),
+            _ => positional.push(arg),
+        }
+    }
+    let (dir, task) = match &positional[..] {
+        [task] => (".", task),
+        [dir, task] => (dir.as_str(), task),
+        _ => return usage(),
+    };
+    let Ok(task) = task.parse() else {
+        return usage();
+    };
+    let Some(factory) = load(Path::new(dir)) else {
+        return ExitCode::FAILURE;
+    };
+    let scored = state::open().and_then(|mut db| {
+        let scores = priory_core::score::score(&mut db, &factory, task, only.as_deref())?;
+        let rows = serde_json::Value::Array(scores.iter().map(|score| score.json()).collect());
+        if json {
+            println!("{}", serde_json::json!({ "scores": rows }));
+        } else {
+            listing::print(&["run", "step", "scorer", "verdict", "reason"], &rows);
+        }
+        Ok(())
+    });
+    exit("score", scored)
+}
+
 fn costs(args: Vec<String>) -> ExitCode {
     let (mut since, mut by, mut json, mut dirs) = (None, "workflow".to_owned(), false, Vec::new());
     let mut args = args.into_iter();
@@ -577,7 +618,8 @@ fn report_risk(args: Vec<String>) -> ExitCode {
     let printed = intake::now().and_then(|now| {
         let db = state::open()?;
         let start = report::start(&db, &since, &now.to_string())?;
-        let risk = risk::risk(&db, &factory, workflow.as_deref(), &since, &start, now)?;
+        let gates = risk::Gates::of(&factory);
+        let risk = risk::risk(&db, &gates, workflow.as_deref(), &since, &start, now)?;
         match json {
             true => state::emit(&risk.json().to_string()),
             false => risk.print(),
@@ -1060,6 +1102,9 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                             });
                             ask["merge_risk"] = lines.join("; ").into();
                         }
+                        if let Some(estimate) = ask.get_mut("risk_estimate") {
+                            *estimate = estimate["line"].clone();
+                        }
                         ask
                     })
                     .collect();
@@ -1082,6 +1127,7 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                         "run_id",
                         "session",
                         "merge_risk",
+                        "risk_estimate",
                     ],
                     &serde_json::Value::Array(open),
                 );
@@ -1273,8 +1319,19 @@ fn flows(mut args: Vec<String>) -> ExitCode {
     let Some(factory) = load(&dir) else {
         return ExitCode::FAILURE;
     };
-    println!("{}", listing::flows(&factory));
+    let mut flows = listing::flows(&factory);
+    listing::with_risk_estimates(&mut flows, history(&factory).as_ref());
+    println!("{flows}");
     ExitCode::SUCCESS
+}
+
+/// Each irreversible step's trials, when `PRIORY_DB` names a state file this priory reads.
+fn history(factory: &factory::Factory) -> Option<risk::Risk> {
+    let db = state::read_only().ok()?;
+    intake::now()
+        .and_then(|now| risk::recent(&db, &risk::Gates::of(factory), now))
+        .inspect_err(|error| eprintln!("warning: no history from the state: {error}"))
+        .ok()
 }
 
 /// Prints the resolved views as `GET /api/views` serves them: `priory views [DIR] --json`.
@@ -2687,8 +2744,10 @@ fn warn_of_stale_herdr_layout(factory: &factory::Factory, dir: &Path) {
 /// the guarded calls each agent can make and the outcomes the daemon verifies, as four tables or
 /// as JSON.
 fn print_explanation(factory: &factory::Factory, json: bool) {
+    let risk = history(factory);
     if json {
         let mut flows = listing::flows(factory);
+        listing::with_risk_estimates(&mut flows, risk.as_ref());
         if let Some(flows) = flows.as_object_mut() {
             flows.remove("workflows");
         }
@@ -2719,23 +2778,52 @@ fn print_explanation(factory: &factory::Factory, json: bool) {
             .replace('\r', "\\r")
             .replace('\n', "\\n")
     };
-    state::emit("workflow\tstep\tgate");
+    let history = |workflow: &str, step: &str| {
+        let Some(risk) = &risk else {
+            return "-\t-\t-".to_owned();
+        };
+        let history = risk.step_history(workflow, step);
+        let share = |outcome: &str| {
+            let (k, n) = (&history[outcome]["k"], &history["trials"]);
+            match history["shown"].as_bool() {
+                Some(true) => format!(
+                    "{k} of {n}, 95% bound {:.1}%",
+                    history[outcome]["p95"].as_f64().unwrap_or_default() * 100.0
+                ),
+                _ => format!("{k} of {n}, needs {}", risk::FLOOR),
+            }
+        };
+        format!(
+            "{}\t{}\t{}",
+            history["caught"],
+            share("judged_wrong"),
+            share("landed_wrong")
+        )
+    };
+    state::emit("workflow\tstep\tgate\tcaught\tjudged wrong\tlanded wrong");
     for (name, gate) in &gates {
         let shown = match &gate.autonomous {
             Some(reason) => format!("autonomous: {reason}"),
             None => gate.approved_by.join(", "),
         };
         state::emit(&format!(
-            "{}\t{}\t{}",
+            "{}\t{}\t{}\t{}",
             cell(name),
             cell(&gate.step),
-            cell(&shown)
+            cell(&shown),
+            history(name, &gate.step)
         ));
     }
     state::emit("");
-    state::emit("workflow\tpath with no human decision");
+    state::emit("workflow\tpath with no human decision\tcaught\tjudged wrong\tlanded wrong");
     for (name, path) in &paths {
-        state::emit(&format!("{}\t{}", cell(name), cell(&path.join(" -> "))));
+        let step = path.last().map_or("", String::as_str);
+        state::emit(&format!(
+            "{}\t{}\t{}",
+            cell(name),
+            cell(&path.join(" -> ")),
+            history(name, step)
+        ));
     }
     state::emit("");
     state::emit("agent\tguard\tworkflow\twhy");

@@ -110,3 +110,19 @@ export function reveal(root, id) {
   });
   return commands;
 }
+
+/** What `install` and the Priory bar own: the root id of a layout this adapter wrote, with or without the views' hash. */
+export const OWN_ID = /^priory-generated(-[0-9a-f]{12})?$/;
+
+/** Herdr's layout file for a view: `default` keeps `priory.json`, so its layout name and `keys.json` bindings stay. @param {string} name */
+export const layoutFile = (name) => (name === "default" ? "priory.json" : `priory-${name}.json`);
+
+/**
+ * Every view's layout by file name, each with the root id `priory-generated-HASH`.
+ * @param {Record<string, { layout: any }>} views what `priory views --json` prints as `views`
+ * @param {any} frame @param {string} hash 12 hex digits of the SHA-256 of that output, trimmed
+ */
+export function layouts(views, frame, hash) {
+  if (!views?.default) throw new Error("the views have no default view");
+  return Object.fromEntries(Object.entries(views).map(([name, view]) => [layoutFile(name), { ...layout(name, view, frame), id: `priory-generated-${hash}` }]));
+}
