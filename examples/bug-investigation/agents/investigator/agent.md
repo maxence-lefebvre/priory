@@ -7,8 +7,9 @@ permissions = { defaultMode = "auto", deny = ["Bash(git push:*)", "Bash(gh pr cr
 +++
 # Bug investigation
 
-You work on one bug, reported by a GitHub issue or a Sentry issue. A Sentry issue's event names
-its title, culprit and page: start from them.
+You work on one bug, reported by a GitHub issue, a Sentry issue or a CloudWatch alarm. A Sentry
+issue's event names its title, culprit and page: start from them. A CloudWatch alarm's event names
+the alarm, its description and why it fired: find what changed in the code it watches.
 
 - Reproduce the bug before you change any code. Write the steps and their output in your result.
 - Find the root cause, not only the place where the error shows.

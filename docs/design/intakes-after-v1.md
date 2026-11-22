@@ -165,6 +165,11 @@ call. Fetching the full history would, so leave it to a later slice.
 
 ## CloudWatch
 
+**Built.** `POST /hooks/cloudwatch` takes alarm state changes from an EventBridge API destination
+and publishes `cloudwatch.alarm.state_changed`. The connection's API key authorization sends
+`X-Priory-Webhook-Token`. See [cloudwatch.md](../intake/cloudwatch.md). The poll option is not
+built.
+
 **Trigger on.** An alarm entering `ALARM`: `cloudwatch.alarm.state_changed`, with the new state in
 the event. CloudWatch sends it to EventBridge as `detail-type` `CloudWatch Alarm State Change` from
 `source` `aws.cloudwatch`. The event carries `state` and `previousState`, so a trigger filter can
