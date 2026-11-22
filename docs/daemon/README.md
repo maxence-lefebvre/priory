@@ -75,8 +75,8 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
   `priory give`, and answering another runner's ask.
 - [agents-slice.md](agents-slice.md): the systemd slice that caps every agent's CPU and memory.
 - [memory-gate.md](memory-gate.md): `priory memory acquire`, which queues heavy commands for memory.
-- [sessions.md](sessions.md): shared agent sessions, attaching to a run's terminal, and trusting a
-  clone for Claude.
+- [sessions.md](sessions.md): shared agent sessions, attaching to a run's terminal, and trusting the
+  worktrees folder and each clone for Claude.
 - [codex.md](codex.md): how a Codex run differs from a Claude run.
 - [signals.md](signals.md): the hook signals a run sends, the nudge after a silent turn, and the
   nudge's evaluation.
@@ -116,6 +116,9 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
   the ask to raise a cap or stop a task, and the new runs a reached cap holds.
 - [score.md](score.md): `priory score`, which grades a task's finished runs with the factory's
   scorers, and `priory score --calibrate`, which measures a judge scorer against a person's labels.
+- [patterns.md](patterns.md): failure patterns, `priory patterns find`, which groups the day's
+  failed, blocked, repaired and marked-wrong tasks by step and reason, the desk's `pattern` row,
+  closing and dismissing a pattern, and capturing its tasks as benchmark cases.
 - [bench.md](bench.md): `priory bench capture`, which turns a past task into a benchmark case,
   `priory bench replay`, which plays one case under one configuration, and `priory bench` with
   `--base` and `--head`, which compares two commits of the factory on a benchmark.

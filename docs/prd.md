@@ -89,6 +89,7 @@ The Warp column comes from Warp's public page and is blank where that page says 
 | Lane       | A `<team>/<theme>` label that groups tasks in views and reports           |              | lane             |
 | Relation   | How one task relates to another: builds on, fixes, takes up or relates to |              |                  |
 | Batch      | A set of issues one planning task orders into tasks under one ask         |              |                  |
+| Pattern    | Tasks that stopped at one step for the same reason, kept as one desk item |              |                  |
 
 ## Configuration
 
@@ -568,6 +569,10 @@ Priory serves these as MCP tools.
 - R10.7 Scorers grade finished runs. Benchmarks replay past tasks under another model or
   configuration. A step can name scorers as a gate on an outcome, and the factory a critic for a
   plan no person reads: a failing one refuses the result, and none approves anything. M4
+- R10.8 A failure pattern groups the tasks that failed, blocked, were repaired or were marked wrong
+  at one step for the same reason. Its count grows as new tasks match, the desk shows it, and a
+  person closes or dismisses it or captures its tasks as benchmark cases, so a factory change can
+  be compared on the failures it means to end. M4
 
 ### R11. Sharing between machines
 

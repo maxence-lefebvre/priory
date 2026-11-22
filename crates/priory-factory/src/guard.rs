@@ -154,9 +154,10 @@ pub fn person_verb(args: &[String]) -> bool {
     let mut words = vec!["priory".to_owned()];
     words.extend_from_slice(args);
     match positional(&words)[..] {
-        ["report", "pick", ..] | ["memories", "accept" | "drop", ..] | ["batch", "edit", ..] => {
-            true
-        }
+        ["report", "pick", ..]
+        | ["memories", "accept" | "drop", ..]
+        | ["batch", "edit", ..]
+        | ["patterns", "close" | "dismiss" | "capture", ..] => true,
         ["score", ..] => args
             .iter()
             .any(|arg| arg == "--calibrate" || arg.starts_with("--calibrate=")),
