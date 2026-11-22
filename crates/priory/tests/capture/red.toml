@@ -1,0 +1,47 @@
+# A red issue whose agents ran gh, played through examples/groom so `priory bench capture` can
+# turn the task into a case. factory_e2e.rs compares that case with the folder red-case/.
+# The reviewer runs on Claude Code here, since the capture reads Claude's transcripts.
+
+files = { "agents/reviewer/agent.md" = "+++\ndescription = \"Reviews a change against its brief.\"\nharness = \"claude-code\"\npermissions = { defaultMode = \"acceptEdits\" }\n+++\nReview the committed change against .priory/brief.md.\n" }
+
+[request]
+trigger = "groom-label"
+key = "github:owner/repo#42"
+source = "e2e-request"
+
+[[turns]]   # groom
+calls = [
+  { name = "Bash", arguments = { command = "gh issue view 42 --json title,body" }, output = "{\"title\":\"Add a widget\",\"body\":\"Draw a box, and change the public API.\"}" },
+  { name = "Bash", arguments = { command = "gh issue view 42 --comments | head -n 20" }, output = "No comments" },
+  { name = "Bash", arguments = { command = "cargo test" }, output = "test result: ok" },
+  { name = "result", arguments = { outcome = "red", reason = "It changes a public interface", summary = "Red: the widget changes the public API", goal = "Draw a box", testing = "cargo test", brief = "Add the widget and its test", verification = "cargo test passes" } },
+]
+
+[[turns]]   # implement
+calls = [{ name = "result", arguments = { outcome = "passed", summary = "Widget added", evidence = "cargo test passed" } }]
+
+[[turns]]   # review
+calls = [
+  { name = "Bash", arguments = { command = "gh pr list --head priory/1 --json number" }, output = "[]" },
+  { name = "result", arguments = { outcome = "clean", summary = "No finding" } },
+]
+
+[[turns]]   # risk
+calls = [{ name = "result", arguments = { outcome = "low", summary = "Merge risk low", risk = { ask = "low: adds the widget the issue asks for", blast_radius = "low: one new function", verification = "low: a test covers it", rollback = "low: a revert removes it", detection = "low: its test fails on a wrong box" } } }]
+
+[[turns]]   # describe
+calls = [{ name = "result", arguments = { outcome = "described", summary = "Add the widget\nIt draws a box. cargo test passes. Merge risk low." } }]
+
+[[events]]
+at = "approve-plan"
+answer = "approved"
+
+[[events]]
+at = "describe"
+type = "github.check_run.completed"
+subject = "owner/repo#7"
+data = { repo = "owner/repo", pull_request = 7, head_branch = "priory/1", head_sha = "{head}", base_branch = "main", name = "test", conclusion = "success", github_id = 1, pending = 0, failing = 0 }
+
+[expect]
+path = ["groom:red", "approve-plan:approved", "implement:passed", "review:clean", "risk:low", "describe:described", "open-pr:opened"]
+state = "done"

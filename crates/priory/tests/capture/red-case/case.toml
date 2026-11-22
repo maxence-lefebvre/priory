@@ -1,0 +1,23 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/case.json
+# Captured from task 1 by priory bench capture. Read it before you share it.
+workflow = "groom"
+key = "github:owner/repo#42"
+repo = "owner/repo"
+start = "280754ddff3d9064d54abdfab6e40999b7156695"
+ends_at = "open-pr"
+partial = true
+gaps = ["run 1: `gh issue view 42 --comments | head -n 20` is not one gh command alone"]
+
+[request]
+type = "factory.task.requested"
+subject = "github:owner/repo#42"
+
+[request.data]
+key = "github:owner/repo#42"
+source = "e2e-request"
+trigger = "groom-label"
+workflow = "groom"
+
+[reference]
+path = ["groom:red", "approve-plan:approved", "implement:passed", "review:clean", "risk:low", "describe:described", "open-pr:opened"]
+labels = []

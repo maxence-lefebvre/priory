@@ -25,6 +25,7 @@ A scenario file drives `crates/priory/tests/factory_e2e.rs` through one factory 
 | `turns` | array of tables | no | The fake agent's turns, in order, across every step and task | |
 | `turns[].calls` | array of tables | yes | The turn's tool calls, in order: `{ name, arguments }`, or `{ name, run }` | `[{ name = "result", arguments = { outcome = "passed", summary = "Done" } }]` |
 | `turns[].calls[].run` | string | no | A shell command run in the factory copy before the daemon starts. The JSON it prints is the call's `arguments` | `"python3 -I e2e/report.py"` |
+| `turns[].calls[].output` | string | no | Stands for a built-in tool call that ran and printed this text, such as a `Bash` call to `gh`. The fake writes the call and its result to its Claude transcript, and no hook hears it | `"[]"` |
 | `events` | array of tables | no | What reaches the task while it sleeps, in order. Each plays once the task sleeps at the step `at` names, or at any step without `at` | |
 | `events[].at` | string | no | The step the task sleeps at | `"implement-green"` |
 | `events[].answer` | string | no | Answers the task's open ask with this option instead of publishing a message | `"approved"` |
