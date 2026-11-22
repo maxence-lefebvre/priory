@@ -41,6 +41,10 @@ A task that never started moves to another runner 30 minutes after its runner's 
 message. `priory give [DIR] KEY RUNNER` moves any other once its runner's lease ends, or at once
 with `--force`. See [runners.md](../daemon/runners.md).
 
+A machine with no runner file serves every runner's asks and tasks with
+`priory daemon --view-only [DIR]`, which claims and runs nothing. See
+[A machine that only views](../daemon/runners.md#a-machine-that-only-views).
+
 ## Errors from `priory check`
 
 | Message | Cause |
