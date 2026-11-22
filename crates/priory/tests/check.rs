@@ -2383,7 +2383,7 @@ fn an_unknown_scorer_kind_names_its_file_and_line() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "scorers/guess.toml:3:8: unknown variant `vibes`, expected one of `outcome`, `command`, `ask-shape`, `judge`\n"
+        "scorers/guess.toml:3:8: unknown variant `vibes`, expected one of `outcome`, `command`, `ask-shape`, `judge`, `held`\n"
     );
 }
 
