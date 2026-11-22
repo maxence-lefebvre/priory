@@ -734,6 +734,37 @@ pub(crate) fn labeled(
     evidence: &str,
     happened: Option<&str>,
 ) -> rusqlite::Result<()> {
+    labeled_with(tx, trace, task, label, evidence, happened, json!({}))
+}
+
+/// Appends the `factory.step.labeled` record of a `held` scorer that graded `task`: label `scored`,
+/// with the scorer, its verdict, and its reason as the evidence. `happened` is the moment its
+/// `after` names.
+pub(crate) fn held(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    scorer: &str,
+    verdict: &str,
+    reason: &str,
+    happened: &str,
+) -> rusqlite::Result<()> {
+    let extra = json!({ "scorer": scorer, "kind": "held", "verdict": verdict });
+    labeled_with(tx, trace, task, SCORED, reason, Some(happened), extra)
+}
+
+/// The label of a `held` scorer's record.
+pub(crate) const SCORED: &str = "scored";
+
+fn labeled_with(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    label: &str,
+    evidence: &str,
+    happened: Option<&str>,
+    extra: Value,
+) -> rusqlite::Result<()> {
     let (workflow, key, generation, grade, time): (String, String, i64, Option<String>, String) =
         tx.query_row(
             "SELECT workflow, key, generation, grade, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -789,7 +820,8 @@ pub(crate) fn labeled(
         "evidence": evidence,
         "happened": happened,
     });
-    if let Value::Object(fields) = &mut data {
+    if let (Value::Object(fields), Value::Object(extra)) = (&mut data, extra) {
+        fields.extend(extra);
         fields.retain(|_, value| !value.is_null());
     }
     append(tx, trace, "factory.step.labeled", &time, data)

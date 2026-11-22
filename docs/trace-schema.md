@@ -339,9 +339,12 @@ task's grade when it was labeled. A task no step graded has no `step_event`.
 
 | Field        | Required | Meaning                                                              |
 | ------------ | -------- | -------------------------------------------------------------------- |
-| `label`      | yes      | One of the outcome labels, or `marked-wrong` from `priory label`     |
+| `label`      | yes      | One of the outcome labels, `marked-wrong` from `priory label`, or `scored` from a `held` scorer |
 | `evidence`   | yes      | The event's URL, the human step and its answer, or a mark's URL      |
-| `happened`   | no       | When the event the label reads happened. The record's `time` is when Priory wrote it. A record written before this field has none |
+| `happened`   | no       | When the event the label reads happened. The record's `time` is when Priory wrote it. A record written before this field has none. For `scored`, the moment the scorer's `after` names |
+| `scorer`     | for `scored` | The `held` scorer that graded the task |
+| `kind`       | for `scored` | `held` |
+| `verdict`    | for `scored` | `pass` or `fail`. The `evidence` is its reason. See [Held scorers](daemon/score.md#held-scorers) |
 
 ```json
 {

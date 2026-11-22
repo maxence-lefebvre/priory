@@ -240,11 +240,13 @@ fn ended(db: &Connection, task: i64) -> rusqlite::Result<Vec<Ended>> {
         .collect()
 }
 
-/// The outcome labels the task holds: each label not cleared after it was given.
+/// The outcome labels the task holds: each label not cleared after it was given. A held scorer's
+/// record is a score, not an outcome label.
 fn labels(db: &Connection, task: i64) -> rusqlite::Result<Vec<String>> {
     let mut statement = db.prepare(
         "SELECT DISTINCT json_extract(event, '$.data.label') FROM trace AS labeled
          WHERE type = 'factory.step.labeled' AND json_extract(event, '$.data.task') = ?1
+           AND json_extract(event, '$.data.label') != 'scored'
            AND NOT EXISTS (SELECT 1 FROM trace AS cleared WHERE cleared.type = 'factory.step.unlabeled'
              AND cleared.seq > labeled.seq
              AND json_extract(cleared.event, '$.data.task') = ?1

@@ -45,7 +45,7 @@ does and the page that describes it.
   publish. It publishes nothing and posts no report. It fails for a trigger without `[pre]`. See
   [pre.md](../intake/pre.md).
 - `priory daemon [DIR] [--once]`: routes events to tasks and runs agents. `--once` routes what is
-  pending, starts no run and exits. See [the daemon](../daemon/README.md).
+  pending, grades the tasks a `held` scorer is due to grade, starts no run and exits. See [the daemon](../daemon/README.md).
 - `priory daemon --view-only [DIR]`: on a machine with no runner file, mirrors every runner's asks
   and tasks, serves them and runs nothing. See
   [runners.md](../daemon/runners.md#a-machine-that-only-views).
