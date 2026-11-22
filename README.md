@@ -71,11 +71,11 @@ Build Priory from a clone, with the Rust toolchain that `rust-toolchain.toml` pi
 ```sh
 git clone https://github.com/maxence-lefebvre/priory
 cd priory
-cargo build --release
-export PATH="$PWD/target/release:$PATH"
+cargo install --path crates/priory
 ```
 
-Then follow [GETTING_STARTED.md](GETTING_STARTED.md). It takes you from this build to a factory of
+`cargo install` puts `priory` in `~/.cargo/bin`. Then follow
+[GETTING_STARTED.md](GETTING_STARTED.md). It takes you from this build to a factory of
 your own, a first task, and a first ask answered in the web view on `127.0.0.1`. To begin from a
 ready-made factory instead, see
 [How to start from a starter factory](docs/starting-from-a-starter.md).
@@ -101,6 +101,7 @@ as a website, with search, built from `main`.
 - Tutorial: [GETTING_STARTED.md](GETTING_STARTED.md), from a build to a first answered ask.
 - How-to guides, one task each:
   [start from a starter](docs/starting-from-a-starter.md),
+  [install a release](docs/installing-a-release.md),
   [use the web view, on a phone too](docs/using-the-web-view.md),
   [run Priory as services](docs/running-as-services.md),
   [test a factory with fake agents](docs/testing-a-factory.md),

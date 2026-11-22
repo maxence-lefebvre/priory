@@ -21,6 +21,7 @@ GROUPS = [
     ("Tutorial", None, ["GETTING_STARTED.md"]),
     ("How-to guides", None, [
         "docs/starting-from-a-starter.md",
+        "docs/installing-a-release.md",
         "docs/using-the-web-view.md",
         "docs/running-as-services.md",
         "docs/testing-a-factory.md",
