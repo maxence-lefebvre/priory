@@ -114,6 +114,8 @@ as a website, with search, built from `main`.
   intake message, with their JSON Schemas. [docs/trace-schema.md](docs/trace-schema.md) holds the
   format of trace records.
 - How it works: [docs/concepts.md](docs/concepts.md) explains the terms.
+  [Priory and other agent factories](docs/priory-and-other-factories.md) compares Priory with
+  eleven similar products and says what Priory lacks.
   [docs/daemon/](docs/daemon/README.md) explains how the daemon runs tasks, and
   [docs/intake/](docs/intake/README.md) how each source becomes events, one file per topic.
 - Adapters: [docs/adapters/herdr.md](docs/adapters/herdr.md), Priory's panels as Herdr mods, and
