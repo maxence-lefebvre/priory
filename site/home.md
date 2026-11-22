@@ -30,6 +30,9 @@
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/maxence-lefebvre/priory/main/install.sh | sh
+```
+
+```sh
 nix profile install github:maxence-lefebvre/priory
 ```
 

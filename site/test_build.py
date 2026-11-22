@@ -92,7 +92,9 @@ class Chapters(unittest.TestCase):
         for text in (build.home(PAGES), (build.ROOT / "README.md").read_text(encoding="utf-8")):
             self.assertIn(script, text)
             self.assertIn(nix, text)
-            self.assertLess(text.index(script), text.index("cargo install --path crates/priory"))
+            cargo = text.index("cargo install --path crates/priory")
+            self.assertLess(text.index(script), cargo)
+            self.assertLess(text.index(nix), cargo)
 
 
 if __name__ == "__main__":

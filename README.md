@@ -70,10 +70,13 @@ spend, merges and your attention.
 
 ## Get started
 
-Install the latest release's binary to `~/.local/bin`, or build it with Nix:
+Install the latest release's binary to `~/.local/bin` with the script, or build it with Nix:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/maxence-lefebvre/priory/main/install.sh | sh
+```
+
+```sh
 nix profile install github:maxence-lefebvre/priory
 ```
 

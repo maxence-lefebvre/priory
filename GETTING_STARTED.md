@@ -14,7 +14,7 @@ You need:
 - On `PATH`: `git`, `tmux`, `openssl`, `gh` logged in to GitHub, and `claude`, logged in. The agent of this
   tutorial runs Claude Code. To run Codex instead, set `harness = "codex"` in step 2 and read
   [codex.md](docs/daemon/codex.md).
-- The Rust toolchain. `rust-toolchain.toml` pins the version, and `rustup` installs it on the first
+- The Rust toolchain, to build from source. `rust-toolchain.toml` pins the version, and `rustup` installs it on the first
   build.
 - A GitHub repository you can push to, for the agent to work in. This page calls it `owner/name`.
 

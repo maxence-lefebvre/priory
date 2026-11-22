@@ -11,8 +11,11 @@ from a clone instead, see [Getting started](../GETTING_STARTED.md#1-build-priory
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/maxence-lefebvre/priory/main/install.sh | sh
-priory --version
+~/.local/bin/priory --version
 ```
+
+The script does not change your `PATH`. When `~/.local/bin` is not on it, the script says so: add
+it in your shell's profile to run `priory` by name.
 
 ### What the script checks
 
@@ -39,7 +42,7 @@ lets several machines share one log, with `--features postgres` (see
 ## With Nix
 
 The repository is a Nix flake. Its default package builds `priory` from source with nixpkgs' Rust
-toolchain, so the first install compiles for several minutes. The flake also holds a development
+toolchain, so the first install compiles it. The flake also holds a development
 shell, `nix develop`, with the tools the tests need.
 
 Run `priory` once without installing it:
@@ -54,8 +57,8 @@ Install it to your Nix profile:
 nix profile install github:maxence-lefebvre/priory
 ```
 
-To pin a version, add a commit or a tag to the reference, such as
-`github:maxence-lefebvre/priory/<commit>`. Releases after v0.1.0 hold the flake; v0.1.0 does not.
+To pin a version, add a commit to the reference, such as
+`github:maxence-lefebvre/priory/<commit>`. The v0.1.0 tag holds no flake.
 
 To add Priory to your own flake, such as a NixOS or home-manager configuration, take it as an
 input and use its package or its overlay:
