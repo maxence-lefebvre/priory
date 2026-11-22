@@ -91,9 +91,9 @@ publishes no second task request.
 
 ## Limits
 
-- A notification lost while the server is down or unreachable never reaches the factory. Nothing
-  polls Intercom to recover it. Intercom suspends a private app's webhooks after seven days of error
-  replies.
+- Intercom sends a failed notification once more, a minute later. A notification that fails both
+  times, while the server is down or unreachable, never reaches the factory: nothing polls Intercom
+  to recover it. Intercom also suspends a private app's webhooks after seven days of error replies.
 - Only `conversation.user.created` publishes. Replies, admin messages and other topics publish
   nothing yet.
 - One `[webhooks.intercom]` takes one workspace.

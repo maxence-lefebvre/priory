@@ -105,27 +105,14 @@ fn observe(triggers: &[(&str, &Trigger)], payload: &Value) -> Result<Option<Mess
             .filter(|text| !text.is_empty())
             .map(str::to_owned)
     };
-    let mut data = json!({
-        "conversation": text(&item["id"]),
-        "workspace": text(&payload["app_id"]),
-        "title": text(&item["title"]),
-        "subject": text(&source["subject"]),
-        "body": text(&source["body"]),
-        "author": text(&source["author"]["name"]),
-        "author_type": text(&source["author"]["type"]),
-        "page": text(&source["url"]),
-        "delivery": text(&payload["id"]),
-        "baseline": false,
-    });
-    if data["conversation"].is_null() {
+    let Some(conversation) = text(&item["id"]) else {
         return Err("the payload lacks the conversation's `id`".into());
-    }
+    };
     let Some(seconds) = item["created_at"].as_i64() else {
         return Err("the payload lacks the conversation's `created_at`".into());
     };
     let time = Timestamp::from_second(seconds)
         .map_err(|error| format!("Intercom time `{seconds}`: {error}"))?;
-    data["time"] = json!(time.to_string());
     let matched: Vec<&str> = triggers
         .iter()
         .filter(|(_, trigger)| format!("intercom.{}", trigger.on) == CREATED)
@@ -134,11 +121,24 @@ fn observe(triggers: &[(&str, &Trigger)], payload: &Value) -> Result<Option<Mess
     if matched.is_empty() {
         return Ok(None);
     }
-    data["triggers"] = json!(matched);
-    let conversation = data["conversation"].as_str().unwrap_or_default().to_owned();
-    let subject = data["title"]
-        .as_str()
-        .map_or_else(|| format!("conversation {conversation}"), str::to_owned);
+    let title = text(&item["title"]);
+    let subject = title
+        .clone()
+        .unwrap_or_else(|| format!("conversation {conversation}"));
+    let data = json!({
+        "conversation": conversation,
+        "workspace": text(&payload["app_id"]),
+        "title": title,
+        "subject": text(&source["subject"]),
+        "body": text(&source["body"]),
+        "author": text(&source["author"]["name"]),
+        "author_type": text(&source["author"]["type"]),
+        "page": text(&source["url"]),
+        "delivery": text(&payload["id"]),
+        "time": time.to_string(),
+        "baseline": false,
+        "triggers": matched,
+    });
     Ok(Some(
         Message::new(CREATED, data)
             .id(id(&format!("intercom:conversation:{conversation}:created")))

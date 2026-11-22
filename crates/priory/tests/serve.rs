@@ -6542,6 +6542,26 @@ fn an_intercom_delivery_with_a_wrong_or_missing_signature_gets_401_before_it_is_
 }
 
 #[test]
+fn the_intercom_signature_covers_the_exact_body_bytes_not_the_parsed_json() {
+    let mut setup = Setup::intercom_hooks("intercom-raw-bytes");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let pretty = serde_json::to_string_pretty(&intercom_notification(
+        "conversation.user.created",
+        "a86dr8yl",
+    ))
+    .unwrap();
+    let signature = intercom_signature(&setup.secret, &pretty);
+    let reformatted = pretty.replacen("\n", "\n ", 1);
+
+    let (altered, _) = deliver_intercom(&address, Some(&signature), &reformatted);
+    let (status, reply) = deliver_intercom(&address, Some(&signature), &pretty);
+
+    assert_eq!(altered, 401);
+    assert_eq!(status, 202, "{reply}");
+    assert_eq!(reply, r#"{"outcome":"published"}"#);
+}
+
+#[test]
 fn a_replayed_intercom_notification_publishes_nothing() {
     let mut setup = Setup::intercom_hooks("intercom-replay");
     let address = setup.start(&["serve", &setup.factory()]);
