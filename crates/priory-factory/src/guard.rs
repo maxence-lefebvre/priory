@@ -144,6 +144,7 @@ pub const PERSON_VERBS: &[&str] = &[
     "unsubscribe",
     "give",
     "eval",
+    "bench",
     "label",
 ];
 

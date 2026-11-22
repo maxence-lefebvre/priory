@@ -21,3 +21,58 @@ workflow = "groom"
 [reference]
 path = ["groom:red", "approve-plan:approved", "implement:passed", "review:clean", "risk:low", "describe:described", "open-pr:opened"]
 labels = []
+
+[[spent]]
+step = "groom"
+model = "claude-fake-5"
+minutes = 1
+
+[spent.tokens]
+input = 101
+output = 11
+cache_read = 1001
+cache_write = 51
+
+[[spent]]
+step = "implement"
+model = "claude-fake-5"
+minutes = 1
+
+[spent.tokens]
+input = 102
+output = 12
+cache_read = 1002
+cache_write = 52
+
+[[spent]]
+step = "review"
+model = "claude-fake-5"
+minutes = 1
+
+[spent.tokens]
+input = 103
+output = 13
+cache_read = 1003
+cache_write = 53
+
+[[spent]]
+step = "risk"
+model = "claude-fake-5"
+minutes = 1
+
+[spent.tokens]
+input = 104
+output = 14
+cache_read = 1004
+cache_write = 54
+
+[[spent]]
+step = "describe"
+model = "claude-fake-5"
+minutes = 1
+
+[spent.tokens]
+input = 105
+output = 15
+cache_read = 1005
+cache_write = 55

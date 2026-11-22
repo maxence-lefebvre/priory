@@ -4,6 +4,8 @@
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
 
 const SCHEMAS: &str =
     "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/";
@@ -35,6 +37,36 @@ pub struct Case {
     pub request: Option<Message>,
     /// What really happened to the task, for a reader and for scorers.
     pub reference: Reference,
+    /// What each model step before `ends_at` spent, in order, for a replay's estimate.
+    #[serde(default)]
+    pub spent: Vec<Spent>,
+}
+
+/// What one model step of the task spent before the first irreversible step.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Spent {
+    /// The model step.
+    pub step: String,
+    /// The model the run reported, such as `claude-sonnet-5-5`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// How long the step took, in whole minutes rounded up, at least 1.
+    #[schemars(range(min = 1))]
+    pub minutes: u64,
+    /// The step's tokens. Absent when Priory could not read them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<Tokens>,
+}
+
+/// Tokens of each kind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Tokens {
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
 }
 
 /// A message the inbox recorded.
@@ -105,6 +137,99 @@ pub fn table<T: Serialize>(value: &T) -> Result<BTreeMap<String, toml::Value>, S
     }
 }
 
+/// A case folder as a replay reads it: `case.toml`, its `gh/` answers in file order, and the
+/// answers of `answers.toml`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Loaded {
+    pub case: Case,
+    pub gh: Vec<GhAnswer>,
+    pub answers: Vec<Answer>,
+}
+
+/// Reads the case folder `dir`. Each error names the file.
+pub fn load(dir: &Path) -> Result<Loaded, String> {
+    fn read<T: serde::de::DeserializeOwned>(file: &Path) -> Result<T, String> {
+        let text =
+            fs::read_to_string(file).map_err(|error| format!("{}: {error}", file.display()))?;
+        toml::from_str(&text).map_err(|error| format!("{}: {error}", file.display()))
+    }
+    let case = read(&dir.join("case.toml"))?;
+    let answers = dir.join("answers.toml");
+    let answers = if answers.exists() {
+        read::<Answers>(&answers)?.answers
+    } else {
+        Vec::new()
+    };
+    let mut files = match fs::read_dir(dir.join("gh")) {
+        Ok(entries) => entries
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("{}: {error}", dir.join("gh").display()))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(format!("{}: {error}", dir.join("gh").display())),
+    };
+    files.retain(|file| {
+        file.extension()
+            .is_some_and(|extension| extension == "toml")
+    });
+    files.sort();
+    let gh = files
+        .iter()
+        .map(|file| read(file))
+        .collect::<Result<_, _>>()?;
+    Ok(Loaded { case, gh, answers })
+}
+
+/// The keys of `factory.toml` a replay leaves out: each reaches past the scratch folder, starts a
+/// model call the budget does not count, or runs a script.
+pub const LEFT_OUT: [&str; 10] = [
+    "log",
+    "telemetry",
+    "notify",
+    "serve",
+    "webhooks",
+    "slack",
+    "asks",
+    "handler",
+    "search",
+    "sweep",
+];
+
+/// The text of a replay's `factory.toml`, from the factory folder `dir`: its `factory.toml` or
+/// `factory.yaml` without the keys of `LEFT_OUT`, and with a kit repository given as a relative
+/// path made absolute, since the replay's copy of the factory lives elsewhere.
+pub fn replay_settings(dir: &Path) -> Result<String, String> {
+    let found = ["factory.toml", "factory.yaml", "factory.yml"]
+        .map(|name| dir.join(name))
+        .into_iter()
+        .find(|file| file.is_file())
+        .ok_or_else(|| format!("{}: no factory.toml or factory.yaml", dir.display()))?;
+    let text =
+        fs::read_to_string(&found).map_err(|error| format!("{}: {error}", found.display()))?;
+    let at = |error: String| format!("{}: {error}", found.display());
+    let mut table: toml::Table = if found.extension().is_some_and(|ext| ext == "toml") {
+        toml::from_str(&text).map_err(|error| at(error.to_string()))?
+    } else {
+        serde_saphyr::from_str(&text).map_err(|error| at(error.to_string()))?
+    };
+    for key in LEFT_OUT {
+        table.remove(key);
+    }
+    if let Some(toml::Value::String(repo)) = table
+        .get_mut("kit")
+        .and_then(|kit| kit.as_table_mut())
+        .and_then(|kit| kit.get_mut("repo"))
+    {
+        let trimmed = repo.trim();
+        if !trimmed.contains(':') && Path::new(trimmed).is_relative() {
+            let absolute =
+                std::path::absolute(dir.join(trimmed)).map_err(|error| at(error.to_string()))?;
+            *repo = absolute.display().to_string();
+        }
+    }
+    toml::to_string(&table).map_err(|error| at(error.to_string()))
+}
+
 fn table_schema(_: &mut SchemaGenerator) -> Schema {
     json_schema!({ "type": "object" })
 }
@@ -172,6 +297,17 @@ mod tests {
                 path: vec!["groom:red".to_owned()],
                 labels: vec![],
             },
+            spent: vec![Spent {
+                step: "groom".to_owned(),
+                model: Some("claude-sonnet-5-5".to_owned()),
+                minutes: 3,
+                tokens: Some(Tokens {
+                    input: 1,
+                    output: 2,
+                    cache_read: 3,
+                    cache_write: 4,
+                }),
+            }],
         };
         let gh = GhAnswer {
             run: 1,
@@ -197,8 +333,48 @@ mod tests {
         assert_eq!(toml::from_str::<Case>(&files[0].1).unwrap(), case);
         assert_eq!(
             toml::from_str::<Answers>(&files[1].1).unwrap().answers,
-            [answer]
+            std::slice::from_ref(&answer)
         );
         assert_eq!(toml::from_str::<GhAnswer>(&files[2].1).unwrap(), gh);
+
+        let dir = std::env::temp_dir().join(format!("priory-case-{}", std::process::id()));
+        for (path, text) in &files {
+            let file = dir.join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, text).unwrap();
+        }
+        let loaded = load(&dir);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            loaded.unwrap(),
+            Loaded {
+                case,
+                gh: vec![gh],
+                answers: vec![answer]
+            }
+        );
+    }
+
+    #[test]
+    fn a_replay_s_settings_leave_out_what_reaches_past_the_scratch_folder() {
+        let dir = std::env::temp_dir().join(format!("priory-settings-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("factory.yaml"),
+            "name: demo\nhandler: reviewer\ngate: cargo test\nlog:\n  backend: postgres\nserve:\n  listen: 127.0.0.1:7340\nkit:\n  repo: ../kit\n",
+        )
+        .unwrap();
+
+        let settings = replay_settings(&dir);
+
+        let absolute = std::path::absolute(dir.join("../kit")).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        let settings: toml::Table = toml::from_str(&settings.unwrap()).unwrap();
+        let keys: Vec<&str> = settings.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["name", "gate", "kit"]);
+        assert_eq!(
+            settings["kit"]["repo"].as_str(),
+            Some(absolute.display().to_string().as_str())
+        );
     }
 }
