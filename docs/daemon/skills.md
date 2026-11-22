@@ -57,9 +57,11 @@ Without skills, instructions or memories, a run's arguments are as before.
 ## A Codex run
 
 A Codex run gets the instructions, a blank line, then the agent's own prompt in
-`developer_instructions`, on its command line. `priory check` refuses a Codex agent whose prompt
-and the instructions together pass 8192 bytes, which keeps the command under tmux's limit with
-Priory's hooks and tools:
+`developer_instructions`, on its command line. `priory check` refuses a Codex agent whose
+`developer_instructions` pass 8192 bytes, which keeps the command under tmux's limit with Priory's
+hooks and tools. It counts what the run gets: the instructions, the indexes and the prompt, with a
+blank line between each part there is, so an agent's own prompt counts alone in a factory without
+instructions, memories or skills:
 
 ```text
 agents/reviewer/agent.md:3: a codex agent takes instructions.md and its own prompt on its command line, as `developer_instructions`: together they are 40995 bytes, over the limit of 8192

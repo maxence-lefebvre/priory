@@ -2397,6 +2397,38 @@ fn codex_with_instructions(name: &str, instructions: &str) -> Outcome {
 }
 
 #[test]
+fn a_codex_prompt_past_the_limit_fails_the_check_without_instructions_or_an_index() {
+    let agent = format!(
+        "+++\ndescription = \"Implements one task.\"\nharness = \"codex\"\n+++\n{}\n",
+        "a".repeat(9000)
+    );
+    let mut files = valid();
+    files[1] = ("agents/implementer/agent.md", &agent);
+
+    let outcome = check(&factory("codex-prompt-long", &files));
+
+    assert_eq!(outcome.code, 1, "{}", outcome.stderr);
+    assert_eq!(
+        outcome.stderr,
+        "agents/implementer/agent.md:3: a codex agent takes its own prompt on its command line, as `developer_instructions`: it is 9000 bytes, over the limit of 8192\n"
+    );
+}
+
+#[test]
+fn a_codex_prompt_at_the_limit_passes_since_no_separator_comes_without_instructions() {
+    let agent = format!(
+        "+++\ndescription = \"Implements one task.\"\nharness = \"codex\"\n+++\n{}\n",
+        "a".repeat(8192)
+    );
+    let mut files = valid();
+    files[1] = ("agents/implementer/agent.md", &agent);
+
+    let outcome = check(&factory("codex-prompt-at-limit", &files));
+
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+}
+
+#[test]
 fn instructions_past_the_codex_limit_fail_the_check_for_a_codex_agent_with_the_limit() {
     let long = "a".repeat(40 * 1024);
 
@@ -2560,7 +2592,7 @@ fn the_memory_index_counts_toward_the_codex_limit() {
     assert_eq!(outcome.code, 1, "{}", outcome.stderr);
     assert!(
         outcome.stderr.starts_with(
-            "agents/implementer/agent.md:3: a codex agent takes instructions.md, the memory index and its own prompt on its command line"
+            "agents/implementer/agent.md:3: a codex agent takes the memory index and its own prompt on its command line"
         ),
         "{}",
         outcome.stderr
@@ -2773,7 +2805,7 @@ fn the_skill_index_counts_toward_the_codex_limit() {
     assert_eq!(outcome.code, 1, "{}", outcome.stderr);
     assert!(
         outcome.stderr.starts_with(
-            "agents/implementer/agent.md:3: a codex agent takes instructions.md, the skill index and its own prompt on its command line"
+            "agents/implementer/agent.md:3: a codex agent takes the skill index and its own prompt on its command line"
         ),
         "{}",
         outcome.stderr

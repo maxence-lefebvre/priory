@@ -2,6 +2,7 @@ use crate::factory::{
     ASK_SHAPE, Agent, Backend, Benchmark, CODEX_PROMPT_LIMIT, Decider, Effect, Factory, Harness,
     INSTRUCTIONS, Intervention, Loaded, Moment, OPEN_MEMORIES_PR, OnChange, PermissionMode,
     Problem, Proof, Recipe, ScoreKind, ScoreOn, Scorer, Session, Step, Trigger, Until, Workflow,
+    join_instructions,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
 use crate::labels;
@@ -815,21 +816,31 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
     if !matches!(value.harness, Harness::Codex) {
         return;
     }
-    let instructions = factory.codex_instructions();
-    let size = instructions.len() + "\n\n".len() + factory.prompt(value).len();
-    if !instructions.is_empty() && size > CODEX_PROMPT_LIMIT {
-        let mut parts = vec![INSTRUCTIONS];
+    // What a Codex run gets as `developer_instructions`, as the daemon joins it.
+    let size = join_instructions(&factory.codex_instructions(), &factory.prompt(value)).len();
+    if size > CODEX_PROMPT_LIMIT {
+        let mut parts = Vec::new();
+        if !factory.instructions().is_empty() {
+            parts.push(INSTRUCTIONS);
+        }
         if !factory.memories.is_empty() {
             parts.push("the memory index");
         }
         if !factory.skills.is_empty() {
             parts.push("the skill index");
         }
-        let parts = format!("{} and its own prompt", parts.join(", "));
+        let (parts, they) = if parts.is_empty() {
+            ("its own prompt".to_owned(), "it is")
+        } else {
+            (
+                format!("{} and its own prompt", parts.join(", ")),
+                "together they are",
+            )
+        };
         problems.push(problem(
             agent,
             agent.lines.field("harness"),
-            format!("a codex agent takes {parts} on its command line, as `developer_instructions`: together they are {size} bytes, over the limit of {CODEX_PROMPT_LIMIT}"),
+            format!("a codex agent takes {parts} on its command line, as `developer_instructions`: {they} {size} bytes, over the limit of {CODEX_PROMPT_LIMIT}"),
         ));
     }
     for (field, set) in [
