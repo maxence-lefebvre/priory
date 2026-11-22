@@ -185,7 +185,7 @@ fn an_unknown_field_names_its_file_and_line() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, compactAt, idleCompactAt, onChange, memory, disk, mcpServers, connectorSignIn, permissions\n"
+        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, compactAt, idleCompactAt, onChange, memory, disk, mcpServers, skills, connectorSignIn, permissions\n"
     );
 }
 
@@ -2809,6 +2809,130 @@ fn the_skill_index_counts_toward_the_codex_limit() {
         ),
         "{}",
         outcome.stderr
+    );
+}
+
+/// A factory with the skills `a`, `b` and `review_notes`, `a` described in `size` bytes, and with
+/// `[kit]` when `kit` holds, whose implementer runs on `harness` with the frontmatter line `line`.
+fn with_named_skills(name: &str, harness: &str, line: &str, size: usize, kit: bool) -> Outcome {
+    let skills: Vec<(String, String)> = [("a", size), ("b", 1500), ("review_notes", 1500)]
+        .map(|(skill, size)| {
+            let description = "d".repeat(size);
+            (
+                format!("skills/{skill}/SKILL.md"),
+                format!("---\nname: {skill}\ndescription: {description}\n---\nDo it.\n"),
+            )
+        })
+        .into();
+    let agent = format!(
+        "+++\ndescription = \"Implements one task.\"\nharness = \"{harness}\"\n{line}\n+++\nMake the smallest correct change.\n"
+    );
+    let toml = "name = \"demo\"\n\n[kit]\nrepo = \"git@github.com:owner/abbey.git\"\n";
+    let mut files: Vec<(&str, &str)> = valid();
+    files[1] = ("agents/implementer/agent.md", &agent);
+    if kit {
+        files[0] = ("factory.toml", toml);
+    }
+    files.extend(
+        skills
+            .iter()
+            .map(|(file, text)| (file.as_str(), text.as_str())),
+    );
+    check(&factory(name, &files))
+}
+
+#[test]
+fn a_skills_list_naming_no_skill_of_a_factory_without_a_kit_fails_the_check_with_the_factorys_skills()
+ {
+    let line = "skills = [\"a\", \"review-coments\"]";
+
+    let outcome = with_named_skills("skills-unknown", "claude-code", line, 10, false);
+    let kit = with_named_skills("skills-unknown-kit", "claude-code", line, 10, true);
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "agents/implementer/agent.md:4: `skills` names `review-coments`, which is not a skill of this factory: a, b, review_notes\n"
+    );
+    assert_eq!(
+        (kit.code, kit.stderr.as_str()),
+        (0, ""),
+        "the kit may hold it"
+    );
+}
+
+#[test]
+fn a_skills_list_with_a_name_twice_or_an_empty_name_fails_the_check() {
+    let twice = with_named_skills(
+        "skills-twice",
+        "claude-code",
+        "skills = [\"a\", \"a\"]",
+        10,
+        true,
+    );
+    let empty = with_named_skills("skills-empty", "claude-code", "skills = [\"\"]", 10, true);
+    let underscore = with_named_skills(
+        "skills-underscore",
+        "claude-code",
+        "skills = [\"review_notes\"]",
+        10,
+        false,
+    );
+    let none = with_named_skills("skills-none", "claude-code", "skills = []", 10, false);
+
+    assert_eq!(twice.code, 1);
+    assert_eq!(
+        twice.stderr,
+        "agents/implementer/agent.md:4: `skills` names `a` twice\n"
+    );
+    assert_eq!(empty.code, 1);
+    assert_eq!(
+        empty.stderr,
+        "agents/implementer/agent.md:4: `skills` holds an empty name\n"
+    );
+    assert_eq!((underscore.code, underscore.stderr.as_str()), (0, ""));
+    assert_eq!((none.code, none.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn a_codex_agent_counts_only_the_skills_it_names_toward_its_limit() {
+    let every = with_named_skills("skills-codex-every", "codex", "", 6000, false);
+    let named = with_named_skills(
+        "skills-codex-named",
+        "codex",
+        "skills = [\"b\", \"review_notes\"]",
+        6000,
+        false,
+    );
+
+    assert_eq!(every.code, 1, "{}", every.stderr);
+    assert!(
+        every.stderr.starts_with(
+            "agents/implementer/agent.md:3: a codex agent takes the skill index and its own prompt on its command line, as `developer_instructions`: together they are"
+        ),
+        "{}",
+        every.stderr
+    );
+    assert_eq!((named.code, named.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn a_codex_agent_whose_own_prompt_passes_the_limit_fails_the_check_without_instructions_or_skills()
+{
+    let mut files = valid();
+    let agent = format!(
+        "+++\ndescription = \"Implements one task.\"\nharness = \"codex\"\nskills = []\n+++\n{}\n",
+        "a".repeat(9000)
+    );
+    files[1] = ("agents/implementer/agent.md", &agent);
+    files.push(("skills/release-notes/SKILL.md", SKILL));
+
+    let outcome = check(&factory("codex-skills-none-prompt-long", &files));
+
+    assert_eq!(outcome.code, 1, "{}", outcome.stderr);
+    assert_eq!(
+        outcome.stderr,
+        "agents/implementer/agent.md:3: a codex agent takes its own prompt on its command line, as `developer_instructions`: it is 9000 bytes, over the limit of 8192\n"
     );
 }
 

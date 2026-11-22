@@ -425,6 +425,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
     for agent in factory.agents.values() {
         check_codex(factory, agent, &mut problems);
         check_shared(agent, &mut problems);
+        check_skills(factory, agent, &mut problems);
     }
     for workflow in factory.workflows.values() {
         check_band(
@@ -791,6 +792,40 @@ fn check_band<T>(
     }
 }
 
+/// Refuses an empty or repeated name in an agent's `skills`, and, without a kit, a name that is no
+/// skill of the factory.
+fn check_skills(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
+    let Some(skills) = &agent.value.skills else {
+        return;
+    };
+    let line = agent.lines.field("skills");
+    let kit = factory
+        .settings
+        .as_ref()
+        .is_some_and(|settings| settings.value.kit.is_some());
+    let mut seen = BTreeSet::new();
+    for name in skills {
+        let message = if name.is_empty() {
+            "`skills` holds an empty name".to_owned()
+        } else if !seen.insert(name) {
+            format!("`skills` names `{name}` twice")
+        } else if !kit && !factory.skills.contains_key(name) {
+            let known: Vec<&str> = factory.skills.keys().map(String::as_str).collect();
+            format!(
+                "`skills` names `{name}`, which is not a skill of this factory: {}",
+                if known.is_empty() {
+                    "it has none".to_owned()
+                } else {
+                    known.join(", ")
+                }
+            )
+        } else {
+            continue;
+        };
+        problems.push(problem(agent, line, message));
+    }
+}
+
 /// Refuses the keys that only a shared session reads.
 fn check_shared(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
     let value = &agent.value;
@@ -817,7 +852,7 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
         return;
     }
     // What a Codex run gets as `developer_instructions`, as the daemon joins it.
-    let size = join_instructions(&factory.codex_instructions(), &factory.prompt(value)).len();
+    let size = join_instructions(&factory.codex_instructions(value), &factory.prompt(value)).len();
     if size > CODEX_PROMPT_LIMIT {
         let mut parts = Vec::new();
         if !factory.instructions().is_empty() {
@@ -826,7 +861,7 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
         if !factory.memories.is_empty() {
             parts.push("the memory index");
         }
-        if !factory.skills.is_empty() {
+        if factory.skills.keys().any(|name| value.gets_skill(name)) {
             parts.push("the skill index");
         }
         let (parts, they) = if parts.is_empty() {
