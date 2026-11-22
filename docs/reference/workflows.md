@@ -318,7 +318,7 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` a code step needs an `action` `` | A code step without `action` |
 | `` a `run` action needs a `run` command `` | `action = "run"` without `run` |
 | `` only a `run` action has a `run` command `` | `run` on a code step with another action |
-| `` an `open-memories-pr` action writes to the kit repository, so factory.toml needs a `[kit]` `` | An `open-memories-pr` step in a factory without `[kit]` |
+| `` an `open-memories-pr` action writes to the memories repository or the kit, so factory.toml needs a `[memories]` or a `[kit]` `` | An `open-memories-pr` step in a factory with neither `[memories]` nor `[kit]` |
 | `` only a code step has a `run` command `` | `run` on a model or human step |
 | `` only a human step has a `command` `` | `command` on a model or code step |
 | `` only a human step has a `question` `` | `question` on a model or code step |

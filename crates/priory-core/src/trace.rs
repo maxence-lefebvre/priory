@@ -168,14 +168,15 @@ pub(crate) fn ended(
     }
     if let Some(agent) = agent {
         if let Some(run) = run {
-            let (hash, commit) = tx
+            let (hash, commit, memories) = tx
                 .query_row(
-                    "SELECT kit_hash, kit_commit FROM runs WHERE id = ?1",
+                    "SELECT kit_hash, kit_commit, memories_commit FROM runs WHERE id = ?1",
                     [run],
                     |row| {
                         Ok((
                             row.get::<_, Option<String>>(0)?,
                             row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
                         ))
                     },
                 )
@@ -184,6 +185,9 @@ pub(crate) fn ended(
             data["kit_hash"] = hash.map_or(Value::Null, Value::from);
             if let Some(commit) = commit {
                 data["kit_commit"] = Value::from(commit);
+            }
+            if let Some(commit) = memories {
+                data["memories_commit"] = Value::from(commit);
             }
         }
         data["harness"] = json!(agent.value.harness);

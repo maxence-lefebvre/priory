@@ -196,9 +196,9 @@ pub const LEFT_OUT: [&str; 10] = [
 ];
 
 /// The text of a replay's `factory.toml`, from the factory folder `dir`: its `factory.toml` or
-/// `factory.yaml` without the keys of `LEFT_OUT`, and with a kit repository given as a relative
-/// path made absolute, since the replay's copy of the factory lives elsewhere. Each name in
-/// `[asks.targets]` stays, as the folder `targets`, so a step's command still checks and runs
+/// `factory.yaml` without the keys of `LEFT_OUT`, and with a kit or memories repository given as a
+/// relative path made absolute, since the replay's copy of the factory lives elsewhere. Each name
+/// in `[asks.targets]` stays, as the folder `targets`, so a step's command still checks and runs
 /// nowhere that matters.
 pub fn replay_settings(dir: &Path, targets: &Path) -> Result<String, String> {
     let found = ["factory.toml", "factory.yaml", "factory.yml"]
@@ -233,16 +233,18 @@ pub fn replay_settings(dir: &Path, targets: &Path) -> Result<String, String> {
         asks.insert("targets".to_owned(), toml::Value::Table(named));
         table.insert("asks".to_owned(), toml::Value::Table(asks));
     }
-    if let Some(toml::Value::String(repo)) = table
-        .get_mut("kit")
-        .and_then(|kit| kit.as_table_mut())
-        .and_then(|kit| kit.get_mut("repo"))
-    {
-        let trimmed = repo.trim();
-        if !trimmed.contains(':') && Path::new(trimmed).is_relative() {
-            let absolute =
-                std::path::absolute(dir.join(trimmed)).map_err(|error| at(error.to_string()))?;
-            *repo = absolute.display().to_string();
+    for key in ["kit", "memories"] {
+        if let Some(toml::Value::String(repo)) = table
+            .get_mut(key)
+            .and_then(|kit| kit.as_table_mut())
+            .and_then(|kit| kit.get_mut("repo"))
+        {
+            let trimmed = repo.trim();
+            if !trimmed.contains(':') && Path::new(trimmed).is_relative() {
+                let absolute = std::path::absolute(dir.join(trimmed))
+                    .map_err(|error| at(error.to_string()))?;
+                *repo = absolute.display().to_string();
+            }
         }
     }
     toml::to_string(&table).map_err(|error| at(error.to_string()))

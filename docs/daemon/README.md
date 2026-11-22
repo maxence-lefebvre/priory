@@ -75,8 +75,9 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
   nudge's evaluation.
 - [skills.md](skills.md): how the factory's skills, `instructions.md` and memories reach every
   run, the skills and memories a run gets when it touches a file under their `paths`, the `[kit]`
-  repository each runner fetches, the hash and commit each run records, and the memories agents write with `remember` and `forget`, which a person accepts, and the daily pull
-  request that moves accepted ones into the kit.
+  and `[memories]` repositories each runner fetches, the hashes and commits each run records, the
+  memories agents write with `remember` and `forget`, which a person accepts, and the daily pull
+  request that moves accepted ones into the memories repository or the kit.
 - [writing.md](writing.md): the factory's writing guide, which every agent's system prompt carries,
   and its evaluation.
 - [guard.md](guard.md): the tool guard, which denies irreversible tool calls no person approved.
