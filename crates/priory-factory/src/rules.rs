@@ -866,14 +866,15 @@ fn check_hooked(
             .keys()
             .any(|key| !hooked.filters.contains(&key.as_str()))
     }) {
-        let (last, others) = hooked.filters.split_last().expect("a source has filters");
-        let others: Vec<String> = others.iter().map(|filter| format!("`{filter}`")).collect();
+        let filters: Vec<String> = hooked.filters.iter().map(|f| format!("`{f}`")).collect();
+        let filters = match filters.split_last() {
+            Some((last, [])) => last.clone(),
+            Some((last, others)) => format!("{} or {last}", others.join(", ")),
+            None => String::new(),
+        };
         report(
             "filter",
-            format!(
-                "a `{source}` trigger filters on {} or `{last}`",
-                others.join(", ")
-            ),
+            format!("a `{source}` trigger filters on {filters}"),
         );
     }
     if value.repo.as_deref().is_some_and(|repo| !owner_name(repo)) {
