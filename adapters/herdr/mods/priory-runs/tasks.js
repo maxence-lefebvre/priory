@@ -90,3 +90,6 @@ const TRIAGE_WORDS = { "nothing-to-do": "nothing to do", "persons-call": "your c
 
 /** A feedback item's class as the task page words it. */
 export const triageWords = (triage) => TRIAGE_WORDS[triage] || triage;
+
+/** A task's workflow and step as a row shows them: the step once when it is the workflow's name. @param {any} task */
+export const workStep = (task) => [task.workflow, task.step !== task.workflow && task.step].filter(Boolean).join(", ");

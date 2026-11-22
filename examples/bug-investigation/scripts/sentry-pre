@@ -1,0 +1,29 @@
+#!/bin/sh
+# The Sentry trigger's pre script: drops an issue below the level named by --min-level.
+# The event arrives as JSON on stdin. Exit 0 keeps the request, exit 1 drops it with the first
+# line printed as the reason. It only reads, since the intake may run it twice for one event.
+set -eu
+
+min=error
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --min-level) min="$2"; shift 2 ;;
+    *) echo "unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+
+rank() {
+  case "$1" in
+    debug) echo 0 ;; info) echo 1 ;; warning) echo 2 ;; error) echo 3 ;; fatal) echo 4 ;;
+    *) echo 3 ;;
+  esac
+}
+
+# Sentry's level is a plain word, and quotes inside the event's strings arrive escaped.
+level=$(sed -n 's/.*"level":"\([a-z]*\)".*/\1/p' | head -n 1)
+level=${level:-error}
+
+if [ "$(rank "$level")" -lt "$(rank "$min")" ]; then
+  echo "level $level is below $min"
+  exit 1
+fi

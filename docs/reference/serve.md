@@ -671,7 +671,7 @@ And these objects:
 | `bands` | The name of one of the factory's bands, highest first, as the daemon last recorded them. A band that holds no task is listed too |
 | `workflows` | The name of one of the factory's workflows, sorted. `priory queue --json` without `DIR` lists none |
 | `up_next` | One of the next three runs, soonest first: `at`, `kind`, `task`, `key`, `title`, `trigger` and `why`. See [Up next](#up-next) |
-| `waiting` | A queued or ready task in start order, then each held task by when it was held: `position` and `band_position` (its place in the queue and in its band, null for a held task), `id`, `key`, `title`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `since`, and `conditions` (see [Conditions](#conditions)), null for a task that is not held |
+| `waiting` | A queued or ready task in start order, then each held task by when it was held: `position` and `band_position` (its place in the queue and in its band, null for a held task), `id`, `key`, `title`, `workflow`, `step`, `state`, `band`, `lane`, `reason`, `since`, `conditions` (see [Conditions](#conditions)), null for a task that is not held, `stops`, the tasks whose runs stop at their next turn end to make room for it, and `protected`, each live run's task that it may not stop, as `{task, reason}` (see [room.md](../daemon/room.md#urgent-wakes)); both are `[]` for any other task |
 | `asleep` | An asleep task, longest asleep first: `id`, `key`, `title`, `workflow`, `step`, `band`, `lane`, `since` (when it fell asleep), `retired`, and `waits`, each open wait as `kind`, `on` (what it waits on, as `priory waits` shows it) and `since` (when it was stored). A task asleep only on an ask has no waits |
 | `running` | A live run: `run`, `task`, `key`, `title`, `step`, `agent`, `started` |
 | `ended` | A task done, failed or dropped in the last day, latest first: `id`, `key`, `title`, `workflow`, `step`, `state`, `reason`, `ended` |
@@ -731,6 +731,7 @@ one of `workflow` (the default), `agent`, `model`, `machine`, `repo` and `lane`.
 | `split` | One entry per value of the current window's records, sorted: the value under the dimension's name, such as `"model": "claude-opus-5-5"`, and a [total](#cost-total) |
 | `scores` | One entry per value and scorer of the current window's scores, sorted: the value under the dimension's name, `scorer`, then the count of each verdict, `pass`, `fail`, `error` and `not_applicable`. A run counts once per scorer, with its latest score in the window |
 | `caps` | One entry per spend cap: `scope` (`factory`, `trigger <name>` or `lane <lane>`), `period` (`task`, `day` or `week`), `cap_usd`, `spent_usd` and `task`. A `day` or `week` cap's `spent_usd` is what its window spent up to now, and `task` is null. A `task` cap's is the most an active task under it spent, and `task` names that task; both are null with no such task. See [spend.md](../daemon/spend.md) |
+| `held` | One entry per task held at a spend cap now, by task: `task`, its `key`, the cap it reached as `scope` and `period`, `cap_usd`, and `spent_usd`, what the cap counted when the task was held: the task's spend for a `task` cap, its window's for a `day` or `week` cap. See [spend.md](../daemon/spend.md#held-with-one-ask) |
 
 ### Cost total
 

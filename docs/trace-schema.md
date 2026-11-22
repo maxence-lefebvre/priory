@@ -102,6 +102,46 @@ names the run that failed.
 | `action`  | yes      | What the factory did about the cause, such as `sweep` or `wait for room`  |
 | `outcome` | yes      | `ready` when the task waits to start its agent again, `failed` when it stays failed |
 
+## `factory.run.preempted`
+
+A run ended at its turn end to make room for the head of the queue, in a band of `[queue]
+preempt` (see [room.md](daemon/room.md#urgent-wakes)). It shares `factory`, `factory_revision`,
+`workflow`, `task`, `key`, `generation`, `step` and `machine` with `factory.step.ended`. `run`
+names the stopped run and `task` its task.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d4-0000-7000-8000-000000000007",
+  "source": "factory://example/xps13",
+  "type": "factory.run.preempted",
+  "time": "2026-11-22T10:04:12Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "7",
+    "key": "github:example/app#42",
+    "run": "31",
+    "generation": 1,
+    "step": "implement",
+    "machine": "xps13",
+    "band": "later",
+    "head_task": "12",
+    "head_band": "blocker",
+    "waited_ms": 81000
+  }
+}
+```
+
+| Field       | Required | Meaning                                                              |
+| ----------- | -------- | -------------------------------------------------------------------- |
+| `band`      | yes      | The stopped task's band                                              |
+| `head_task` | yes      | The task the run stopped for                                         |
+| `head_band` | yes      | That task's band                                                     |
+| `waited_ms` | no       | How long the head waited between the mark and the stop               |
+
 ## `factory.task.reopened`
 
 Feedback on a done task's open pull request, issue, Linear issue or Slack thread moved it back to a

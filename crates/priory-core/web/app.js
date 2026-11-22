@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, snoozeShortcut, snoozed, stillArmed, submitted, takesText, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, stillArmed, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
@@ -11,8 +11,8 @@ import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedP
 import { emptyDetail, eventWords, handled, neverOwned, sinceWords, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
-import { actionNote, batchParts, countWords, dueParts, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
-import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskLabel, taskViews, triageWords } from "./tasks.js";
+import { actionNote, batchParts, capsuleWords, countHead, countWords, dueParts, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
+import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskLabel, taskViews, triageWords, workStep } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { PANELS, backTo, pageTitle } from "./pages.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
@@ -579,7 +579,7 @@ function asleepRow(task) {
   const waits = (task.waits || []).map((wait) => `${wait.kind} ${wait.on}, ${age(wait.since)}`).join("; ");
   return html`<a class="row" href="/tasks/${task.id}">
     ${tile("asleep")}
-    <span class="l1"><span class="mono">${taskLabel(task.key)}</span><span>${task.workflow} ${task.step}</span><span>asleep</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
+    <span class="l1"><span class="mono">${taskLabel(task.key)}</span><span>${workStep(task)}</span><span>asleep</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
     <span class="l2 r">${task.title || task.lane || ""}</span>
     <span class="l3"><span>${waits ? `Waits on ${waits}` : "Waits on an ask"}</span></span>
     <span class="chev">${icon("chevron-right", "s15")}</span></a>`;
@@ -595,7 +595,7 @@ const prsTag = (task, id) => {
 function taskRow(task) {
   return html`<div class="row">
     ${tile(task.state)}
-    <span class="l1"><span class="mono">${taskLabel(task.key)}</span><span>${task.workflow} ${task.step}</span><span>${task.state}</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
+    <span class="l1"><span class="mono">${taskLabel(task.key)}</span><span>${workStep(task)}</span><span>${task.state}</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
     <span class="l2 r ${task.reason ? `t-${role(task.state)}` : ""}">${autolinked(task.reason || task.tldr || task.title || task.lane || "", task.repo)}</span></div>`;
 }
 
@@ -634,9 +634,10 @@ function upNext(model, queueLink = true) {
   const what = (run) => html`<span class="mono">${run.key ? taskLabel(run.key) : run.trigger}</span> ${run.why}`;
   const body = next.length
     ? html`<ol>${next.map((run) => html`<li>${timeTag(run.at, when(run))}${run.task ? html`<a href="/tasks/${run.task}" title="task ${run.task}">${what(run)}</a>` : html`<span>${what(run)}</span>`}</li>`)}</ol>`
-    : html`<p>Nothing is queued or scheduled to run next.</p>`;
+    : null;
   const link = queueLink ? html`<a class="open" href="/queue">Open the queue</a>` : "";
-  return html`<div class="sec">Up next<span>next 3 runs</span></div><div class="strip">${body}${link}</div>`;
+  const shown = body ? html`<div class="strip">${body}${link}</div>` : html`<p class="empty">Nothing is queued or scheduled to run next.</p>${link}`;
+  return html`<div class="sec">Up next<span>next 3 runs</span></div>${shown}`;
 }
 
 // The one next thing (DESIGN.md, Desk): the desk's `next`, an alarm or the ask that ranks first, and why.
@@ -665,8 +666,9 @@ function sinceYouLooked() {
   const body = groups.length
     ? groups.map((group) => html`<div class="sgroup">${group.task ? html`<a class="mono" href="/tasks/${group.task}" title="task ${group.task}">${taskLabel(group.key)}</a>` : html`<span class="mono">factory</span>`}
       <ol>${group.events.map((event) => html`<li>${timeTag(event.time)}<span>${sinceWords(event.what)}</span></li>`)}</ol></div>`)
-    : html`<p>Nothing happened since you looked.</p>`;
-  return html`<div class="sec">Since you looked<span>${from ? `since ${today(from) ? clock(from) : date(from)}` : "latest 50"}</span></div><div class="strip since" data-since>${body}</div>`;
+    : null;
+  const shown = body ? html`<div class="strip since" data-since>${body}</div>` : html`<p class="empty" data-since>Nothing happened since you looked.</p>`;
+  return html`<div class="sec">Since you looked<span>${from ? `since ${today(from) ? clock(from) : date(from)}` : "latest 50"}</span></div>${shown}`;
 }
 
 function deskBody(wide) {
@@ -833,6 +835,7 @@ const review = html`<span class="task-acts"><a class="btn secondary act" href="/
 const itemActs = (item) => (["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : rowActs(item));
 
 function deskTable(model, selected) {
+  if (!model.open.length && !model.stopped.length && !model.todos.length && !model.other.length) return "";
   const itemLine = (item) => item.kind === "memories" ? html`<tr>
     <td>${stateWord("memories")}</td><td class="mono"></td><td></td><td class="q full"><span>${item.candidates?.length ?? 0} memory candidates: ${(item.candidates || []).map((candidate) => candidate.name).join(", ")}</span>${fold(review)}</td>
     <td class="recw">${review}</td><td class="r">${timeTag(item.since)}</td></tr>` : html`<tr>
@@ -855,7 +858,8 @@ const addButton = (kind) => html`<button class="${kind}" data-action="add-open" 
 // On a phone the Add button sits beside the capsule, or alone where the capsule hides.
 function capsule(model) {
   const n = model.open.length;
-  const answer = n && deskView() === "needs" ? html`<a class="capsule" href="/asks/${model.first.id}">${icon("ask", "s20")}Answer ${n} ${n === 1 ? "ask" : "asks"}</a>` : "";
+  const words = capsuleWords(n, Boolean(state.failed));
+  const answer = n && deskView() === "needs" ? html`<a class="capsule ${words.off ? "off" : ""}" href="/asks/${model.first.id}">${icon(words.icon, "s20")}${words.text}</a>` : "";
   return html`<div class="fade"></div><div class="dock">${answer}${addButton("fab")}</div>`;
 }
 
@@ -965,7 +969,7 @@ function taskListRow(task) {
   if (elsewhere(task, ago)) return remoteListRow(task);
   const line3 = reasonShown(task) ? html`<span class="t-${role(task.state)}">${task.reason}</span>${batchTag(task)}` : html`<span>${task.lane || ""}</span><span>${task.band || ""}</span>${batchTag(task)}`;
   return html`<div class="row" data-href="/tasks/${task.id}">${tile(task.state)}
-    <span class="l1"><a class="mono" href="/tasks/${task.id}" title="task ${task.id}">${taskLabel(task.key)}</a><span>${task.workflow} ${task.step}</span><span>${task.state}</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
+    <span class="l1"><a class="mono" href="/tasks/${task.id}" title="task ${task.id}">${taskLabel(task.key)}</a><span>${workStep(task)}</span><span>${task.state}</span>${prsTag(task)}<span class="age">${timeTag(task.since)}</span></span>
     <span class="l2 r">${task.title || task.tldr || ""}</span><span class="l3">${line3}</span><span class="chev">${icon("chevron-right", "s15")}</span></div>`;
 }
 
@@ -1111,8 +1115,9 @@ function askDetail(id, wide) {
   const nav = (to, label, name) => (to
     ? html`<a class="iconbtn" href="/asks/${to.id}" aria-label="${label}">${icon(name, "s20")}</a>`
     : html`<span class="iconbtn" aria-disabled="true" aria-label="${label}">${icon(name, "s20")}</span>`);
+  const shrunk = shrunkHead(ask);
   const header = html`<div class="ahead">
-    ${wide ? html`<span class="ctx">${tile("ask", "sm")}<span>ask <span class="mono">#${ask.id}</span></span><span>revision ${ask.revision}</span><span>${timeTag(ask.since)}</span></span>` : html`<a class="back" href="${back[0]}">${icon("chevron-left", "s22")}${back[1]}</a>`}
+    ${wide ? html`<span class="ctx">${tile("ask", "sm")}<span>ask <span class="mono">#${ask.id}</span></span><span>revision ${ask.revision}</span><span>${timeTag(ask.since)}</span></span>` : html`<a class="back" href="${back[0]}" aria-label="${back[1]}">${icon("chevron-left", "s22")}<span>${back[1]}</span></a><span class="aq" aria-hidden="true"><b>${shrunk.question}</b><small>${shrunk.place}</small></span>`}
     ${at >= 0 ? html`<span class="pos num">${at + 1}<span>/${open.length}</span></span>` : html`<span class="sp"></span>`}
     ${nav(open[at - 1], "Previous ask", "chevron-up")}${nav(open[at + 1], "Next ask", "chevron-down")}
     ${wide ? html`<a class="iconbtn" href="${back[0]}" aria-label="Close">${icon("x", "s20")}</a>` : ""}</div>`;
@@ -1478,7 +1483,7 @@ function taskPage(id) {
     <textarea id="say" name="text" rows="2" placeholder="Say to the agent">${state.sayDrafts.get(task.id) || ""}</textarea><button class="btn primary" ${said}>Say</button></form>`;
   const sections = taskSections(task).map(([, , section]) => section);
   return html`${back}<div class="scroll"><div class="ask task">
-    <p class="ctx">${tile(task.state, "sm")}<span class="mono">${taskLabel(task.key)}</span><span>${task.state}</span><span>${task.workflow} ${task.step}</span><span>${task.lane || ""}</span><span>${task.band || ""}</span>${task.batch == null ? "" : html`<a href="/batches/${task.batch}">batch ${task.batch}</a>`}</p>
+    <p class="ctx">${tile(task.state, "sm")}<span class="mono">${taskLabel(task.key)}</span><span>${task.state}</span><span>${workStep(task)}</span><span>${task.lane || ""}</span><span>${task.band || ""}</span>${task.batch == null ? "" : html`<a href="/batches/${task.batch}">batch ${task.batch}</a>`}</p>
     <h1 class="question">${autolinked(task.tldr || task.brief?.title || task.brief?.request?.split("\n")[0] || taskLabel(task.key), task.repo)}</h1>
     ${task.reason ? html`<p class="text t-${role(task.state)}">${autolinked(task.reason, task.repo)}</p>` : ""}
     ${taskAsks(task)}${taskActs(task.id, task.state)}${say}</div>${sections}${terminalSection(task)}</div>`;
@@ -1588,7 +1593,7 @@ function terminalBody({ term, task, tmux, end }) {
   if (stale && !end && !gone) notes.push(["warn", "unplug", screen ? `Reconnecting. Screen from ${clock(new Date(at).toISOString())}, ${Math.round((Date.now() - at) / 1000)} s ago.` : "Reconnecting. The screen could not be read yet."]);
   if (end) notes.push(["", (STATES[end] || [, "circle-help"])[1], screen ? `Run ${run} ended as ${end}. This is the last screen this page saw.` : `Run ${run} ended as ${end}.`]);
   else if (gone) notes.push(["warn", "unplug", `This server reads no screen of run ${run}. Run priory screen ${task} on the runner to see why.`]);
-  else if (!screen && !stale) notes.push(["", "clock", "Reading the screen…"]);
+  else if (!screen && !stale) notes.push(["", "clock", "Loading the screen…"]);
   const keys = keyboard.state();
   const held = end ? null : keys.held;
   const offer = !end && !held && Boolean(screen?.keyboard);
@@ -2389,7 +2394,7 @@ function addedTask() {
   return html`<div class="added" role="status">
     <p class="line">Added. The task waits in the queue for its turn.</p>
     <div class="row">${tile(task.state)}
-      <span class="l1"><span class="mono">${taskLabel(task.key)}</span><span>${[task.workflow, task.step !== task.workflow && task.step].filter(Boolean).join(", ")}</span><span class="age">${task.state}</span></span>
+      <span class="l1"><span class="mono">${taskLabel(task.key)}</span><span>${workStep(task)}</span><span class="age">${task.state}</span></span>
       <span class="l2">${task.brief?.request || task.brief?.title || (id === null ? "No task took this key yet. It shows on the Desk once one does." : "")}</span>
       <span class="l3">${[task.band, task.lane].filter(Boolean).join(", ")}</span></div>
     <div class="acts"><button class="btn secondary" data-action="add-another">Add another</button><button class="btn primary" data-action="add-done">Close</button></div></div>`;
@@ -2552,7 +2557,7 @@ const flowEdge = (edge) => {
   const line = (extra) => html`<path d="${edge.d}" fill="none" stroke-width="${style.width}" ${style.dash ? raw(`stroke-dasharray="${style.dash}"`) : ""} class="${extra}"/>`;
   return html`<g class="fedge by-${edge.by}${edge.ungated ? " ungated" : ""}"><title>${edge.outcome}: ${edge.from} to ${edge.to}, ${BY_WORD[edge.by] ?? edge.by}${edge.ungated ? ", reaches an irreversible step with no person's decision" : ""}</title>
     ${edge.ungated ? html`<path d="${edge.d}" fill="none" stroke-width="${style.width + 6}" class="halo"/>` : ""}${line("fline")}
-    <text x="${edge.mid.x + (edge.vertical ? 0 : 5)}" y="${edge.mid.y}" class="felabel"${edge.vertical ? raw(` transform="rotate(-90 ${edge.mid.x} ${edge.mid.y})" text-anchor="middle"`) : ""}>${clip(edge.outcome, 14)}</text></g>`;
+    <text x="${edge.label.x}" y="${edge.label.y}" text-anchor="${edge.label.anchor}" class="felabel"${edge.label.turned ? raw(` transform="rotate(-90 ${edge.label.x} ${edge.label.y})"`) : ""}>${clip(edge.outcome, 14)}</text></g>`;
 };
 
 const flowLegend = () => html`<section class="sect flegend" aria-labelledby="legend-title"><h2 class="sh" id="legend-title">Key</h2>
@@ -2586,7 +2591,7 @@ function flowsPage(compact) {
   const head = compact ? html`<div class="top"><h1>Flows</h1><span class="sp"></span>${connection()}</div>` : html`<div class="lhead"><h1>Flows</h1></div>`;
   const flows = state.data.flows;
   if (!flows && state.flowsError) return html`${head}<p class="empty" role="alert">The flows did not load: ${state.flowsError}. Run <code>priory check --explain</code> meanwhile.</p><p class="empty"><button class="btn secondary" data-action="flows-retry">Retry</button></p>`;
-  if (!flows) { setTimeout(loadFlows); return html`${head}<p class="empty" role="status">Loading the flows.</p>`; }
+  if (!flows) { setTimeout(loadFlows); return html`${head}<p class="empty" role="status">Loading the flows…</p>`; }
   const body = flows.workflows.length ? html`${flowLegend()}${flows.workflows.map((workflow) => flowSection(workflow, flows.paths, flows.irreversible))}` : html`<p class="empty">This factory has no workflows. Add one under <code>workflows/</code>.</p>`;
   return html`${head}<div class="panel" role="region" aria-label="Flows"><div class="scroll">${body}</div></div>`;
 }
@@ -2733,10 +2738,10 @@ async function turnPush(on) {
 // Screens
 function deskPhone(withCapsule = true) {
   const { model, views, banner, rows } = deskBody(false);
-  const n = model.open.length;
+  const head = countHead(model.open.length);
   return html`<div class="top"><span class="fac">${state.data.views.factory}</span>${connection()}</div>
     <div class="panel" role="region" aria-label="Desk"><h1 class="sr">Desk</h1><div class="scroll ${withCapsule ? "desk-end" : ""}">
-      <div class="count"><span class="n num">${n}</span><span class="w">${n === 1 ? "ask needs you" : "asks need you"}<span>${countLine(model)}</span></span></div>
+      <div class="count ${head.n ? "" : "quiet"}">${head.n ? html`<span class="n num">${head.n}</span>` : ""}<span class="w">${head.words}<span>${countLine(model)}</span></span></div>
       ${nextCard(model)}${views}${banner}${rows}</div>${withCapsule ? capsule(model) : ""}</div>`;
 }
 
@@ -2749,9 +2754,9 @@ function asksPhone() {
 function listPanel(panel, wide) {
   if (panel === "desk") {
     const { model, views, banner, rows } = deskBody(wide);
-    const n = model.open.length;
+    const head = countHead(model.open.length);
     return html`<div class="list" role="region" aria-label="Desk"><div class="lhead"><h1>Desk</h1>
-      <span class="cnt"><span class="n num">${n}</span><span class="w">${n === 1 ? "ask needs you" : "asks need you"}<span>${countLine(model)}</span></span></span></div>
+      <span class="cnt">${head.n ? html`<span class="n num">${head.n}</span>` : ""}<span class="w">${head.words}<span>${countLine(model)}</span></span></span></div>
       ${nextCard(model)}${views}${banner}<div class="scroll">${rows}</div>${wide ? keyHints() : ""}</div>`;
   }
   if (panel === "inbox") {
@@ -3039,8 +3044,13 @@ function watchSections(app) {
     }
     const options = scroller.querySelector(".opts");
     const bar = app.querySelector(".abar");
-    if (!options || !bar) continue;
-    track(new IntersectionObserver(([entry]) => { bar.hidden = entry.isIntersecting; }, { root: scroller })).observe(options);
+    const head = app.querySelector(".ahead:has(.aq)");
+    if (!options || !(bar || head)) continue;
+    track(new IntersectionObserver(([entry]) => {
+      if (bar) bar.hidden = entry.isIntersecting;
+      // Only options scrolled past shrink the header; options still below the fold leave it whole.
+      head?.classList.toggle("shrunk", !entry.isIntersecting && entry.boundingClientRect.bottom <= (entry.rootBounds?.top ?? 0));
+    }, { root: scroller })).observe(options);
   }
 }
 

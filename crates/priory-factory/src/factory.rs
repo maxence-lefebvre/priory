@@ -883,6 +883,10 @@ pub struct Queue {
     /// Whether a task waits for an earlier active task that changes the same files; true when unset.
     #[serde(default = "on")]
     pub overlap: bool,
+    /// The bands whose waiting head may stop a run of a lower band at the end of its turn; none
+    /// when unset.
+    #[serde(default)]
+    pub preempt: Vec<String>,
 }
 
 fn on() -> bool {
@@ -891,7 +895,10 @@ fn on() -> bool {
 
 impl Default for Queue {
     fn default() -> Self {
-        Queue { overlap: true }
+        Queue {
+            overlap: true,
+            preempt: Vec::new(),
+        }
     }
 }
 
@@ -1038,6 +1045,9 @@ pub struct Agent {
     /// The MCP servers the run gets, by name.
     #[serde(default)]
     pub mcp_servers: Vec<String>,
+    /// The skills the run gets, by name, from the factory or the kit. Unset, it gets every skill;
+    /// empty, none.
+    pub skills: Option<Vec<String>>,
     /// Lets the run call an MCP server's `authenticate` tools. Off by default: an unattended run
     /// that signs in clears the stored token every later run needs.
     #[serde(default)]
@@ -1047,6 +1057,15 @@ pub struct Agent {
     /// The Markdown after the frontmatter: the agent's instructions.
     #[serde(skip)]
     pub body: String,
+}
+
+impl Agent {
+    /// Whether a run of the agent gets the skill `name`, if the factory or the kit holds it.
+    pub fn gets_skill(&self, name: &str) -> bool {
+        self.skills
+            .as_ref()
+            .is_none_or(|skills| skills.iter().any(|skill| skill == name))
+    }
 }
 
 /// Claude Code's own `permissions` settings, so a person can copy rules across.
@@ -1341,6 +1360,52 @@ pub struct Trigger {
     pub lead: Option<String>,
     /// Spend caps in dollars for the trigger's tasks.
     pub caps: Option<Limits>,
+    /// A script of the factory that runs on each matching event before it becomes a task request,
+    /// and can drop the request or change it.
+    pub pre: Option<Pre>,
+}
+
+/// A trigger's `[pre]` script. Priory execs `argv` with no shell, writes the event and the request
+/// as JSON on its stdin, and reads its decision from its exit and stdout.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Pre {
+    /// The command and its arguments. The first is an executable file inside the factory folder.
+    #[schemars(length(min = 1))]
+    pub argv: Vec<String>,
+    /// How long it may run, at most `60s`; 10 seconds when unset.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub timeout: Option<Duration>,
+    /// Environment variables copied from the process that runs it, beside `PATH`, `LANG` and
+    /// `HOME`.
+    #[serde(default)]
+    pub env: Vec<String>,
+    /// What a script that fails does with the request: `pass` publishes it unchanged, `drop`
+    /// drops it. `pass` when unset.
+    #[serde(default)]
+    pub on_error: OnError,
+}
+
+impl Pre {
+    /// The longest `timeout` a `pre` script may have.
+    pub const MAX_TIMEOUT: Duration = Duration::from_secs(60);
+
+    /// Its timeout, 10 seconds when unset.
+    pub fn timeout(&self) -> Duration {
+        self.timeout.unwrap_or(Duration::from_secs(10))
+    }
+}
+
+/// What a failed `pre` script does with its request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum OnError {
+    /// The request is published unchanged, with `pre.failed`.
+    #[default]
+    Pass,
+    /// The request is dropped.
+    Drop,
 }
 
 /// Why a task is held, and the conditions that release it once all of them hold. With none, a
@@ -2344,6 +2409,13 @@ impl Factory {
             .is_none_or(|settings| settings.value.queue.overlap)
     }
 
+    /// The bands whose waiting head may stop a run of a lower band.
+    pub fn preempt(&self) -> &[String] {
+        self.settings
+            .as_ref()
+            .map_or(&[], |settings| settings.value.queue.preempt.as_slice())
+    }
+
     /// The agent's own prompt, then the factory's writing guide.
     pub fn prompt(&self, agent: &Agent) -> String {
         [
@@ -2376,9 +2448,13 @@ impl Factory {
         join_instructions(self.instructions(), &self.memory_index(folder))
     }
 
-    /// `run_instructions`, then the index of the skills, as a Codex run gets them.
-    pub fn codex_instructions(&self) -> String {
-        let skills = self.skills.iter().map(|(n, s)| (n.as_str(), &s.value));
+    /// `run_instructions`, then the index of the skills `agent` gets, as a Codex run gets them.
+    pub fn codex_instructions(&self, agent: &Agent) -> String {
+        let skills = self
+            .skills
+            .iter()
+            .filter(|(name, _)| agent.gets_skill(name))
+            .map(|(n, s)| (n.as_str(), &s.value));
         join_instructions(
             &self.run_instructions(MEMORY_FOLDER),
             &skill_index(SKILL_FOLDER, skills),

@@ -161,7 +161,7 @@ export default class PrioryCosts extends View {
   body(t, wide) {
     const pad = wide ? S["space-5"] : S["space-4"];
     if (!this.data) {
-      return v_flex().id("costs-body").flex_1().p(pad).text_color(t["text-2"]).child(this.error ? "" : "Reading costs…");
+      return v_flex().id("costs-body").flex_1().p(pad).text_color(t["text-2"]).child(this.error ? "" : "Loading costs…");
     }
     const { costs, attention } = this.data;
     const scroll = (/** @type {string} */ id) => v_flex().id(id).flex_1().min_w_0().min_h_0().overflow_y_scrollbar().px(pad).pt(pad).pb(32).gap(S["space-5"]);

@@ -1630,6 +1630,19 @@ pub fn attach(name: &str, session: &str, read_only: bool) -> Option<Vec<String>>
     )
 }
 
+/// How many tmux clients are attached to the session `name`, or none when tmux cannot tell.
+pub fn clients(name: &str) -> Option<usize> {
+    run(tmux().args([
+        "list-clients",
+        "-t",
+        &format!("={name}"),
+        "-F",
+        "#{client_name}",
+    ]))
+    .ok()
+    .map(|clients| clients.lines().filter(|line| !line.is_empty()).count())
+}
+
 /// Kills the tmux session `name`, if it still exists.
 pub fn kill(name: &str) {
     let _ = run(tmux().args(["kill-session", "-t", &format!("={name}")]));

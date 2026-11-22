@@ -50,7 +50,16 @@ fn as_version_57(db: &rusqlite::Connection) {
         .unwrap();
     }
     db.execute_batch(
-        "ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+        "DROP VIEW task_text; CREATE VIEW task_text AS SELECT tasks.id AS task,
+           coalesce(json_extract(inbox.data, '$.title'), '') AS title,
+           coalesce(json_extract(inbox.data, '$.text'), json_extract(inbox.data, '$.body'),
+             json_extract(inbox.data, '$.description'), json_extract(inbox.data, '$.prompt'), '') AS request,
+           coalesce(tasks.tldr, '') AS tldr,
+           coalesce((SELECT group_concat(summary || ' ' || coalesce(evidence, ''), ' ') FROM results
+             WHERE results.task = tasks.id), '') AS results
+           FROM tasks LEFT JOIN inbox ON inbox.id = tasks.source; ALTER TABLE tasks DROP COLUMN pre_title; ALTER TABLE tasks DROP COLUMN pre_text;
+         ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
+         ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          DROP TRIGGER ask_returns_from_its_lead; DROP TRIGGER push_an_intake_failure;
@@ -61,7 +70,7 @@ fn as_version_57(db: &rusqlite::Connection) {
          ALTER TABLE results DROP COLUMN merge_risk; ALTER TABLE subscriptions DROP COLUMN chosen;
          ALTER TABLE approvals DROP COLUMN generation;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition;
-         DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; PRAGMA user_version = 57;",
+         DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE runs DROP COLUMN preempted_for; ALTER TABLE runs DROP COLUMN marked; ALTER TABLE tasks DROP COLUMN preempted; ALTER TABLE tasks DROP COLUMN protected; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; PRAGMA user_version = 57;",
     )
     .unwrap();
 }

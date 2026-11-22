@@ -1,6 +1,7 @@
 mod conform;
 #[cfg(feature = "postgres")]
 mod partition;
+mod preempt;
 #[cfg(feature = "postgres")]
 mod proxy;
 mod tmux_dir;
@@ -42,12 +43,30 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
+/// Undoes migration 93: the `pre` script's task columns and the pending requests.
+macro_rules! undo_pre {
+    () => {
+        "DROP VIEW task_text; CREATE VIEW task_text AS SELECT tasks.id AS task,
+    coalesce(json_extract(inbox.data, '$.title'), '') AS title,
+    coalesce(json_extract(inbox.data, '$.text'), json_extract(inbox.data, '$.body'),
+      json_extract(inbox.data, '$.description'), json_extract(inbox.data, '$.prompt'), '') AS request,
+    coalesce(tasks.tldr, '') AS tldr,
+    coalesce((SELECT group_concat(summary || ' ' || coalesce(evidence, ''), ' ') FROM results
+      WHERE results.task = tasks.id), '') AS results
+    FROM tasks LEFT JOIN inbox ON inbox.id = tasks.source; ALTER TABLE tasks DROP COLUMN pre_title; ALTER TABLE tasks DROP COLUMN pre_text;
+  ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
+  "
+    };
+}
+
+const UNDO_PRE: &str = undo_pre!();
+
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
 /// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, 66, which added the step a gate enters after the merge, 70, which added idle compactions and session definitions, and 71, which added cleared deliveries, ended snoozes and withdrawal times. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+const UNDO_SINCE_SEARCH: &str = concat!(undo_pre!(), "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE runs DROP COLUMN preempted_for; ALTER TABLE runs DROP COLUMN marked; ALTER TABLE tasks DROP COLUMN preempted; ALTER TABLE tasks DROP COLUMN protected; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
@@ -75,7 +94,7 @@ const UNDO_SINCE_SEARCH: &str = "ALTER TABLE claims DROP COLUMN generation; ALTE
   DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
   DROP TABLE embedder; DROP TABLE vectors; ALTER TABLE tasks DROP COLUMN tldr; DROP TABLE dispatches;
   ALTER TABLE irreversible_asks DROP COLUMN lets;
-  ALTER TABLE tasks DROP COLUMN files; ALTER TABLE tasks DROP COLUMN files_run; DROP TABLE findings;";
+  ALTER TABLE tasks DROP COLUMN files; ALTER TABLE tasks DROP COLUMN files_run; DROP TABLE findings;");
 
 /// A factory, bus, state, Priory home, origin repository and fake `claude`, all under the test's
 /// own directory, and a tmux server in its own short directory. Dropping it kills the daemon and
@@ -1445,6 +1464,50 @@ fn the_first_prompt_is_the_step_prompt_and_the_task_events_typed_once_and_confir
 }
 
 #[test]
+fn the_first_prompt_carries_the_title_text_and_context_a_pre_script_gave() {
+    let mut setup = Setup::new("first-prompt-pre");
+    let source = labeled(42);
+    let mut request = requested(42);
+    request.data["source"] = json!(source.id.to_string());
+    request.data["title"] = json!("Division by zero in /divide");
+    request.data["text"] = json!("Fix the division.");
+    request.data["context"] = json!("312 users hit it today.");
+    request.data["pre"] = json!({
+        "script": "scripts/sentry-pre",
+        "changed": ["title", "text", "context"],
+        "seconds": 0.1
+    });
+    for message in [&source, &request] {
+        setup.publish(message);
+    }
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let typed = setup.typed();
+    let lines: Vec<_> = typed[0].lines().collect();
+    assert!(
+        lines[2].starts_with("github.issues.labeled owner/repo#42 {"),
+        "{lines:?}"
+    );
+    assert!(
+        lines[2].contains(r#""title":"Division by zero in /divide""#),
+        "{lines:?}"
+    );
+    assert!(
+        lines[2].contains(r#""text":"Fix the division.""#),
+        "{lines:?}"
+    );
+    assert_eq!(
+        lines[3..],
+        [
+            "Context from the trigger's pre script scripts/sentry-pre:",
+            "312 users hit it today."
+        ]
+    );
+}
+
+#[test]
 fn an_event_kept_while_the_run_is_running_is_typed_after_the_next_stop() {
     let mut setup = Setup::new("message");
     setup.publish(&requested(42));
@@ -2314,21 +2377,26 @@ fn teardown_kills_a_tmux_server_that_a_late_child_starts() {
         .process_group(0)
         .spawn()
         .unwrap();
-    let mut listed = setup.command("tmux");
-    listed.arg("list-sessions");
-    let mut killed = setup.command("tmux");
-    killed
-        .arg("-S")
-        .arg(setup.tmux.socket().unwrap())
-        .arg("kill-server");
+    let dir = setup.tmux.path().to_owned();
 
     drop(setup);
+    // Once the child is gone, so is any tmux client it ran: a server it started is running now.
     late.wait().unwrap();
-    std::thread::sleep(Duration::from_millis(1000));
 
-    let listed = listed.output().unwrap();
-    let _ = killed.output();
-    assert!(!listed.status.success(), "a tmux server outlived its test");
+    // With TMUX_TMPDIR gone, tmux falls back to the shared /tmp socket, so look for what it inherited.
+    let Some(left) = tmux_dir::inheriting(&dir) else {
+        eprintln!(
+            "skipped the check: this host has no /proc to find a server that outlived the test"
+        );
+        return;
+    };
+    if !left.is_empty() {
+        let _ = Command::new("kill").arg("-9").args(&left).output();
+    }
+    assert!(
+        left.is_empty(),
+        "processes {left:?} outlived the test, a tmux server among them"
+    );
 }
 
 /// Whether process `pid` has exited. An init that reaps late, as in some containers, leaves a dead
@@ -6182,6 +6250,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     setup.crash();
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(UNDO_PRE).unwrap();
     db.execute_batch(
         "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation;
          ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
@@ -6200,7 +6269,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
          ALTER TABLE actions DROP COLUMN stdout; ALTER TABLE actions DROP COLUMN stderr;
          ALTER TABLE actions DROP COLUMN pid; ALTER TABLE actions DROP COLUMN pid_started;
          ALTER TABLE actions DROP COLUMN ended;
-         ALTER TABLE tasks DROP COLUMN progress; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha;
+         ALTER TABLE tasks DROP COLUMN progress; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE runs DROP COLUMN preempted_for; ALTER TABLE runs DROP COLUMN marked; ALTER TABLE tasks DROP COLUMN preempted; ALTER TABLE tasks DROP COLUMN protected; ALTER TABLE tasks DROP COLUMN base_sha;
          ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head;
          DROP TABLE deliveries;
          DROP TABLE reports;
@@ -10592,8 +10661,9 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     setup.crash();
     // The state file as version 64 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(UNDO_PRE).unwrap();
     db.execute_batch(
-        "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+        "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE runs DROP COLUMN preempted_for; ALTER TABLE runs DROP COLUMN marked; ALTER TABLE tasks DROP COLUMN preempted; ALTER TABLE tasks DROP COLUMN protected; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after;
@@ -21170,6 +21240,237 @@ fn a_codex_run_gets_the_factorys_instructions_and_an_index_of_its_skills_before_
         .map(|event| event["data"]["kit_hash"].clone())
         .collect();
     assert_eq!(traced, [json!(claude), json!(codex)]);
+}
+
+impl Setup {
+    /// Gives the factory two skills, `a` and `b`.
+    fn two_skills(&self) {
+        for name in ["a", "b"] {
+            let folder = self.dir.join("factory/skills").join(name);
+            fs::create_dir_all(&folder).unwrap();
+            let skill = format!("---\nname: {name}\ndescription: Does {name}.\n---\nDo {name}.\n");
+            fs::write(folder.join("SKILL.md"), skill).unwrap();
+        }
+    }
+
+    /// Adds `line` to the frontmatter of the agent `agent`.
+    fn agent_line(&self, agent: &str, line: &str) {
+        let file = self.dir.join("factory/agents").join(agent).join("agent.md");
+        let text = fs::read_to_string(&file).unwrap();
+        let text = text.replacen("\n+++\n", &format!("\n{line}\n+++\n"), 1);
+        fs::write(&file, text).unwrap();
+    }
+
+    /// The `--plugin-dir` of the session in row `run` of `priory runs`, if any.
+    fn plugin_dir(&self, run: usize) -> Option<PathBuf> {
+        arg(&self.claude_args(run), "--plugin-dir").map(PathBuf::from)
+    }
+}
+
+/// The names of the skills in the plugin folder `plugin`.
+fn plugin_skills(plugin: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(plugin.join("skills"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn an_agent_that_names_its_skills_gets_only_those_and_an_agent_without_a_list_gets_every_one() {
+    let mut setup = Setup::with_workflow("skills-named", TWO_AGENTS);
+    setup.two_skills();
+    setup.agent_line("implementer", "skills = [\"a\"]");
+    setup.calls(&[result("passed"), result("approved")]);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let named = setup.plugin_dir(0).expect("--plugin-dir");
+    setup.release("hold-call");
+    let every = setup.plugin_dir(1).expect("--plugin-dir");
+    assert_eq!(plugin_skills(&named), ["a"]);
+    assert_eq!(plugin_skills(&every), ["a", "b"]);
+    assert_eq!(
+        every,
+        setup
+            .dir
+            .join("home/kit/f83994070d3117171c46ff975c32193d/plugin"),
+        "the folder a run got before agents named skills"
+    );
+    let runs = setup.rows("runs");
+    assert_eq!(
+        runs[1][8], "9f9cca149704883070b2b1f08c8a31a9",
+        "the hash a run got before agents named skills"
+    );
+    assert_ne!(runs[0][8], runs[1][8], "{runs:?}");
+}
+
+#[test]
+fn two_agents_that_name_the_same_skills_in_any_order_share_one_plugin_folder_and_hash() {
+    let mut setup = Setup::with_workflow("skills-same", TWO_AGENTS);
+    setup.two_skills();
+    setup.agent_line("implementer", "skills = [\"b\", \"a\"]");
+    setup.agent_line("reviewer", "skills = [\"a\", \"b\"]");
+    setup.calls(&[result("passed"), result("approved")]);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let first = setup.plugin_dir(0).expect("--plugin-dir");
+    setup.release("hold-call");
+    let second = setup.plugin_dir(1).expect("--plugin-dir");
+    assert_eq!(first, second);
+    assert_eq!(plugin_skills(&first), ["a", "b"]);
+    let runs = setup.rows("runs");
+    assert_eq!(runs[0][8], runs[1][8], "{runs:?}");
+}
+
+#[test]
+fn an_agent_with_an_empty_skills_list_gets_no_plugin_folder_and_a_codex_one_no_skill_index() {
+    let mut setup = Setup::with_workflow("skills-empty", TWO_AGENTS);
+    fs::write(setup.dir.join("factory/agents/reviewer/agent.md"), CODEX).unwrap();
+    setup.kit("Run the gate before every result.\n");
+    setup.agent_line("implementer", "skills = []");
+    setup.agent_line("reviewer", "skills = []");
+    setup.calls(&[result("passed"), result("approved")]);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let args = setup.claude_args(0);
+    assert_eq!(arg(&args, "--plugin-dir"), None, "{args:?}");
+    setup.release("hold-call");
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    assert_eq!(
+        codex_config(&setup)["developer_instructions"],
+        "Run the gate before every result.\n\nYou review one change."
+    );
+}
+
+#[test]
+fn a_codex_agent_that_names_one_skill_gets_an_index_of_that_skill_alone() {
+    let mut setup = Setup::with_workflow("skills-codex", TWO_AGENTS);
+    fs::write(setup.dir.join("factory/agents/reviewer/agent.md"), CODEX).unwrap();
+    setup.two_skills();
+    setup.agent_line("reviewer", "skills = [\"a\"]");
+    setup.calls(&[result("passed"), result("approved")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    let config = codex_config(&setup);
+    let instructions = config["developer_instructions"].as_str().unwrap();
+    let lines: Vec<&str> = instructions
+        .lines()
+        .filter(|line| line.starts_with("- "))
+        .collect();
+    assert_eq!(lines, ["- a/SKILL.md: Does a."], "{instructions}");
+}
+
+#[test]
+fn a_named_kit_skill_reaches_the_run_the_factorys_copy_wins_and_a_name_nobody_holds_is_logged() {
+    let mut setup = Setup::new("skills-kit");
+    setup.kit("The factory says: write tests first.\n");
+    let commit = setup.kit_repo();
+    setup.agent_line(
+        "implementer",
+        "skills = [\"kit-notes\", \"release-notes\", \"review-coments\"]",
+    );
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let plugin = setup.plugin_dir(0).expect("--plugin-dir");
+    assert_eq!(plugin_skills(&plugin), ["kit-notes", "release-notes"]);
+    assert_eq!(
+        tree(&plugin.join("skills/kit-notes")),
+        tree(
+            &setup
+                .dir
+                .join(format!("home/kit/{commit}/skills/kit-notes"))
+        ),
+        "the kit's skill"
+    );
+    assert_eq!(
+        tree(&plugin.join("skills/release-notes")),
+        tree(&setup.dir.join("factory/skills/release-notes")),
+        "the factory's skill hides the kit's"
+    );
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    let missing = format!(
+        "agent implementer names skill review-coments, which neither the factory nor kit commit {} holds",
+        &commit[..12]
+    );
+    assert_eq!(log.matches(&missing).count(), 1, "{log}");
+}
+
+#[test]
+fn a_shared_session_hears_that_its_agents_skills_changed_and_nothing_when_its_list_is_reordered() {
+    let mut setup = shared("skills-drift");
+    setup.two_skills();
+    let agent = setup.dir.join("factory/agents/implementer/agent.md");
+    let lead = |skills: &str| {
+        LEAD.replace(
+            "session = \"shared\"\n",
+            &format!("session = \"shared\"\nskills = {skills}\n"),
+        )
+    };
+    fs::write(&agent, lead("[\"a\", \"b\"]")).unwrap();
+    setup.calls(&[result("passed"), result("passed"), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| with(rows, 7, "done") == 1);
+    setup.crash();
+    fs::write(&agent, lead("[\"b\", \"a\"]")).unwrap();
+    setup.publish(&requested(43));
+    setup.start();
+    setup.until("runs", |rows| with(rows, 7, "done") == 2);
+    setup.crash();
+    fs::write(&agent, lead("[\"a\"]")).unwrap();
+
+    setup.publish(&requested(44));
+    setup.start();
+
+    let runs = setup.until("runs", |rows| with(rows, 7, "done") == 3);
+    assert!(runs.iter().all(|run| run[4] == runs[0][4]), "{runs:?}");
+    let typed = setup.typed();
+    assert!(typed[1].starts_with("This is task 2"), "{typed:?}");
+    assert_eq!(
+        typed[2].lines().next(),
+        Some("Your agent definition changed since this conversation started: its prompt."),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn an_idle_shared_session_whose_agent_names_its_skills_compacts_with_its_runs_plugin_folder() {
+    let mut setup = idle_compacted("skills-idle");
+    setup.two_skills();
+    setup.agent_line("implementer", "skills = [\"a\"]");
+    setup.contexts(&[6000]);
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    let plugin = setup.plugin_dir(0).expect("--plugin-dir");
+    setup.until("runs", |rows| with(rows, 7, "done") == 1);
+
+    setup.idle_for(56);
+
+    setup.until_compactions(1);
+    assert_eq!(
+        arg(&launched(&setup), "--plugin-dir"),
+        Some(plugin.display().to_string())
+    );
 }
 
 /// A batch over `ENG-40` and `ENG-41` on `OPEN_PR`, `ENG-41` stacked on `ENG-40` at `waiting`, after

@@ -109,7 +109,7 @@ export default class PrioryTask extends View {
       .when(Boolean(this.error), (el) => el.child(this.offline(t)))
       .child(task ? this.body(task, t, font)
         : this.id == null ? note("Open a task from the Desk to see it here.")
-          : this.error ? div() : note(`Reading task ${this.id}…`));
+          : this.error ? div() : note(`Loading task ${this.id}…`));
   }
 
   /** @param {Task} task @param {Palette} t @param {typeof FONTS.indigo} font */

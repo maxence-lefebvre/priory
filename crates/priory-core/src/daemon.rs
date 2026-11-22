@@ -1022,7 +1022,10 @@ fn take(
         )),
         Ok(Input::Deliver(line)) => Ok((replied(deliver::act(db, &line)?), None)),
         Ok(Input::Add(line)) => Ok((replied(add(db, &line.add, trace, counter)?), None)),
-        Ok(Input::Signal(signal)) => Ok(("ok".to_owned(), state::signal(db, &signal, trace)?)),
+        Ok(Input::Signal(signal)) => Ok((
+            "ok".to_owned(),
+            state::signal(db, &signal, trace, &watched)?,
+        )),
         Ok(Input::Call(call)) if call.tool == "progress" => {
             Ok((replied(progress::tool(db, &call, trace)?), None))
         }
@@ -1169,7 +1172,8 @@ fn tend(
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
         let room = || measured.get_or_init(|| room::measure(home));
-        let Some(admission) = state::admissible(db, factory, trace.runner.as_deref(), share, room)?
+        let Some(admission) =
+            state::admissible(db, factory, trace.runner.as_deref(), share, room, &watched)?
         else {
             break;
         };
@@ -1194,6 +1198,12 @@ fn tend(
             state::block(db, trace, admission.task, "failed", &reason)?;
         }
     }
+    // A marked run idle between turns has no turn end to wait for.
+    for session in crate::preempt::idle(db)? {
+        if let Some(tmux) = tools::preempt_idle(db, trace, &session, &watched)? {
+            runtime::kill(&tmux);
+        }
+    }
     while let Some((tmux, session, text)) = state::attempt(db)? {
         let typed = runtime::pane(&tmux, &session)
             .ok_or_else(|| "its pane is gone".to_owned())
@@ -1203,6 +1213,12 @@ fn tend(
         }
     }
     Ok(())
+}
+
+/// Whether a person may be watching the tmux session `name`: a client is attached, or tmux
+/// cannot tell.
+fn watched(name: &str) -> bool {
+    runtime::clients(name).is_none_or(|clients| clients > 0)
 }
 
 /// Classifies why a run's agent exited; the admission's room check holds a memory restart.
@@ -1856,8 +1872,6 @@ fn start(
     recipes: &mut crate::recipe::Running,
     kit: crate::kit::Current<'_>,
 ) -> Result<Result<(), String>, Error> {
-    let candidates = crate::memories::layer(db, Some(admission.task))?;
-    let sources = crate::kit::sources(factory, kit, &candidates);
     let step = factory.workflows[&admission.workflow]
         .value
         .step(&admission.step)
@@ -1869,6 +1883,18 @@ fn start(
     else {
         return Ok(Err(format!("step {} names no known agent", step.id)));
     };
+    let candidates = crate::memories::layer(db, Some(admission.task))?;
+    let sources = crate::kit::sources(factory, kit, &candidates, Some(&agent.value));
+    for skill in &sources.missing {
+        let held = match sources.commit {
+            Some(commit) => format!(
+                "which neither the factory nor kit commit {} holds",
+                &commit[..commit.len().min(12)]
+            ),
+            None => "which the factory does not hold, and this runner has no kit commit yet".into(),
+        };
+        eprintln!("priory daemon: agent {name} names skill {skill}, {held}");
+    }
     let Some(repo) = repo_of(factory, &admission.trigger, admission.repo.as_deref()) else {
         return Ok(Err(format!("task {} names no repo", admission.task)));
     };
@@ -2138,7 +2164,6 @@ fn compact_idle(
     kit: crate::kit::Current<'_>,
 ) -> Result<(), Error> {
     let candidates = crate::memories::layer(db, None)?;
-    let sources = crate::kit::sources(trace.factory, kit, &candidates);
     for live in idle::live(db)? {
         let ended_as = match (live.overdue, live.late) {
             (true, _) => Some("timeout"),
@@ -2171,6 +2196,7 @@ fn compact_idle(
         let Some(due) = idle::due(db, name)? else {
             continue;
         };
+        let sources = crate::kit::sources(trace.factory, kit, &candidates, Some(&agent.value));
         let tmux = format!("priory-idle-{name}");
         let id = idle::begin(db, name, &due.session, &tmux)?;
         let dir = Path::new(&due.worktree);

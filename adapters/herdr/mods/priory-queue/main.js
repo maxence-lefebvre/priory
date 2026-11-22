@@ -396,7 +396,7 @@ export default class PrioryQueue extends View {
       ended: "No task ended in the last day.",
       all: "No tasks yet.",
     }[this.view] ?? "";
-    if (!this.data) return v_flex().id("queue-list").p(16).text_color(t["text-3"]).child(this.error ? "" : "Reading the queue…");
+    if (!this.data) return v_flex().id("queue-list").p(16).text_color(t["text-3"]).child(this.error ? "" : "Loading the queue…");
     return v_flex().id("queue-list").min_h_0().overflow_y_scrollbar().pb(16)
       .when(this.view === "next" && this.data.up_next.length > 0, (el) => el.child(this.upNext(t, now)))
       .when(!list.sections.length, (el) => el.child(div().p(16).text_color(t["text-2"]).child(empty)))

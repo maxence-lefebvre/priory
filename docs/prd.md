@@ -429,8 +429,9 @@ until its run starts.
   resource, how much is missing, since when and the waiting task. M1
 - R4.4 The queue starts ready tasks in band order, then in the order a person set inside the band,
   then oldest first. The bands default to `blocker`, `now`, `today` and `later`, and `factory.toml`
-  can rename them. A trigger or workflow sets a task's default band. A higher band only starts
-  earlier: it never skips the room check. M1
+  can rename them. A trigger or workflow sets a task's default band. A higher band starts earlier
+  and never skips the room check. Only a band the factory lists in `[queue] preempt` also stops a
+  run of a lower band at its turn end, when its task waits for that run's room. M1
 - R4.5 A person can move a task to another band or position, from the CLI or a view. M1
 - R4.6 A task can be held with a reason, by a person or until a time, another task's end, a pull
   request's merge, or its issue's last open blocker. A hold on a pull request also says what happens

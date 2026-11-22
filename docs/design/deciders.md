@@ -218,9 +218,10 @@ in a later slice, once the trace shows how often the model is right about it.
 
 ### (b) Intake scripts' noise and band
 
-The intake's pre scripts (in review as #320) can drop an event as noise or set its band. A
-decision model could answer the same two questions, a `noul` for noise and a `choice` of band,
-for a trigger that names a point. The fallback is the trigger as written. This waits for #320.
+A trigger's [`pre`](../reference/triggers.md#pre) script can drop an event as noise or set its
+band ([pre.md](../intake/pre.md)). A decision model could answer the same two questions, a `noul`
+for noise and a `choice` of band, for a trigger that names a point. The fallback is the trigger
+and its `pre` script as written.
 
 ### (c) The confidence for approve-by-confidence
 
@@ -282,7 +283,7 @@ Tests, through the CLI with the fake model only. None calls a real API:
 ## Later slices
 
 1. Triage's `persons-call` at the threshold raises the ask itself, naming the item, with no run.
-2. The intake scripts' noise and band, after #320.
+2. The noise and band of a trigger's `pre` script.
 3. The second confidence for approve-by-confidence, after its first slice.
 4. The `decision` scorer kind.
 5. The task page and the desk say which items a decision model sorted.

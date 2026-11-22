@@ -225,6 +225,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         .transpose()?
         .map(Arc::new);
     drop(state::read_only()?);
+    crate::pending::start(factory);
     let listener =
         TcpListener::bind(listen).map_err(|error| format!("listen on {listen}: {error}"))?;
     let bound = listener
@@ -1707,12 +1708,14 @@ fn costs(db: &Connection, served: &Served, query: &str) -> Reply {
         Ok(now) => now.to_string(),
         Err(error) => return Reply::error(500, &error),
     };
-    let caps = match crate::spend::report(db, &served.book, &now) {
-        Ok(caps) => caps,
+    let spend = crate::spend::report(db, &served.book, &now)
+        .and_then(|caps| crate::spend::held(db).map(|held| (caps, held)));
+    let (caps, held) = match spend {
+        Ok(spend) => spend,
         Err(error) => return Reply::error(500, &error.to_string()),
     };
     match report::costs(db, &served.prices, &window, &by) {
-        Ok(costs) => Reply::json(200, costs.with_caps(caps).json().to_string()),
+        Ok(costs) => Reply::json(200, costs.with_caps(caps, held).json().to_string()),
         Err(error) => Reply::error(500, &error),
     }
 }

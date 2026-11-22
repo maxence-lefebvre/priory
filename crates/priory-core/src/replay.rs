@@ -1033,9 +1033,13 @@ mod tests {
             .output()
             .unwrap();
         let pid = String::from_utf8_lossy(&pid.stdout).trim().to_owned();
+        // A dead process reads Z until its parent reaps it, then X for a moment before it is gone.
         let running = || {
-            fs::read_to_string(format!("/proc/{pid}/stat"))
-                .is_ok_and(|stat| !stat.rsplit(')').next().unwrap_or("").starts_with(" Z"))
+            fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+                !stat
+                    .rsplit_once(") ")
+                    .is_some_and(|(_, state)| state.starts_with(['Z', 'X']))
+            })
         };
         assert!(running(), "no tmux server {pid}");
 
@@ -1046,11 +1050,13 @@ mod tests {
         });
 
         // The scratch removes its folder, socket and all, so the server is found by its pid.
+        // One read decides: a second read after the loop can catch the server between Z and gone.
         let deadline = Instant::now() + Duration::from_secs(5);
-        while running() && Instant::now() < deadline {
+        let mut alive = running();
+        while alive && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
+            alive = running();
         }
-        let alive = running();
         if alive {
             let _ = Command::new("kill").arg(&pid).status();
         }

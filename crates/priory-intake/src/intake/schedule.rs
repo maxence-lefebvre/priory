@@ -10,32 +10,58 @@ use serde_json::json;
 pub(super) const FIRED: &str = "schedule.fired";
 
 /// Publishes each schedule's latest firing, under an id that names it so the log drops a repeat.
+/// A trigger with a `pre` script runs it for a new firing only, and on the intake's first poll for
+/// the latest one, which a stopped intake may not have decided.
 pub(super) fn fire(
     bus: &dyn Log,
     triggers: &[(&str, &Trigger)],
     now: Timestamp,
+    first: bool,
 ) -> Result<(), String> {
     for (name, trigger) in triggers {
         let Some(slot) = latest(trigger, now) else {
             continue;
         };
         let firing = format!("{name}@{slot}");
-        let key = match &trigger.key {
-            Some(key) => format!("schedule:{key}"),
-            None => format!("schedule:{firing}"),
-        };
         let data = json!({ "trigger": name, "scheduled": slot.to_string() });
         let source = Message::new(FIRED, data)
             .id(id(&format!("{FIRED}:{firing}")))
             .subject(format!("schedule:{firing}"))
             .time(slot);
-        let mut task = task_requested(name, trigger, &source, key);
-        task.data["scheduled"] = json!(slot.to_string());
-        task.data["prompt"] = json!(trigger.prompt);
-        publish(bus, &source)?;
-        publish(bus, &task)?;
+        let task = request(name, trigger, &source);
+        if trigger.pre.is_none() {
+            publish(bus, &source)?;
+            publish(bus, &task)?;
+            continue;
+        }
+        let newest = bus
+            .messages(super::OUTPUT, None, 1)
+            .map_err(|error| error.to_string())?
+            .first()
+            .map(|stored| stored.seq);
+        let seq = bus
+            .publish(super::OUTPUT, &source)
+            .map_err(|error| format!("publish on {}: {error}", super::OUTPUT))?;
+        let new = first || newest.is_none_or(|newest| seq > newest);
+        if new && let Some(decided) = crate::pre::apply(name, trigger, &source, task)? {
+            publish(bus, &decided)?;
+        }
     }
     Ok(())
+}
+
+/// The task request of a schedule's firing `source`.
+pub(super) fn request(name: &str, trigger: &Trigger, source: &Message) -> Message {
+    let firing = source.subject.as_deref().unwrap_or_default();
+    let firing = firing.strip_prefix("schedule:").unwrap_or(firing);
+    let key = match &trigger.key {
+        Some(key) => format!("schedule:{key}"),
+        None => format!("schedule:{firing}"),
+    };
+    let mut task = task_requested(name, trigger, source, key);
+    task.data["scheduled"] = source.data["scheduled"].clone();
+    task.data["prompt"] = json!(trigger.prompt);
+    task
 }
 
 /// The latest time at or before `now` that the trigger fires.

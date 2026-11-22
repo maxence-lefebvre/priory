@@ -52,6 +52,119 @@ keeps the stall. A different resource starts a new one. The stall ends when no t
 at the head. A task waiting because room cannot be measured holds the queue without a stall. The
 sweep scripts and the sweeper act on stalls (see Sweep).
 
+## Urgent wakes
+
+By default a higher band only starts earlier: a `blocker` task that finds the machine full waits
+for a run to end. `[queue] preempt` in `factory.toml` names the bands whose waiting task may stop a
+run of a lower band. None may by default:
+
+```toml
+[queue]
+preempt = ["blocker"]
+```
+
+`priory check` refuses a band the factory lacks, and the last band, which has no band below it.
+
+### When a run is marked
+
+On each tick, the daemon marks runs when all of these hold:
+
+1. The head of the queue waits for room, and its band is in `preempt`.
+2. It lacks memory or declared disk, and it would fit if some live runs' promises were gone. A head
+   that waits for load, for a shared agent, for a pause or for a measurement that failed marks
+   nothing.
+3. Live runs of a lower band, which the next section does not protect, promise enough.
+
+The daemon picks runs in reverse start order: the lowest band first, then the last in a person's
+order, then the youngest task. It adds runs until the head fits by the room's own check. When every
+run it may pick still frees too little, it picks none. Each tick works the marks out again, so a
+mark is withdrawn once the head starts, is held or cancelled, or stops being the head. A mark is
+stored in the state file, so it survives a daemon restart.
+
+A mark changes nothing until the run's turn ends. The head then goes through the room check like
+any task: a stop never admits a run into room the machine lacks.
+
+### What is never stopped
+
+The daemon never marks these runs, and withdraws a mark it finds on one at the turn end:
+
+| The run | Why |
+| ------- | --- |
+| Is at a step whose effect is `irreversible` | A stop between two of its calls could leave a push without its pull request |
+| Has an open keyboard grant | A person is typing in it |
+| Has a tmux client attached | A person is watching or typing. A `tmux list-clients` that fails counts as a client |
+| Runs in a shared session | It serves several tasks |
+| Belongs to the sweeper | It frees the room the queue waits for |
+| Belongs to a task in the head's band or a higher one | A band never stops itself. `priory move --band` protects a task |
+| Belongs to a task already stopped since its last `result`, `ask` or `wait` | Each resume gets one whole turn |
+
+The daemon reads `tmux list-clients` only for the runs it may pick, on the tick that marks and again
+at the turn end. A person who attaches in the few milliseconds between that read and the kill still
+loses the pane.
+
+### What happens at the turn end
+
+At a marked run's `Stop`, the settlement reads the mark before it decides whether the process goes
+on, in the transaction that stores the result:
+
+| The turn ended with | Without a mark | With a mark |
+| ------------------- | -------------- | ----------- |
+| `ask` or `wait`, with no answer or `say` queued | The run ends and the task sleeps | The same |
+| `ask` or `wait`, with an answer or a `say` already queued | The run goes on, with that prompt next | The run ends as `preempted`, and the answer or `say` stays queued behind the stop prompt |
+| A `result` that leads to another agent's step, a human or code step, `done` or `stop` | The run ends | The same |
+| A `result` that leads to a model step of the same agent | The process carries on into the next run | The run ends as `preempted`, and the task is `ready` at the next step with that step's prompt |
+| No tool | One nudge | The run ends as `preempted`, with no nudge |
+
+A step over its `budget` fails at its turn end, as it would without a mark.
+
+A marked run that sits idle between turns, with no prompt attempted, ends on the tick that marks
+it. Two cases wait instead:
+
+- A run with a prompt the outbox attempted and has not confirmed keeps its mark and goes on, since
+  a stop there would leave the prompt `uncertain`. The mark applies at its next turn end.
+- A compaction due at this `Stop` gives way: the run ends, and the resumed session queues its
+  `/compact` at its `SessionStart`, as a session that resumes past `compactAt` does. So it compacts
+  after its first turn. A compaction already typed finishes first.
+
+The daemon then kills the tmux session, as for a run that sleeps. The task keeps its worktree,
+branch, uncommitted files and session. It is `ready` in its own band at its own place, and its next
+run resumes the session with this prompt ahead of any other queued prompt:
+
+```text
+Priory stopped your last run at the end of your turn to make room for task 12, in band blocker.
+Your session and worktree are as you left them. Continue.
+```
+
+Only the stopped run's declared `memory` and `disk` come back. Its worktree stays.
+
+### What the desk shows
+
+An urgent wake is backpressure with a plan, so it opens no stall. The head's reason in
+`priory tasks` and `priory queue` names the runs that stop:
+
+```text
+waits for room: 3.1 GB of memory free, needs 6.0 GB and keeps 6.4 GB free; task 7 (later) stops at its next turn end
+```
+
+When it can stop no run, the reason names why, so a person can act:
+
+```text
+waits for room: 3.1 GB of memory free, needs 6.0 GB and keeps 6.4 GB free; stops no run: task 3 is at irreversible step open-pr, task 5's keyboard is held, task 9 was already stopped once
+```
+
+When the runs it may stop free too little, the list ends with `the runs it may stop free too
+little`. A marked task reads `stops at its next turn end for task 12 (blocker)`. A stopped task reads
+`stopped for task 12 (blocker); resumes when there is room`, and `priory runs` shows its run as
+ended `preempted`. The head's item in `priory queue --json` carries `stops` and `protected` (see
+[serve.md](../reference/serve.md)). Each stop appends a `factory.run.preempted` trace record (see
+[trace-schema.md](../trace-schema.md#factoryrunpreempted)), whose `waited_ms` says how long the head
+waited between the mark and the stop.
+
+A turn end is the only stop point. A turn can run up to its step's `timeout`, so the head may still
+wait that long.
+
+## Measurements
+
 `PRIORY_PROC` names a directory to read in place of `/proc`. The tests use it, with a fake `df` on
 `PATH`, to steer measurements.
 

@@ -125,7 +125,7 @@ export default class PrioryFlows extends View {
       return [note(`The flows did not load: ${this.error}. Run priory check --explain meanwhile.`).text_color(t["warn-text"]),
         h_flex().child(this.secondary("retry", "Retry", (cx) => this.load(cx), t))];
     }
-    if (!this.flows) return [note("Loading the flows.")];
+    if (!this.flows) return [note("Loading the flows…")];
     const { workflows, paths, irreversible = [] } = this.flows;
     if (!workflows.length) return [note("This factory has no workflows. Add one under workflows/.")];
     const room = this.width - 2 * pad;

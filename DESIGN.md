@@ -378,7 +378,9 @@ The desk is the "Needs me" view. It lists, top to bottom:
    `--type-hero` and a line in `--text-3`: "Oldest waits 42 min. Also 2 stopped and 1 waiting."
    The line names every other item the Needs me view counts, stopped, to-dos, reports and also
    waiting, so the count and the Needs me chip add up. On wide screens the count sits at the
-   right of the list header in `--type-count-wide`.
+   right of the list header in `--type-count-wide`. With no open ask the desk stays quiet: no
+   number, and "No asks need you" in `--type-body` and `--text-2`, over the same line, which
+   still names any stopped work.
 2. **The next thing**: a card on `--surface` with `--radius-md` and a `--line` edge, in every
    saved view, with the desk's `next` whatever its kind: an alarm (a blocked or failed task, an
    uncertain prompt or command, a failing intake) or the ask that ranks first. It shows the tile,
@@ -414,9 +416,10 @@ The desk is the "Needs me" view. It lists, top to bottom:
    A refused action keeps the row and shows why under it, in the row's note.
 7. **Up next**: a strip with the next 3 runs, queued or scheduled, as in the Herdr Queue panel.
    Each line shows when, the task and why, and opens the task. A queued task waiting for its place
-   shows "now, when a runner has room"; one with its own wait reason shows "now" and that reason. With none, the
-   strip says "Nothing is queued or scheduled to run next." An "Open the queue" link ends the
-   strip and opens the Queue panel, where Move and Held live.
+   shows "now, when a runner has room"; one with its own wait reason shows "now" and that reason. With none, a
+   plain sentence with no strip says "Nothing is queued or scheduled to run next." An "Open the
+   queue" link ends the strip, or follows that sentence, and opens the Queue panel, where Move
+   and Held live.
 8. **Since you looked**: a strip with the events since the person's last visit, one group per
    task, the task with the newest event first. Each group opens with the task's key, which opens
    the task page, then each event's time and what: the event type in plain words, as the Inbox
@@ -443,6 +446,9 @@ selected row.
 
 - **The desk list ends with bottom padding of `--desk-end`**: the capsule's height plus its gap
   above and below, so the capsule never covers the last row when the list is scrolled to the end.
+- Offline, the capsule leaves the primary look: `--surface` with a `--control-line` edge, `unplug`
+  and `--warn-text`, reading "Read 3 asks, offline". It still opens the ask, whose options stay
+  disabled until the view reconnects.
 - The capsule hides when no ask is open. An empty desk shows: "No open asks. Agents ask here when
   they need you."
 - A round [Add](#add) button, `--capsule` wide and tall, sits at the right of the capsule with
@@ -674,7 +680,10 @@ did not show. Until then the options are disabled under a `layers` note, "Readin
 
 **Answer while reading.** On a phone, once the options scroll out of view:
 
-- The header shrinks to one line: the question, clamped, over the task key, step and revision.
+- The header shrinks to one line: the question, clamped, over the task key, step and revision,
+  such as "ENG-212, approve-pr, revision 1", once the options scroll above the view. Options still
+  below the fold leave the header whole. The back link keeps its chevron and drops its word, at
+  `--control` width, and the position leaves. Scrolling the options back restores the header.
 - The section chips stick under the header.
 - A **sticky answer bar** on `--bar`, `--answer-bar` tall, holds two buttons with
   `--radius-card`: a secondary "3 options" with `chevron-up`, and the recommended option as a
@@ -846,6 +855,10 @@ open Priory window when there is one.
   title. Line 3 is lane, band and the batch tag; a `blocked`, `held`, `failed` or `dropped` row
   shows its reason there instead of lane and band, in the role's text color, and keeps the batch tag. A run row's line 2 is its agent and
   model, line 3 its run id, outcome, duration and tokens.
+- **The step never truncates.** Line 1 names the step once when it equals the workflow's name,
+  "implement" rather than "implement implement", and "implement, approve-pr" otherwise. A long step
+  wraps its own words. A row with tags on line 1, such as a runner or Command, wraps the tags and
+  the age to a second line before it cuts the step.
 - **Wide**: a table, `--row-wide` (38 px) at least, with columns for state, key, title, workflow
   and step, lane, band and age (tasks), or state, run id, key, step, agent and model, outcome,
   duration, tokens and started (runs). A task's reason sits under its title. Numbers are right
@@ -1160,7 +1173,10 @@ The web view's `/workflow`, named Flows: each workflow of the factory drawn as a
   `--emph`, `asleep` dotted in `--text-3`. Each ends in an arrowhead, and carries its outcome in 11
   px `--text-2` over a `--bg` halo. An edge that skips a row, or loops back, runs down a lane right
   of the nodes with its label turned sideways, so it never crosses a step. So does an outcome that
-  shares both ends with another, so each keeps its own line and label.
+  shares both ends with another, so each keeps its own line and label. Lanes sit 20 px apart, and
+  a turned label sits right of its own line, clear of the next lane, at the middle of the longest
+  stretch that no outer lane's bend crosses. A slanted edge's label sits on the side the edge
+  heads to, where its own curve is not.
 - **Ungated paths**: each edge on a path from the start to an irreversible step that follows no
   `human` edge, the paths `priory check --explain` lists, has a 6 px `--danger-text` halo at 22 %.
   Under the diagram, "Reaches an irreversible step with no person's decision:" lists each path in mono
@@ -1179,7 +1195,7 @@ The web view's `/workflow`, named Flows: each workflow of the factory drawn as a
 
 | State | What shows |
 | ----- | ---------- |
-| loading | "Loading the flows." |
+| loading | "Loading the flows…" |
 | error | "The flows did not load: ..." with `priory check --explain` as the fallback, in `role="alert"`, and a secondary Retry button |
 | empty | "This factory has no workflows. Add one under `workflows/`." |
 
@@ -1253,11 +1269,12 @@ with no change shows its line without an icon.
 - **Empty**: one sentence that says what appears here and what makes it appear, plus the action
   or CLI command. "No open asks. Agents ask here when they need you."
 - **Loading**: until the first listing arrives, the frame shows nothing. A page then shows one
-  sentence in the empty state's place, "Loading" and what loads: "Loading task 7…". A list that
-  loads its older rows ends with "Loading older runs…". The ask's plan and the terminal say
-  "Reading the plan of revision 2 before you answer." and "Reading the screen…". The Costs panel
-  alone shows nothing for 300 ms, then three skeleton blocks on `--raised`. Never a full-page
-  spinner. A list that has data keeps it while it refreshes.
+  sentence in the empty state's place, with the one verb "Loading" and what loads: "Loading task
+  7…", "Loading the flows…". A list that loads its older rows ends with "Loading older runs…". The
+  terminal says "Loading the screen…", and Herdr's panels say the same as the web. The ask's plan
+  says "Reading the plan of revision 2 before you answer.", since it gates the answer. The Costs
+  panel alone shows nothing for 300 ms, then three skeleton blocks on `--raised`. Never a
+  full-page spinner. A list that has data keeps it while it refreshes.
 - **Error**: where it failed, why, and how to fix it, with a "Retry" button. "Could not load runs:
   the daemon refused the connection. Check that the daemon runs on its runner, then retry." Keep
   any stale data visible under the error.
@@ -1279,6 +1296,10 @@ run.
 
 - Touch targets are at least 44 by 44 px on coarse pointers and 24 by 24 px everywhere, with
   8 px between neighbours.
+- A link drawn smaller than that, such as an ask's or batch's context line, a task key on the batch
+  page or another runner's chevron, keeps its look and takes a transparent hit area of `--control`
+  height on coarse pointers, where no other link sits under it. A row's task key needs none: the
+  whole row opens the same task. A chevron button is 24 by 24 px at least everywhere.
 - Put the primary action of a screen in its bottom third on compact screens.
 - Every gesture has a visible button that does the same thing.
 - Allowed gestures: horizontal swipe between asks in an ask's detail and between tabs; pinch and
@@ -1342,7 +1363,7 @@ run.
 Priory's panels also ship as Herdr mods (R8.6). A mod renders natively with gpui-kit, in a pane
 beside other panes, with a fine pointer. It keeps this file's structure, tokens, state tiles, copy
 and ask rules. This section lists only what differs, and the panels the adapter ships: Desk, Asks,
-Queue, Bonjour, Costs, Flows, Task, Inbox, Tasks and Runs. Bonjour is also the web view's Reports panel. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
+Queue, Bonjour, Costs, Flows, Task, Inbox, Tasks and Runs, and the usage line. Bonjour is also the web view's Reports panel. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
 the adapter lives, how it reads and acts, and the data each panel needs. The approved boards are in
 `~/shared/priory-round-6/` on the author's machine.
 
@@ -1492,10 +1513,29 @@ The web's [Costs panel](#costs-panel).
 - The Split by `select` becomes a row of chips, `workflow` to `lane`, beside the split's title.
 - The day chart and each task's bar are drawn with elements, not SVG. The week line is a dashed
   `--text-3` edge before this week's first bar. Waiting on you keeps its `--wait` stripes.
-- Loading reads "Reading costs…", with no skeleton.
+- Loading reads "Loading costs…", with no skeleton.
 - Scores follow the split as the web's do. From 600 px they are rows of columns, the scorer in
   mono and the pass rate in weight 600. Below, each row stacks, as on the web. With no cost, the
   split chips sit beside the scores' title.
+
+### Usage line
+
+One 30 px line docked at the bottom of every layout, right of Herdr's status line, on `--bar` with a
+`--line` top edge, in UI text at 12 px, as Herdr's own status line. The approved board is
+`~/shared/priory-usage/board.png` on the author's machine.
+
+- **Line.** "Priory" in weight 600, then "$12.40 today of $40", "$171.20 this week of $200",
+  "2 held at a cap" and "Claude 7d 43%", split by `--text-3` dots. Without a factory cap, a spend
+  stands alone; with no held task or no Over9k file, its part is left out. A figure takes
+  `--warn-text` at 80% of its cap or limit and `--danger-text` once reached, else `--text-2`.
+- **Narrow.** Below 520 px the line drops cents and Claude's figure: "$12 of $40 today",
+  "$171 of $200 wk", "2 held". It never cuts a number.
+- **Detail.** A click opens a 380 px popup on `--surface`: Spend caps, each with its label, its
+  spend against the cap and a 6 px bar on `--raised`, filled `--text-2`, `--tile-warn` from 80%
+  and `--tile-danger` once reached, with "Reached: new runs wait for the next day" in
+  `--danger-text`; then "This week by workflow" with each workflow in mono and its cost; then
+  "Held at a cap", each task's key in mono `--action-text` and the cap it reached, which opens the
+  task; then Claude's 7-day limit as a bar with when it resets. Hairlines separate the sections.
 
 ### Flows
 
@@ -1525,7 +1565,7 @@ open it.
   18 px tile and a `--type-small` line over a `--text-3` caption, split by hairlines. Inbox lists
   the latest 20 events routed to the task, newest first, with the web's tiles and wording and the
   time in the caption: "kept, still queued · 11:50". History lists the last 10 runs, newest first.
-- With no task opened: "Open a task from the Desk to see it here." While it reads: "Reading task
+- With no task opened: "Open a task from the Desk to see it here." While it reads: "Loading task
   7…"
 - Under each History run, one row per scorer with the run's latest score: its 18 px verdict tile,
   the scorer in mono, the verdict word in its role's text color, and the reason in a `--text-2`
@@ -1551,7 +1591,7 @@ The web's [Inbox](#inbox) panel, as a tab in the center stack.
   the web. An asleep task's card shows its `follow_up` command in mono `--text-2` instead of Say,
   which stays on the web. A blocked task's card has Resume task 15 and "It reads them when it
   resumes."
-- While it reads: "Reading the unrouted events…"
+- While it reads: "Loading the unrouted events…"
 
 ### Tasks
 
@@ -1575,7 +1615,7 @@ The web's [Tasks panel](#tasks-panel), as a tab in the center stack.
   the Task panel.
 - In a factory of several runners a Runner chip follows Workflow, and this runner reads
   "workstation (here)", as on the web.
-- While it reads: "Reading the tasks…"
+- While it reads: "Loading the tasks…"
 
 ### Runs
 
@@ -1589,7 +1629,7 @@ The web's [Runs panel](#runs-panel), as a tab in the center stack.
   opens its task in the [Task](#task) panel.
 - Recent ends with a "Show 3 older runs" button in `--action-text` while runs older than 7 days
   match: the pane already holds them, so it shows them on a press instead of on scroll.
-- While it reads: "Reading the runs…"
+- While it reads: "Loading the runs…"
 
 ### Open questions
 
@@ -1597,7 +1637,7 @@ The web's [Runs panel](#runs-panel), as a tab in the center stack.
   as the Desk's first row and in the Asks panel. Max will tweak this next week.
 - **Not built in the web view.** These were drawn and are not on `main`: the wide top bar's
   command bar (`Ctrl K`) and runner name, the phone top bar's filter and search buttons, the query
-  bar, the shortcuts sheet (`?`), the `w` and `[` `]` keys, and skeleton rows outside Costs. Build
+  bar, the shortcuts sheet (`?`), and the `w` and `[` `]` keys. Build
   each with its rule here, or leave it out. The setting that turns single-key shortcuts off is
   missing too; WCAG 2.2 (2.1.4, Character Key Shortcuts) needs it, so build it.
 - **Herdr asides.** An aside is a bare column, while the frame's main pane and the `cockpit-fleet`

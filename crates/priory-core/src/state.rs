@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 92;
+const VERSION: i64 = 94;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1657,6 +1657,42 @@ ALTER TABLE runs ADD COLUMN memories_commit TEXT;
 PRAGMA user_version = 92;
 ";
 
+// A `pre` script's title, text and context for a task, and the requests a server stores until it
+// runs their `pre` script.
+const SCHEMA_93: &str = "
+ALTER TABLE tasks ADD COLUMN pre_title TEXT;
+ALTER TABLE tasks ADD COLUMN pre_text TEXT;
+ALTER TABLE tasks ADD COLUMN pre_context TEXT;
+ALTER TABLE tasks ADD COLUMN pre_script TEXT;
+DROP VIEW task_text;
+CREATE VIEW task_text AS SELECT tasks.id AS task,
+  coalesce(tasks.pre_title, json_extract(inbox.data, '$.title'), '') AS title,
+  coalesce(tasks.pre_text, json_extract(inbox.data, '$.text'), json_extract(inbox.data, '$.body'),
+    json_extract(inbox.data, '$.description'), json_extract(inbox.data, '$.prompt'), '')
+    || coalesce(char(10) || tasks.pre_context, '') AS request,
+  coalesce(tasks.tldr, '') AS tldr,
+  coalesce((SELECT group_concat(summary || ' ' || coalesce(evidence, ''), ' ') FROM results
+    WHERE results.task = tasks.id), '') AS results
+  FROM tasks LEFT JOIN inbox ON inbox.id = tasks.source;
+CREATE TABLE IF NOT EXISTS pending_requests (
+  seq     INTEGER PRIMARY KEY AUTOINCREMENT,
+  id      TEXT NOT NULL UNIQUE,
+  pending TEXT NOT NULL,
+  stored  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+PRAGMA user_version = 93;
+";
+
+// Urgent wakes: the head task a live run stops for at its turn end and since when, the head a task
+// was stopped for until its next result, ask or wait, and the runs that protect a head's room.
+const SCHEMA_94: &str = "
+ALTER TABLE runs ADD COLUMN preempted_for INTEGER;
+ALTER TABLE runs ADD COLUMN marked TEXT;
+ALTER TABLE tasks ADD COLUMN preempted INTEGER;
+ALTER TABLE tasks ADD COLUMN protected TEXT;
+PRAGMA user_version = 94;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1670,7 +1706,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
-    SCHEMA_90, SCHEMA_91, SCHEMA_92,
+    SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1991,8 +2027,10 @@ pub(crate) fn route_in(
         Decision::Create(new) => {
             tx.execute(
                 "INSERT INTO tasks
-                   (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, repo, entered, tldr, intervention, lead)
-                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?12, ?13, ?14)",
+                   (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, repo, entered, tldr, intervention, lead,
+                    pre_title, pre_text, pre_context, pre_script)
+                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?12, ?13, ?14,
+                   ?15, ?16, ?17, ?18)",
                 params![
                     new.key,
                     new.workflow,
@@ -2011,7 +2049,11 @@ pub(crate) fn route_in(
                         .filter(|tldr| !tldr.is_empty())
                         .map(|tldr| crate::search::fit(tldr, counter)),
                     new.intervention.map(|intervention| intervention.as_str()),
-                    new.lead
+                    new.lead,
+                    new.title,
+                    new.text,
+                    new.context,
+                    new.pre.as_ref().map(|pre| &pre.script)
                 ],
             )?;
             let id = tx.last_insert_rowid();
@@ -2846,6 +2888,8 @@ pub(crate) struct Admission {
     pub repo: Option<String>,
     /// Queued, not ready: its run is the task's first and gets the step's prompt.
     pub fresh: bool,
+    /// The head task this task's last run was stopped for, until its next result, ask or wait.
+    pub preempted: Option<i64>,
 }
 
 /// The first queued or ready task at a model step, in start order, that fits in the runner's room.
@@ -2856,9 +2900,10 @@ pub(crate) fn admissible<'r>(
     runner: Option<&str>,
     share: &Share,
     room: impl Fn() -> &'r Result<Room, String>,
+    watched: &dyn Fn(&str) -> bool,
 ) -> rusqlite::Result<Option<Admission>> {
     let mut statement = db.prepare(&format!(
-        "SELECT id, workflow, step, trigger, state = 'queued', repo FROM tasks
+        "SELECT id, workflow, step, trigger, state = 'queued', repo, preempted FROM tasks
              WHERE state IN ('queued', 'ready')
              -- A task waits while a recipe runs in its worktree, or a teardown is owed there.
              AND NOT EXISTS (SELECT 1 FROM recipes WHERE recipes.task = tasks.id
@@ -2880,6 +2925,7 @@ pub(crate) fn admissible<'r>(
                 trigger: row.get(3)?,
                 fresh: row.get(4)?,
                 repo: row.get(5)?,
+                preempted: row.get(6)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2889,6 +2935,7 @@ pub(crate) fn admissible<'r>(
     // The first task that waits for room: no task behind it starts, so it is never starved.
     let mut head = None;
     let mut stall = None;
+    let mut planned = false;
     for admission in queued {
         let Some(step) = factory
             .workflows
@@ -2928,7 +2975,7 @@ pub(crate) fn admissible<'r>(
                 match room() {
                     Ok(measured) => {
                         let short = room::wait(measured, share, promised, need);
-                        let reason = short.as_ref().map(|short| short.reason.clone());
+                        let mut reason = short.as_ref().map(|short| short.reason.clone());
                         // A lead that can never fit never answers: dropping it returns its ask.
                         if let Some(reason) = reason.as_ref().filter(|_| {
                             admission.trigger == crate::tools::LEAD_TRIGGER
@@ -2946,6 +2993,21 @@ pub(crate) fn admissible<'r>(
                             // Waiting only for live runs to end is backpressure, not a stall.
                             stall = room::wait(measured, share, room::Need::default(), need)
                                 .map(|short| (admission.task, short));
+                            // Only memory and declared disk are promises a stop gives back.
+                            if short.as_ref().is_some_and(|short| short.resource != "CPU") {
+                                planned = true;
+                                let urgent = crate::preempt::Head {
+                                    task: admission.task,
+                                    need,
+                                    measured,
+                                    promised,
+                                };
+                                if let Some(plan) =
+                                    crate::preempt::plan(db, factory, share, &urgent, watched)?
+                                {
+                                    reason = reason.map(|reason| format!("{reason}; {plan}"));
+                                }
+                            }
                         }
                         reason
                     }
@@ -2956,13 +3018,24 @@ pub(crate) fn admissible<'r>(
                 }
             }
         };
-        let Some(reason) = waits else {
+        let Some(mut reason) = waits else {
             return Ok(Some(admission));
         };
+        // A stopped task waits for the room its stop made; its own plan, if any, says more.
+        if let Some(head) = admission.preempted
+            && (reason.starts_with("waits behind")
+                || reason.starts_with("waits for room") && !reason.contains("; "))
+        {
+            let (band, _) = crate::preempt::prompt(db, factory, head)?;
+            reason = format!("stopped for task {head} ({band}); resumes when there is room");
+        }
         db.execute(
             "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
             params![admission.task, reason],
         )?;
+    }
+    if !planned {
+        crate::preempt::withdraw(db)?;
     }
     crate::stall::record(db, stall.as_ref().map(|(task, short)| (*task, short)))?;
     Ok(None)
@@ -3386,11 +3459,12 @@ pub(crate) fn unread(
     except: Option<i64>,
 ) -> rusqlite::Result<Vec<(i64, bool, String)>> {
     let mut statement = tx.prepare(
-        "SELECT seq, 0, type, subject, data FROM inbox WHERE outbox IS NULL AND seq IS NOT ?3
+        "SELECT seq, 0, type, subject, data, id = (SELECT source FROM tasks WHERE id = ?1)
+         FROM inbox WHERE outbox IS NULL AND seq IS NOT ?3
            AND ((task = ?1 AND outcome = 'kept')
              OR (?2 AND id = (SELECT source FROM tasks WHERE id = ?1)))
          UNION ALL
-         SELECT inbox.seq, 1, inbox.type, inbox.subject, inbox.data
+         SELECT inbox.seq, 1, inbox.type, inbox.subject, inbox.data, 0
          FROM subscription_deliveries AS heard JOIN inbox ON inbox.seq = heard.seq
          WHERE heard.task = ?1 AND heard.outcome = 'kept' AND heard.outbox IS NULL
            AND heard.seq IS NOT ?3
@@ -3399,17 +3473,63 @@ pub(crate) fn unread(
     let mut rows = statement.query(params![task, source, except])?;
     let mut events = Vec::new();
     while let Some(row) = rows.next()? {
-        events.push((
-            row.get(0)?,
-            row.get(1)?,
-            line(
-                &row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?.as_deref(),
-                &row.get::<_, String>(4)?,
-            ),
-        ));
+        let (kind, subject) = (row.get::<_, String>(2)?, row.get::<_, Option<String>>(3)?);
+        let data = row.get::<_, String>(4)?;
+        let line = match row.get::<_, bool>(5)? {
+            true => requested(tx, task, &kind, subject.as_deref(), &data)?,
+            false => line(&kind, subject.as_deref(), &data),
+        };
+        events.push((row.get(0)?, row.get(1)?, line));
     }
     Ok(events)
+}
+
+/// The line of `task`'s source event, with the title and text its trigger's `pre` script gave in
+/// place of the event's, and the context it added after it.
+fn requested(
+    tx: &Transaction,
+    task: i64,
+    kind: &str,
+    subject: Option<&str>,
+    data: &str,
+) -> rusqlite::Result<String> {
+    let (title, text, context, by): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = tx.query_row(
+        "SELECT pre_title, pre_text, pre_context, pre_script FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let mut said = match (
+        &title,
+        &text,
+        serde_json::from_str::<serde_json::Value>(data),
+    ) {
+        (None, None, _) | (_, _, Err(_)) => line(kind, subject, data),
+        (_, _, Ok(mut value)) => {
+            if let Some(title) = title {
+                value["title"] = serde_json::json!(title);
+            }
+            if let Some(text) = text {
+                let field = ["text", "body", "description", "prompt"]
+                    .into_iter()
+                    .find(|field| value[*field].is_string())
+                    .unwrap_or("text");
+                value[field] = serde_json::json!(text);
+            }
+            line(kind, subject, &value.to_string())
+        }
+    };
+    if let Some(context) = context {
+        let by = by.unwrap_or_default();
+        said.push_str(&format!(
+            "\nContext from the trigger's pre script {by}:\n{context}"
+        ));
+    }
+    Ok(said)
 }
 
 /// Records that prompt `outbox` carries the `unread` events of `task`.
@@ -3591,6 +3711,7 @@ pub(crate) fn signal(
     db: &mut Connection,
     signal: &Signal,
     trace: &Trace,
+    watched: &dyn Fn(&str) -> bool,
 ) -> rusqlite::Result<Option<String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let Some(run) = tx
@@ -3630,9 +3751,12 @@ pub(crate) fn signal(
         "Stop" => {
             tx.execute("UPDATE runs SET idle = 1, turn = NULL WHERE id = ?1", [run])?;
             let context = crate::trace::account(&tx, trace, run, signal.transcript.as_deref())?;
+            // A run marked for an urgent wake ends here; its resumed session compacts instead.
+            if let Some(head) = crate::preempt::due(&tx, run, watched)? {
+                kill = crate::tools::preempt(&tx, &signal.session, trace, head)?;
             // The run settles its ask or wait once its compact is typed, so it never sleeps past it.
             // A result carried into the next step on this process compacts there.
-            if !crate::tools::overflow(&tx, &signal.session, context, trace.factory)? {
+            } else if !crate::tools::overflow(&tx, &signal.session, context, trace.factory)? {
                 kill = crate::tools::stop(&tx, &signal.session, trace)?;
                 crate::tools::overflow(&tx, &signal.session, context, trace.factory)?;
             }

@@ -124,3 +124,53 @@ test("each irreversible step of a workflow shows its history: counts, then the b
   ]);
   assert.deepEqual(historyRows([{ workflow: "implement", step: "open-pr", risk_estimate: null }], "implement"), []);
 });
+
+// An 11 px label turned a quarter: its ascent reaches 11 px left of the baseline, its descent 3 px right.
+test("a turned label sits between its own lane and the next, clear of every line", () => {
+  const drawing = timeline(implement, new Set());
+  const turned = drawing.edges.filter((each) => each.label.turned);
+  assert.ok(turned.length >= 3);
+  const lanes = turned.map((each) => each.lane).sort((a, b) => a - b);
+  for (const each of turned) {
+    const [left, right] = [each.label.x - 11, each.label.x + 3];
+    assert.ok(lanes.every((lane) => lane < left - 1 || lane > right + 1), `${each.outcome} sits on a lane`);
+    assert.ok(left > each.lane && right < drawing.width, `${each.outcome} leaves its lane's band`);
+  }
+});
+
+test("a slanted label sits on the side its edge heads to, off its own curve", () => {
+  const drawing = timeline(implement, new Set());
+  const opened = drawing.edges.find((each) => each.outcome === "opened");
+  const failed = drawing.edges.find((each) => each.from === "open-pr" && each.outcome === "failed");
+  assert.deepEqual([opened.label.turned, opened.label.anchor], [false, "end"]);
+  assert.ok(opened.label.x < opened.mid.x);
+  assert.deepEqual([failed.label.turned, failed.label.anchor], [false, "start"]);
+  assert.ok(failed.label.x > failed.mid.x);
+});
+
+// A lane edge bends from its node to its lane between 24 and 44 px past the node, at each end, so
+// it crosses every lane inside its own there.
+test("a turned label sits where no outer lane edge bends across it", () => {
+  const drawing = timeline(implement, new Set());
+  const turned = drawing.edges.filter((each) => each.label.turned);
+  for (const each of turned) {
+    const half = (each.outcome.length * 6.5) / 2;
+    const [top, bottom] = [each.label.y - half, each.label.y + half];
+    for (const outer of turned.filter((other) => other.lane > each.lane)) {
+      const [from, to] = [Number(/^M[\d.]+ ([\d.]+)/.exec(outer.d)[1]), Number(/V([\d.]+)/.exec(outer.d)[1])];
+      for (const [a, b] of [[from + 20, from + 48], [to - 4, to + 24]]) assert.ok(bottom < a || top > b, `${each.outcome} is crossed by ${outer.outcome}`);
+    }
+  }
+});
+
+test("a loop back's turned label stays on its own lane's straight part, inside the drawing", () => {
+  const looping = structuredClone(implement);
+  looping.steps[1].edges[1] = edge("rejected", "plan", "human");
+  looping.steps[0].edges.push(edge("again", "plan", "model"));
+  const drawing = timeline(looping, new Set());
+  for (const each of drawing.edges.filter((one) => one.label.turned)) {
+    const [low, high] = [Math.min(...each.straight), Math.max(...each.straight)];
+    assert.ok(each.label.y > low && each.label.y < high, `${each.outcome} sits at its lane's end`);
+    assert.ok(each.label.y > 0 && each.label.y < drawing.height, `${each.outcome} leaves the drawing`);
+  }
+});

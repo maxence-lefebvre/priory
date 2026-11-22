@@ -43,6 +43,22 @@ pub(crate) struct NewTask {
     pub lead: Option<String>,
     #[serde(default)]
     pub batch: Option<priory_intake::events::BatchRequest>,
+    /// From the trigger's `pre` script: the title and text in place of the source event's, and
+    /// text added after the request.
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub context: Option<String>,
+    #[serde(default)]
+    pub pre: Option<PreScript>,
+}
+
+/// The `pre` object of a request, as far as a task keeps it.
+#[derive(Debug, PartialEq, Deserialize)]
+pub(crate) struct PreScript {
+    pub script: String,
 }
 
 /// The resources a message names, which a task may own: a task request's key, a CLI request's

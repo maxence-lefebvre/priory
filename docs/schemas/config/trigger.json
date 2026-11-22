@@ -121,6 +121,21 @@
       },
       "type": "object"
     },
+    "OnError": {
+      "description": "What a failed `pre` script does with its request.",
+      "oneOf": [
+        {
+          "const": "pass",
+          "description": "The request is published unchanged, with `pre.failed`.",
+          "type": "string"
+        },
+        {
+          "const": "drop",
+          "description": "The request is dropped.",
+          "type": "string"
+        }
+      ]
+    },
     "OneOrMany_After": {
       "anyOf": [
         {
@@ -148,6 +163,46 @@
         }
       ],
       "description": "One value, or a list of them; null reads as none, as the single values it replaced did."
+    },
+    "Pre": {
+      "additionalProperties": false,
+      "description": "A trigger's `[pre]` script. Priory execs `argv` with no shell, writes the event and the request\nas JSON on its stdin, and reads its decision from its exit and stdout.",
+      "properties": {
+        "argv": {
+          "description": "The command and its arguments. The first is an executable file inside the factory folder.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "env": {
+          "default": [],
+          "description": "Environment variables copied from the process that runs it, beside `PATH`, `LANG` and\n`HOME`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "on_error": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/OnError"
+            }
+          ],
+          "description": "What a script that fails does with the request: `pass` publishes it unchanged, `drop`\ndrops it. `pass` when unset."
+        },
+        "timeout": {
+          "default": null,
+          "description": "How long it may run, at most `60s`; 10 seconds when unset.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "argv"
+      ],
+      "type": "object"
     }
   },
   "description": "`triggers/<name>.toml` or `.yaml`: an event source, its filter and the workflow its events\nstart. The file name is the trigger's name.",
@@ -269,6 +324,17 @@
       "default": "",
       "description": "The event that starts a task, such as `issues.labeled`; depends on `source`.",
       "type": "string"
+    },
+    "pre": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Pre"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "A script of the factory that runs on each matching event before it becomes a task request,\nand can drop the request or change it."
     },
     "prompt": {
       "description": "What a schedule's firing tells the task it wakes.",

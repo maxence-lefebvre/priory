@@ -185,7 +185,7 @@ fn an_unknown_field_names_its_file_and_line() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, compactAt, idleCompactAt, onChange, memory, disk, mcpServers, connectorSignIn, permissions\n"
+        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, compactAt, idleCompactAt, onChange, memory, disk, mcpServers, skills, connectorSignIn, permissions\n"
     );
 }
 
@@ -1454,6 +1454,28 @@ fn factory_toml_renames_the_bands() {
         duplicate.stderr,
         "factory.toml:2: `bands` needs at least one band, each named once\n\
          triggers/agent-label.toml:8: band `p1` is not one of p0, p0\n"
+    );
+}
+
+#[test]
+fn preempt_names_bands_the_factory_has_above_its_last() {
+    let good = "name = \"demo\"\n\n[queue]\npreempt = [\"blocker\"]\n";
+    let ok = check(&factory("preempt-ok", &with("factory.toml", good)));
+    let unknown = good.replace("[\"blocker\"]", "[\"urgent\"]");
+    let unknown = check(&factory("preempt-unknown", &with("factory.toml", &unknown)));
+    let last = good.replace("[\"blocker\"]", "[\"blocker\", \"later\"]");
+    let last = check(&factory("preempt-last", &with("factory.toml", &last)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(unknown.code, 1);
+    assert_eq!(
+        unknown.stderr,
+        "factory.toml:3: `preempt` names band `urgent`, which is not one of blocker, now, today, later\n"
+    );
+    assert_eq!(last.code, 1);
+    assert_eq!(
+        last.stderr,
+        "factory.toml:3: `preempt` names band `later`, the last band, which has no band below it\n"
     );
 }
 
@@ -2812,6 +2834,130 @@ fn the_skill_index_counts_toward_the_codex_limit() {
     );
 }
 
+/// A factory with the skills `a`, `b` and `review_notes`, `a` described in `size` bytes, and with
+/// `[kit]` when `kit` holds, whose implementer runs on `harness` with the frontmatter line `line`.
+fn with_named_skills(name: &str, harness: &str, line: &str, size: usize, kit: bool) -> Outcome {
+    let skills: Vec<(String, String)> = [("a", size), ("b", 1500), ("review_notes", 1500)]
+        .map(|(skill, size)| {
+            let description = "d".repeat(size);
+            (
+                format!("skills/{skill}/SKILL.md"),
+                format!("---\nname: {skill}\ndescription: {description}\n---\nDo it.\n"),
+            )
+        })
+        .into();
+    let agent = format!(
+        "+++\ndescription = \"Implements one task.\"\nharness = \"{harness}\"\n{line}\n+++\nMake the smallest correct change.\n"
+    );
+    let toml = "name = \"demo\"\n\n[kit]\nrepo = \"git@github.com:owner/abbey.git\"\n";
+    let mut files: Vec<(&str, &str)> = valid();
+    files[1] = ("agents/implementer/agent.md", &agent);
+    if kit {
+        files[0] = ("factory.toml", toml);
+    }
+    files.extend(
+        skills
+            .iter()
+            .map(|(file, text)| (file.as_str(), text.as_str())),
+    );
+    check(&factory(name, &files))
+}
+
+#[test]
+fn a_skills_list_naming_no_skill_of_a_factory_without_a_kit_fails_the_check_with_the_factorys_skills()
+ {
+    let line = "skills = [\"a\", \"review-coments\"]";
+
+    let outcome = with_named_skills("skills-unknown", "claude-code", line, 10, false);
+    let kit = with_named_skills("skills-unknown-kit", "claude-code", line, 10, true);
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "agents/implementer/agent.md:4: `skills` names `review-coments`, which is not a skill of this factory: a, b, review_notes\n"
+    );
+    assert_eq!(
+        (kit.code, kit.stderr.as_str()),
+        (0, ""),
+        "the kit may hold it"
+    );
+}
+
+#[test]
+fn a_skills_list_with_a_name_twice_or_an_empty_name_fails_the_check() {
+    let twice = with_named_skills(
+        "skills-twice",
+        "claude-code",
+        "skills = [\"a\", \"a\"]",
+        10,
+        true,
+    );
+    let empty = with_named_skills("skills-empty", "claude-code", "skills = [\"\"]", 10, true);
+    let underscore = with_named_skills(
+        "skills-underscore",
+        "claude-code",
+        "skills = [\"review_notes\"]",
+        10,
+        false,
+    );
+    let none = with_named_skills("skills-none", "claude-code", "skills = []", 10, false);
+
+    assert_eq!(twice.code, 1);
+    assert_eq!(
+        twice.stderr,
+        "agents/implementer/agent.md:4: `skills` names `a` twice\n"
+    );
+    assert_eq!(empty.code, 1);
+    assert_eq!(
+        empty.stderr,
+        "agents/implementer/agent.md:4: `skills` holds an empty name\n"
+    );
+    assert_eq!((underscore.code, underscore.stderr.as_str()), (0, ""));
+    assert_eq!((none.code, none.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn a_codex_agent_counts_only_the_skills_it_names_toward_its_limit() {
+    let every = with_named_skills("skills-codex-every", "codex", "", 6000, false);
+    let named = with_named_skills(
+        "skills-codex-named",
+        "codex",
+        "skills = [\"b\", \"review_notes\"]",
+        6000,
+        false,
+    );
+
+    assert_eq!(every.code, 1, "{}", every.stderr);
+    assert!(
+        every.stderr.starts_with(
+            "agents/implementer/agent.md:3: a codex agent takes the skill index and its own prompt on its command line, as `developer_instructions`: together they are"
+        ),
+        "{}",
+        every.stderr
+    );
+    assert_eq!((named.code, named.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn a_codex_agent_whose_own_prompt_passes_the_limit_fails_the_check_without_instructions_or_skills()
+{
+    let mut files = valid();
+    let agent = format!(
+        "+++\ndescription = \"Implements one task.\"\nharness = \"codex\"\nskills = []\n+++\n{}\n",
+        "a".repeat(9000)
+    );
+    files[1] = ("agents/implementer/agent.md", &agent);
+    files.push(("skills/release-notes/SKILL.md", SKILL));
+
+    let outcome = check(&factory("codex-skills-none-prompt-long", &files));
+
+    assert_eq!(outcome.code, 1, "{}", outcome.stderr);
+    assert_eq!(
+        outcome.stderr,
+        "agents/implementer/agent.md:3: a codex agent takes its own prompt on its command line, as `developer_instructions`: it is 9000 bytes, over the limit of 8192\n"
+    );
+}
+
 #[test]
 fn a_kit_takes_a_repository_and_paths_inside_it() {
     let toml = "name = \"demo\"\n\n[kit]\nrepo = \"git@github.com:owner/abbey.git\"\nref = \"main\"\ninstructions = \"claude/CLAUDE.md\"\nevery = \"10m\"\n";
@@ -2926,6 +3072,105 @@ fn spend_caps_pass_and_a_cap_not_above_zero_or_a_malformed_lane_is_refused() {
     assert_eq!(
         lane.stderr,
         "factory.toml:3: `[caps.lanes]` `intake` is not a lane such as `team/theme`\n"
+    );
+}
+
+/// The valid factory with `[pre]` table `pre` on its trigger, and an executable `scripts/pre`.
+fn with_pre(name: &str, pre: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let trigger = format!("{TRIGGER}\n[pre]\n{pre}");
+    let mut files = with("triggers/agent-label.toml", &trigger);
+    files.push(("scripts/pre", "#!/bin/sh\nexit 0\n"));
+    files.push(("scripts/plain", "#!/bin/sh\nexit 0\n"));
+    let dir = factory(name, &files);
+    fs::set_permissions(dir.join("scripts/pre"), fs::Permissions::from_mode(0o755)).unwrap();
+    dir
+}
+
+#[test]
+fn a_pre_script_inside_the_factory_with_a_short_timeout_passes() {
+    let outcome = check(&with_pre(
+        "pre-valid",
+        "argv = [\"scripts/pre\", \"--min-level\", \"error\"]\ntimeout = \"60s\"\nenv = [\"AMPLITUDE_READ_TOKEN\"]\non_error = \"drop\"\n",
+    ));
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn check_refuses_a_pre_script_outside_the_factory_or_not_executable_and_a_long_timeout() {
+    let cases = [
+        (
+            "pre-outside",
+            "argv = [\"../outside\"]\n",
+            "triggers/agent-label.toml:9: `[pre] argv`: ../outside leaves the factory folder\n",
+        ),
+        (
+            "pre-absolute",
+            "argv = [\"/bin/true\"]\n",
+            "triggers/agent-label.toml:9: `[pre] argv`: /bin/true leaves the factory folder\n",
+        ),
+        (
+            "pre-plain",
+            "argv = [\"scripts/plain\"]\n",
+            "triggers/agent-label.toml:9: `[pre] argv`: scripts/plain is not executable: chmod +x it\n",
+        ),
+        (
+            "pre-missing",
+            "argv = [\"scripts/missing\"]\n",
+            "triggers/agent-label.toml:9: `[pre] argv`: scripts/missing is not a file in the factory folder\n",
+        ),
+        (
+            "pre-slow",
+            "argv = [\"scripts/pre\"]\ntimeout = \"2m\"\n",
+            "triggers/agent-label.toml:9: `[pre] timeout` is 120s: a pre script runs at most 60s\n",
+        ),
+        (
+            "pre-env",
+            "argv = [\"scripts/pre\"]\nenv = [\"NOT-A-NAME\"]\n",
+            "triggers/agent-label.toml:9: `[pre] env`: `NOT-A-NAME` is not a variable name\n",
+        ),
+    ];
+    for (name, pre, expected) in cases {
+        let outcome = check(&with_pre(name, pre));
+
+        assert_eq!(
+            (outcome.code, outcome.stderr.as_str()),
+            (1, expected),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn check_refuses_an_unknown_pre_on_error_with_its_line() {
+    let outcome = check(&with_pre(
+        "pre-on-error",
+        "argv = [\"scripts/pre\"]\non_error = \"retry\"\n",
+    ));
+
+    assert_eq!(
+        (outcome.code, outcome.stderr.as_str()),
+        (
+            1,
+            "triggers/agent-label.toml:11:12: unknown variant `retry`, expected `pass` or `drop`\n"
+        )
+    );
+}
+
+#[test]
+fn a_symlink_out_of_the_factory_is_refused_as_a_pre_script() {
+    let dir = with_pre("pre-symlink", "argv = [\"scripts/link\"]\n");
+    std::os::unix::fs::symlink("/bin/true", dir.join("scripts/link")).unwrap();
+
+    let outcome = check(&dir);
+
+    assert_eq!(
+        (outcome.code, outcome.stderr.as_str()),
+        (
+            1,
+            "triggers/agent-label.toml:9: `[pre] argv`: scripts/link leaves the factory folder\n"
+        )
     );
 }
 
