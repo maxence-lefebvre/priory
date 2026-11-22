@@ -157,7 +157,8 @@ See [Columns](#columns).
 - `priory outbox`: prints every prompt. See [outbox.md](../daemon/outbox.md).
 - `priory waits`: prints each open wait. See [waits.md](../daemon/waits.md#waits).
 - `priory actions`: prints each code step's and each answer's action, with its status, error and
-  output. Read it when a code step failed. See [tools.md](../daemon/tools.md#code-steps).
+  output. Read it when a code step failed, or to read what a `staged` action would have done. See
+  [tools.md](../daemon/tools.md#code-steps).
 - `priory trace`: prints every trace record, one JSON object per line. See
   [trace.md](../daemon/trace.md).
 - `priory recap [--since <instant-or-duration>] [--max-bytes N]`: prints, oldest first, what the

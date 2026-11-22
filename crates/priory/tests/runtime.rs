@@ -3530,7 +3530,9 @@ fn a_queued_task_at_a_step_its_workflow_lost_is_blocked_with_the_reason() {
 
     setup.start();
 
-    let tasks = setup.until("tasks", |rows| rows[0][4] == "blocked");
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
     assert_eq!(tasks[0][7], "step plan is not in workflow implement");
 }
 
@@ -8304,6 +8306,107 @@ fn an_autonomous_irreversible_step_runs_without_an_ask() {
         ["open-pr", "open-pr", "opened", "github:owner/repo#7"]
     );
     assert!(setup.rows("asks").is_empty());
+}
+
+impl Setup {
+    /// Marks the trigger `staged`, so its tasks write nothing at an irreversible step.
+    fn staged(&self) {
+        let trigger = self.dir.join("factory/triggers/agent-label.toml");
+        fs::write(trigger, format!("{TRIGGER}staged = true\n")).unwrap();
+    }
+}
+
+#[test]
+fn a_staged_task_records_the_pull_request_it_would_open_and_blocks_on_the_desk() {
+    let mut setup = Setup::with_workflow("open-pr-staged", AUTONOMOUS);
+    setup.staged();
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(
+        actions[0][2..8],
+        ["open-pr", "open-pr", "staged", "-", "-", "-"]
+    );
+    let preview = &actions[0][8];
+    assert!(
+        preview.contains("would open a pull request on owner/repo from priory/1 into main"),
+        "{preview}"
+    );
+    assert!(preview.contains("title: Add the widget"), "{preview}");
+    assert!(
+        preview.contains("Add the widget\\nIt draws a box.\\n\\ncargo test passed"),
+        "{preview}"
+    );
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    assert_eq!(tasks[0][3], "open-pr");
+    let desk = desk(&setup, &[]);
+    assert_eq!(desk.len(), 1, "{desk:?}");
+    assert_eq!(desk[0][1], "blocked");
+    let shown = desk[0].join(" ");
+    assert!(
+        shown.contains("staged: step open-pr would run open-pr, and wrote nothing"),
+        "{shown}"
+    );
+    assert!(
+        !setup.gh().iter().any(|call| call[..2] == ["pr", "create"]),
+        "{:?}",
+        setup.gh()
+    );
+    let bare = setup.dir.join("origin/owner/repo.git");
+    let branch = git(&bare)
+        .args(["rev-parse", "--verify", "-q", "priory/1"])
+        .output();
+    assert!(!branch.unwrap().status.success(), "nothing is pushed");
+}
+
+#[test]
+fn a_staged_task_resumed_once_its_trigger_is_no_longer_staged_opens_its_pull_request() {
+    let mut setup = Setup::with_workflow("open-pr-unstaged", AUTONOMOUS);
+    setup.staged();
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    let trigger = setup.dir.join("factory/triggers/agent-label.toml");
+    fs::write(trigger, TRIGGER).unwrap();
+    setup.crash();
+    fs::remove_file(setup.socket()).unwrap();
+    setup.start();
+    listening(&setup);
+
+    let resumed = setup.priory(&["resume", "1"]);
+
+    assert!(resumed.status.success(), "{resumed:?}");
+    let actions = setup.until("actions", |rows| rows.len() == 2);
+    assert_eq!(actions[0][4], "staged");
+    assert_eq!(actions[1][4..6], ["opened", "github:owner/repo#7"]);
+}
+
+#[test]
+fn a_staged_task_never_starts_an_irreversible_model_step() {
+    let mut setup = Setup::with_workflow("build-staged", &autonomous_build(""));
+    setup.staged();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    assert_eq!(tasks[0][3], "build");
+    assert!(setup.rows("runs").is_empty(), "no run starts");
+    let shown = desk(&setup, &[])[0].join(" ");
+    assert!(
+        shown.contains("staged: step build is irreversible, so its run did not start"),
+        "{shown}"
+    );
 }
 
 #[test]
@@ -13297,7 +13400,9 @@ fn a_setup_a_stopped_daemon_left_running_blocks_its_task() {
     setup.crash();
     setup.start();
 
-    let tasks = setup.until("tasks", |rows| rows[0][4] == "blocked");
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
     assert_eq!(tasks[0][7], "setup failed: interrupted by a daemon restart");
     assert_eq!(setup.rows("runs"), Vec::<Vec<String>>::new());
 }
@@ -28729,7 +28834,9 @@ fn a_second_refusal_in_the_same_run_blocks_the_task_for_a_person() {
     let script = "#!/bin/sh\necho a.txt has no test\nexit 1\n";
     let (setup, _) = gated_step("gate-twice", script, 3);
 
-    let tasks = setup.until("tasks", |rows| rows[0][4] == "blocked");
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
 
     assert_eq!(
         tasks[0][7],

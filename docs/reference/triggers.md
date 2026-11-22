@@ -39,6 +39,7 @@ cannot tell which keys a source refuses; `priory check` does.
 | `lead` | string | with `hands-off` | | The agent that answers asks of a `hands-off` task | `"lead"` |
 | `caps` | table | no | no cap | Spend caps in dollars for its tasks: `task`, `day` and `week`, each above zero. See [spend.md](../daemon/spend.md) | `{ task = 2.0, day = 10.0 }` |
 | `pre` | table | no | | A script that runs on each matching event before its task request, and can drop or change it. See [`pre`](#pre) | `{ argv = ["scripts/sentry-pre"] }` |
+| `staged` | boolean | no | `false` | Whether its tasks are a trial: model steps run, and each task blocks before its first irreversible step with what that step would have done. See [Staged tasks](../daemon/tools.md#staged-tasks) | `true` |
 
 Without a `repo`, a Linear, Sentry, Honeycomb, Intercom or Slack trigger's tasks block before their first run.
 
