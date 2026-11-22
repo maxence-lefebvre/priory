@@ -9,7 +9,7 @@ import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
 import { emptyDetail, eventWords, handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
-import { EARLIER_CAP, sayLine, screenRows, screenWatch } from "./terminal.js";
+import { EARLIER_CAP, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
 import { actionNote, batchParts, dueParts, mergeSince, nextLink, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 import { TASK_FACETS, TASK_VIEWS, elsewhere, filtered, olderPart, taskViews, triageWords } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
@@ -1384,10 +1384,7 @@ function terminalBody({ term, task, tmux, end }) {
   if (end) notes.push(["", (STATES[end] || [, "circle-help"])[1], screen ? `Run ${run} ended as ${end}. This is the last screen this page saw.` : `Run ${run} ended as ${end}.`]);
   else if (gone) notes.push(["warn", "unplug", `This server reads no screen of run ${run}. Run priory screen ${task} on the runner to see why.`]);
   else if (!screen && !stale) notes.push(["", "clock", "Reading the screen…"]);
-  // Each part's classes come from screenRows' fixed set; its text stays text.
-  const part = (part) => (part.hidden ? html`<span class="hid">${part.text}</span>` : part.cls ? html`<span class="${part.cls}">${part.text}</span>` : part.text);
   const earlier = screen?.earlier || 0;
-  const rows = screen ? screenRows(screen.lines).map((parts, at) => html`${at < earlier ? html`<span class="earlier">${parts.map(part)}</span>` : parts.map(part)}\n${at === earlier - 1 ? raw('<span class="fold" aria-hidden="true"></span>') : ""}`) : "";
   const top = end || !screen ? "" : kept.more ? html`<button class="term-more" data-action="term-earlier">${icon("chevron-up", "s15")}Load earlier${earlier ? html` <span class="dim">(${earlier} shown)</span>` : ""}</button>`
     : earlier >= EARLIER_CAP ? html`<p class="term-edge">The last ${EARLIER_CAP.toLocaleString("en")} lines are as far back as this pane reads.</p>` : "";
   const typing = terminal.typing && !end;
@@ -1399,10 +1396,20 @@ function terminalBody({ term, task, tmux, end }) {
         <button data-action="term-copy" aria-label="Copy screen" ${screen ? "" : raw('aria-disabled="true"')}>${icon("copy", "s15")}<span>${copied("screen", "Copy screen")}</span></button>
         <button data-action="term-fit" aria-label="Fit" aria-pressed="${String(terminal.fit)}">${icon("fit", "s15")}<span>Fit</span></button>
         <button data-action="term-attach" aria-label="Copy the attach command" data-task="${task}">${icon("eye", "s15")}<span>${copied("attach", "Attach")}</span></button></div>
-      ${top}<pre id="term-screen" tabindex="0" aria-label="Screen${screen ? `, ${screen.width} by ${screen.height}` : ""}">${rows}</pre>
+      ${top}<pre id="term-screen" tabindex="0" aria-label="Screen${screen ? `, ${screen.width} by ${screen.height}` : ""}"></pre>
       ${typing ? html`<div class="term-type"><form data-action="term-say" data-task="${task}"><span class="pr" aria-hidden="true">›</span><label class="sr" for="term-line">Say to the agent</label>
-        <input id="term-line" autocomplete="off" placeholder="Say to the agent" value="${terminal.line}"><button class="send" ${terminal.line.trim() && !terminal.saying ? "" : raw('aria-disabled="true"')}>Say</button></form>
+        <input id="term-line" autocomplete="off" placeholder="Say to the agent"><button class="send" ${terminal.line.trim() && !terminal.saying ? "" : raw('aria-disabled="true"')}>Say</button></form>
         ${terminal.said ? html`<p class="tn ${terminal.said.said ? "ok" : "no"}" role="status">${icon(terminal.said.said ? "check" : "circle-x", "s15")}<span>${terminal.said.note}</span></p>` : ""}</div>` : ""}</div>`;
+}
+
+// The markup of each row of the screen. The cursor shows only on a live run's screen with no earlier rows above it.
+function terminalRows(screen, end) {
+  if (!screen) return [];
+  // Each part's classes come from screenRows' fixed set; its text stays text.
+  const inner = (part) => (part.hidden ? html`<span class="hid">${part.text}</span>` : part.cls ? html`<span class="${part.cls}">${part.text}</span>` : part.text);
+  const part = (part) => (part.cursor ? html`<span class="cur">${inner(part)}</span>` : inner(part));
+  const earlier = screen.earlier || 0;
+  return screenRows(screen.lines, earlier || end ? null : screen.cursor).map((parts, at) => html`${at < earlier ? html`<span class="earlier">${parts.map(part)}</span>` : parts.map(part)}\n${at === earlier - 1 ? raw('<span class="fold" aria-hidden="true"></span>') : ""}`.text);
 }
 
 // Says the pane's line through the task's say verb; a refusal keeps the line, as the task page's Say does.
@@ -1427,16 +1434,19 @@ async function sayFromPane(task) {
 function paintTerminal(app, rendered = false) {
   const box = app?.querySelector("[data-term]");
   if (!box) return;
-  const { screen, stale, gone, at, more } = watch.state();
-  const key = JSON.stringify([screen?.hash, stale, gone, more, stale && Math.round((Date.now() - at) / 1000), terminal.fit, terminal.copied, terminal.typing, innerWidth]);
-  if (box.dataset.painted === key && !rendered) return;
+  const { screen } = watch.state();
   if (terminal.run !== box.dataset.term) Object.assign(terminal, { run: box.dataset.term, left: 0, typing: false, line: "", said: null, saying: false });
+  const frame = terminalBody(box.dataset).text;
+  const key = JSON.stringify([frame, innerWidth]);
+  // A new screen in the same frame rewrites only its changed rows, so a selection elsewhere stays.
+  if (box.dataset.painted === key && !rendered) return paintRows(box.querySelector("pre"), terminalRows(screen, box.dataset.end));
   const active = document.activeElement;
   const focused = box.contains(active) ? active.id || active.dataset.action || "pre" : null;
   const caret = active?.id === "term-line" ? [active.selectionStart, active.selectionEnd] : null;
-  box.innerHTML = terminalBody(box.dataset).text;
+  box.innerHTML = frame;
   box.dataset.painted = key;
   const pre = box.querySelector("pre");
+  paintRows(pre, terminalRows(screen, box.dataset.end));
   const own = parseFloat(getComputedStyle(pre).fontSize);
   const fit = terminal.fit && screen;
   pre.style.fontSize = fit ? `${Math.min(own, Math.max(9, (pre.clientWidth - 24) / (screen.width * 0.6)))}px` : "";
@@ -1444,7 +1454,10 @@ function paintTerminal(app, rendered = false) {
   pre.scrollLeft = terminal.left;
   pre.addEventListener("scroll", () => { terminal.left = pre.scrollLeft; });
   if (focused) (focused === "pre" ? pre : box.querySelector(`#${focused}, [data-action="${focused}"]`))?.focus({ preventScroll: true });
-  if (caret) box.querySelector("#term-line")?.setSelectionRange(...caret);
+  const line = box.querySelector("#term-line");
+  // The line's text stays out of the frame, so typing alone repaints nothing.
+  if (line) line.value = terminal.line;
+  if (caret) line?.setSelectionRange(...caret);
 }
 
 // Polls while a live run's pane is on screen and the page is shown.

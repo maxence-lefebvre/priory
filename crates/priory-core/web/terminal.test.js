@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sayLine, screenWatch, screenRows } from "./terminal.js";
+import { paintRows, sayLine, screenWatch, screenRows } from "./terminal.js";
 
 // A clock the test moves by hand, and a server whose replies the test releases one by one.
 function rig() {
@@ -249,6 +249,8 @@ test("any text parses: only SGR codes leave it, and classes come from the fixed 
     const lines = Array.from({ length: 1 + random(3) }, () => Array.from({ length: random(16) }, () => bits[random(bits.length)]).join(""));
     const rows = screenRows(lines);
     assert.equal(rows.length, lines.length);
+    const cursor = { x: random(20), y: random(lines.length) };
+    assert.equal(screenRows(lines, cursor).flat().filter((part) => part.cursor).length, 1, JSON.stringify([lines, cursor]));
     rows.forEach((parts, row) => {
       assert.equal(parts.map((part) => part.text).join(""), lines[row].replace(sgr, ""), JSON.stringify(lines[row]));
       for (const part of parts) {
@@ -279,4 +281,45 @@ test("a revision during a read polls again as soon as the read ends", async () =
   assert.equal(asked.length, 1);
   await answer(screen(4, "a"));
   assert.equal(asked.length, 2);
+});
+
+test("the cursor marks the cell it sits on, inside a coloured part or past the row's end", () => {
+  assert.deepEqual(screenRows(["$ \x1b[32mgo\x1b[0m!", ""], { x: 3, y: 0 })[0], [
+    { text: "$ ", cls: "", hidden: false },
+    { text: "g", cls: "f2", hidden: false },
+    { text: "o", cls: "f2", hidden: false, cursor: true },
+    { text: "!", cls: "", hidden: false },
+  ]);
+  assert.deepEqual(screenRows(["ab", "é"], { x: 3, y: 1 })[1], [
+    { text: "é", cls: "", hidden: false },
+    { text: "  ", cls: "", hidden: false },
+    { text: " ", cls: "", hidden: false, cursor: true },
+  ]);
+  assert.deepEqual(screenRows(["ab"], null), screenRows(["ab"]));
+});
+
+// A `pre` of the page: row elements whose markup the test reads, and which a repaint replaced.
+function fakePre() {
+  const pre = { children: [], written: [] };
+  const element = () => {
+    const row = { markup: "", remove: () => pre.children.splice(pre.children.indexOf(row), 1) };
+    Object.defineProperty(row, "innerHTML", { set(markup) { row.markup = markup; pre.written.push(markup); } });
+    return row;
+  };
+  pre.ownerDocument = { createElement: element };
+  pre.append = (row) => pre.children.push(row);
+  return pre;
+}
+
+test("a repaint writes only the rows whose markup changed, so a selection in the others stays", () => {
+  const pre = fakePre();
+  paintRows(pre, ["$ cargo test\n", "running 3 tests\n", "\n"]);
+  const [first, second] = pre.children;
+  pre.written = [];
+  paintRows(pre, ["$ cargo test\n", "running 3 tests\n", "test a ... ok\n", "\n"]);
+  assert.deepEqual(pre.written, ["test a ... ok\n", "\n"]);
+  assert.equal(pre.children[0], first);
+  assert.equal(pre.children[1], second);
+  paintRows(pre, ["$ cargo test\n"]);
+  assert.deepEqual(pre.children.map((row) => row.markup), ["$ cargo test\n"]);
 });

@@ -128,6 +128,26 @@ export async function sayLine(post, task, text) {
   return { said: false, note };
 }
 
+// Each row element's markup as last written.
+const painted = new WeakMap();
+
+/**
+ * Makes `pre` hold one span per row of `rows`, each row's markup, and writes only the rows that
+ * changed: a person's selection in the others stays, since a poll leaves their text alone.
+ * @param {HTMLElement} pre
+ * @param {string[]} rows
+ */
+export function paintRows(pre, rows) {
+  [...pre.children].slice(rows.length).forEach((row) => row.remove());
+  rows.forEach((markup, at) => {
+    let row = pre.children[at];
+    if (!row) pre.append((row = pre.ownerDocument.createElement("span")));
+    if (painted.get(row) === markup) return;
+    row.innerHTML = markup;
+    painted.set(row, markup);
+  });
+}
+
 // xterm's eight colours, to which a 256-palette or RGB colour falls by distance. A colour that is
 // not grey is brightened first, so a dark diff background keeps its hue instead of turning black.
 const EIGHT = [[0, 0, 0], [205, 0, 0], [0, 205, 0], [205, 205, 0], [0, 0, 238], [205, 0, 205], [0, 205, 205], [229, 229, 229]];
@@ -194,18 +214,42 @@ function classes({ flags, fg, bg }) {
 /**
  * The screen's rows as parts of text, each with the classes of its SGR style and whether it is a
  * `[redacted]` the pane draws dim. The style carries from row to row, as tmux writes it. Only SGR
- * codes are read; any other escape stays text.
+ * codes are read; any other escape stays text. The part under `cursor`, a cell of `lines` from the
+ * top left at 0, carries `cursor: true`.
  * @param {string[]} lines
+ * @param {{ x: number, y: number } | null} [cursor]
  */
-export function screenRows(lines) {
+export function screenRows(lines, cursor = null) {
   let style = { flags: new Set(), fg: null, bg: null };
-  return lines.map((line) => {
+  return lines.map((line, row) => {
     const parts = [];
     line.split(/\x1b\[([0-9;:]*)m/).forEach((piece, at) => {
       if (at % 2) return void (style = apply(style, piece));
       const cls = classes(style);
       for (const text of piece.split(/(\[redacted\])/)) if (text) parts.push({ text, cls, hidden: text === "[redacted]" });
     });
-    return parts;
+    return cursor?.y === row ? withCursor(parts, cursor.x) : parts;
   });
+}
+
+// `parts` with the cell at column `x` split out as the cursor's, padded with spaces past the row's
+// end. A `[redacted]` stays whole and carries the cursor itself.
+// shortcut: counts a cell per code point, so a wide character before the cursor shifts it; count widths if agents print CJK.
+function withCursor(parts, x) {
+  const out = [];
+  let column = 0;
+  for (const part of parts) {
+    const chars = [...part.text];
+    const at = x - column;
+    column += chars.length;
+    if (at < 0 || at >= chars.length) out.push(part);
+    else if (part.hidden) out.push({ ...part, cursor: true });
+    else {
+      const pieces = [[chars.slice(0, at).join("")], [chars[at], true], [chars.slice(at + 1).join("")]];
+      for (const [text, cursor] of pieces) if (text) out.push(cursor ? { ...part, text, cursor } : { ...part, text });
+    }
+  }
+  if (column > x) return out;
+  if (x > column) out.push({ text: " ".repeat(x - column), cls: "", hidden: false });
+  return out.concat({ text: " ", cls: "", hidden: false, cursor: true });
 }
