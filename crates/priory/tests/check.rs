@@ -3524,7 +3524,7 @@ fn a_spend_cap_needs_a_price_table() {
 #[test]
 fn a_spend_cap_warns_for_an_agent_whose_model_has_no_price_or_that_runs_codex() {
     let capped = format!("{FACTORY}\n\n[caps]\nday = 50.0\n");
-    let unpriced = AGENT.replace("session = ", "model = \"opus\"\nsession = ");
+    let unpriced = AGENT.replace("session = ", "model = \"claude-opus-5-5\"\nsession = ");
     let mut files = with("factory.toml", &capped);
     files.retain(|(path, _)| *path != "agents/implementer/agent.md");
     files.push(("agents/implementer/agent.md", &unpriced));
@@ -3534,9 +3534,17 @@ fn a_spend_cap_warns_for_an_agent_whose_model_has_no_price_or_that_runs_codex() 
         (warned.code, warned.stderr.as_str()),
         (
             0,
-            "warning: agents/implementer/agent.md:4: the spend caps count nothing for agent `implementer`: prices.toml has no price for its model `opus`\n"
+            "warning: agents/implementer/agent.md:4: the spend caps count nothing for agent `implementer`: prices.toml has no price for its model `claude-opus-5-5`\n"
         )
     );
+
+    let alias = AGENT.replace("session = ", "model = \"sonnet\"\nsession = ");
+    let mut files = with("factory.toml", &capped);
+    files.retain(|(path, _)| *path != "agents/implementer/agent.md");
+    files.push(("agents/implementer/agent.md", &alias));
+    files.push(("prices.toml", PRICES));
+    let quiet = check(&factory("caps-model-alias", &files));
+    assert_eq!((quiet.code, quiet.stderr.as_str()), (0, ""));
 
     let codex =
         "+++\ndescription = \"Implements one task.\"\nharness = \"codex\"\n+++\nMake the change.\n";

@@ -792,6 +792,16 @@ pub fn warnings(factory: &Factory) -> Vec<Problem> {
     warnings
 }
 
+/// Claude Code's model aliases: a transcript names the full model, which no price key can predict.
+const CLAUDE_ALIASES: &[&str] = &[
+    "default",
+    "sonnet",
+    "opus",
+    "haiku",
+    "opusplan",
+    "sonnet[1m]",
+];
+
 const CAPS_PRICED: &str = "needs prices.toml, which turns the steps' tokens into dollars";
 
 /// A spend cap counts dollars, so a factory with a cap and no `prices.toml` would never reach it.
@@ -845,6 +855,7 @@ fn caps_warnings(factory: &Factory) -> Vec<Problem> {
             .value
             .model
             .as_deref()
+            .filter(|model| !CLAUDE_ALIASES.contains(model))
             .filter(|model| !factory.prices.contains_key(*model))
         {
             (

@@ -403,7 +403,25 @@ Spend caps in dollars, priced from `prices.toml`. See [spend.md](../daemon/spend
 | `week` | number | no | no cap | Dollars the factory may spend in a week from Monday 00:00 local time, as `day` | `200.0` |
 | `lanes` | table of tables | no | no lane cap | Each lane's `task`, `day` and `week` caps, by its `<team>/<theme>` name. A lane's `day` or `week` cap only holds new runs | `{ "core/intake" = { day = 10.0 } }` |
 
-Each cap is a number above zero. A run can overshoot a cap by one turn.
+Each cap is a number above zero. A run can overshoot a cap by one turn. A factory with a cap needs
+`prices.toml` beside `factory.toml`, which prices each model the transcripts name (see
+[trace.md](../daemon/trace.md#costs)):
+
+<!-- example: factory/prices.toml -->
+```toml
+# Dollars per million tokens of each kind, by the model name the transcript gives.
+["claude-sonnet-5-5"]
+input = 3.0
+output = 15.0
+cache_read = 0.3
+cache_write = 3.75
+
+["claude-haiku-5-5"]
+input = 1.0
+output = 5.0
+cache_read = 0.1
+cache_write = 1.25
+```
 
 ## `[decisions.triage]`
 
@@ -570,4 +588,5 @@ In a factory with a spend cap and `prices.toml`, `priory check` also warns, and 
 agent of a model step whose spend no cap counts:
 `` warning: agents/<name>/agent.md:<line>: the spend caps count nothing for agent `<name>`: <why> ``,
 where `<why>` is `` prices.toml has no price for its model `<model>` `` or
-`Priory reads no Codex tokens`.
+`Priory reads no Codex tokens`. A Claude Code alias such as `sonnet` never warns: the transcript
+names the full model, which `priory check` cannot know.
