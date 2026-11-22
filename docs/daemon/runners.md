@@ -381,7 +381,8 @@ progress. A task can be given back to a runner that had it before.
 `priory give` reads this machine's state file to find the owner. It refuses with
 `no runner holds <key>` for a key no runner holds or whose task ended, with
 `runner <runner> holds <key> already`, with `runner <runner> has no runner file in runners/`, and
-with `<key> is a lead task, which stays on the runner of the ask it answers`.
+with `<key> is a lead task, which stays on the runner of the ask it answers`, and with `<key> is a
+consult task, which stays on the runner of the consult it answers`.
 Every runner also refuses a claim for a runner without a runner file.
 
 ## Limits

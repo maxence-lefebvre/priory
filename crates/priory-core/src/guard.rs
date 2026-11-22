@@ -186,6 +186,7 @@ fn sign_in(
         "INSERT OR IGNORE INTO todos (text, connector) VALUES (?1, ?2)",
         params![format!("Sign in to {connector}"), connector],
     )?;
+    crate::consult::signed_in(&tx, run.task, connector)?;
     trace::tool_denied(&tx, trace, run.task, run.id, call, &reason)?;
     tx.commit()?;
     Ok(Err(reason))

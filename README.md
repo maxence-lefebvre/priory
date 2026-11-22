@@ -63,6 +63,9 @@ every poll:
 - A [debate step](docs/daemon/debates.md) has two agents answer one question in turns, and ends
   with their verdict or your pick. A [decision model](docs/daemon/decisions.md), once measured
   against your labels, settles review feedback that asks the agent for nothing.
+- A run can [consult an investigator](docs/daemon/tools.md#consulting-an-investigator), a
+  read-only agent with its own MCP servers, such as an error tracker's, and get its report without
+  ever holding those servers.
 - A run's result can carry [evidence](docs/daemon/evidence.md), such as a screenshot or a
   recording, so you see the change work before you read the diff.
 - The queue holds new starts while too many pull requests wait for your

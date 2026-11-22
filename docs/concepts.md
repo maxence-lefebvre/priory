@@ -110,6 +110,11 @@ work before reading the diff. See [docs/daemon/evidence.md](daemon/evidence.md).
 Once measured against a person's labels, it settles feedback on a pull request that asks the agent
 for nothing, so the task is not woken. See [docs/daemon/decisions.md](daemon/decisions.md).
 
+**Consult.** A run asks an investigator one question with the `consult` tool and gets the report
+in its next prompt. An investigator is an agent that only reads, with MCP servers of its own, such
+as an error tracker's. The asking run never gets those servers. See
+[consulting an investigator](daemon/tools.md#consulting-an-investigator).
+
 **Repository readiness.** `priory check --repo PATH` scores what an unattended agent needs from a
 repository, such as one test command and CI on pull requests. See
 [docs/reference/readiness.md](reference/readiness.md).

@@ -1,5 +1,6 @@
 mod auto_answer;
 mod conform;
+mod consult;
 mod debate;
 mod evidence;
 #[cfg(feature = "postgres")]

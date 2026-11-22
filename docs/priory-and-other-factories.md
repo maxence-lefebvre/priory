@@ -53,7 +53,8 @@ did not. Priory has since built parts of all five, and this list says what remai
    A repository's [setup, resume and teardown recipes](reference/factory.md#repos) run around its
    worktrees, an agent names the MCP servers and skills its runs get, and
    [`priory check --repo`](reference/readiness.md) scores what an unattended agent needs from a
-   repository. A factory cannot declare a token per agent or network rules.
+   repository. A run can [consult](daemon/tools.md#consulting-an-investigator) a read-only
+   investigator, so MCP servers and their credentials stay away from the agent that pushes code. A factory cannot declare a token per agent or network rules.
    [agent-credentials.md](design/agent-credentials.md) designs them.
 
 Three more features came after the first reading. A [review limit](daemon/runs.md#review-limit)

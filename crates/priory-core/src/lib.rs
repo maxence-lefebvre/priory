@@ -2,6 +2,7 @@ pub mod batch;
 pub mod bench;
 pub mod capture;
 mod command;
+pub mod consult;
 pub mod daemon;
 pub(crate) mod debate;
 pub mod decision;

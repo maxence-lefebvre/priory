@@ -64,6 +64,7 @@ such as a revert, arrives as a second record that points at the first. Each reco
 | `duration_ms`      | yes      | Wall time from start to end                                           |
 | `tokens`           | no       | For `model` steps: `input`, `output`, `cache_read`, `cache_write`, summed over the step's turns |
 | `overrun`          | no       | For a `model` step with a `budget` whose turn sent its result over it: `budget_usd` and `spent_usd`, priced with `prices.toml`. See [health.md](daemon/health.md#budget) |
+| `consult`          | no       | For an investigator's step: `id`, the consult it answers, and `task`, the asking task's id. See [tools.md](daemon/tools.md#consulting-an-investigator) |
 | `debate`           | no       | For a debate step: the debate, below. Its record has no `harness`, `model` or `tokens`, since each turn's `factory.debate.turn_ended` carries its own |
 
 A debate step's `decider` is `model` when its agents agreed, and `human` when a person picked the
@@ -773,6 +774,66 @@ and to mark a repeat. `factory` is the head commit's factory name, and `source` 
 | `budget`    | yes      | The budget, in dollars                                               |
 | `machine`   | no       | The machine's hostname                                               |
 | `pull_request` | no    | The pull request `--post` named, `owner/name#12`. Null without `--post` |
+
+## `factory.consult.asked` and `factory.consult.reported`
+
+A run asked an investigator one question, and the report or the reason none came was queued for
+its task (see [tools.md](daemon/tools.md#consulting-an-investigator)). Both share `factory`,
+`factory_revision`, `workflow`, `task`, `key`, `generation`, `lane` and `machine` with
+`factory.step.ended`, all of the asking task. The question and the report stay in the state file,
+which `priory task <id> --json` reads, and never enter the trace.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d5-0000-7000-8000-000000000011",
+  "source": "factory://example/desktop",
+  "type": "factory.consult.reported",
+  "time": "2026-11-22T10:04:51Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "12",
+    "key": "github:example/app#42",
+    "generation": 1,
+    "machine": "desktop",
+    "consult": 4,
+    "investigation": "13",
+    "outcome": "reported",
+    "seconds": 162.4,
+    "report_length": 412,
+    "model": "claude-haiku-5-5",
+    "tokens": { "input": 20412, "output": 610, "cache_read": 81220, "cache_write": 9120 },
+    "cost_usd": 0.0413
+  }
+}
+```
+
+`factory.consult.asked`, when the consult is stored:
+
+| Field             | Required | Meaning                                         |
+| ----------------- | -------- | ----------------------------------------------- |
+| `run`             | yes      | The run that asked                              |
+| `step`            | yes      | The asking task's step                          |
+| `agent`           | yes      | The asking run's agent                          |
+| `investigator`    | yes      | The investigator asked                          |
+| `consult`         | yes      | The consult's id                                |
+| `question_length` | yes      | The question's length, in characters            |
+
+`factory.consult.reported`, when the report or a line for no report is queued for the asking task,
+or would be for a task that moved on:
+
+| Field           | Required | Meaning |
+| --------------- | -------- | ------- |
+| `consult`       | yes      | The consult's id |
+| `investigation` | no       | The id of the investigator's task |
+| `outcome`       | yes      | `reported`, `unknown`, `deadline`, `cap` or `failed` |
+| `seconds`       | yes      | From the question to this record |
+| `report_length` | yes      | The report's length, in characters; 0 with no report |
+| `tokens`, `model` | no     | What the investigator's run spent so far, since a run ended by its deadline or cap writes no `factory.step.ended` |
+| `cost_usd`      | no       | `tokens` priced with `prices.toml` |
 
 ## Spans
 
