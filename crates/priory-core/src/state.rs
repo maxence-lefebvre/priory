@@ -1821,11 +1821,16 @@ fn renamed(tx: &Transaction, message: &Message, to: Option<&String>) -> rusqlite
     if !moved || from == *to {
         return Ok(());
     }
-    tx.execute(
-        "UPDATE OR IGNORE tasks SET key = ?2 || substr(key, length(?1) + 1)
-         WHERE key = ?1 OR substr(key, 1, length(?1) + 1) = ?1 || '.'",
-        params![from, to],
-    )?;
+    // Every runner and view reads the move, so each renames its own copy of who owns the key.
+    for table in ["tasks", "claims", "remote_task_submissions"] {
+        tx.execute(
+            &format!(
+                "UPDATE OR IGNORE {table} SET key = ?2 || substr(key, length(?1) + 1)
+                 WHERE key = ?1 OR substr(key, 1, length(?1) + 1) = ?1 || '.'"
+            ),
+            params![from, to],
+        )?;
+    }
     for table in ["owns", "subscriptions", "closed_subscriptions"] {
         tx.execute(
             &format!("UPDATE OR IGNORE {table} SET resource = ?2 WHERE resource = ?1"),

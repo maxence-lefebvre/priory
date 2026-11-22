@@ -947,8 +947,9 @@ fn adopt(db: &mut Connection, me: &str) -> rusqlite::Result<()> {
         if ended {
             claim["ended"] = json!(true);
         }
-        // A reopened task claims afresh: its first claim's id is on the log already.
-        let id = format!("adopt/{request}/{me}/{generation}");
+        // A reopened task claims afresh: its first claim's id is on the log already. So does a
+        // task whose key a Linear team move changed.
+        let id = format!("adopt/{request}/{me}/{generation}/{key}");
         send(&tx, &stamped(CLAIMED, claim, &id).subject(key))?;
     }
     tx.commit()

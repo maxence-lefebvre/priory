@@ -65,6 +65,9 @@ When a Linear issue moves to another team, the intake publishes a `linear.issue.
 Before it routes that event, the daemon renames every task key `linear:<previous_issue>`, and the
 keys of its batch entries, to the new identifier. It moves owned and subscribed resources, open
 waits and open holds the same way. So the event and every later one of the issue reach the task.
+In a factory of several runners, every runner reads the event and renames its copy of the key's
+claim and of the task actions sent to it, so the owner still starts the task and no other runner
+claims the new key (see [runners.md](runners.md)).
 
 ### Stacks
 

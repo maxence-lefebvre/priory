@@ -18692,6 +18692,75 @@ fn a_copy_reopened_on_a_runner_whose_key_another_runner_owns_drops_with_the_owne
     b.until_own_tasks(|rows| rows[0][4] == "running");
 }
 
+/// A Linear request for `issue` keyed by its identifier.
+fn linear_requested(issue: &str, source: &str) -> Message {
+    let key = format!("linear:{issue}");
+    let mut request = requested(1);
+    request.data["key"] = json!(key);
+    request.data["source"] = json!(source);
+    request.subject(key)
+}
+
+/// `from` moved to another Linear team, where it is `to`.
+fn team_moved(from: &str, to: &str) -> Message {
+    let mut moved = Message::new(
+        "linear.issue.updated",
+        json!({ "issue": to, "linear_id": "history-1", "team": "OPS", "state": "Todo",
+                "changed": ["identifier"], "previous_issue": from }),
+    )
+    .subject(to);
+    moved.data["description"] = json!(null);
+    moved
+}
+
+#[test]
+fn a_task_moved_twice_to_other_linear_teams_keeps_its_claim_starts_and_is_not_claimed_again() {
+    let mut a = runner("team-moves", "a", None);
+    let mut b = runner("team-moves", "b", Some(&a));
+    a.publish(&linear_requested("ENG-7", "first"));
+    a.memory(0);
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    logged(
+        &a,
+        "priory.task.held",
+        json!({ "key": "linear:ENG-7", "runner": "a", "hold": "waiting" }),
+    );
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    // b read the request before a's claim, so it claimed too, and lost.
+    for side in [&a, &b] {
+        side.until("inbox", |rows| {
+            rows.iter().any(|row| {
+                row[1] == "priory.task.claimed" && row[2] == "linear:ENG-7" && row[4] == "refused"
+            })
+        });
+    }
+
+    a.publish(&team_moved("ENG-7", "OPS-3"));
+    a.publish(&team_moved("OPS-3", "SUP-9"));
+    a.publish(&linear_requested("SUP-9", "later"));
+    b.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "factory.task.requested" && row[2] == "linear:SUP-9")
+    });
+    a.memory(60);
+
+    let tasks = a.until_own_tasks(|rows| rows.first().is_some_and(|row| row[4] == "running"));
+    assert_eq!(tasks[0][1], "linear:SUP-9", "{tasks:?}");
+    for side in [&a, &b] {
+        let db = rusqlite::Connection::open(side.dir.join("priory.db")).unwrap();
+        let claims: Vec<(String, String)> = db
+            .prepare("SELECT key, runner FROM claims ORDER BY key")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(claims, [("linear:SUP-9".to_owned(), "a".to_owned())]);
+    }
+    assert!(b.own_tasks().is_empty(), "{:?}", b.own_tasks());
+}
+
 #[test]
 fn a_lead_task_runs_on_the_runner_of_the_ask_it_answers_without_a_claim_and_cannot_be_given() {
     let mut a = hands_off("lead-runner", WORKFLOW);
