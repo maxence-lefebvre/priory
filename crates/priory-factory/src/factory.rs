@@ -279,6 +279,7 @@ impl Serve {
 pub struct Webhooks {
     pub github: Option<GithubWebhook>,
     pub linear: Option<LinearWebhook>,
+    pub sentry: Option<SentryWebhook>,
 }
 
 /// GitHub webhooks, at `POST /hooks/github`.
@@ -296,6 +297,15 @@ pub struct GithubWebhook {
 pub struct LinearWebhook {
     /// The environment variable that holds the webhook's signing secret, never the secret itself.
     #[serde(default = "linear_secret_env")]
+    pub secret_env: String,
+}
+
+/// Sentry issue webhooks, at `POST /hooks/sentry`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SentryWebhook {
+    /// The environment variable that holds the integration's Client Secret, never the secret itself.
+    #[serde(default = "sentry_secret_env")]
     pub secret_env: String,
 }
 
@@ -320,6 +330,10 @@ pub struct SlackShortcut {
 
 fn app_token_env() -> String {
     "SLACK_APP_TOKEN".to_owned()
+}
+
+fn sentry_secret_env() -> String {
+    "SENTRY_CLIENT_SECRET".to_owned()
 }
 
 fn linear_secret_env() -> String {
@@ -814,7 +828,7 @@ struct KindOf {
 #[serde(deny_unknown_fields)]
 #[schemars(title = "trigger")]
 pub struct Trigger {
-    /// `github`, `linear`, `linear.view`, `slack` or `schedule`.
+    /// `github`, `linear`, `linear.view`, `sentry`, `slack` or `schedule`.
     pub source: String,
     /// The repository the trigger's tasks work in, a GitHub `owner/name` with no `.` or `..` name;
     /// the polled one for `github`.
@@ -1691,6 +1705,17 @@ impl Factory {
             .as_ref()
     }
 
+    /// The Sentry webhook's settings; none takes no Sentry webhook.
+    pub fn sentry_webhook(&self) -> Option<&SentryWebhook> {
+        self.settings
+            .as_ref()?
+            .value
+            .webhooks
+            .as_ref()?
+            .sentry
+            .as_ref()
+    }
+
     /// The environment variables that hold a secret the factory reads, defaults included, then the
     /// ones `[serve] redact_env` lists.
     pub fn secret_envs(&self) -> Vec<String> {
@@ -1701,6 +1726,8 @@ impl Factory {
                 .map_or_else(secret_env, |hook| hook.secret_env.clone()),
             self.linear_webhook()
                 .map_or_else(linear_secret_env, |hook| hook.secret_env.clone()),
+            self.sentry_webhook()
+                .map_or_else(sentry_secret_env, |hook| hook.secret_env.clone()),
             self.slack_shortcut()
                 .map_or_else(app_token_env, |shortcut| shortcut.token_env.clone()),
             self.log().url_env().to_owned(),
