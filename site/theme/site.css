@@ -35,6 +35,11 @@ kbd { font: 500 11px/16px var(--font-mono); padding: 0 5px; border: 1px solid va
 [data-mode="dark"] .brand .lk-light { display: none; }
 [data-mode="dark"] .brand .lk-dark { display: block; }
 .top .brand span { font: 500 var(--type-caption) var(--font-ui); color: var(--text-3); padding-left: var(--space-2); border-left: 1px solid var(--line); }
+/* Section tabs: one per Diátaxis type; the current one is in --text with a 2 px ink rule under it */
+.tabs { display: flex; align-self: stretch; gap: var(--space-5); margin-left: var(--space-2); }
+.tabs a { display: flex; align-items: center; color: var(--text-2); font: 500 var(--type-small) var(--font-ui); text-decoration: none; white-space: nowrap; border-bottom: 2px solid transparent; padding-top: 2px; }
+.tabs a:hover { color: var(--text); }
+.tabs a[aria-current="true"] { color: var(--text); border-bottom-color: var(--emph); }
 .top .tools { display: flex; align-items: center; gap: var(--space-1); margin-left: auto; }
 .iconbtn { display: inline-grid; place-items: center; width: var(--control-fine); height: var(--control-fine); border-radius: var(--radius-md); color: var(--text-2); background: none; border: 0; cursor: pointer; }
 .iconbtn:hover { background: var(--raised); color: var(--text); }
@@ -82,6 +87,10 @@ main { min-width: 0; padding: var(--space-6) var(--space-8) var(--space-8); outl
 .kind { display: inline-flex; align-items: center; height: 22px; padding: 0 var(--space-2); border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text-2); font: 500 12px/1 var(--font-ui); }
 .kind[hidden] { display: none; }
 .edit { margin-left: auto; display: inline-flex; gap: var(--space-1); align-items: center; }
+.copy-md { display: inline-flex; gap: var(--space-1); align-items: center; height: 28px; padding: 0 var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-md); background: none; color: var(--text-2); font: var(--type-caption) var(--font-ui); cursor: pointer; }
+.copy-md:hover { background: var(--raised); color: var(--text); }
+.copy-md[hidden] { display: none; }
+.copy-md svg.i { width: 14px; height: 14px; }
 
 /* Reading */
 .prose { max-width: var(--measure); font: var(--type-doc) var(--font-ui); color: var(--text); }
@@ -136,7 +145,7 @@ tbody tr:first-child td { border-top: 0; }
 .ref td:nth-child(5) { min-width: 26ch; }
 .ref td:nth-child(6) { white-space: nowrap; }
 
-/* On this page: a hairline rule; the current heading takes a 2 px ink rule */
+/* On this page: a hairline rule; the current heading takes a 2 px amber rule */
 .toc { position: sticky; top: var(--top-bar); align-self: start; max-height: calc(100dvh - var(--top-bar)); overflow: auto; padding: var(--space-6) var(--gutter) var(--space-8) var(--space-4); font: var(--type-caption) var(--font-ui); }
 .toc[hidden] { display: none; }
 .toc h2 { font: 600 var(--type-caption) var(--font-ui); color: var(--text); margin: 0 0 var(--space-2); }
@@ -144,7 +153,7 @@ tbody tr:first-child td { border-top: 0; }
 .toc a { display: block; padding: 4px 0 4px var(--space-3); border-left: 1px solid var(--line); color: var(--text-3); text-decoration: none; }
 .toc a:hover { color: var(--text); }
 .toc .sub a { padding-left: var(--space-6); }
-.toc a[aria-current="true"] { color: var(--text); font-weight: 600; border-left: 2px solid var(--emph); padding-left: 11px; }
+.toc a[aria-current="true"] { color: var(--text); font-weight: 600; border-left: 2px solid var(--wait); padding-left: 11px; }
 .toc .sub a[aria-current="true"] { padding-left: 31px; }
 .toc-inline { display: none; }
 
@@ -221,6 +230,7 @@ figcaption { font: var(--type-caption) var(--font-ui); color: var(--text-3); mar
   .nav li a { min-height: var(--control); font-size: 15px; }
   .top { gap: var(--space-2); padding: 0 var(--space-2); }
   .top .menu, .top .search-icon { display: inline-grid; }
+  .tabs { display: none; }
   .iconbtn { width: var(--control); height: var(--control); }
   .top .brand span { display: none; }
   #mdbook-search-wrapper.hidden { display: none; }
@@ -240,6 +250,7 @@ figcaption { font: var(--type-caption) var(--font-ui); color: var(--text-3); mar
   .pager a { min-height: 64px; justify-content: center; }
   .pager a[rel="next"] { grid-column: 1; }
   .edit { margin-left: 0; }
+  .copy-md { height: var(--control); }
 
   /* Reference tables stack: key, type and required on one line, then meaning, default and example */
   .ref table, .ref tbody, .ref td { display: block; }

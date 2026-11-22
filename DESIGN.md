@@ -1705,13 +1705,22 @@ it differs from the view:
 - **Type.** Body text is 16 / 26 within `--measure`, except beside a wide table. On wide screens,
   the title is 36 / 42 and h2 22 / 28, at `--display-weight` and normal width; h3 is 17 / 24 at
   600. The paragraph under the title is the lede, 17 / 27 in `--text-2`.
-- **Layout.** A 52 px top bar with the lockup, search and a light or dark toggle. From 1200 px, a
-  264 px navigation on the left, the page at most `--measure` wide, and a 216 px "On this page"
-  list on the right. From 900 px, the list folds under the title. Below 900 px, the navigation and
-  the search open over the page.
+- **Layout.** A 52 px top bar with the lockup, the section tabs, search and a light or dark
+  toggle. From 1200 px, a 264 px navigation on the left, the page at most `--measure` wide, and a
+  216 px "On this page" list on the right. From 900 px, the list folds under the title. Below
+  900 px, the navigation and the search open over the page, and the tabs hide: the navigation's
+  groups carry the same sections.
+- **Section tabs.** Tutorial, How-to guides, Reference and Explanation, one per Diátaxis type, in
+  the order `GROUPS` in `site/build.py` lists the docs. Each links to its first page; Explanation
+  holds every group after Reference. The current tab is in `--text` with a 2 px `--emph` rule
+  under it.
+- **Copy as Markdown.** A 28 px `--line` button right of "Edit on GitHub" copies the page's source
+  Markdown. `site/build.py` writes each page's source beside it as `<page>.md.txt`, so the site
+  needs no server. It shows only once the script can reach the clipboard, and it is 44 px tall
+  below 900 px.
 - **Navigation.** One group per docs folder, its head a caption in `--text`. The current page sits
   on `--raised`. In "On this page", a hairline runs beside the list and the current heading takes a
-  2 px `--emph` rule.
+  2 px `--wait` rule.
 - **Reference tables.** They scroll in their own box with the key column sticky. Below 900 px, each
   row stacks into one block: key, type and "yes" when required, then meaning, default and example.
 - **Code** follows the mode: `--raised` with a `--line` edge and `--radius-card`, and a copy button.

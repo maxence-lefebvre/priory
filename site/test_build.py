@@ -1,3 +1,5 @@
+import re
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -75,6 +77,52 @@ class Tokens(unittest.TestCase):
             self.assertTrue((build.ROOT / "design" / "tokens" / name).exists())
         css = (build.SITE / "theme" / "site.css").read_text(encoding="utf-8")
         self.assertNotRegex(css, r"#[0-9A-Fa-f]{3,8}\b|light-dark\(|rgba?\(")
+
+
+class Tabs(unittest.TestCase):
+    def test_the_top_bar_has_one_tab_per_diataxis_type_in_groups_order(self):
+        tabs = build.tabs(build.chapters())
+        self.assertEqual([t for t, _, _ in tabs], ["Tutorial", "How-to guides", "Reference", "Explanation"])
+        self.assertEqual([first for _, first, _ in tabs], [
+            "GETTING_STARTED.md",
+            "docs/starting-from-a-starter.md",
+            "docs/reference/README.md",
+            "docs/concepts.md",
+        ])
+        grouped = [g for _, _, gs in tabs for g in gs]
+        self.assertEqual(grouped, [title for title, _, _ in build.GROUPS])
+
+    def test_the_staged_theme_links_each_tab_to_its_first_page(self):
+        page = build.theme_page(build.tabs(build.chapters()))
+        self.assertNotIn("<!-- tabs -->", page)
+        self.assertIn('<nav class="tabs" aria-label="Sections">', page)
+        self.assertIn('<a href="{{ path_to_root }}GETTING_STARTED.html" data-groups="Tutorial">Tutorial</a>', page)
+        self.assertIn('<a href="{{ path_to_root }}docs/concepts.html" data-groups="How it works|The intake', page)
+
+
+class CopyAsMarkdown(unittest.TestCase):
+    def test_build_stages_each_page_source_beside_it_as_text(self):
+        out = Path(tempfile.mkdtemp())
+        try:
+            build.stage_markdown(out, {"docs/concepts.md"})
+            self.assertEqual(
+                (out / "docs/concepts.md.txt").read_text(encoding="utf-8"),
+                (build.ROOT / "docs/concepts.md").read_text(encoding="utf-8"),
+            )
+        finally:
+            shutil.rmtree(out)
+
+    def test_each_page_has_a_copy_as_markdown_button_for_its_source(self):
+        page = (build.SITE / "theme" / "index.hbs").read_text(encoding="utf-8")
+        self.assertIn('data-markdown="{{ path_to_root }}{{ path }}.txt"', page)
+        self.assertIn("Copy as Markdown", page)
+
+
+class OnThisPage(unittest.TestCase):
+    def test_the_current_heading_takes_the_amber_rule(self):
+        css = (build.SITE / "theme" / "site.css").read_text(encoding="utf-8")
+        rule = re.search(r'\.toc a\[aria-current="true"\] \{([^}]*)\}', css)
+        self.assertIn("border-left: 2px solid var(--wait)", rule[1])
 
 
 class Chapters(unittest.TestCase):
