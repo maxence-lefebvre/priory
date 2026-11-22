@@ -111,7 +111,8 @@ the factory's, then the accepted candidates. `replaces` is null, unknown, for a 
 the accepted candidates lack while the factory's kit has no commit checked out on this machine, as
 on a machine that only views. `/api/desk` marks its candidates the same way.
 
-`accept` and `drop` publish [`priory.memory.accepted`](events.md#priorymemoryaccepted) or
+Only a person runs `accept` and `drop`: inside a run's shell they exit 2, and the `priory-person`
+guard denies them to every agent (see [guard.md](../daemon/guard.md)). `accept` and `drop` publish [`priory.memory.accepted`](events.md#priorymemoryaccepted) or
 [`priory.memory.dropped`](events.md#priorymemorydropped) on the log of the factory in `DIR`, `.` by
 default, and print `<name> accepted: every runner applies it as it reads the log`.
 `POST /api/memories/{id}/accept` and `POST /api/memories/{id}/drop` are their twins (see
