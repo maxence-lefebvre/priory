@@ -955,7 +955,7 @@ pub struct Queue {
     #[serde(default)]
     pub preempt: Vec<String>,
     /// How many pull requests of a lane, or of a batch, may wait for a person before its new tasks
-    /// wait to start; no limit when unset.
+    /// wait to start; no limit when unset. A task of the first band never waits.
     #[serde(default)]
     pub review_limit: Option<std::num::NonZeroU32>,
 }

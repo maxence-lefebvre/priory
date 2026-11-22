@@ -35,6 +35,21 @@ export function unheardNote(count) {
   return `${count} ${count === 1 ? "event" : "events"} kept by a sleeping task reached no agent`;
 }
 
+/** The desk's calm line for `count` requests a pre script dropped in the last 24 hours, or "" with none. */
+export function droppedNote(count) {
+  if (!count) return "";
+  return `${count} ${count === 1 ? "request" : "requests"} a pre script dropped in the last 24 hours`;
+}
+
+/**
+ * Why a pre script dropped a request, its reason or how it failed, and what judges its resource again.
+ * @param {{ reason: string | null, failed: string | null }} drop
+ */
+export function droppedWhy(drop) {
+  const why = drop.reason ? `Dropped: ${drop.reason}.` : drop.failed ? `Dropped: the script failed: ${drop.failed}.` : "Dropped with no reason.";
+  return `${why} A new event of it that a trigger wants runs the script again.`;
+}
+
 /**
  * What gets an unheard group's events to an agent, by its task's state: say to an asleep task;
  * say to a blocked one, which reads them when it resumes; route an ended one as an owned group

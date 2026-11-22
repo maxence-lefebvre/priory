@@ -3151,7 +3151,8 @@ pub(crate) fn admissible<'r>(
         let busy = match busy {
             Some(reason) => Some(reason),
             None if admission.fresh => {
-                crate::review::waits(db, factory.review_limit(), admission.task)?
+                let first_band = factory.bands().first().copied();
+                crate::review::waits(db, factory.review_limit(), first_band, admission.task)?
             }
             None => None,
         };

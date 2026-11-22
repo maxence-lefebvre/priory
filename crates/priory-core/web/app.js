@@ -8,7 +8,7 @@ import { markdown } from "./markdown.js";
 import { around, dossier, nextPick, refusal } from "./reports.js";
 import { checkState, prStack, stateWords } from "./stack.js";
 import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
-import { emptyDetail, eventWords, handled, neverOwned, sinceWords, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
+import { droppedNote, droppedWhy, emptyDetail, eventWords, handled, neverOwned, sinceWords, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
 import { actionNote, arrivalAsk, batchParts, capsuleWords, countHead, countWords, deskBanners, dueParts, plural, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
@@ -716,10 +716,10 @@ function unroutedRows() {
     queueMicrotask(loadUnrouted);
     return html`<p class="empty">Loading the unrouted events…</p>`;
   }
-  const { owned, other, unheard = [] } = view.groups;
+  const { owned, other, unheard = [], dropped = [] } = view.groups;
   const rest = neverOwned(other);
   const restLine = rest ? html`<p class="meta unowned">${rest}</p>` : "";
-  const heard = unheard.length ? html`<div class="sec" id="unheard">Unheard<span>no agent read them</span></div>${unheard.map(unheardGroup)}<div class="sec">Unrouted<span>reached no task</span></div>` : "";
+  const heard = unheard.length || dropped.length ? html`${unheard.length ? html`<div class="sec" id="unheard">Unheard<span>no agent read them</span></div>${unheard.map(unheardGroup)}` : ""}${dropped.length ? html`<div class="sec" id="dropped">Dropped<span>a script judged each once</span></div>${dropped.map(droppedGroup)}` : ""}<div class="sec">Unrouted<span>reached no task</span></div>` : "";
   if (!owned.length) return html`${heard}<p class="empty">No event of a task's resource went unrouted. An event about an ended task's pull request or issue shows here.</p>${restLine}`;
   return [heard, ...owned.map((group) => {
     const { task } = group;
@@ -747,6 +747,15 @@ function routeButton(group, action) {
     : html`<p class="meta">No new task can take this resource from here: start one from its thread.</p>`;
   const busy = state.unrouted.busy === group.resource ? raw('aria-disabled="true"') : "";
   return html`<button type="button" class="btn secondary" data-action="subscribe-task" data-resource="${group.resource}" data-task="${task.id}" ${busy}>Subscribe ${taskLabel(task.key)}</button>`;
+}
+
+// A request a pre script dropped (DESIGN.md, Inbox): its trigger, script, source event and why, with no action.
+function droppedGroup(drop) {
+  const events = drop.event ? [drop.event] : [];
+  return html`<section class="ugroup" aria-label="${drop.key || "dropped request"}"><p class="l1"><span class="mono">${drop.key || "-"}</span><span class="num">${events.length}</span></p>
+    <p class="meta">${tile("dropped", "sm")}trigger ${drop.trigger}, ${drop.script}</p>
+    ${eventRows(events, "dropped")}
+    <p class="meta">${droppedWhy(drop)}</p></section>`;
 }
 
 // One task's unheard events (DESIGN.md, Inbox), with what gets them to an agent.
@@ -825,6 +834,8 @@ function needsMe(model, wide) {
   if (unrouted) sections.push(html`<a class="row one calm" href="/inbox?view=unrouted">${tile("queued")}<span>${unrouted}</span><span class="num">${state.data.desk.counts.unrouted}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
   const unheard = unheardNote(state.data.desk.counts?.unheard);
   if (unheard) sections.push(html`<a class="row one calm" href="/inbox?view=unrouted#unheard">${tile("asleep")}<span>${unheard}</span><span class="num">${state.data.desk.counts.unheard}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
+  const dropped = droppedNote(state.data.desk.counts?.dropped);
+  if (dropped) sections.push(html`<a class="row one calm" href="/inbox?view=unrouted#dropped">${tile("dropped")}<span>${dropped}</span><span class="num">${state.data.desk.counts.dropped}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
   if (model.reports.length) sections.push(html`<div class="sec">Reports<span>${model.reports.length}</span></div>${model.reports.map(itemRow)}`);
   return sections;
 }

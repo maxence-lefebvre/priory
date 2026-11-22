@@ -132,3 +132,15 @@ fn a_batch_at_its_review_limit_holds_its_new_entries_and_no_other_task() {
     setup.publish(&requested(44));
     setup.until("runs", |rows| rows.len() == 2 && rows[1][1] == "3");
 }
+
+#[test]
+fn a_task_of_the_first_band_starts_while_its_lane_is_at_its_review_limit() {
+    let setup = Setup::reviewing("review-blocker", &[result("passed")]);
+
+    setup.publish(&requested_in(43, Some("blocker")));
+
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+    assert_eq!(runs[1][1], "2", "{runs:?}");
+    let tasks = setup.rows("tasks");
+    assert!(!tasks[1][7].contains("review limit"), "{tasks:?}");
+}

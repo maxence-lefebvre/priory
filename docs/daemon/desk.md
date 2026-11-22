@@ -67,6 +67,19 @@ task's next run. When such events came in the last 24 hours and are at least 5 m
 as a calm row under the unrouted one, and the Herdr Desk's count line ends with "2 events no agent
 read." See [routing.md](routing.md#events-no-agent-read).
 
+A request a trigger's `pre` script dropped made no task, and its issue stays in its view with none.
+When a script dropped requests in the last 24 hours, and no task has their key since, `priory desk`
+prints one more line:
+
+```text
+1 request a pre script dropped in the last 24 hours. See it with `priory inbox --unrouted`.
+```
+
+`priory desk --json` carries it as `counts.dropped`, 0 when there are none. The web Desk shows it
+as a calm row under the unheard one, which opens the Inbox at its Dropped section, and the Herdr
+Desk's count line ends with "1 request a script dropped in 24 h." See
+[pre.md](../intake/pre.md#one-decision-per-event).
+
 A comment or review from someone outside the repository is not unrouted: its outcome is
 `outsider`. When some came in the last 24 hours, `priory desk` prints one more line:
 

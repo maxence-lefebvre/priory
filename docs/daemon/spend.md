@@ -111,7 +111,8 @@ A lane's caps only ever hold new runs. Its `task` cap holds the task with an ask
 - The Herdr adapter's [usage line](../reference/herdr-panels.md#the-usage-line) shows today's and this
   week's spend against the factory's caps, and how many tasks are held at a cap. A click lists
   every cap and each held task.
-- The web view's Desk shows each line of `caps` as a banner. It shows no spend or cap table yet.
+- The web view's Desk and the Herdr Desk show each line of `caps` as a banner. The web view shows
+  no spend or cap table yet.
 
 ## Known limits
 

@@ -1711,6 +1711,16 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
                         "{unrouted} {events} reached no task in the last 24 hours. See them with `priory inbox --unrouted`."
                     ));
                 }
+                if let Some(dropped) = value["counts"]["dropped"].as_u64().filter(|n| *n > 0) {
+                    let (requests, it) = if dropped == 1 {
+                        ("request", "it")
+                    } else {
+                        ("requests", "them")
+                    };
+                    state::emit(&format!(
+                        "{dropped} {requests} a pre script dropped in the last 24 hours. See {it} with `priory inbox --unrouted`."
+                    ));
+                }
                 if let Some(unheard) = value["counts"]["unheard"].as_u64().filter(|n| *n > 0) {
                     let (events, it) = if unheard == 1 {
                         ("event", "it")

@@ -162,6 +162,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue,
     desk.counts.snoozed ? `${desk.counts.snoozed} snoozed.` : null,
     desk.counts.unrouted ? `${plural(desk.counts.unrouted, "event")} reached no task in 24 h.` : null,
     desk.counts.unheard ? `${plural(desk.counts.unheard, "event")} no agent read.` : null,
+    desk.counts.dropped ? `${plural(desk.counts.dropped, "request")} a script dropped in 24 h.` : null,
   ].filter(Boolean).join(" ");
 
   /** @type {Record<string, () => { title: string, note: string | null, rows: any[] }[]>} */
@@ -197,7 +198,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue,
       { id: "all", label: "All tasks", count: tasks.length },
     ],
     sections: (/** @type {string} */ view) => (views[view] ?? views.needs)().filter((section) => section.rows.length),
-    banners: [began(desk.paused, now), began(desk.banner, now), desk.intake].filter(Boolean),
+    banners: [began(desk.paused, now), began(desk.banner, now), desk.intake, ...(desk.caps ?? [])].filter(Boolean),
     since: {
       from: desk.last_visit ? when(desk.last_visit, now) : null,
       rows: desk.since_you_looked.map((/** @type {any} */ event) => ({ key: event.key, task: event.task, what: sinceWords(event.what), time: age(event.time, now) })),
