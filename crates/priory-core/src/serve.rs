@@ -504,7 +504,9 @@ fn terminal(db: &Connection, served: &Served, run: &str, query: &str) -> Reply {
             }
             Reply::json(200, screen::reply(shown, have).to_string())
         }
-        Err(error) => Reply::error(404, &error),
+        Err(screen::Unread::Gone(error)) => Reply::error(404, &error),
+        // The run is live, so a later read may show it, or the daemon ends the run.
+        Err(screen::Unread::Unreadable(error)) => Reply::error(503, &error),
     }
 }
 

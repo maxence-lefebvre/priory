@@ -20841,10 +20841,11 @@ fn a_runs_screen_reads_its_tagged_pane_not_the_active_one_and_refuses_a_run_it_c
         .unwrap();
     let pane = agent.split(' ').next().unwrap();
     setup.tmux_out(&["set-option", "-p", "-t", pane, "@priory", "another-session"]);
+    // The run is still live, so the page keeps asking until the daemon ends it.
     let (status, body) = http(&address, "GET", "/api/runs/1/screen", "", "");
     assert_eq!(
         (status, body),
-        (404, json!({ "error": sentence }).to_string())
+        (503, json!({ "error": sentence }).to_string())
     );
     let (status, body) = http(&address, "GET", "/api/runs/9/screen", "", "");
     assert_eq!(
@@ -20974,8 +20975,9 @@ fn a_screen_gives_up_on_a_hung_tmux_at_its_deadline_and_a_third_at_once_gets_503
     let (status, body) = http(&address, "GET", "/api/runs/1/screen", "", "");
     assert_eq!(status, 503, "{body}");
     assert_eq!(http(&address, "GET", "/api/desk", "", "").0, 200);
+    // The run is live, so a read tmux did not answer in time is one to retry.
     for hung in hung {
-        assert_eq!(hung.join().unwrap().0, 404);
+        assert_eq!(hung.join().unwrap().0, 503);
     }
     assert!(
         started.elapsed() < Duration::from_secs(4),

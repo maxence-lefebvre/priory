@@ -424,8 +424,9 @@ fn screen(args: Vec<String>) -> ExitCode {
         None => factory::Factory::default(),
     };
     let secrets = priory_core::screen::secrets(&factory.secret_envs());
-    let read =
-        state::open().and_then(|db| priory_core::screen::read(&db, &target, &secrets, history));
+    let read = state::open().and_then(|db| {
+        priory_core::screen::read(&db, &target, &secrets, history).map_err(String::from)
+    });
     let colours = std::io::IsTerminal::is_terminal(&std::io::stdout());
     exit(
         "screen",

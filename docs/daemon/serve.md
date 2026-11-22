@@ -191,7 +191,9 @@ password in plain words gets through. Whoever holds the token may read what the 
 shows. A factory that does not want that sets [`[serve] terminal = "off"`](../reference/factory.md#serve).
 
 tmux can hang. So each screen has its own 2 second deadline, and at most 2 are read at once,
-which leaves workers for other requests however tmux behaves.
+which leaves workers for other requests however tmux behaves. A live run's screen that tmux did
+not give in time, or that holds a secret redaction cannot hide, gets `503`, so the page asks again.
+Only a run that ended or does not exist gets `404`, and the page stops asking.
 
 ## A run's keyboard
 
