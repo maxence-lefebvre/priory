@@ -60,10 +60,16 @@ test("an upright lane label that would cover another moves down a line, and the 
   const flows = fixture("flows-groom");
   const [groom] = flows.workflows;
   const edges = timeline(groom, ungatedPairs(groom.name, flows.paths)).edges;
-  const spots = labelSpots(edges, 1);
-  const at = (from, to) => spots[edges.findIndex((edge) => edge.from === from && edge.to === to)];
-  // rejected and failed share their lanes' middle, 42 px apart: the later one moves 16 px down.
-  assert.deepEqual([at("approve-plan", "stop"), at("implement-green", "stop")], [{ x: 365, y: 422 }, { x: 407, y: 438 }]);
+  const spotsAt = (scale) => {
+    const spots = labelSpots(edges, scale);
+    return (from, to) => spots[edges.findIndex((edge) => edge.from === from && edge.to === to)];
+  };
+  // At full size, rejected and failed share their lanes' middle 60 px apart, so neither moves.
+  const at = spotsAt(1);
+  assert.deepEqual([at("approve-plan", "stop"), at("implement-green", "stop")], [{ x: 371, y: 422 }, { x: 431, y: 422 }]);
   assert.deepEqual(at("groom", "implement"), { x: 351, y: 142 });
   assert.deepEqual(at("groom", "approve-plan"), { x: 135.5, y: 86 });
+  // At half size they sit 30 px apart: the later one moves down whole lines until it covers none.
+  const half = spotsAt(0.5);
+  assert.deepEqual([half("approve-plan", "stop"), half("implement-green", "stop")], [{ x: 188.5, y: 207 }, { x: 218.5, y: 255 }]);
 });
