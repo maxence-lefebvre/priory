@@ -20614,7 +20614,12 @@ fn a_runs_screen_takes_earlier_rows_up_to_its_cap_and_hashes_them_and_the_cli_ta
     };
     assert_eq!(cli("5")["hash"], five["hash"]);
     assert_eq!(cli("99999")["hash"], capped["hash"]);
-    assert!(!setup.priory(&["screen", "1", "--history", "many"]).status.success());
+    assert!(
+        !setup
+            .priory(&["screen", "1", "--history", "many"])
+            .status
+            .success()
+    );
     server.kill().unwrap();
     server.wait().unwrap();
 }
@@ -20685,7 +20690,7 @@ fn a_runs_screen_reads_its_tagged_pane_not_the_active_one_and_refuses_a_run_it_c
 }
 
 #[test]
-fn a_runs_screen_and_the_cli_given_the_factory_hide_its_secrets_and_secret_shapes_and_the_hash_ignores_them() {
+fn a_runs_screen_and_priory_screen_dir_hide_the_factorys_secrets_and_the_hash_ignores_them() {
     let setup = Setup::running("screen-secrets");
     let serve = format!(
         "{WATCH}redact_env = [\"TEST_ONE\", \"TEST_TWO\"]\n\n[webhooks.github]\nsecret_env = \"TEST_HOOK\"\n\n\

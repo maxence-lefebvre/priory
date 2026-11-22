@@ -919,8 +919,14 @@ The **lane graph** draws a plan, in the batch page and in a go ask.
 
 - Always the `--term-*` tokens, dark in every theme and mode, with `--radius-md`. Mono at 12 / 16
   on compact, 12.5 / 19 on wide.
-- tmux sets the width, so lines never wrap. The pane scrolls sideways inside its own box. A "Fit"
-  toggle scales the text down to fit the width, never below 9 px.
+- tmux sets the width, so lines never wrap. The pane scrolls sideways inside its own box, and its
+  scrollbar takes the `--term-*` colours in every theme. A "Fit" toggle scales the text down to fit
+  the width, never below 9 px.
+- A new screen rewrites only the rows whose text or style changed, so a selection in the other rows
+  stays while the agent writes.
+- The cursor fills its cell with `--term-fg`, its character in `--term-bg`, without blinking. It
+  shows only when the screen carries one, never while earlier rows sit above the screen and never
+  on an ended run. Under forced colours it takes a `CanvasText` outline.
 - Read-only by default. "Type" opens a one-line input at the bottom, with a "Say" button, that
   sends the line on Enter through the task's say verb: it reaches the agent once its run is idle,
   never as a slash command. The header's tag reads `read-only`, or `say` while the input is open.
