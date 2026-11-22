@@ -434,7 +434,8 @@ carries over between them. See [docs/daemon/runs.md](docs/daemon/runs.md).
 **Inbox and routing.** Every event the intake publishes lands in the daemon's inbox before anything
 acts on it. The daemon then finds the task the event concerns, such as the task that owns the pull
 request a check ran on. `priory task ID --json` lists the events routed to a task, and
-`priory inbox --unrouted` lists those that reached none, as the web and Herdr Inbox panels do. See
+`priory inbox --unrouted` lists those that reached none, as the web and Herdr Inbox panels do. It
+also lists the events a sleeping task kept that no agent read yet. See
 [docs/daemon/routing.md](docs/daemon/routing.md).
 
 **Waits and asks.** An agent ends a turn with one of three tools: `result` reports the step's

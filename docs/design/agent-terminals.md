@@ -176,7 +176,7 @@ phone. Four rules bound that:
 4. **Send nothing elsewhere.** No screen goes to the trace, a notification, the OTLP export or the
    server's log.
 
-Redaction is best effort. A secret split across two rows, a token in a shape not on the list, or a
+Redaction is best effort. A secret the application split across two rows, a token in a shape not on the list, or a
 password in plain words gets through. The note says so where `[serve] terminal` is documented, and
 the honest boundary stays the token: whoever holds it may read what the agent's screen shows.
 

@@ -373,7 +373,11 @@ fn route(
         "/api/inbox" => match query {
             "" => listing::revised(db, "inbox", |db| listing::inbox(db, 0).map(Some)),
             "unrouted=1" => {
-                listing::revised(db, "unrouted", |db| listing::unrouted(db, 0).map(Some))
+                let now = match intake::now() {
+                    Ok(now) => now,
+                    Err(error) => return Reply::error(500, &error),
+                };
+                listing::revised(db, "unrouted", |db| listing::unrouted(db, 0, now).map(Some))
             }
             _ => return Reply::error(400, "inbox takes one parameter: unrouted=1"),
         },

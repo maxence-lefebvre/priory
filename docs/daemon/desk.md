@@ -50,6 +50,17 @@ hours, `priory desk` prints one line before its rows. Events no task ever owned 
 It is a count, not an alarm: nothing ranks for it. `priory desk --json` carries it as
 `counts.unrouted`, 0 when there are none. See [routing.md](routing.md#events-that-reach-no-task).
 
+An event a task kept while it was not running reached a task, but no agent read it yet, until the
+task's next run. When such events came in the last 24 hours and are at least 5 minutes old,
+`priory desk` prints one more line:
+
+```text
+1 event kept by a sleeping task reached no agent. See it with `priory inbox --unrouted`.
+```
+
+`priory desk --json` carries it as `counts.unheard`, 0 when there are none. See
+[routing.md](routing.md#events-no-agent-read).
+
 A comment or review from someone outside the repository is not unrouted: its outcome is
 `outsider`. When some came in the last 24 hours, `priory desk` prints one more line:
 

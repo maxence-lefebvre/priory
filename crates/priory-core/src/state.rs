@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 83;
+const VERSION: i64 = 84;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1504,6 +1504,18 @@ ALTER TABLE runs ADD COLUMN kit_commit TEXT;
 PRAGMA user_version = 83;
 ";
 
+// The subscriptions a close of their resource ended, which a later event of it open again restores.
+const SCHEMA_84: &str = "
+CREATE TABLE IF NOT EXISTS closed_subscriptions (
+  task     INTEGER NOT NULL REFERENCES tasks (id),
+  resource TEXT NOT NULL,
+  created  TEXT NOT NULL,
+  chosen   INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (task, resource)
+);
+PRAGMA user_version = 84;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1516,7 +1528,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
-    SCHEMA_82, SCHEMA_83,
+    SCHEMA_82, SCHEMA_83, SCHEMA_84,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1725,10 +1737,20 @@ pub(crate) fn route_in(
     }
     let resources = route::resources(message);
     claim_pull_request(tx, message)?;
-    // The intake publishes no reopen, so a later event of an open pull request tells it.
-    if message.kind != CLOSED && message.data["open"] == true {
+    // The intake publishes no reopen, so a later event of an open pull request or issue tells it,
+    // and gives back the subscriptions its close ended.
+    if ![CLOSED, ISSUE_CLOSED].contains(&message.kind.as_str()) && message.data["open"] == true {
         tx.execute(
             "UPDATE pull_requests SET state = 'open' WHERE resource = ?1 AND state = 'closed'",
+            [resources.first()],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO subscriptions (task, resource, created, chosen)
+             SELECT task, resource, created, chosen FROM closed_subscriptions WHERE resource = ?1",
+            [resources.first()],
+        )?;
+        tx.execute(
+            "DELETE FROM closed_subscriptions WHERE resource = ?1",
             [resources.first()],
         )?;
     }
@@ -1868,6 +1890,11 @@ pub(crate) fn route_in(
         crate::post::report(tx, "linear", &refiltered(&message.data))?;
     }
     crate::hold::event(tx, &resources)?;
+    if message.kind == "linear.issue.left"
+        && let Some(resource) = resources.first()
+    {
+        crate::hold::left(tx, resource, message.data["view"].as_str())?;
+    }
     if message.kind == priory_intake::intake::PR_CLOSED && message.data["merged"] == true {
         crate::tools::restack_stacked(tx, trace, seq, &message.data)?;
     }
@@ -1940,6 +1967,11 @@ pub(crate) fn route_in(
     }
     // After the delivery above, so the close reaches its subscribers.
     if [CLOSED, ISSUE_CLOSED].contains(&message.kind.as_str()) {
+        tx.execute(
+            "INSERT OR REPLACE INTO closed_subscriptions (task, resource, created, chosen)
+             SELECT task, resource, created, chosen FROM subscriptions WHERE resource = ?1",
+            [resources.first()],
+        )?;
         tx.execute(
             "DELETE FROM subscriptions WHERE resource = ?1",
             [resources.first()],
@@ -2128,9 +2160,10 @@ fn delivered(
     Ok(None)
 }
 
-/// The events a task's subscription to its own key carries: what people say, edit and close. Checks,
+/// The events a task's subscription to its own key carries: what people say, edit, close and take
+/// out of a view. Checks,
 /// labels and pushes stay with the checks gate and waits, since each would start a run.
-const OWN_KEY: [&str; 10] = [
+pub(crate) const OWN_KEY: [&str; 11] = [
     "github.pull_request_review.submitted",
     "github.pull_request.comment",
     "github.pull_request_review_comment",
@@ -2140,6 +2173,7 @@ const OWN_KEY: [&str; 10] = [
     "linear.comment.created",
     "linear.issue.state_changed",
     "linear.issue.updated",
+    "linear.issue.left",
     "slack.thread.replied",
 ];
 
