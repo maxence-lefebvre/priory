@@ -14,7 +14,7 @@ You need:
 - On `PATH`: `git`, `tmux`, `openssl`, `gh` logged in to GitHub, and `claude`, logged in. The agent of this
   tutorial runs Claude Code. To run Codex instead, set `harness = "codex"` in step 2 and read
   [codex.md](docs/daemon/codex.md).
-- The Rust toolchain. `rust-toolchain.toml` pins the version, and `rustup` installs it on the first
+- The Rust toolchain, to build from source. `rust-toolchain.toml` pins the version, and `rustup` installs it on the first
   build.
 - A GitHub repository you can push to, for the agent to work in. This page calls it `owner/name`.
 
@@ -28,6 +28,10 @@ Five words come back on every page. [Concepts](docs/concepts.md) explains them i
 
 ## 1. Build Priory
 
+To skip the build, install the release binary with `install.sh` or a build with Nix, as
+[How to install Priory](docs/installing-a-release.md) shows, then go to step 2. This step builds
+Priory from a clone:
+
 ```sh
 git clone https://github.com/maxence-lefebvre/priory
 cd priory
@@ -38,9 +42,6 @@ priory --version
 `cargo install` builds Priory and puts `priory` in `~/.cargo/bin`, which `rustup` added to your
 `PATH`, so every terminal you open finds it. The last command prints the version, such as
 `priory 0.1.0`.
-
-To install a prebuilt binary instead, once a release exists, see
-[How to install a release](docs/installing-a-release.md).
 
 ## 2. Write a factory
 
@@ -248,7 +249,7 @@ with a key such as `github:owner/name#42`. It goes through the same steps.
 ## Next steps
 
 - Start from a ready-made factory: [How to start from a starter factory](docs/starting-from-a-starter.md).
-- Install a prebuilt binary: [How to install a release](docs/installing-a-release.md).
+- Install the release binary or a Nix build: [How to install Priory](docs/installing-a-release.md).
 - Answer asks from a phone, with notifications: [How to use the web view](docs/using-the-web-view.md).
 - Keep both processes running: [How to run Priory as services](docs/running-as-services.md).
 - Try a factory with fake agents before a real one runs: [How to test a factory end to end](docs/testing-a-factory.md).
