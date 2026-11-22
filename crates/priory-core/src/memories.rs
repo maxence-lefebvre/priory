@@ -330,3 +330,161 @@ pub fn decide(
         "{name} {verb}: every runner applies it as it reads the log"
     ))
 }
+
+/// The kit repository's branch that the daily pull request of accepted memories comes from.
+pub(crate) const BRANCH: &str = "priory/memories";
+
+/// An accepted candidate that decides its name: the last accepted in log order.
+struct Winner {
+    id: String,
+    name: String,
+    /// The memory's file, or none for a forget.
+    file: Option<Vec<u8>>,
+    key: String,
+    runner: Option<String>,
+    decided: String,
+}
+
+/// The accepted candidate that decides each name, by name, and the time of the last accept.
+fn winners(db: &Connection) -> rusqlite::Result<(Vec<Winner>, Option<String>)> {
+    let mut by_name = std::collections::BTreeMap::new();
+    let mut last = None;
+    let rows = db
+        .prepare(
+            "SELECT id, name, description, text, key, runner, decided FROM memory_candidates
+             WHERE accepted IS NOT NULL ORDER BY accepted",
+        )?
+        .query_map([], |row| {
+            let name: String = row.get(1)?;
+            let kept: Option<(String, String)> = row.get::<_, Option<String>>(2)?.zip(row.get(3)?);
+            Ok(Winner {
+                id: row.get(0)?,
+                file: kept.map(|(description, text)| file(&name, &description, &text).into_bytes()),
+                name,
+                key: row.get(4)?,
+                runner: row.get(5)?,
+                decided: row.get(6)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for winner in rows {
+        last = Some(winner.decided.clone());
+        by_name.insert(winner.name.clone(), winner);
+    }
+    Ok((by_name.into_values().collect(), last))
+}
+
+/// The `open-memories-pr` action: commits the file of each accepted memory, and removes the file
+/// of each accepted forget, under the kit's memories folder on top of its ref, pushes the commit to
+/// the kit's `priory/memories` branch, and opens or updates one pull request from it on `repo`.
+/// `unchanged` when the kit already holds them.
+pub(crate) fn open_pull_request(
+    db: &Connection,
+    factory: &Factory,
+    home: &std::path::Path,
+    repo: Option<&str>,
+) -> Result<crate::tools::Done, Box<dyn std::error::Error>> {
+    let failed = crate::daemon::failed;
+    let Some(settings) = factory.settings.as_ref().and_then(|s| s.value.kit.as_ref()) else {
+        return Ok(failed("the factory names no [kit]".to_owned()));
+    };
+    let Some(repo) = repo else {
+        return Ok(failed(
+            "the task names no repo: the kit's GitHub owner/name".to_owned(),
+        ));
+    };
+    let (winners, last) = winners(db)?;
+    let Some(last) = last else {
+        return Ok(unchanged());
+    };
+    let [_, _, (_, folder)] = settings.paths();
+    let folder = folder.trim_start_matches("./").trim_end_matches('/');
+    let path = |name: &str| match folder {
+        "" | "." => format!("{name}.md"),
+        folder => format!("{folder}/{name}.md"),
+    };
+    let files: Vec<(String, Option<Vec<u8>>)> = winners
+        .iter()
+        .map(|winner| (path(&winner.name), winner.file.clone()))
+        .collect();
+    let date = last
+        .parse::<jiff::Timestamp>()
+        .map(|time| format!("@{} +0000", time.as_second()))
+        .map_err(|error| format!("candidate time {last:?}: {error}"))?;
+    let (url, mirror) = crate::kit::place(settings, factory, home)?;
+    let reference = settings.reference();
+    let message = "Move the memories accepted on Priory into the kit\n";
+    let made =
+        match priory_runtime::runtime::kit_commit(&mirror, &url, reference, &files, message, &date)
+        {
+            Ok(Some(made)) => made,
+            Ok(None) => return Ok(unchanged()),
+            Err(error) => return Ok(failed(error)),
+        };
+    let mut lines = Vec::new();
+    for (status, changed) in &made.changed {
+        let Some(winner) = winners.iter().find(|winner| path(&winner.name) == *changed) else {
+            continue;
+        };
+        let what = match status {
+            'A' => "added",
+            'D' => "removed",
+            _ => "changed",
+        };
+        let runner = winner
+            .runner
+            .as_deref()
+            .map(|runner| format!(" on runner {runner}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "- `{}`: {what}. Candidate {}, written by task {}{runner}, accepted {}.",
+            winner.name, winner.id, winner.key, winner.decided
+        ));
+    }
+    let base = (reference != "HEAD").then_some(reference);
+    let body = format!(
+        "A person accepted these memories on Priory's log, so every run already gets them. Merging \
+         this pull request moves them into the kit's `{folder}` folder.\n\n{}\n\nPriory rebuilds \
+         this branch from `{}` each day, so a commit pushed to it is lost.",
+        lines.join("\n"),
+        base.unwrap_or("the kit's default branch"),
+    );
+    let pushed =
+        priory_runtime::runtime::kit_push(&mirror, &url, &made.commit, BRANCH).and_then(|()| {
+            priory_runtime::runtime::kit_pull_request(
+                repo,
+                BRANCH,
+                base,
+                "Accepted memories from Priory",
+                &body,
+            )
+        });
+    Ok(match pushed {
+        Ok(number) => crate::tools::Done {
+            status: "opened",
+            pull_request: None,
+            commit: Some(made.commit),
+            error: None,
+            stdout: Some(format!(
+                "pull request {repo}#{number} from {BRANCH}: {} file(s) changed",
+                made.changed.len()
+            )),
+            stack: Vec::new(),
+        },
+        Err(error) => crate::tools::Done {
+            commit: Some(made.commit),
+            ..failed(error)
+        },
+    })
+}
+
+fn unchanged() -> crate::tools::Done {
+    crate::tools::Done {
+        status: "unchanged",
+        pull_request: None,
+        commit: None,
+        error: None,
+        stdout: None,
+        stack: Vec::new(),
+    }
+}

@@ -23713,3 +23713,226 @@ fn remember_refuses_a_bad_name_a_long_text_and_a_credential_and_a_dropped_candid
         "{desk}"
     );
 }
+
+const MEMORIES_PR: &str = r#"
+start = "open"
+
+[[steps]]
+id = "open"
+decides = "code"
+action = "open-memories-pr"
+effect = "irreversible"
+autonomous = "a person reviews the pull request before any memory merges"
+next = { opened = "done", unchanged = "done", failed = "stop" }
+"#;
+
+const KIT_MEMORIES: &str = r#"
+source = "schedule"
+repo = "owner/repo"
+at = "06:00"
+key = "kit-memories"
+workflow = "memories"
+"#;
+
+/// A firing of the daily `kit-memories` schedule, at `scheduled`.
+fn memories_day(scheduled: &str) -> Message {
+    let key = "schedule:kit-memories";
+    Message::new(
+        "factory.task.requested",
+        json!({
+            "workflow": "memories",
+            "key": key,
+            "band": null,
+            "lane": null,
+            "trigger": "kit-memories",
+            "source": format!("source-{scheduled}"),
+            "scheduled": scheduled,
+            "prompt": null
+        }),
+    )
+    .subject(key)
+}
+
+impl Setup {
+    /// Adds the `memories` workflow and the daily schedule that starts it.
+    fn memories_pr(&self) {
+        for (path, content) in [
+            ("factory/workflows/memories.toml", MEMORIES_PR),
+            ("factory/triggers/kit-memories.toml", KIT_MEMORIES),
+        ] {
+            fs::write(self.dir.join(path), content).unwrap();
+        }
+    }
+
+    /// Runs git in the kit's bare repository and returns its stdout, or none when it fails.
+    fn kit_git(&self, args: &[&str]) -> Option<String> {
+        let output = git(&self.dir.join("kit.git")).args(args).output().unwrap();
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8(output.stdout).unwrap())
+    }
+
+    /// Waits until this runner recorded `count` actions that ended, and returns them.
+    fn until_actions(&self, count: usize) -> Vec<Vec<String>> {
+        self.until("actions", |rows| {
+            rows.len() == count && rows.iter().all(|row| row[4] != "running")
+        })
+    }
+}
+
+#[test]
+fn the_daily_pull_request_carries_each_accepted_memory_as_a_file_in_the_kit_and_never_a_pending_one()
+ {
+    let mut a = runner("memories-pr", "a", None);
+    let mut b = runner("memories-pr", "b", Some(&a));
+    a.kit_repo();
+    let main = b.kit_repo();
+    a.memories_pr();
+    b.memories_pr();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.calls(&[json!([
+        remember("release-day", "Releases go out on Tuesdays."),
+        forget("kit-fact"),
+        remember("gate-cost", "The gate takes ten minutes."),
+        ask()
+    ])]);
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    a.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    a.crash();
+
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let candidates = b.until_candidates(|candidates| {
+        candidates.len() == 3
+            && candidates
+                .iter()
+                .all(|candidate| candidate["state"] == "pending")
+    });
+    b.decide(
+        "accept",
+        &candidate(
+            &candidates,
+            "release-day",
+            Some("Releases go out on Tuesdays."),
+        ),
+    );
+    b.decide("accept", &candidate(&candidates, "kit-fact", None));
+    b.publish(&memories_day("2026-11-22T06:00:00Z"));
+
+    let actions = b.until_actions(1);
+    assert_eq!(
+        actions[0][2..5],
+        ["open", "open-memories-pr", "opened"],
+        "{actions:?}"
+    );
+    let pushed = b
+        .kit_git(&["rev-parse", "priory/memories"])
+        .expect("the branch is pushed");
+    let pushed = pushed.trim();
+    assert_eq!(
+        actions[0][6], pushed,
+        "the action records the pushed commit"
+    );
+    assert_eq!(actions[0][5], "-", "the task owns no pull request");
+    assert_eq!(
+        b.kit_git(&["rev-parse", "priory/memories^"])
+            .unwrap()
+            .trim(),
+        main,
+        "the commit sits on the kit's ref"
+    );
+    assert_eq!(
+        b.kit_git(&["show", "priory/memories:memories/release-day.md"])
+            .unwrap(),
+        "---\nname: release-day\ndescription: \"What release-day says.\"\n---\nReleases go out on Tuesdays.\n",
+        "an accepted memory is its file, as runs get it"
+    );
+    assert_eq!(
+        b.kit_git(&["show", "priory/memories:memories/kit-fact.md"]),
+        None,
+        "an accepted forget removes the file"
+    );
+    assert_eq!(
+        b.kit_git(&["show", "priory/memories:memories/gate-cost.md"]),
+        None,
+        "a pending candidate stays out"
+    );
+    assert_eq!(
+        b.kit_git(&["diff", "--name-status", "main", "priory/memories"])
+            .unwrap(),
+        "D\tmemories/kit-fact.md\nA\tmemories/release-day.md\n"
+    );
+    let gh = b.gh();
+    assert_eq!(gh.len(), 2, "{gh:?}");
+    assert_eq!(
+        gh[0],
+        [
+            "pr",
+            "list",
+            "-R",
+            "owner/repo",
+            "--head",
+            "priory/memories",
+            "--state",
+            "open",
+            "--json",
+            "number"
+        ]
+    );
+    assert_eq!(
+        gh[1][..8],
+        [
+            "pr",
+            "create",
+            "-R",
+            "owner/repo",
+            "--base",
+            "main",
+            "--head",
+            "priory/memories"
+        ]
+    );
+    let body = &gh[1][gh[1].iter().position(|arg| arg == "--body").unwrap() + 1];
+    assert!(
+        body.contains("`release-day`") && body.contains("`kit-fact`"),
+        "{body}"
+    );
+    assert!(!body.contains("gate-cost"), "{body}");
+    assert_eq!(b.rows("tasks")[0][4], "done");
+
+    fs::write(b.dir.join("fake/open-pr"), "7").unwrap();
+    b.publish(&memories_day("2026-11-23T06:00:00Z"));
+
+    let actions = b.until_actions(2);
+    assert_eq!(actions[1][4], "opened", "{actions:?}");
+    assert_eq!(
+        actions[1][6], pushed,
+        "the same memories on the same ref make the same commit"
+    );
+    let gh = b.gh();
+    assert_eq!(gh.len(), 4, "{gh:?}");
+    assert_eq!(gh[3][..5], ["pr", "edit", "7", "-R", "owner/repo"]);
+
+    assert!(
+        git(&b.dir.join("kit.git"))
+            .args(["update-ref", "refs/heads/main", pushed])
+            .status()
+            .unwrap()
+            .success()
+    );
+    b.publish(&memories_day("2026-11-24T06:00:00Z"));
+
+    let actions = b.until_actions(3);
+    assert_eq!(
+        actions[2][4], "unchanged",
+        "once the kit holds them, there is nothing to propose: {actions:?}"
+    );
+    assert_eq!(b.gh().len(), 4, "no pull request call");
+    assert_eq!(
+        b.kit_git(&["rev-parse", "priory/memories"]).unwrap().trim(),
+        pushed
+    );
+}

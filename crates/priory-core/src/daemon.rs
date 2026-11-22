@@ -1280,6 +1280,12 @@ fn act(
     let done = match step.action.as_deref().unwrap_or_default() {
         "open-pr" => open_pr(db, factory, due, head.as_deref())?,
         "open-issue" => open_issue(db, factory, due)?,
+        factory::OPEN_MEMORIES_PR => crate::memories::open_pull_request(
+            db,
+            factory,
+            home,
+            repo_of(factory, &due.trigger, due.repo.as_deref()),
+        )?,
         "start-batch" => {
             start_batch(db, trace, due, step)?;
             return Ok(false);
@@ -1377,6 +1383,7 @@ fn start_batch(
             pull_request: None,
             commit: None,
             error: None,
+            stdout: None,
             stack: Vec::new(),
         },
         Err(error) => failed(error),
@@ -1618,18 +1625,20 @@ fn open_pr(
             pull_request: stack.last().map(|pull| pull.resource.clone()),
             commit: commit.map(str::to_owned),
             error: None,
+            stdout: None,
             stack,
         },
         Err(error) => failed(error),
     })
 }
 
-fn failed(error: String) -> Done {
+pub(crate) fn failed(error: String) -> Done {
     Done {
         status: "failed",
         pull_request: None,
         commit: None,
         error: Some(error),
+        stdout: None,
         stack: Vec::new(),
     }
 }
@@ -1714,6 +1723,7 @@ fn open_issue(db: &Connection, factory: &Factory, due: &state::Due) -> Result<Do
             pull_request: None,
             commit: None,
             error: None,
+            stdout: None,
             stack: Vec::new(),
         },
         Err(error) => failed(error),

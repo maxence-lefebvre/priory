@@ -201,18 +201,7 @@ impl Fetcher {
             db.execute("DELETE FROM kit", [])?;
             return Ok(None);
         };
-        let repo = settings.repo.trim();
-        let local = !repo.contains("://") && !repo.contains(':');
-        let repo = if local && Path::new(repo).is_relative() {
-            std::path::absolute(factory.dir.join(repo))?
-                .display()
-                .to_string()
-        } else {
-            repo.to_owned()
-        };
-        let mirror = home
-            .join("kit/repos")
-            .join(format!("{}.git", digest([repo.as_bytes()])));
+        let (repo, mirror) = place(&settings, factory, home)?;
         let own = factory
             .skills
             .keys()
@@ -316,6 +305,28 @@ impl Fetcher {
         )?;
         Ok(())
     }
+}
+
+/// The kit's repository as `git fetch` takes it, a relative path made absolute, and its bare mirror
+/// under Priory home.
+pub(crate) fn place(
+    settings: &factory::Kit,
+    factory: &Factory,
+    home: &Path,
+) -> std::io::Result<(String, PathBuf)> {
+    let repo = settings.repo.trim();
+    let local = !repo.contains("://") && !repo.contains(':');
+    let repo = if local && Path::new(repo).is_relative() {
+        std::path::absolute(factory.dir.join(repo))?
+            .display()
+            .to_string()
+    } else {
+        repo.to_owned()
+    };
+    let mirror = home
+        .join("kit/repos")
+        .join(format!("{}.git", digest([repo.as_bytes()])));
+    Ok((repo, mirror))
 }
 
 /// Fetches the ref, then checks out and loads the commit it names.
