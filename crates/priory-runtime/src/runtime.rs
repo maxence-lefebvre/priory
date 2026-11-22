@@ -749,7 +749,11 @@ fn tmux_socket() -> PathBuf {
     }) {
         return socket;
     }
-    let dir = set("TMUX_TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+    tmux_socket_in(&set("TMUX_TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from))
+}
+
+/// The default socket of a tmux server started with `TMUX_TMPDIR` set to `dir`.
+pub fn tmux_socket_in(dir: &Path) -> PathBuf {
     dir.join(format!("tmux-{}", uid())).join("default")
 }
 

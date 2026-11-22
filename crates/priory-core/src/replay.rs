@@ -407,12 +407,18 @@ impl Drop for Scratch {
             let _ = daemon.kill();
             let _ = daemon.wait();
         }
-        let _ = self
-            .command("tmux")
-            .arg("kill-server")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        // Only ever the scratch's own server: a bare kill-server can reach the person's own.
+        let socket = priory_runtime::runtime::tmux_socket_in(&self.dir);
+        if socket.exists() {
+            let _ = self
+                .command("tmux")
+                .arg("-S")
+                .arg(&socket)
+                .arg("kill-server")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
         let worktree = Connection::open(self.dir.join("priory.db"))
             .and_then(|db| {
                 db.query_row(
@@ -996,5 +1002,59 @@ mod tests {
                 true
             )
         );
+    }
+
+    #[test]
+    fn a_scratch_dropped_before_its_environment_kills_only_its_own_tmux_server() {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        let dir = PathBuf::from(format!("/tmp/priory-scratch-{}", std::process::id()));
+        fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+        let uid = fs::metadata(&dir).unwrap().uid();
+        let socket = dir.join(format!("tmux-{uid}"));
+        fs::DirBuilder::new().mode(0o700).create(&socket).unwrap();
+        let socket = socket.join("default");
+        let tmux = |args: &[&str]| {
+            Command::new("tmux")
+                .env_remove("TMUX")
+                .arg("-S")
+                .arg(&socket)
+                .args(args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+        };
+        assert!(tmux(&["new-session", "-d", "sleep 100"]).success());
+        let pid = Command::new("tmux")
+            .env_remove("TMUX")
+            .arg("-S")
+            .arg(&socket)
+            .args(["display-message", "-p", "#{pid}"])
+            .output()
+            .unwrap();
+        let pid = String::from_utf8_lossy(&pid.stdout).trim().to_owned();
+        let running = || {
+            fs::read_to_string(format!("/proc/{pid}/stat"))
+                .is_ok_and(|stat| !stat.rsplit(')').next().unwrap_or("").starts_with(" Z"))
+        };
+        assert!(running(), "no tmux server {pid}");
+
+        drop(Scratch {
+            dir: dir.clone(),
+            env: Vec::new(),
+            daemon: None,
+        });
+
+        // The scratch removes its folder, socket and all, so the server is found by its pid.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while running() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let alive = running();
+        if alive {
+            let _ = Command::new("kill").arg(&pid).status();
+        }
+        let _ = fs::remove_dir_all(&dir);
+        assert!(!alive, "the scratch's own tmux server outlived it");
     }
 }

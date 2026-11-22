@@ -2052,7 +2052,10 @@ fn teardown_kills_a_tmux_server_that_a_late_child_starts() {
     let mut listed = setup.command("tmux");
     listed.arg("list-sessions");
     let mut killed = setup.command("tmux");
-    killed.arg("kill-server");
+    killed
+        .arg("-S")
+        .arg(setup.tmux.socket().unwrap())
+        .arg("kill-server");
 
     drop(setup);
     late.wait().unwrap();
