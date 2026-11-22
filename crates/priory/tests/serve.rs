@@ -6347,6 +6347,128 @@ fn a_honeycomb_payload_without_the_template_gets_400_and_a_body_over_1_mib_gets_
     assert!(setup.published().is_empty());
 }
 
+const INTERCOM_HOOKS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n\n[webhooks.intercom]\nsecret_env = \"TEST_SECRET\"\nworkspace = \"a86dr8yl\"\n";
+
+/// An Intercom notification on `topic` from workspace `workspace`, carrying a conversation a
+/// contact started, trimmed to the fields of Intercom's conversation model that Priory reads.
+fn intercom_notification(topic: &str, workspace: &str) -> Value {
+    json!({
+        "type": "notification_event",
+        "app_id": workspace,
+        "id": "notif_78c122d0-23ba-11e4-9464-79b01267cc2e",
+        "topic": topic,
+        "delivery_status": "pending",
+        "delivery_attempts": 1,
+        "delivered_at": 0,
+        "first_sent_at": 1795353700,
+        "created_at": 1795353699,
+        "data": {
+            "type": "notification_event_data",
+            "item": {
+                "type": "conversation",
+                "id": "1295",
+                "title": null,
+                "created_at": 1795353698,
+                "updated_at": 1795353699,
+                "state": "open",
+                "source": {
+                    "type": "conversation",
+                    "id": "3",
+                    "delivered_as": "customer_initiated",
+                    "subject": "",
+                    "body": "The export button does nothing on Firefox.",
+                    "author": { "type": "user", "id": "274", "name": "Jane Doe", "email": "jane@example.com" },
+                    "url": "https://app.example.com/settings"
+                }
+            }
+        }
+    })
+}
+
+/// `sha1=` and the hex HMAC-SHA1 of `body` under `secret`, as Intercom signs.
+fn intercom_signature(secret: &str, body: &str) -> String {
+    use hmac::{Hmac, KeyInit, Mac};
+    let mut mac = Hmac::<sha1::Sha1>::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(body.as_bytes());
+    let digest = mac.finalize().into_bytes();
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("sha1={hex}")
+}
+
+/// POSTs `body` to `/hooks/intercom` as Intercom would, with `signature` in `X-Hub-Signature`
+/// when given.
+fn deliver_intercom(address: &str, signature: Option<&str>, body: &str) -> (u16, String) {
+    let signature = signature.map_or(String::new(), |signature| {
+        format!("X-Hub-Signature: {signature}\r\n")
+    });
+    raw(
+        address,
+        &format!(
+            "POST /hooks/intercom HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\n\
+             User-Agent: intercom-parrot-service-client/1.0\r\n{signature}Content-Length: {}\r\n\
+             Connection: close\r\n\r\n{body}",
+            body.len()
+        ),
+    )
+}
+
+impl Setup {
+    /// A factory with `[serve]`, the Intercom webhook for workspace `a86dr8yl` and an `intercom`
+    /// trigger.
+    fn intercom_hooks(name: &str) -> Self {
+        let setup = Setup::new(name, INTERCOM_HOOKS);
+        fs::create_dir_all(setup.dir.join("factory/triggers")).unwrap();
+        fs::write(
+            setup.dir.join("factory/triggers/intercom-conversations.toml"),
+            "source = \"intercom\"\non = \"conversation.created\"\nrepo = \"owner/repo\"\nworkflow = \"implement\"\nkey = \"conversation.id\"\n",
+        )
+        .unwrap();
+        setup
+    }
+
+    fn send_intercom(&self, address: &str, body: &Value) -> (u16, String) {
+        let body = body.to_string();
+        let signature = intercom_signature(&self.secret, &body);
+        deliver_intercom(address, Some(&signature), &body)
+    }
+}
+
+#[test]
+fn a_signed_intercom_conversation_from_the_workspace_publishes_the_event_and_requests_a_task() {
+    let mut setup = Setup::intercom_hooks("intercom-created");
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, reply) = setup.send_intercom(
+        &address,
+        &intercom_notification("conversation.user.created", "a86dr8yl"),
+    );
+
+    assert_eq!(status, 202, "{reply}");
+    assert_eq!(reply, r#"{"outcome":"published"}"#);
+    let published = setup.published();
+    let kinds: Vec<_> = published.iter().map(|m| m.kind.as_str()).collect();
+    assert_eq!(kinds, ["intercom.conversation.created", "factory.task.requested"]);
+    assert_eq!(published[0].subject.as_deref(), Some("conversation 1295"));
+    assert_eq!(
+        published[0].data,
+        json!({
+            "conversation": "1295",
+            "workspace": "a86dr8yl",
+            "title": null,
+            "subject": null,
+            "body": "The export button does nothing on Firefox.",
+            "author": "Jane Doe",
+            "author_type": "user",
+            "page": "https://app.example.com/settings",
+            "delivery": "notif_78c122d0-23ba-11e4-9464-79b01267cc2e",
+            "time": "2026-11-22T10:01:38Z",
+            "baseline": false,
+            "triggers": ["intercom-conversations"]
+        })
+    );
+    assert_eq!(published[1].subject.as_deref(), Some("intercom:1295"));
+}
+
 #[test]
 fn the_unsubscribe_endpoint_ends_a_subscription_as_priory_unsubscribe_does() {
     let mut setup = Setup::new("web-unsubscribe", SERVE);
