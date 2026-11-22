@@ -128,3 +128,22 @@ INSERT INTO inbox (id,type,subject,time,data,links,outcome,task) VALUES
 INSERT INTO memory_candidates (id,name,description,text,key,runner,written,logged) VALUES
 ('0193f0a2-mem-0001','release-day','When releases go out. Read it before you plan or merge a change near a release.','Releases go out on Wednesdays since November 2026, not Tuesdays. Merge nothing risky on a Tuesday afternoon.'||char(10)||char(10)||'The release train freezes main at 14:00 UTC, so a pull request merged after that waits a week.','ENG-212','laptop',strftime('%Y-%m-%dT%H:%M:%SZ','now','-2 hours'),1),
 ('0193f0a2-mem-0002','search-staging','Which search cluster the integration tests use.','staging-a refuses connections from runners outside the VPN. Run the search integration tests against staging-b, and rerun the two index-version tests once if they fail.','ENG-224',NULL,strftime('%Y-%m-%dT%H:%M:%SZ','now','-25 minutes'),2);
+-- scores: two scorers on the demo's runs, and a week of scores across workflows for the Costs panel
+INSERT INTO trace (id,type,time,event)
+SELECT 'demo-score-' || r.run || '-' || s.scorer, 'factory.run.scored', strftime('%Y-%m-%dT%H:%M:%fZ','now','-50 minutes'),
+ json_object('data', json_object('workflow','implement','task',CAST(r.task AS TEXT),'run',CAST(r.run AS TEXT),'step',r.step,'machine','dev-box',
+  'scorer',s.scorer,'kind',s.kind,'verdict',
+   CASE WHEN s.scorer='gate' THEN r.gate ELSE r.passed END,
+  'reason', CASE WHEN s.scorer='gate' THEN r.gate_reason ELSE r.passed_reason END))
+FROM (SELECT 102 AS run, 1 AS task, 'implement' AS step, 'pass' AS gate, 'the tests pass' AS gate_reason, 'pass' AS passed, 'outcome passed' AS passed_reason
+      UNION ALL SELECT 103,3,'implement','error','timed out after 600s','fail','outcome blocked, not passed'
+      UNION ALL SELECT 104,2,'implement','fail','2 of 214 tests fail: test_vat_rounding, test_pdf_footer','pass','outcome passed'
+      UNION ALL SELECT 101,6,'plan','not applicable','the result names no commit','not applicable','a plan step has no passed outcome') r,
+     (SELECT 'gate' AS scorer, 'command' AS kind UNION ALL SELECT 'passed','outcome') s;
+WITH RECURSIVE d(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM d WHERE n < 17)
+INSERT INTO trace (id,type,time,event)
+SELECT 'demo-score-week-' || n || '-' || s.scorer, 'factory.run.scored', strftime('%Y-%m-%dT%H:%M:%fZ','now',printf('-%d hours', 2+n*7)),
+ json_object('data', json_object('workflow', CASE WHEN n%3=0 THEN 'plan-batch' ELSE 'implement' END,'task','1','run',CAST(200+n AS TEXT),'step','implement',
+  'machine', CASE WHEN n%2=0 THEN 'dev-box' ELSE 'build-host' END,'scorer',s.scorer,'kind',s.kind,
+  'verdict', CASE WHEN (n*s.k)%7=3 THEN 'fail' WHEN (n+s.k)%9=4 THEN 'error' WHEN n%3=0 AND s.scorer='gate' THEN 'not applicable' ELSE 'pass' END,'reason','seeded'))
+FROM d, (SELECT 'gate' AS scorer,'command' AS kind, 1 AS k UNION ALL SELECT 'passed','outcome',2) s;

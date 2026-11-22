@@ -22972,6 +22972,46 @@ fn priory_score_grades_the_latest_finished_run_of_each_step_and_traces_each_scor
 }
 
 #[test]
+fn the_task_lists_the_latest_score_of_each_run_and_scorer() {
+    let setup = scored_task("score-task");
+    scorer(&setup, "passed", PASSED_SCORER);
+    scores(&setup, &[]);
+    scorer(
+        &setup,
+        "passed",
+        "description = \"Ready.\"\non = \"result\"\nkind = \"outcome\"\nexpect = [\"ready\"]\n",
+    );
+    scores(&setup, &[]);
+
+    let task = task_json(&setup, "1");
+
+    let shown: Vec<_> = task["scores"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|score| {
+            ["run", "step", "scorer", "kind", "verdict", "reason"]
+                .map(|field| score[field].as_str().unwrap().to_owned())
+        })
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ["1", "plan", "passed", "outcome", "pass", "outcome ready"],
+            [
+                "2",
+                "implement",
+                "passed",
+                "outcome",
+                "fail",
+                "outcome passed, not ready"
+            ],
+        ]
+        .map(|row| row.map(str::to_owned))
+    );
+}
+
+#[test]
 fn a_run_that_asked_passes_an_ask_shape_scorer_and_fails_an_outcome_scorer() {
     let mut setup = Setup::with_workflow("score-ask", STEPS);
     setup.calls(&[ask()]);

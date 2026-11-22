@@ -368,6 +368,9 @@ split by workflow, agent, model, machine or repository, as `priory costs` prints
 Attention shows the minutes of your attention per merged pull request, how long asks waited for
 you, and where each task's time went, as `priory report attention` prints it. On a phone, both sit
 under More. The Herdr Costs panel shows the same. See [docs/daemon/trace.md](docs/daemon/trace.md#costs).
+Once you grade runs with `priory score`, the Costs panel adds each scorer's pass rate under the
+split, and a task's page lists each run's scores under it. Herdr does not show scores yet. See
+[docs/daemon/score.md](docs/daemon/score.md#where-scores-show).
 
 ## Use it from a phone
 

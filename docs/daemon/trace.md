@@ -198,7 +198,9 @@ prices them from the same `prices.toml` in `DIR` (default: the current folder).
   A pull request counts once, on the local day of its first merged close. The split has no merges.
 
 `--json` prints one object, which `GET /api/costs` also answers (see
-[the serve reference](../reference/serve.md#costs)). The web view's Costs panel draws it.
+[the serve reference](../reference/serve.md#costs)). The web view's Costs panel draws it. Its
+`scores` counts the verdicts of the window's `factory.run.scored` records by the same split; a
+score takes its run's agent and its run's model. The text output leaves the scores out.
 
 Known limits:
 

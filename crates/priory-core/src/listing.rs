@@ -1532,6 +1532,20 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         "SELECT item, class, run, created FROM feedback_triage WHERE task = ?1 ORDER BY rowid",
         [id],
     )?;
+    task["scores"] = rows(
+        db,
+        "SELECT run, step, scorer, kind, verdict, reason, time FROM (
+           SELECT json_extract(event, '$.data.run') AS run, json_extract(event, '$.data.step') AS step,
+             json_extract(event, '$.data.scorer') AS scorer, json_extract(event, '$.data.kind') AS kind,
+             json_extract(event, '$.data.verdict') AS verdict,
+             json_extract(event, '$.data.reason') AS reason, time,
+             row_number() OVER (PARTITION BY json_extract(event, '$.data.run'),
+               json_extract(event, '$.data.scorer') ORDER BY seq DESC) AS latest
+           FROM trace WHERE type = 'factory.run.scored'
+             AND json_extract(event, '$.data.task') = CAST(?1 AS TEXT))
+         WHERE latest = 1 ORDER BY CAST(run AS INTEGER), scorer",
+        [id],
+    )?;
     task["asks"] = asks_of(db, Some(id), None, None)?;
     task["stack"] = crate::stack::json(db, id)?;
     task["relations"] = crate::relate::json(db, id)?;

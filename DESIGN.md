@@ -309,6 +309,16 @@ Run states (`runs.ended_as`; a run with no `ended` is live):
 | `exited`    | danger | `log-out`     | The agent process exited unexpectedly.                           |
 | `failed`    | danger | `circle-x`    | The run failed.                                                  |
 
+A scorer's verdict on a run (`factory.run.scored`) takes a tile too, with the verdict word as the
+trace has it. An `error` means the scorer broke, not the run, so it is warn, never danger:
+
+| Verdict          | Role   | Icon           |
+| ---------------- | ------ | -------------- |
+| `pass`           | ok     | `check`        |
+| `fail`           | danger | `circle-x`     |
+| `error`          | warn   | `circle-alert` |
+| `not applicable` | muted  | `minus`        |
+
 If the daemon reports a state not in these tables, show it as a muted tile with its raw word and
 the `circle-help` icon. Add it here in the same change that adds it to the daemon.
 
@@ -940,7 +950,9 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
   in plain words in bold, as in the Inbox panel, and the subject, then what it did under them in `--text-2`, worded as `priory task ID`
   prints it: "kept, still queued" or "woke, delivered as prompt, fired wait 3". Past 20, a note
   says "Latest 20 of 57. `priory task 7` lists every event."
-- Then the runs table and the terminal of the selected run.
+- Then the runs table and the terminal of the selected run. Under each run, one row per scorer
+  with the run's latest score: its verdict tile, the scorer in mono, the verdict word in its role's
+  text color, and the reason under them in `--text-2`. A run with no score shows no row.
 - The full workflow diagram (steps as nodes, outcome edges) keeps the same encodings, top to
   bottom on compact and left to right on wide, with pinch, drag and a "Fit" button.
 
@@ -1170,6 +1182,11 @@ left, with a hairline between them.
 - **Split**: "This week by workflow" with a Split by `select` (workflow, agent, model, machine,
   repo), then a table of the value in mono, cost, tokens and notes. The first column sticks when
   the table scrolls sideways.
+- **Scores**: under the split, when the window has scores, "Scores by workflow" with the caption
+  "The pass rate leaves out errors and not applicable." Then a table of the value and the scorer in
+  mono, the pass rate (`pass` over `pass` and `fail`, `-` with neither), and the count of each
+  verdict. Below 600 px each row stacks: the value and scorer on line 1, then a `--text-2` caption,
+  "pass rate 79%, 11 pass, 3 fail, 1 error", which names only the verdicts it counted.
 - **Attention headline**: the person's minutes per merged pull request in `--type-count` and
   `--text`, never `--count`, which belongs to asks; beside it "minutes of your attention per
   merge" in the display role and a caption with the minutes, merges and acts.
@@ -1435,6 +1452,7 @@ The web's [Costs panel](#costs-panel).
 - The day chart and each task's bar are drawn with elements, not SVG. The week line is a dashed
   `--text-3` edge before this week's first bar. Waiting on you keeps its `--wait` stripes.
 - Loading reads "Reading costs…", with no skeleton.
+- The scores table stays on the web page for now.
 
 ### Flows
 
@@ -1466,7 +1484,7 @@ open it.
   time in the caption: "kept, still queued · 11:50". History lists the last 10 runs, newest first.
 - With no task opened: "Open a task from the Desk to see it here." While it reads: "Reading task
   7…"
-- The actions, Say, Progress and the workflow grid stay on the web page for now.
+- The actions, Say, Progress, the workflow grid and each run's scores stay on the web page for now.
 
 ### Inbox
 
