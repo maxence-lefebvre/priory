@@ -1368,6 +1368,10 @@ fn guard(quoted: &str, matcher: Option<&str>) -> serde_json::Value {
     group
 }
 
+/// The Claude tools whose calls reach `priory hook PreToolUse`: the guard reads the commands and
+/// MCP calls, and the file tools bring in the skills and memories whose `paths` match their file.
+const CLAUDE_HOOKED: &str = "Bash|mcp__.*|Read|Edit|Write|MultiEdit|NotebookEdit";
+
 const ASK_INSTEAD: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Priory runs this session unattended. Call the ask tool of the priory MCP server instead."}}"#;
 
 const DENY: &str = r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Priory runs this session unattended and never approves a permission prompt, so it denied this one. Go on without it. If the task cannot go on without it, call the ask or result tool of the priory MCP server."}}}"#;
@@ -1395,7 +1399,7 @@ fn settings(exe: &Path, permissions: &serde_json::Value) -> String {
                 "matcher": "AskUserQuestion",
                 "hooks": [{ "type": "command", "command": format!("printf '%s' '{ASK_INSTEAD}'") }],
             },
-            guard(&quoted, Some("Bash|mcp__.*")),
+            guard(&quoted, Some(CLAUDE_HOOKED)),
         ]),
     );
     hooks.insert(

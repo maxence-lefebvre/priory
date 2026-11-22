@@ -22,6 +22,7 @@ skipped.
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `name` | string | yes | | The memory's name, the same as its file's | `"release-day"` |
 | `description` | string | yes | | When an agent should read the memory. The index shows it on one line | `"When releases go out."` |
+| `paths` | string or list of strings | no | none | [Path globs](#path-globs): a Claude Code run that reads, edits or creates a matching file gets the memory's file in its context, once per run | `["CHANGELOG.md", "docs/**/*.md"]` |
 
 Priory ignores any other key.
 
@@ -66,7 +67,39 @@ The factory's memories are in <folder>, one fact per file. Read a memory's file 
 
 Each line starts with the file and line, such as `memories/release-day.md:2:`. The name and
 description errors point at line 1, except a wrong `name`, which points at its line. A file or
-folder that is not a memory has no line.
+folder that is not a memory has no line. The [path glob errors](#errors-in-path-globs) point at the
+line of `paths`, or of its first item in a YAML list on its own lines.
+
+## Path globs
+
+A memory's `paths`, and a skill's `paths` in its `SKILL.md` (see
+[skills.md](../daemon/skills.md#skills-and-memories-by-path)), hold globs relative to the root of
+the task's repository. One glob is a string, several are a list.
+
+| Glob part | Matches | Example | Matches | Does not match |
+| --------- | ------- | ------- | ------- | -------------- |
+| text | itself | `CHANGELOG.md` | `CHANGELOG.md` | `docs/CHANGELOG.md` |
+| `*` | any characters within one part of the path | `src/*.rs` | `src/main.rs` | `src/bin/main.rs` |
+| `?` | one character within one part | `crates/?/x` | `crates/a/x` | `crates/ab/x` |
+| `**` | any number of whole parts, none included | `docs/**/*.md` | `docs/a.md`, `docs/a/b.md` | `doc/a.md` |
+| `{a,b}` | either text | `*.{md,txt}` | `notes.txt` | `notes.rs` |
+
+A glob matches the whole path, so `*.md` matches files at the root only: write `**/*.md` for any
+folder.
+
+### Errors in path globs
+
+| Message | Cause |
+| ------- | ----- |
+| `a path glob is empty` | A blank glob |
+| `` the path glob `<glob>` starts with /: a glob is relative to the repository root `` | An absolute path |
+| `` the path glob `<glob>` holds `[`: a glob takes *, **, ? and {a,b} `` | `[`, `]` or `\`, which Priory's globs do not read |
+| `` the path glob `<glob>` nests braces or leaves one open `` | `{a,{b,c}}`, `{a` or `a}` |
+| `` the path glob `<glob>` has an empty part, as in a//b or a trailing / `` | Two slashes in a row, or a slash at the end |
+| `` the path glob `<glob>` has a `.` or `..` part `` | A part that is `.` or `..` |
+| `` the path glob `<glob>` puts ** inside a part: ** stands alone between slashes `` | `**` beside other text, as in `src/a**/b` |
+
+A skill's errors start with its `skills/<name>/SKILL.md` and the same line.
 
 ## Candidates
 

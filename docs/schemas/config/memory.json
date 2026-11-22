@@ -1,6 +1,22 @@
 {
   "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/memory.json",
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "Globs": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "`paths` as a frontmatter writes it: one glob, or a list of them."
+    }
+  },
   "description": "The frontmatter of `memories/<name>.md`: one fact every run gets in its index. Priory reads\nthese keys and ignores any other.",
   "properties": {
     "description": {
@@ -12,6 +28,17 @@
       "description": "The memory's name, the same as its file's, in lowercase letters, digits and hyphens.",
       "pattern": "^[a-z0-9][a-z0-9-]*$",
       "type": "string"
+    },
+    "paths": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Globs"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Globs relative to the repository root, such as `src/**/*.rs`: a run that reads, edits or\ncreates a matching file gets the memory's file in its context, once per run."
     }
   },
   "required": [

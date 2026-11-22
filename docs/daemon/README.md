@@ -74,8 +74,8 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [signals.md](signals.md): the hook signals a run sends, the nudge after a silent turn, and the
   nudge's evaluation.
 - [skills.md](skills.md): how the factory's skills, `instructions.md` and memories reach every
-  run, the `[kit]` repository each runner fetches, the hash and commit each run records, and the
-  memories agents write with `remember` and `forget`, which a person accepts, and the daily pull
+  run, the skills and memories a run gets when it touches a file under their `paths`, the `[kit]`
+  repository each runner fetches, the hash and commit each run records, and the memories agents write with `remember` and `forget`, which a person accepts, and the daily pull
   request that moves accepted ones into the kit.
 - [writing.md](writing.md): the factory's writing guide, which every agent's system prompt carries,
   and its evaluation.

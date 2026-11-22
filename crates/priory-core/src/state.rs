@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 90;
+const VERSION: i64 = 91;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1633,6 +1633,17 @@ CREATE INDEX IF NOT EXISTS recipes_by_task ON recipes (task, id);
 "
 );
 
+// Each skill or memory file a run's `PreToolUse` hook added to its context for a path under its
+// `paths`, so the run gets each file once.
+const SCHEMA_91: &str = "
+CREATE TABLE IF NOT EXISTS scoped_sent (
+  run  INTEGER NOT NULL REFERENCES runs (id),
+  file TEXT NOT NULL,
+  PRIMARY KEY (run, file)
+);
+PRAGMA user_version = 91;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1646,7 +1657,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
-    SCHEMA_90,
+    SCHEMA_90, SCHEMA_91,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory

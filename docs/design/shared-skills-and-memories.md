@@ -242,6 +242,13 @@ Tests:
    after the memory index: the folder, then each skill's `SKILL.md` path and description.
    `priory check` counts the index toward the 8192-byte limit. Since both harnesses now get the
    skills, their runs record the same `kit_hash`.
+6. Skills and memories by path: a `paths` glob in a skill's or memory's frontmatter, so the
+   `PreToolUse` hook adds the file to a run's context when it reads, edits or creates a matching
+   path, once per run, with no reliance on the model picking it from the index. This slice is
+   built: [skills.md](../daemon/skills.md#skills-and-memories-by-path) describes it. Only Claude
+   Code runs get it, through the hook's `additionalContext` on the file tools. The daemon records
+   each file a run got in its state file, and the hook counts every match as new when no daemon
+   answers.
 
 ## Open questions
 

@@ -817,6 +817,7 @@ fn apply(
 enum Input {
     Guard(crate::guard::Line),
     Connector(crate::todo::ConnectorLine),
+    Scoped(crate::scoped::Line),
     Todo(crate::todo::Line),
     Subscribe(subscribe::Line),
     Unsubscribe(subscribe::EndLine),
@@ -1002,6 +1003,7 @@ fn take(
             crate::todo::connector_used(db, &line.connector_used)?;
             Ok((replied(Ok(String::new())), None))
         }
+        Ok(Input::Scoped(line)) => Ok((replied(crate::scoped::sent(db, &line.scoped)?), None)),
         Ok(Input::Todo(line)) => Ok((
             replied(crate::todo::change(db, &line, trace.factory)?),
             None,
@@ -2108,6 +2110,11 @@ fn launch(
         let index = sources.skill_index(&plugin.join("skills").display().to_string());
         instructions = factory::join_instructions(&instructions, &index);
     }
+    let mut env = env.to_vec();
+    if let Some(scoped) = sources.scoped(home, plugin.as_deref(), memories.as_deref())? {
+        env.push(format!("PRIORY_PATHS={}", scoped.display()));
+        env.push(format!("PRIORY_WORKTREE={}", started.dir.display()));
+    }
     runtime::launch(
         harness(&agent.harness),
         &Launch {
@@ -2129,7 +2136,7 @@ fn launch(
                 .default_mode
                 .map_or("manual", PermissionMode::as_str),
             scope,
-            env,
+            env: &env,
             servers: started.servers,
         },
     )

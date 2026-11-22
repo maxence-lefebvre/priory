@@ -25,8 +25,9 @@ Say what is wrong in the first sentence, then why it matters.
 ```
 
 `priory check` refuses a skill whose frontmatter has no `name` or no `description`, or whose `name`
-differs from its folder, with the file and line 1. Its `ok` line counts the skills. The harness reads
-the other frontmatter keys, so Priory passes them through.
+differs from its folder, with the file and line 1. Its `ok` line counts the skills. Priory also reads
+`paths` (see [Skills and memories by path](#skills-and-memories-by-path)). The harness reads the
+other frontmatter keys, so Priory passes them through.
 
 They belong to the factory, not to a person. A run keeps reading the person's own `~/.claude` or
 `~/.codex` as before: Priory adds the factory's files through launch flags, for that run only, and
@@ -103,6 +104,61 @@ toward a Codex agent's 8192-byte limit.
 
 An agent also writes memories, with the `remember` and `forget` tools, as the next section says.
 A memory in git changes only through a pull request, which a person reviews.
+
+## Skills and memories by path
+
+An index works only when the agent picks the right line from it, and a long kit makes it miss more
+often. So a skill or memory can name the files it is about, with `paths` in its frontmatter: globs
+relative to the root of the task's repository (see
+[the reference](../reference/memories.md#path-globs)).
+
+```markdown
+---
+name: migrations
+description: Writes a schema migration.
+paths:
+  - crates/*/src/state.rs
+  - "migrations/**/*.sql"
+---
+Take the next free version, and never edit a migration that shipped.
+```
+
+When a Claude Code run reads, edits or creates a file a glob matches, Priory adds that skill's
+`SKILL.md` or that memory's file to the run's context, before the tool runs. Code decides, so
+nothing relies on the model picking the line. A run gets each file once, however many matching files
+it touches. The skill or memory stays in the index and in the plugin as before.
+
+`priory check` refuses a glob the hook cannot match, with the file and the line of `paths` (see
+[the errors](../reference/memories.md#errors-in-path-globs)).
+
+How it works:
+
+1. Before the run starts, the daemon writes the skills and memories with `paths`, each with its
+   globs and its file's text, to `$PRIORY_HOME/kit/<hash>/paths/paths.json`, read-only like the
+   plugin folder. The run's pane gets `PRIORY_PATHS`, that file, and `PRIORY_WORKTREE`, the task's
+   worktree.
+2. Claude runs `priory hook PreToolUse` before every `Read`, `Edit`, `Write`, `MultiEdit` and
+   `NotebookEdit` call too, as well as `Bash` and MCP calls for the [tool guard](guard.md). The hook
+   takes the file the call names, relative to the worktree, and matches it against each glob. A
+   file outside the worktree matches nothing.
+3. On a match, the hook asks the daemon which matching files the run has not got yet, and waits up
+   to 1 second. The daemon records each new one against the run in its state file and replies with
+   them.
+4. The hook prints each new file's text as the call's `additionalContext`, after a line that names
+   the skill or memory, its file, and the path and glob that matched. The call then runs as before:
+   the hook never denies a file tool's call.
+
+A daemon that does not answer counts every match as new, so a run then gets a file again at each
+match rather than never. A lookup that fails adds nothing. A resumed session is a new run, so it
+gets each file again at its first match.
+
+Limits:
+
+- A Codex run gets no file by path yet: its hook sees no file tool, and Codex reads files through
+  its shell.
+- The hook sees only the file a file tool names. A `cat` or `sed` in `Bash`, or a search with
+  `Grep` or `Glob`, brings in nothing.
+- A memory an agent writes with `remember` has no `paths`.
 
 ## Memories agents write
 
