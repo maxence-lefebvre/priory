@@ -80,16 +80,20 @@ impl Setup {
     }
 
     fn priory(&self, args: &[&str]) -> Output {
-        harness::priory()
+        self.command(args).output().unwrap()
+    }
+
+    fn command(&self, args: &[&str]) -> std::process::Command {
+        let mut command = harness::priory();
+        command
             .env_remove("TMUX")
             .env_remove("PRIORY_NOW")
             .env("TMUX_TMPDIR", self.tmux.path())
             .env("HERDR_BUS_DB", self.dir.join("bus.db"))
             .env("PRIORY_DB", self.dir.join("priory.db"))
             .env("PRIORY_HOME", self.dir.join("home"))
-            .args(args)
-            .output()
-            .unwrap()
+            .args(args);
+        command
     }
 
     fn sql(&self, sql: &str, params: &[&dyn rusqlite::ToSql]) {
@@ -227,6 +231,50 @@ fn find_groups_the_days_stopped_tasks_by_step_and_the_shape_of_their_reason() {
         .unwrap();
     assert_eq!(ranked["title"], "tasks stopped for one reason");
     assert_eq!(ranked["why"], "it waits on a person");
+}
+
+#[test]
+fn find_keeps_no_secret_of_a_reason_in_the_pattern_or_the_trace() {
+    for (name, token, known) in [
+        ("secret-shaped", "ghp_abcdefghijklmnopqrstuvwxyz", false),
+        ("secret-known", "plainwordsthefactorykeeps", true),
+    ] {
+        kept_out(name, token, known);
+    }
+}
+
+/// A task stopped with `token` in its reason, and `PRIORY_TOKEN` set to it when `known`.
+fn kept_out(name: &str, token: &str, known: bool) {
+    let setup = Setup::new(name, 1);
+    setup.stop(
+        1,
+        "failed",
+        "implement",
+        &format!("git push failed for {token}"),
+        1,
+    );
+
+    let factory = setup.factory();
+    let mut find = setup.command(&["patterns", "find", &factory]);
+    if known {
+        find.env("PRIORY_TOKEN", token);
+    }
+    succeeded(&find.output().unwrap());
+
+    let pattern = setup.pattern("implement");
+    assert!(!pattern.to_string().contains(token), "{pattern}");
+    let trace: Vec<String> = rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .prepare("SELECT event FROM trace")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        trace.iter().all(|event| !event.contains(token)),
+        "{trace:?}"
+    );
 }
 
 #[test]
