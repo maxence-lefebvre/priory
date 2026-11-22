@@ -6824,6 +6824,33 @@ fn commented() -> Message {
 }
 
 #[test]
+fn a_comment_on_a_pull_request_reopened_after_its_close_reopens_the_done_task() {
+    let setup = gated("reopen-after-close");
+    setup.publish(&check(1, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1100));
+    let mut close = closed().time(herdr_bus::Timestamp::now());
+    close.data["merged"] = json!(false);
+    close.data["open"] = json!(false);
+    setup.publish(&close);
+    setup.until("inbox", |rows| rows.len() == 4);
+    std::thread::sleep(Duration::from_millis(1100));
+
+    let mut comment = commented();
+    comment.data["open"] = json!(true);
+    setup.publish(&comment);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    assert!(
+        setup.typed()[2].starts_with(
+            "Feedback reopened this done task as generation 2: ana commented on github:owner/repo#7"
+        ),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
 fn a_done_task_whose_open_pull_request_gets_a_comment_reopens_and_resumes_its_session() {
     let setup = gated("reopen");
     setup.publish(&check(1, 0));
@@ -9604,6 +9631,86 @@ fn a_blockers_hold_releases_the_task_when_its_issue_has_no_open_blocker_left() {
         "priory hold: task 2 comes from no Linear issue, so Priory cannot see its blockers\n"
     );
     setup.until("tasks", |rows| rows[0][4] == "running");
+}
+
+fn left_view() -> Message {
+    let mut left = linear_7("linear.issue.left", &[]);
+    left.data["view"] = json!("My loop backlog");
+    left
+}
+
+#[test]
+fn an_issue_that_leaves_the_view_before_its_task_ran_asks_to_drop_or_keep_it() {
+    for (name, answer, state) in [
+        ("left-view-drop", "drop", "dropped"),
+        ("left-view-keep", "keep", "queued"),
+    ] {
+        let mut setup = Setup::new(name);
+        setup.memory(0);
+        let source = linear_7("linear.issue.entered", &[]);
+        let mut request = requested(42);
+        request.data["key"] = json!("linear:ENG-7");
+        request.data["source"] = json!(source.id.to_string());
+        setup.publish(&source);
+        setup.publish(&request);
+        setup.start();
+        setup.until("tasks", |rows| rows.len() == 1);
+
+        setup.publish(&left_view());
+
+        let asks = setup.until("asks", |rows| rows.len() == 1);
+        assert_eq!(
+            [&*asks[0][1], &asks[0][3], &asks[0][4]],
+            [
+                "1",
+                "ENG-7 left the view My loop backlog. Drop the task?",
+                "[\"drop\",\"keep\"]"
+            ],
+            "{name}"
+        );
+        assert_eq!(
+            held_as(&setup, "1"),
+            [
+                "held".to_owned(),
+                "held: left the view My loop backlog, until a person answers whether to keep it"
+                    .to_owned()
+            ],
+            "{name}"
+        );
+
+        person(&setup, "answer", &[&asks[0][0], answer, "--revision", "1"]);
+
+        assert_eq!(held_as(&setup, "1")[0], state, "{name}");
+        if answer == "drop" {
+            assert_eq!(
+                held_as(&setup, "1")[1],
+                "dropped by a person after its issue left the view"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_issue_that_leaves_the_view_wakes_its_asleep_task() {
+    let mut setup = Setup::new("left-view-asleep");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    setup.publish(&request.subject("linear:ENG-7"));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+
+    setup.publish(&left_view().time(herdr_bus::Timestamp::now()));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(inbox[1][4], "woke");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with("linear.issue.left ENG-7 {"),
+        "{:?}",
+        setup.typed()
+    );
+    assert!(setup.rows("asks").is_empty());
 }
 
 #[test]
@@ -14197,6 +14304,52 @@ fn unrouted_events_no_task_ever_owned_count_per_source_without_a_tasks_source_ev
 }
 
 #[test]
+fn an_event_an_asleep_task_keeps_and_no_agent_read_is_listed_and_counted_as_unheard() {
+    let mut setup = Setup::new("inbox-unheard");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    let output = setup.priory(&["unsubscribe", "1", "github:owner/repo#42"]);
+    assert!(output.status.success(), "{output:?}");
+    let written = herdr_bus::Timestamp::now() - jiff::SignedDuration::from_mins(10);
+    setup.publish(&issue_commented(902).time(written));
+    let inbox = setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(inbox[1][4], "kept");
+
+    let output = setup.priory(&["inbox", "--unrouted", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let unheard = &listed["unrouted"]["unheard"];
+    assert_eq!(unheard.as_array().map(Vec::len), Some(1), "{listed}");
+    assert_eq!(unheard[0]["task"]["id"], 1);
+    assert_eq!(unheard[0]["task"]["state"], "asleep");
+    assert_eq!(unheard[0]["events"][0]["seq"], 2);
+    assert_eq!(unheard[0]["events"][0]["line"], "Also the empty case.");
+    assert_eq!(
+        unheard[0]["follow_up"],
+        "priory say 1 'Read the events that came while you slept.'"
+    );
+
+    let output = setup.priory(&["inbox", "--unrouted"]);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.contains("task 1 asleep kept 1 event no agent read:\n  2  github.issues.comment  owner/repo#42  Also the empty case.\n  priory say 1 "),
+        "{text}"
+    );
+
+    let desk = setup.priory(&["desk", "--json"]);
+    let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+    assert_eq!(desk["counts"]["unheard"], 1, "{desk}");
+    let desk = setup.priory(&["desk"]);
+    let text = String::from_utf8(desk.stdout).unwrap();
+    assert!(
+        text.contains("1 event kept by a sleeping task reached no agent. See it with `priory inbox --unrouted`."),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_comment_on_a_subscribed_pull_request_reopens_the_done_task() {
     let mut setup = Setup::new("subscribe-done");
     setup.calls(&[json!([subscribe("subscribe"), result("passed")])]);
@@ -14386,6 +14539,29 @@ fn a_closed_pull_request_wakes_its_subscriber_and_ends_its_subscriptions() {
         setup.typed()
     );
     assert_eq!(subscriptions(&setup, "1"), ["github:owner/repo#42"]);
+}
+
+#[test]
+fn a_pull_request_reopened_after_its_close_gives_back_the_subscriptions_the_close_ended() {
+    let setup = subscribed("subscribe-reopened");
+    let mut close = off_branch(closed());
+    close.data["merged"] = json!(false);
+    setup.publish(&close);
+    setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(subscriptions(&setup, "1"), ["github:owner/repo#42"]);
+
+    let mut reopened = off_branch(on_pull(
+        "github.pull_request.synchronize",
+        json!({ "github_id": 702, "open": true }),
+    ));
+    reopened.data["head_sha"] = json!(format!("72{}", "0".repeat(38)));
+    setup.publish(&reopened);
+
+    setup.until("inbox", |rows| rows.len() == 3);
+    assert_eq!(
+        subscriptions(&setup, "1"),
+        ["github:owner/repo#42", "github:owner/repo#7"]
+    );
 }
 
 #[test]
@@ -15525,6 +15701,31 @@ fn a_comment_on_the_middle_pull_request_wakes_the_task_naming_its_place_in_the_s
             .contains("ana commented on github:owner/repo#8 (#8, 2 of 3): One more thing. u"),
         "{outbox:?}"
     );
+}
+
+#[test]
+fn a_comment_on_a_merged_pull_request_of_an_open_stack_wakes_the_task() {
+    let setup = opened_stack("stack-merged-comment");
+    setup.publish(&merged(9));
+    stays_asleep_after(&setup, 1);
+    let comment = on_stack(
+        9,
+        "github.pull_request.comment",
+        json!({ "actor": "ana", "body": "This drops the BOM, fix it in #8.", "url": "u",
+                "github_id": 901, "open": false }),
+    )
+    .time(herdr_bus::Timestamp::now());
+
+    setup.publish(&comment);
+
+    let outbox = setup.until("outbox", |rows| rows.len() == 2);
+    assert!(
+        outbox[1][4].contains(
+            "ana commented on github:owner/repo#9 (#9, 3 of 3): This drops the BOM, fix it in #8. u"
+        ),
+        "{outbox:?}"
+    );
+    setup.until("runs", |rows| rows.len() == 2);
 }
 
 #[test]

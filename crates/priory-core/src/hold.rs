@@ -653,6 +653,58 @@ fn closed_outside(tx: &Transaction, resource: &str, state: &str) -> rusqlite::Re
     Ok(())
 }
 
+/// Asks a person whether to drop or keep each task keyed by the Linear issue `resource`, which left
+/// `view` before the task's first run, holding the task until they answer. A task that ran hears
+/// the leave as an event of its own key instead.
+pub(crate) fn left(tx: &Transaction, resource: &str, view: Option<&str>) -> rusqlite::Result<()> {
+    let tasks: Vec<(i64, String)> = tx
+        .prepare(
+            "SELECT id, state FROM tasks
+             WHERE (key = ?1 OR substr(key, 1, length(?1) + 1) = ?1 || '.')
+             AND state IN ('queued', 'ready', 'held')
+             AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id)
+             AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task = tasks.id
+               AND holds.kind = 'person' AND holds.released IS NULL AND holds.ask IS NOT NULL
+               AND holds.reason LIKE 'left the view%')
+             ORDER BY id",
+        )?
+        .query_map([resource], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let issue = resource.trim_start_matches("linear:");
+    let view = view.map_or_else(|| "the view".to_owned(), |view| format!("the view {view}"));
+    for (task, held) in tasks {
+        let reason = format!("left {view}");
+        tx.execute(
+            "INSERT INTO holds (task, reason, kind, resume)
+             VALUES (?1, ?2, 'person', coalesce((SELECT resume FROM holds
+               WHERE task = ?1 AND released IS NULL LIMIT 1),
+               (SELECT state FROM tasks WHERE id = ?1)))",
+            params![task, reason],
+        )?;
+        let id = tx.last_insert_rowid();
+        let waits = "until a person answers whether to keep it";
+        let reason = match held.as_str() {
+            "held" => format!(" and {waits}"),
+            _ => format!("held: {reason}, {waits}"),
+        };
+        tx.execute(
+            "UPDATE tasks SET state = 'held',
+               reason = iif(state = 'held', coalesce(reason, '') || ?2, ?2) WHERE id = ?1",
+            params![task, reason],
+        )?;
+        tx.execute(
+            "INSERT INTO asks (task, step, kind, question, options)
+             SELECT id, step, 'agent', ?2, '[\"drop\",\"keep\"]' FROM tasks WHERE id = ?1",
+            params![task, format!("{issue} left {view}. Drop the task?")],
+        )?;
+        tx.execute(
+            "UPDATE holds SET ask = ?2 WHERE id = ?1",
+            params![id, tx.last_insert_rowid()],
+        )?;
+    }
+    Ok(())
+}
+
 /// Judges the condition `id` on the newest event in the inbox about its resource: a merge meets it,
 /// and a close without one does what the hold says; an issue with no open blocker, or one Done or
 /// Canceled, meets it.
@@ -855,6 +907,9 @@ pub(crate) fn answered(tx: &Transaction, id: i64, answer: &str) -> rusqlite::Res
     )?;
     let why = match kind.as_str() {
         "merged" => "dropped by a person after the task it waited on could not merge",
+        "person" if reason.starts_with("left the view") => {
+            "dropped by a person after its issue left the view"
+        }
         "person" if reason.starts_with("task ") => {
             "dropped by a person after the branch it stacks on moved"
         }

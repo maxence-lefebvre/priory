@@ -370,7 +370,8 @@ factory, such as herdr-bowtie, can read the same output as another consumer.
   merges. M0
 - R2.3 Deliver each event at least once and drop duplicates by event id. M0
 - R2.4 Trigger on Linear saved views (an issue enters or leaves) and on Linear issues and comments.
-  Poll the Slack threads that waits name. M1
+  An issue that leaves the view reaches its task's agent, or asks a person whether to drop a task
+  that has not run yet. Poll the Slack threads that waits name. M1
 - R2.5 Trigger on schedules: a time of day, weekdays, an optional repeat until an end, and a
   timezone. Each firing publishes one task request, once, and a restart fires only the latest
   missed firing. Without a fixed `key`, each firing starts its own task. With one, a firing creates

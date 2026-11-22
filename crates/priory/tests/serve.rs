@@ -463,7 +463,7 @@ fn each_endpoint_returns_what_the_cli_shows_and_its_json() {
     assert_eq!(queue["running"], json!([]));
     assert_eq!(
         api(&address, "/api/desk")["counts"],
-        json!({ "asleep": 0, "snoozed": 0, "unrouted": 0, "outsider": 0 })
+        json!({ "asleep": 0, "snoozed": 0, "unrouted": 0, "unheard": 0, "outsider": 0 })
     );
     let desk = api(&address, "/api/desk");
     assert_eq!(desk["banner"], Value::Null);
@@ -5788,7 +5788,10 @@ fn an_outsider_comment_is_counted_on_the_desk_and_listed_as_a_group_of_its_own()
 
     assert_eq!(desk["counts"]["outsider"], 1);
     assert_eq!(desk["counts"]["unrouted"], 0);
-    assert_eq!(unrouted["unrouted"], json!({ "owned": [], "other": [] }));
+    assert_eq!(
+        unrouted["unrouted"],
+        json!({ "owned": [], "other": [], "unheard": [] })
+    );
     assert_eq!(unrouted["outsider"][0]["subject"], "owner/repo#7");
     assert_eq!(unrouted["outsider"][0]["actor"], "stranger");
     assert!(
