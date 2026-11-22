@@ -1,3 +1,6 @@
+#[allow(dead_code)]
+mod harness;
+
 mod conform;
 
 use herdr_bus::{Bus, Message, MessageQuery, Stored};
@@ -100,7 +103,7 @@ impl Setup {
             self.dir.join("bin").display(),
             std::env::var("PATH").unwrap()
         );
-        let mut command = Command::new(env!("CARGO_BIN_EXE_priory"));
+        let mut command = harness::priory();
         command
             .args(["intake", "--once"])
             .arg(self.dir.join("factory"))
@@ -327,7 +330,7 @@ fn a_failing_gh_exits_non_zero_and_publishes_nothing() {
 impl Setup {
     /// `priory desk --json` on the intake's state file.
     fn desk(&self) -> serde_json::Value {
-        let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+        let output = harness::priory()
             .args(["desk", "--json"])
             .env("PRIORY_DB", self.dir.join("priory.db"))
             .env("PRIORY_HOME", self.dir.join("home"))
@@ -1913,7 +1916,7 @@ impl Setup {
     /// The rows of `priory inbox` after `priory daemon --once` reads the intake's output.
     fn inbox(&self) -> Vec<Vec<String>> {
         let priory = |args: &[&str]| {
-            let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+            let output = harness::priory()
                 .args(args)
                 .env("HERDR_BUS_DB", self.dir.join("bus.db"))
                 .env("PRIORY_DB", self.dir.join("priory.db"))
@@ -2105,7 +2108,7 @@ fn a_view_whose_filter_changed_publishes_one_changed_event_and_no_entered_or_lef
         })
     );
     setup.inbox();
-    let desk = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let desk = harness::priory()
         .arg("desk")
         .env("PRIORY_DB", setup.dir.join("priory.db"))
         .output()
@@ -2643,7 +2646,7 @@ fn a_linear_task_lands_in_the_lane_its_team_and_project_derive() {
     succeeded(&setup.intake());
     setup.inbox();
 
-    let tasks = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let tasks = harness::priory()
         .arg("tasks")
         .env("PRIORY_DB", setup.dir.join("priory.db"))
         .output()
@@ -2792,7 +2795,7 @@ fn a_slack_trigger_requests_one_task_per_matching_message_and_drops_a_duplicate(
         ]
     );
     setup.inbox();
-    let tasks = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let tasks = harness::priory()
         .arg("tasks")
         .env("PRIORY_DB", setup.dir.join("priory.db"))
         .output()
@@ -2859,7 +2862,7 @@ impl Setup {
 
     /// The `priory tasks` rows, as key and state.
     fn task_states(&self) -> Vec<[String; 2]> {
-        let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+        let output = harness::priory()
             .arg("tasks")
             .env("PRIORY_DB", self.dir.join("priory.db"))
             .output()

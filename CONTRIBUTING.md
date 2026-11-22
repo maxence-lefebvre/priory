@@ -24,6 +24,10 @@ the one CI uses.
 - Give each test that starts tmux a `TmuxDir` from `crates/priory/tests/tmux_dir` as its
   `TMUX_TMPDIR`. It keeps the socket under `/tmp`, short wherever the worktree lives, and dropping
   it kills every process that inherited it, even when the test panics.
+- Start every process a test runs with `harness::priory()` or `harness::command(program)` from
+  `crates/priory/tests/harness`, never `Command::new`. It drops the `PRIORY_*` and `HERDR_*`
+  variables your shell exports, so the suite passes on your machine as it does in CI. Set a
+  variable the test needs on the command itself.
 - Cover each parser of outside text (JSON, request heads, shell commands) with a `proptest` test
   that feeds it random and mutated input and asserts it returns or refuses without panicking.
   `proptest` is a dev-dependency only. Keep each test to a few seconds in a debug build.

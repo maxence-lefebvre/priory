@@ -1,7 +1,9 @@
+#[allow(dead_code)]
+mod harness;
+
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const FACTORY: &str = r#"name = "demo""#;
 
@@ -109,7 +111,7 @@ struct Outcome {
 }
 
 fn priory(args: &[&str], dir: &Path) -> Outcome {
-    let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let output = harness::priory()
         .args(args)
         .arg(dir)
         .env_remove("PRIORY_DB")

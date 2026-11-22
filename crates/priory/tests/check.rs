@@ -1,6 +1,8 @@
+#[allow(dead_code)]
+mod harness;
+
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
@@ -90,7 +92,7 @@ fn check(dir: &Path) -> Outcome {
 }
 
 fn check_with_herdr(dir: &Path, herdr: &Path) -> Outcome {
-    let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let output = harness::priory()
         .arg("check")
         .arg(dir)
         .env("HERDR_APP_HOME", herdr)
@@ -2155,7 +2157,7 @@ fn herdr_with_layout(name: &str, id: &str) -> PathBuf {
 
 /// The hash `adapters/herdr/layout` puts in a layout's root id for this factory's views.
 fn views_hash(dir: &Path) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let output = harness::priory()
         .args(["views", "--json"])
         .arg(dir)
         .output()
@@ -3699,7 +3701,7 @@ fn a_debate_step_with_two_priced_agents_passes_and_explain_prints_its_worst_case
     assert_eq!(outcome.stderr, "");
     assert_eq!(outcome.code, 0);
 
-    let explained = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let explained = harness::priory()
         .args(["check", "--explain"])
         .arg(&dir)
         .output()
@@ -3717,7 +3719,7 @@ fn a_debate_step_with_two_priced_agents_passes_and_explain_prints_its_worst_case
 fn explain_notes_a_debate_whose_agents_share_a_harness_and_a_model() {
     let dir = debate_factory("debate-same", TWO, READ);
     fs::write(dir.join("agents/skeptic/agent.md"), DEBATER).unwrap();
-    let explained = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let explained = harness::priory()
         .args(["check", "--explain"])
         .arg(&dir)
         .output()

@@ -1,7 +1,10 @@
+#[allow(dead_code)]
+mod harness;
+
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 use std::time::Duration;
 
 struct Setup {
@@ -19,7 +22,7 @@ impl Setup {
     }
 
     fn priory(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_priory"))
+        harness::priory()
             .args(args)
             .env("PRIORY_DB", self.dir.join("priory.db"))
             .env("HERDR_BUS_DB", self.dir.join("bus.db"))

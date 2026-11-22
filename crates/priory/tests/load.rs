@@ -9,6 +9,9 @@
 //!
 //! `LOAD_SCALE` multiplies every count. The budgets do not scale: they hold at ten times the load.
 
+#[allow(dead_code)]
+mod harness;
+
 use herdr_bus::{Bus, Message, Output};
 use serde_json::json;
 use std::fs;
@@ -121,7 +124,7 @@ impl Load {
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_priory"));
+        let mut command = harness::priory();
         command
             .env_remove("TMUX")
             .env("HERDR_BUS_DB", self.dir.join("bus.db"))

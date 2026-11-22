@@ -1,7 +1,9 @@
 //! The verbs only a person runs refuse inside a run, whose pane sets `PRIORY_SESSION`.
 
+#[allow(dead_code)]
+mod harness;
+
 use std::path::Path;
-use std::process::Command;
 
 #[test]
 fn a_person_verb_refuses_inside_a_run() {
@@ -36,7 +38,7 @@ fn a_person_verb_refuses_inside_a_run() {
         &["patterns", "dismiss", ".", "1a2b3c4d"],
         &["patterns", "capture", "1a2b3c4d", "--into", "cases"],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+        let output = harness::priory()
             .args(args)
             .env("PRIORY_SESSION", "6f1c0b9e-0d2a-4f43-9a51-3c2e8e1b7d10")
             .env("PRIORY_DB", dir.join("priory.db"))

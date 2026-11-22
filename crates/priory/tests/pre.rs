@@ -1,5 +1,8 @@
 //! A trigger's `pre` script, as the intake and `priory intake pre` run it.
 
+#[allow(dead_code)]
+mod harness;
+
 mod conform;
 
 use herdr_bus::{Bus, MessageQuery, Stored};
@@ -105,7 +108,7 @@ impl Setup {
             self.dir.join("bin").display(),
             std::env::var("PATH").unwrap()
         );
-        let mut command = Command::new(env!("CARGO_BIN_EXE_priory"));
+        let mut command = harness::priory();
         command
             .args(args)
             .env("PATH", path)
@@ -1009,7 +1012,7 @@ fn the_bug_investigation_starters_sentry_script_drops_issues_below_error() {
             "subject": "PYTHON-Y",
             "data": { "issue": "4812", "project": "my-project", "level": level, "title": "\"level\":\"debug\"" }
         });
-        let mut child = Command::new(env!("CARGO_BIN_EXE_priory"))
+        let mut child = harness::priory()
             .args(["intake", "pre", starter.to_str().unwrap(), "sentry-issue"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

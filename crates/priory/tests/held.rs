@@ -1,3 +1,6 @@
+#[allow(dead_code)]
+mod harness;
+
 mod tmux_dir;
 
 use herdr_bus::{Bus, Message, Output as BusOutput};
@@ -92,7 +95,7 @@ impl Setup {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_priory"));
+        let mut command = harness::priory();
         command
             .env_remove("TMUX")
             .env("TMUX_TMPDIR", self.tmux.path())

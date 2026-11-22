@@ -1,9 +1,11 @@
+#[allow(dead_code)]
+mod harness;
+
 mod conform;
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 fn reference() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference")
@@ -44,11 +46,7 @@ fn example_factory(to: &Path) {
 fn the_example_factory_passes_check() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("reference-example");
     example_factory(&dir);
-    let output = Command::new(env!("CARGO_BIN_EXE_priory"))
-        .arg("check")
-        .arg(&dir)
-        .output()
-        .unwrap();
+    let output = harness::priory().arg("check").arg(&dir).output().unwrap();
     assert!(
         output.status.success(),
         "{}{}",
@@ -67,7 +65,7 @@ fn every_starter_factory_passes_check_and_its_explanation() {
             continue;
         }
         for flags in [&[][..], &["--explain"]] {
-            let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+            let output = harness::priory()
                 .arg("check")
                 .args(flags)
                 .arg(&starter)
@@ -90,7 +88,7 @@ fn every_starter_factory_passes_check_and_its_explanation() {
 fn the_batches_starter_passes_check() {
     let starter = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/batches");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let output = harness::priory()
         .arg("check")
         .arg(&starter)
         .output()
@@ -142,7 +140,7 @@ fn the_config_schemas_accept_the_values_the_loader_accepts() {
         example_factory(&dir);
         fs::create_dir_all(dir.join(file).parent().unwrap()).unwrap();
         fs::write(dir.join(file), &text).unwrap();
-        let loads = Command::new(env!("CARGO_BIN_EXE_priory"))
+        let loads = harness::priory()
             .arg("check")
             .arg(&dir)
             .output()
@@ -274,7 +272,7 @@ fn the_reference_pages_show_every_example_file_as_it_is() {
 /// The commands `priory` prints with no arguments, one per line, without the leading `usage:`
 /// and any trailing note.
 fn usage_lines() -> Vec<String> {
-    let output = Command::new(env!("CARGO_BIN_EXE_priory")).output().unwrap();
+    let output = harness::priory().output().unwrap();
     String::from_utf8(output.stderr)
         .unwrap()
         .lines()

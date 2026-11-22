@@ -1,12 +1,14 @@
 //! `priory ask NAME JSON` takes text from outside sessions: it stores the ask or refuses it.
 
+#[allow(dead_code)]
+mod harness;
+
 use proptest::prelude::*;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 fn priory(dir: &Path, name: &str, fields: &str) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_priory"))
+    harness::priory()
         .args(["ask", name, fields])
         .env("PRIORY_DB", dir.join("priory.db"))
         .env("PRIORY_HOME", dir.join("home"))

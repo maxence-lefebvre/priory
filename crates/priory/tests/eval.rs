@@ -1,8 +1,11 @@
+#[allow(dead_code)]
+mod harness;
+
 use serde_json::{Value, json};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 fn dir(name: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
@@ -15,7 +18,7 @@ fn dir(name: &str) -> PathBuf {
 
 /// Feeds `lines` to `priory mcp` with `args` and returns its JSON replies.
 fn serve(args: &[&str], lines: &[Value]) -> Vec<Value> {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let mut child = harness::priory()
         .arg("mcp")
         .args(args)
         .stdin(Stdio::piped())
@@ -57,7 +60,7 @@ fn eval(dir: &Path, args: &[&str]) -> std::process::Output {
     )
     .unwrap();
     fs::create_dir_all(dir.join("fake")).unwrap();
-    Command::new(env!("CARGO_BIN_EXE_priory"))
+    harness::priory()
         .arg("eval")
         .args(args)
         .current_dir(dir)

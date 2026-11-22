@@ -1,7 +1,9 @@
 //! `priory answer` and `priory dismiss` name the revision they miss, instead of the whole usage.
 
+#[allow(dead_code)]
+mod harness;
+
 use std::path::Path;
-use std::process::Command;
 
 #[test]
 fn an_answer_or_remote_dismiss_without_a_revision_names_the_flag() {
@@ -13,7 +15,7 @@ fn an_answer_or_remote_dismiss_without_a_revision_names_the_flag() {
         (&["answer", "b:12", "approve"], "b:12"),
         (&["dismiss", "b:12"], "b:12"),
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+        let output = harness::priory()
             .args(args)
             .env("PRIORY_DB", dir.join("priory.db"))
             .env("PRIORY_HOME", dir.join("home"))
@@ -39,7 +41,7 @@ fn an_answer_without_a_revision_prints_the_command_with_the_current_revision() {
     priory_runtime::runtime::remove_sealed(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let priory = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_priory"))
+        harness::priory()
             .args(args)
             .env_remove("PRIORY_FACTORY")
             .env("PRIORY_DB", dir.join("priory.db"))

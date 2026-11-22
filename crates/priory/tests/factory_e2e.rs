@@ -1,6 +1,9 @@
 //! Plays a scenario through a whole factory folder, from a task request to its final state, with
 //! the fake `claude`, `codex` and `gh`. docs/testing-a-factory.md explains the scenario file.
 
+#[allow(dead_code)]
+mod harness;
+
 mod tmux_dir;
 
 use herdr_bus::{Bus, Message, Output};
@@ -172,7 +175,7 @@ impl Play {
     /// goes under the test's home instead.
     fn copy(&self, factory: &Path) {
         fs::create_dir_all(&self.dir).unwrap();
-        let copied = Command::new("cp")
+        let copied = harness::command("cp")
             .arg("-R")
             .arg(factory)
             .arg(self.factory())
@@ -343,7 +346,7 @@ impl Play {
                 .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
         )
         .unwrap();
-        let mut command = Command::new(program);
+        let mut command = harness::command(program);
         // A cleared environment keeps the user's tokens from a factory script that would use them.
         command
             .env_clear()

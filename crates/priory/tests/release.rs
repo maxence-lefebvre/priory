@@ -1,8 +1,11 @@
+#[allow(dead_code)]
+mod harness;
+
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 const TARGETS: [&str; 3] = [
     "x86_64-unknown-linux-musl",
@@ -14,10 +17,7 @@ const FAKE: &[u8] = b"#!/bin/sh\necho fake priory\n";
 #[test]
 fn version_prints_the_workspace_version() {
     for flag in ["--version", "-V"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_priory"))
-            .arg(flag)
-            .output()
-            .unwrap();
+        let output = harness::priory().arg(flag).output().unwrap();
         assert!(output.status.success(), "{output:?}");
         assert_eq!(
             String::from_utf8_lossy(&output.stdout),
@@ -61,7 +61,7 @@ fn scratch(name: &str) -> PathBuf {
 /// signed in, so a developer's own `gh` checks no fake binary.
 fn install(release: &Path, prefix: &Path, path_first: Option<&Path>) -> Output {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../install.sh");
-    let mut command = Command::new("sh");
+    let mut command = harness::command("sh");
     let signed_out = stub(
         &format!("{}-gh", prefix.file_name().unwrap().to_string_lossy()),
         "gh",

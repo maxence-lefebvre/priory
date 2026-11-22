@@ -1,13 +1,16 @@
 //! The Slack message shortcut: `priory intake` against a fake Slack, a WebSocket server on
 //! 127.0.0.1 and a fake `curl` for the Web API calls.
 
+#[allow(dead_code)]
+mod harness;
+
 use herdr_bus::{Bus, MessageQuery, Stored};
 use serde_json::{Value, json};
 use std::fs;
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 use tungstenite::{Message, WebSocket};
 
@@ -90,7 +93,7 @@ impl Slack {
             self.dir.join("bin").display(),
             std::env::var("PATH").unwrap()
         );
-        let child = Command::new(env!("CARGO_BIN_EXE_priory"))
+        let child = harness::priory()
             .arg("intake")
             .arg(self.dir.join("factory"))
             .env("PATH", path)
@@ -346,7 +349,7 @@ fn an_allowed_submission_queues_the_thread_once_and_says_so() {
 #[test]
 fn a_thread_whose_task_ended_is_queued_again() {
     let mut slack = Slack::new("queue-again");
-    let tasks = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let tasks = harness::priory()
         .arg("tasks")
         .env("PRIORY_DB", slack.dir.join("priory.db"))
         .output()

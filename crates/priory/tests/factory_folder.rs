@@ -1,9 +1,12 @@
 //! Every command that takes `[DIR]` reads the same factory folder without it: `PRIORY_FACTORY`
 //! when set, else the current folder.
 
+#[allow(dead_code)]
+mod harness;
+
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 /// A test folder with `env/`, a factory whose only problem names `bogus_key`, `cwd/`, an empty
 /// folder to run from, and `good/`, a factory with no problem.
@@ -25,7 +28,7 @@ fn folders(name: &str) -> PathBuf {
 }
 
 fn priory(dir: &Path, cwd: &str, factory: Option<&str>, args: &[&str]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_priory"));
+    let mut command = harness::priory();
     command
         .args(args)
         .current_dir(dir.join(cwd))
@@ -121,7 +124,7 @@ fn a_dir_comes_before_priory_factory_and_priory_factory_before_the_current_folde
     let current = priory(&dir, "good", None, &["check"]);
     assert!(current.status.success(), "{current:?}");
 
-    let unset = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let unset = harness::priory()
         .arg("check")
         .current_dir(dir.join("good"))
         .env("PRIORY_FACTORY", "")

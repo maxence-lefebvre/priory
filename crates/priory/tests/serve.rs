@@ -1,3 +1,6 @@
+#[allow(dead_code)]
+mod harness;
+
 mod conform;
 mod tmux_dir;
 
@@ -90,7 +93,7 @@ impl Setup {
             std::iter::once(fake).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
         )
         .unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_priory"));
+        let mut command = harness::priory();
         command
             .env_remove("TMUX")
             .env("PATH", path)

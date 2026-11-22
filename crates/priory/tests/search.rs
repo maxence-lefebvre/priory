@@ -1,9 +1,12 @@
+#[allow(dead_code)]
+mod harness;
+
 mod tmux_dir;
 
 use herdr_bus::{Bus, Output};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output as Exit};
+use std::process::{Child, Output as Exit};
 use std::time::{Duration, Instant};
 use tmux_dir::TmuxDir;
 
@@ -83,7 +86,7 @@ impl Setup {
             std::iter::once(fake).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
         )
         .unwrap();
-        Command::new(env!("CARGO_BIN_EXE_priory"))
+        harness::priory()
             .args(args)
             .env_remove("TMUX")
             .env("PATH", path)
@@ -129,7 +132,7 @@ impl Setup {
         )
         .unwrap();
         self.daemon = Some(
-            Command::new(env!("CARGO_BIN_EXE_priory"))
+            harness::priory()
                 .args(["daemon", &self.factory()])
                 .env_remove("TMUX")
                 .env("PATH", path)

@@ -1,7 +1,9 @@
+#[allow(dead_code)]
+mod harness;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Runs `adapters/herdr/deliver` with a fake `hc` that records its arguments and answers `get`
 /// with `fake/get.json` when it exists. Returns its exit code and each `hc` call's arguments.
@@ -14,7 +16,7 @@ fn deliver(dir: &Path, session: &str) -> (Option<i32>, Vec<Vec<String>>) {
             .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
     )
     .unwrap();
-    let status = Command::new(script)
+    let status = harness::command(script)
         .args(["cache.ship", "2", session, "answered", "ship"])
         .env("PATH", path)
         .env("HOME", dir.join("home"))

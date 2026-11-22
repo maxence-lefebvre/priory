@@ -1,6 +1,8 @@
+#[allow(dead_code)]
+mod harness;
+
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const FACTORY: &str = r#"name = "demo""#;
 
@@ -114,7 +116,7 @@ struct Outcome {
 }
 
 fn draw(dir: &Path, workflow: &str) -> Outcome {
-    let output = Command::new(env!("CARGO_BIN_EXE_priory"))
+    let output = harness::priory()
         .arg("draw")
         .arg(dir)
         .arg(workflow)
