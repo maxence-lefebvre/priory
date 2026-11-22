@@ -871,6 +871,50 @@ pub struct TaskApplied {
     pub why: Option<String>,
 }
 
+/// An agent saves a memory with the `remember` tool, or removes one with `forget`. Each message is
+/// one candidate, known by its `id`: its own task's later runs get it at once, and other tasks'
+/// runs only once a person accepts it. A later write of the same name is a new candidate.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryWritten {
+    /// The memory's name, in lowercase letters, digits and hyphens.
+    pub name: String,
+    /// When an agent should read the memory. Absent for a forget.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The fact. Absent for a forget.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// True for a forget: the candidate removes the memory of its name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forget: Option<bool>,
+    /// The key of the task whose run wrote it.
+    pub task: String,
+    /// The runner that wrote it, or null in a factory of one runner.
+    pub runner: Option<String>,
+}
+
+/// A person accepts a memory candidate with `priory memories accept`. Every runner gives it to
+/// every task's later runs. Between two accepted candidates of one name, the later accept in log
+/// order wins.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryAccepted {
+    /// The `id` of the `priory.memory.written` message.
+    #[schemars(extend("format" = "uuid"))]
+    pub candidate: String,
+}
+
+/// A person drops a memory candidate with `priory memories drop`. No run gets it, not even its own
+/// task's.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryDropped {
+    /// The `id` of the `priory.memory.written` message.
+    #[schemars(extend("format" = "uuid"))]
+    pub candidate: String,
+}
+
 /// Where a stream stands after a poll that moved it; a missing marker means the stream is still
 /// in its baseline.
 #[derive(JsonSchema)]

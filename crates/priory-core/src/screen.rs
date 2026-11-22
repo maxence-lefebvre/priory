@@ -30,6 +30,11 @@ static SHAPES: LazyLock<Regex> = LazyLock::new(|| {
     .expect("the secret shapes compile")
 });
 
+/// Whether `text` holds a secret by its shape, such as a GitHub token or a PEM private key.
+pub(crate) fn holds_secret(text: &str) -> bool {
+    SHAPES.is_match(text)
+}
+
 static PEM_END: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"-----END [A-Z ]*PRIVATE KEY-----").expect("the PEM end compiles")
 });

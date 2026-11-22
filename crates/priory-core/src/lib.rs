@@ -15,6 +15,7 @@ mod kit;
 pub mod label;
 pub mod link;
 pub mod listing;
+pub mod memories;
 pub mod memory;
 #[cfg(feature = "model")]
 mod model;

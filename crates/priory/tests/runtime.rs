@@ -5821,6 +5821,9 @@ fn the_mcp_server_lists_its_tools() {
             "unsubscribe",
             "relate",
             "finding",
+            "remember",
+            "forget",
+            "memory",
             "compact",
             "tldr",
             "report",
@@ -22416,8 +22419,8 @@ impl Setup {
 fn memory_index(folder: &str) -> String {
     format!(
         "# Memories\n\nThe factory's memories are in {folder}, one fact per file. Read a memory's \
-         file when its description fits your task. Never edit these files: a memory changes only \
-         through a pull request to the factory.\n\n- gate-cost.md: How long the gate takes.\n\
+         file when its description fits your task. Never edit these files: save a fact with the \
+         remember tool, and remove a wrong one with forget.\n\n- gate-cost.md: How long the gate takes.\n\
          - release-day.md: When releases go out."
     )
 }
@@ -23332,4 +23335,381 @@ fn bench_capture_refuses_a_task_with_no_irreversible_step_or_no_start_commit() {
         "priory bench capture: task 1 has no start commit: it began before Priory stored one\n"
     );
     assert!(!into.exists(), "a refused capture wrote {}", into.display());
+}
+
+fn remember(name: &str, text: &str) -> serde_json::Value {
+    json!({ "name": "remember", "arguments": {
+        "name": name, "description": format!("What {name} says."), "text": text,
+    } })
+}
+
+fn forget(name: &str) -> serde_json::Value {
+    json!({ "name": "forget", "arguments": { "name": name } })
+}
+
+/// A `tools/call` of `params` for `Setup::mcp`.
+fn mcp_call(params: serde_json::Value) -> serde_json::Value {
+    json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params })
+}
+
+/// The memories a launch got, each file's name and its text after the frontmatter; none without
+/// `--add-dir`.
+fn remembered(args: &[String]) -> Vec<(String, String)> {
+    let Some(folder) = arg(args, "--add-dir") else {
+        return Vec::new();
+    };
+    tree(Path::new(&folder))
+        .into_iter()
+        .map(|(name, bytes)| {
+            let text = String::from_utf8(bytes).unwrap();
+            let body = text.rsplit("---\n").next().unwrap().trim().to_owned();
+            (name, body)
+        })
+        .collect()
+}
+
+impl Setup {
+    /// `priory memories --all --json`: every memory candidate this runner read.
+    fn candidates(&self) -> Vec<serde_json::Value> {
+        let output = self.priory(&["memories", "--all", "--json"]);
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["candidates"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    /// Waits until `done` holds for this runner's memory candidates, and returns them.
+    fn until_candidates(
+        &self,
+        done: impl Fn(&[serde_json::Value]) -> bool,
+    ) -> Vec<serde_json::Value> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let candidates = self.candidates();
+            if done(&candidates) {
+                return candidates;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out on the memory candidates: {candidates:?}\ndaemon: {}",
+                fs::read_to_string(self.dir.join("daemon.log")).unwrap_or_default()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Accepts or drops candidate `id` on the factory's log, and waits until this runner read it.
+    fn decide(&self, verb: &str, id: &str) {
+        let factory = self.dir.join("factory");
+        let decided = self.priory(&["memories", verb, factory.to_str().unwrap(), id]);
+        assert!(decided.status.success(), "{decided:?}");
+        let state = if verb == "accept" {
+            "accepted"
+        } else {
+            "dropped"
+        };
+        self.until_candidates(|candidates| {
+            candidates
+                .iter()
+                .any(|candidate| candidate["id"] == id && candidate["state"] == state)
+        });
+    }
+
+    /// Answers this runner's ask 1 and returns the arguments of the launch that resumes its session.
+    fn answer_and_relaunch(&self, run: usize) -> Vec<String> {
+        let _ = fs::remove_file(self.dir.join("fake/args.log"));
+        let answered = self.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+        assert!(answered.status.success(), "{answered:?}");
+        self.claude_args(run)
+    }
+
+    /// The text of the `memory` tool's reply to the live run `run` for `name`, and whether it failed.
+    fn recall(&self, run: usize, name: &str) -> (String, bool) {
+        let session = self.rows("runs")[run][4].clone();
+        let replies = self.mcp(
+            &session,
+            &[mcp_call(
+                json!({ "name": "memory", "arguments": { "name": name } }),
+            )],
+        );
+        reply(&replies[0])
+    }
+}
+
+/// The id of the one candidate of `name` that holds `text`, or a tombstone when `text` is none.
+fn candidate(candidates: &[serde_json::Value], name: &str, text: Option<&str>) -> String {
+    let found: Vec<&serde_json::Value> = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate["name"] == name && candidate["text"].as_str().map(str::trim) == text
+        })
+        .collect();
+    assert_eq!(found.len(), 1, "{candidates:?}");
+    found[0]["id"].as_str().unwrap().to_owned()
+}
+
+#[test]
+fn a_remembered_fact_reaches_its_own_tasks_next_run_at_once_and_other_tasks_once_a_person_accepts_it()
+ {
+    let mut a = runner("remember", "a", None);
+    let mut b = runner("remember", "b", Some(&a));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    b.calls(&[
+        ask(),
+        json!([
+            remember("release-day", "Releases go out on Wednesdays."),
+            ask()
+        ]),
+    ]);
+    a.calls(&[json!([
+        remember("release-day", "Releases go out on Tuesdays."),
+        ask()
+    ])]);
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    a.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let (text, failed) = reply(&a.replies()[0]);
+    assert!(!failed, "{text}");
+    logged(
+        &a,
+        "priory.memory.written",
+        json!({ "name": "release-day", "runner": "a", "task": "github:owner/repo#1" }),
+    );
+
+    let resumed = a.answer_and_relaunch(1);
+    assert_eq!(
+        remembered(&resumed),
+        [(
+            "release-day.md".to_owned(),
+            "Releases go out on Tuesdays.".to_owned()
+        )],
+        "the task that wrote it gets it at once"
+    );
+    let (text, failed) = a.recall(1, "release-day");
+    assert!(
+        !failed && text.contains("Releases go out on Tuesdays."),
+        "{text}"
+    );
+    a.crash();
+
+    b.publish(&requested(2));
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let candidates = b.until_candidates(|candidates| candidates.len() == 1);
+    let first = candidate(
+        &candidates,
+        "release-day",
+        Some("Releases go out on Tuesdays."),
+    );
+    assert_eq!(candidates[0]["state"], "pending");
+    assert_eq!(
+        remembered(&b.claude_args(0)),
+        [],
+        "another task waits for a person"
+    );
+    let (text, failed) = b.recall(0, "release-day");
+    assert!(failed, "{text}");
+    let desk = b.priory(&["desk", "--json"]);
+    let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+    let items: Vec<&serde_json::Value> = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["kind"] == "memories")
+        .collect();
+    assert_eq!(items.len(), 1, "{desk}");
+    assert_eq!(items[0]["candidates"][0]["id"], json!(first));
+
+    b.decide("accept", &first);
+    b.publish(&requested(3));
+    b.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    assert_eq!(
+        remembered(&b.claude_args(1)),
+        [(
+            "release-day.md".to_owned(),
+            "Releases go out on Tuesdays.".to_owned()
+        )],
+        "an accepted candidate reaches every task"
+    );
+    b.until_candidates(|candidates| {
+        candidates.len() == 2
+            && candidates
+                .iter()
+                .all(|candidate| candidate["state"] != "sending")
+    });
+    let desk = b.priory(&["desk", "--json"]);
+    let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+    assert_eq!(
+        desk["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["kind"] == "memories")
+            .map(|item| item["candidates"].as_array().unwrap().len())
+            .collect::<Vec<_>>(),
+        [1],
+        "only the overwrite waits: {desk}"
+    );
+    b.crash();
+
+    a.publish(&requested(4));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let candidates = a.until_candidates(|candidates| {
+        candidates.len() == 2
+            && candidates
+                .iter()
+                .any(|candidate| candidate["state"] == "accepted")
+    });
+    let second = candidate(
+        &candidates,
+        "release-day",
+        Some("Releases go out on Wednesdays."),
+    );
+    assert_eq!(
+        remembered(&a.claude_args(2)),
+        [(
+            "release-day.md".to_owned(),
+            "Releases go out on Tuesdays.".to_owned()
+        )],
+        "accepting a candidate never accepts a later write of its name"
+    );
+
+    a.decide("accept", &second);
+    a.publish(&requested(5));
+    assert_eq!(
+        remembered(&a.claude_args(3)),
+        [(
+            "release-day.md".to_owned(),
+            "Releases go out on Wednesdays.".to_owned()
+        )],
+        "the later accept wins"
+    );
+}
+
+#[test]
+fn a_forget_of_a_kit_memory_hides_it_from_its_own_task_at_once_and_from_every_runner_once_accepted()
+{
+    let mut a = runner("forget-kit", "a", None);
+    let mut b = runner("forget-kit", "b", Some(&a));
+    a.kit_repo();
+    b.kit_repo();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.calls(&[json!([forget("kit-fact"), ask()])]);
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let first = a.claude_args(0);
+    assert_eq!(
+        remembered(&first),
+        [("kit-fact.md".to_owned(), "The kit lives in git.".to_owned())]
+    );
+    a.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    assert_eq!(
+        remembered(&a.answer_and_relaunch(1)),
+        [],
+        "the task that forgot it no longer gets it"
+    );
+    a.crash();
+
+    b.publish(&requested(2));
+    b.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let candidates = b.until_candidates(|candidates| candidates.len() == 1);
+    assert_eq!(candidates[0]["forget"], true, "{candidates:?}");
+    assert_eq!(
+        remembered(&b.claude_args(0)),
+        [("kit-fact.md".to_owned(), "The kit lives in git.".to_owned())],
+        "a forget waits for a person too"
+    );
+
+    let tombstone = candidate(&candidates, "kit-fact", None);
+    b.decide("accept", &tombstone);
+    b.publish(&requested(3));
+    assert_eq!(remembered(&b.claude_args(1)), []);
+    b.crash();
+
+    a.publish(&requested(4));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    a.until_candidates(|candidates| candidates[0]["state"] == "accepted");
+    assert_eq!(
+        remembered(&a.claude_args(2)),
+        [],
+        "every runner reads the accept"
+    );
+}
+
+#[test]
+fn remember_refuses_a_bad_name_a_long_text_and_a_credential_and_a_dropped_candidate_takes_no_accept()
+ {
+    let mut setup = Setup::with_workflow("remember-refused", STEPS);
+    setup.publish(&requested(42));
+    setup.start();
+    let session = setup.until("runs", |rows| rows.len() == 1)[0][4].clone();
+    let calls = [
+        remember("Release_Day", "Tuesdays."),
+        remember("release-day", &"x".repeat(4096)),
+        remember("token", "Use ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123 to push."),
+        remember("release-day", "Releases go out on Tuesdays."),
+    ];
+    let replies: Vec<(String, bool)> = calls
+        .into_iter()
+        .map(|call| reply(&setup.mcp(&session, &[mcp_call(call)])[0]))
+        .collect();
+
+    assert_eq!(
+        replies[..3]
+            .iter()
+            .map(|(text, failed)| (text.as_str(), *failed))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "a memory's name has lowercase letters, digits and hyphens, and starts with a letter or a digit",
+                true
+            ),
+            (
+                "a memory holds one fact in at most 4096 bytes: this one is 4161 bytes",
+                true
+            ),
+            (
+                "the text looks like it holds a credential: a memory reaches every later run, so keep secrets out of it",
+                true
+            ),
+        ]
+    );
+    assert!(!replies[3].1, "{:?}", replies[3]);
+    let candidates = setup.until_candidates(|candidates| {
+        candidates.len() == 1 && candidates[0]["state"] == "pending"
+    });
+    let id = candidates[0]["id"].as_str().unwrap().to_owned();
+    let listed = setup.rows("memories");
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(
+        listed[0][..4],
+        [id.as_str(), "release-day", "remember", "pending"]
+    );
+
+    setup.decide("drop", &id);
+    let factory = setup.dir.join("factory");
+    let accepted = setup.priory(&["memories", "accept", factory.to_str().unwrap(), &id]);
+    assert!(!accepted.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&accepted.stderr).trim(),
+        format!("priory memories: candidate {id} is dropped")
+    );
+    assert!(
+        setup.rows("memories").is_empty(),
+        "the list shows pending ones"
+    );
+    let desk = setup.priory(&["desk", "--json"]);
+    let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+    assert!(
+        desk["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["kind"] != "memories"),
+        "{desk}"
+    );
 }

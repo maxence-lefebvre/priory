@@ -201,6 +201,11 @@ memories and reads a file when its description fits the task. `priory check` cou
 `ok` line. To change a memory, edit the file and merge it like any other change to the factory.
 See [memories.md](docs/reference/memories.md) for the file's keys.
 
+Agents save memories too, with the `remember` tool. The task that saved one gets it at once; every
+other task gets it once you accept it. The desk lists the candidates that wait, and
+`priory memories accept ID` or `priory memories drop ID` decides each (see
+[skills.md](docs/daemon/skills.md#memories-agents-write)).
+
 ### Share a kit across factories
 
 To keep skills, instructions and memories in their own repository, name it under `[kit]` in
@@ -285,6 +290,7 @@ When someone labels issue 42 of `owner/name` with `agent`, this happens:
 | `priory dismiss [--expected N] ASK` | Closes an ask with no answer. `priory dismiss --revision N [DIR] RUNNER:ASK` dismisses another runner's ask |
 | `priory deliver ASK (--retry \| --clear)` | Sends a failed answer delivery again, or clears it from the desk |
 | `priory snooze KIND ID --for 2h`, `--until TIME`, `--clear` | Hides a desk item until then, or brings it back |
+| `priory memories [--all]`, `priory memories (accept \| drop) [DIR] ID` | Lists the memories agents saved that wait for you, and accepts or drops one, on every runner |
 | `priory todo add TEXT [--band B] [--due TIME]`, `priory todo done ID`, `priory todo list` | Adds a to-do of your own to the desk, marks it done, or lists them |
 | `priory tasks [--lane LANE] [--grade GRADE]` | Lists tasks in start order, with their grade, and other runners' tasks in a factory of several |
 | `priory runs [--json]` | Lists every run; `--json` adds its task key, outcome, model and tokens |

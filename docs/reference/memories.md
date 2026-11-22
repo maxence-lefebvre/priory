@@ -2,9 +2,9 @@
 
 A memory is one fact the factory keeps for every run, in `memories/<name>.md`. The file name,
 without `.md`, is the memory's name. Every run gets an index of the memories, each name and
-description, and reads a memory's file when its description fits the task. No tool writes a memory:
-a memory changes only through a pull request to the factory. See [skills.md](../daemon/skills.md#memories)
-for how a run gets them.
+description, and reads a memory's file when its description fits the task. An agent also writes
+memories with the `remember` and `forget` tools, as candidates a person accepts (see
+[Candidates](#candidates)). See [skills.md](../daemon/skills.md#memories) for how a run gets them.
 
 A memory's name has lowercase letters, digits and hyphens, and starts with a letter or a digit. The
 file starts with frontmatter, fenced by `---` for YAML or `+++` for TOML. The Markdown after the
@@ -44,7 +44,7 @@ memory in name order:
 ```text
 # Memories
 
-The factory's memories are in <folder>, one fact per file. Read a memory's file when its description fits your task. Never edit these files: a memory changes only through a pull request to the factory.
+The factory's memories are in <folder>, one fact per file. Read a memory's file when its description fits your task. Never edit these files: save a fact with the remember tool, and remove a wrong one with forget.
 
 - release-day.md: When releases go out. Read it before you plan or merge a change near a release.
 ```
@@ -67,3 +67,70 @@ The factory's memories are in <folder>, one fact per file. Read a memory's file 
 Each line starts with the file and line, such as `memories/release-day.md:2:`. The name and
 description errors point at line 1, except a wrong `name`, which points at its line. A file or
 folder that is not a memory has no line.
+
+## Candidates
+
+Each `remember` or `forget` call is one candidate, known by the id of its
+[`priory.memory.written`](events.md#priorymemorywritten) message. A candidate's memory is a file like
+the ones above, with its `description` quoted as a JSON string:
+
+```markdown
+---
+name: release-day
+description: "When releases go out."
+---
+Releases go out on Tuesdays.
+```
+
+A run gets the kit's memories, then the factory's, then the candidates it sees, each in log order: a
+person's accept puts a candidate at the accept's place, and a candidate of the run's own task sits
+at its write. A forget removes the memory of its name. The tools are in
+[tools.md](../daemon/tools.md#remembername-description-text-forgetname-and-memoryname).
+
+| State | Meaning | Which runs get it |
+| ----- | ------- | ----------------- |
+| `sending` | Stored on this runner, not read back from the log yet | Its own task's |
+| `pending` | On the log, and waits for a person | Its own task's |
+| `accepted` | A person accepted it | Every task's, on every runner |
+| `dropped` | A person dropped it | None |
+
+### `priory memories`
+
+```sh
+priory memories [--all] [--json]
+priory memories (accept | drop) [DIR] CANDIDATE
+```
+
+The first lists the `pending` candidates this runner read, oldest first, or with `--all` every
+candidate: id, name, kind (`remember` or `forget`), state, task key, runner (`-` in a factory of one
+runner) and when it was written. `--json` prints `{ "candidates": [...] }`, each with `id`, `name`,
+`description`, `text` and `forget`, `task`, `runner`, `written`, `decided` and `state`.
+
+`accept` and `drop` publish [`priory.memory.accepted`](events.md#priorymemoryaccepted) or
+[`priory.memory.dropped`](events.md#priorymemorydropped) on the log of the factory in `DIR`, `.` by
+default, and print `<name> accepted: every runner applies it as it reads the log`. They check this
+runner's state file first and refuse:
+
+| Message | Cause |
+| ------- | ----- |
+| `no memory candidate <id>` | This runner never read that id |
+| `candidate <id> is not on the log yet: try again once its runner reaches the log` | It is `sending` |
+| `candidate <id> is accepted`, `candidate <id> is dropped` | A person already decided it |
+| `the log is unreachable since <time>: try again when it is back` | This runner is cut off from the log |
+
+A candidate takes one verdict. The first accept or drop in log order stands, and every runner
+records a later one as `refused`.
+
+### Errors from the tools
+
+| Message | Cause |
+| ------- | ----- |
+| `a memory's name has lowercase letters, digits and hyphens, and starts with a letter or a digit` | A name such as `Release_Day` |
+| `a memory needs a description, which tells an agent when to read it` | A blank `description` |
+| `a memory needs a text: the fact itself` | A blank `text` |
+| `a memory holds one fact in at most 4096 bytes: this one is <n> bytes` | The candidate's file, as above, is over 4096 bytes |
+| `the text looks like it holds a credential: a memory reaches every later run, so keep secrets out of it` | The name, description or text matches a GitHub, Anthropic, OpenAI, AWS, Slack or Linear key, or a PEM private key |
+| `no memory <name> reaches your task: your instructions' index lists those that do` | `memory` names a memory the caller's task does not see |
+
+A runner applies the same rules to each `priory.memory.written` it reads, since anyone who can
+publish on the log can write one.

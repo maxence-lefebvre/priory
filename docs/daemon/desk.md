@@ -13,6 +13,7 @@
 | `held` | the hold | the task's reason: why it is held, and until what | it was held |
 | `batch` | the batch | its title and counts, then which entries start next: `Invoice exports: 1 merged, 3 started, 2 planned. Next: tasks 36 and 37 start when task 34 merges.` One row per going batch, in place of the `held` rows of its entries (see Batches) | the go |
 | `memory` | the memory grant | `waits for <N> GB: <command>` | it was requested |
+| `memories` | `memories` | `` <n> memory candidates wait for a person: <name>, <name>; see them with `priory memories` ``. One row while any candidate waits (see Memory candidates) | the oldest candidate was written |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
 | `sweep` | the script's run | its command, then `running`, or its status and output, for the open stall | it started |
 | `report` | the report's inbox sequence number | `<source>: <line>`, for an unread report | it was posted |
@@ -126,6 +127,17 @@ It leaves the desk in two ways:
 
 A run started before the item was added does not clear it. If the connector still needs a sign-in,
 the next denial adds the item again.
+
+## Memory candidates
+
+While any memory candidate waits for a person, the desk shows one `memories` row for all of them,
+so reviewing memories costs one look a day, not one per memory. In `priory desk --json` and
+`/api/desk`, the item carries `candidates`, each as `priory memories --json` lists it. It ranks
+with the rest, and its title is `memory candidates wait for a person`. A person accepts or drops
+each with `priory memories accept ID` or `priory memories drop ID`, and the row leaves once none
+waits. See [skills.md](skills.md#memories-agents-write).
+
+The web and Herdr Desks show it as a plain row with its line, without Accept or Drop buttons.
 
 ## Reports
 
