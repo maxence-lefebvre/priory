@@ -3,9 +3,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
-/// The demo's other runners take writes, so its screenshots show what a remote action does.
 #[test]
-fn the_demo_sends_an_answer_to_another_runners_ask() {
+fn the_demo_sends_answers_to_both_other_runners_asks() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("demo");
     if dir.exists() {
@@ -37,17 +36,22 @@ fn the_demo_sends_an_answer_to_another_runners_ask() {
         .unwrap();
     assert!(seeded.status.success(), "{seeded:?}");
 
-    let sent = Command::new(real)
-        .args(["answer"])
-        .arg(demo.join("factory"))
-        .args(["laptop:4", "split it", "--revision", "2"])
-        .env("PRIORY_DB", demo.join("state.db"))
-        .env("PRIORY_HOME", demo.join("home"))
-        .output()
-        .unwrap();
-    assert!(sent.status.success(), "{sent:?}");
-    assert!(
-        String::from_utf8_lossy(&sent.stdout).contains("sent to laptop"),
-        "{sent:?}"
-    );
+    for (ask, option, revision, runner) in [
+        ("laptop:4", "split it", "2", "laptop"),
+        ("xps13:12", "approved", "1", "xps13"),
+    ] {
+        let sent = Command::new(real)
+            .args(["answer"])
+            .arg(demo.join("factory"))
+            .args([ask, option, "--revision", revision])
+            .env("PRIORY_DB", demo.join("state.db"))
+            .env("PRIORY_HOME", demo.join("home"))
+            .output()
+            .unwrap();
+        assert!(sent.status.success(), "{sent:?}");
+        assert!(
+            String::from_utf8_lossy(&sent.stdout).contains(&format!("sent to {runner}")),
+            "{sent:?}"
+        );
+    }
 }
