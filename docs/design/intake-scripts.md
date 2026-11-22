@@ -210,7 +210,7 @@ Stdin is the task as `priory task ID --json` prints it. The environment adds `PR
 as a `run` action's does. Those values are Priory's own, never event text.
 
 The daemon treats it as it treats a command an answer runs
-([tools.md](../daemon/tools.md#commands-an-answer-runs)):
+([tools.md](../reference/tools.md#commands-an-answer-runs)):
 
 - It stores the script as an action, with the task's generation, in the transaction that ends
   the task, and starts it at its next tick.

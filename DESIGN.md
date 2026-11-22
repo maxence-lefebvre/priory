@@ -392,7 +392,10 @@ The desk is the "Needs me" view. It lists, top to bottom:
 4. **Room banners** (R4.3): a `--warn-text` edge on `--surface`, the `hard-drive` or
    `memory-stick` icon, and the daemon's sentence: what is short, by how much, since when, and
    the waiting task. The intake banner looks the same with the `unplug` icon: which source fails
-   to poll, since when and why, or since when the intake has not polled.
+   to poll, since when and why, or since when the intake has not polled. So do the pause banner,
+   with the `pause` icon and the desk's `paused` line, and one banner per day or week spend cap
+   reached, with the `hourglass` icon and its line of `caps`. The order is pause, room, intake,
+   then the caps.
 5. **Asks**: the open asks, oldest first, as ask rows. An ask routed to a lead carries the
    [routed mark](#routed-ask) in its row and in the next thing's card.
 6. **Stopped**: blocked tasks, uncertain prompts (R5.4) and failed tasks, each with its reason in
@@ -1364,7 +1367,7 @@ Priory's panels also ship as Herdr mods (R8.6). A mod renders natively with gpui
 beside other panes, with a fine pointer. It keeps this file's structure, tokens, state tiles, copy
 and ask rules. This section lists only what differs, and the panels the adapter ships: Desk, Asks,
 Queue, Bonjour, Costs, Flows, Task, Inbox, Tasks and Runs, and the usage line. Bonjour is also the web view's Reports panel. [`docs/adapters/herdr.md`](docs/adapters/herdr.md) explains where
-the adapter lives, how it reads and acts, and the data each panel needs. The approved boards are in
+the adapter lives and how it reads and acts, and [`docs/reference/herdr-panels.md`](docs/reference/herdr-panels.md) lists the data each panel needs. The approved boards are in
 `~/shared/priory-round-6/` on the author's machine.
 
 ### What differs from the web view

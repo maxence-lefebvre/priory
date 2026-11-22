@@ -120,7 +120,7 @@ Releases go out on Tuesdays.
 A run gets the kit's memories, then the factory's, then the candidates it sees, each in log order: a
 person's accept puts a candidate at the accept's place, and a candidate of the run's own task sits
 at its write. A forget removes the memory of its name. The tools are in
-[tools.md](../daemon/tools.md#remembername-description-text-forgetname-and-memoryname).
+[tools.md](tools.md#remembername-description-text-forgetname-and-memoryname).
 
 | State | Meaning | Which runs get it |
 | ----- | ------- | ----------------- |

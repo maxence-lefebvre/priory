@@ -28,7 +28,7 @@ run before it builds on it.
 - Giving every agent every server has a price: each server's tool list fills the context of
   every run, and each server's credentials reach an agent that also pushes code.
 - `finding` hands a problem to a new task and does not wait for it
-  ([tools.md](../daemon/tools.md#findingkey-title-details)). The run that called it never hears
+  ([tools.md](../reference/tools.md#findingkey-title-details)). The run that called it never hears
   what the fix task learned.
 - `ask` puts a question to a person and sleeps until the answer
   (`crates/priory-core/src/tools.rs:636`).

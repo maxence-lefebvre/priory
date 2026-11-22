@@ -24,7 +24,7 @@ decide.
   lead agent, which answers once with `result` (`crates/priory-core/src/tools.rs:2381`, `:2448`).
   The lead gives one answer per routed ask, and the two agents share no channel.
 - A risk step is a second agent's verdict on the first one's work, "a fresh look at the diff"
-  ([tools.md](../daemon/tools.md#merge-risk)). It gives one opinion, with nobody to answer it.
+  ([tools.md](../reference/tools.md#merge-risk)). It gives one opinion, with nobody to answer it.
 - A prompt reaches an agent through the outbox, typed only when the agent is idle
   ([outbox.md](../daemon/outbox.md)). An agent that waits holds no process (Principle 3).
 - A workflow can mix harnesses: each step starts its own agent's harness

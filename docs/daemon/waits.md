@@ -1,9 +1,14 @@
 # Asks, waits and checks
 
+An ask is a question to a person, with options, a recommendation and a trade-off. A wait is the
+conditions an agent names before it sleeps. Both let a task sleep with no process until an answer
+or an event wakes it. The checks gate makes a task that reaches `done` wait on its pull request, so
+its agent fixes what the checks find before the task ends.
+
 ## Asks and answers
 
 `priory asks` prints each open ask: id, task, revision, question, options, then the fields of
-[`ask`](tools.md#the-tools) and of an outside ask.
+[`ask`](../reference/tools.md#askquestion-options-recommendation-tradeoff-title-text-whatwaits-nextaction-command) and of an outside ask.
 `priory answer <ask> <option-or-text> --revision <n>` sends the answer to the daemon. `--expected`
 is the same flag, and `--` ends the flags, as in `priory answer --expected 2 -- cache.ship ship`.
 The first answer to the ask's revision stands. Refused: an answer to another revision, a second
@@ -41,7 +46,7 @@ prompts.
 ## Waits
 
 A wait ends with the first event that fires it. To hear every event on a resource without ending
-the turn, a task subscribes instead (see `subscribe` in [tools.md](tools.md#subscribeon-and-unsubscribeon)).
+the turn, a task subscribes instead (see `subscribe` in [tools.md](../reference/tools.md#subscribeon-and-unsubscribeon)).
 
 `wait(on)` names one condition in `on.type`. `wait(any)` names a list of them, and the task wakes
 on the first that fires. Each condition fires the wait on:

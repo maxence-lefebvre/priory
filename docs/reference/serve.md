@@ -501,9 +501,9 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | ----- | ---- | ------- |
 | `id` | integer or string | The ask: its number, or the id an outside ask was given |
 | `task`, `key`, `step`, `lane`, `band`, `repo` | | The task, its key, the ask's step, and the task's lane, band and repository. An outside ask has no task, so its `lane`, `band` and `repo` are null, and its `key` is the one it sent |
-| `risk` | array of strings | What answering risks, empty for none: `irreversible` when the answer lets an irreversible step run before a person decides again, the rule `priory check --explain` uses, or when it is an agent's or a step's ask whose answer runs a [command](../daemon/tools.md#commands-an-answer-runs); then the task's [merge risk](../daemon/tools.md#merge-risk) verdict, `low`, `medium` or `high`; then the task's grooming grade, `red`, `yellow` or `green`. An outside ask has none. The daemon records its factory's irreversible approvals when it starts |
+| `risk` | array of strings | What answering risks, empty for none: `irreversible` when the answer lets an irreversible step run before a person decides again, the rule `priory check --explain` uses, or when it is an agent's or a step's ask whose answer runs a [command](tools.md#commands-an-answer-runs); then the task's [merge risk](tools.md#merge-risk) verdict, `low`, `medium` or `high`; then the task's grooming grade, `red`, `yellow` or `green`. An outside ask has none. The daemon records its factory's irreversible approvals when it starts |
 | `risk_estimate` | object or null | Null when the trace cannot be read. Only on a step's ask whose answer lets an irreversible step run: that step's own row in [`priory report risk`](../daemon/trace.md#risk), over its default window. `workflow`, `step`, `trials`, `shown` (false under 20 trials), `judged_wrong` and `landed_wrong` (each `k`, `p05`, `median` and `p95`), and `line`, the History line the ask shows, such as `History: 17 of 53 tasks through this step were judged wrong within 30 days, 3 after the merge. 95 % posterior upper bounds: 43.4 % and 13.7 %.` A non-breaking space joins each number to its `%`. Under 20 trials, `line` ends `Too few to estimate.` It changes no value of `risk`. `/api/desk` items of kind `ask` carry it too |
-| `merge_risk` | object or null | The task's latest [merge risk](../daemon/tools.md#merge-risk): `verdict`, then the lines `ask`, `blast_radius`, `verification`, `rollback` and `detection`. Null before a risk step ends |
+| `merge_risk` | object or null | The task's latest [merge risk](tools.md#merge-risk): `verdict`, then the lines `ask`, `blast_radius`, `verification`, `rollback` and `detection`. Null before a risk step ends |
 | `run` | integer or null | The run that asked |
 | `state` | string | `open`, `answered` or `withdrawn` |
 | `withdrawn_reason` | string or null | Why a withdrawn ask closed, one of the [withdrawal reasons](../daemon/waits.md#why-an-ask-or-wait-was-withdrawn): `dismissed`, `sibling-fired`, `moved-on`, `revived` or `predecessor-revived` |
@@ -514,9 +514,9 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `options` | array of strings | The options |
 | `free_text` | boolean | Whether the ask takes free text and a dismissal. False for a step's ask and a hold's ask, which take only their options |
 | `recommendation`, `tradeoff` | string or null | What the agent recommends, and the trade-off |
-| `title`, `text` | string or null | The ask's title and its Markdown body. A human step's ask has the task's [merge risk](../daemon/tools.md#merge-risk) as its body, when it has one |
+| `title`, `text` | string or null | The ask's title and its Markdown body. A human step's ask has the task's [merge risk](tools.md#merge-risk) as its body, when it has one |
 | `what_waits`, `next_action` | string or null | What waits on the answer, and what the agent does next |
-| `command` | object, string or null | An agent's command: `argv`, `target`, `dir`, the absolute folder it runs in, and `runs`, the options that run it. See [tools.md](../daemon/tools.md#commands-an-answer-runs). An outside ask's command is the string it sent, which never runs |
+| `command` | object, string or null | An agent's command: `argv`, `target`, `dir`, the absolute folder it runs in, and `runs`, the options that run it. See [tools.md](tools.md#commands-an-answer-runs). An outside ask's command is the string it sent, which never runs |
 | `ran` | object or null | The command its answer ran: `status` (`running`, `done`, `failed` or `uncertain`), `revision`, `error`, `stdout` and `stderr`. Null when no answer ran it |
 | `coordinator`, `run_id`, `session` | string or null | Who asked from outside Priory: its coordinator, its run id and its session |
 | `answer`, `answered_at` | string or null | The answer and when it came |
@@ -558,7 +558,7 @@ the queue from 1, or null), `generation`, `retired`, `tldr`, `since`
 (when the task last changed state), `grade` (`red`, `yellow`, `green` or null), `grade_reason`,
 `progress`, `conditions`, a held task's [conditions](#conditions) or null, `title` (its TL;DR, else
 the first line of its request, cut to 120 characters), `batch` (the id of the batch it is an entry
-or the planning task of, or null), `stack` and `relations`. See Grades in [tools.md](../daemon/tools.md#grades).
+or the planning task of, or null), `stack` and `relations`. See Grades in [tools.md](tools.md#grades).
 
 In a factory of several runners, each task also has `runner`, this runner's name, `hold`, the
 hold this runner last published for it (`waiting`, `kept`, `ended`, or null before its first claim),
@@ -607,7 +607,7 @@ none. Each entry:
 
 `progress` is null until the task's agent or a person publishes one. Then it is an object with any
 of `goal`, `acceptanceCriteria` (each `{ "id", "description", "required" }`), `latestChange` and
-`nextAction`. See the `progress` tool in [tools.md](../daemon/tools.md).
+`nextAction`. See the `progress` tool in [tools.md](tools.md#progressgoal-acceptancecriteria-latestchange-nextaction).
 
 ## Runs
 
@@ -659,7 +659,7 @@ The fields of [Tasks](#tasks), plus `repo`, `branch`, `base_sha` (the commit the
 first created from, or null for a task with no worktree yet or one created before Priory kept it), `intervention` (`plan`, `hands-off` or null)
 `lead` (the agent that answers a `hands-off` task's asks, or null), `merge_risk` (as in
 [Asks](#asks)), `plan_goal`, `plan_testing`, `plan_brief` and `verification` (what the latest result that gave
-them sent as its `goal`, `testing`, `brief` and `verification`, else null; see [`result`](../daemon/tools.md#resultoutcome-summary-evidence-commit-reason-branches-risk-goal-testing-brief-verification-feedback-batch)),
+them sent as its `goal`, `testing`, `brief` and `verification`, else null; see [`result`](tools.md#resultoutcome-summary-evidence-commit-reason-branches-risk-goal-testing-brief-verification-feedback-batch)),
 and these arrays, oldest first unless the table says otherwise:
 
 | Field | Each entry |
@@ -671,7 +671,7 @@ and these arrays, oldest first unless the table says otherwise:
 | `results` | `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha`, `reason`, `merge_risk` (a risk step's verdict and lines, else null), `created` |
 | `subscriptions` | `resource`, `created`: what the task subscribes to now. Empty once it fails or is dropped |
 | `inbox` | Every event routed to the task, newest first: its source event, the events routing gave it, and those another task took that fired one of its waits or that its subscription delivered to it. Each has `seq`, `type`, `subject`, `time`, `task` (the task routing gave it, or null), `outcome` (as [routing](../daemon/routing.md#outcomes) recorded it, or for an event a subscription delivered beside another task, `woke` or `kept` for this task), `prompt` (the state of this task's prompt that carries the event: `queued`, `attempted`, `uncertain`, `confirmed`, `withdrawn`, or null when none does) and `wait` (the id of this task's wait it fired, or null). See [The task's inbox](../daemon/routing.md#the-tasks-inbox) |
-| `triage` | `item` (a feedback item's URL), `class` (`trivial`, `nothing-to-do` or `persons-call`), `run` (the run whose result sorted it), `created`: how the agent sorted each review feedback item, in the order it first did. See [Review feedback](../daemon/tools.md#review-feedback) |
+| `triage` | `item` (a feedback item's URL), `class` (`trivial`, `nothing-to-do` or `persons-call`), `run` (the run whose result sorted it), `created`: how the agent sorted each review feedback item, in the order it first did. See [Review feedback](tools.md#review-feedback) |
 | `scores` | `run`, `step`, `scorer`, `kind`, `verdict`, `reason` and `time` of each run's latest score by each scorer, by run then scorer. See [score.md](../daemon/score.md) |
 
 And these objects:
@@ -920,8 +920,8 @@ JSON with two fields and nothing else:
 
 | Field | For a new ask | For an alarm |
 | ----- | ------------- | ------------ |
-| `title` | the ask's title, cut to 120 characters; without one, `task <key> asks at <step>`, or `ask <name>` for an outside ask | `task <key> <state>`, such as `task gh:o/r#42 blocked` |
-| `url` | `/asks/<id>` | `/tasks/<id>` |
+| `title` | the ask's title, cut to 120 characters; without one, `task <key> asks at <step>`, or `ask <name>` for an outside ask | `task <key> <state>`, such as `task gh:o/r#42 blocked`; for a spend cap reached, the desk's line for it, cut to 120 characters |
+| `url` | `/asks/<id>` | `/tasks/<id>`, or `/` for a spend cap or an intake report |
 
 ## Report
 
