@@ -1988,6 +1988,11 @@ pub(crate) fn route_in(
     {
         crate::hold::left(tx, resource, message.data["view"].as_str())?;
     }
+    if message.kind == "linear.issue.entered"
+        && let Some(resource) = resources.first()
+    {
+        crate::hold::entered(tx, resource, message.data["view"].as_str())?;
+    }
     if message.kind == priory_intake::intake::PR_CLOSED && message.data["merged"] == true {
         crate::tools::restack_stacked(tx, trace, seq, &message.data)?;
     }
