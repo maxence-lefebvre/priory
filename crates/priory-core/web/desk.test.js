@@ -123,12 +123,14 @@ const tombstone = { id: "c-3", name: "kit-fact", forget: true, text: null, repla
 
 test("a memory candidate's tag says whether it replaces or forgets a memory runs get", () => {
   assert.deepEqual(
-    [remember, fresh, tombstone, { ...tombstone, replaces: false }].map(memoryTag),
+    [remember, fresh, tombstone, { ...tombstone, replaces: false }, { ...fresh, replaces: null }].map(memoryTag),
     [
       { label: "replaces a memory runs get", warn: true },
       { label: "new", warn: false },
       { label: "forgets a memory runs get", warn: true },
       { label: "forget", warn: false },
+      // Unknown where the kit is not checked out: never "new".
+      { label: "may replace a memory runs get", warn: true },
     ],
   );
 });

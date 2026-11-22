@@ -40,6 +40,7 @@ const itemText = (item, now) => (item.kind === "todo" ? dueText(item.what, now) 
 /** The web view's `memoryTag`: whether a candidate replaces or forgets a memory runs get now. @param {any} candidate */
 function memoryTag(candidate) {
   if (candidate.forget) return candidate.replaces ? { tag: "forgets a memory runs get", warn: true } : { tag: "forget", warn: false };
+  if (candidate.replaces == null) return { tag: "may replace a memory runs get", warn: true };
   return candidate.replaces ? { tag: "replaces a memory runs get", warn: true } : { tag: "new", warn: false };
 }
 

@@ -439,10 +439,11 @@ the page shows everything a person needs before they tap:
 - A heading with the count, and one note: an agent wrote each one; Accept gives it to every task's
   runs, on every runner; Drop discards it.
 - Per candidate, in a section: a small memories tile, the name in mono, a tag, and the age. The tag
-  is `new`, `forget`, or in `--warn-text` `replaces a memory runs get` or `forgets a memory runs
-  get`. Then the description in `--text-2`, the full text on `--raised` with `--radius-md`, never
+  is `new`, `forget`, or in `--warn-text` `replaces a memory runs get`, `forgets a memory runs
+  get` or `may replace a memory runs get`, when this machine cannot tell, such as one with no kit
+  checkout. It never says `new` unless the server confirmed it. Then the description in `--text-2`, the full text on `--raised` with `--radius-md`, never
   cut, and for a candidate that replaces a memory, the current text behind a "Current text"
-  disclosure, closed by default. Then "Written by KEY on RUNNER, candidate ID" in `--text-3`.
+  disclosure, closed by default, which stays as the person left it across redraws. Then "Written by KEY on RUNNER, candidate ID" in `--text-3`.
 - Accept in `.btn primary` and Drop in `.btn secondary`. Accept arms on its first tap, as Cancel
   does, and sends on the second within 4 seconds. Drop sends at once: a dropped candidate reaches
   no other task.

@@ -356,12 +356,15 @@ test("the memories row lists each candidate with its full text, its tag and the 
   const memories = { candidates: [
     { id: "c-1", name: "release-day", description: "When releases go out.", text: "Wednesdays.", forget: false, task: "ENG-212", runner: "laptop", replaces: true, current_text: "Tuesdays." },
     { id: "c-2", name: "kit-fact", description: null, text: null, forget: true, task: "ENG-224", runner: null, replaces: false, current_text: null },
+    // Read without the factory folder, or where the kit is not checked out: unknown, never "new".
+    { id: "c-3", name: "search-staging", description: "Which cluster.", text: "Use b.", forget: false, task: "ENG-224", runner: null },
   ] };
   const row = deskModel({ ...data, desk, memories }, { now }).sections("needs").flatMap((section) => section.rows).find((each) => each.kind === "memories");
-  assert.equal(row.text, "2 memory candidates: release-day, kit-fact");
+  assert.equal(row.text, "3 memory candidates: release-day, kit-fact, search-staging");
   assert.equal(row.age, "2 h");
   assert.deepEqual(row.memories, [
     { id: "c-1", name: "release-day", tag: "replaces a memory runs get", warn: true, description: "When releases go out.", text: "Wednesdays.", current: "Tuesdays.", by: "Written by ENG-212 on laptop, candidate c-1" },
     { id: "c-2", name: "kit-fact", tag: "forget", warn: false, description: null, text: "Forgets kit-fact: runs stop getting it.", current: null, by: "Written by ENG-224, candidate c-2" },
+    { id: "c-3", name: "search-staging", tag: "may replace a memory runs get", warn: true, description: "Which cluster.", text: "Use b.", current: null, by: "Written by ENG-224, candidate c-3" },
   ]);
 });

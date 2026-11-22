@@ -103,6 +103,9 @@ export default class PrioryDesk extends View {
     this.memoryArmed = null;
     /** @type {Set<string>} */
     this.currentShown = new Set();
+    // Candidates whose verdict was sent, with what priory said: their buttons stay off until the desk drops them.
+    /** @type {Map<string, string>} */
+    this.memorySent = new Map();
     /** @type {Promise<{ theme: string, client: ReturnType<typeof priory> }> | null} */
     this.client = null;
     this.theme = "indigo";
@@ -245,7 +248,10 @@ export default class PrioryDesk extends View {
       });
       return cx.notify();
     }
-    this.act(cx, accept ? "accept it" : "drop it", (client) => (accept ? client.acceptMemory(id) : client.dropMemory(id)));
+    this.act(cx, accept ? "accept it" : "drop it", async (client) => {
+      const said = await (accept ? client.acceptMemory(id) : client.dropMemory(id));
+      this.memorySent.set(id, `${said.trim()}, then it leaves this list.`);
+    });
   }
 
   // The Asks panel is the one place to answer: open the ask there.
@@ -526,6 +532,7 @@ export default class PrioryDesk extends View {
   memory(ui, memory) {
     const { t } = ui;
     const armed = this.memoryArmed?.id === memory.id;
+    const sent = this.memorySent.get(memory.id);
     const shown = this.currentShown.has(memory.id);
     const text = (/** @type {string} */ id, /** @type {string} */ body) => div().id(id).whitespace_normal().px(S["space-3"]).py(S["space-2"]).rounded(S["radius-md"]).bg(t.raised).text_size(S["type-small"][0]).child(body);
     return v_flex().id(`memory-${memory.id}`).gap(S["space-2"]).pt(S["space-2"]).border_t(1).border_color(t.line)
@@ -543,8 +550,9 @@ export default class PrioryDesk extends View {
         .when(shown, (el) => el.child(text(`memory-current-${memory.id}`, String(memory.current)))))
       .child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(String(memory.by)))
       .child(h_flex().gap(S["space-2"])
-        .child(ui.button(`accept-${memory.id}`, armed ? "Press again to accept" : "Accept", (_e, cx) => this.decide(cx, memory.id, true), { primary: true, disabled: this.busy }))
-        .child(ui.button(`drop-${memory.id}`, "Drop", (_e, cx) => this.decide(cx, memory.id, false), { disabled: this.busy })));
+        .child(ui.button(`accept-${memory.id}`, armed ? "Press again to accept" : "Accept", (_e, cx) => this.decide(cx, memory.id, true), { primary: true, disabled: this.busy || Boolean(sent) }))
+        .child(ui.button(`drop-${memory.id}`, "Drop", (_e, cx) => this.decide(cx, memory.id, false), { disabled: this.busy || Boolean(sent) })))
+      .when(Boolean(sent), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["action-text"]).child(String(sent))));
   }
 
   /** @param {Ui} ui @param {Model} model */

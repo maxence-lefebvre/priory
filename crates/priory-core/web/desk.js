@@ -112,6 +112,7 @@ export function batchParts(what) {
 /** A memory candidate's tag: whether it replaces or forgets a memory runs get now. @param {any} candidate */
 export function memoryTag(candidate) {
   if (candidate.forget) return candidate.replaces ? { label: "forgets a memory runs get", warn: true } : { label: "forget", warn: false };
+  if (candidate.replaces == null) return { label: "may replace a memory runs get", warn: true };
   return candidate.replaces ? { label: "replaces a memory runs get", warn: true } : { label: "new", warn: false };
 }
 

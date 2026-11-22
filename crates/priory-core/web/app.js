@@ -164,6 +164,8 @@ const state = {
   memoryBusy: null,
   memoryNotices: new Map(),
   memorySent: new Set(),
+  // The candidates whose Current text is open, so a redraw keeps it open.
+  memoryCurrent: new Set(),
   // The task whose Move is in flight, and each task's last Move refusal.
   moveBusy: null,
   moveNotices: new Map(),
@@ -441,7 +443,7 @@ function memoryCandidate(candidate) {
     ? html`<p class="text">Forgets ${candidate.name}: runs stop getting it.</p>`
     : html`<p class="desc">${candidate.description}</p><p class="text">${candidate.text}</p>`;
   const current = candidate.current_text == null ? ""
-    : html`<details class="current"><summary>Current text</summary><p class="text">${candidate.current_text}</p></details>`;
+    : html`<details class="current" ${state.memoryCurrent.has(candidate.id) ? raw("open") : ""}><summary data-action="memory-current" data-id="${candidate.id}">Current text</summary><p class="text">${candidate.current_text}</p></details>`;
   return html`<section class="sect mem" aria-label="${candidate.name}"><div class="sh">${tile("memories", "sm")}<span class="mono">${candidate.name}</span><span class="tag ${tag.warn ? "t-warn" : ""}">${tag.label}</span><span class="meta">${timeTag(candidate.written)}</span></div>
     ${body}${current}
     <p class="by">Written by <span class="mono">${candidate.task}</span>${candidate.runner ? ` on ${candidate.runner}` : ""}, candidate <span class="mono">${candidate.id}</span></p>
@@ -3061,6 +3063,12 @@ document.addEventListener("click", (event) => {
   if (action === "todo-done") return markDone(target);
   if (action === "row-act") return rowAct(target);
   if (action === "memory-act") return memoryAct(target);
+  if (action === "memory-current") {
+    event.preventDefault();
+    const { id } = target.dataset;
+    if (!state.memoryCurrent.delete(id)) state.memoryCurrent.add(id);
+    return render();
+  }
   if (action === "move") return moveTask(target);
   if (action === "request-task") return requestTask(target.dataset.text, target.dataset.workflow);
   if (action === "unheard-say") {
