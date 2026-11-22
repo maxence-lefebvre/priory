@@ -601,9 +601,9 @@ pub(crate) fn tick(
 pub(crate) const CLAIMING: &str = "waits for its claim to reach the log";
 
 /// Whether this runner may start the first run of `task` now, or `None` while no claim of its key
-/// is on the log yet, as for a task it adopts. A task the log still holds as `waiting` could be
-/// taken over, so its runner first says it keeps it and starts it only once it read that back: a
-/// takeover published before then wins, and drops the task here.
+/// is on the log yet, as for a task it adopts. A task the log still holds as `waiting` or `ended`
+/// could be taken, so its runner first says it keeps it and starts it only once it read that back:
+/// a takeover or claim published before then wins, and drops the task here.
 pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Result<Option<bool>> {
     let tx = db.transaction()?;
     if lead(&tx, task)? {
@@ -631,7 +631,9 @@ pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Res
         tx.commit()?;
         return Ok(None);
     };
-    if hold != "waiting" {
+    // A task the log holds as ended was reopened here: another runner may claim its key until
+    // the log says this one keeps it again.
+    if hold == "kept" {
         tx.execute(
             "UPDATE tasks SET reason = NULL WHERE id = ?1 AND reason = ?2",
             params![task, CLAIMING],

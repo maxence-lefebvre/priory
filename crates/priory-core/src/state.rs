@@ -2591,7 +2591,7 @@ pub(crate) fn admissible<'r>(
              -- whose `kept` it waits to read back. A lead task stays on its ask's runner.
              AND (?1 IS NULL OR tasks.trigger = ?2 OR EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
                AND claims.runner = ?1
-               AND NOT (claims.hold = 'waiting' AND claims.published IS 'kept')))
+               AND NOT (claims.hold != 'kept' AND claims.published IS 'kept')))
              ORDER BY {START_ORDER}"
     ))?;
     let queued = statement

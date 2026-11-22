@@ -23,9 +23,9 @@ ask. Its source event exists only in that runner's state file, so the runner cla
 starts it at once, and no other runner lists it.
 
 A daemon claims the key of each active task of its own whose key it does not hold, such as a task
-from before the factory got its second runner, or one that feedback reopened. It starts no run of
-that task until it reads its claim back, and the task waits with the reason
-`waits for its claim to reach the log`. When that claim loses, because the log gives the key to
+from before the factory got its second runner, or one that feedback reopened after another runner
+claimed its key. It starts no run of that task until it reads its claim back, and the task waits
+with the reason `waits for its claim to reach the log`. When that claim loses, because the log gives the key to
 another runner, the daemon drops its copy with the reason `owned by runner <name>`.
 
 The daemon also claims, once, the key of each task of its own that ended before the factory had
@@ -93,6 +93,11 @@ A runner never starts the first run of a `waiting` task at once. It publishes `k
 and starts the run only once it reads that message back from the log. If a takeover lands before
 it, the takeover wins and the runner drops the task. If `kept` lands first, the takeover loses. So
 no run of a task that moved had started, and nothing is lost.
+
+A task that feedback reopens on the runner that finished it waits the same way. The log still says
+its key `ended`, so the runner publishes `kept` and starts the task only once it reads that back. A
+request that another runner claims before then wins the key, and the runner drops its reopened
+copy, with the reason `claimed by runner <name>`, before any run of it starts.
 
 A `kept` task never moves on its own. A runner cut off from the others keeps its started tasks
 going, so a second runner that started them over would run them twice. A task asleep on an ask
