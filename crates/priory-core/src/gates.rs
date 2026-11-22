@@ -169,10 +169,32 @@ pub(crate) fn tick(
         .collect();
     for id in finished {
         let thread = grading.running.remove(&id).expect("listed above");
-        let graded = thread.join().unwrap_or_default();
+        let (run, step): (i64, String) =
+            db.query_row("SELECT run, step FROM gates WHERE id = ?1", [id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?;
+        let graded = joined(thread.join(), run, &step);
         kills.extend(apply(db, trace, id, &graded, false, head)?);
     }
     Ok(kills)
+}
+
+/// The scores of a finished grading thread. A thread that panicked graded nothing, so one error
+/// that counts refuses the result: a gate that cannot grade cannot let it through.
+fn joined(thread: std::thread::Result<Graded>, run: i64, step: &str) -> Graded {
+    thread.unwrap_or_else(|_| {
+        let score = Score {
+            run,
+            step: step.to_owned(),
+            scorer: "gate".to_owned(),
+            kind: ScoreKind::Outcome,
+            verdict: Verdict::Error,
+            reason: "the gate's grading crashed".to_owned(),
+            cost: 0.0,
+            judged: None,
+        };
+        vec![(score, true)]
+    })
 }
 
 /// What one grading reads, owned, to run on a thread of its own.
@@ -467,4 +489,23 @@ fn end(tx: &Transaction, id: i64, state: &str, reason: Option<&str>) -> rusqlite
         params![id, state, reason],
     )
     .map(drop)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_grading_thread_that_panicked_refuses_the_result() {
+        let thread = std::thread::spawn(|| -> Graded { panic!("a scorer panicked") });
+
+        let graded = joined(thread.join(), 4, "implement");
+
+        assert_eq!(graded.len(), 1);
+        let (score, counts) = &graded[0];
+        assert!(counts);
+        assert!(matches!(score.verdict, Verdict::Error));
+        assert_eq!(score.reason, "the gate's grading crashed");
+        assert_eq!((score.run, score.step.as_str()), (4, "implement"));
+    }
 }

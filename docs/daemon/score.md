@@ -170,6 +170,7 @@ overrun stands, and a cost that cannot be read fails the task, as for a stored r
 | `pass` or `not applicable` | Lets the result through |
 | `fail` | Refuses it |
 | `error` | Refuses it: a scorer that cannot grade the change cannot let it through |
+| The grading crashed | Refuses it, recorded as scorer `gate` with `error: the gate's grading crashed` |
 | A judge whose calibration does not pass | Holds the result on an ask (see [A judge that lost its calibration](#a-judge-that-lost-its-calibration)), unless another scorer refuses it. Its `error: not calibrated: <why>` is recorded |
 
 A judge gates only while its latest calibration, for its current prompt, model and labeled cases,
