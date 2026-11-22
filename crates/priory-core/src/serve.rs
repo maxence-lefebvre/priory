@@ -6,7 +6,8 @@ use crate::{
 };
 use priory_factory::factory::{Factory, Price, Terminal, Trigger};
 use priory_intake::intake::{
-    self, ASK_ANSWERED, ASK_DISMISSED, Github, HoneycombWebhook, LinearWebhook, SentryWebhook,
+    self, ASK_ANSWERED, ASK_DISMISSED, Github, HoneycombWebhook, IntercomWebhook, LinearWebhook,
+    SentryWebhook,
 };
 use priory_intake::log;
 use priory_runtime::http::{self, Reply, Request};
@@ -24,6 +25,7 @@ const GITHUB: &str = "/hooks/github";
 const LINEAR: &str = "/hooks/linear";
 const SENTRY: &str = "/hooks/sentry";
 const HONEYCOMB: &str = "/hooks/honeycomb";
+const INTERCOM: &str = "/hooks/intercom";
 const INDEX: &[u8] = include_bytes!("../web/index.html");
 /// How long `/api/events` holds a request without a change, at most and by default.
 const WAIT: u64 = 25;
@@ -191,6 +193,14 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         .map(|secret| HoneycombWebhook::new(secret, factory))
         .transpose()?
         .map(Arc::new);
+    let intercom = factory
+        .intercom_webhook()
+        .map(|hook| {
+            env(&hook.secret_env, "the Intercom app's client secret")
+                .and_then(|secret| IntercomWebhook::new(secret, hook.workspace.clone(), factory))
+        })
+        .transpose()?
+        .map(Arc::new);
     drop(state::read_only()?);
     let listener =
         TcpListener::bind(listen).map_err(|error| format!("listen on {listen}: {error}"))?;
@@ -224,6 +234,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         (linear.is_some(), LINEAR),
         (sentry.is_some(), SENTRY),
         (honeycomb.is_some(), HONEYCOMB),
+        (intercom.is_some(), INTERCOM),
     ]
     .into_iter()
     .filter_map(|(on, path)| on.then_some(path))
@@ -268,6 +279,12 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
                 log::open(&event_log).map_err(|error| error.to_string()),
             )
         });
+        let mut intercom = intercom.clone().map(|intercom| {
+            (
+                intercom,
+                log::open(&event_log).map_err(|error| error.to_string()),
+            )
+        });
         move |request: &Request| match (
             request.method == "POST",
             request.path.split('?').next(),
@@ -275,12 +292,16 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
             &mut linear,
             &mut sentry,
             &mut honeycomb,
+            &mut intercom,
         ) {
-            (true, Some(GITHUB), Some((github, bus)), _, _, _) => github.receive(bus, request),
-            (true, Some(LINEAR), _, Some((linear, bus)), _, _) => linear.receive(bus, request),
-            (true, Some(SENTRY), _, _, Some((sentry, bus)), _) => sentry.receive(bus, request),
-            (true, Some(HONEYCOMB), _, _, _, Some((honeycomb, bus))) => {
+            (true, Some(GITHUB), Some((github, bus)), _, _, _, _) => github.receive(bus, request),
+            (true, Some(LINEAR), _, Some((linear, bus)), _, _, _) => linear.receive(bus, request),
+            (true, Some(SENTRY), _, _, Some((sentry, bus)), _, _) => sentry.receive(bus, request),
+            (true, Some(HONEYCOMB), _, _, _, Some((honeycomb, bus)), _) => {
                 honeycomb.receive(bus, request)
+            }
+            (true, Some(INTERCOM), _, _, _, _, Some((intercom, bus))) => {
+                intercom.receive(bus, request)
             }
             _ if request.method == "POST" => write(&db, &home, &served, &remote, request),
             _ => route(

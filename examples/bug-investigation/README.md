@@ -1,7 +1,8 @@
 # Bug investigation
 
 When someone adds the label `bug` to an issue of `owner/repo`, Sentry reports a new error issue
-in `my-project`, or a Honeycomb Trigger fires in `production`, an agent reproduces the bug, finds its root cause, fixes it with a test, and asks
+in `my-project`, a Honeycomb Trigger fires in `production`, or a customer starts an Intercom
+conversation, an agent reproduces the bug, finds its root cause, fixes it with a test, and asks
 you before it opens the fix pull request.
 
 ## What it needs
@@ -23,6 +24,12 @@ recipient pointed at `<url>/hooks/honeycomb` with Priory's payload template. Put
 Shared Secret in `HONEYCOMB_WEBHOOK_SECRET`. Replace `production` in
 `triggers/honeycomb-alert.toml` with your environment's name, or delete the file and the
 `[webhooks.honeycomb]` table. See [docs/intake/honeycomb.md](../../docs/intake/honeycomb.md).
+
+The Intercom trigger needs the same server, reachable from Intercom, and an Intercom app whose
+webhook URL is `<url>/hooks/intercom`, subscribed to `conversation.user.created`. Put the app's
+client secret in `INTERCOM_CLIENT_SECRET`, and replace `my-workspace` in `factory.toml` with your
+workspace id. Or delete `triggers/intercom-conversation.toml` and the `[webhooks.intercom]` table.
+See [docs/intake/intercom.md](../../docs/intake/intercom.md).
 
 ## Gates
 
