@@ -165,15 +165,15 @@ async function sent(post, path, body) {
 }
 
 /**
- * Takes run `run`'s keyboard on the state's `revision` the page drew (docs/reference/serve.md#keyboard).
+ * Takes run `run`'s keyboard (docs/reference/serve.md#keyboard).
  * The grant's secret stays in the page's memory only.
  * @param {(path: string, body: object) => Promise<{ status: number, body: any }>} post
  */
-export async function takeKeyboard(post, run, revision) {
-  const { status, body } = await sent(post, `/api/runs/${run}/keyboard`, { revision });
+export async function takeKeyboard(post, run) {
+  const { status, body } = await sent(post, `/api/runs/${run}/keyboard`, {});
   if (status === 401) return { signOut: true };
   if (status === 200) return { held: { grant: body.grant, ends: body.ends, secret: body.secret } };
-  const why = status === 409 ? "the page was behind. Try again." : status === 0 ? "the connection dropped. Try again." : sentence(status, body);
+  const why = status === 0 ? "the connection dropped. Try again." : sentence(status, body);
   return { note: `Could not take the keyboard: ${why}` };
 }
 
@@ -215,7 +215,7 @@ export async function giveBack(post, run, secret) {
  */
 export function keyboardSession({ post, signOut = () => {}, changed = () => {}, format = (iso) => iso, timer = setTimeout, clear = clearTimeout, now = Date.now }) {
   // `generation` moves whenever the page leaves a run; `held` carries the grant, its secret and its queue.
-  let generation = 0, run = null, held = null, returning = false, ended = null, note = null, pasting = false, expiry = null;
+  let generation = 0, run = null, pane = null, held = null, returning = false, ended = null, note = null, pasting = false, expiry = null;
 
   function drop(why) {
     clear(expiry);
@@ -225,11 +225,15 @@ export function keyboardSession({ post, signOut = () => {}, changed = () => {}, 
 
   return {
     state: () => ({ run, held: held && { grant: held.grant, ends: held.ends }, returning, ended, note, pasting }),
-    /** The pane shows run `next`: a grant on another run goes back. */
-    at(next) {
+    /**
+     * The pane shows run `next` on tmux pane `on`: a grant on another pane goes back. A run carried
+     * into the next step keeps its pane, and the server moved the grant with it.
+     */
+    at(next, on = null) {
       if (next === run) return;
+      if (held && next !== null && on !== null && on === pane) return void ((run = next), changed());
       this.leave();
-      run = next;
+      [run, pane] = [next, on];
     },
     /** The page left the run, or signs out: its grant goes back, without waiting. */
     leave() {
@@ -240,10 +244,10 @@ export function keyboardSession({ post, signOut = () => {}, changed = () => {}, 
       [run, held, returning, pasting, note, ended] = [null, null, false, false, null, null];
       changed();
     },
-    async take(target, revision) {
+    async take(target) {
       if (target !== run || held) return;
       const asked = generation;
-      const taken = await takeKeyboard(post, target, revision);
+      const taken = await takeKeyboard(post, target);
       if (asked !== generation) return void (taken.held && giveBack(post, target, taken.held.secret));
       if (taken.signOut) return signOut();
       if (!taken.held) return void ((ended = taken.note), changed());

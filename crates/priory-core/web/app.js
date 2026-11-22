@@ -1509,7 +1509,7 @@ async function keyboardAct(action) {
   if (String(run) !== sheet.dataset.run) return;
   if (action === "term-take") {
     terminal.typing = false;
-    await keyboard.take(run, state.revision);
+    await keyboard.take(run);
     return document.getElementById("term-keys")?.focus();
   }
   await keyboard.giveBack();
@@ -1534,7 +1534,7 @@ function paintTerminal(app, rendered = false) {
   // The watch may still hold the run shown before, until it polls the one in this box.
   const screen = kept.run === Number(box.dataset.term) ? kept.screen : null;
   // A grant this page holds on a run it no longer shows goes back, so that run's outbox resumes.
-  keyboard.at(box.dataset.end ? null : Number(box.dataset.term));
+  keyboard.at(box.dataset.end ? null : Number(box.dataset.term), `${box.dataset.task}/${box.dataset.tmux}`);
   if (terminal.run !== box.dataset.term) Object.assign(terminal, { run: box.dataset.term, left: 0, typing: false, line: "", said: null, saying: false, menu: false, keys: "" });
   const frame = terminalBody(box.dataset).text;
   const key = JSON.stringify([frame, innerWidth]);

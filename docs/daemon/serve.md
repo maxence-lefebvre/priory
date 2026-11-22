@@ -196,7 +196,9 @@ that holds wide characters, a token in another shape or a password in plain word
 shows. A factory that does not want that sets [`[serve] terminal = "off"`](../reference/factory.md#serve).
 
 tmux can hang. So each screen has its own 2 second deadline, and at most 2 are read at once,
-which leaves workers for other requests however tmux behaves.
+which leaves workers for other requests however tmux behaves. A live run's screen that tmux did
+not give in time, or that holds a secret redaction cannot hide, gets `503`, so the page asks again.
+Only a run that ended or does not exist gets `404`, and the page stops asking.
 
 ## A run's keyboard
 
@@ -213,6 +215,8 @@ to type.
   state see only its hash. A grant ends at its end, when its run ends, on
   `/keyboard/return`, on a new grant for the run, and once the daemon's factory no longer says
   `"type"`. Each end appends `factory.terminal.returned` with why. A grant survives a restart.
+  A run carried into the next step of the same agent keeps its pane, so its grant moves to the new
+  run. The page keeps holding it, and a request to either run's id reaches it.
 - **Keys.** `POST /api/runs/{id}/keys` sends one text or one key from a fixed list. Text is pasted
   through `load-buffer` from stdin and a bracketed `paste-buffer`, without Enter, so no part of it
   is an argument tmux could read as a key or a command. A key goes through `send-keys` by its

@@ -118,7 +118,15 @@ current revision. The daemon records the new choice and tells the agent with thi
 The person changed their pick on 2026-11-20_sentry_fnd-2409 in your report from Take to Later: apply Later instead, then write the report again with the pick's applied filled.
 ```
 
-A pick whose option requests a task fills `applied` at once, so that choice cannot change. When
+A pick whose option requests a task fills `applied` at once, so that choice cannot change. When a
+person changes a pick to such an option, the daemon requests the task and tells the agent to drop
+the first choice:
+
+```text
+The person changed their pick on 2026-11-20_sentry_fnd-2409 in your report from Take to Later: do not apply Take. Priory requested Later's task and filled the pick's applied.
+```
+
+When
 the agent writes `applied` for the old choice after a change, the choice stands with that text
 until the change's line reaches the agent and it writes the report again.
 

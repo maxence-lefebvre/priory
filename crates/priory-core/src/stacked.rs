@@ -29,9 +29,11 @@ pub(crate) fn pushed(db: &mut Connection, trace: &Trace, home: &Path) -> rusqlit
         })?
         .collect::<rusqlite::Result<_>>()?;
     for (task, parent, branch, worktree, told) in stacked {
-        let Some(head) =
-            runtime::pushed_head(home, Path::new(&worktree), &branch).filter(|head| *head != told)
-        else {
+        // The entry may have started from commits its parent had not pushed yet: an older push is
+        // no news to it.
+        let Some(head) = runtime::pushed_head(home, Path::new(&worktree), &branch).filter(|head| {
+            *head != told && !runtime::is_ancestor(Path::new(&worktree), head, &told)
+        }) else {
             continue;
         };
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;

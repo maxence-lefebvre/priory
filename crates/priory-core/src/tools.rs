@@ -1837,7 +1837,8 @@ pub(crate) fn restack_stacked(
 }
 
 /// Tells the stacked `task` `text`, from the event `seq` when one brought it: the line fires its
-/// gate, reaches it while it runs, or reopens it when its checks already made it done.
+/// gate, reaches it while it runs, reopens it when its checks already made it done, or waits in its
+/// queue while it sleeps on an ask or is held, for the run that wakes it.
 pub(crate) fn tell_stacked(
     tx: &Transaction,
     trace: &Trace,
@@ -1860,12 +1861,6 @@ pub(crate) fn tell_stacked(
         .optional()?;
     match (gate, state.as_str()) {
         (Some(gate), _) => fire(tx, gate, task, text, seq)?,
-        (None, "running") => {
-            tx.execute(
-                "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
-                params![task, text],
-            )?;
-        }
         (None, "done") => {
             let stack = crate::stack::of(tx, task)?;
             let bottom = stack.first().map(|pull| pull.resource.clone());
@@ -1875,7 +1870,13 @@ pub(crate) fn tell_stacked(
             wake_on(tx, task, &text, seq)?;
             trace::reopened(tx, trace, task, &bottom, Some(&bottom))?;
         }
-        _ => {}
+        (None, "failed" | "dropped") => {}
+        (None, _) => {
+            tx.execute(
+                "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
+                params![task, text],
+            )?;
+        }
     }
     Ok(())
 }
@@ -2860,14 +2861,22 @@ fn step_in(
             };
             end(tx, run.id, "moved")?;
             tx.execute(
-                "INSERT INTO runs (task, step, agent, tmux, session, idle, ready, transcript, read, thread)
-                 SELECT ?1, ?2, ?3, ?4, ?5, 1, 1, transcript, read, thread FROM runs WHERE id = ?6",
+                "INSERT INTO runs (task, step, agent, tmux, session, idle, ready, transcript, read, thread,
+                   kit_hash, kit_commit)
+                 SELECT ?1, ?2, ?3, ?4, ?5, 1, 1, transcript, read, thread, kit_hash, kit_commit
+                 FROM runs WHERE id = ?6",
                 params![task, target, run.agent, run.tmux, run.session, run.id],
             )?;
+            let carried = tx.last_insert_rowid();
             // Its process carries on, so an unconfirmed prompt may still sit in its input.
             tx.execute(
                 "UPDATE outbox SET run = ?2 WHERE run = ?1 AND state IN ('attempted', 'uncertain')",
-                params![run.id, tx.last_insert_rowid()],
+                params![run.id, carried],
+            )?;
+            // The pane stays the same, so a person typing in it keeps the keyboard.
+            tx.execute(
+                "UPDATE keyboard_grants SET run = ?2 WHERE run = ?1 AND ended IS NULL",
+                params![run.id, carried],
             )?;
             set(tx, task, "running", Some(target), None)?;
             Ok(None)

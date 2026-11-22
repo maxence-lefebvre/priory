@@ -80,17 +80,17 @@ or a reason, is untrusted: render it as text.
 | `400` | The request does not parse, or its target does not start with `/`; `/api/events` lacks `since` or has a parameter out of range; `/api/desk` has a parameter other than `person`, or a broken escape; `/api/asks` has a parameter other than `band`, `risk` and `all=1`, a band the factory does not have, or a risk other than the eight [below](#asks); `/api/tasks` has a parameter other than `all=1`, or a `pr` that is not a pull request such as `github:owner/repo#7`; `/api/runs` has a parameter other than `all=1`; a run screen's `history` is not a whole number; `/api/costs` has a parameter other than `since` and `by`, a broken escape, a `since` that cannot form a window (see [trace.md](../daemon/trace.md#costs)), or a `by` other than the five [below](#costs); `/api/grades` has a parameter other than `since`, a broken escape, or a `since` that does not parse; `/api/attention` has the same faults, with a `by` other than the three [below](#attention); a write's body is not the shape [below](#writes); a keys body whose text or key the [Keyboard](#keyboard) section refuses; for a webhook, it sends two `Content-Length`, or its payload lacks a field its event needs |
 | `401` | The token is missing or wrong on a path under `/api`; for a webhook, the signature is |
 | `403` | A `POST` carries an `Origin` whose host and port differ from its `Host`, such as a page on another site, and that is not one of [`[serve] extension_origins`](factory.md#serve). Or a keys or keyboard return request whose secret matches no open grant of the run |
-| `404` | No such path, task, report, ask, batch or web view file; a run screen whose run ended, whose pane this server cannot find or read within 2 seconds, or that holds a secret redaction cannot hide; any run screen with `[serve] terminal = "off"`; any [keyboard](#keyboard) path, for any method, unless `[serve] terminal = "type"` |
+| `404` | No such path, task, report, ask, batch or web view file; a run screen whose run ended or does not exist; any run screen with `[serve] terminal = "off"`; any [keyboard](#keyboard) path, for any method, unless `[serve] terminal = "type"` |
 | `405` | `POST` on a path that reads, or `GET` on a write. The `Allow` header names the method |
 | `408` | The request sent no byte within 1 second, or took over 5 seconds in all |
-| `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report moved past its `revision`, or the pick already holds that choice or an applied one. Or a batch edit's `revision` is no longer the plan's revision. Or a keyboard take's `revision` is no longer the state's |
+| `409` | A write names an ask whose revision moved or that closed. The body adds the ask as `/api/asks` lists it. Or `/api/request` repeats a text already sent for the same linked issue. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report moved past its `revision`, or the pick already holds that choice or an applied one. Or a batch edit's `revision` is no longer the plan's revision |
 | `411` | A `POST` has no `Content-Length`, or uses `Transfer-Encoding` |
 | `413` | A `GET` has a body; a write's body is over 16 KiB; a webhook's is over 1 MiB |
 | `415` | A write's `Content-Type` is not `application/json` |
 | `422` | The daemon refused a write for another reason, such as an option a step does not take, or a request's unknown workflow or bad `repo`, or a push subscription it does not take. A request the bus could not take gets `422` too, with the bus's error |
 | `431` | The request head is over 8 KiB or 32 headers |
 | `500` | The state could not be read, a delivery could not be published, or Priory failed while answering. The server keeps serving |
-| `503` | 4 requests already wait on `/api/events` and this one would wait too; or a write found no daemon on its socket, as under `priory serve` alone; or `/api/push/key` before a daemon made the key pair; or 2 run screens are already being read. It comes with `Retry-After: 1` |
+| `503` | 4 requests already wait on `/api/events` and this one would wait too; or a write found no daemon on its socket, as under `priory serve` alone; or `/api/push/key` before a daemon made the key pair; or 2 run screens are already being read; or a live run's screen whose pane this server cannot find or read within 2 seconds, or that holds a secret redaction cannot hide. It comes with `Retry-After: 1` |
 | `504` | A write reached the daemon, which did not reply within 10 seconds. It may have applied it |
 
 An error's body is `{"error": "<why>"}`.
@@ -150,7 +150,7 @@ it needs the token, passes the Origin rule and reaches the daemon on its socket.
 
 | Endpoint | Body | Reply |
 | -------- | ---- | ----- |
-| `POST /api/runs/{id}/keyboard` | `revision`, the state's revision the page showed | `{"grant": N, "ends": TIME, "secret": "<32 hex digits>"}`. The grant lasts 15 minutes, and ends the run's grant before it. The secret is in this reply only |
+| `POST /api/runs/{id}/keyboard` | None. A `revision` an older page sends is not checked | `{"grant": N, "ends": TIME, "secret": "<32 hex digits>"}`. The grant lasts 15 minutes, and ends the run's grant before it. The secret is in this reply only |
 | `POST /api/runs/{id}/keyboard/return` | `secret` | `{"ok": "run N's keyboard returned"}` |
 | `POST /api/runs/{id}/keys` | `secret`, `request`, an id of 1 to 64 bytes the page picks, and exactly one of `text` or `key` | `{"outcome": "sent" \| "failed" \| "uncertain"}`, with `error` when it failed and `"repeated": true` for a request id already sent under this grant |
 
@@ -161,8 +161,10 @@ it needs the token, passes the Origin rule and reaches the daemon on its socket.
 - A repeated `request` gets the first outcome and sends nothing, even once the grant ended.
   `uncertain` means the daemon stopped between storing the request and its outcome, or tmux did
   not answer within the command timeout: it may have reached the pane, and it is never sent again.
+- A grant follows a run carried into the next step on the same pane, so the earlier run's id
+  still reaches it.
 - A secret of an expired, returned or replaced grant gets `403`, naming why it ended. A run that
-  ended gets `404`, and a stale `revision` `409`.
+  ended gets `404`.
 
 ```sh
 curl -X POST http://127.0.0.1:7340/api/runs/12/keys -H "Authorization: Bearer $PRIORY_TOKEN" \

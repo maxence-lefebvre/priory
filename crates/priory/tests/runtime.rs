@@ -13804,6 +13804,34 @@ fn an_agreed_pick_changes_until_the_workflow_applies_it_and_wakes_the_task_with_
 }
 
 #[test]
+fn a_pick_changed_to_an_option_that_requests_a_task_tells_the_agent_not_to_apply_the_first() {
+    let requests = json!({ "Later": {
+        "workflow": "implement", "key": "fnd-2409", "text": "Fix the DWARF pause", "repo": "owner/repo"
+    } });
+    let setup = asleep_on_a_report("report-change-request", &bonjour(requests));
+    let first = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+    assert!(first.status.success(), "{first:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+
+    let changed = setup.priory(&["report", "pick", PICK, "Later", "--expected", "2"]);
+
+    assert!(changed.status.success(), "{changed:?}");
+    setup.until("tasks", |rows| rows.len() == 2);
+    let line = format!(
+        "The person changed their pick on {PICK} in your report from Take to Later: do not apply Take. Priory requested Later's task and filled the pick's applied."
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !setup
+        .typed()
+        .iter()
+        .any(|typed| typed.lines().any(|typed| typed == line))
+    {
+        assert!(Instant::now() < deadline, "{:?}", setup.typed());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
 fn a_pick_at_a_stale_revision_is_refused_and_changes_nothing() {
     let setup = asleep_on_a_report("report-stale", &bonjour(serde_json::Value::Null));
 
@@ -20270,6 +20298,115 @@ fn the_predecessor_pushing_again_wakes_the_waiting_entry_to_rebase_onto_the_new_
     );
 }
 
+impl Setup {
+    /// Pushes task `task`'s branch `priory/<task>` to the bare origin from its worktree.
+    fn push_task(&self, task: i64) {
+        let worktree = self.dir.join(format!("home/worktrees/owner/repo/{task}"));
+        assert!(
+            git(&worktree)
+                .env("GIT_CONFIG_COUNT", "1")
+                .env(
+                    "GIT_CONFIG_KEY_0",
+                    format!(
+                        "url.file://{}/.insteadOf",
+                        self.dir.join("origin").display()
+                    ),
+                )
+                .env("GIT_CONFIG_VALUE_0", "https://github.com/")
+                .args(["push", "-q", "origin", &format!("priory/{task}")])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    /// Returns once the daemon ran one whole tick after this call: the keyboard sweep at a tick's
+    /// end ends a grant that no factory with `terminal = "type"` keeps, so two such ends span one.
+    fn ticked(&self) {
+        let db = rusqlite::Connection::open(self.dir.join("priory.db")).unwrap();
+        for _ in 0..2 {
+            let grant: i64 = db
+                .query_row(
+                    "INSERT INTO keyboard_grants (run, hash, label, started, ends)
+                     VALUES (1, hex(randomblob(16)), 'tick', 'now', '9999') RETURNING id",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while db
+                .query_row(
+                    "SELECT ended IS NULL FROM keyboard_grants WHERE id = ?1",
+                    [grant],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+            {
+                assert!(Instant::now() < deadline, "the daemon never ticked");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
+#[test]
+fn an_entry_that_started_from_its_parents_unpushed_commit_is_told_only_of_a_push_past_it() {
+    let setup = stacked_entry_opened("batch-waiting-unpushed");
+    let pushed = setup.pushed("priory/2");
+    // The entry started from a commit its parent had not pushed yet.
+    let local = setup.commit(2, "c.txt");
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute("UPDATE tasks SET parent_head = ?1 WHERE id = 3", [&local])
+        .unwrap();
+
+    setup.ticked();
+    let head = setup.commit(2, "d.txt");
+    setup.push_task(2);
+
+    let line = format!("task 2 pushed priory/2 to {head}; rebase onto it");
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "3" && row[4].contains(&line))
+    });
+    let told: Vec<&String> = outbox
+        .iter()
+        .filter(|row| row[1] == "3" && row[4].contains("pushed priory/2"))
+        .map(|row| &row[4])
+        .collect();
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(!told[0].contains(&pushed), "{told:?}");
+}
+
+#[test]
+fn a_parents_push_reaches_an_entry_asleep_on_an_ask_once_it_wakes() {
+    let setup = stacked_entry("batch-waiting-asked");
+    let asks = setup.until("asks", |rows| rows.iter().any(|row| row[1] == "3"));
+    setup.gone("priory-3");
+
+    let head = setup.commit(2, "c.txt");
+    setup.push_task(2);
+
+    let line = format!("task 2 pushed priory/2 to {head}; rebase onto it");
+    let outbox = setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "3" && row[4].contains(&line))
+    });
+    let told = outbox
+        .iter()
+        .find(|row| row[1] == "3" && row[4].contains(&line))
+        .unwrap();
+    assert_eq!(told[3], "queued", "{told:?}");
+    let task = setup
+        .rows("tasks")
+        .into_iter()
+        .find(|row| row[0] == "3")
+        .unwrap();
+    assert_eq!(task[4], "asleep", "{task:?}");
+    let open = setup.rows("asks");
+    assert!(open.iter().any(|row| row[0] == asks[0][0]), "{open:?}");
+}
+
 #[test]
 fn the_predecessors_pull_request_merging_wakes_the_waiting_entry_to_rebase_onto_its_base() {
     let setup = stacked_entry_opened("batch-waiting-restack");
@@ -21157,10 +21294,11 @@ fn a_runs_screen_reads_its_tagged_pane_not_the_active_one_and_refuses_a_run_it_c
         .unwrap();
     let pane = agent.split(' ').next().unwrap();
     setup.tmux_out(&["set-option", "-p", "-t", pane, "@priory", "another-session"]);
+    // The run is still live, so the page keeps asking until the daemon ends it.
     let (status, body) = http(&address, "GET", "/api/runs/1/screen", "", "");
     assert_eq!(
         (status, body),
-        (404, json!({ "error": sentence }).to_string())
+        (503, json!({ "error": sentence }).to_string())
     );
     let (status, body) = http(&address, "GET", "/api/runs/9/screen", "", "");
     assert_eq!(
@@ -21290,8 +21428,9 @@ fn a_screen_gives_up_on_a_hung_tmux_at_its_deadline_and_a_third_at_once_gets_503
     let (status, body) = http(&address, "GET", "/api/runs/1/screen", "", "");
     assert_eq!(status, 503, "{body}");
     assert_eq!(http(&address, "GET", "/api/desk", "", "").0, 200);
+    // The run is live, so a read tmux did not answer in time is one to retry.
     for hung in hung {
-        assert_eq!(hung.join().unwrap().0, 404);
+        assert_eq!(hung.join().unwrap().0, 503);
     }
     assert!(
         started.elapsed() < Duration::from_secs(4),
@@ -21397,8 +21536,7 @@ fn post(address: &str, path: &str, body: serde_json::Value) -> (u16, serde_json:
     (status, serde_json::from_str(&reply).unwrap_or(json!(reply)))
 }
 
-/// Takes the keyboard of run 1 at the state's current revision, read again while a starting daemon
-/// moves it, and returns the grant's secret.
+/// Takes the keyboard of run 1 and returns the grant's secret.
 fn take_keyboard(address: &str) -> String {
     take_keyboard_as(address, "")["secret"]
         .as_str()
@@ -21408,22 +21546,9 @@ fn take_keyboard(address: &str) -> String {
 
 /// The grant `take_keyboard` gets, sent with the `extra` headers.
 fn take_keyboard_as(address: &str, extra: &str) -> serde_json::Value {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let desk = http(address, "GET", "/api/desk", "", "").1;
-        let revision =
-            serde_json::from_str::<serde_json::Value>(&desk).unwrap()["revision"].clone();
-        let body = json!({ "revision": revision }).to_string();
-        let (status, grant) = http(address, "POST", "/api/runs/1/keyboard", extra, &body);
-        if status == 200 {
-            return serde_json::from_str(&grant).unwrap();
-        }
-        assert!(
-            status == 409 && Instant::now() < deadline,
-            "{status}: {grant}"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let (status, grant) = http(address, "POST", "/api/runs/1/keyboard", extra, "{}");
+    assert_eq!(status, 200, "{grant}");
+    serde_json::from_str(&grant).unwrap()
 }
 
 /// How many times the screen of run 1 shows `text`, once it shows it `times` times.
@@ -21681,6 +21806,45 @@ fn an_expired_returned_or_replaced_grant_is_refused_and_each_end_is_recorded() {
 }
 
 #[test]
+fn a_run_carried_into_the_next_step_keeps_its_keyboard_grant_and_its_prompt_waits_for_it() {
+    let mut setup = Setup::with_workflow("keys-carried", STEPS);
+    setup.calls(&[result("ready")]);
+    setup.hold("hold-call");
+    let (mut server, address) = serving(&setup, TYPE, &[("TEST_TOKEN", SERVE_TOKEN)]);
+    setup.publish(&requested(42));
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("TEST_TOKEN", SERVE_TOKEN)],
+    );
+    setup.written("fake/submitted");
+    let secret = take_keyboard(&address);
+
+    setup.release("hold-call");
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+
+    assert_eq!(runs[0][7], "moved");
+    let grants: (i64, Option<String>) = rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT run, why FROM keyboard_grants", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(grants, (2, None));
+    assert_eq!(setup.rows("outbox")[1][3], "queued");
+    assert_eq!(setup.typed().len(), 1);
+    // A page that still draws run 1 reaches the grant on the same pane.
+    let (status, _) = post(
+        &address,
+        "/api/runs/1/keyboard/return",
+        json!({ "secret": secret }),
+    );
+    assert_eq!(status, 200);
+    setup.until("outbox", |rows| rows[1][3] == "confirmed");
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+#[test]
 fn the_outbox_types_nothing_into_a_run_whose_keyboard_a_person_holds() {
     let (setup, mut server, address) = Setup::typing("keys-outbox");
     let secret = take_keyboard(&address);
@@ -21795,12 +21959,13 @@ fn taking_the_keyboard_records_its_label_and_no_record_or_log_holds_the_secret()
     let (setup, mut server, address) = Setup::typing("keys-secret");
     let desk = http(&address, "GET", "/api/desk", "", "").1;
     let revision = serde_json::from_str::<serde_json::Value>(&desk).unwrap()["revision"].clone();
-    let stale = post(
+    // Writes elsewhere move the state's revision; a run's keyboard does not wait for them.
+    let behind = post(
         &address,
         "/api/runs/1/keyboard",
         json!({ "revision": revision.as_i64().unwrap() - 1 }),
     );
-    assert_eq!(stale.0, 409, "{}", stale.1);
+    assert_eq!(behind.0, 200, "{}", behind.1);
     let grant = take_keyboard_as(
         &address,
         &format!("User-Agent: {}\r\n", "Phone ".repeat(20)),
@@ -21827,7 +21992,10 @@ fn taking_the_keyboard_records_its_label_and_no_record_or_log_holds_the_secret()
     let taken = setup
         .trace()
         .into_iter()
-        .find(|record| record["type"] == "factory.terminal.taken")
+        .find(|record| {
+            record["type"] == "factory.terminal.taken"
+                && record["data"]["grant"] == json!(grant["grant"].to_string())
+        })
         .unwrap();
     assert_eq!(taken["data"]["label"], json!("Phone ".repeat(11)[..64]));
     assert_eq!(taken["data"]["grant"], json!(grant["grant"].to_string()));
@@ -22416,6 +22584,33 @@ impl Setup {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
+}
+
+#[test]
+fn a_run_carried_into_the_next_step_records_the_kit_its_process_got() {
+    let mut setup = Setup::with_workflow("kit-carried", STEPS);
+    let commit = setup.kit_repo();
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let runs: Vec<(String, Option<String>, Option<String>)> = db
+        .prepare("SELECT ended_as, kit_hash, kit_commit FROM runs ORDER BY id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    assert_eq!(runs[0].0, "moved");
+    assert_eq!(runs[0].2.as_deref(), Some(commit.as_str()));
+    assert!(runs[0].1.is_some());
+    assert_eq!((&runs[1].1, &runs[1].2), (&runs[0].1, &runs[0].2));
 }
 
 #[test]

@@ -156,7 +156,9 @@ The run's plugin folder, memory snapshot and `kit_hash` cover the merged files, 
 Each run records `kit_hash`, a hash of the skills, instructions and memories it got, or none when it
 got none of them. A Claude run's hash covers all three. A Codex run's covers the instructions and
 memories only, so the two differ in a factory with skills. `priory runs` shows it in its `kit` column, and the `factory.step.ended`
-trace record of a model step carries it (see [the trace schema](../trace-schema.md)).
+trace record of a model step carries it (see [the trace schema](../trace-schema.md)). A run carried
+into the next step of the same agent keeps its process, so it records the hash and kit commit of
+the run it continues.
 
 Two runners whose factory checkouts differ give the same agent's runs different hashes. That is how a
 person sees that a runner needs a pull.

@@ -194,6 +194,22 @@ fn hide(text: &str, spans: &[Range<usize>], codes: &mut [(usize, &str)]) -> Stri
     out
 }
 
+/// Why a run's screen was not read: its run is gone, or the live run's pane could not be read or
+/// shown this time.
+#[derive(Debug)]
+pub enum Unread {
+    Gone(String),
+    Unreadable(String),
+}
+
+impl From<Unread> for String {
+    fn from(unread: Unread) -> String {
+        match unread {
+            Unread::Gone(why) | Unread::Unreadable(why) => why,
+        }
+    }
+}
+
 /// The screen of the live run `target` names after up to `history` rows of its scrollback, with
 /// `exact` and the secret shapes hidden, its colour codes kept and its links dropped, and a hash of
 /// it; or why there is none. `cut` counts the top rows left out to keep it under 256 KiB.
@@ -202,15 +218,20 @@ pub fn read(
     target: &state::Attach,
     exact: &[String],
     history: usize,
-) -> Result<Value, String> {
-    let run = state::live_run(db, target)?;
+) -> Result<Value, Unread> {
+    let run = state::live_run(db, target).map_err(Unread::Gone)?;
     let snapshot = runtime::snapshot(&run.tmux, &run.session, history, DEADLINE)
-        .ok_or_else(|| state::no_pane(&run))?;
+        .ok_or_else(|| Unread::Unreadable(state::no_pane(&run)))?;
     let rows = LINK
         .replace_all(&snapshot.lines.join("\n"), "")
         .into_owned();
-    let (shown, redacted) = redact(&rows, exact, Some(usize::from(snapshot.width)))
-        .ok_or("a secret on this screen stays visible after redaction, so it is not shown")?;
+    let (shown, redacted) =
+        redact(&rows, exact, Some(usize::from(snapshot.width))).ok_or_else(|| {
+            Unread::Unreadable(
+                "a secret on this screen stays visible after redaction, so it is not shown"
+                    .to_owned(),
+            )
+        })?;
     let mut lines: Vec<&str> = shown.split('\n').collect();
     let mut weight: usize = lines
         .iter()
