@@ -13,6 +13,9 @@ export function taskViews(tasks) {
   };
 }
 
+/** A task's name in the views: its key without the source, `linear:ENG-245` as "ENG-245". @param {string | null | undefined} key */
+export const taskLabel = (key) => String(key ?? "").replace(/^(linear|github|slack|cli):/, "");
+
 /**
  * Where another runner's task runs, from its claim: "On runner a, last seen 12 min ago", or null for
  * a task of this runner, which has an id. `ago` turns a time into "12 min ago".

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TASK_FACETS, TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskViews, triageWords } from "./tasks.js";
+import { TASK_FACETS, TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskLabel, taskViews, triageWords } from "./tasks.js";
 
 // `/api/tasks` as the server sends it: in start order, ended tasks in it too.
 const tasks = [
@@ -84,4 +84,13 @@ test("another runner's task says what became of the newest action sent to it", (
   assert.deepEqual(remoteSent({ ...remote, submissions: [{ ...sent, act: "release", outcome: "applied" }] }), { text: "a applied release", tone: "quiet" });
   assert.equal(remoteSent({ ...remote, submissions: [] }), null);
   assert.equal(remoteSent({ ...tasks[0], runner: "b", submissions: [sent] }), null, "this runner's own task shows its state instead");
+});
+
+test("a task is named by its key without its source", () => {
+  assert.equal(taskLabel("linear:ENG-245"), "ENG-245");
+  assert.equal(taskLabel("github:acme/shop#190"), "acme/shop#190");
+  assert.equal(taskLabel("ENG-224"), "ENG-224");
+  assert.equal(taskLabel("cli:PRI-55"), "PRI-55");
+  assert.equal(taskLabel("batch:2026-11-21-1"), "batch:2026-11-21-1");
+  assert.equal(taskLabel(null), "");
 });

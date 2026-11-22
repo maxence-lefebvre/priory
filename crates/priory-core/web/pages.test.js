@@ -17,12 +17,13 @@ test("a detail page opened first goes back to Tasks", () => {
 });
 
 test("each page has its own title, a task by its key", () => {
-  const data = { tasks: [{ id: 7, key: "ENG-224" }], asks: [{ id: 3 }] };
+  const data = { tasks: [{ id: 7, key: "ENG-224" }, { id: 9, key: "linear:ENG-245" }], asks: [{ id: 3 }] };
   assert.equal(pageTitle("/", data), "Desk · Priory");
   assert.equal(pageTitle("/index.html", data), "Desk · Priory");
   assert.equal(pageTitle("/queue", data), "Queue · Priory");
   assert.equal(pageTitle("/workflow", data), "Flows · Priory");
   assert.equal(pageTitle("/tasks/7", data), "ENG-224 · Priory");
+  assert.equal(pageTitle("/tasks/9", data), "ENG-245 · Priory");
   assert.equal(pageTitle("/tasks/8", data), "Task 8 · Priory");
   assert.equal(pageTitle("/asks/3", data), "Ask #3 · Priory");
   assert.equal(pageTitle("/batches/2", data), "Batch 2 · Priory");

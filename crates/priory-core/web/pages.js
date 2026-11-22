@@ -1,4 +1,5 @@
 // What each page is called: its panel's label, its title, and where its back link goes.
+import { taskLabel } from "./tasks.js";
 
 /** Each panel's label and icon. */
 export const PANELS = {
@@ -37,7 +38,7 @@ export function pageTitle(path, data) {
   const [first, id] = parts(path);
   const number = /^\d+$/.test(id || "");
   let name = "Page not found";
-  if (first === "tasks" && number) name = data.tasks.find((task) => String(task.id) === id)?.key || `Task ${id}`;
+  if (first === "tasks" && number) name = taskLabel(data.tasks.find((task) => String(task.id) === id)?.key) || `Task ${id}`;
   else if (first === "asks" && id) name = `Ask #${decodeURIComponent(id)}`;
   else if (first === "batches" && number) name = `Batch ${id}`;
   else if (first === "memories") name = "Memory candidates";

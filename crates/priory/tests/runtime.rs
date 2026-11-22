@@ -20547,7 +20547,7 @@ fn a_going_batch_is_one_desk_line_in_place_of_the_held_tasks_its_edges_hold() {
         .unwrap();
     assert_eq!(
         line["what"],
-        "Invoice exports: 1 queued, 2 planned. Next: tasks 3 and 4 start when task 2 merges."
+        "Invoice exports: 1 queued, 2 planned. Next: ENG-41 and ENG-42 start when ENG-40 merges."
     );
     assert_eq!(
         (&line["id"], &line["key"]),

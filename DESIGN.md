@@ -418,12 +418,14 @@ The desk is the "Needs me" view. It lists, top to bottom:
    A refused action keeps the row and shows why under it, in the row's note.
 7. **Up next**: a strip with the next 3 runs, queued or scheduled, as in the Herdr Queue panel.
    Each line shows when, the task and why, and opens the task. A queued task waiting for its place
-   shows "now, on room"; one with its own wait reason shows "now" and that reason. With none, the
+   shows "now, when a runner has room"; one with its own wait reason shows "now" and that reason. With none, the
    strip says "Nothing is queued or scheduled to run next." An "Open the queue" link ends the
    strip and opens the Queue panel, where Move and Held live.
 8. **Since you looked**: a strip with the events since the person's last visit, one group per
    task, the task with the newest event first. Each group opens with the task's key, which opens
-   the task page, then each event's time and what. The heading's note says "since 09:12", or
+   the task page, then each event's time and what: the event type in plain words, as the Inbox
+   panel says it, then its subject ("GitHub pull request review submitted acme/shop#245: kept").
+   Repeats do not fold: each event keeps its own line. The heading's note says "since 09:12", or
    "latest 50" before a first visit. With none, the strip says "Nothing happened since you
    looked." Once the strip is drawn, the page records the visit (`POST /api/seen`) and keeps the
    events it opened on until it reloads.
@@ -750,7 +752,10 @@ The pull request's title, then a line of branch, base, additions in `--ok-text`,
 `--danger-text`, file count and head sha. Then the largest files, up to 4 on a phone and 5 in
 the drawer: path in mono (ellipsized from the left), counts, and five squares of added and
 deleted share in `--tile-ok` and `--tile-danger`. Then the checks, each a `check`, `x` or live
-dot with its name and duration, and the review state.
+dot with its name and duration, and the review state. A check that passed takes the `check`; one
+with no conclusion yet takes the live dot and "running"; a `skipped` or `neutral` one takes the
+muted `minus`; every other conclusion takes the `x`. Check and review states read in plain words:
+"passed", "changes requested", "timed out".
 
 A task with a stack of two or more pull requests adds "Stack, bottom first: 3 PRs" in
 `--text-2`, then one `.hist` row per pull request, bottom first: a small tile, the number as a link
@@ -859,7 +864,8 @@ open Priory window when there is one.
   leading edge), new (fading `--action-soft`), focused (focus ring).
 - A live run shows its duration counting up once per minute, not per second. Tapping a run opens
   its task's page, which holds the runs table and the terminal.
-- Tokens add up input, output and cache tokens: "640", "1.5k", "312k", "3.3M".
+- Tokens add up input, output and cache tokens: "640", "1.5k", "312k", "3.3M". The task page's
+  trace and the Costs panel use the same format.
 - Another runner's task row shows its hold's tile and word in place of the state, and its workflow
   without a step. Its line 3, or the line under its title on wide screens, reads "On runner a, last
   seen 12 min ago" in `--text-3`, or "On runner a, never seen alive". Its key is plain text: its
@@ -1312,11 +1318,16 @@ run.
 
 - Use the terms of the PRD's Concepts table: task, run, ask, desk, inbox, queue, wait, result,
   lane, band, runner. Never "job", "ticket", "worker" or "prompt" for these.
-- Show state names exactly as the daemon writes them, in lowercase.
+- Show state names exactly as the daemon writes them, in lowercase. A pull request's review and
+  check states are GitHub's, not the daemon's: they read in plain words ("changes requested",
+  "passed").
+- Name a task by its key without the source prefix: "ENG-245", not "linear:ENG-245". The numeric
+  id never stands alone; it goes in the `title`.
 - Name actions with the CLI verb: Answer, Resume, Cancel, Revive, Hold, Release, Move, Attach.
   Confirmations reuse the verb: "Answered", "Resumed".
 - Errors say what failed, why, and what to do. No apologies, no "Oops", no exclamation marks.
-- Times: relative under 24 h ("12 min", "3 h"), then a date ("Nov 18, 14:02"). The full
+- Times: "just now" under a minute, relative under 24 h ("12 min", "3 h"), then a date ("Nov
+  18, 14:02"). Since you looked, a task's inbox and its trace follow it too. The full
   timestamp is in the element's `title` and in `<time datetime>`.
 - Sentence case for everything. No uppercase labels.
 - Plain English, short sentences, active voice, no em dashes.

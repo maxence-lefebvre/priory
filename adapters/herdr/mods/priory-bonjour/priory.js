@@ -256,8 +256,12 @@ export function prStack(stack, latest = null) {
   if (!stack || stack.length < 2) return { label: null, entries: [] };
   const next = stack.findIndex((pull) => pull.state === "open");
   const checks = latest?.checks ?? [];
-  const failing = checks.filter((/** @type {any} */ check) => !["success", "skipped", "neutral"].includes(check.conclusion)).length;
-  const known = !checks.length ? null : failing ? `${failing} of ${checks.length} checks failing` : `${checks.length} checks pass`;
+  const failing = checks.filter((/** @type {any} */ check) => check.conclusion && !["success", "skipped", "neutral"].includes(check.conclusion)).length;
+  const running = checks.filter((/** @type {any} */ check) => !check.conclusion).length;
+  const known = !checks.length ? null
+    : failing ? `${failing} of ${checks.length} checks failing`
+    : running ? `${running} of ${checks.length} checks running`
+    : `${checks.length} checks pass`;
   return {
     label: `${stack.length} PRs`,
     entries: stack.map((pull, at) => ({

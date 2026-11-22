@@ -10,16 +10,16 @@ const PROMPTS = {
 
 /**
  * What one event of task `task`'s inbox did: its outcome, its prompt, the wait it fired and the
- * task routing gave it to when that is another task.
+ * task routing gave it to when that is another task, by `name`.
  * @param {{ outcome: string, prompt: string | null, wait: number | null, task: number | null }} event
- * @param {number} task
+ * @param {number} task @param {(id: number) => string} [name]
  */
-export function handled(event, task) {
+export function handled(event, task, name = (id) => `task ${id}`) {
   const own = event.task === task;
   const prompt = PROMPTS[event.prompt] || (event.outcome === "kept" && own ? "for its next run" : "");
   let text = prompt ? `${event.outcome}, ${prompt}` : event.outcome;
   if (event.wait != null) text += `, fired wait ${event.wait}`;
-  if (event.task != null && !own) text += ` (routed to task ${event.task})`;
+  if (event.task != null && !own) text += ` (routed to ${name(event.task)})`;
   return text;
 }
 
@@ -70,6 +70,12 @@ const SOURCES = { github: "GitHub", linear: "Linear", slack: "Slack", factory: "
 export function eventWords(type) {
   const [source, ...rest] = type.split(".");
   return [SOURCES[source] ?? source, ...rest].filter(Boolean).join(" ").replaceAll("_", " ");
+}
+
+/** A Since you looked line, `<type> <subject>: <outcome>`, with its type in plain words; a report's line as it is. @param {string} what */
+export function sinceWords(what) {
+  const [type] = what.split(" ", 1);
+  return /^[a-z_]+(\.[a-z_]+)+$/.test(type) ? eventWords(type) + what.slice(type.length) : what;
 }
 
 /** The detail pane's line while nothing is selected, by the panels on screen: events open no detail. */
