@@ -28399,3 +28399,71 @@ fn a_settled_comment_on_a_subscribed_issue_wakes_no_one() {
     stays_asleep(&setup);
     assert_eq!(setup.decided()[0]["acted"], true);
 }
+
+const IRREVERSIBLE_THEN_CHECK: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { passed = "approve", failed = "stop" }
+
+[[steps]]
+id = "approve"
+decides = "human"
+effect = "none"
+approves = ["publish"]
+options = ["go", "stop"]
+next = { go = "publish", stop = "stop" }
+
+[[steps]]
+id = "publish"
+decides = "model"
+agent = "implementer"
+prompt = "Publish the change."
+effect = "irreversible"
+next = { passed = "check", failed = "stop" }
+
+[[steps]]
+id = "check"
+decides = "model"
+agent = "implementer"
+prompt = "Check the change."
+effect = "reversible"
+next = { passed = "done", failed = "stop" }
+"#;
+
+#[test]
+fn a_spend_cap_holds_no_run_at_an_irreversible_step_and_holds_the_task_at_its_next_step() {
+    let mut setup = Setup::with_workflow("cap-irreversible", IRREVERSIBLE_THEN_CHECK);
+    // Turn 1 spends $101 and turn 2, silent at the irreversible step, takes the task to $203.
+    setup.caps("[caps]\ntask = 200.0\n");
+    setup.calls(&[
+        passed_with_evidence(),
+        serde_json::Value::Null,
+        result("passed"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    setup.gone("priory-1");
+    let answered = setup.priory(&["answer", "1", "go", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+
+    let held = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "held")
+    });
+
+    assert_eq!(held[0][3], "check", "{held:?}");
+    let runs = setup.rows("runs");
+    let capped: Vec<&str> = runs
+        .iter()
+        .filter(|run| run[7] == "capped")
+        .map(|run| run[2].as_str())
+        .collect();
+    assert_eq!(capped, ["check"], "{runs:?}");
+    assert_eq!(setup.open_asks().len(), 1);
+}

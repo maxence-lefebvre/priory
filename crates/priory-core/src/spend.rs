@@ -323,13 +323,29 @@ fn reached_line(cap: &Cap, spent: f64) -> String {
     )
 }
 
-/// A task the tick checks: its id, trigger, lane and state, and its live run and tmux session.
-type Candidate = (i64, String, Option<String>, String, Option<(i64, String)>);
+/// A live run the tick may end: its id, tmux session, step and agent, and whether a person holds
+/// its keyboard.
+struct Live {
+    run: i64,
+    tmux: String,
+    step: String,
+    agent: String,
+    keyboard_held: bool,
+}
+
+/// A task the tick checks: its id, trigger, lane, state and workflow, and its live run.
+type Candidate = (i64, String, Option<String>, String, String, Option<Live>);
 
 /// Holds each task past a cap, once its turn ended, with one ask to raise the cap or stop the task;
 /// and records the day and week caps reached, which hold new runs. Returns the tmux sessions of
-/// the runs it ended, to kill.
-pub(crate) fn tick(db: &mut Connection, trace: &Trace, now: &str) -> rusqlite::Result<Vec<String>> {
+/// the runs it ended, to kill. A run that an urgent wake would not stop either, or that a person
+/// watches in tmux, carries on until a turn end outside them.
+pub(crate) fn tick(
+    db: &mut Connection,
+    trace: &Trace,
+    now: &str,
+    watched: &dyn Fn(&str) -> bool,
+) -> rusqlite::Result<Vec<String>> {
     let factory = trace.factory;
     let book = Book::new(factory);
     let caps = &book.caps;
@@ -366,8 +382,9 @@ pub(crate) fn tick(db: &mut Connection, trace: &Trace, now: &str) -> rusqlite::R
     }
     // A running task between turns, or one about to start.
     let candidates: Vec<Candidate> = db
-        .prepare(
-            "SELECT tasks.id, tasks.trigger, tasks.lane, tasks.state, runs.id, runs.tmux FROM tasks
+        .prepare(&format!(
+            "SELECT tasks.id, tasks.trigger, tasks.lane, tasks.state, tasks.workflow, runs.id,
+               runs.tmux, runs.step, coalesce(runs.agent, ''), {} FROM tasks
              LEFT JOIN runs ON runs.task = tasks.id AND runs.ended IS NULL
              WHERE (tasks.state IN ('queued', 'ready')
                -- With several runners, only a task this runner may start, as the queue reads it.
@@ -377,17 +394,31 @@ pub(crate) fn tick(db: &mut Connection, trace: &Trace, now: &str) -> rusqlite::R
                SELECT 1 FROM outbox WHERE outbox.run = runs.id
                AND outbox.state IN ('attempted', 'uncertain')))
              ORDER BY tasks.id",
-        )?
+            crate::preempt::KEYBOARD_HELD
+        ))?
         .query_map(params![trace.runner, crate::tools::LEAD_TRIGGER], |row| {
-            let run = match row.get::<_, Option<i64>>(4)? {
-                Some(run) => Some((run, row.get(5)?)),
+            let run = match row.get::<_, Option<i64>>(5)? {
+                Some(run) => Some(Live {
+                    run,
+                    tmux: row.get(6)?,
+                    step: row.get(7)?,
+                    agent: row.get(8)?,
+                    keyboard_held: row.get(9)?,
+                }),
                 None => None,
             };
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, run))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                run,
+            ))
         })?
         .collect::<rusqlite::Result<_>>()?;
     let mut killed = Vec::new();
-    for (task, trigger, lane, state, run) in candidates {
+    for (task, trigger, lane, state, workflow, run) in candidates {
         let running = state == "running";
         if !running && !at_model_step(db, factory, task)? {
             continue;
@@ -414,14 +445,28 @@ pub(crate) fn tick(db: &mut Connection, trace: &Trace, now: &str) -> rusqlite::R
         let Some((cap, spent)) = crossed else {
             continue;
         };
+        if let Some(live) = &run {
+            let guarded = crate::preempt::guarded(
+                factory,
+                task,
+                &workflow,
+                &live.step,
+                &live.agent,
+                live.keyboard_held,
+            );
+            // Read last, since it runs tmux.
+            if guarded.is_some() || watched(&live.tmux) {
+                continue;
+            }
+        }
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some((run, tmux)) = &run {
-            crate::trace::account(&tx, trace, *run, None)?;
+        if let Some(live) = &run {
+            crate::trace::account(&tx, trace, live.run, None)?;
             tx.execute(
                 &format!("UPDATE runs SET ended = {NOW}, ended_as = 'capped' WHERE id = ?1"),
-                [run],
+                [live.run],
             )?;
-            killed.push(tmux.clone());
+            killed.push(live.tmux.clone());
         }
         hold(
             &tx,

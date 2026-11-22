@@ -53,6 +53,38 @@ fn band_of(db: &Connection, factory: &Factory, task: i64) -> rusqlite::Result<St
     }))
 }
 
+/// Why no one may stop the live run of `task` at `step` between two turns, if a reason holds: an
+/// irreversible step, whose stop could leave a push without its pull request; a keyboard a
+/// person holds; or a shared session. Urgent wakes and spend caps both read it. A tmux client
+/// watching the run is the caller's test, since it runs tmux.
+pub(crate) fn guarded(
+    factory: &Factory,
+    task: i64,
+    workflow: &str,
+    step: &str,
+    agent: &str,
+    keyboard_held: bool,
+) -> Option<String> {
+    let at = factory
+        .workflows
+        .get(workflow)
+        .and_then(|flow| flow.value.step(step));
+    let defined = factory.agents.get(agent).map(|agent| &agent.value);
+    if at.is_some_and(|at| at.effect == Effect::Irreversible) {
+        Some(format!("task {task} is at irreversible step {step}"))
+    } else if keyboard_held {
+        Some(format!("task {task}'s keyboard is held"))
+    } else if defined.is_some_and(|agent| matches!(agent.session, Session::Shared)) {
+        Some(format!("task {task} runs in a shared session"))
+    } else {
+        None
+    }
+}
+
+/// Whether `run` has a keyboard grant a person holds now.
+pub(crate) const KEYBOARD_HELD: &str = "EXISTS (SELECT 1 FROM keyboard_grants AS held
+  WHERE held.run = runs.id AND held.ended IS NULL AND julianday(held.ends) > julianday('now'))";
+
 /// Marks the runs whose promises, once gone, let `head` fit, and withdraws every other mark.
 /// Returns what the head's reason adds: the runs that stop, or why none does.
 pub(crate) fn plan(
@@ -69,14 +101,12 @@ pub(crate) fn plan(
         return Ok(None);
     }
     let head_rank = rank(&bands, Some(&band));
-    let mut statement = db.prepare(
+    let mut statement = db.prepare(&format!(
         "SELECT runs.id, runs.task, runs.step, coalesce(runs.agent, ''), runs.tmux, tasks.band,
-           tasks.workflow, tasks.trigger, tasks.preempted IS NOT NULL,
-           EXISTS (SELECT 1 FROM keyboard_grants AS held WHERE held.run = runs.id
-             AND held.ended IS NULL AND julianday(held.ends) > julianday('now')),
+           tasks.workflow, tasks.trigger, tasks.preempted IS NOT NULL, {KEYBOARD_HELD},
            tasks.position
-         FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL",
-    )?;
+         FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL"
+    ))?;
     let mut rows = statement.query([])?;
     let mut candidates = Vec::new();
     while let Some(row) = rows.next()? {
@@ -92,18 +122,10 @@ pub(crate) fn plan(
         let (stopped, held, position): (bool, bool, Option<i64>) =
             (row.get(8)?, row.get(9)?, row.get(10)?);
         let defined = factory.agents.get(&agent).map(|agent| &agent.value);
-        let at = factory
-            .workflows
-            .get(&workflow)
-            .and_then(|flow| flow.value.step(&step));
         let own_rank = rank(&bands, own_band.as_deref());
         let own_band = own_band.unwrap_or_else(|| bands.last().copied().unwrap_or_default().into());
-        let protected = if at.is_some_and(|at| at.effect == Effect::Irreversible) {
-            Some(format!("task {task} is at irreversible step {step}"))
-        } else if held {
-            Some(format!("task {task}'s keyboard is held"))
-        } else if defined.is_some_and(|agent| matches!(agent.session, Session::Shared)) {
-            Some(format!("task {task} runs in a shared session"))
+        let protected = if let Some(why) = guarded(factory, task, &workflow, &step, &agent, held) {
+            Some(why)
         } else if trigger == crate::stall::TRIGGER {
             Some(format!("task {task} is the sweeper"))
         } else if own_rank <= head_rank {

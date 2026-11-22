@@ -1172,7 +1172,7 @@ fn tend(
         row.get(0)
     })?;
     // Before the outbox types, so a run between turns is held before its next prompt.
-    for tmux in crate::spend::tick(db, trace, &now)? {
+    for tmux in crate::spend::tick(db, trace, &now, &watched)? {
         runtime::kill(&tmux);
     }
     loop {
