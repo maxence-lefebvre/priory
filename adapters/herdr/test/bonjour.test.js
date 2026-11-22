@@ -176,6 +176,17 @@ test("a press on a row's link opens the link and leaves the row unselected", asy
   assert.equal(panel.selected, row.id);
 });
 
+test("the selected row's key, text and meta select and copy; the other rows stay buttons", async () => {
+  const { find, panel, view } = await mounted({ report: (/** @type {string[]} */ args) => (args[1] === "list" ? { revision: 6, reports: [] } : read), links: { links: [] } });
+  const [first, second] = dossier(read, { now }).sections[0].rows;
+  panel.selected = first.id;
+  const tree = view();
+  assert.notEqual(find(tree, `row-${first.id}`).kind, "button");
+  assert.equal(find(tree, `text-${first.id}`).calls.selectable?.[0], true);
+  assert.equal(find(tree, `row-${second.id}`).kind, "button");
+  assert.equal(find(tree, `text-${second.id}`), null);
+});
+
 /** The Bonjour panel drawn against `replies`, once its first read settled. @param {Record<string, unknown>} replies */
 async function mounted(replies) {
   const kit = await import("./kit.js");

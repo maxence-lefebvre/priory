@@ -2,6 +2,7 @@ import { Background, PathBuilder, View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile } from "herdr";
 import { priory } from "./priory.js";
+import { selectable } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { attentionView, costTiles, dayBars, money, scoreTable, splitTable, SPLITS } from "./view.js";
 
@@ -147,14 +148,14 @@ export default class PrioryCosts extends View {
         .when(!wide, (el) => el.children(VIEWS.map(([id, label]) => this.chip(`view-${id}`, label, this.view === id, (cx) => { this.view = id; cx.notify(); }, t)))))
       .when(Boolean(this.error), (el) => el.child(this.offline(t)))
       .when(Boolean(this.data) && (Boolean(this.error) || now - this.updated > READ_EVERY_MS), (el) => el.child(
-        div().flex_none().px(S["space-4"]).py(6).text_size(S["type-caption"][0]).text_color(t["text-3"]).child(`Costs as read ${readAt(this.updated)}.`)))
+        div().flex_none().px(S["space-4"]).py(S["space-2"]).text_size(S["type-caption"][0]).text_color(t["text-3"]).child(`Costs as read ${readAt(this.updated)}.`)))
       .child(this.body(t, wide));
   }
 
   /** @param {Palette} t */
   offline(t) {
-    return h_flex().flex_none().px(S["space-4"]).py(6).gap(6).items_start().text_size(S["type-small"][0]).text_color(t["warn-text"]).border_b(1).border_color(t.line)
-      .child(div().flex_1().whitespace_normal().child(`Could not load costs: ${this.error}. Check that priory runs, then it reads again on its own.`));
+    return h_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).items_start().text_size(S["type-small"][0]).text_color(t["warn-text"]).border_b(1).border_color(t.line)
+      .child(div().flex_1().min_w_0().whitespace_normal().child(selectable("costs-error", `Could not load costs: ${this.error}. Check that priory runs, then it reads again on its own.`)));
   }
 
   /** @param {Palette} t @param {boolean} wide */
@@ -164,7 +165,7 @@ export default class PrioryCosts extends View {
       return v_flex().id("costs-body").flex_1().p(pad).text_color(t["text-2"]).child(this.error ? "" : "Loading costs…");
     }
     const { costs, attention } = this.data;
-    const scroll = (/** @type {string} */ id) => v_flex().id(id).flex_1().min_w_0().min_h_0().overflow_y_scrollbar().px(pad).pt(pad).pb(32).gap(S["space-5"]);
+    const scroll = (/** @type {string} */ id) => v_flex().id(id).flex_1().min_w_0().min_h_0().overflow_y_scrollbar().px(pad).pt(pad).pb(S["space-6"]).gap(S["space-5"]);
     if (!wide) {
       return scroll("costs-body").children(this.view === "costs" ? this.costsPart(costs, t) : this.attentionPart(attention, t));
     }
@@ -176,14 +177,14 @@ export default class PrioryCosts extends View {
 
   /** @param {string} title @param {string | null} meta @param {Palette} t */
   heading(title, meta, t) {
-    return h_flex().gap(6).items_baseline().text_size(S["type-small"][0]).font_weight(650)
+    return h_flex().gap(S["space-2"]).items_baseline().text_size(S["type-small"][0]).font_weight(650)
       .child(title).when(Boolean(meta), (el) => el.child(div().font_weight(400).text_color(t["text-3"]).child(meta ?? "")));
   }
 
   /** @param {Tile[]} tiles @param {Palette} t */
   tiles(tiles, t) {
     return h_flex().rounded(S["radius-md"]).border(1).border_color(t.line).bg(t.surface)
-      .children(tiles.map((tile, index) => v_flex().flex_1().min_w_0().p(S["space-3"]).gap(2).when(index > 0, (el) => el.border_l(1).border_color(t.line))
+      .children(tiles.map((tile, index) => v_flex().flex_1().min_w_0().p(S["space-3"]).gap(S["space-1"]).when(index > 0, (el) => el.border_l(1).border_color(t.line))
         .accessibility_label(`${tile.label}: ${tile.value}`)
         .child(div().truncate().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(tile.label))
         .child(div().font_family(this.font.display).font_weight(650).text_size(S["type-hero"][0]).line_height(`${S["type-hero"][1]}px`).child(tile.value))
@@ -238,9 +239,9 @@ export default class PrioryCosts extends View {
       .children(cells.slice(0, 2).map((cell) => div().w(120).flex_none().whitespace_normal().font_family(head ? this.font.ui : this.font.mono).child(cell)))
       .children(cells.slice(2).map((cell, index) => div().w(index ? 56 : 72).flex_none().whitespace_normal().text_right()
         .when(!head && index === 0, (el) => el.font_weight(600)).child(cell)));
-    const stacked = (/** @type {Scores["rows"][number]} */ entry) => v_flex().py(S["space-2"]).gap(2).border_b(1).border_color(t.line)
+    const stacked = (/** @type {Scores["rows"][number]} */ entry) => v_flex().py(S["space-2"]).gap(S["space-1"]).border_b(1).border_color(t.line)
       .child(h_flex().gap(S["space-2"]).flex_wrap().font_family(this.font.mono).text_size(S["type-small"][0]).child(entry.name).child(entry.scorer))
-      .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(entry.line));
+      .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(selectable(`score-${entry.name}-${entry.scorer}`, entry.line)));
     return [v_flex().id("costs-scores").gap(S["space-2"])
       .child(h_flex().gap(S["space-2"]).items_center().flex_wrap()
         .child(this.heading(`Scores by ${costs.by}`, null, t)).child(div().flex_1()).when(chips, (el) => el.children(this.splitChips(t))))
@@ -279,7 +280,7 @@ export default class PrioryCosts extends View {
       .child(div().w(140).flex_none().truncate().font_family(head ? this.font.ui : this.font.mono).child(cells[0]))
       .child(div().w(80).flex_none().text_right().child(cells[1]))
       .child(div().w(100).flex_none().text_right().child(cells[2]))
-      .child(div().flex_1().min_w_0().whitespace_normal().text_color(head ? t["text-3"] : t["text-2"]).child(cells[3]));
+      .child(div().flex_1().min_w_0().whitespace_normal().text_color(head ? t["text-3"] : t["text-2"]).child(head ? cells[3] : selectable(`note-${cells[0]}`, cells[3])));
     return v_flex().id("costs-split").overflow_x_scrollbar()
       .child(row([table.dimension, "Cost", "Tokens", "Notes"], true))
       .children(table.rows.map((entry) => row([entry.name, entry.cost, entry.tokens, entry.note], false)));
@@ -297,16 +298,16 @@ export default class PrioryCosts extends View {
       v_flex().gap(S["space-2"]).child(this.heading("Your attention", "this week", t))
         .child(h_flex().gap(S["space-3"]).items_center()
           .child(div().flex_none().font_family(this.font.display).font_weight(700).text_size(S["type-pane-count"][0]).child(headline.value))
-          .child(v_flex().flex_1().min_w_0().gap(2)
+          .child(v_flex().flex_1().min_w_0().gap(S["space-1"])
             .child(div().whitespace_normal().font_family(this.font.display).font_weight(600).child(headline.label))
             .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(headline.note))))
         .child(this.tiles(view.waits, t)),
       v_flex().gap(S["space-2"]).child(this.heading("Where each task's time went", null, t))
         .child(h_flex().gap(S["space-3"]).flex_wrap().text_size(S["type-caption"][0]).text_color(t["text-2"])
-          .children(PARTS.map(([part, label]) => h_flex().gap(6).items_center().child(this.part(part, t).w(18).h(10).rounded(2)).child(label))))
+          .children(PARTS.map(([part, label]) => h_flex().gap(S["space-2"]).items_center().child(this.part(part, t).w(18).h(10).rounded(2)).child(label))))
         .children(tasks.map((task) => v_flex().gap(S["space-1"]).py(S["space-1"])
           .child(h_flex().gap(S["space-2"]).items_baseline()
-            .child(div().font_family(this.font.mono).text_size(S["type-caption"][0]).child(task.key))
+            .child(div().font_family(this.font.mono).text_size(S["type-caption"][0]).child(selectable(`time-${task.key}`, task.key)))
             .child(div().flex_1().min_w_0().truncate().text_size(S["type-small"][0]).text_color(t["text-2"]).child(task.workflow))
             .child(div().text_size(S["type-small"][0]).child(task.wall)))
           .child(this.taskBar(task, t)))),
@@ -323,7 +324,7 @@ export default class PrioryCosts extends View {
 
   /** @param {TaskTime} task @param {Palette} t */
   taskBar(task, t) {
-    return h_flex().h(12).gap(2).accessibility_label(task.text)
+    return h_flex().h(12).gap(S["space-1"]).accessibility_label(task.text)
       .children(task.parts.filter((part) => part.fraction > 0).map((part) => this.part(part.part, t).h_full().rounded(2)
         .w(`${part.fraction * 100}%`).accessibility_label(`${part.label}: ${part.value}`)));
   }
@@ -333,7 +334,7 @@ export default class PrioryCosts extends View {
    * @param {Palette} t @param {boolean} [disabled]
    */
   chip(id, label, on, action, t, disabled = false) {
-    return Button.new(id).h(S["pane-chip"]).px(10).flex().flex_none().items_center().rounded(S["radius-full"])
+    return Button.new(id).h(S["pane-chip"]).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-full"])
       .selected(on).disabled(disabled).opacity(disabled && !on ? 0.5 : 1)
       .bg(on ? t.emph : t.bg).text_color(on ? t["on-emph"] : t["text-2"]).text_size(S["type-small"][0]).font_weight(500)
       .hover((s) => s.bg(on ? t.emph : t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))

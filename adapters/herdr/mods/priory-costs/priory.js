@@ -175,14 +175,19 @@ const escapeHtml = (/** @type {string} */ text) => text.replace(/[&<>"']/g, (c) 
 
 /**
  * `autolink` spans as HTML for Herdr's `TextView.html`, which opens a link with the system's browser.
+ * It drops `<br>`, so each line is a paragraph.
  * @param {{ text: string, url?: string }[]} spans
  */
-export const spansHtml = (spans) => spans
-  .map(({ text, url }) => {
-    const html = escapeHtml(text).replaceAll("\n", "<br>");
-    return url ? `<a href="${escapeHtml(url)}">${html}</a>` : html;
-  })
-  .join("");
+export function spansHtml(spans) {
+  const lines = [""];
+  for (const { text, url } of spans) {
+    text.split("\n").forEach((part, index) => {
+      if (index > 0) lines.push("");
+      if (part) lines[lines.length - 1] += url ? `<a href="${escapeHtml(url)}">${escapeHtml(part)}</a>` : escapeHtml(part);
+    });
+  }
+  return lines.map((line) => `<p>${line}</p>`).join("");
+}
 
 /** A count and its noun: "1 task", "2 tasks"; `many` covers irregular plurals. @param {number} count @param {string} one @param {string} [many] */
 export const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;

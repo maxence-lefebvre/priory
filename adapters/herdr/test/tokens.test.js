@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { FONTS, STRUCTURE, THEMES, palette } from "../lib/tokens.js";
 
 // Each theme block of themes.css, as { theme: { token: [light, dark] } }.
@@ -38,5 +38,15 @@ test("the structure tokens a pane draws with are design/tokens/structure.css", (
     const declared = css.match(new RegExp(`--${token}:\\s*([^;]+);`))?.[1];
     const expected = Array.isArray(value) ? `${value[0]}px/${value[1] === 1 ? "1" : `${value[1]}px`}` : `${value}px`;
     assert.equal(declared, expected, `--${token} in adapters/herdr/lib/tokens.js`);
+  }
+});
+
+// The Priory bar draws Herdr's own chrome with Herdr's theme, so it alone keeps Herdr's spacing.
+test("every panel spaces with the structure tokens, never a raw number", () => {
+  const mods = new URL("../mods/", import.meta.url);
+  const files = readdirSync(mods).filter((mod) => mod.startsWith("priory-") && mod !== "priory-tabs").flatMap((mod) => readdirSync(new URL(`${mod}/`, mods)).filter((file) => file.endsWith(".js")).map((file) => `${mod}/${file}`));
+  for (const file of files) {
+    const raw = readFileSync(new URL(file, mods), "utf8").match(/\.(p|px|py|pt|pb|pl|pr|gap)\(\d+\)/g);
+    assert.equal(raw, null, `${file} spaces with ${raw?.join(", ")}: use STRUCTURE's space-N`);
   }
 });

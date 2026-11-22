@@ -1,10 +1,11 @@
 import { View, div, svg } from "gpui-kit";
-import { h_flex, v_flex, Button, Input, InputState, Popover, TextView } from "gpui-base";
+import { h_flex, v_flex, Button, Input, InputState, Popover } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
-import { follow, priory, spansHtml } from "./priory.js";
+import { follow, priory } from "./priory.js";
+import { selectable } from "./ui.js";
 import { addChoices } from "./add.js";
 import { AddForm } from "./add-form.js";
-import { FONTS, palette } from "./tokens.js";
+import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { moveTargets, queueList, reorder, upNext } from "./view.js";
 
 // The --pane-* tokens of design/tokens/structure.css, and the type and radii this panel uses.
@@ -55,9 +56,6 @@ async function connect() {
   const links = await client.links().then((read) => read.links, () => []);
   return { theme: config.theme ?? "indigo", client, links };
 }
-
-/** Text with its autolinks; plain text stays a plain child. @param {string} id @param {{ text: string, url?: string }[]} spans */
-const linked = (id, spans) => (spans.some((span) => span.url) ? TextView.html(id, spansHtml(spans)) : spans.map((span) => span.text).join(""));
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
 
@@ -295,14 +293,14 @@ export default class PrioryQueue extends View {
         cx.notify();
       })
       .child(this.header(list, t))
-      .when(Boolean(this.error), (el) => el.child(this.strip(`Reconnecting to priory: ${this.error}.${this.age(now)}`, t)))
-      .when(Boolean(list.paused), (el) => el.child(this.strip(list.paused ?? "", t)))
-      .when(Boolean(this.notice) && !this.rows().some((candidate) => candidate.id === this.notice?.task), (el) => el.child(this.strip(this.notice?.text ?? "", t)))
-      .when(this.adding.open, (el) => el.child(div().flex_none().px(16).pt(8).child(this.adding.render(t, "mods/priory-queue/icons", addChoices(this.data ?? { waiting: [] }, [])))))
+      .when(Boolean(this.error), (el) => el.child(this.strip("offline", `Reconnecting to priory: ${this.error}.${this.age(now)}`, t)))
+      .when(Boolean(list.paused), (el) => el.child(this.strip("paused", list.paused ?? "", t)))
+      .when(Boolean(this.notice) && !this.rows().some((candidate) => candidate.id === this.notice?.task), (el) => el.child(this.strip("notice", this.notice?.text ?? "", t)))
+      .when(this.adding.open, (el) => el.child(div().flex_none().px(S["space-4"]).pt(S["space-2"]).child(this.adding.render(t, "mods/priory-queue/icons", addChoices(this.data ?? { waiting: [] }, [])))))
       .child(this.filters(list, t))
       .child(wide ? h_flex().flex_1().min_h_0()
         .child(this.listPane(list, t, now, false).w(Math.min(400, this.width * 0.45)).flex_none().border_r(1).border_color(t.line))
-        .child(row ? v_flex().id("queue-detail").flex_1().min_w_0().min_h_0().overflow_y_scrollbar().p(16).gap(12).child(this.detail(row, t, true)) : div().flex_1())
+        .child(row ? v_flex().id("queue-detail").flex_1().min_w_0().min_h_0().overflow_y_scrollbar().p(S["space-4"]).gap(S["space-3"]).child(this.detail(row, t, true)) : div().flex_1())
         : this.listPane(list, t, now, true).flex_1());
   }
 
@@ -320,9 +318,9 @@ export default class PrioryQueue extends View {
     return ` Last update ${minutes < 1 ? "under a minute" : `${minutes} min`} ago.`;
   }
 
-  /** @param {string} text @param {Palette} t */
-  strip(text, t) {
-    return div().flex_none().px(16).py(6).whitespace_normal().text_size(TYPE.small[0]).text_color(t["warn-text"]).border_b(1).border_color(t.line).child(text);
+  /** @param {string} id @param {string} text @param {Palette} t */
+  strip(id, text, t) {
+    return div().flex_none().px(S["space-4"]).py(S["space-2"]).whitespace_normal().text_size(TYPE.small[0]).text_color(t["warn-text"]).border_b(1).border_color(t.line).child(selectable(id, text));
   }
 
   /** @param {ReturnType<typeof queueList>} list @param {Palette} t */
@@ -332,10 +330,10 @@ export default class PrioryQueue extends View {
     const trigger = Button.new("queue-more").size(PANE.control).flex().flex_none().items_center().justify_center().rounded(RADIUS.sm)
       .selected(open).bg(open ? t.raised : t.bg).hover((s) => s.bg(t.raised)).focus((s) => s.bg(t.raised))
       .accessibility_label("More for the queue").child(svg(ICON("more-horizontal")).size(16).text_color(t["text-2"]));
-    return h_flex().flex_none().h(PANE.head).px(16).gap(8).items_center().border_b(1).border_color(t.line)
+    return h_flex().flex_none().h(PANE.head).px(S["space-4"]).gap(S["space-2"]).items_center().border_b(1).border_color(t.line)
       .child(div().font_family(this.font.display).font_weight(700).text_size(16).child("Queue"))
       .child(div().flex_1().text_size(TYPE.small[0]).text_color(t["text-3"]).child(`${list.waiting} waiting`))
-      .child(Button.new("add-open").h(PANE.control).px(8).gap(4).flex().flex_none().items_center().rounded(RADIUS.sm)
+      .child(Button.new("add-open").h(PANE.control).px(S["space-2"]).gap(S["space-1"]).flex().flex_none().items_center().rounded(RADIUS.sm)
         .bg(t.bg).hover((s) => s.bg(t.raised)).focus((s) => s.bg(t.raised)).text_size(TYPE.small[0]).text_color(t.text)
         .accessibility_label("Add a task, N").on_click((_event, cx) => this.adding.show(cx))
         .child(svg(ICON("plus")).size(16).text_color(t["text-2"])).child("Add"))
@@ -351,7 +349,7 @@ export default class PrioryQueue extends View {
     /** @param {"lane" | "band"} facet @param {string} label */
     const picker = (facet, label) => {
       const value = this.facets[facet];
-      const trigger = Button.new(`facet-${facet}`).h(PANE.chip).px(10).flex().flex_none().items_center().gap(4).rounded(RADIUS.sm)
+      const trigger = Button.new(`facet-${facet}`).h(PANE.chip).px(S["space-3"]).flex().flex_none().items_center().gap(S["space-1"]).rounded(RADIUS.sm)
         .border(1).border_color(value ? t["action-soft"] : t["control-line"]).bg(value ? t["action-soft"] : t.surface)
         .text_color(value ? t["action-text"] : t.text).text_size(TYPE.small[0]).selected(this.popover === facet)
         .accessibility_label(value ? `${label}: ${value}. Clear` : `Filter by ${label.toLowerCase()}`)
@@ -365,22 +363,22 @@ export default class PrioryQueue extends View {
           this.refilter(cx);
         }])));
     };
-    return v_flex().flex_none().px(16).py(8).gap(8).border_b(1).border_color(t.line)
-      .child(h_flex().gap(6).flex_wrap().children(list.views.map((view) => {
+    return v_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).border_b(1).border_color(t.line)
+      .child(h_flex().gap(S["space-2"]).flex_wrap().children(list.views.map((view) => {
         const on = this.view === view.id;
-        return Button.new(`view-${view.id}`).h(PANE.chip).px(10).flex().flex_none().items_center().gap(4).rounded(999)
+        return Button.new(`view-${view.id}`).h(PANE.chip).px(S["space-3"]).flex().flex_none().items_center().gap(S["space-1"]).rounded(999)
           .selected(on).text_size(TYPE.small[0]).font_weight(on ? 600 : 500).bg(on ? t.emph : t.surface).text_color(on ? t["on-emph"] : t.text)
           .hover((s) => s.opacity(0.88)).focus((s) => s.border(2).border_color(t["action-text"]))
           .on_click((_event, cx) => { this.view = view.id; this.refilter(cx); })
           .child(view.label).child(div().opacity(0.7).child(view.id === "all" ? "" : String(view.count)));
       })))
-      .child(h_flex().gap(6).flex_wrap().child(picker("lane", "Lane")).child(picker("band", "Band")));
+      .child(h_flex().gap(S["space-2"]).flex_wrap().child(picker("lane", "Lane")).child(picker("band", "Band")));
   }
 
   /** @param {Palette} t @param {MenuItem[]} items */
   menu(t, items) {
-    return v_flex().min_w(220).p(4).gap(2).rounded(RADIUS.md).bg(t.surface).border(1).border_color(t["control-line"])
-      .children(items.map(([label, hint, action, icon], index) => Button.new(`menu-${index}-${label}`).h(PANE.control).px(8).gap(8).flex().items_center()
+    return v_flex().min_w(220).p(S["space-1"]).gap(S["space-1"]).rounded(RADIUS.md).bg(t.surface).border(1).border_color(t["control-line"])
+      .children(items.map(([label, hint, action, icon], index) => Button.new(`menu-${index}-${label}`).h(PANE.control).px(S["space-2"]).gap(S["space-2"]).flex().items_center()
         .rounded(RADIUS.sm).text_size(TYPE.small[0]).text_color(t.text).hover((s) => s.bg(t.raised)).focus((s) => s.bg(t.raised))
         .on_click((_event, cx) => action(cx))
         .when(Boolean(icon), (el) => el.child(svg(ICON(/** @type {string} */ (icon))).size(14).text_color(t["text-2"])))
@@ -396,17 +394,17 @@ export default class PrioryQueue extends View {
       ended: "No task ended in the last day.",
       all: "No tasks yet.",
     }[this.view] ?? "";
-    if (!this.data) return v_flex().id("queue-list").p(16).text_color(t["text-3"]).child(this.error ? "" : "Loading the queue…");
-    return v_flex().id("queue-list").min_h_0().overflow_y_scrollbar().pb(16)
+    if (!this.data) return v_flex().id("queue-list").p(S["space-4"]).text_color(t["text-3"]).child(this.error ? "" : "Loading the queue…");
+    return v_flex().id("queue-list").min_h_0().overflow_y_scrollbar().pb(S["space-4"])
       .when(this.view === "next" && this.data.up_next.length > 0, (el) => el.child(this.upNext(t, now)))
-      .when(!list.sections.length, (el) => el.child(div().p(16).text_color(t["text-2"]).child(empty)))
+      .when(!list.sections.length, (el) => el.child(div().p(S["space-4"]).text_color(t["text-2"]).child(empty)))
       .children(list.sections.map((section) => v_flex()
         .child(this.sectionHead(section, t))
         .children((this.folded(section.id) ? [] : section.rows).map((/** @type {Row} */ row) => {
           const selected = row.id === this.selected;
-          return v_flex().px(8)
+          return v_flex().px(S["space-2"])
             .child(this.row(row, selected, t))
-            .when(inPlace && selected && this.opened, (el) => el.child(v_flex().px(8).pb(12).gap(10).child(this.detail(row, t, false))));
+            .when(inPlace && selected && this.opened, (el) => el.child(v_flex().px(S["space-2"]).pb(S["space-3"]).gap(S["space-3"]).child(this.detail(row, t, false))));
         }))));
   }
 
@@ -417,7 +415,7 @@ export default class PrioryQueue extends View {
 
   /** @param {{ id: string, title: string, note: string }} section @param {Palette} t */
   sectionHead(section, t) {
-    const head = h_flex().px(16).pt(14).pb(6).gap(6).items_center().text_size(TYPE.caption[0]).font_weight(600).text_color(t["text-2"])
+    const head = h_flex().px(S["space-4"]).pt(S["space-3"]).pb(S["space-2"]).gap(S["space-2"]).items_center().text_size(TYPE.caption[0]).font_weight(600).text_color(t["text-2"])
       .child(section.title).child(div().font_weight(400).text_color(t["text-3"]).child(section.note));
     if (section.id !== "ended" || this.view !== "next") return head;
     return Button.new("fold-ended").w_full().focus((s) => s.bg(t.raised)).selected(this.lastDay)
@@ -431,11 +429,11 @@ export default class PrioryQueue extends View {
     // A schedule that wakes an asleep task names a task the queue does not list.
     const all = queueList(this.data, { view: "all", now }).sections.flatMap((section) => section.rows);
     const listed = (/** @type {number | null} */ task) => all.some((row) => row.id === task);
-    return v_flex().mx(16).mt(12).p(4).rounded(RADIUS.md).border(1).border_color(t.line).bg(t.surface)
-      .child(h_flex().px(8).py(4).gap(6).items_center().text_size(TYPE.caption[0])
+    return v_flex().mx(16).mt(12).p(S["space-1"]).rounded(RADIUS.md).border(1).border_color(t.line).bg(t.surface)
+      .child(h_flex().px(S["space-2"]).py(S["space-1"]).gap(S["space-2"]).items_center().text_size(TYPE.caption[0])
         .child(svg(ICON("calendar-clock")).size(14).text_color(t["text-2"]))
         .child(div().font_weight(600).child("Up next")).child(div().text_color(t["text-3"]).child("the next 3 runs")))
-      .children(upNext(this.data, now).map((next, index) => Button.new(`next-${index}`).px(8).py(6).flex().gap(10).items_start().rounded(RADIUS.sm)
+      .children(upNext(this.data, now).map((next, index) => Button.new(`next-${index}`).px(S["space-2"]).py(S["space-2"]).flex().gap(S["space-3"]).items_start().rounded(RADIUS.sm)
         .hover((s) => s.bg(t.raised)).focus((s) => s.bg(t.raised)).disabled(!listed(next.task))
         .accessibility_label(`${next.when} ${next.sub}: ${next.label}${next.title ? `, ${next.title}` : ""}. ${next.why}`)
         .on_click((_event, cx) => {
@@ -467,13 +465,13 @@ export default class PrioryQueue extends View {
         if (dragged !== null) this.reorder(dragged, { onto: row.id }, cx);
         cx.stop_propagation();
       }))
-      .child(Button.new(`row-${row.id}`).flex_1().min_w_0().min_h(PANE.row).px(8).py(8).flex().items_start().gap(10).rounded(RADIUS.md)
+      .child(Button.new(`row-${row.id}`).flex_1().min_w_0().min_h(PANE.row).px(S["space-2"]).py(S["space-2"]).flex().items_start().gap(S["space-3"]).rounded(RADIUS.md)
         .selected(selected).hover((s) => s.bg(selected ? t["action-soft"] : t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
         .accessibility_label(`${row.tile} ${row.key}${row.title ? `, ${row.title}` : ""}: ${row.why?.text ?? row.step}`)
         .on_click((_event, cx) => this.select(row.id, cx))
         .child(this.tile(row.tile, t))
-        .child(v_flex().flex_1().min_w_0().gap(2)
-          .child(h_flex().gap(6).items_center().text_size(TYPE.caption[0]).text_color(t["text-3"])
+        .child(v_flex().flex_1().min_w_0().gap(S["space-1"])
+          .child(h_flex().gap(S["space-2"]).items_center().text_size(TYPE.caption[0]).text_color(t["text-3"])
             .when(row.position != null, (el) => el.child(div().font_weight(600).text_color(t["text-2"]).child(String(row.position))))
             .child(div().font_family(this.font.mono).text_color(t.text).child(row.key))
             .child(div().child(row.step))
@@ -485,7 +483,7 @@ export default class PrioryQueue extends View {
           .when(Boolean(row.why), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).line_height(TYPE.small[1]).text_color(this.tone(row.why.tone, t)).child(row.why.text)))
           .when(Boolean(row.conditions?.length), (el) => el.children(row.conditions.map((/** @type {{ text: string, met: boolean }} */ item) => this.condition(item, t))))))
       .child(reorderable
-        ? div().id(`grip-${row.id}`).w(PANE.grip).flex_none().flex().justify_center().pt(10).cursor_grab()
+        ? div().id(`grip-${row.id}`).w(PANE.grip).flex_none().flex().justify_center().pt(S["space-3"]).cursor_grab()
           .on_mouse_down("left", (_event, cx) => { this.drag = row.id; this.selected = row.id; cx.stop_propagation(); cx.notify(); })
           .child(svg(ICON("grip-vertical")).size(14).text_color(t["text-3"]))
         : div().w(PANE.grip).flex_none());
@@ -498,7 +496,7 @@ export default class PrioryQueue extends View {
 
   /** @param {{ text: string, met: boolean }} item @param {Palette} t */
   condition(item, t) {
-    return h_flex().gap(4).items_center().text_size(TYPE.caption[0]).text_color(item.met ? t["ok-text"] : t["text-2"])
+    return h_flex().gap(S["space-1"]).items_center().text_size(TYPE.caption[0]).text_color(item.met ? t["ok-text"] : t["text-2"])
       .child(svg(ICON(item.met ? "check" : "clock")).size(12).flex_none()).child(div().whitespace_normal().child(item.text));
   }
 
@@ -513,19 +511,19 @@ export default class PrioryQueue extends View {
   /** What an opened row shows: why it waits, and the person's actions. @param {Row} row @param {Palette} t @param {boolean} wide */
   detail(row, t, wide) {
     const notice = this.notice?.task === row.id ? this.notice.text : null;
-    return v_flex().gap(12)
+    return v_flex().gap(S["space-3"])
       .when(wide, (el) => el
-        .child(h_flex().flex_wrap().gap(6).items_center().text_size(TYPE.caption[0]).text_color(t["text-3"])
-          .child(this.tile(row.tile, t)).child(div().font_family(this.font.mono).text_color(t["text-2"]).child(row.key)).child(row.step).child(row.tile))
-        .child(div().whitespace_normal().font_family(this.font.display).font_weight(700).text_size(TYPE.title[0]).line_height(TYPE.title[1]).child(row.title ? linked(`title-${row.id}`, row.titleSpans) : row.key)))
-      // The compact row truncates its title in a button, so the opened detail repeats a title that links.
-      .when(!wide && row.titleSpans?.some((span) => span.url), (el) => el.child(div().whitespace_normal().child(linked(`title-${row.id}`, row.titleSpans))))
-      .when(Boolean(row.why) && wide, (el) => el.child(v_flex().p(12).gap(6).rounded(RADIUS.md).border(1).border_color(row.why.tone === "warn" ? t["warn-text"] : t.line)
-        .child(div().whitespace_normal().child(row.why.text))
+        .child(h_flex().flex_wrap().gap(S["space-2"]).items_center().text_size(TYPE.caption[0]).text_color(t["text-3"])
+          .child(this.tile(row.tile, t)).child(div().font_family(this.font.mono).text_color(t["text-2"]).child(selectable(`key-${row.id}`, row.key))).child(row.step).child(row.tile))
+        .child(div().whitespace_normal().font_family(this.font.display).font_weight(700).text_size(TYPE.title[0]).line_height(TYPE.title[1]).child(row.title ? selectable(`title-${row.id}`, row.titleSpans) : selectable(`title-${row.id}`, row.key))))
+      // The compact row truncates its title in a button, so the opened detail repeats it to read, select and follow.
+      .when(!wide && Boolean(row.title), (el) => el.child(div().whitespace_normal().child(selectable(`title-${row.id}`, row.titleSpans))))
+      .when(Boolean(row.why) && wide, (el) => el.child(v_flex().p(S["space-3"]).gap(S["space-2"]).rounded(RADIUS.md).border(1).border_color(row.why.tone === "warn" ? t["warn-text"] : t.line)
+        .child(div().whitespace_normal().child(selectable(`why-${row.id}`, row.why.text)))
         .children((row.conditions ?? []).map((/** @type {{ text: string, met: boolean }} */ item) => this.condition(item, t)))))
-      .when(Boolean(notice), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["warn-text"]).child(notice ?? "")))
+      .when(Boolean(notice), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["warn-text"]).child(selectable(`notice-${row.id}`, notice ?? ""))))
       .child(this.actions(row, t))
-      .when(wide && WAITING.includes(row.tile), (el) => el.child(v_flex().gap(6)
+      .when(wide && WAITING.includes(row.tile), (el) => el.child(v_flex().gap(S["space-2"])
         .child(div().text_size(TYPE.small[0]).font_weight(650).child("Order"))
         .child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["text-2"])
           .child("A higher band starts first. Inside a band, the order you set with the grip or Shift J and Shift K wins, then the oldest first."))));
@@ -535,7 +533,7 @@ export default class PrioryQueue extends View {
   actions(row, t) {
     const off = this.acting || Boolean(this.error);
     /** @param {string} id @param {string} icon @param {string} label @param {(cx: import("gpui-kit").Context) => void} action */
-    const button = (id, icon, label, action) => Button.new(`${id}-${row.id}`).h(PANE.control).px(10).flex().flex_none().items_center().gap(6)
+    const button = (id, icon, label, action) => Button.new(`${id}-${row.id}`).h(PANE.control).px(S["space-3"]).flex().flex_none().items_center().gap(S["space-2"])
       .rounded(RADIUS.card).border(1).border_color(t["control-line"]).bg(this.popover === id ? t.raised : t.surface).text_color(t.text)
       .text_size(TYPE.small[0]).font_weight(600).disabled(off).opacity(off ? 0.5 : 1).hover((s) => s.bg(t.raised))
       .focus((s) => s.border(2).border_color(t["action-text"])).on_click((_event, cx) => action(cx))
@@ -553,12 +551,12 @@ export default class PrioryQueue extends View {
     const task = row.id;
     const waiting = WAITING.includes(row.tile);
     const targets = this.data ? moveTargets(this.data, task) : [];
-    return h_flex().gap(6).flex_wrap().items_center()
+    return h_flex().gap(S["space-2"]).flex_wrap().items_center()
       .when(targets.length > 0, (el) => el.child(popover("move", "arrow-up-to-line", "Move…", this.menu(t, targets.map(({ label, move }) =>
         [label, "", (cx) => this.act(task, "Move", (client, revision) => client.move(task, move, revision), cx)])))))
-      .when(waiting, (el) => el.child(popover("hold", "pause", "Hold…", v_flex().w(260).p(10).gap(8).rounded(RADIUS.md).bg(t.surface).border(1).border_color(t["control-line"])
+      .when(waiting, (el) => el.child(popover("hold", "pause", "Hold…", v_flex().w(260).p(S["space-3"]).gap(S["space-2"]).rounded(RADIUS.md).bg(t.surface).border(1).border_color(t["control-line"])
         .child(div().text_size(TYPE.small[0]).font_weight(600).child(`Hold ${row.key} until a person releases it`))
-        .child(div().h(PANE.control).px(8).rounded(RADIUS.sm).border(1).border_color(t["control-line"]).child(Input.new(this.reason).h_full().w_full().text_size(TYPE.small[0]).text_color(t.text)))
+        .child(div().h(PANE.control).px(S["space-2"]).rounded(RADIUS.sm).border(1).border_color(t["control-line"]).child(Input.new(this.reason).h_full().w_full().text_size(TYPE.small[0]).text_color(t.text)))
         .child(button("hold-confirm", "", "Hold", (cx) => this.hold(cx))))))
       .when(row.tile === "held", (el) => el.child(button("release", "play", "Release", (cx) => this.act(task, "Release", (client, revision) => client.release(task, revision), cx))))
       .when(row.tile === "running", (el) => el.child(button("attach", "terminal", "Attach", (cx) => {
@@ -569,9 +567,9 @@ export default class PrioryQueue extends View {
         setShared("priory.task.open", { task, at: Date.now() });
         cx.notify();
       }))
-      .when(waiting || row.tile === "held" || row.tile === "running", (el) => el.child(popover("cancel", "x", "Cancel…", v_flex().w(260).p(10).gap(8).rounded(RADIUS.md).bg(t.surface).border(1).border_color(t["control-line"])
+      .when(waiting || row.tile === "held" || row.tile === "running", (el) => el.child(popover("cancel", "x", "Cancel…", v_flex().w(260).p(S["space-3"]).gap(S["space-2"]).rounded(RADIUS.md).bg(t.surface).border(1).border_color(t["control-line"])
         .child(div().whitespace_normal().text_size(TYPE.small[0]).child(`Cancel ${row.key}? Its run stops and the task ends as dropped.`))
-        .child(Button.new(`cancel-confirm-${task}`).h(PANE.control).px(12).flex().items_center().rounded(RADIUS.card).bg(t["tile-danger"]).text_color(t["on-tile"])
+        .child(Button.new(`cancel-confirm-${task}`).h(PANE.control).px(S["space-3"]).flex().items_center().rounded(RADIUS.card).bg(t["tile-danger"]).text_color(t["on-tile"])
           .font_weight(600).focus((s) => s.border(2).border_color(t["action-text"]))
           .on_click((_event, cx) => this.act(task, "Cancel", (client, revision) => client.cancel(task, revision), cx)).child(`Cancel ${row.key}`)))));
   }

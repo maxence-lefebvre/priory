@@ -85,7 +85,7 @@ export class AddForm {
       .child(div().w(64).flex_none().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(label))
       .children(choices[field].map((value) => {
         const on = this.picked[field] === value;
-        return Button.new(`add-${field}-${value}`).h(S["pane-chip"]).px(10).flex().flex_none().items_center().rounded(S["radius-sm"])
+        return Button.new(`add-${field}-${value}`).h(S["pane-chip"]).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-sm"])
           .selected(on).border(1).border_color(on ? t["action-soft"] : t["control-line"]).bg(on ? t["action-soft"] : t.surface)
           .text_size(S["type-caption"][0]).text_color(on ? t["action-text"] : t.text)
           .focus((s) => s.border(2).border_color(t["action-text"]))

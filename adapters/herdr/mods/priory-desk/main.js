@@ -3,6 +3,7 @@ import { v_flex, h_flex, Button, TextView } from "gpui-base";
 import { appHome, checking, exec, focused, home as herdrHome, layout as shown, nextCommand, panes, readTextFile, run, setShared, settings } from "herdr";
 import { showAsks } from "./layout.js";
 import { follow, priory, spansHtml } from "./priory.js";
+import { selectable } from "./ui.js";
 import { addChoices } from "./add.js";
 import { AddForm } from "./add-form.js";
 import { deskModel, mergeSince, tomorrowAt } from "./view.js";
@@ -326,7 +327,7 @@ export default class PrioryDesk extends View {
     const failed = this.error
       ? h_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).items_center().border_b(1).border_color(t.line).bg(t.surface)
         .child(div().flex_1().min_w_0().whitespace_normal().text_size(S["type-small"][0]).text_color(t["danger-text"])
-          .child(`Could not read the desk: ${this.error}. Check that priory runs where settings.json's "priory" object says, then retry.`))
+          .child(selectable("desk-error", `Could not read the desk: ${this.error}. Check that priory runs where settings.json's "priory" object says, then retry.`)))
         .child(ui.button("retry", "Retry", (_e, cx) => {
           if (this.reading) return;
           this.load(cx);
@@ -352,7 +353,7 @@ export default class PrioryDesk extends View {
       .when(this.adding.open, (el) => el.child(this.adding.render(t, ICONS, addChoices(this.data.queue, this.data.tasks.tasks))))
       .when(Boolean(model.next), (el) => el.child(this.next(ui, model, wide)))
       .children(model.banners.map((text, i) => ui.banner(`banner-${i}`, text)))
-      .when(Boolean(this.actionError), (el) => el.child(div().text_size(S["type-small"][0]).text_color(t["danger-text"]).child(String(this.actionError))));
+      .when(Boolean(this.actionError), (el) => el.child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["danger-text"]).child(selectable("action-error", String(this.actionError)))));
     const list = v_flex().gap(S["space-3"]).min_w_0()
       .child(this.views(ui, model))
       .children(model.sections(this.view).map((section) => this.section(ui, section, table)))
@@ -392,15 +393,15 @@ export default class PrioryDesk extends View {
         .child(div().text_color(t["text-2"]).child(next.step ?? ""))
         .child(div().flex_1())
         .child(div().text_color(t["text-3"]).child(`waits ${next.age}`)))
-      .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(`First because ${next.why}`))
+      .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(selectable("next-why", `First because ${next.why}`)))
       .when(Boolean(next.routed), (el) => el.child(routed(ui, next.routed)))
       .when(Boolean(next.runner), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(next.away ? t["warn-text"] : t["text-2"]).child([next.runner, next.away].filter(Boolean).join(", "))))
       .when(Boolean(next.sent), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(next.sent?.refused ? t["warn-text"] : t["action-text"]).child(next.sent?.text ?? "")))
-      .child(div().whitespace_normal().font_family(ui.fonts.display).text_size(S["type-pane-question"][0]).line_height(S["type-pane-question"][1] / S["type-pane-question"][0]).font_weight(650).child(linked("next-question", next.questionSpans)))
+      .child(div().whitespace_normal().font_family(ui.fonts.display).text_size(S["type-pane-question"][0]).line_height(S["type-pane-question"][1] / S["type-pane-question"][0]).font_weight(650).child(selectable("next-question", next.questionSpans)))
       .when(Boolean(next.recommendation || next.tradeoff), (el) => el.child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-2"])
-        .child(next.recommendation ? `Recommends ${next.recommendation}. ${next.tradeoff ?? ""}` : String(next.tradeoff))))
+        .child(selectable("next-recommendation", next.recommendation ? `Recommends ${next.recommendation}. ${next.tradeoff ?? ""}` : String(next.tradeoff)))))
       .when(Boolean(next.progress?.nextAction), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"])
-        .child(`Next: ${next.progress?.nextAction}`)))
+        .child(selectable("next-action", `Next: ${next.progress?.nextAction}`))))
       .child(h_flex().gap(S["space-2"]).flex_wrap().items_center()
         .when(next.ask != null, (el) => el.child(ui.button("next-answer", "Answer…", () => this.answer(/** @type {number | string} */ (next.ask)), { primary: true })))
         .when(next.todo != null, (el) => el.child(ui.button("next-done", "Done", (_e, cx) => this.done(cx, /** @type {number} */ (next.todo)), { disabled: this.busy })))
@@ -444,6 +445,8 @@ export default class PrioryDesk extends View {
     const reasonColor = t[(TILES[row.kind] ?? MUTED_TILE)[2]];
     const meta = row.recommends ? `Recommends ${row.recommends}` : null;
     const snoozed = row.snoozed;
+    // The selected row's text selects and copies; another row's is a label, so a press selects the row.
+    const text = selected ? selectable(`text-${row.id}`, row.textSpans) : linked(`text-${row.id}`, row.textSpans);
     const note = row.note
       ? h_flex().gap(S["space-1"]).items_center().text_size(S["type-caption"][0]).text_color(snoozed ? t["text-3"] : t["action-text"])
         .child(svg(`${ICONS}/${snoozed ? "clock" : "rotate-ccw"}.svg`).size(13).flex_none().text_color(snoozed ? t["text-3"] : t["action-text"])).child(row.note)
@@ -454,8 +457,8 @@ export default class PrioryDesk extends View {
           .child(ui.icon(row.kind, 15)).child(row.kind))
         .child(div().w(96).flex_none().truncate().child(ui.mono(row.key ?? "")))
         .child(div().w(80).flex_none().truncate().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(row.step ?? ""))
-        .child(v_flex().flex_1().min_w_0().gap(2)
-          .child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(row.kind === "ask" ? t.text : reasonColor).child(linked(`text-${row.id}`, row.textSpans)))
+        .child(v_flex().flex_1().min_w_0().gap(S["space-1"])
+          .child(div().whitespace_normal().text_size(S["type-small"][0]).text_color(row.kind === "ask" ? t.text : reasonColor).child(text))
           .when(Boolean(note), (el) => el.child(note))
           .when(Boolean(row.routed), (el) => el.child(routed(ui, row.routed)))
           .when(Boolean(row.runner), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(row.away ? t["warn-text"] : t["text-2"]).child([row.runner, row.away].filter(Boolean).join(", "))))
@@ -465,17 +468,17 @@ export default class PrioryDesk extends View {
         .child(div().w(48).flex_none().text_right().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(row.count != null ? String(row.count) : row.age ?? ""))
       : h_flex().gap(S["space-3"]).items_start()
         .child(ui.tile(row.id, row.kind, S["pane-tile"]))
-        .child(v_flex().flex_1().min_w_0().gap(2)
+        .child(v_flex().flex_1().min_w_0().gap(S["space-1"])
           .child(h_flex().gap(S["space-2"]).items_center().text_size(S["type-caption"][0])
             .child(ui.mono(row.key ?? ""))
             .child(div().truncate().text_color(t["text-2"]).child(row.step ?? ""))
             .when(row.kind !== "ask", (el) => el.child(div().text_color(reasonColor).child(row.kind)))
-            .when(Boolean(row.runner), (el) => el.child(div().flex_none().px(5).rounded(S["radius-sm"]).bg(t.raised).font_weight(600).text_color(row.away ? t["warn-text"] : t["text-2"]).child(String(row.runner))))
+            .when(Boolean(row.runner), (el) => el.child(div().flex_none().px(S["space-1"]).rounded(S["radius-sm"]).bg(t.raised).font_weight(600).text_color(row.away ? t["warn-text"] : t["text-2"]).child(String(row.runner))))
             .when(Boolean(row.prs), (el) => el.child(div().flex_none().text_color(t["text-2"]).child(String(row.prs))))
             .child(div().flex_1())
             .child(div().flex_none().text_color(t["text-3"]).child(row.count != null ? String(row.count) : row.age ?? "")))
           .child(div().whitespace_normal().max_h(2 * S["type-body"][1]).overflow_hidden().text_size(S["type-body"][0])
-            .text_color(row.kind === "ask" ? t.text : reasonColor).child(linked(`text-${row.id}`, row.textSpans)))
+            .text_color(row.kind === "ask" ? t.text : reasonColor).child(text))
           .when(Boolean(row.sent), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(row.sent?.refused ? t["warn-text"] : t["action-text"]).child(row.sent?.text ?? "")))
           .when(Boolean(row.away) && !row.sent, (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["warn-text"]).child(`${row.runner} ${row.away}`)))
           .when(Boolean(meta) && !row.sent, (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(String(meta))))
@@ -516,7 +519,7 @@ export default class PrioryDesk extends View {
           (_e, cx) => this.snooze(cx, /** @type {NonNullable<Row["snooze"]>} */ (item), { until: tomorrowAt(9, Date.now()) }), { icon: "moon", disabled: this.busy })));
     return v_flex().gap(S["space-2"]).pl(S["pane-tile"] + S["space-3"])
       .children((row.memories ?? []).map((/** @type {any} */ memory) => this.memory(ui, memory)))
-      .children((row.progress ?? []).map((/** @type {string} */ line, /** @type {number} */ i) => div().id(`progress-${row.id}-${i}`).whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(String(line))))
+      .children((row.progress ?? []).map((/** @type {string} */ line, /** @type {number} */ i) => div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(selectable(`progress-${row.id}-${i}`, String(line)))))
       .child(actions);
   }
 
@@ -527,12 +530,12 @@ export default class PrioryDesk extends View {
     const armed = this.memoryArmed?.id === memory.id;
     const sent = this.memorySent.get(memory.id);
     const shown = this.currentShown.has(memory.id);
-    const text = (/** @type {string} */ id, /** @type {string} */ body) => div().id(id).whitespace_normal().px(S["space-3"]).py(S["space-2"]).rounded(S["radius-md"]).bg(t.raised).text_size(S["type-small"][0]).child(body);
+    const text = (/** @type {string} */ id, /** @type {string} */ body) => div().whitespace_normal().px(S["space-3"]).py(S["space-2"]).rounded(S["radius-md"]).bg(t.raised).text_size(S["type-small"][0]).child(selectable(id, body));
     return v_flex().id(`memory-${memory.id}`).gap(S["space-2"]).pt(S["space-2"]).border_t(1).border_color(t.line)
       .child(h_flex().gap(S["space-2"]).items_center().text_size(S["type-caption"][0])
-        .child(div().font_family(ui.fonts.mono).text_color(t.text).child(String(memory.name)))
-        .child(div().px(5).rounded(S["radius-sm"]).border(1).border_color(memory.warn ? t["warn-text"] : t["control-line"]).text_color(memory.warn ? t["warn-text"] : t["text-2"]).child(String(memory.tag))))
-      .when(Boolean(memory.description), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(String(memory.description))))
+        .child(div().font_family(ui.fonts.mono).text_color(t.text).child(selectable(`memory-name-${memory.id}`, String(memory.name))))
+        .child(div().px(S["space-1"]).rounded(S["radius-sm"]).border(1).border_color(memory.warn ? t["warn-text"] : t["control-line"]).text_color(memory.warn ? t["warn-text"] : t["text-2"]).child(String(memory.tag))))
+      .when(Boolean(memory.description), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(selectable(`memory-description-${memory.id}`, String(memory.description)))))
       .child(text(`memory-text-${memory.id}`, String(memory.text)))
       .when(memory.current != null, (el) => el
         .child(ui.button(`current-${memory.id}`, shown ? "Hide current text" : "Current text", (_e, cx) => {
@@ -574,7 +577,7 @@ export default class PrioryDesk extends View {
       .children(model.since.rows.map((/** @type {Model["since"]["rows"][number]} */ event, /** @type {number} */ i) => h_flex().id(`since-${i}`).gap(S["space-2"]).py(S["space-1"]).items_start().text_size(S["type-caption"][0])
         .border_t(1).border_color(t.line)
         .child(div().flex_none().child(ui.mono(event.key ?? "")))
-        .child(div().flex_1().min_w_0().whitespace_normal().text_color(t["text-2"]).child(event.what))
+        .child(div().flex_1().min_w_0().whitespace_normal().text_color(t["text-2"]).child(selectable(`since-what-${i}`, event.what)))
         .child(div().flex_none().font_family(ui.fonts.mono).text_color(t["text-3"]).child(event.time))));
   }
 }
@@ -617,7 +620,7 @@ class Ui {
     return h_flex().id(id).gap(S["space-2"]).px(S["space-3"]).py(S["space-2"]).items_start().rounded(S["radius-md"]).bg(this.t.surface)
       .border(1).border_color(this.t["warn-text"]).text_size(S["type-small"][0])
       .child(svg(`${ICONS}/${/memory/.test(text) ? "memory-stick" : "hard-drive"}.svg`).size(16).flex_none().text_color(this.t["warn-text"]))
-      .child(div().flex_1().min_w_0().whitespace_normal().child(text));
+      .child(div().flex_1().min_w_0().whitespace_normal().child(selectable(`${id}-text`, text)));
   }
 
   /** @param {string[][]} hints @param {boolean} [inline] */

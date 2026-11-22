@@ -103,15 +103,23 @@ const RAN = {
   uncertain: "Priory stopped while this ran. Check the target before you act on it.",
 };
 
-/** @param {any} ask @returns {{ title: string, words: string[], note: string } | null} */
+/** A word as a POSIX shell reads it back: bare when safe, else single-quoted. @param {string} word */
+const shellWord = (word) => (/^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`);
+
+/** @param {any} ask @returns {{ title: string, words: string[], note: string, line: string } | null} the command, and `line` to copy */
 function command(ask) {
   const owner = runnerOf(ask);
   if (!ask.command) return null;
   if (typeof ask.command === "string") {
-    return { title: "Command the asker attached", words: [ask.command], note: "Priory stores this command and never runs it: the ask came from outside Priory." };
+    return { title: "Command the asker attached", words: [ask.command], note: "Priory stores this command and never runs it: the ask came from outside Priory.", line: ask.command };
   }
   const { argv, dir, target, runs } = ask.command;
-  return { title: "Command an answer runs", words: argv, note: `In ${dir} (${target}). ${owner ? `Runs on ${owner} when` : "Runs when"} answered ${runs.join(" or ")}. Bound to revision ${ask.revision}. Runs at most once.` };
+  return {
+    title: "Command an answer runs",
+    words: argv,
+    note: `In ${dir} (${target}). ${owner ? `Runs on ${owner} when` : "Runs when"} answered ${runs.join(" or ")}. Bound to revision ${ask.revision}. Runs at most once.`,
+    line: argv.map(shellWord).join(" "),
+  };
 }
 
 export const ARM_MS = 4000;

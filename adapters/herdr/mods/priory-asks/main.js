@@ -1,8 +1,9 @@
 import { View, div, svg } from "gpui-kit";
-import { h_flex, v_flex, Button, Popover, ScrollHandle, Textarea, TextareaState, TextView } from "gpui-base";
+import { h_flex, v_flex, Button, Popover, ScrollHandle, Textarea, TextareaState } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared, shared } from "herdr";
-import { follow, priory, runnerOf, spansHtml } from "./priory.js";
-import { FONTS, palette } from "./tokens.js";
+import { follow, priory, runnerOf } from "./priory.js";
+import { selectable } from "./ui.js";
+import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { ARM_MS, askDetail, asksList, press, refusal, tomorrowAt } from "./view.js";
 
 // The --pane-* tokens of design/tokens/structure.css, and the type and radii this panel uses.
@@ -45,9 +46,6 @@ async function connect() {
   return { theme: config.theme ?? "indigo", client, links };
 }
 
-/** Text with its autolinks; plain text stays a plain child. @param {string} id @param {{ text: string, url?: string }[]} spans */
-const linked = (id, spans) => (spans.some((span) => span.url) ? TextView.html(id, spansHtml(spans)) : spans.map((span) => span.text).join(""));
-
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
 
 export default class PrioryAsks extends View {
@@ -66,6 +64,8 @@ export default class PrioryAsks extends View {
     this.task = null;
     this.updated = 0;
     this.width = 420;
+    /** @type {string | null} the command line Copy last put on the clipboard */
+    this.copied = null;
     this.view = "open";
     /** @type {{ command?: boolean, lane?: string, band?: string, risk?: string, task?: string, runner?: string }} */
     this.facets = {};
@@ -391,8 +391,8 @@ export default class PrioryAsks extends View {
       })
       .when(!reading, (el) => el.child(this.header(t, open)).child(this.filters(list, t)))
       .when(Boolean(this.error), (el) => el.child(this.offline(t, now)))
-      .when(Boolean(this.flash) && !reading, (el) => el.child(h_flex().flex_none().px(16).py(6).gap(8).items_center().border_b(1).border_color(t.line)
-        .text_size(TYPE.small[0]).text_color(t["warn-text"]).child(div().flex_1().whitespace_normal().child(this.flash ?? ""))
+      .when(Boolean(this.flash) && !reading, (el) => el.child(h_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).items_center().border_b(1).border_color(t.line)
+        .text_size(TYPE.small[0]).text_color(t["warn-text"]).child(div().flex_1().min_w_0().whitespace_normal().child(selectable("flash", this.flash ?? "")))
         .child(this.secondary("flash-close", "Close", (cx) => { this.flash = null; cx.notify(); }, t))))
       .child(reading ? this.reader(ask, t, now)
         : wide ? h_flex().flex_1().min_h_0()
@@ -403,7 +403,7 @@ export default class PrioryAsks extends View {
 
   /** @param {Palette} t @param {number} open */
   header(t, open) {
-    return h_flex().flex_none().h(PANE.head).px(16).gap(8).items_center().border_b(1).border_color(t.line)
+    return h_flex().flex_none().h(PANE.head).px(S["space-4"]).gap(S["space-2"]).items_center().border_b(1).border_color(t.line)
       .child(div().font_family(this.font.display).font_weight(700).text_size(16).child("Asks"))
       .child(div().text_size(TYPE.small[0]).text_color(t["text-3"]).child(`${open} open`));
   }
@@ -411,7 +411,7 @@ export default class PrioryAsks extends View {
   /** @param {ReturnType<typeof asksList>} list @param {Palette} t */
   filters(list, t) {
     /** @param {string} id @param {string} label @param {boolean} on @param {(cx: import("gpui-kit").Context) => void} action @param {number} radius */
-    const chip = (id, label, on, action, radius) => Button.new(id).h(PANE.chip).px(10).flex().flex_none().items_center().gap(4).rounded(radius)
+    const chip = (id, label, on, action, radius) => Button.new(id).h(PANE.chip).px(S["space-3"]).flex().flex_none().items_center().gap(S["space-1"]).rounded(radius)
       .selected(on).text_size(TYPE.small[0]).font_weight(on ? 600 : 500)
       .bg(on ? t.emph : t.surface).text_color(on ? t["on-emph"] : t.text)
       .when(radius === RADIUS.sm, (el) => el.border(1).border_color(on ? t["action-soft"] : t["control-line"]))
@@ -421,7 +421,7 @@ export default class PrioryAsks extends View {
     const here = (/** @type {unknown} */ name) => (this.data?.asks ?? []).some((/** @type {any} */ ask) => ask.runner === name && !runnerOf(ask));
     const picker = (facet, label) => {
       const value = this.facets[facet];
-      const trigger = Button.new(`facet-${facet}`).h(PANE.chip).px(10).flex().flex_none().items_center().gap(4).rounded(RADIUS.sm)
+      const trigger = Button.new(`facet-${facet}`).h(PANE.chip).px(S["space-3"]).flex().flex_none().items_center().gap(S["space-1"]).rounded(RADIUS.sm)
         .border(1).border_color(value ? t["action-soft"] : t["control-line"]).bg(value ? t["action-soft"] : t.surface)
         .text_color(value ? t["action-text"] : t.text).text_size(TYPE.small[0]).selected(this.popover === facet)
         .accessibility_label(value ? `${label}: ${value}. Clear` : `Filter by ${label.toLowerCase()}`)
@@ -435,10 +435,10 @@ export default class PrioryAsks extends View {
           this.refilter(cx);
         }])));
     };
-    return v_flex().flex_none().px(16).py(8).gap(8).border_b(1).border_color(t.line)
-      .child(h_flex().gap(6).flex_wrap().children(list.views.map((view) =>
+    return v_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).border_b(1).border_color(t.line)
+      .child(h_flex().gap(S["space-2"]).flex_wrap().children(list.views.map((view) =>
         chip(`view-${view.id}`, `${view.label} ${view.count}`, this.view === view.id, (cx) => { this.view = view.id; this.refilter(cx); }, 999))))
-      .child(h_flex().gap(6).flex_wrap()
+      .child(h_flex().gap(S["space-2"]).flex_wrap()
         .child(chip("facet-command", "Command", Boolean(this.facets.command), (cx) => {
           if (this.facets.command) delete this.facets.command;
           else this.facets.command = true;
@@ -453,8 +453,8 @@ export default class PrioryAsks extends View {
 
   /** @param {Palette} t @param {MenuItem[]} items */
   menu(t, items) {
-    return v_flex().min_w(220).p(4).gap(2).rounded(RADIUS.md).bg(t.surface).border(1).border_color(t["control-line"])
-      .children(items.map(([label, hint, action, icon], index) => Button.new(`menu-${index}-${label}`).h(PANE.control).px(8).gap(8).flex().items_center()
+    return v_flex().min_w(220).p(S["space-1"]).gap(S["space-1"]).rounded(RADIUS.md).bg(t.surface).border(1).border_color(t["control-line"])
+      .children(items.map(([label, hint, action, icon], index) => Button.new(`menu-${index}-${label}`).h(PANE.control).px(S["space-2"]).gap(S["space-2"]).flex().items_center()
         .rounded(RADIUS.sm).text_size(TYPE.small[0]).text_color(t.text).hover((s) => s.bg(t.raised)).focus((s) => s.bg(t.raised))
         .on_click((_event, cx) => action(cx))
         .when(Boolean(icon), (el) => el.child(svg(ICON(/** @type {string} */ (icon))).size(14).text_color(t["text-2"])))
@@ -466,8 +466,8 @@ export default class PrioryAsks extends View {
   offline(t, now) {
     const minutes = Math.round((now - this.updated) / 60_000);
     const last = this.data ? ` Last update ${minutes < 1 ? "under a minute" : `${minutes} min`} ago.` : "";
-    return h_flex().flex_none().px(16).py(6).gap(6).items_start().text_size(TYPE.small[0]).text_color(t["warn-text"]).border_b(1).border_color(t.line)
-      .child(div().flex_1().whitespace_normal().child(`Reconnecting to priory: ${this.error}.${last}`));
+    return h_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).items_start().text_size(TYPE.small[0]).text_color(t["warn-text"]).border_b(1).border_color(t.line)
+      .child(div().flex_1().min_w_0().whitespace_normal().child(selectable("offline", `Reconnecting to priory: ${this.error}.${last}`)));
   }
 
   /** @param {ReturnType<typeof asksList>} list @param {Palette} t @param {boolean} inPlace */
@@ -479,34 +479,34 @@ export default class PrioryAsks extends View {
       answered: "No answered asks yet. An ask moves here once someone answers it.",
       all: "No asks yet. Agents ask here when they need you.",
     }[this.view] ?? "";
-    if (!this.data) return v_flex().id("asks-list").p(16).text_color(t["text-3"]).child(this.error ? "" : "Loading the asks…");
-    return v_flex().id("asks-list").min_h_0().overflow_y_scrollbar().pb(16)
-      .when(this.view === "snoozed" && list.sections.length > 0, (el) => el.child(div().px(16).pt(10).text_size(TYPE.caption[0]).text_color(t["text-3"])
+    if (!this.data) return v_flex().id("asks-list").p(S["space-4"]).text_color(t["text-3"]).child(this.error ? "" : "Loading the asks…");
+    return v_flex().id("asks-list").min_h_0().overflow_y_scrollbar().pb(S["space-4"])
+      .when(this.view === "snoozed" && list.sections.length > 0, (el) => el.child(div().px(S["space-4"]).pt(S["space-3"]).text_size(TYPE.caption[0]).text_color(t["text-3"])
         .child("Snoozed asks leave the Open count. The agent keeps waiting, and a new revision brings an ask back early.")))
-      .when(!list.sections.length, (el) => el.child(div().p(16).text_color(t["text-2"]).child(empty)))
+      .when(!list.sections.length, (el) => el.child(div().p(S["space-4"]).text_color(t["text-2"]).child(empty)))
       .children(list.sections.map((section) => v_flex()
-        .child(h_flex().px(16).pt(14).pb(6).gap(6).text_size(TYPE.caption[0]).font_weight(600).text_color(t["text-2"])
+        .child(h_flex().px(S["space-4"]).pt(S["space-3"]).pb(S["space-2"]).gap(S["space-2"]).text_size(TYPE.caption[0]).font_weight(600).text_color(t["text-2"])
           .child(section.title).child(div().font_weight(400).text_color(t["text-3"]).child(section.note)))
         .children(section.rows.map((row) => {
           const ask = this.data?.asks.find((candidate) => candidate.id === row.id);
           const selected = row.id === this.selected;
-          return v_flex().px(8)
+          return v_flex().px(S["space-2"])
             .child(this.row(row, selected, t))
-            .when(inPlace && selected && Boolean(ask), (el) => el.child(v_flex().px(8).pb(12).gap(12)
+            .when(inPlace && selected && Boolean(ask), (el) => el.child(v_flex().px(S["space-2"]).pt(S["space-2"]).pb(S["space-4"]).gap(S["space-3"])
               .child(this.decide(ask, t, now)).child(this.chips(ask, t)).child(this.section(ask, "why", t, now))));
         }))));
   }
 
   /** @param {ReturnType<typeof asksList>["sections"][number]["rows"][number]} row @param {boolean} selected @param {Palette} t */
   row(row, selected, t) {
-    return Button.new(`row-${row.id}`).w_full().min_h(PANE.row).px(8).py(8).flex().items_start().gap(10).rounded(RADIUS.md)
+    return Button.new(`row-${row.id}`).w_full().min_h(PANE.row).px(S["space-2"]).py(S["space-2"]).flex().items_start().gap(S["space-3"]).rounded(RADIUS.md)
       .selected(selected).bg(selected ? t["action-soft"] : t.bg).hover((s) => s.bg(selected ? t["action-soft"] : t.raised))
       .focus((s) => s.border(2).border_color(t["action-text"]))
       .accessibility_label(`${row.tile === "ask" ? "Open ask" : row.tile} from ${row.key}: ${row.text}`)
       .on_click((_event, cx) => this.select(selected && this.width < PANE.split ? null : row.id, cx))
       .child(this.tile(row.tile, t))
-      .child(v_flex().flex_1().min_w_0().gap(2)
-        .child(h_flex().gap(6).items_center().text_size(TYPE.caption[0]).text_color(t["text-3"])
+      .child(v_flex().flex_1().min_w_0().gap(S["space-1"])
+        .child(h_flex().gap(S["space-2"]).items_center().text_size(TYPE.caption[0]).text_color(t["text-3"])
           .child(div().font_family(this.font.mono).text_color(t["text-2"]).child(row.key ?? ""))
           .child(div().child(row.step ?? ""))
           .when(row.command, (el) => el.child(this.tag("Command", t)))
@@ -515,7 +515,7 @@ export default class PrioryAsks extends View {
           .child(div().flex_1())
           .child(div().whitespace_nowrap().child(row.age)))
         .child(div().whitespace_normal().text_size(TYPE.body[0]).line_height(TYPE.body[1]).font_weight(selected ? 600 : 500).child(row.text))
-        .when(Boolean(row.meta), (el) => el.child(h_flex().gap(6).text_size(TYPE.caption[0]).text_color(t["text-3"])
+        .when(Boolean(row.meta), (el) => el.child(h_flex().gap(S["space-2"]).text_size(TYPE.caption[0]).text_color(t["text-3"])
           .child(row.meta?.[0] ?? "").child(div().min_w_0().truncate().font_weight(600).text_color(t["text-2"]).child(row.meta?.[1] ?? ""))
           .when(Boolean(row.by), (el) => el.child(`by ${row.by}`))))
         .when(Boolean(row.sent), (el) => el.child(div().min_w_0().truncate().text_size(TYPE.caption[0]).text_color(row.sent?.refused ? t["warn-text"] : t["action-text"]).child(row.sent?.text ?? "")))
@@ -535,12 +535,12 @@ export default class PrioryAsks extends View {
 
   /** @param {string} label @param {Palette} t */
   tag(label, t) {
-    return div().px(5).rounded(RADIUS.sm).bg(t.raised).text_size(TYPE.caption[0] - 1).font_weight(600).text_color(t["text-2"]).child(label);
+    return div().px(S["space-1"]).rounded(RADIUS.sm).bg(t.raised).text_size(TYPE.caption[0] - 1).font_weight(600).text_color(t["text-2"]).child(label);
   }
 
   /** @param {string} icon @param {string} text @param {import("gpui-kit").Color} color */
   note(icon, text, color) {
-    return h_flex().gap(4).items_center().text_size(TYPE.caption[0]).text_color(color).child(svg(ICON(icon)).size(12).flex_none()).child(text);
+    return h_flex().gap(S["space-1"]).items_center().text_size(TYPE.caption[0]).text_color(color).child(svg(ICON(icon)).size(12).flex_none()).child(text);
   }
 
   /** The decide part: context, question, recommendation, options, write an answer and the overflow menu. */
@@ -548,41 +548,41 @@ export default class PrioryAsks extends View {
   decide(ask, t, now) {
     const detail = askDetail(ask, { now, armed: this.armed, task: this.task, links: this.links });
     const notice = this.notices.get(ask.id);
-    return v_flex().gap(10)
-      .child(h_flex().flex_wrap().gap(6).items_center().text_size(TYPE.caption[0]).text_color(t["text-3"])
+    return v_flex().gap(S["space-3"])
+      .child(h_flex().flex_wrap().gap(S["space-2"]).items_center().text_size(TYPE.caption[0]).text_color(t["text-3"])
         .child(this.tile(ask.state === "open" ? "ask" : ask.state, t))
         .children(detail.context.map((word, index) => word === "Command" ? this.tag(word, t)
-          : div().when(index === 0, (el) => el.font_family(this.font.mono).text_color(t["text-2"])).child(word))))
-      .when(Boolean(detail.riskLine), (el) => el.child(h_flex().gap(6).items_start().text_size(TYPE.caption[0]).text_color(t["text-2"])
-        .child(svg(ICON("lock")).size(14).flex_none().mt(1)).child(div().whitespace_normal().child(detail.riskLine ?? ""))))
-      .child(div().whitespace_normal().font_family(this.font.display).font_weight(700).text_size(TYPE.question[0]).line_height(TYPE.question[1]).child(linked("question", detail.questionSpans)))
-      .when(Boolean(detail.routed), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["action-text"]).child(detail.routed ?? "")))
+          : index === 0 ? div().font_family(this.font.mono).text_color(t["text-2"]).child(selectable(`key-${ask.id}`, word)) : div().child(word))))
+      .when(Boolean(detail.riskLine), (el) => el.child(h_flex().gap(S["space-2"]).items_start().text_size(TYPE.caption[0]).text_color(t["text-2"])
+        .child(svg(ICON("lock")).size(14).flex_none().mt(1)).child(div().flex_1().min_w_0().whitespace_normal().child(selectable(`risk-${ask.id}`, detail.riskLine ?? "")))))
+      .child(div().whitespace_normal().font_family(this.font.display).font_weight(700).text_size(TYPE.question[0]).line_height(TYPE.question[1]).child(selectable(`question-${ask.id}`, detail.questionSpans)))
+      .when(Boolean(detail.routed), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["action-text"]).child(selectable(`routed-${ask.id}`, detail.routed ?? ""))))
       .when(Boolean(detail.sent) && !notice, (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(detail.sent?.refused ? t["warn-text"] : t["action-text"])
-        .child(detail.sent?.refused ? `${detail.sent.text}.` : `${detail.sent?.text}. It applies when ${ask.runner} reads the log.`)))
-      .when(Boolean(notice), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["warn-text"]).child(notice ?? "")))
-      .when(Boolean(detail.decided), (el) => el.child(div().p(12).rounded(RADIUS.md).bg(t.raised).font_weight(600).child(detail.decided ?? "")))
+        .child(selectable(`sent-${ask.id}`, detail.sent?.refused ? `${detail.sent.text}.` : `${detail.sent?.text}. It applies when ${ask.runner} reads the log.`))))
+      .when(Boolean(notice), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["warn-text"]).child(selectable(`notice-${ask.id}`, notice ?? ""))))
+      .when(Boolean(detail.decided), (el) => el.child(div().p(S["space-3"]).rounded(RADIUS.md).bg(t.raised).font_weight(600).child(selectable(`decided-${ask.id}`, detail.decided ?? ""))))
       .when(Boolean(detail.ran), (el) => el.child(this.note("terminal", detail.ran?.text ?? "", detail.ran?.warn ? t["warn-text"] : t["text-2"])))
-      .when(Boolean(detail.recommendation) && ask.state === "open", (el) => el.child(v_flex().p(12).gap(6).rounded(RADIUS.md).bg(t["action-soft"])
-        .child(div().whitespace_normal().font_weight(600).text_color(t["action-text"]).child(detail.recommendation?.text ?? ""))
-        .when(Boolean(detail.recommendation?.next), (el) => el.child(h_flex().gap(6).items_start().text_size(TYPE.small[0]).text_color(t["text-2"])
-          .child(svg(ICON("corner-down-right")).size(14).flex_none().mt(2)).child(div().whitespace_normal().child(detail.recommendation?.next ?? ""))))))
+      .when(Boolean(detail.recommendation) && ask.state === "open", (el) => el.child(v_flex().p(S["space-3"]).gap(S["space-2"]).rounded(RADIUS.md).bg(t["action-soft"])
+        .child(div().whitespace_normal().font_weight(600).text_color(t["action-text"]).child(selectable(`recommendation-${ask.id}`, detail.recommendation?.text ?? "")))
+        .when(Boolean(detail.recommendation?.next), (el) => el.child(h_flex().gap(S["space-2"]).items_start().text_size(TYPE.small[0]).text_color(t["text-2"])
+          .child(svg(ICON("corner-down-right")).size(14).flex_none().mt(2)).child(div().flex_1().min_w_0().whitespace_normal().child(selectable(`next-${ask.id}`, detail.recommendation?.next ?? "")))))))
       .when(detail.options.length > 0, (el) => el.child(this.options(ask, detail, t, now)))
       .when(Boolean(this.error) && ask.state === "open", (el) => el.child(this.note("x", "Reconnect to answer.", t["text-2"])))
       .when(Boolean(this.pending && this.pending.id === ask.id), (el) => el.child(this.sending(t)))
       .when(ask.state === "open", (el) => el.child(this.actions(ask, detail, t)))
-      .when(Boolean(detail.elsewhere), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["text-2"]).child(detail.elsewhere ?? "")))
+      .when(Boolean(detail.elsewhere), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["text-2"]).child(selectable(`elsewhere-${ask.id}`, detail.elsewhere ?? ""))))
       .when(ask.state === "open" && this.writing.has(ask.id), (el) => el.child(this.composer(ask, t)));
   }
 
   /** @param {any} ask @param {ReturnType<typeof askDetail>} detail @param {Palette} t @param {number} now */
   options(ask, detail, t, now) {
     const busy = this.busy() || Boolean(this.error);
-    return v_flex().gap(6).children(detail.options.flatMap((option) => {
+    return v_flex().gap(S["space-2"]).children(detail.options.flatMap((option) => {
       const chosen = this.pending?.id === ask.id && this.pending.text === option.label;
       const fill = option.armed ? t.emph : option.recommended ? t.action : t.surface;
       const ink = option.armed ? t["on-emph"] : option.recommended ? t["on-action"] : t.text;
       const left = this.armed ? Math.max(0, 1 - (now - this.armed.at) / ARM_MS) : 0;
-      const button = Button.new(`option-${ask.id}-${option.index}`).w_full().min_h(PANE.option).px(12).py(6).flex().items_center().gap(8)
+      const button = Button.new(`option-${ask.id}-${option.index}`).w_full().min_h(PANE.option).px(S["space-3"]).py(S["space-2"]).flex().items_center().gap(S["space-2"])
         .rounded(RADIUS.card).bg(fill).text_color(ink).disabled(busy && !chosen)
         .when(!option.recommended && !option.armed, (el) => el.border(1).border_color(t["control-line"]))
         .when(option.armed, (el) => el.border(3).border_color(t.action))
@@ -591,36 +591,36 @@ export default class PrioryAsks extends View {
         .accessibility_label(option.armed ? `Press ${option.key} again or click to run ${option.label}` : [option.label, option.notes].filter(Boolean).join(". "))
         .on_click((_event, cx) => this.choose(ask, option.index, cx))
         .when(chosen, (el) => el.child(svg(ICON("check")).size(16).flex_none()))
-        .child(v_flex().flex_1().min_w_0().gap(2)
+        .child(v_flex().flex_1().min_w_0().gap(S["space-1"])
           .when(option.armed, (el) => el.child(div().text_size(TYPE.caption[0]).font_weight(600).child(`Press ${option.key} again or click to run`)))
           .child(div().whitespace_normal().text_size(TYPE.body[0]).font_weight(600).child(option.label))
           .when(option.armed, (el) => el.child(div().text_size(TYPE.caption[0]).opacity(0.8).child(`Cancels in ${Math.ceil(left * ARM_MS / 1000)} s`))
             .child(div().h(3).w_full().rounded(2).bg(t["on-emph-2"]).child(div().h(3).w(`${Math.round(left * 100)}%`).rounded(2).bg(t.action))))
           .when(!option.armed && Boolean(option.notes), (el) => el.child(div().text_size(TYPE.caption[0]).opacity(0.85).child(option.notes))))
-        .when(Boolean(option.key), (el) => el.child(div().px(5).rounded(RADIUS.sm).border(1).border_color(ink).opacity(0.7)
+        .when(Boolean(option.key), (el) => el.child(div().px(S["space-1"]).rounded(RADIUS.sm).border(1).border_color(ink).opacity(0.7)
           .font_family(this.font.mono).text_size(TYPE.caption[0]).child(option.key)));
-      return option.armed && detail.command ? [button, this.commandBlock(detail.command, t)] : [button];
+      return option.armed && detail.command ? [button, this.commandBlock(detail.command, t, "option")] : [button];
     }));
   }
 
   /** @param {Palette} t */
   sending(t) {
     const pending = /** @type {NonNullable<typeof this.pending>} */ (this.pending);
-    return h_flex().gap(8).p(10).items_center().rounded(RADIUS.md).bg(t.raised).text_size(TYPE.small[0])
-      .child(div().flex_1().whitespace_normal().child(`Sending "${pending.text}"`))
+    return h_flex().gap(S["space-2"]).p(S["space-3"]).items_center().rounded(RADIUS.md).bg(t.raised).text_size(TYPE.small[0])
+      .child(div().flex_1().min_w_0().whitespace_normal().child(`Sending "${pending.text}"`))
       .when(Boolean(pending.timer), (el) => el.child(this.secondary("undo", "Undo", (cx) => this.undo(cx), t)));
   }
 
   /** @param {string} id @param {string} label @param {(cx: import("gpui-kit").Context) => void} action @param {Palette} t */
   secondary(id, label, action, t) {
-    return Button.new(id).h(PANE.control).px(12).flex().flex_none().items_center().rounded(RADIUS.card).border(1).border_color(t["control-line"])
+    return Button.new(id).h(PANE.control).px(S["space-3"]).flex().flex_none().items_center().rounded(RADIUS.card).border(1).border_color(t["control-line"])
       .bg(t.surface).text_color(t.text).text_size(TYPE.small[0]).font_weight(600).hover((s) => s.bg(t.raised))
       .focus((s) => s.border(2).border_color(t["action-text"])).on_click((_event, cx) => action(cx)).child(label);
   }
 
   /** @param {string} id @param {string} icon @param {string} label @param {(cx: import("gpui-kit").Context) => void} action @param {Palette} t */
   ghost(id, icon, label, action, t) {
-    return Button.new(id).h(PANE.control).px(6).flex().flex_none().items_center().gap(4).rounded(RADIUS.sm)
+    return Button.new(id).h(PANE.control).px(S["space-2"]).flex().flex_none().items_center().gap(S["space-1"]).rounded(RADIUS.sm)
       .text_color(t["action-text"]).text_size(TYPE.small[0]).font_weight(500).hover((s) => s.bg(t.raised))
       .disabled(this.busy()).focus((s) => s.bg(t.raised)).on_click((_event, cx) => action(cx))
       .child(svg(ICON(icon)).size(14)).child(label);
@@ -630,7 +630,7 @@ export default class PrioryAsks extends View {
   /** @param {any} ask @param {ReturnType<typeof askDetail>} detail @param {Palette} t */
   actions(ask, detail, t) {
     const snoozed = Boolean(ask.snoozed_until) && !ask.back_early;
-    return h_flex().gap(4).items_center()
+    return h_flex().gap(S["space-1"]).items_center()
       .when(detail.takesText, (el) => el.child(this.ghost(`write-${ask.id}`, "pencil", "Write an answer…", (cx) => {
         this.writing.add(ask.id);
         this.draft(ask.id).focus();
@@ -689,17 +689,17 @@ export default class PrioryAsks extends View {
     const send = (/** @type {import("gpui-kit").Context} */ cx) => {
       if (text && !this.busy()) this.hold(ask, text, cx);
     };
-    return v_flex().gap(6)
-      .child(div().id(`draft-${ask.id}`).p(8).rounded(RADIUS.md).border(1).border_color(t["control-line"]).bg(t.surface).cursor_text()
+    return v_flex().gap(S["space-2"])
+      .child(div().id(`draft-${ask.id}`).p(S["space-2"]).rounded(RADIUS.md).border(1).border_color(t["control-line"]).bg(t.surface).cursor_text()
         .on_key_down((event, cx) => {
           if (event.keystroke !== "ctrl-enter" && event.keystroke !== "cmd-enter") return;
           send(cx);
           cx.stop_propagation();
         })
         .child(Textarea.new(draft).w_full().text_size(16).text_color(t.text)))
-      .child(h_flex().gap(8).items_center()
+      .child(h_flex().gap(S["space-2"]).items_center()
         .child(div().flex_1().text_size(TYPE.caption[0]).text_color(t["text-3"]).child("Ctrl+Enter sends. Free text goes as the answer."))
-        .child(Button.new(`send-${ask.id}`).h(PANE.control).px(14).flex().items_center().rounded(RADIUS.card).bg(t.action).text_color(t["on-action"])
+        .child(Button.new(`send-${ask.id}`).h(PANE.control).px(S["space-3"]).flex().items_center().rounded(RADIUS.card).bg(t.action).text_color(t["on-action"])
           .font_weight(600).disabled(!text || this.busy()).opacity(!text || this.busy() ? 0.5 : 1)
           .focus((s) => s.border(2).border_color(t["action-text"])).on_click((_event, cx) => send(cx)).child("Send")));
   }
@@ -708,8 +708,8 @@ export default class PrioryAsks extends View {
   chips(ask, t) {
     const detail = askDetail(ask, { now: Date.now(), armed: null, task: this.task, links: this.links });
     const current = this.reading ?? (this.width >= PANE.split ? "why" : null);
-    return h_flex().flex_none().gap(4).flex_wrap().children(detail.chips.map(([id, label]) =>
-      Button.new(`chip-${ask.id}-${id}`).h(PANE.chip).px(10).flex().items_center().rounded(999).selected(current === id)
+    return h_flex().flex_none().gap(S["space-1"]).flex_wrap().children(detail.chips.map(([id, label]) =>
+      Button.new(`chip-${ask.id}-${id}`).h(PANE.chip).px(S["space-3"]).flex().items_center().rounded(999).selected(current === id)
         .bg(current === id ? t.emph : t.bg).text_color(current === id ? t["on-emph"] : t["text-2"]).text_size(TYPE.small[0]).font_weight(500)
         .hover((s) => s.bg(current === id ? t.emph : t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
         .on_click((_event, cx) => {
@@ -724,69 +724,78 @@ export default class PrioryAsks extends View {
   section(ask, id, t, now) {
     const detail = askDetail(ask, { now, armed: this.armed, task: this.task, links: this.links });
     /** @param {string} icon @param {string} title @param {string} [meta] */
-    const head = (icon, title, meta = "") => h_flex().gap(6).items_center().text_size(TYPE.small[0]).font_weight(650)
+    const head = (icon, title, meta = "") => h_flex().gap(S["space-2"]).items_center().text_size(TYPE.small[0]).font_weight(650)
       .child(svg(ICON(icon)).size(14).text_color(t["text-2"])).child(title).child(div().flex_1())
       .child(div().font_weight(400).text_color(t["text-3"]).text_size(TYPE.caption[0]).child(meta));
     /** @param {string} icon @param {string} label @param {string} text */
-    const fact = (icon, label, text) => h_flex().gap(6).items_start().text_size(TYPE.small[0]).text_color(t["text-2"])
-      .child(svg(ICON(icon)).size(14).flex_none().mt(3)).child(div().flex_1().whitespace_normal().child(`${label} ${text}`));
+    const fact = (icon, label, text) => h_flex().gap(S["space-2"]).items_start().text_size(TYPE.small[0]).text_color(t["text-2"])
+      .child(svg(ICON(icon)).size(14).flex_none().mt(3)).child(div().flex_1().min_w_0().whitespace_normal().child(selectable(`${icon}-${ask.id}`, `${label} ${text}`)));
     if (id === "history") {
-      return v_flex().gap(8).child(head("history", "Answer history"))
-        .children(detail.history.map((item) => h_flex().gap(8).items_center().text_size(TYPE.small[0])
-          .child(this.tile(item.tile, t)).child(div().flex_1().whitespace_normal()
-            .text_color(item.tile === "refused" ? t["warn-text"] : t.text).child(item.text))
+      return v_flex().gap(S["space-2"]).child(head("history", "Answer history"))
+        .children(detail.history.map((item) => h_flex().gap(S["space-2"]).items_center().text_size(TYPE.small[0])
+          .child(this.tile(item.tile, t)).child(div().flex_1().min_w_0().whitespace_normal()
+            .text_color(item.tile === "refused" ? t["warn-text"] : t.text).child(selectable(`history-${ask.id}-${item.time}`, item.text)))
           .child(div().font_family(this.font.mono).text_size(TYPE.caption[0]).text_color(t["text-3"]).child(item.time))));
     }
-    /** @param {string} text */
-    const body = (text) => div().whitespace_normal().text_size(TYPE.body[0]).line_height("22px").child(text);
+    /** @param {string} key @param {string} text */
+    const body = (key, text) => div().whitespace_normal().text_size(TYPE.body[0]).line_height("22px").child(selectable(`${key}-${ask.id}`, text));
     /** @param {string} text */
     const caption = (text) => div().whitespace_normal().text_size(TYPE.caption[0]).text_color(t["text-3"]).child(text);
     // Briefs, plans and results are agent text: they draw as plain text, never as Markdown or HTML.
     if (id === "brief" && detail.brief) {
-      return v_flex().gap(8).child(head("message-text", "Brief", detail.brief.from ?? ""))
-        .when(Boolean(detail.brief.request), (el) => el.child(caption("The request")).child(body(detail.brief.request)))
-        .when(Boolean(detail.brief.text), (el) => el.child(body(detail.brief.text)));
+      return v_flex().gap(S["space-2"]).child(head("message-text", "Brief", detail.brief.from ?? ""))
+        .when(Boolean(detail.brief.request), (el) => el.child(caption("The request")).child(body("request", detail.brief.request)))
+        .when(Boolean(detail.brief.text), (el) => el.child(body("brief", detail.brief.text)));
     }
     if (id === "plan" && detail.plan) {
-      return v_flex().gap(8).child(head("check", "Plan", detail.plan.from)).child(body(detail.plan.text));
+      return v_flex().gap(S["space-2"]).child(head("check", "Plan", detail.plan.from)).child(body("plan", detail.plan.text));
     }
     if (id === "pr" && detail.pr) {
-      return v_flex().gap(8).child(head("terminal", detail.pr.title, detail.pr.review ?? ""))
-        .when(Boolean(detail.pr.line), (el) => el.child(caption(String(detail.pr.line))))
-        .children(detail.pr.checks.map((check) => h_flex().gap(6).items_center().text_size(TYPE.small[0])
+      return v_flex().gap(S["space-2"]).child(head("terminal", detail.pr.title, detail.pr.review ?? ""))
+        .when(Boolean(detail.pr.line), (el) => el.child(div().whitespace_normal().text_size(TYPE.caption[0]).text_color(t["text-3"]).child(selectable(`pr-line-${ask.id}`, String(detail.pr.line)))))
+        .children(detail.pr.checks.map((check) => h_flex().gap(S["space-2"]).items_center().text_size(TYPE.small[0])
           .child(svg(ICON(CHECK_ICONS[check.state][0])).size(14).text_color(t[CHECK_ICONS[check.state][1]]))
           .child(div().flex_1().child(check.name)).child(div().text_color(t["text-3"]).child(check.text))))
         .when(Boolean(detail.pr.stack), (el) => el.child(div().text_size(TYPE.caption[0]).text_color(t["text-2"]).child(`Stack, bottom first: ${detail.pr.prs}`))
-          .children((detail.pr.stack ?? []).map((pull) => h_flex().gap(8).items_center().text_size(TYPE.small[0])
-            .child(div().w(56).flex_none().font_family(this.font.mono).child(linked(`stack-${pull.number}`, [{ text: `#${pull.number}`, url: pull.url }])))
+          .children((detail.pr.stack ?? []).map((pull) => h_flex().gap(S["space-2"]).items_center().text_size(TYPE.small[0])
+            .child(div().w(56).flex_none().font_family(this.font.mono).child(selectable(`stack-${pull.number}`, [{ text: `#${pull.number}`, url: pull.url }])))
             .child(div().flex_1().min_w_0().truncate().text_color(t["text-2"]).child(`${pull.branch} into ${pull.base}`))
             .when(Boolean(pull.checks), (row) => row.child(div().flex_none().text_color(t["text-3"]).child(String(pull.checks))))
             .child(div().flex_none().text_color(pull.next ? t["action-text"] : t["text-3"]).child(pull.next ? `${pull.state}, next to merge` : pull.state)))));
     }
     if (id === "trace") {
-      return v_flex().gap(8).child(head("clock", "Trace"))
-        .children(detail.trace.map((run) => h_flex().gap(8).items_center().text_size(TYPE.small[0])
+      return v_flex().gap(S["space-2"]).child(head("clock", "Trace"))
+        .children(detail.trace.map((run) => h_flex().gap(S["space-2"]).items_center().text_size(TYPE.small[0])
           .child(div().w(138).flex_none().font_family(this.font.mono).child(run.label))
-          .child(div().flex_1().whitespace_normal().text_color(t["text-2"]).child([run.span, run.outcome, run.tokens].filter(Boolean).join(", ")))));
+          .child(div().flex_1().min_w_0().whitespace_normal().text_color(t["text-2"]).child(selectable(`trace-${ask.id}-${run.label}`, [run.span, run.outcome, run.tokens].filter(Boolean).join(", "))))));
     }
     if (id === "command" && detail.command) {
-      return v_flex().gap(8).child(head("terminal", detail.command.title)).child(this.commandBlock(detail.command, t));
+      return v_flex().gap(S["space-2"]).child(head("terminal", detail.command.title)).child(this.commandBlock(detail.command, t, "section"));
     }
     // Agent text is untrusted, so it draws as plain text, never as Markdown or HTML.
-    return v_flex().gap(8)
+    return v_flex().gap(S["space-2"])
       .child(head("message-text", "What the agent says", detail.why.run ? `run ${detail.why.run}` : ""))
-      .child(div().whitespace_normal().text_size(TYPE.body[0]).line_height("22px").child(linked("why", detail.why.textSpans)))
+      .child(div().whitespace_normal().text_size(TYPE.body[0]).line_height("22px").child(selectable(`why-${ask.id}`, detail.why.textSpans)))
       .when(Boolean(detail.why.tradeoff), (el) => el.child(fact("scale", "Trade-off.", detail.why.tradeoff)))
       .when(Boolean(detail.why.whatWaits), (el) => el.child(fact("hourglass", "What waits.", detail.why.whatWaits)));
   }
 
-  /** The argv word by word, each in its own box, so a space, a quote or an empty word shows as it is. */
-  /** @param {NonNullable<ReturnType<typeof askDetail>["command"]>} command @param {Palette} t */
-  commandBlock(command, t) {
-    return v_flex().gap(6).p(10).rounded(RADIUS.md).bg(t.raised)
-      .child(h_flex().flex_wrap().gap(4).children(command.words.map((word) => div().min_w(14).px(4).rounded(RADIUS.sm).border(1)
+  /**
+   * The argv word by word, each in its own box, so a space, a quote or an empty word shows as it is.
+   * Copy puts the whole command on the clipboard as one shell line; `where` keeps two copies' ids apart.
+   * @param {NonNullable<ReturnType<typeof askDetail>["command"]>} command @param {Palette} t @param {string} where
+   */
+  commandBlock(command, t, where) {
+    return v_flex().gap(S["space-2"]).p(S["space-3"]).rounded(RADIUS.md).bg(t.raised)
+      .child(h_flex().flex_wrap().gap(S["space-1"]).children(command.words.map((word) => div().min_w(14).px(S["space-1"]).rounded(RADIUS.sm).border(1)
         .border_color(t["control-line"]).bg(t.surface).font_family(this.font.mono).text_size(12.5).whitespace_nowrap().child(word))))
-      .child(div().whitespace_normal().text_size(TYPE.caption[0]).text_color(t["text-2"]).child(command.note));
+      .child(h_flex().gap(S["space-2"]).items_start()
+        .child(div().flex_1().min_w_0().whitespace_normal().text_size(TYPE.caption[0]).text_color(t["text-2"]).child(selectable(`command-note-${where}`, command.note)))
+        .child(this.secondary(`copy-command-${where}`, this.copied === command.line ? "Copied" : "Copy", (cx) => {
+          cx.write_to_clipboard(command.line);
+          this.copied = command.line;
+          cx.notify();
+        }, t)));
   }
 
   /** From 720 px: the decide part pinned at the top, and the sections scrolling under it. */
@@ -794,9 +803,9 @@ export default class PrioryAsks extends View {
   drawer(ask, t, now) {
     const detail = askDetail(ask, { now, armed: this.armed, task: this.task, links: this.links });
     return v_flex().flex_1().min_w_0().min_h_0()
-      .child(v_flex().id("ask-decide").flex_none().max_h("50%").overflow_y_scrollbar().p(16).gap(12).border_b(1).border_color(t.line)
+      .child(v_flex().id("ask-decide").flex_none().max_h("50%").overflow_y_scrollbar().p(S["space-4"]).gap(S["space-3"]).border_b(1).border_color(t.line)
         .child(this.decide(ask, t, now)).child(this.chips(ask, t)))
-      .child(v_flex().id("ask-sections").flex_1().min_h_0().overflow_y_scrollbar().p(16).gap(20)
+      .child(v_flex().id("ask-sections").flex_1().min_h_0().overflow_y_scrollbar().p(S["space-4"]).gap(S["space-5"])
         .track_scroll(this.scroll)
         .children(detail.chips.map(([id]) => this.section(ask, id, t, now))));
   }
@@ -812,7 +821,7 @@ export default class PrioryAsks extends View {
       .rounded(RADIUS.sm).disabled(off).opacity(off ? 0.4 : 1).accessibility_label(label).hover((s) => s.bg(t.raised)).focus((s) => s.bg(t.raised))
       .on_click((_event, cx) => action(cx)).child(svg(ICON(icon)).size(16).text_color(t["text-2"]));
     return v_flex().flex_1().min_h_0()
-      .child(h_flex().flex_none().h(PANE.head).px(8).gap(4).items_center().border_b(1).border_color(t.line)
+      .child(h_flex().flex_none().h(PANE.head).px(S["space-2"]).gap(S["space-1"]).items_center().border_b(1).border_color(t.line)
         .child(icon("back", "chevron-left", "Back to the asks", (cx) => { this.reading = null; cx.notify(); }))
         .child(v_flex().flex_1().min_w_0()
           .child(div().truncate().font_weight(600).text_size(TYPE.small[0]).child(detail.question))
@@ -820,10 +829,10 @@ export default class PrioryAsks extends View {
         .when(at >= 0, (el) => el.child(div().font_family(this.font.display).font_weight(700).text_size(TYPE.small[0]).child(`${at + 1}/${open.length}`)))
         .child(icon("previous", "chevron-up", "Previous ask", (cx) => { this.select(open[at - 1], cx); this.reading = "why"; }, at <= 0))
         .child(icon("next", "chevron-down", "Next ask", (cx) => { this.select(open[at + 1], cx); this.reading = "why"; }, at < 0 || at >= open.length - 1)))
-      .child(div().flex_none().px(16).py(8).border_b(1).border_color(t.line).child(this.chips(ask, t)))
-      .child(v_flex().id("ask-reading").flex_1().min_h_0().overflow_y_scrollbar().p(16).gap(12)
+      .child(div().flex_none().px(S["space-4"]).py(S["space-2"]).border_b(1).border_color(t.line).child(this.chips(ask, t)))
+      .child(v_flex().id("ask-reading").flex_1().min_h_0().overflow_y_scrollbar().p(S["space-4"]).gap(S["space-3"])
         .when(this.notices.has(ask.id), (el) => el.child(div().whitespace_normal().text_size(TYPE.small[0]).text_color(t["warn-text"]).child(this.notices.get(ask.id) ?? "")))
-        .when(Boolean(detail.decided), (el) => el.child(div().p(12).rounded(RADIUS.md).bg(t.raised).font_weight(600).child(detail.decided ?? "")))
+        .when(Boolean(detail.decided), (el) => el.child(div().p(S["space-3"]).rounded(RADIUS.md).bg(t.raised).font_weight(600).child(selectable(`decided-${ask.id}`, detail.decided ?? ""))))
         .child(this.section(ask, this.reading ?? "why", t, now))
         .when(ask.state === "open" && this.writing.has(ask.id), (el) => el.child(this.composer(ask, t))))
       .when(Boolean(detail.bar), (el) => el.child(this.bar(ask, detail, t, now)));
@@ -836,19 +845,19 @@ export default class PrioryAsks extends View {
     // An armed option takes the bar, so its command and second press stay in sight.
     const option = detail.options.find((candidate) => candidate.armed) ?? detail.options[bar.option];
     const opened = this.popover === "options";
-    const trigger = Button.new(`options-${ask.id}`).h(PANE.control).px(10).flex().flex_none().items_center().gap(4).rounded(RADIUS.card)
+    const trigger = Button.new(`options-${ask.id}`).h(PANE.control).px(S["space-3"]).flex().flex_none().items_center().gap(S["space-1"]).rounded(RADIUS.card)
       .border(1).border_color(t["control-line"]).bg(opened ? t.raised : t.surface).selected(opened).text_size(TYPE.small[0]).font_weight(600)
       .focus((s) => s.border(2).border_color(t["action-text"])).child(svg(ICON("chevron-up")).size(14)).child(bar.count);
-    return v_flex().flex_none().gap(6).px(12).py(10).bg(t.bar).border_t(1).border_color(t.line)
-      .when(option.armed && Boolean(detail.command), (el) => el.child(this.commandBlock(/** @type {any} */ (detail.command), t)))
+    return v_flex().flex_none().gap(S["space-2"]).px(S["space-3"]).py(S["space-3"]).bg(t.bar).border_t(1).border_color(t.line)
+      .when(option.armed && Boolean(detail.command), (el) => el.child(this.commandBlock(/** @type {any} */ (detail.command), t, "bar")))
       .when(Boolean(this.pending && this.pending.id === ask.id), (el) => el.child(this.sending(t)))
-      .child(h_flex().min_h(PANE.bar - 20).gap(8).items_center()
+      .child(h_flex().min_h(PANE.bar - 20).gap(S["space-2"]).items_center()
         .child(Popover.new(`options-menu-${ask.id}`).trigger(trigger).anchor("bottom_left").open(opened)
           .on_open_change((/** @type {boolean} */ next, /** @type {import("gpui-kit").Context} */ cx) => { this.popover = next ? "options" : null; cx.notify(); })
-          .content(v_flex().w(Math.max(260, this.width - 40)).p(10).gap(8).rounded(RADIUS.md).bg(t.surface).border(1).border_color(t["control-line"])
+          .content(v_flex().w(Math.max(260, this.width - 40)).p(S["space-3"]).gap(S["space-2"]).rounded(RADIUS.md).bg(t.surface).border(1).border_color(t["control-line"])
             .child(div().text_size(TYPE.small[0]).font_weight(600).child(`Answer ask #${ask.id}, revision ${ask.revision}`))
             .child(this.options(ask, detail, t, now))))
-        .child(Button.new(`bar-answer-${ask.id}`).flex_1().min_w_0().min_h(PANE.control).px(12).py(4).flex().items_center().rounded(RADIUS.card)
+        .child(Button.new(`bar-answer-${ask.id}`).flex_1().min_w_0().min_h(PANE.control).px(S["space-3"]).py(S["space-1"]).flex().items_center().rounded(RADIUS.card)
           .bg(option.armed ? t.emph : t.action).text_color(option.armed ? t["on-emph"] : t["on-action"])
           .when(option.armed, (el) => el.border(3).border_color(t.action)).disabled(this.busy() || Boolean(this.error))
           .focus((s) => s.border(2).border_color(t["action-text"])).on_click((_event, cx) => this.choose(ask, option.index, cx))
