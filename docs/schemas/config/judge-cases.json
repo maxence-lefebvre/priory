@@ -1,0 +1,75 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/judge-cases.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Label": {
+      "description": "A person's verdict on a labeled case.",
+      "enum": [
+        "pass",
+        "fail"
+      ],
+      "type": "string"
+    },
+    "Labeled": {
+      "additionalProperties": false,
+      "description": "One labeled case: what the judge reads, and the verdict a person gave it.",
+      "properties": {
+        "diff": {
+          "default": "",
+          "description": "The change, as `git diff` prints it.",
+          "type": "string"
+        },
+        "name": {
+          "description": "A name, unique in the file.",
+          "type": "string"
+        },
+        "request": {
+          "description": "What the task was asked.",
+          "type": "string"
+        },
+        "result": {
+          "default": {},
+          "description": "The run's result, with its `outcome`, `summary` and other fields.",
+          "type": "object"
+        },
+        "verdict": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Label"
+            }
+          ],
+          "description": "The right verdict."
+        },
+        "why": {
+          "description": "Why the person gave that verdict, for a reader.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "request",
+        "verdict"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "`scorers/<name>.eval.toml`: the cases a person labeled for a judge scorer.",
+  "properties": {
+    "cases": {
+      "description": "The labeled cases: at least 10, of which at least 3 `pass` and 3 `fail`.",
+      "items": {
+        "$ref": "#/definitions/Labeled"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "cases"
+  ],
+  "title": "judge cases",
+  "type": "object"
+}

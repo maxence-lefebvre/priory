@@ -441,6 +441,67 @@ impl Agent for Claude<'_> {
     }
 }
 
+/// What one judge call answered: its text, its cost in dollars, and why it failed.
+pub struct Judged {
+    pub answer: String,
+    pub cost: f64,
+    pub error: Option<String>,
+}
+
+/// Asks `model` once, as `priory eval` runs a turn but with no tool and no MCP server at all:
+/// a headless `claude -p` in the empty folder `dir`, so it reads no project settings, with
+/// `system` appended to its system prompt, `prompt` on its stdin, and at most `budget` dollars.
+pub fn judge(
+    model: &str,
+    system: &str,
+    prompt: &str,
+    budget: f64,
+    dir: &Path,
+) -> Result<Judged, String> {
+    let mut command = Command::new("claude");
+    command
+        .args(["-p", "--output-format", "json", "--model", model])
+        .args([
+            "--no-session-persistence",
+            "--strict-mcp-config",
+            "--setting-sources",
+            "project",
+            "--tools",
+            "",
+            "--max-budget-usd",
+        ])
+        .arg(format!("{budget:.4}"))
+        .args(["--append-system-prompt", system])
+        .current_dir(dir);
+    for name in crate::runtime::NESTED {
+        command.env_remove(name);
+    }
+    let output = crate::runtime::fed_within(&mut command, Some(prompt.into()), TURN_TIMEOUT)
+        .map_err(|error| format!("cannot run claude: {error}"))?
+        .ok_or("claude ran past its timeout")?;
+    let parsed: Value = serde_json::from_slice(&output.stdout).unwrap_or_default();
+    let Some(cost) = parsed["total_cost_usd"].as_f64() else {
+        return Err(format!(
+            "claude gave no cost: {}{}",
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    };
+    let error = if parsed["is_error"] == true {
+        Some(parsed["subtype"].as_str().unwrap_or("error").to_owned())
+    } else {
+        (!output.status.success()).then(|| match output.status.code() {
+            Some(code) => format!("exit {code}"),
+            None => "killed".to_owned(),
+        })
+    };
+    Ok(Judged {
+        answer: parsed["result"].as_str().unwrap_or_default().to_owned(),
+        cost,
+        error,
+    })
+}
+
 /// Serves Priory's agent tools as a fake for an evaluation: it appends each `tools/call` params
 /// object to `log`, one JSON line, and answers `ok`. `describe` replaces one tool's description.
 pub fn serve(log: &Path, describe: Option<(&str, &str)>) -> Result<(), String> {

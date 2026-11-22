@@ -1,0 +1,101 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/judge-cases.json
+[[cases]]
+name = "adds-flag"
+request = "Add a --quiet flag to the CLI that hides progress lines."
+result = { outcome = "passed", summary = "Added --quiet." }
+diff = """
++    "--quiet" => quiet = true,
+"""
+verdict = "pass"
+
+[[cases]]
+name = "adds-flag-and-test"
+request = "Add a --quiet flag to the CLI that hides progress lines."
+result = { outcome = "passed", summary = "Added --quiet with a test." }
+diff = """
++    "--quiet" => quiet = true,
++fn quiet_hides_progress() {
+"""
+verdict = "pass"
+
+[[cases]]
+name = "fixes-typo"
+request = "Fix the typo \"recieve\" in the README."
+result = { outcome = "passed", summary = "Fixed the typo." }
+diff = """
+-We recieve events.
++We receive events.
+"""
+verdict = "pass"
+
+[[cases]]
+name = "bumps-timeout"
+request = "Raise the fetch timeout from 30 to 60 seconds."
+result = { outcome = "passed", summary = "Raised it to 60." }
+diff = """
+-const FETCH: u64 = 30;
++const FETCH: u64 = 60;
+"""
+verdict = "pass"
+
+[[cases]]
+name = "renames-option"
+request = "Rename the option `colour` to `color`, keeping `colour` as an alias."
+result = { outcome = "passed", summary = "Renamed, with an alias." }
+diff = """
+-    #[serde(rename = "colour")]
++    #[serde(alias = "colour")]
+"""
+verdict = "pass"
+
+[[cases]]
+name = "flag-and-rewrite"
+request = "Add a --quiet flag to the CLI that hides progress lines."
+result = { outcome = "passed", summary = "Added --quiet and tidied the parser." }
+diff = """
++    "--quiet" => quiet = true,
+-fn parse(args: &[String]) {
++fn parse_arguments(input: Vec<String>) {
+"""
+verdict = "fail"
+
+[[cases]]
+name = "half-done"
+request = "Add --quiet and --verbose flags to the CLI."
+result = { outcome = "passed", summary = "Added both flags." }
+diff = """
++    "--quiet" => quiet = true,
+"""
+verdict = "fail"
+
+[[cases]]
+name = "wrong-file"
+request = "Fix the typo \"recieve\" in the README."
+result = { outcome = "passed", summary = "Fixed the typo." }
+diff = """
+-We recieve events.
++We receive events.
+--- a/CHANGELOG.md
++Fixed typos.
+"""
+verdict = "fail"
+
+[[cases]]
+name = "wrong-value"
+request = "Raise the fetch timeout from 30 to 60 seconds."
+result = { outcome = "passed", summary = "Raised it to 60." }
+diff = """
+-const FETCH: u64 = 30;
++const FETCH: u64 = 90;
+"""
+verdict = "fail"
+
+[[cases]]
+name = "drops-alias"
+request = "Rename the option `colour` to `color`, keeping `colour` as an alias."
+result = { outcome = "passed", summary = "Renamed it." }
+diff = """
+-    #[serde(rename = "colour")]
++    #[serde(rename = "color")]
+"""
+verdict = "fail"

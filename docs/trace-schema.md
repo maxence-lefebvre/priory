@@ -470,6 +470,54 @@ and `time` is when the score was recorded. Scoring a run again appends another r
 | `kind`    | yes      | How it answers, such as `outcome`, `command` or `ask-shape`          |
 | `verdict` | yes      | `pass`, `fail`, `not applicable` or `error`                          |
 | `reason`  | yes      | One line of why                                                      |
+| `model`     | for a judge | The model the judge called                                        |
+| `agreement` | for a judge | The share of labeled cases its calibration got right              |
+| `cases`     | for a judge | The number of labeled cases its calibration ran                   |
+
+## `factory.scorer.calibrated`
+
+`priory score --calibrate` ran a judge scorer on every one of its labeled cases (see
+[score.md](daemon/score.md#calibration)). `priory score` and `priory bench` read the latest record
+whose `scorer`, `model`, `prompt_sha256` and `cases_sha256` match the judge as it is now. A
+calibration that the budget cut short appends no record.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-00000000000b",
+  "source": "factory://example/xps13",
+  "type": "factory.scorer.calibrated",
+  "time": "2026-11-22T10:04:41Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "machine": "xps13",
+    "scorer": "does-what-was-asked",
+    "model": "opus",
+    "prompt_sha256": "5d41402abc4b2a76b9719d911017c592ae0b6c5c3b4c2d1e8f0a9b8c7d6e5f40",
+    "cases_sha256": "7d793037a0760186574b0282f2f435e7aa1c5b2a5e4d3c2b1a0f9e8d7c6b5a49",
+    "cases": 10,
+    "agreed": 9,
+    "agreement": 0.9,
+    "needs": 0.8,
+    "spent": 0.21
+  }
+}
+```
+
+| Field           | Required | Meaning                                                           |
+| --------------- | -------- | ----------------------------------------------------------------- |
+| `scorer`        | yes      | The judge scorer's name                                           |
+| `model`         | yes      | The model it called                                               |
+| `prompt_sha256` | yes      | The SHA-256 of its prompt file                                    |
+| `cases_sha256`  | yes      | The SHA-256 of its evaluation file                                |
+| `cases`         | yes      | The labeled cases it ran                                          |
+| `agreed`        | yes      | The cases whose verdict equals the person's label                 |
+| `agreement`     | yes      | `agreed` over `cases`                                             |
+| `needs`         | yes      | The scorer's `agreement` when it was calibrated                   |
+| `spent`         | yes      | What the calls cost, in dollars                                   |
+| `factory_revision` | no    | The factory folder's Git commit, when it is in a repository       |
 
 ## `factory.bench.compared`
 

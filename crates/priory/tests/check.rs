@@ -2019,16 +2019,99 @@ fn a_factory_with_a_scorer_of_each_kind_passes_and_counts_them() {
     );
 }
 
-#[test]
-fn a_judge_scorer_is_not_supported_yet_with_its_file_and_line() {
-    let judge = "description = \"Does what was asked.\"\non = \"diff\"\nkind = \"judge\"\nmodel = \"sonnet\"\n";
+const JUDGE: &str = "description = \"Does what was asked.\"\non = \"diff\"\nkind = \"judge\"\nmodel = \"opus\"\nprompt = \"asked.md\"\nevaluation = \"asked.eval.toml\"\nagreement = 0.8\n";
 
-    let outcome = with_scorers("scorer-judge", &[("scorers/judge.toml", judge)]);
+/// `pass` labeled cases, then `fail` ones, as a judge's evaluation file.
+fn labeled(pass: usize, fail: usize) -> String {
+    (0..pass + fail)
+        .map(|n| {
+            let verdict = if n < pass { "pass" } else { "fail" };
+            format!("[[cases]]\nname = \"c{n}\"\nrequest = \"Add a flag.\"\ndiff = \"+flag\"\nverdict = \"{verdict}\"\n")
+        })
+        .collect()
+}
+
+#[test]
+fn a_judge_with_its_prompt_and_ten_labeled_cases_passes_and_its_cases_are_no_scorer() {
+    let cases = labeled(5, 5);
+
+    let outcome = with_scorers(
+        "scorer-judge",
+        &[
+            ("scorers/asked.toml", JUDGE),
+            (
+                "scorers/asked.md",
+                "Does the change do what the request asks?\n",
+            ),
+            ("scorers/asked.eval.toml", &cases),
+        ],
+    );
+
+    assert_eq!(outcome.stderr, "");
+    assert_eq!(
+        outcome.stdout,
+        "ok: 1 agent, 1 trigger, 1 workflow, 1 runner, 1 scorer\n"
+    );
+}
+
+#[test]
+fn a_judge_without_a_prompt_an_evaluation_or_enough_labeled_cases_is_refused() {
+    let few = labeled(8, 2);
+    let bare = "description = \"Bare.\"\non = \"diff\"\nkind = \"judge\"\n";
+    let odd = "description = \"Odd.\"\non = \"result\"\nkind = \"judge\"\nmodel = \"opus\"\nprompt = \"../asked.md\"\nevaluation = \"asked.eval.toml\"\nagreement = 1.5\nexpect = [\"pass\"]\n";
+    let wrong = "description = \"Wrong.\"\non = \"result\"\nkind = \"outcome\"\nexpect = [\"passed\"]\nmodel = \"opus\"\n";
+
+    let outcome = with_scorers(
+        "scorer-judge-refused",
+        &[
+            ("scorers/asked.toml", JUDGE),
+            ("scorers/asked.eval.toml", &few),
+            ("scorers/bare.toml", bare),
+            ("scorers/odd.toml", odd),
+            ("scorers/wrong.toml", wrong),
+        ],
+    );
 
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "scorers/judge.toml:3: kind `judge` is not supported yet: use outcome, command or ask-shape\n"
+        "scorers/asked.toml:5: `prompt` names asked.md, which is missing from scorers/\n\
+         scorers/asked.toml:6: `evaluation` asked.eval.toml: a judge needs at least 10 labeled cases, 3 of them pass and 3 fail: this file has 10 (8 pass, 2 fail)\n\
+         scorers/bare.toml:3: a `judge` scorer needs `model`: the model that grades\n\
+         scorers/bare.toml:3: a `judge` scorer needs `prompt`: a file beside it with the judge's whole prompt\n\
+         scorers/bare.toml:3: a `judge` scorer needs `evaluation`: a file beside it with its labeled cases\n\
+         scorers/odd.toml:2: kind `judge` reads on = \"diff\", not \"result\"\n\
+         scorers/odd.toml:8: a `judge` scorer takes no `expect`: its answer is pass or fail\n\
+         scorers/odd.toml:5: `prompt` names ../asked.md, which is not beside the scorer\n\
+         scorers/odd.toml:6: `evaluation` asked.eval.toml: a judge needs at least 10 labeled cases, 3 of them pass and 3 fail: this file has 10 (8 pass, 2 fail)\n\
+         scorers/odd.toml:7: `agreement` is 1.5: give a share above 0 and at most 1, such as 0.8\n\
+         scorers/wrong.toml:5: `model` is for kind `judge`, not `outcome`\n"
+    );
+}
+
+#[test]
+fn a_judge_whose_model_an_agent_also_runs_warns_and_passes() {
+    let cases = labeled(5, 5);
+    let mut files = valid();
+    files[1] = (
+        "agents/implementer/agent.md",
+        "+++\ndescription = \"Implements one task.\"\nharness = \"claude-code\"\nmodel = \"opus\"\nsession = \"per-task\"\n+++\n# Implementation\n",
+    );
+    files.extend_from_slice(&[
+        ("scorers/asked.toml", JUDGE),
+        (
+            "scorers/asked.md",
+            "Does the change do what the request asks?\n",
+        ),
+        ("scorers/asked.eval.toml", &cases),
+    ]);
+
+    let outcome = check(&factory("scorer-judge-own", &files));
+
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+    assert_eq!(
+        outcome.stderr,
+        "warning: scorers/asked.toml:4: the judge's model `opus` is also the model of agent `implementer`: a model tends to prefer its own work\n"
     );
 }
 
@@ -2041,7 +2124,7 @@ fn an_unknown_scorer_kind_names_its_file_and_line() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "scorers/guess.toml:3:8: unknown variant `vibes`, expected one of `outcome`, `command`, `ask-shape`\n"
+        "scorers/guess.toml:3:8: unknown variant `vibes`, expected one of `outcome`, `command`, `ask-shape`, `judge`\n"
     );
 }
 

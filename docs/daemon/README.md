@@ -91,7 +91,7 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
   makes on them.
 - [trace.md](trace.md): trace records, token counts, `priory report`, `priory costs`, the attention report, outcome labels, `priory grades`, `priory report risk` and the OpenTelemetry export.
 - [score.md](score.md): `priory score`, which grades a task's finished runs with the factory's
-  scorers.
+  scorers, and `priory score --calibrate`, which measures a judge scorer against a person's labels.
 - [bench.md](bench.md): `priory bench capture`, which turns a past task into a benchmark case,
   `priory bench replay`, which plays one case under one configuration, and `priory bench` with
   `--base` and `--head`, which compares two commits of the factory on a benchmark.

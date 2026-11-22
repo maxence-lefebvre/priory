@@ -20,6 +20,11 @@
           "const": "ask-shape",
           "description": "Passes when every ask shows each part `expect` names.",
           "type": "string"
+        },
+        {
+          "const": "judge",
+          "description": "Asks `model` to grade the change, once its calibration agrees with a person's labels.",
+          "type": "string"
         }
       ]
     },
@@ -46,9 +51,26 @@
   },
   "description": "`scorers/<name>.toml` or `.yaml`: a question that grades one finished run with `pass` or\n`fail`. The file name is the scorer's name.",
   "properties": {
+    "agreement": {
+      "description": "For `judge`, the least share of labeled cases it must get right before its verdict counts;\n0.8 when unset.",
+      "format": "double",
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "type": [
+        "number",
+        "null"
+      ]
+    },
     "description": {
       "description": "What the scorer checks, in one line.",
       "type": "string"
+    },
+    "evaluation": {
+      "description": "For `judge`, the file beside the scorer that holds its labeled cases, named `*.eval.toml`.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "expect": {
       "default": [],
@@ -64,7 +86,14 @@
           "$ref": "#/definitions/ScoreKind"
         }
       ],
-      "description": "How it answers: `outcome`, `command` or `ask-shape`."
+      "description": "How it answers: `outcome`, `command`, `ask-shape` or `judge`."
+    },
+    "model": {
+      "description": "For `judge`, the model that grades, such as `opus`.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "on": {
       "allOf": [
@@ -73,6 +102,13 @@
         }
       ],
       "description": "What it reads: `result`, `diff` or `ask`."
+    },
+    "prompt": {
+      "description": "For `judge`, the file beside the scorer that holds the judge's whole prompt.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "run": {
       "description": "For `command`, an executable in the factory folder: exit 0 passes, 1 fails, any other\nending is an error.",

@@ -183,6 +183,8 @@ fn every_example_config_matches_its_schema() {
             "workflows" => "workflow",
             "runners" => "runner",
             "views" => "view",
+            "scorers" if file.ends_with(".eval.toml") => "judge-cases",
+            "scorers" if file.ends_with(".md") => continue,
             "scorers" => "scorer",
             "benchmarks" => "benchmark",
             "memories" => "memory",

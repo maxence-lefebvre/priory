@@ -4,8 +4,10 @@ use crate::factory::{
     ScoreKind, ScoreOn, Scorer, Session, Step, Trigger, Until, Workflow,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
+use crate::labels;
 use crate::lanes::{self, Lanes};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 const ENDS: [&str; 2] = ["done", "stop"];
 
@@ -475,6 +477,7 @@ fn check_scorer(factory: &Factory, scorer: &Loaded<Scorer>, problems: &mut Vec<P
         ScoreKind::Outcome => ScoreOn::Result,
         ScoreKind::Command => ScoreOn::Diff,
         ScoreKind::AskShape => ScoreOn::Ask,
+        ScoreKind::Judge => ScoreOn::Diff,
     };
     if value.on != reads {
         problems.push(problem(
@@ -523,7 +526,30 @@ fn check_scorer(factory: &Factory, scorer: &Loaded<Scorer>, problems: &mut Vec<P
             expect,
             "a `command` scorer takes no `expect`: its exit code is its answer".to_owned(),
         )),
+        ScoreKind::Judge if !value.expect.is_empty() => problems.push(problem(
+            scorer,
+            expect,
+            "a `judge` scorer takes no `expect`: its answer is pass or fail".to_owned(),
+        )),
         _ => {}
+    }
+    if value.kind == ScoreKind::Judge {
+        check_judge(factory, scorer, problems);
+    } else {
+        for (field, set) in [
+            ("model", value.model.is_some()),
+            ("prompt", value.prompt.is_some()),
+            ("evaluation", value.evaluation.is_some()),
+            ("agreement", value.agreement.is_some()),
+        ] {
+            if set {
+                problems.push(problem(
+                    scorer,
+                    scorer.lines.field(field),
+                    format!("`{field}` is for kind `judge`, not `{kind}`"),
+                ));
+            }
+        }
     }
     if value.kind != ScoreKind::Command {
         for (field, set) in [
@@ -565,6 +591,123 @@ fn check_scorer(factory: &Factory, scorer: &Loaded<Scorer>, problems: &mut Vec<P
     if let Some(refused) = refused {
         problems.push(problem(scorer, scorer.lines.field("run"), refused));
     }
+}
+
+/// A judge's file beside its scorer: `file` resolved from the scorer's folder, or why it cannot be.
+pub fn beside(factory: &Factory, scorer: &Loaded<Scorer>, file: &Path) -> Result<PathBuf, String> {
+    let named = file.display();
+    if file.is_absolute() || file.components().any(|part| part.as_os_str() == "..") {
+        return Err(format!("{named}, which is not beside the scorer"));
+    }
+    let folder = scorer.file.parent().unwrap_or(Path::new(""));
+    let path = factory.dir.join(folder).join(file);
+    match path.is_file() {
+        true => Ok(path),
+        false => Err(format!(
+            "{named}, which is missing from {}",
+            folder.join("").display()
+        )),
+    }
+}
+
+fn check_judge(factory: &Factory, scorer: &Loaded<Scorer>, problems: &mut Vec<Problem>) {
+    let value = &scorer.value;
+    let at = |field| scorer.lines.field(field).or(scorer.lines.field("kind"));
+    if value
+        .model
+        .as_deref()
+        .is_none_or(|model| model.trim().is_empty())
+    {
+        problems.push(problem(
+            scorer,
+            at("model"),
+            "a `judge` scorer needs `model`: the model that grades".to_owned(),
+        ));
+    }
+    match &value.prompt {
+        None => problems.push(problem(
+            scorer,
+            at("kind"),
+            "a `judge` scorer needs `prompt`: a file beside it with the judge's whole prompt"
+                .to_owned(),
+        )),
+        Some(file) => {
+            if let Err(why) = beside(factory, scorer, file) {
+                problems.push(problem(
+                    scorer,
+                    at("prompt"),
+                    format!("`prompt` names {why}"),
+                ));
+            }
+        }
+    }
+    match &value.evaluation {
+        None => problems.push(problem(
+            scorer,
+            at("kind"),
+            "a `judge` scorer needs `evaluation`: a file beside it with its labeled cases"
+                .to_owned(),
+        )),
+        Some(file) => match beside(factory, scorer, file) {
+            Err(why) => problems.push(problem(
+                scorer,
+                at("evaluation"),
+                format!("`evaluation` names {why}"),
+            )),
+            Ok(path) => {
+                if let Err(why) = labels::load(&path) {
+                    problems.push(problem(
+                        scorer,
+                        at("evaluation"),
+                        format!("`evaluation` {}: {why}", file.display()),
+                    ));
+                }
+            }
+        },
+    }
+    if let Some(agreement) = value.agreement
+        && !(agreement > 0.0 && agreement <= 1.0)
+    {
+        problems.push(problem(
+            scorer,
+            at("agreement"),
+            format!("`agreement` is {agreement}: give a share above 0 and at most 1, such as 0.8"),
+        ));
+    }
+}
+
+/// The warnings `priory check` prints and does not refuse: a judge whose model is also an agent's,
+/// since a model tends to prefer its own work.
+pub fn warnings(factory: &Factory) -> Vec<Problem> {
+    let mut warnings = Vec::new();
+    for scorer in factory.scorers.values() {
+        let Some(model) = scorer.value.model.as_deref() else {
+            continue;
+        };
+        if scorer.value.kind != ScoreKind::Judge {
+            continue;
+        }
+        let same: Vec<&str> = factory
+            .agents
+            .iter()
+            .filter(|(_, agent)| agent.value.model.as_deref() == Some(model))
+            .map(|(name, _)| name.as_str())
+            .collect();
+        if !same.is_empty() {
+            warnings.push(problem(
+                scorer,
+                scorer.lines.field("model"),
+                format!(
+                    "the judge's model `{model}` is also the model of {}: a model tends to prefer its own work",
+                    same.iter()
+                        .map(|name| format!("agent `{name}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ));
+        }
+    }
+    warnings
 }
 
 fn not_a_lane(lane: &str) -> String {

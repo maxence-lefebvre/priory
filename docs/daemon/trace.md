@@ -9,7 +9,8 @@ no record. A repair appends `factory.task.repaired` instead (see Repair), and a 
 such as a merge or a revert, appends `factory.step.labeled` (see Outcome labels). Each `priory gate` appends
 `factory.gate.ran`, which a step's `gate-passed` proof reads (see Proofs in
 [tools.md](tools.md#proofs)). Each score of `priory score` appends `factory.run.scored` (see
-[score.md](score.md)). `priory report` reads only
+[score.md](score.md)), and each complete `priory score --calibrate` of a judge appends
+`factory.scorer.calibrated` (see [score.md](score.md#calibration)). `priory report` reads only
 `factory.step.ended`.
 
 Records live in the `trace` table of the state file, one CloudEvents JSON object per row. R9.3 keeps

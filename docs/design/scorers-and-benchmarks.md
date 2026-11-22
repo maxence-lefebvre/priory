@@ -419,7 +419,14 @@ Tests:
    from a fresh task with no branch, and cover a label from a bot, which still waits for the
    person's answer, a fork, an event with no `head_repo`, a head that moved after the answer, and
    a second label, which repeats. This slice closes M4's done-when line.
-5. The `judge` kind, `priory score --calibrate` and the agreement rule.
+5. Built. The `judge` kind, `priory score --calibrate` and the agreement rule
+   ([score.md](../daemon/score.md#judges), [scorers.md](../reference/scorers.md#labeled-cases)).
+   The calibration is a `factory.scorer.calibrated` trace record, so it needs no new table. A judge
+   reads the request, the result and the diff between markers with a random id, and its question
+   sits in the system prompt, where agent text never goes. `priory score` takes `--budget` for its
+   judges. `priory bench` prices a judge's calls at what one call cost when it was calibrated,
+   rather than from `prices.toml`, since a call's tokens depend on the diff it reads. Its tests use
+   the fake `claude`, so they cost nothing.
 6. Built. Scores in the task page and Costs panel of the web view and Herdr, and in `priory costs`
    ([score.md](../daemon/score.md#where-scores-show)).
 
