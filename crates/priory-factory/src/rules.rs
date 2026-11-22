@@ -1341,8 +1341,8 @@ fn check_linear(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     }
 }
 
-/// A `[pre]` script is an executable file inside the factory folder, with a timeout of at most 60
-/// seconds and `env` names that are variable names.
+/// A `[pre]` script sits on any trigger but `cli` and is an executable file inside the factory
+/// folder, with a timeout of at most 60 seconds and `env` names that are variable names.
 fn check_pre(factory: &Factory, trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     let Some(pre) = &trigger.value.pre else {
         return;
@@ -1350,6 +1350,13 @@ fn check_pre(factory: &Factory, trigger: &Loaded<Trigger>, problems: &mut Vec<Pr
     let mut report = |message: String| {
         problems.push(problem(trigger, trigger.lines.field("pre"), message));
     };
+    if trigger.value.source == "cli" {
+        report(
+            "`[pre]` runs on every source except `triggers/cli.toml`: priory add and priory request never run it"
+                .into(),
+        );
+        return;
+    }
     match pre.argv.first() {
         None => report("`[pre] argv` needs a program".into()),
         Some(program) => {

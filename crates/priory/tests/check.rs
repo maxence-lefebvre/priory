@@ -3159,6 +3159,26 @@ fn check_refuses_an_unknown_pre_on_error_with_its_line() {
 }
 
 #[test]
+fn check_refuses_a_pre_script_on_the_cli_trigger_which_nothing_runs() {
+    use std::os::unix::fs::PermissionsExt;
+    let cli = "source = \"cli\"\nrepo = \"owner/repo\"\nworkflow = \"implement\"\n\n[pre]\nargv = [\"scripts/pre\"]\n";
+    let mut files = with("triggers/cli.toml", cli);
+    files.push(("scripts/pre", "#!/bin/sh\nexit 1\n"));
+    let dir = factory("pre-cli", &files);
+    fs::set_permissions(dir.join("scripts/pre"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    let outcome = check(&dir);
+
+    assert_eq!(
+        (outcome.code, outcome.stderr.as_str()),
+        (
+            1,
+            "triggers/cli.toml:5: `[pre]` runs on every source except `triggers/cli.toml`: priory add and priory request never run it\n"
+        )
+    );
+}
+
+#[test]
 fn a_symlink_out_of_the_factory_is_refused_as_a_pre_script() {
     let dir = with_pre("pre-symlink", "argv = [\"scripts/link\"]\n");
     std::os::unix::fs::symlink("/bin/true", dir.join("scripts/link")).unwrap();
