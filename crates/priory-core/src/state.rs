@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 82;
+const VERSION: i64 = 83;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1492,6 +1492,18 @@ CREATE TABLE IF NOT EXISTS keyboard_keys (
 "
 );
 
+// The subscriptions a close of their resource ended, which a later event of it open again restores.
+const SCHEMA_83: &str = "
+CREATE TABLE IF NOT EXISTS closed_subscriptions (
+  task     INTEGER NOT NULL REFERENCES tasks (id),
+  resource TEXT NOT NULL,
+  created  TEXT NOT NULL,
+  chosen   INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (task, resource)
+);
+PRAGMA user_version = 83;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1504,7 +1516,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
-    SCHEMA_82,
+    SCHEMA_82, SCHEMA_83,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1713,10 +1725,20 @@ pub(crate) fn route_in(
     }
     let resources = route::resources(message);
     claim_pull_request(tx, message)?;
-    // The intake publishes no reopen, so a later event of an open pull request tells it.
-    if message.kind != CLOSED && message.data["open"] == true {
+    // The intake publishes no reopen, so a later event of an open pull request or issue tells it,
+    // and gives back the subscriptions its close ended.
+    if ![CLOSED, ISSUE_CLOSED].contains(&message.kind.as_str()) && message.data["open"] == true {
         tx.execute(
             "UPDATE pull_requests SET state = 'open' WHERE resource = ?1 AND state = 'closed'",
+            [resources.first()],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO subscriptions (task, resource, created, chosen)
+             SELECT task, resource, created, chosen FROM closed_subscriptions WHERE resource = ?1",
+            [resources.first()],
+        )?;
+        tx.execute(
+            "DELETE FROM closed_subscriptions WHERE resource = ?1",
             [resources.first()],
         )?;
     }
@@ -1933,6 +1955,11 @@ pub(crate) fn route_in(
     }
     // After the delivery above, so the close reaches its subscribers.
     if [CLOSED, ISSUE_CLOSED].contains(&message.kind.as_str()) {
+        tx.execute(
+            "INSERT OR REPLACE INTO closed_subscriptions (task, resource, created, chosen)
+             SELECT task, resource, created, chosen FROM subscriptions WHERE resource = ?1",
+            [resources.first()],
+        )?;
         tx.execute(
             "DELETE FROM subscriptions WHERE resource = ?1",
             [resources.first()],

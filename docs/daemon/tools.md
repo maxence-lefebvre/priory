@@ -348,7 +348,11 @@ Or until the pull request closes or a Linear blocker is Done, whichever comes fi
 
 `subscribe` makes the task own a pull request, a Linear issue or a Slack thread until the resource
 closes, the task retires (fails or is dropped), or `unsubscribe`. It takes one condition object, as
-`wait` does, and reads only the fields that name the resource:
+`wait` does, and reads only the fields that name the resource. A close sets the resource's
+subscriptions aside, and a later event that says the pull request or issue is open again (its
+`open` is true) gives them back, so a pull request closed and reopened to run CI again keeps its
+subscribers. An event of a GitHub issue that the intake polls carries no `open`, so only a webhook
+event tells a reopened issue apart:
 
 | `on.type` | Resource |
 | --------- | -------- |

@@ -6791,6 +6791,33 @@ fn commented() -> Message {
 }
 
 #[test]
+fn a_comment_on_a_pull_request_reopened_after_its_close_reopens_the_done_task() {
+    let setup = gated("reopen-after-close");
+    setup.publish(&check(1, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    std::thread::sleep(Duration::from_millis(1100));
+    let mut close = closed().time(herdr_bus::Timestamp::now());
+    close.data["merged"] = json!(false);
+    close.data["open"] = json!(false);
+    setup.publish(&close);
+    setup.until("inbox", |rows| rows.len() == 4);
+    std::thread::sleep(Duration::from_millis(1100));
+
+    let mut comment = commented();
+    comment.data["open"] = json!(true);
+    setup.publish(&comment);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    assert!(
+        setup.typed()[2].starts_with(
+            "Feedback reopened this done task as generation 2: ana commented on github:owner/repo#7"
+        ),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
 fn a_done_task_whose_open_pull_request_gets_a_comment_reopens_and_resumes_its_session() {
     let setup = gated("reopen");
     setup.publish(&check(1, 0));
@@ -14465,6 +14492,29 @@ fn a_closed_pull_request_wakes_its_subscriber_and_ends_its_subscriptions() {
         setup.typed()
     );
     assert_eq!(subscriptions(&setup, "1"), ["github:owner/repo#42"]);
+}
+
+#[test]
+fn a_pull_request_reopened_after_its_close_gives_back_the_subscriptions_the_close_ended() {
+    let setup = subscribed("subscribe-reopened");
+    let mut close = off_branch(closed());
+    close.data["merged"] = json!(false);
+    setup.publish(&close);
+    setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(subscriptions(&setup, "1"), ["github:owner/repo#42"]);
+
+    let mut reopened = off_branch(on_pull(
+        "github.pull_request.synchronize",
+        json!({ "github_id": 702, "open": true }),
+    ));
+    reopened.data["head_sha"] = json!(format!("72{}", "0".repeat(38)));
+    setup.publish(&reopened);
+
+    setup.until("inbox", |rows| rows.len() == 3);
+    assert_eq!(
+        subscriptions(&setup, "1"),
+        ["github:owner/repo#42", "github:owner/repo#7"]
+    );
 }
 
 #[test]

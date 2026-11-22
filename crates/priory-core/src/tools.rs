@@ -3647,7 +3647,8 @@ fn regenerate(tx: &Transaction, task: i64, generation: i64) -> rusqlite::Result<
 
 /// The done task that feedback in `message` reopens: the newest that owns the pull request, issue,
 /// Linear issue or Slack thread it is on, done before the feedback was written, with no close of
-/// that pull request in the inbox, no merged pull request and no active task on its key.
+/// that pull request in the inbox since it was last read open, no merged pull request and no
+/// active task on its key. Feedback the intake read on an open pull request is itself that read.
 pub(crate) fn reopenable(
     tx: &Transaction,
     message: &herdr_bus::Message,
@@ -3670,15 +3671,26 @@ pub(crate) fn reopenable(
             "SELECT tasks.id FROM {owner} AS held JOIN tasks ON tasks.id = held.task
              WHERE held.resource = ?1 AND tasks.state = 'done'
              AND julianday(?2) >= julianday(tasks.changed)
-             AND NOT EXISTS (SELECT 1 FROM inbox WHERE type IN (?3, ?4) AND 'github:'
+             AND (?5 OR NOT EXISTS (SELECT 1 FROM inbox AS close WHERE type IN (?3, ?4) AND 'github:'
                || json_extract(data, '$.repo') || '#'
-               || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1)
+               || coalesce(json_extract(data, '$.pull_request'), json_extract(data, '$.issue')) = ?1
+               AND NOT EXISTS (SELECT 1 FROM inbox AS open WHERE open.seq > close.seq
+                 AND open.type NOT IN (?3, ?4) AND json_extract(open.data, '$.open') = 1
+                 AND 'github:' || json_extract(open.data, '$.repo') || '#'
+                   || coalesce(json_extract(open.data, '$.pull_request'),
+                     json_extract(open.data, '$.issue')) = ?1)))
              AND NOT EXISTS (SELECT 1 FROM tasks AS other WHERE other.key = tasks.key
                AND other.state NOT IN ('done', 'failed', 'dropped'))
              AND NOT EXISTS (SELECT 1 FROM pull_requests WHERE task = tasks.id AND state = 'merged')
              ORDER BY tasks.id DESC LIMIT 1"
         ),
-        params![resource, message.time.to_string(), CLOSED, ISSUE_CLOSED],
+        params![
+            resource,
+            message.time.to_string(),
+            CLOSED,
+            ISSUE_CLOSED,
+            data["open"] == true
+        ],
         |row| row.get(0),
     )
     .optional()

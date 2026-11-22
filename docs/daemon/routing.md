@@ -289,8 +289,10 @@ When no active task owns a resource it names, it reopens the newest done task th
   as every task does to its own key until it unsubscribes;
 - became done at or before the feedback's `time`, to the second;
 - has no `github.pull_request.closed` or `github.issues.closed` event of that pull request or issue
-  in the inbox, merged or not, and
-  the feedback's `open` is true, so a close the intake publishes after it reopens nothing;
+  in the inbox, merged or not, since the last event that read it open, and
+  the feedback's `open` is not false, so a close the intake publishes after it reopens nothing.
+  Feedback whose `open` is true was read on an open pull request, so an earlier close does not
+  count;
 - has no merged pull request, so a "Shipped, thanks" on the Linear issue or in the Slack thread a
   week later starts no new generation on a merged branch;
 - shares its key with no active task.
@@ -315,7 +317,8 @@ feedback](tools.md#review-feedback)).
 
 Limits:
 
-- A pull request closed and reopened on GitHub keeps its close in the inbox, so it reopens nothing.
+- A GitHub issue closed and reopened reopens nothing when the intake polls it, since a polled
+  issue comment carries no `open`. A webhook event carries it.
 - The intake hears a done task's Linear issue or Slack thread only while something watches it,
   such as the subscription to its key (see [watches.md](../intake/watches.md)).
 - The intake publishes no bot's comment, and only feedback after the task was done reopens it. A
