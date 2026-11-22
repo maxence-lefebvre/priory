@@ -16,6 +16,8 @@ const FILE_SHARE: &str = "file_share";
 const BROADCAST: &str = "thread_broadcast";
 /// How many messages a channel's first poll reads.
 const FIRST: u64 = 50;
+/// How many polls in a row a rate limit may leave a thread unread before the poll reports it.
+const BEHIND: u32 = 5;
 
 /// The bot Priory reads Slack as, the Slack triggers, and where each of their channels stands: the
 /// `ts` of the newest message seen, or none while the channel is still in its baseline.
@@ -32,6 +34,8 @@ pub(super) struct Slack<'a> {
     names: RefCell<BTreeMap<String, String>>,
     /// Whether a failing `users.info` was reported, so that it is reported once.
     unnamed: Cell<bool>,
+    /// How many polls in a row a rate limit left each watched thread unread.
+    unread: BTreeMap<(String, String), u32>,
 }
 
 impl<'a> Slack<'a> {
@@ -62,6 +66,7 @@ impl<'a> Slack<'a> {
             turn: super::now()?.as_second().div_euclid(60),
             names: RefCell::default(),
             unnamed: Cell::new(false),
+            unread: BTreeMap::new(),
         })
     }
 
@@ -77,8 +82,9 @@ impl<'a> Slack<'a> {
                 Err(error) => failed.push(error),
             }
         }
-        // A wait and a subscription can name one thread: it is read once, from the earlier time.
-        let mut earliest: BTreeMap<(&str, &str), Timestamp> = BTreeMap::new();
+        // A wait and a subscription can name one thread: it is read once, from the earlier time, at
+        // the better rank.
+        let mut earliest: BTreeMap<(&str, &str), (u8, Timestamp)> = BTreeMap::new();
         for watch in watched {
             let Some((channel, thread)) = watch
                 .resource
@@ -87,25 +93,56 @@ impl<'a> Slack<'a> {
             else {
                 continue;
             };
-            let since = earliest.entry((channel, thread)).or_insert(watch.since);
-            *since = (*since).min(watch.since);
+            let read = earliest
+                .entry((channel, thread))
+                .or_insert((watch.rank, watch.since));
+            *read = (read.0.min(watch.rank), read.1.min(watch.since));
         }
-        let threads: Vec<(&str, &str, Timestamp)> = earliest
-            .into_iter()
-            .map(|((channel, thread), since)| (channel, thread, since))
-            .collect();
-        // Slack lets a new app read one thread a minute: each poll starts at the next thread.
-        let start = self.turn.rem_euclid(threads.len().max(1) as i64) as usize;
+        let mut ranked: BTreeMap<u8, Vec<(&str, &str, Timestamp)>> = BTreeMap::new();
+        for ((channel, thread), (rank, since)) in earliest {
+            ranked
+                .entry(rank)
+                .or_default()
+                .push((channel, thread, since));
+        }
+        // Slack lets a new app read one thread a minute: open waits come first, then active tasks,
+        // then ended ones, and each poll starts every rank at its next thread.
+        let turn = self.turn;
         self.turn += 1;
+        let threads: Vec<(&str, &str, Timestamp)> = ranked
+            .into_values()
+            .flat_map(|mut threads| {
+                let start = turn.rem_euclid(threads.len() as i64) as usize;
+                threads.rotate_left(start);
+                threads
+            })
+            .collect();
         let mut replies = Vec::new();
-        for (channel, thread, since) in threads[start..].iter().chain(&threads[..start]) {
+        let mut limited = Vec::new();
+        for (channel, thread, since) in &threads {
             // A deleted thread or a channel the bot left fails the poll once the rest is published. A
-            // rate limit only delays the thread: the next poll starts with it.
+            // rate limit only delays the thread, until it has been unread for `BEHIND` polls.
+            let key = ((*channel).to_owned(), (*thread).to_owned());
             match self.replies(channel, thread, *since) {
-                Ok(found) => replies.extend(found),
-                Err(error) if error.ends_with(": ratelimited") => eprintln!("{error}"),
-                Err(error) => failed.push(format!("thread {channel}:{thread}: {error}")),
+                Ok(found) => {
+                    replies.extend(found);
+                    limited.push((key, false));
+                }
+                Err(error) if error.ends_with(": ratelimited") => {
+                    eprintln!("{error}");
+                    limited.push((key, true));
+                }
+                Err(error) => {
+                    failed.push(format!("thread {channel}:{thread}: {error}"));
+                    limited.push((key, false));
+                }
             }
+        }
+        let late = behind(&mut self.unread, &limited);
+        if late > 0 {
+            failed.push(format!(
+                "{late} threads behind: Slack rate-limited their reads for more than {BEHIND} polls"
+            ));
         }
         for (channel, events, top) in polled {
             for event in &events {
@@ -521,10 +558,37 @@ pub(super) fn send(
     Ok(answer)
 }
 
+/// Counts the polls in a row that a rate limit left each thread of `polled` unread, forgets the
+/// threads it no longer names, and returns how many went unread for more than `BEHIND` polls.
+fn behind(
+    unread: &mut BTreeMap<(String, String), u32>,
+    polled: &[((String, String), bool)],
+) -> usize {
+    let mut counted = BTreeMap::new();
+    for (thread, limited) in polled {
+        if *limited {
+            counted.insert(thread.clone(), unread.get(thread).copied().unwrap_or(0) + 1);
+        }
+    }
+    *unread = counted;
+    unread.values().filter(|polls| **polls > BEHIND).count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn a_thread_a_rate_limit_left_unread_for_more_than_five_polls_is_behind_until_it_reads() {
+        let thread = ("C0123".to_owned(), "1.0".to_owned());
+        let other = ("C0123".to_owned(), "2.0".to_owned());
+        let mut unread = BTreeMap::new();
+        let poll = [(thread.clone(), true), (other.clone(), false)];
+        let counts: Vec<usize> = (0..6).map(|_| behind(&mut unread, &poll)).collect();
+        assert_eq!(counts, [0, 0, 0, 0, 0, 1]);
+        assert_eq!(behind(&mut unread, &[(thread, false), (other, true)]), 0);
+    }
 
     #[test]
     fn a_ts_with_a_multibyte_character_in_its_fraction_is_refused() {

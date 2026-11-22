@@ -25,6 +25,10 @@ const LABELS: [&str; 6] = [
     "reverted",
 ];
 
+/// How the report line of a merge that turned out red or was reverted starts; the desk ranks it as
+/// an alarm.
+pub(crate) const LANDED: &str = "landed wrong: ";
+
 /// The share of green tasks with a final outcome that should be `approved-clean`.
 const TARGET: f64 = 0.9;
 
@@ -71,9 +75,18 @@ pub(crate) fn label(tx: &Transaction, trace: &Trace, message: &Message) -> rusql
             else {
                 return Ok(());
             };
+            let base = data["base_branch"].as_str().unwrap_or("its base branch");
+            let name = data["name"].as_str().unwrap_or("a check");
             for (number, branch) in merged_at(tx, repo, head)? {
-                for task in authors(tx, repo, number as u64, branch.as_deref())? {
+                let tasks = authors(tx, repo, number as u64, branch.as_deref())?;
+                for &task in &tasks {
                     trace::labeled(tx, trace, task, "red-after-merge", url, happened)?;
+                }
+                // One alarm per merge commit, however many of its checks fail.
+                let red = format!("{LANDED}{repo}#{number} of {} is red on {base}", of(&tasks));
+                if !tasks.is_empty() && !reported(tx, &red)? {
+                    let line = format!("{red}: {name} {conclusion} {url}");
+                    report(tx, &line)?;
                 }
             }
         }
@@ -250,11 +263,43 @@ fn reverts(
         {
             continue;
         }
-        for task in authors(tx, repo, reverted as u64, branch.as_deref())? {
+        let tasks = authors(tx, repo, reverted as u64, branch.as_deref())?;
+        for &task in &tasks {
             trace::labeled(tx, trace, task, "reverted", url, happened)?;
+        }
+        let line = format!(
+            "{LANDED}{repo}#{reverted} of {} was reverted by #{number}: {url}",
+            of(&tasks)
+        );
+        if !tasks.is_empty() && !reported(tx, &line)? {
+            report(tx, &line)?;
         }
     }
     Ok(())
+}
+
+/// `task 5`, or `tasks 5, 6`.
+fn of(tasks: &[i64]) -> String {
+    let ids: Vec<String> = tasks.iter().map(i64::to_string).collect();
+    match ids.len() {
+        1 => format!("task {}", ids[0]),
+        _ => format!("tasks {}", ids.join(", ")),
+    }
+}
+
+/// Whether a report line from Priory starts with `start`.
+fn reported(tx: &Transaction, start: &str) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM inbox WHERE type = ?1 AND subject = 'priory'
+           AND substr(json_extract(data, '$.line'), 1, length(?2)) = ?2)",
+        params![crate::post::REPORT, start],
+        |row| row.get(0),
+    )
+}
+
+fn report(tx: &Transaction, line: &str) -> rusqlite::Result<()> {
+    crate::post::report(tx, "priory", line)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(error.into()))
 }
 
 /// Whether `text` holds `reference` not followed by another digit, so `#5` is not `#57`.

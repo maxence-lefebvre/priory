@@ -114,6 +114,9 @@ pub fn output() -> Output {
 pub struct Watch {
     pub resource: String,
     pub since: Timestamp,
+    /// Which the intake reads first when a source limits its reads: 0 for an open wait or hold, 1
+    /// for an active task, 2 for a task that ended.
+    pub rank: u8,
 }
 
 /// A task's pull request merged recently: the intake reads the check runs at its merge commit on the

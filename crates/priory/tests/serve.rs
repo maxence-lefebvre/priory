@@ -5887,3 +5887,114 @@ fn the_subscribe_endpoint_subscribes_a_task_as_priory_subscribe_does() {
         .collect();
     assert!(resources.contains(&json!(pull)), "{resources:?}");
 }
+
+#[test]
+fn the_unsubscribe_endpoint_ends_a_subscription_as_priory_unsubscribe_does() {
+    let mut setup = Setup::new("web-unsubscribe", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["pause"]));
+    let pull = "github:owner/repo#7";
+    succeeded(&setup.priory(&["subscribe", "1", pull]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let unsubscribe =
+        |extra: &str, body: Value| post(&address, "/api/unsubscribe", extra, &body.to_string());
+
+    let foreign = unsubscribe(
+        "Origin: http://evil.example\r\n",
+        json!({ "task": 1, "resource": pull }),
+    );
+    let malformed = unsubscribe("", json!({ "task": 1, "resource": "owner/repo#7" }));
+    let revised = unsubscribe("", json!({ "task": 1, "resource": pull, "revision": 1 }));
+    let missing = unsubscribe("", json!({ "task": 9, "resource": pull }));
+    let done = unsubscribe("", json!({ "task": 1, "resource": pull }));
+    let again = unsubscribe("", json!({ "task": 1, "resource": pull }));
+
+    assert_eq!(foreign.0, 403, "{}", foreign.1);
+    assert_eq!(malformed.0, 400, "{}", malformed.1);
+    assert_eq!(
+        revised.0, 400,
+        "unsubscribe takes no revision: {}",
+        revised.1
+    );
+    assert_eq!(missing.0, 404, "{}", missing.1);
+    assert_eq!(
+        done,
+        (
+            200,
+            json!({ "ok": "task 1 unsubscribed from github:owner/repo#7" }).to_string()
+        )
+    );
+    assert_eq!(again.0, 422, "{}", again.1);
+    let output = setup.priory(&["task", "1", "--json"]);
+    succeeded(&output);
+    let task_json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        !task_json["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["resource"] == pull && row["chosen"] == true),
+        "{task_json}"
+    );
+}
+
+#[test]
+fn the_label_endpoint_marks_a_task_wrong_and_clears_it_as_priory_label_does() {
+    let mut setup = Setup::new("web-label", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let label = |extra: &str, task: &str, body: Value| {
+        post(
+            &address,
+            &format!("/api/tasks/{task}/label"),
+            extra,
+            &body.to_string(),
+        )
+    };
+    let evidence = "https://github.com/owner/repo/pull/91";
+
+    let foreign = label(
+        "Origin: http://evil.example\r\n",
+        "1",
+        json!({ "evidence": evidence }),
+    );
+    let both = label("", "1", json!({ "evidence": evidence, "clear": true }));
+    let neither = label("", "1", json!({}));
+    let missing = label("", "9", json!({ "evidence": evidence }));
+    let no_url = label("", "1", json!({ "evidence": "the fix" }));
+    let not_marked = label("", "1", json!({ "clear": true }));
+    let marked = label(
+        "",
+        "1",
+        json!({ "evidence": evidence, "happened": "2026-10-02" }),
+    );
+
+    assert_eq!(foreign.0, 403, "{}", foreign.1);
+    assert_eq!(both.0, 400, "{}", both.1);
+    assert_eq!(neither.0, 400, "{}", neither.1);
+    assert_eq!(missing.0, 404, "{}", missing.1);
+    assert_eq!(no_url.0, 422, "{}", no_url.1);
+    assert!(no_url.1.contains("is not a URL"), "{}", no_url.1);
+    assert_eq!(not_marked.0, 422, "{}", not_marked.1);
+    assert_eq!(
+        marked,
+        (
+            200,
+            json!({ "ok": format!("task 1 marked wrong: {evidence}") }).to_string()
+        )
+    );
+    let cleared = label("", "1", json!({ "clear": true }));
+    assert_eq!(
+        cleared,
+        (
+            200,
+            json!({ "ok": "task 1 is no longer marked wrong" }).to_string()
+        )
+    );
+    let output = setup.priory(&["label", &setup.factory(), "1", "wrong", "--clear"]);
+    assert!(
+        !output.status.success(),
+        "the web's clear withdrew the mark"
+    );
+}

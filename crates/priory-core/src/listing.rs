@@ -4,7 +4,7 @@ use crate::{post, snooze, stall, state, sweep};
 use jiff::Timestamp;
 use priory_factory::explain;
 use priory_factory::factory::{Factory, Trigger};
-use priory_intake::intake::schedule;
+use priory_intake::intake::{CHECKED, schedule};
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OptionalExtension, Params, params};
 use serde_json::{Map, Value, json};
@@ -71,7 +71,8 @@ fn urgency() -> String {
     format!(
         "CASE WHEN desk.part = 1 OR desk.kind = 'batch' THEN NULL
            WHEN desk.kind IN ('blocked', 'failed', 'prompt', 'command')
-             OR desk.kind = 'report' AND desk.what LIKE 'intake: %' THEN 'alarm'
+             OR desk.kind = 'report' AND (desk.what LIKE 'intake: %'
+               OR desk.what LIKE 'priory: landed wrong: %') THEN 'alarm'
            WHEN desk.kind = 'ask' THEN (SELECT CASE WHEN {IRREVERSIBLE} THEN 'irreversible'
                WHEN tasks.key GLOB '*:review:*' THEN 'review'
                WHEN asks.kind = 'step' THEN 'plan' ELSE 'ask' END
@@ -95,6 +96,8 @@ const DESK_TITLE: &str = "CASE WHEN desk.kind = 'ask' THEN (SELECT coalesce(asks
            || (SELECT key FROM tasks WHERE tasks.id = desk.task) || ' ' || desk.kind
          WHEN desk.kind = 'report' AND desk.what LIKE 'intake: %' THEN 'the intake fails to poll '
            || substr(desk.what, 9, instr(substr(desk.what, 9), ':') - 1)
+         WHEN desk.kind = 'report' AND desk.what LIKE 'priory: landed wrong: %'
+           THEN 'a merge landed wrong'
          WHEN desk.kind = 'report' THEN 'a report from '
            || substr(desk.what, 1, instr(desk.what, ':') - 1)
          ELSE desk.kind || ' ' || desk.id END AS title";
@@ -533,12 +536,20 @@ fn event_json(
     let said = ["body", "text", "title"]
         .iter()
         .find_map(|field| message.data[field].as_str())
-        .and_then(|text| text.lines().find(|line| !line.trim().is_empty()));
+        .and_then(|text| text.lines().find(|line| !line.trim().is_empty()))
+        .map(str::to_owned)
+        .or_else(|| checked(&kind, &message.data));
     let event = json!({
         "seq": seq, "type": kind, "subject": subject,
         "time": time, "line": said, "url": message.data["url"].as_str(),
     });
     (resource, event)
+}
+
+/// A check run's name and conclusion, `test (ubuntu) failure`, as the line of its event.
+fn checked(kind: &str, data: &Value) -> Option<String> {
+    let name = data["name"].as_str().filter(|_| kind == CHECKED)?;
+    Some(format!("{name} {}", data["conclusion"].as_str()?))
 }
 
 /// Every task in start order, or the tasks of one lane, of one grade, or both.
