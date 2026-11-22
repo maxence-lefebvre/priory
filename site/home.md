@@ -21,21 +21,22 @@
 
 ## Start in three steps
 
-<p class="sub">Priory needs Linux, git, tmux, gh logged in to GitHub, and claude or codex.</p>
+<p class="sub">Priory needs Linux, git, tmux, gh logged in to GitHub, openssl, claude or codex, and the Rust toolchain.</p>
 
 <ol class="steps">
 <li>
 
-### Install Priory
+### Build Priory
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/maxence-lefebvre/priory/main/install.sh | sh
-priory --version
+git clone https://github.com/maxence-lefebvre/priory
+cd priory
+cargo install --path crates/priory
 ```
 
-The script installs the latest release to `~/.local/bin`. You can also build from source.
+Build from source with the pinned Rust toolchain.
 
-[Install Priory](GETTING_STARTED.md#1-install-priory)
+[Build Priory](GETTING_STARTED.md#1-build-priory)
 
 </li>
 <li>
@@ -54,20 +55,25 @@ A factory is a folder: one agent, one workflow and one trigger to start.
 </li>
 <li>
 
-### Run it
+### Run it and answer the first ask
 
 ```sh
+mkdir -p ~/.local/state/priory-oss
 export PRIORY_DB=~/.local/state/priory-oss/priory.db
-priory intake example
-```
-
-```sh
+export PRIORY_TOKEN=$(openssl rand -hex 32)
+echo "$PRIORY_TOKEN"
 priory daemon example
 ```
 
-Run the intake and the daemon side by side, each in its own terminal with `PRIORY_DB` set. The intake finds work. The daemon runs one agent per task in tmux and a git worktree.
+In a second terminal:
 
-[Run it](GETTING_STARTED.md#5-run-it)
+```sh
+priory add example --repo owner/name "Fix the typo in the README"
+```
+
+The daemon runs one agent per task in tmux and a git worktree. Its question lands on the desk, in the web view on `127.0.0.1:7340`, which asks for the token the `echo` printed.
+
+[Run it](GETTING_STARTED.md#4-run-it)
 
 </li>
 </ol>
@@ -85,7 +91,11 @@ Run the intake and the daemon side by side, each in its own terminal with `PRIOR
 
 ## Concepts
 
-<!-- include GETTING_STARTED.md "Concepts" -->
+A factory is a folder of files: agents, workflows and triggers. A trigger turns an event into a task.
+A task goes through its workflow's steps, and each step is decided by a model, a person or code.
+What waits on a person lands on one list, the desk.
+
+[Read the concepts](docs/concepts.md)
 
 </section>
 

@@ -5,7 +5,7 @@ tasks under another model or configuration." M4 is done when "a configuration ch
 replayed tasks before it merges". It builds nothing. It holds the model, the first code slice with
 its tests, the slices after it, and the open questions with a recommendation for each.
 
-## What exists today
+## What existed when this note was written
 
 - The PRD lists `scorers/` and `benchmarks/` among the factory's files. Nothing reads them.
 - `priory eval` compares two texts on a real model

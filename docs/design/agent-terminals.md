@@ -5,7 +5,7 @@ the web view on a phone or a desktop and from Herdr. It covers the terminal pane
 terminal attach of M2. It builds nothing. It holds the model, the first code slice with its tests,
 the slices after it, and the open questions with a recommendation for each.
 
-## What exists today
+## What existed when this note was written
 
 - Each run is a detached tmux session, `priory-<task id>`, launched at 200 columns by 50 rows, whose
   agent pane carries the run's `@priory` tag. A read-write attach resizes it to the client ([runtime.rs](../../crates/priory-runtime/src/runtime.rs)).

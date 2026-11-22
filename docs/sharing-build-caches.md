@@ -2,7 +2,7 @@
 
 This guide shows how to give a runner's agents a build cache, such as sccache or a Nix binary
 cache. It assumes a factory that already runs on the machine, and a daemon started as
-[services.md](daemon/services.md) describes.
+[How to run Priory as services](running-as-services.md) describes.
 
 Each task builds in its own worktree, so each one starts with an empty build folder. A cache saves
 that time. Priory does not install, start or configure one: a cache belongs to the machine, as

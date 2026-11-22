@@ -807,14 +807,9 @@ Another front end, such as Orca, gets Priory the same way:
    `--pane-*` tokens do.
 4. Put the adapter in its own folder under `adapters/`, outside the Cargo workspace.
 
-## Core gaps
+## What the core serves
 
-The panels still need these from Priory's core. Each is a separate slice.
-
-1. Earlier reports listed by date, for the Bonjour panel's older and newer arrows.
-2. A `report pick` that replaces a choice the workflow has not applied yet, for Change.
-
-The core already serves the rest of the fields above:
+The core serves every field above:
 
 - JSON: `priory desk`, `asks`, `tasks`, `queue`, `schedules` and `report show` take `--json`.
   [serve.md](../reference/serve.md) lists each field.

@@ -11,7 +11,8 @@ priory daemon [DIR] [--once]
 `DIR` is the factory folder, `.` by default. The daemon checks the factory first, as `priory check`
 does, and refuses to start while it has problems.
 
-It reads the herdr-bus output `factory.intake` as the consumer `priory`, or `priory.<runner>` in a
+It reads the output `factory.intake` of the event log, herdr-bus by default or Postgres with
+[`[log] backend = "postgres"`](../reference/factory.md#log), as the consumer `priory`, or `priory.<runner>` in a
 factory of several runners (see [runners.md](runners.md)). It records each message in
 the inbox and routes it to a task (see [routing.md](routing.md)). Without `--once`, the daemon looks
 for new messages every second and runs agents, as [runs.md](runs.md) describes.
@@ -32,8 +33,8 @@ read the same file.
 The daemon refuses to start without `PRIORY_DB`. It also refuses an empty name, `:memory:` or a
 `file:` URI, because SQLite may not keep those on disk.
 
-Clones, worktrees and the daemon's socket live in a separate folder, Priory home (see
-[home.md](home.md)).
+Clones and worktrees live in a separate folder, Priory home. The daemon's socket sits at a short
+path derived from it (see [home.md](home.md#socket-spool-and-lock)).
 
 ## A task's life
 
@@ -89,13 +90,15 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [outbox.md](outbox.md): prompt states and how the daemon types a prompt.
 - [reports.md](reports.md): reports of sections that a workflow writes, and the picks a person
   makes on them.
-- [trace.md](trace.md): trace records, token counts, `priory report`, `priory costs`, the attention report, outcome labels, `priory grades`, `priory report risk` and the OpenTelemetry export.
+- [trace.md](trace.md): trace records, token counts, `priory report`, `priory costs`, the attention
+  report, outcome labels, `priory grades`, `priory report risk` and the OpenTelemetry export. To send
+  the export to a backend, follow
+  [How to send traces to an OpenTelemetry backend](../sending-traces-to-opentelemetry.md).
 - [score.md](score.md): `priory score`, which grades a task's finished runs with the factory's
   scorers, and `priory score --calibrate`, which measures a judge scorer against a person's labels.
 - [bench.md](bench.md): `priory bench capture`, which turns a past task into a benchmark case,
   `priory bench replay`, which plays one case under one configuration, and `priory bench` with
   `--base` and `--head`, which compares two commits of the factory on a benchmark.
-- [otel-recipes.md](otel-recipes.md): how to send the export to a local ClickStack, Honeycomb or Grafana Cloud.
 - [batches.md](batches.md): batches, `priory batch add`, `priory batch show` and `priory batch edit`, split issues, the plan a
   planning task sends, the go and the `merged` hold condition.
 - [relations.md](relations.md): how tasks relate, `priory relate`, the relations Priory records
@@ -103,4 +106,6 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [search.md](search.md): TL;DRs, the summarizer, `priory search`, and the optional embeddings.
 - [load.md](load.md): the load test, how to rerun it and the limits it measured.
 - [serve.md](serve.md): the HTTP server over the state, its token and its limits.
-- [services.md](services.md): running Priory as systemd user services, and the listing commands.
+- To run Priory as systemd user services, follow
+  [How to run Priory as services](../running-as-services.md). The listing commands, such as
+  `priory runs`, are in [the command reference](../reference/cli.md).

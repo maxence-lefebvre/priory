@@ -114,7 +114,7 @@ hangs, is given up on.
 
 ## `[telemetry]`
 
-See [trace.md](../daemon/trace.md) and, for backends, [otel-recipes.md](../daemon/otel-recipes.md).
+See [trace.md](../daemon/trace.md) and, for backends, [How to send traces to an OpenTelemetry backend](../sending-traces-to-opentelemetry.md).
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |

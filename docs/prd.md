@@ -381,7 +381,8 @@ factory, such as herdr-bowtie, can read the same output as another consumer.
 - R2.6 Accept signed webhooks and check the signature before any trigger sees the payload. M2
 - R2.7 Trigger when someone asks a person directly for a pull request review, in any repository.
   A removed request that the person did not answer with a review withdraws the task, and a
-  re-request wakes it. Team requests come later. M1
+  re-request wakes it. A request to a team the trigger names starts a task too (see
+  [review-requests.md](intake/review-requests.md)). M1
 
 ### R3. Inbox
 
@@ -534,8 +535,11 @@ Priory serves these as MCP tools.
   runs. M3
 - R9.2 A runner keeps its tasks going while the other machines are offline. Answers given on another
   machine meanwhile are delivered when it reconnects, through the revision check in R6.3. M3
-- R9.3 State goes through an event log with cursors, plus requests with a deadline, a take and a
-  reply, in the shape herdr-bus uses. In M0 the log is herdr-bus's SQLite file and the task state is
+- R9.3 State goes through an event log with cursors. Requests with a deadline, a take and a reply
+  are left out: claims and leases on the log do that job (see
+  [ADR 0001](adr/0001-the-intake-and-the-daemon-reach-the-event-log-through-one-log-trait.md) and
+  [ADR 0003](adr/0003-runners-own-tasks-through-claims-and-leases-on-the-shared-log.md)).
+  In M0 the log is herdr-bus's SQLite file and the task state is
   Priory's own. The daemon acks a message only after its state change commits, and drops a
   redelivered message by its event id, so each event changes state exactly once. One store for both
   waits for the adapters of R9.4. M0

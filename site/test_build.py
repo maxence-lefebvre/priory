@@ -80,7 +80,7 @@ class Chapters(unittest.TestCase):
     def test_home_includes_every_section_it_names(self):
         home = build.home(PAGES)
         self.assertNotIn("<!-- include", home)
-        self.assertIn("**Factory.**", home)
+        self.assertIn("docs/concepts.md", home)
 
 
 if __name__ == "__main__":

@@ -34,7 +34,7 @@ on every turn and crowds out the agent's own instructions. The starters' guides 
 
 ## What the starters' guide changes
 
-Seven starters ship the same `WRITING.md`: question first, then the recommendation, what waits and
+Eight starters ship the same `WRITING.md`: question first, then the recommendation, what waits and
 what happens next, in plain words. `examples/writing.eval.toml` runs two cases that each end in an
 ask, with and without the guide, on Haiku. Its `shape` setting counts an ask as `short` when its
 question is one line of at most 25 words, and names the optional fields the ask filled. See

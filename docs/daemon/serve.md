@@ -43,8 +43,9 @@ echo "PRIORY_TOKEN=$(openssl rand -hex 32)" >> ~/.config/priory/env
 
 ## Writes
 
-Ten endpoints change the state: answer an ask, dismiss one, snooze a desk item, add a task,
-resume, revive, cancel, release or say to a task, and add a to-do or mark one done. Each is the twin of a CLI
+These endpoints change the state, among others: answer an ask, dismiss one, snooze a desk item, add
+a task, resume, revive, cancel, release or say to a task, and add a to-do or mark one done.
+[serve.md](../reference/serve.md#writes) lists every one. Each is the twin of a CLI
 verb: `priory answer`, `priory dismiss`, `priory snooze`, `priory add`, `priory resume`, `priory
 revive`, `priory cancel`, `priory release`, `priory say`, `priory todo add` and `priory todo done`. All but the add build the same line
 the verb builds and sends it to the daemon on its socket, so the daemon applies it in the same
@@ -100,7 +101,7 @@ on a secure origin: `https://`, or `localhost` on the machine itself. On a tailn
 `tailscale serve` is such a proxy. It gives the machine an `https://<machine>.<tailnet>.ts.net`
 address with a certificate, accepts connections from the tailnet only, and forwards them to
 `127.0.0.1`. The daemon keeps listening on loopback, with no `public = true`.
-[GETTING_STARTED.md](../../GETTING_STARTED.md#use-it-from-a-phone) has the steps. The server
+[How to use the web view](../using-the-web-view.md) has the steps. The server
 compares `Origin` with `Host` and not the scheme, so the proxy, which keeps `Host`, passes the
 Origin rule.
 

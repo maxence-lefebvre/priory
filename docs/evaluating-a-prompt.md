@@ -2,7 +2,7 @@
 
 This guide shows how to measure a change to text that Priory gives agents, such as a tool
 description, the nudge or a task intro, before you ship it. It assumes a clone of this repository
-with its [build prerequisites](../GETTING_STARTED.md#build-from-source), and Claude Code signed in.
+with its [build prerequisites](../GETTING_STARTED.md#1-build-priory), and Claude Code signed in.
 
 `priory eval` runs each case of an evaluation file several times under each variant of the text,
 with a real model. The agent's only tools are a fake of Priory's MCP server: it serves the same
