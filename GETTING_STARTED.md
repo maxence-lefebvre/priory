@@ -332,7 +332,9 @@ The web view's Tasks panel lists every task, with the saved views Active, Blocke
 filters by state, lane and workflow; each row opens the task's page, and a batch's entries link to
 the batch. The Runs panel lists the runs of the last 7 days with their agent, model, outcome,
 duration and tokens, filtered by outcome, agent or step. `priory tasks` and `priory runs` print the
-same tasks and runs, and the Herdr Tasks and Runs panels show them too.
+same tasks and runs, and the Herdr Tasks and Runs panels show them too. In a factory of several
+runners, both Tasks panels also list the tasks the other runners hold and filter by runner. Such a
+task's row opens nothing here: its page stays on its runner.
 
 The Queue panel, under More on a phone, shows Up next, then each band's waiting tasks in the order
 they start, with why each one waits. Its Move menu moves a task to the top of its band, up or down

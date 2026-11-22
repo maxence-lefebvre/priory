@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, takesText, writeNote } from "./asks.js";
+import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, takesText, writeNote } from "./asks.js";
 
 const now = Date.parse("2026-11-20T12:00:00Z");
 const ask = (id, fields) => ({ id, state: "open", snoozed_until: null, ...fields });
@@ -121,4 +121,20 @@ test("a write to another runner's ask that could not reach the log says nothing 
 
 test("the S key snoozes no ask of another runner, whose task is a task of that runner", () => {
   assert.equal(snoozeShortcut(ask("xps13:12", { task: 4, runner: "xps13", submissions: [] }), now), null);
+});
+
+test("each answer and dismiss sent to another runner's ask is a history row with its runner, its outcome and when it was sent", () => {
+  const remote = ask("laptop:3", { runner: "laptop", submissions: [
+    { submission: "s1", verb: "answer", revision: 1, text: "rejected", sent: "2026-11-20T11:00:00Z", outcome: "refused", why: "ask 3 is at revision 2", applied: "2026-11-20T11:01:00Z" },
+    { submission: "s2", verb: "answer", revision: 2, text: "approved", sent: "2026-11-20T11:10:00Z", outcome: "answered", why: null, applied: "2026-11-20T11:11:00Z" },
+    { submission: "s3", verb: "dismiss", revision: 2, text: null, sent: "2026-11-20T11:20:00Z", outcome: "dismissed", why: null, applied: "2026-11-20T11:21:00Z" },
+    { submission: "s4", verb: "answer", revision: 2, text: "merge", sent: "2026-11-20T11:30:00Z", outcome: null, why: null, applied: null },
+  ] });
+  assert.deepEqual(submitted(remote), [
+    { tile: "refused", text: "Sent rejected to laptop for revision 1. laptop refused it: ask 3 is at revision 2", at: "2026-11-20T11:00:00Z" },
+    { tile: "answered", text: "Sent approved to laptop for revision 2. laptop applied it", at: "2026-11-20T11:10:00Z" },
+    { tile: "withdrawn", text: "Sent the dismiss to laptop for revision 2. laptop applied it", at: "2026-11-20T11:20:00Z" },
+    { tile: "queued", text: "Sent merge to laptop for revision 2. Not applied yet", at: "2026-11-20T11:30:00Z" },
+  ]);
+  assert.deepEqual(submitted(ask(7)), []);
 });

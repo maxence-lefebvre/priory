@@ -24,14 +24,25 @@ export function elsewhere(task, ago) {
 }
 
 /**
- * Each facet's key, label and a task's values, as the Asks list's facets. A task with no lane
- * shows under `none`. @type {[string, string, (task: any) => string[]][]}
+ * Each facet's key, label and a task's values, as the Asks list's facets. A task with no lane, or
+ * another runner's task with no workflow, shows under `none`. @type {[string, string, (task: any) => string[]][]}
  */
 export const TASK_FACETS = [
   ["state", "State", (task) => [task.state ?? "elsewhere"]],
   ["lane", "Lane", (task) => [task.lane ?? "none"]],
-  ["workflow", "Workflow", (task) => [task.workflow]],
+  ["workflow", "Workflow", (task) => [task.workflow ?? "none"]],
 ];
+
+/**
+ * The task facets, with a Runner facet in a factory of several runners, where every task names one.
+ * Like the Asks list's, it has no order and names this runner "<name> (here)". @param {any[]} tasks
+ * @returns {any[]}
+ */
+export function taskFacets(tasks) {
+  if (!tasks.some((task) => task.runner)) return TASK_FACETS;
+  const named = (name) => (tasks.some((task) => task.runner === name && task.id != null) ? `${name} (here)` : name);
+  return [...TASK_FACETS, ["runner", "Runner", (task) => [task.runner ?? "none"], null, named]];
+}
 
 /**
  * The items every picked facet value matches. @template T @param {T[]} items
