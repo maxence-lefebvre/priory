@@ -5,6 +5,7 @@ import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { appHome, closeOverlay, exec, home as herdrHome, openOverlay, props, readTextFile, setShared } from "herdr";
 import { priory } from "./priory.js";
+import { selectable } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 
 const READ_EVERY_MS = 60_000;
@@ -128,18 +129,18 @@ export default class PrioryUsage extends View {
   /** @param {Palette} t */
   detail(t) {
     const costs = this.costs;
-    const body = v_flex().id("usage-detail").size_full().min_h_0().overflow_y_scrollbar().p(14).gap(S["space-3"])
+    const body = v_flex().id("usage-detail").size_full().min_h_0().overflow_y_scrollbar().p(S["space-3"]).gap(S["space-3"])
       .bg(t.surface).text_color(t.text).font_family(this.font?.ui ?? FONTS.indigo.ui).text_size(S["type-caption"][0]);
-    if (!costs) return body.child(div().text_color(this.error ? t["warn-text"] : t["text-3"]).child(this.error ? `Could not read costs: ${this.error}` : "Reading costs…"));
+    if (!costs) return body.child(div().text_color(this.error ? t["warn-text"] : t["text-3"]).child(this.error ? selectable("usage-error", `Could not read costs: ${this.error}`) : "Reading costs…"));
     const heading = (/** @type {string} */ title, /** @type {string} */ meta = "") => h_flex().justify_between().font_weight(600).text_color(t["text-3"])
       .child(title).when(Boolean(meta), (el) => el.child(div().font_weight(400).child(meta)));
-    const section = (/** @type {string} */ id) => v_flex().id(id).gap(6).pt(S["space-3"]).border_t(1).border_color(t.line);
+    const section = (/** @type {string} */ id) => v_flex().id(id).gap(S["space-2"]).pt(S["space-3"]).border_t(1).border_color(t.line);
     /** @type {Cap[]} */
     const caps = costs.caps ?? [];
     /** @type {Held[]} */
     const held = costs.held ?? [];
     return body
-      .when(Boolean(this.error), (el) => el.child(div().id("usage-stale").whitespace_normal().text_color(t["warn-text"]).child(`Could not read costs: ${this.error}. This is the last read.`)))
+      .when(Boolean(this.error), (el) => el.child(div().id("usage-stale").whitespace_normal().text_color(t["warn-text"]).child(selectable("usage-stale-text", `Could not read costs: ${this.error}. This is the last read.`))))
       .when(caps.length > 0, (el) => el.child(v_flex().id("usage-caps").gap(S["space-2"]).child(heading("Spend caps"))
         .children(caps.map((cap, at) => {
           const fraction = share(cap.spent_usd, cap.cap_usd);
@@ -156,10 +157,10 @@ export default class PrioryUsage extends View {
           .child(div().font_family(this.font?.mono ?? FONTS.indigo.mono).child(String(row[costs.by] ?? "-")))
           .child(div().text_color(t["text-2"]).child(money(row.cost_usd))))))
       .when(held.length > 0, (el) => el.child(section("usage-held").child(heading("Held at a cap", String(held.length)))
-        .children(held.map((row) => h_flex().id(`held-${row.task}`).gap(S["space-2"]).items_start().px(6).py(4).rounded(S["radius-sm"])
+        .children(held.map((row) => h_flex().id(`held-${row.task}`).gap(S["space-2"]).items_start().px(S["space-2"]).py(S["space-1"]).rounded(S["radius-sm"])
           .hover((s) => s.bg(t.raised)).on_click(() => this.openTask(row.task))
           .child(div().flex_none().font_family(this.font?.mono ?? FONTS.indigo.mono).text_color(t["action-text"]).child(row.key))
-          .child(div().flex_1().whitespace_normal().text_color(t["text-2"]).child(`spent ${money(row.spent_usd)} of ${owner(row.scope)} ${row.period} cap of ${money(row.cap_usd)}`))))))
+          .child(div().flex_1().min_w_0().whitespace_normal().text_color(t["text-2"]).child(`spent ${money(row.spent_usd)} of ${owner(row.scope)} ${row.period} cap of ${money(row.cap_usd)}`))))))
       .when(Boolean(this.claude), (el) => el.child(section("usage-claude").child(heading("Claude subscription"))
         .child(this.bar("claude-fill", "7-day limit", `${Math.round(this.claude?.used ?? 0)}%${this.claude?.resets ? `, resets in ${left(this.claude.resets - Date.now() / 1000)}` : ""}`, (this.claude?.used ?? 0) / 100, t))));
   }
@@ -167,7 +168,7 @@ export default class PrioryUsage extends View {
   /** A labelled bar, filled to `fraction`, warn from 80% and danger once reached. @param {string} id @param {string} label @param {string} value @param {number} fraction @param {Palette} t */
   bar(id, label, value, fraction, t) {
     const fill = fraction >= 1 ? t["tile-danger"] : fraction >= WARN ? t["tile-warn"] : t["text-2"];
-    return v_flex().gap(4)
+    return v_flex().gap(S["space-1"])
       .child(h_flex().justify_between().gap(S["space-2"]).child(div().truncate().child(label)).child(div().flex_none().text_color(t["text-2"]).child(value)))
       .child(div().h(6).w_full().rounded(S["radius-full"]).bg(t.raised).overflow_hidden()
         .child(div().id(id).h_full().rounded(S["radius-full"]).bg(fill).w(`${Math.round(Math.min(1, fraction) * 100)}%`)));
@@ -207,7 +208,7 @@ export default class PrioryUsage extends View {
       // The usage block is at least 320 px, where the first part always fits.
       while (parts.length > 1 && width() > this.width) parts.pop();
     }
-    return h_flex().id("usage-line").size_full().px(12).gap(8).items_center().overflow_hidden().whitespace_nowrap()
+    return h_flex().id("usage-line").size_full().px(S["space-3"]).gap(S["space-2"]).items_center().overflow_hidden().whitespace_nowrap()
       .hover((s) => s.bg(t.raised)).on_click(() => this.open())
       .bg(t.bar).border_t(1).border_color(t.line).font_family(this.font?.ui ?? FONTS.indigo.ui).text_size(12)
       .on_size_change(({ width }, cx) => {

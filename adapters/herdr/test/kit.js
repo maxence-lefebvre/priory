@@ -60,12 +60,17 @@ export function all(root, kind) {
   return [...(node.kind === kind ? [node] : []), ...node.kids.flatMap((kid) => all(kid, kind))];
 }
 
+const ENTITIES = /** @type {Record<string, string>} */ ({ "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'" });
+
+/** The words a TextView's HTML shows, its paragraphs joined by spaces. @param {string} html */
+const shown = (html) => html.split(/<\/p>\s*<p>/).map((part) => part.replace(/<[^>]*>/g, "").replace(/&(amp|lt|gt|quot|#39);/g, (entity) => ENTITIES[entity])).filter(Boolean).join(" ");
+
 /** Every text a node and its children show, joined by spaces. @param {any} value @returns {string} */
 export function text(value) {
   if (typeof value === "string") return value;
   const node = nodeOf(value);
   if (!node) return "";
-  return [node.html ?? "", ...node.kids.map(text)].filter(Boolean).join(" ");
+  return [shown(node.html ?? ""), ...node.kids.map(text)].filter(Boolean).join(" ");
 }
 
 /** A context whose spawned work the test awaits with `settle`. */
@@ -89,6 +94,7 @@ export function context() {
     },
     sleep: () => new Promise(() => {}),
     focus_handle: () => ({ focus() {} }),
+    write_to_clipboard(/** @type {string} */ text) { herdr.clipboard = text; },
     theme: () => ({ appearance: "light" }),
   };
   return cx;
@@ -174,6 +180,8 @@ export const herdr = {
   listening: [],
   /** @type {any} what props() gives the mod, as an overlay's copy gets `overlay` */
   props: {},
+  /** @type {string | null} what a mod last wrote to the clipboard */
+  clipboard: null,
   /** @type {any[]} each overlay the mods opened and not closed, as given to openOverlay */
   overlays: [],
   /** Delivers `command` to every mod waiting in nextCommand, as `run("<mod>.<command>")` does. @param {string} command */
@@ -198,6 +206,7 @@ export const herdr = {
     this.waiting = [];
     this.timers = [];
     this.notices = [];
+    this.clipboard = null;
     this.listening = [];
     this.props = {};
     this.overlays = [];

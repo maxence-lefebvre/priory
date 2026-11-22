@@ -347,6 +347,14 @@ test("a press on a row's link opens the link and leaves the selection where it w
   assert.equal(panel.selected, "ask:2");
 });
 
+test("the selected row's text selects and copies, and so does the next thing's question", async () => {
+  const { draw, find } = await import("./kit.js");
+  const { panel, cx } = await deskPanel();
+  panel.selected = "ask:2";
+  const tree = draw(panel, cx);
+  for (const id of ["text-ask:2", "next-question"]) assert.equal(find(tree, id)?.calls.selectable?.[0], true, id);
+});
+
 test("another runner's ask names its runner and when it was last seen, says what an answer sent to it became, and offers no snooze", () => {
   const since = new Date(now - 30 * 60_000).toISOString();
   const item = { kind: "ask", id: "desktop:12", task: null, key: "ENG-260", step: "approve-pr", since, what: "Merge?", runner: "desktop", last_seen: new Date(now - 40 * 60_000).toISOString(), snoozed_until: null };
