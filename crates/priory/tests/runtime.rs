@@ -21825,3 +21825,56 @@ fn a_command_scorer_on_a_task_with_no_start_commit_is_an_error() {
 
     assert_eq!(rows[0][3..], ["error", "no start commit"]);
 }
+
+#[test]
+fn a_command_scorer_refuses_a_result_commit_that_is_not_a_hash_before_git_reads_it() {
+    let (setup, _) = committed_task("score-bad-commit");
+    // The result tool takes only a full SHA, but a stored result is older than that rule.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "DROP TRIGGER results_are_immutable;
+         UPDATE results SET commit_sha = '--orphan=x' WHERE run = 1;",
+    )
+    .unwrap();
+    command_scorer(&setup, "ok", "1m", "#!/bin/sh\nexit 0\n");
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(
+        rows[0][3..],
+        [
+            "error",
+            "the result's commit \"--orphan=x\" is not a commit hash"
+        ]
+    );
+    let branches = git(&setup.dir.join("home/repos/owner/repo"))
+        .args(["branch", "--list", "x"])
+        .output()
+        .unwrap();
+    assert!(branches.stdout.is_empty());
+}
+
+#[test]
+fn a_command_scorer_whose_run_leads_outside_the_factory_folder_is_an_error_and_never_runs() {
+    use std::os::unix::fs::PermissionsExt;
+    let (setup, _) = committed_task("score-outside");
+    let ran = setup.dir.join("ran");
+    let outside = setup.dir.join("outside.sh");
+    fs::write(&outside, format!("#!/bin/sh\ntouch {}\n", ran.display())).unwrap();
+    fs::set_permissions(&outside, fs::Permissions::from_mode(0o755)).unwrap();
+    command_scorer(&setup, "escape", "1m", "#!/bin/sh\nexit 0\n");
+    let link = setup.dir.join("factory/scripts/escape.sh");
+    fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(
+        rows[0][3..],
+        [
+            "error",
+            "`run` names scripts/escape.sh, which leads outside the factory folder"
+        ]
+    );
+    assert!(!ran.exists());
+}

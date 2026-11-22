@@ -31,6 +31,11 @@ command adds a detached worktree of the result's `commit` from Priory's clone, u
 `$PRIORY_HOME/scores/`, runs the scorer there and removes it. So a scorer of an earlier run sees
 that run's commit, whatever the branch holds now. The commit must still be in the clone.
 
+The agent writes a result's `commit`, so the command checks it before git reads it: a value that
+is not 7 to 64 hexadecimal characters answers `error: the result's commit "<value>" is not a
+commit hash`. The scorer's `run` must resolve inside the factory folder. One that leads outside,
+as through a symbolic link, answers `error` and never runs.
+
 The scorer runs in its own process group, with a cleared environment that keeps `PATH` and `HOME`
 and adds `PRIORY_SCORE_BASE`, `PRIORY_SCORE_HEAD` and `PRIORY_SCORE_RESULT`. Past its `timeout`,
 Priory kills the group and the scorer answers `error: timed out after <n>s`. Exit 0 passes and

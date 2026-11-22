@@ -236,11 +236,19 @@ fn command(
     let Some(head) = result["commit"].as_str() else {
         return error("the result names no commit".to_owned());
     };
+    // The agent wrote it, and git would read a value starting with `-` as an option.
+    if !(7..=64).contains(&head.len()) || !head.chars().all(|c| c.is_ascii_hexdigit()) {
+        return error(format!("the result's commit {head:?} is not a commit hash"));
+    }
     let Some(base) = &task.base else {
         return error("no start commit".to_owned());
     };
     let Some(program) = &scorer.run else {
         return error("the scorer names no `run`".to_owned());
+    };
+    let program = match inside(&factory.dir, program) {
+        Ok(program) => program,
+        Err(why) => return error(why),
     };
     let clone = match &task.repo {
         Some(repo) => home.join("repos").join(repo),
@@ -263,14 +271,7 @@ fn command(
         }
         Err(why) => return error(format!("cannot run git: {why}")),
     }
-    let answer = run_command(
-        &factory.dir.join(program),
-        &scratch,
-        base,
-        head,
-        result,
-        scorer.timeout(),
-    );
+    let answer = run_command(&program, &scratch, base, head, result, scorer.timeout());
     let _ = git(&clone)
         .args(["worktree", "remove", "--force"])
         .arg(&scratch)
@@ -326,6 +327,25 @@ fn run_command(
     };
     let _ = std::fs::remove_file(&file);
     answer
+}
+
+/// `run` resolved in the factory folder `dir`, refused when it leads outside it, as through `..`
+/// or a symbolic link.
+fn inside(dir: &Path, run: &Path) -> Result<std::path::PathBuf, String> {
+    let shown = run.display();
+    let folder = dir
+        .canonicalize()
+        .map_err(|why| format!("cannot read the factory folder: {why}"))?;
+    let program = dir
+        .join(run)
+        .canonicalize()
+        .map_err(|why| format!("`run` names {shown}, which cannot be read: {why}"))?;
+    if !program.starts_with(&folder) {
+        return Err(format!(
+            "`run` names {shown}, which leads outside the factory folder"
+        ));
+    }
+    Ok(program)
 }
 
 fn git(dir: &Path) -> Command {
