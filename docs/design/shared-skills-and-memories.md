@@ -21,7 +21,8 @@ slices after it, and the open questions with a recommendation for each.
   machine.
 - Each runner has its own checkout of the factory, and reads the shared log
   ([runners.md](../daemon/runners.md)). Nothing keeps those checkouts at the same commit: a person
-  pulls each one. Each runner fetches a `[kit]` repository on its own (later slice 2).
+  pulls each one. Each runner fetches a `[kit]` repository on its own (later slice 2), and agents
+  write memories on the log (later slice 3).
 
 Max keeps his own kit, `maxence-lefebvre/abbey`, in a private repository: `claude/` (a `CLAUDE.md`
 and the docs it points to), `codex/AGENTS.md` and a `skills/` folder. It is the natural first
@@ -219,6 +220,12 @@ Tests:
    `priory.memory.written` and `priory.memory.accepted` schemas. Tests run two runners on one
    herdr-bus file, as the runner tests do, and cover an overwrite after an accept and a forget of a
    name the kit holds.
+   This slice is built: [skills.md](../daemon/skills.md#memories-agents-write) describes it. It
+   differs from this note in four ways: a person's drop is a third message,
+   `priory.memory.dropped`, which also takes the candidate from its own task's runs; an accepted
+   candidate overrides the factory's memory of its name too, not only the kit's; the desk item
+   lists every candidate that waits, not only the day's; and the `memory` tool reads the memory as
+   the task sees it at the call, while the run's snapshot keeps what it saw at its start.
 4. The daily pull request of accepted memories to the kit repository.
 5. Codex skills, once the open question is settled.
 

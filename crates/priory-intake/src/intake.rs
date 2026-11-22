@@ -39,6 +39,12 @@ pub const ASK_APPLIED: &str = "priory.ask.applied";
 pub const TASK_ACTED: &str = "priory.task.acted";
 /// A runner applied or refused an action on one of its tasks that another machine sent.
 pub const TASK_APPLIED: &str = "priory.task.applied";
+/// An agent saves or forgets a memory: a candidate that other tasks' runs get once accepted.
+pub const MEMORY_WRITTEN: &str = "priory.memory.written";
+/// A person accepts a memory candidate, so every task's runs get it.
+pub const MEMORY_ACCEPTED: &str = "priory.memory.accepted";
+/// A person drops a memory candidate, so no run gets it.
+pub const MEMORY_DROPPED: &str = "priory.memory.dropped";
 const LABELED: &str = "github.issues.labeled";
 const OPENED: &str = "github.issues.opened";
 pub const ISSUE_CLOSED: &str = "github.issues.closed";
@@ -111,6 +117,9 @@ pub fn output() -> Output {
             ASK_APPLIED,
             TASK_ACTED,
             TASK_APPLIED,
+            MEMORY_WRITTEN,
+            MEMORY_ACCEPTED,
+            MEMORY_DROPPED,
         ])
 }
 

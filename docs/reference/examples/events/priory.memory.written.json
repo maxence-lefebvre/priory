@@ -1,0 +1,14 @@
+{
+  "id": "0196f1d0-4a5b-7c6d-8e9f-0a1b2c3d4e5f",
+  "type": "priory.memory.written",
+  "subject": "release-day",
+  "time": "2026-11-21T10:30:00Z",
+  "data": {
+    "name": "release-day",
+    "description": "When releases go out. Read it before you plan or merge a change near a release.",
+    "text": "Releases go out on Tuesdays. Merge nothing risky on a Monday afternoon.",
+    "task": "github:acme/widgets#42",
+    "runner": "xps13"
+  },
+  "links": []
+}

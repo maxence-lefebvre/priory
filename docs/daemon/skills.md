@@ -3,8 +3,8 @@
 A factory's `skills/` folder, `instructions.md` and `memories/` folder reach every run on every
 runner, through the factory checkout each runner already has (R11.1). A kit repository that
 `[kit]` names adds its own, which each runner fetches. This page explains how each harness gets
-them and how a run records what it got. The rest of R11.1, memories that agents write, is in
-[the design note](../design/shared-skills-and-memories.md).
+them, how a run records what it got, and how memories that agents write reach other runs once a
+person accepts them. The rest of R11.1 is in [the design note](../design/shared-skills-and-memories.md).
 
 ## The files
 
@@ -85,8 +85,80 @@ A Claude Code run gets the index through `--append-system-prompt-file`, as instr
 index in `developer_instructions`, and its sandbox reads any file. `priory check` counts the index
 toward a Codex agent's 8192-byte limit.
 
-No tool writes a memory. A memory changes only through a pull request to the factory, which a
-person reviews.
+An agent also writes memories, with the `remember` and `forget` tools, as the next section says.
+A memory in git changes only through a pull request, which a person reviews.
+
+## Memories agents write
+
+A memory one run learns must reach runs on every runner, and a poisoned memory must not. So an
+agent's memory travels on the log, as a candidate, and a person accepts it before other tasks get
+it.
+
+### Candidates
+
+Each `remember(name, description, text)` or `forget(name)` call is one candidate (see
+[tools.md](tools.md#remembername-description-text-forgetname-and-memoryname)). The daemon stores it
+in its state file, then publishes it as `priory.memory.written` through its queue, as it does a
+claim, so a runner cut off from the log publishes it once the link is back. The message's id is the
+candidate's id. A later write of the same name is a new candidate, never an edit. A forget is a
+candidate too: a tombstone for its name.
+
+Every runner records each candidate as it reads the log, in log order, in a factory of one runner
+too. A runner refuses a candidate that breaks the rules of `remember`, since anyone who can publish
+on the log can write one.
+
+### Which run gets which candidate
+
+A run gets the kit's memories, then the factory's, then, in log order:
+
+- each accepted candidate, at the place of its accept, and
+- each candidate its own task wrote on this runner and no person dropped, at the place of its
+  write. One not read back from the log yet comes last.
+
+A forget removes the memory of its name, whether the kit, the factory or a candidate held it. So:
+
+- The task that wrote a candidate gets it at its next run, such as the run an answer resumes.
+- Another task gets it only once a person accepts it, on any runner, since every runner reads the
+  accept.
+- Accepting a candidate never accepts a later write of the same name. That write waits for its own
+  accept, so unreviewed text never inherits one.
+- Between two accepted candidates of one name, the later accept in log order wins, and every runner
+  agrees, since they read one order.
+
+The memories a run gets go into its snapshot, `$PRIORY_HOME/kit/<hash>/memories/`, and its index,
+as above. A candidate's file holds its name, its description and its text (see
+[the reference](../reference/memories.md#candidates)). An accepted candidate changes the run's
+`kit_hash`, so a shared session reads it as a change to its agent's prompt. The `memory(name)` tool
+replies with the file the caller's task sees at the time of the call, so it can show a memory
+accepted after the run started.
+
+### Accepting a candidate
+
+The desk shows one `memories` item while any candidate waits, which lists every one (see
+[desk.md](desk.md#memory-candidates)). A person reads them with `priory memories`, then accepts or
+drops each by its id:
+
+```sh
+priory memories
+priory memories accept 0196f1d0-4a5b-7c6d-8e9f-0a1b2c3d4e5f
+priory memories drop 0196f1d0-9a8b-7c6d-8e9f-0a1b2c3d4e5f
+```
+
+Each publishes its verdict on the log, and every runner applies it as it reads it. A drop also
+takes the candidate from its own task's later runs. A candidate takes one verdict: the first in log
+order stands.
+
+### Limits
+
+- Accepted candidates live in the log and in each state file, not in git. The daily pull request
+  that moves them into the kit repository is a later slice of
+  [the design note](../design/shared-skills-and-memories.md#later-slices).
+- Write access to the log equals a person's accept, as it does an answer (see
+  [runners.md](runners.md#every-runner-reads-the-whole-log)).
+- The credential check matches common key shapes only. A memory reaches other tasks only after a
+  person reads it, so read each one for secrets and for instructions an issue may have planted.
+- The web and Herdr Desks show the `memories` item as a plain row with its line, and no Accept or
+  Drop button, since [DESIGN.md](../../DESIGN.md) describes none. Use `priory memories`.
 
 The plugin folder, the memory snapshot and the kit checkout below are read-only: each file is
 `0444` and each folder `0555`. An agent can still make them writable with a shell, so before each

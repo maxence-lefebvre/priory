@@ -1391,7 +1391,7 @@ pub fn give(
     ))
 }
 
-fn publish(log: &EventLog, message: &Message) -> Result<(), String> {
+pub(crate) fn publish(log: &EventLog, message: &Message) -> Result<(), String> {
     let log = priory_intake::log::open(log).map_err(|error| error.to_string())?;
     log.declare(&intake::output())
         .map_err(|error| error.to_string())?;
