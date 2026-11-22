@@ -202,6 +202,10 @@ prices them from the same `prices.toml` in `DIR` (default: the current folder).
   merged, when a task owns the pull request or its head branch, as a worker's task owns its branch.
   A pull request counts once, on the local day of its first merged close. The split has no merges.
 
+When the factory has spend caps, a last table lists each with its limit and what it spent: a `day`
+or `week` cap's window up to now, or, for a `task` cap, the most an active task under it spent, as
+`$4.10 by task 7`. See [spend.md](spend.md).
+
 `--json` prints one object, which `GET /api/costs` also answers (see
 [the serve reference](../reference/serve.md#costs)). The web view's Costs panel draws it. Its
 `scores` counts, by the same split, each run's latest score by each scorer in the window. A score

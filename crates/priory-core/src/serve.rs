@@ -244,6 +244,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         })
         .to_string(),
         prices: factory.prices.clone(),
+        book: crate::spend::Book::new(factory),
         terminal: config.terminal,
         secrets: screen::secrets(&factory.secret_envs()),
         snapshots: AtomicUsize::new(0),
@@ -395,6 +396,8 @@ struct Served {
     /// `GET /api/request`: what the Add control prefills and offers.
     request: String,
     prices: BTreeMap<String, Price>,
+    /// The spend caps and what prices them, for `GET /api/costs`.
+    book: crate::spend::Book,
     terminal: Terminal,
     /// The secret values the terminal hides, read when the server starts.
     secrets: Vec<String>,
@@ -577,7 +580,7 @@ fn route(
         },
         "/api/reports" => listing::revised(db, "reports", |db| sections::list(db).map(Some)),
         "/api/reports/latest" => listing::revised(db, "report", |db| sections::show(db, None)),
-        "/api/costs" => return costs(db, &served.prices, query),
+        "/api/costs" => return costs(db, served, query),
         "/api/grades" => return grades(db, query),
         "/api/attention" => return attention(db, query),
         _ if path.starts_with("/api/batches/") => {
@@ -1686,13 +1689,21 @@ fn window_by(
 }
 
 /// `GET /api/costs?since=WINDOW&by=SPLIT`: what `priory costs --json` prints.
-fn costs(db: &Connection, prices: &BTreeMap<String, Price>, query: &str) -> Reply {
+fn costs(db: &Connection, served: &Served, query: &str) -> Reply {
     let (window, by) = match window_by(db, "costs", query, &report::BY) {
         Ok(window_by) => window_by,
         Err(reply) => return reply,
     };
-    match report::costs(db, prices, &window, &by) {
-        Ok(costs) => Reply::json(200, costs.json().to_string()),
+    let now = match intake::now() {
+        Ok(now) => now.to_string(),
+        Err(error) => return Reply::error(500, &error),
+    };
+    let caps = match crate::spend::report(db, &served.book, &now) {
+        Ok(caps) => caps,
+        Err(error) => return Reply::error(500, &error.to_string()),
+    };
+    match report::costs(db, &served.prices, &window, &by) {
+        Ok(costs) => Reply::json(200, costs.with_caps(caps).json().to_string()),
         Err(error) => Reply::error(500, &error),
     }
 }

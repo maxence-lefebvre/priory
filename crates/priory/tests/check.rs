@@ -2707,3 +2707,45 @@ fn an_open_memories_pr_step_needs_a_kit() {
     );
     assert_eq!(with_kit.code, 0, "{}", with_kit.stderr);
 }
+
+#[test]
+fn spend_caps_pass_and_a_cap_not_above_zero_or_a_malformed_lane_is_refused() {
+    let good = "name = \"demo\"\n\n[caps]\ntask = 5.0\nday = 50\n\n[caps.lanes.\"core/intake\"]\nweek = 100.0\n";
+    let trigger = format!("{TRIGGER}caps = {{ task = 2.5, day = 10 }}\n");
+    let mut files = with("factory.toml", good);
+    files.retain(|(path, _)| *path != "triggers/agent-label.toml");
+    files.push(("triggers/agent-label.toml", &trigger));
+    let ok = check(&factory("caps-ok", &files));
+    let bad = "name = \"demo\"\n\n[caps]\ntask = 0\n\n[caps.lanes.intake]\nday = 1.0\n";
+    let refused = check(&factory("caps-bad", &with("factory.toml", bad)));
+    let negative = format!("{TRIGGER}caps = {{ week = -3.0 }}\n");
+    let mut files = valid();
+    files.retain(|(path, _)| *path != "triggers/agent-label.toml");
+    files.push(("triggers/agent-label.toml", &negative));
+    let trigger_refused = check(&factory("caps-trigger-bad", &files));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(refused.code, 1);
+    assert!(
+        refused
+            .stderr
+            .contains("0 is not a spend cap: give dollars above zero"),
+        "{}",
+        refused.stderr
+    );
+    assert_eq!(trigger_refused.code, 1);
+    assert!(
+        trigger_refused
+            .stderr
+            .contains("-3 is not a spend cap: give dollars above zero"),
+        "{}",
+        trigger_refused.stderr
+    );
+    let lane = "name = \"demo\"\n\n[caps.lanes.intake]\nday = 1.0\n";
+    let lane = check(&factory("caps-lane-bad", &with("factory.toml", lane)));
+    assert_eq!(lane.code, 1);
+    assert_eq!(
+        lane.stderr,
+        "factory.toml:3: `[caps.lanes]` `intake` is not a lane such as `team/theme`\n"
+    );
+}

@@ -28,6 +28,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `links` | table of strings | no | the built-in `#n` link | Autolinks, each a regex and a URL template. See [`[links]`](#links) | |
 | `request` | table | no | `priory add` needs `--workflow` | The defaults of `priory add` and `POST /api/request`. See [`[request]`](#request) | |
 | `batch` | table | no | `priory batch add` is refused | How `priory batch add` plans batches. See [`[batch]`](#batch) | |
+| `caps` | table | no | no cap | Spend caps in dollars for every task and each lane. See [`[caps]`](#caps) | |
 | `guard` | table | no | the built-in guards alone | Irreversible commands and MCP tools the tool guard denies on top of the built-in ones. See [`[guard]`](#guard) | |
 
 A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m"` or `"2h"`.
@@ -342,6 +343,19 @@ commands = [{ name = "fly-deploy", run = ["fly", "deploy"] }]
 tools = ["mcp__stripe__*"]
 ```
 
+## `[caps]`
+
+Spend caps in dollars, priced from `prices.toml`. See [spend.md](../daemon/spend.md).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `task` | number | no | no cap | Dollars one task may spend. Past it, the task is held with an ask to raise the cap or stop | `5.0` |
+| `day` | number | no | no cap | Dollars the factory may spend in a local day. Past it, a running task is held with an ask, and new runs wait | `50.0` |
+| `week` | number | no | no cap | Dollars the factory may spend in a week from Monday 00:00 local time, as `day` | `200.0` |
+| `lanes` | table of tables | no | no lane cap | Each lane's `task`, `day` and `week` caps, by its `<team>/<theme>` name. A lane's `day` or `week` cap only holds new runs | `{ "core/intake" = { day = 10.0 } }` |
+
+Each cap is a number above zero. A run can overshoot a cap by one turn.
+
 ## Example
 
 <!-- example: factory/factory.toml -->
@@ -406,6 +420,13 @@ targets = { ops = "../ops" }                   # where an answer can run an ask'
 [request]
 workflow = "implement"                         # what priory add starts without --workflow
 band = "today"                                 # its band without --band
+
+[caps]
+task = 5.0                                     # dollars one task may spend
+week = 200.0                                   # dollars the factory may spend from Monday
+
+[caps.lanes."core/intake"]
+day = 10.0                                     # dollars the lane may spend in a day
 ```
 
 ## Errors from `priory check`
@@ -445,6 +466,8 @@ band = "today"                                 # its band without --band
 | `` `[links]` `<regex>` links to `<url>`: a link's host is fixed, with no group or `{repo}` in it `` | A template whose host is empty or holds anything but letters, digits, `.`, `-` and a `:port`, such as `$1` or `{repo}`, so the linked text could pick the site |
 | `` `[request] workflow` `<name>` does not exist `` | `[request] workflow` names no file under `workflows/` |
 | `` `[request] band` `<band>` is not one of <bands> `` | `[request] band` names a band the factory lacks |
+| `<n> is not a spend cap: give dollars above zero` | A `[caps]` value of zero or less, or not finite |
+| `` `[caps.lanes]` `<lane>` is not a lane such as `team/theme` `` | A `[caps.lanes]` key that is not `<team>/<theme>` |
 | `invalid socket address syntax` | `listen` is not an IP address and port, such as `127.0.0.1:7340` |
 
 Each line starts with the file and line, such as `factory.toml:3:1:`. A file that does not parse

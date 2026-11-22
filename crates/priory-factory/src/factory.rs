@@ -77,6 +77,58 @@ pub struct Settings {
     #[schemars(with = "BTreeMap<String, String>", extend("default" = {}))]
     pub links: Vec<Link>,
     pub kit: Option<Kit>,
+    /// Spend caps in dollars for every task, and for each lane by its name.
+    pub caps: Option<Caps>,
+}
+
+/// The factory's spend caps, in dollars, which the daemon enforces from `prices.toml` and the
+/// steps' token counts.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Caps {
+    /// What one task may spend.
+    #[serde(default, deserialize_with = "cap")]
+    #[schemars(extend("exclusiveMinimum" = 0))]
+    pub task: Option<f64>,
+    /// What the factory may spend in a local day.
+    #[serde(default, deserialize_with = "cap")]
+    #[schemars(extend("exclusiveMinimum" = 0))]
+    pub day: Option<f64>,
+    /// What the factory may spend in a week from Monday 00:00 local time.
+    #[serde(default, deserialize_with = "cap")]
+    #[schemars(extend("exclusiveMinimum" = 0))]
+    pub week: Option<f64>,
+    /// Each lane's caps, by its `<team>/<theme>` name. A lane's day or week cap holds new starts.
+    #[serde(default)]
+    pub lanes: BTreeMap<String, Limits>,
+}
+
+/// Spend caps in dollars: per task, per local day and per week.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Limits {
+    /// What one task may spend.
+    #[serde(default, deserialize_with = "cap")]
+    #[schemars(extend("exclusiveMinimum" = 0))]
+    pub task: Option<f64>,
+    /// What may be spent in a local day.
+    #[serde(default, deserialize_with = "cap")]
+    #[schemars(extend("exclusiveMinimum" = 0))]
+    pub day: Option<f64>,
+    /// What may be spent in a week from Monday 00:00 local time.
+    #[serde(default, deserialize_with = "cap")]
+    #[schemars(extend("exclusiveMinimum" = 0))]
+    pub week: Option<f64>,
+}
+
+fn cap<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
+    let dollars = f64::deserialize(deserializer)?;
+    if dollars.is_finite() && dollars > 0.0 {
+        return Ok(Some(dollars));
+    }
+    Err(D::Error::custom(format!(
+        "{dollars} is not a spend cap: give dollars above zero"
+    )))
 }
 
 /// A kit repository whose skills, instructions and memories every run gets, before the factory's
@@ -1075,6 +1127,8 @@ pub struct Trigger {
     /// The agent that answers asks of a `hands-off` task: a `claude-code` agent with a `shared`
     /// session.
     pub lead: Option<String>,
+    /// Spend caps in dollars for the trigger's tasks.
+    pub caps: Option<Limits>,
 }
 
 /// Why a task is held, and the conditions that release it once all of them hold. With none, a

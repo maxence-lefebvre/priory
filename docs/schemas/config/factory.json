@@ -53,6 +53,50 @@
       ],
       "type": "object"
     },
+    "Caps": {
+      "additionalProperties": false,
+      "description": "The factory's spend caps, in dollars, which the daemon enforces from `prices.toml` and the\nsteps' token counts.",
+      "properties": {
+        "day": {
+          "default": null,
+          "description": "What the factory may spend in a local day.",
+          "exclusiveMinimum": 0,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "lanes": {
+          "additionalProperties": {
+            "$ref": "#/definitions/Limits"
+          },
+          "description": "Each lane's caps, by its `<team>/<theme>` name. A lane's day or week cap holds new starts.",
+          "type": "object"
+        },
+        "task": {
+          "default": null,
+          "description": "What one task may spend.",
+          "exclusiveMinimum": 0,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "week": {
+          "default": null,
+          "description": "What the factory may spend in a week from Monday 00:00 local time.",
+          "exclusiveMinimum": 0,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "CloudwatchWebhook": {
       "additionalProperties": false,
       "description": "CloudWatch alarm state changes, from an EventBridge API destination at `POST /hooks/cloudwatch`.",
@@ -243,6 +287,43 @@
       "required": [
         "repo"
       ],
+      "type": "object"
+    },
+    "Limits": {
+      "additionalProperties": false,
+      "description": "Spend caps in dollars: per task, per local day and per week.",
+      "properties": {
+        "day": {
+          "default": null,
+          "description": "What may be spent in a local day.",
+          "exclusiveMinimum": 0,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "task": {
+          "default": null,
+          "description": "What one task may spend.",
+          "exclusiveMinimum": 0,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "week": {
+          "default": null,
+          "description": "What may be spent in a week from Monday 00:00 local time.",
+          "exclusiveMinimum": 0,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
       "type": "object"
     },
     "LinearWebhook": {
@@ -657,6 +738,17 @@
           "type": "null"
         }
       ]
+    },
+    "caps": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Caps"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Spend caps in dollars for every task, and for each lane by its name."
     },
     "command_timeout": {
       "default": null,

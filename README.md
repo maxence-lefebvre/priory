@@ -40,6 +40,8 @@ every poll:
 - A workflow can be a runbook of human steps only, where an answer runs a step's command once.
   The desk also holds your own to-dos, ranked after the asks.
 - Every step's outcome, tokens and time are recorded, so you can measure a workflow and its cost.
+- Spend caps per task, day or week stop a factory that overspends: past a cap, a task waits for
+  you to raise the cap or stop it. See [docs/daemon/spend.md](docs/daemon/spend.md).
 
 ## The web view
 

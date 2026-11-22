@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 88;
+const VERSION: i64 = 89;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1588,6 +1588,24 @@ END;
 PRAGMA user_version = 88;
 ";
 
+// A task held at a spend cap, the cap it reached and, once a person raises it, the limit it may
+// spend to; and each window cap reached now, which the daemon writes for the desk.
+const SCHEMA_89: &str = "
+CREATE TABLE IF NOT EXISTS spend_holds (
+  hold      INTEGER PRIMARY KEY REFERENCES holds (id),
+  task      INTEGER NOT NULL REFERENCES tasks (id),
+  cap       TEXT NOT NULL,
+  cap_usd   REAL NOT NULL,
+  spent_usd REAL NOT NULL,
+  raised_to REAL
+);
+CREATE TABLE IF NOT EXISTS spend_reached (
+  cap       TEXT PRIMARY KEY,
+  line      TEXT NOT NULL
+);
+PRAGMA user_version = 89;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1600,7 +1618,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_58, SCHEMA_59, SCHEMA_60, SCHEMA_61, SCHEMA_62, SCHEMA_63, SCHEMA_64, SCHEMA_65,
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
-    SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88,
+    SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -2810,6 +2828,7 @@ pub(crate) fn admissible<'r>(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let promised = promised(db, factory, None)?;
     let paused = paused(db)?;
+    let book = crate::spend::Book::new(factory);
     // The first task that waits for room: no task behind it starts, so it is never starved.
     let mut head = None;
     let mut stall = None;
@@ -2838,6 +2857,10 @@ pub(crate) fn admissible<'r>(
         };
         // A pause holds only new tasks: a woken, resumed or revived one is `ready` and goes on.
         let busy = busy.or_else(|| paused.clone().filter(|_| admission.fresh));
+        let busy = match busy {
+            Some(reason) => Some(reason),
+            None => crate::spend::waits(db, &book, admission.task)?,
+        };
         let waits = match (busy, head) {
             (Some(reason), _) => Some(reason),
             // The sweeper frees the room the queue waits for, so it never waits for room itself.

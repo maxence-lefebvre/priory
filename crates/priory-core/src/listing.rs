@@ -1452,6 +1452,7 @@ pub fn desk(
         .map_or(0, Vec::len);
     Ok(json!({
         "paused": state::pause_banner(db)?,
+        "caps": crate::spend::desk_lines(db)?,
         "banner": stall::banner(db)?,
         "intake": outside,
         "counts": {

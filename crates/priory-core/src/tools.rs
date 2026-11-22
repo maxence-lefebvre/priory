@@ -2587,7 +2587,7 @@ fn wake(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64> {
 
 /// Queues `text` as the task's next prompt, ahead of the prompts already queued, which it carries
 /// after it: an event kept during the last turn must not reach the agent before its new instructions.
-fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64> {
+pub(crate) fn queue_first(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<i64> {
     let mut merged = text.to_owned();
     let mut queued = Vec::new();
     {

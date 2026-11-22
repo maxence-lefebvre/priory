@@ -112,6 +112,9 @@ race the hold. Hold such a task once it is back in the queue. `priory release <t
 task go, back to the state it was held from. Both go to the daemon over its socket, as
 `priory resume` does, so a hold and a run start never race.
 
+The daemon holds a task itself when it passes a spend cap, with an ask to raise the cap or stop
+the task, and ends its run first when it has one. See [spend.md](spend.md).
+
 A hold takes conditions, which release it without a person once all of them are met. `--after` and
 `--merge` repeat. `--until` and `--blockers` come once.
 

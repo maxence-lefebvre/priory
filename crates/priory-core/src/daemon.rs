@@ -1170,6 +1170,13 @@ fn tend(
     memory::reclaim(db)?;
     perform(db, trace, home, commands)?;
     crate::keyboard::sweep(db, trace)?;
+    let now: String = db.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
+        row.get(0)
+    })?;
+    // Before the outbox types, so a run between turns is held before its next prompt.
+    for tmux in crate::spend::tick(db, trace, &now)? {
+        runtime::kill(&tmux);
+    }
     loop {
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();

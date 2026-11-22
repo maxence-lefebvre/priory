@@ -26322,3 +26322,153 @@ fn the_benchmark_starter_drops_a_forks_pull_request_and_one_whose_event_names_no
     assert!(setup.rows("asks").is_empty());
     assert!(setup.rows("actions").is_empty());
 }
+
+/// Prices the fake's model at one dollar per input token and nothing else, so its turn n costs
+/// 100 + n dollars.
+const DOLLAR_A_TOKEN: &str =
+    "[\"claude-fake-5\"]\ninput = 1000000.0\noutput = 0.0\ncache_read = 0.0\ncache_write = 0.0\n";
+
+impl Setup {
+    /// Sets `caps` in `factory.toml` and prices the fake's model at a dollar a token.
+    fn caps(&self, caps: &str) {
+        fs::write(
+            self.dir.join("factory/factory.toml"),
+            format!("name = \"demo\"\n\n{caps}"),
+        )
+        .unwrap();
+        fs::write(self.dir.join("factory/prices.toml"), DOLLAR_A_TOKEN).unwrap();
+    }
+
+    /// `priory asks --json`'s open asks.
+    fn open_asks(&self) -> Vec<serde_json::Value> {
+        let output = self.priory(&["asks", "--json"]);
+        assert!(output.status.success(), "{output:?}");
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        value["asks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|ask| ask["answer"].is_null())
+            .cloned()
+            .collect()
+    }
+}
+
+#[test]
+fn a_task_past_its_spend_cap_is_held_after_its_turn_with_one_ask_and_a_raise_lets_it_go_on() {
+    let mut setup = Setup::new("cap-raise");
+    setup.caps("[caps]\ntask = 50.0\n");
+    setup.calls(&[serde_json::Value::Null, result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    let held = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "held")
+    });
+    setup.gone("priory-1");
+
+    assert_eq!(
+        held[0][7],
+        "held: spent $101.00 of the factory's task cap of $50.00, until a person raises the cap or stops the task"
+    );
+    let asks = setup.open_asks();
+    assert_eq!(asks.len(), 1, "{asks:?}");
+    assert_eq!(
+        asks[0]["question"],
+        "Task 1 spent $101.00 of the factory's task cap of $50.00. Raise the cap for this task by $50.00, or stop the task?"
+    );
+    assert_eq!(asks[0]["options"], json!(["raise", "stop"]));
+    let runs = setup.rows("runs");
+    assert_eq!(runs[0][7], "capped", "{runs:?}");
+
+    let answered = setup.priory(&["answer", "1", "raise", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    assert!(setup.open_asks().is_empty());
+    assert!(
+        setup
+            .typed()
+            .iter()
+            .any(|typed| typed.contains("A person raised the spend cap this task reached")),
+        "{:?}",
+        setup.typed()
+    );
+}
+
+#[test]
+fn stop_drops_a_task_held_at_its_spend_cap() {
+    let mut setup = Setup::new("cap-stop");
+    setup.caps("[caps]\ntask = 50.0\n");
+    setup.calls(&[serde_json::Value::Null, result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "held")
+    });
+
+    let answered = setup.priory(&["answer", "1", "stop", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "dropped")
+    });
+    assert_eq!(tasks[0][7], "stopped by a person at a spend cap");
+}
+
+#[test]
+fn a_lane_day_cap_holds_new_starts_without_an_ask_and_the_desk_shows_it() {
+    let mut setup = Setup::new("cap-lane");
+    setup.caps("[caps.lanes.\"none/misc\"]\nday = 50.0\n");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+
+    setup.publish(&requested(43));
+
+    let reason = "waits: spend cap: lane none/misc spent $101.00 of its day cap of $50.00";
+    let tasks = setup.until("tasks", |rows| rows.iter().any(|row| row[7] == reason));
+    assert_eq!(tasks[1][4], "queued", "{tasks:?}");
+    assert_eq!(tasks[1][6], "none/misc", "{tasks:?}");
+    assert!(setup.open_asks().is_empty());
+    let desk = setup.priory(&["desk"]);
+    let desk = String::from_utf8(desk.stdout).unwrap();
+    assert!(
+        desk.lines().next().is_some_and(|line| line
+            == "spend cap reached: lane none/misc spent $101.00 of its day cap of $50.00; its new runs wait for the next day"),
+        "{desk}"
+    );
+}
+
+#[test]
+fn a_trigger_day_cap_holds_its_running_task_after_the_turn_that_crossed_it() {
+    let mut setup = Setup::new("cap-trigger");
+    setup.caps("");
+    fs::write(
+        setup.dir.join("factory/triggers/agent-label.toml"),
+        format!("{TRIGGER}caps = {{ day = 150.0 }}\n"),
+    )
+    .unwrap();
+    setup.calls(&[
+        serde_json::Value::Null,
+        serde_json::Value::Null,
+        result("passed"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    let held = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "held")
+    });
+
+    assert_eq!(
+        held[0][7],
+        "held: spent $203.00 of trigger agent-label's day cap of $150.00, until a person raises the cap or stops the task"
+    );
+    assert_eq!(setup.open_asks().len(), 1);
+}

@@ -84,6 +84,43 @@
         }
       ]
     },
+    "Limits": {
+      "additionalProperties": false,
+      "description": "Spend caps in dollars: per task, per local day and per week.",
+      "properties": {
+        "day": {
+          "default": null,
+          "description": "What may be spent in a local day.",
+          "exclusiveMinimum": 0,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "task": {
+          "default": null,
+          "description": "What one task may spend.",
+          "exclusiveMinimum": 0,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "week": {
+          "default": null,
+          "description": "What may be spent in a week from Monday 00:00 local time.",
+          "exclusiveMinimum": 0,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "OneOrMany_After": {
       "anyOf": [
         {
@@ -134,6 +171,17 @@
         "string",
         "null"
       ]
+    },
+    "caps": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Limits"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Spend caps in dollars for the trigger's tasks."
     },
     "channel": {
       "description": "The Slack channel id a `slack` trigger reads, such as `C0123`.",

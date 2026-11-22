@@ -41,6 +41,7 @@ pub mod search;
 pub mod sections;
 pub mod serve;
 pub mod snooze;
+pub mod spend;
 mod stack;
 mod stacked;
 pub mod stall;
