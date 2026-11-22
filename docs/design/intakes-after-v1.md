@@ -82,6 +82,11 @@ schemas.
 
 ## Honeycomb
 
+**Built.** `POST /hooks/honeycomb` publishes `honeycomb.trigger.fired` from Priory's payload
+template. See [honeycomb.md](../intake/honeycomb.md). Resolved Triggers, SLO burn alerts and
+anomaly detection are not mapped yet. The message id uses the firing's `.Alert.InstanceID` rather
+than the delivery id, so a replay under a new delivery id publishes nothing.
+
 **Trigger on.** A Honeycomb Trigger firing: `honeycomb.trigger.fired`. A resolved state could be
 `honeycomb.trigger.resolved`, and SLO burn alerts could be `honeycomb.slo.burn_alert`. Both depend
 on the payload template (see Task key).

@@ -4,7 +4,7 @@ writing = "WRITING.md"
 gate = "make test"   # your project's tests, which `priory gate` runs
 
 [serve]
-listen = "127.0.0.1:7340"   # reach it from Sentry and EventBridge through a tunnel, such as tailscale funnel 7340
+listen = "127.0.0.1:7340"   # reach it from Sentry, Honeycomb and EventBridge through a tunnel, such as tailscale funnel 7340
 token_env = "PRIORY_TOKEN"
 
 [webhooks.sentry]
@@ -12,3 +12,6 @@ secret_env = "SENTRY_CLIENT_SECRET"   # the variable holding the integration's C
 
 [webhooks.cloudwatch]
 secret_env = "CLOUDWATCH_WEBHOOK_SECRET"   # the variable holding the EventBridge connection's API key value
+
+[webhooks.honeycomb]
+secret_env = "HONEYCOMB_WEBHOOK_SECRET"   # the variable holding the recipient's Shared Secret

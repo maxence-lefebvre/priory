@@ -25,6 +25,7 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
   [`linear.comment.created`](#linearcommentcreated)
 - Sentry: [`sentry.issue.created`](#sentryissuecreated)
 - CloudWatch: [`cloudwatch.alarm.state_changed`](#cloudwatchalarmstate_changed)
+- Honeycomb: [`honeycomb.trigger.fired`](#honeycombtriggerfired)
 - Slack: [`slack.message.posted`](#slackmessageposted), [`slack.thread.replied`](#slackthreadreplied)
 - Others: [`schedule.fired`](#schedulefired), [`priory.task.requested.cli`](#priorytaskrequestedcli),
   [`factory.task.requested`](#factorytaskrequested), [`factory.intake.baseline`](#factoryintakebaseline)
@@ -44,7 +45,7 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
 | `subject` | string | A short line for listings; each type below gives its own |
 | `time` | RFC 3339 | When the event happened |
 | `data` | object | The fields below, by type |
-| `links` | array | GitHub, Linear and Sentry events carry one `{ "label", "url" }` to the event's page; others carry none |
+| `links` | array | GitHub, Linear, Sentry and Honeycomb events carry one `{ "label", "url" }` to the event's page; others carry none |
 
 Every GitHub, Linear and Slack event ends its `data` with the same three fields:
 
@@ -1055,6 +1056,53 @@ Schema: [`cloudwatch.alarm.state_changed.json`](../schemas/events/cloudwatch.ala
     "triggers": ["cloudwatch-alarms"]
   },
   "links": []
+}
+```
+
+## Honeycomb
+
+### `honeycomb.trigger.fired`
+
+One message per Honeycomb Trigger firing that some `honeycomb` trigger matches. Only a webhook
+delivery publishes it, and only with Priory's payload template: see
+[honeycomb.md](../intake/honeycomb.md). Subject: the Trigger's name.
+Schema: [`honeycomb.trigger.fired.json`](../schemas/events/honeycomb.trigger.fired.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `trigger` | string | Honeycomb's Trigger id. The task key is `honeycomb:<trigger>` |
+| `name` | string | The Trigger's name |
+| `description` | string or null | The Trigger's description |
+| `url` | string | The Trigger's page on Honeycomb |
+| `environment` | string or null | The Honeycomb environment's name |
+| `summary` | string or null | Honeycomb's one-line summary of the alert |
+| `instance` | string | The id of this firing, the same across retries |
+| `result_url` | string or null | The query result that fired the Trigger |
+| `delivery` | string or null | The delivery's `X-Honeycomb-Webhook-Delivery-ID` |
+| `time` | string | When Honeycomb evaluated the Trigger |
+
+<!-- example: events/honeycomb.trigger.fired.json -->
+```json
+{
+  "id": "afeef28c-9b40-54fe-bda7-28659f1360d0",
+  "type": "honeycomb.trigger.fired",
+  "subject": "Checkout errors",
+  "time": "2026-11-21T16:40:22.896Z",
+  "data": {
+    "trigger": "JwwZxfcP5kH",
+    "name": "Checkout errors",
+    "description": "More than 10 checkout errors in 15 minutes.",
+    "url": "https://ui.honeycomb.io/acme/environments/production/datasets/checkout/triggers/JwwZxfcP5kH",
+    "environment": "production",
+    "summary": "Triggered: Checkout errors",
+    "instance": "c0fd570f-e920-4022-96d2-39e7df3e0621",
+    "result_url": "https://ui.honeycomb.io/acme/environments/production/datasets/checkout/result/4656626d79",
+    "delivery": "4b9a6e2c-1f3d-4c5e-8a7b-9d0e1f2a3b4c",
+    "time": "2026-11-21T16:40:22.896871538Z",
+    "baseline": false,
+    "triggers": ["honeycomb-alerts"]
+  },
+  "links": [{ "label": "trigger", "url": "https://ui.honeycomb.io/acme/environments/production/datasets/checkout/triggers/JwwZxfcP5kH" }]
 }
 ```
 

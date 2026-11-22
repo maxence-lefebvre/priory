@@ -283,8 +283,24 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             "github" => check_github(trigger, &mut problems),
             "linear" | "linear.view" => check_linear(trigger, &mut problems),
             "slack" => check_slack(trigger, &mut problems),
-            "sentry" => check_sentry(factory, trigger, &mut problems),
-            "cloudwatch" => check_cloudwatch(factory, trigger, &mut problems),
+            "sentry" => check_hooked(
+                trigger,
+                &SENTRY,
+                factory.sentry_webhook().is_some(),
+                &mut problems,
+            ),
+            "honeycomb" => check_hooked(
+                trigger,
+                &HONEYCOMB,
+                factory.honeycomb_webhook().is_some(),
+                &mut problems,
+            ),
+            "cloudwatch" => check_hooked(
+                trigger,
+                &CLOUDWATCH,
+                factory.cloudwatch_webhook().is_some(),
+                &mut problems,
+            ),
             _ if trigger.value.backfill.is_some() => problems.push(problem(
                 trigger,
                 trigger.lines.field("backfill"),
@@ -298,6 +314,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             "linear.view",
             "sentry",
             "cloudwatch",
+            "honeycomb",
             "slack",
             "schedule",
         ];
@@ -770,58 +787,55 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     }
 }
 
-/// Sentry events arrive only by webhook: a `sentry` trigger takes `issue.created`, filtered on
-/// the project slug or the level, keyed by Sentry's issue id.
-fn check_sentry(factory: &Factory, trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
-    let value = &trigger.value;
-    let mut report = |field: &str, message: String| {
-        let line = trigger.lines.field(field).or(trigger.lines.field("source"));
-        problems.push(problem(trigger, line, message));
-    };
-    if value.backfill.is_some() {
-        report(
-            "backfill",
-            "only a GitHub, Linear or Slack trigger has `backfill`".into(),
-        );
-    }
-    if factory.sentry_webhook().is_none() {
-        report(
-            "source",
-            "a `sentry` trigger needs `[webhooks.sentry]` in factory.toml: Sentry events arrive only by webhook".into(),
-        );
-    }
-    if value.on != "issue.created" {
-        report(
-            "on",
-            format!(
-                "a `sentry` trigger handles `issue.created`, not `{}`",
-                value.on
-            ),
-        );
-    }
-    let filters = ["project", "level"];
-    if value
-        .filter
-        .as_ref()
-        .is_some_and(|filter| filter.keys().any(|key| !filters.contains(&key.as_str())))
-    {
-        report(
-            "filter",
-            "a `sentry` trigger filters on `project` or `level`".into(),
-        );
-    }
-    if value.repo.as_deref().is_some_and(|repo| !owner_name(repo)) {
-        report("repo", "a Sentry trigger's `repo` is `owner/name`".into());
-    }
-    if value.key.as_deref().is_some_and(|key| key != "issue.id") {
-        report("key", "a Sentry trigger's `key` is `issue.id`".into());
-    }
+/// A source whose events arrive only by webhook: the one event it takes, its filters and its key.
+struct Hooked {
+    source: &'static str,
+    vendor: &'static str,
+    on: &'static str,
+    filters: &'static [&'static str],
+    key: &'static str,
+    events: &'static str,
 }
 
-/// CloudWatch events arrive only through an EventBridge API destination: a `cloudwatch` trigger
-/// takes `alarm.state_changed`, filtered on the alarm name or the states, keyed by the alarm ARN.
-fn check_cloudwatch(factory: &Factory, trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
+const SENTRY: Hooked = Hooked {
+    source: "sentry",
+    vendor: "Sentry",
+    on: "issue.created",
+    filters: &["project", "level"],
+    key: "issue.id",
+    events: "events",
+};
+
+const HONEYCOMB: Hooked = Hooked {
+    source: "honeycomb",
+    vendor: "Honeycomb",
+    on: "trigger.fired",
+    filters: &["environment", "trigger"],
+    key: "trigger.id",
+    events: "alerts",
+};
+
+const CLOUDWATCH: Hooked = Hooked {
+    source: "cloudwatch",
+    vendor: "CloudWatch",
+    on: "alarm.state_changed",
+    filters: &["name", "state", "previous_state"],
+    key: "alarm.arn",
+    events: "alarm state changes",
+};
+
+/// A trigger of a webhook-only source takes its one event, its filters and its key, and needs its
+/// `[webhooks.<source>]` table.
+fn check_hooked(
+    trigger: &Loaded<Trigger>,
+    hooked: &Hooked,
+    webhook: bool,
+    problems: &mut Vec<Problem>,
+) {
     let value = &trigger.value;
+    let Hooked {
+        source, vendor, on, ..
+    } = hooked;
     let mut report = |field: &str, message: String| {
         let line = trigger.lines.field(field).or(trigger.lines.field("source"));
         problems.push(problem(trigger, line, message));
@@ -832,40 +846,47 @@ fn check_cloudwatch(factory: &Factory, trigger: &Loaded<Trigger>, problems: &mut
             "only a GitHub, Linear or Slack trigger has `backfill`".into(),
         );
     }
-    if factory.cloudwatch_webhook().is_none() {
+    if !webhook {
         report(
             "source",
-            "a `cloudwatch` trigger needs `[webhooks.cloudwatch]` in factory.toml: CloudWatch events arrive only through EventBridge".into(),
-        );
-    }
-    if value.on != "alarm.state_changed" {
-        report(
-            "on",
             format!(
-                "a `cloudwatch` trigger handles `alarm.state_changed`, not `{}`",
-                value.on
+                "a `{source}` trigger needs `[webhooks.{source}]` in factory.toml: {vendor} {} arrive only by webhook",
+                hooked.events
             ),
         );
     }
-    let filters = ["name", "state", "previous_state"];
-    if value
-        .filter
-        .as_ref()
-        .is_some_and(|filter| filter.keys().any(|key| !filters.contains(&key.as_str())))
-    {
+    if value.on != *on {
+        report(
+            "on",
+            format!("a `{source}` trigger handles `{on}`, not `{}`", value.on),
+        );
+    }
+    if value.filter.as_ref().is_some_and(|filter| {
+        filter
+            .keys()
+            .any(|key| !hooked.filters.contains(&key.as_str()))
+    }) {
+        let (last, others) = hooked.filters.split_last().expect("a source has filters");
+        let others: Vec<String> = others.iter().map(|filter| format!("`{filter}`")).collect();
         report(
             "filter",
-            "a `cloudwatch` trigger filters on `name`, `state` or `previous_state`".into(),
+            format!(
+                "a `{source}` trigger filters on {} or `{last}`",
+                others.join(", ")
+            ),
         );
     }
     if value.repo.as_deref().is_some_and(|repo| !owner_name(repo)) {
         report(
             "repo",
-            "a CloudWatch trigger's `repo` is `owner/name`".into(),
+            format!("a {vendor} trigger's `repo` is `owner/name`"),
         );
     }
-    if value.key.as_deref().is_some_and(|key| key != "alarm.arn") {
-        report("key", "a CloudWatch trigger's `key` is `alarm.arn`".into());
+    if value.key.as_deref().is_some_and(|key| key != hooked.key) {
+        report(
+            "key",
+            format!("a {vendor} trigger's `key` is `{}`", hooked.key),
+        );
     }
 }
 

@@ -624,6 +624,32 @@ pub struct CloudwatchAlarmStateChanged {
     pub source: Source,
 }
 
+/// A Honeycomb Trigger fired, from a webhook delivery that carried the Shared Secret.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HoneycombTriggerFired {
+    /// Honeycomb's Trigger id, such as `JwwZxfcP5kH`.
+    pub trigger: String,
+    /// The Trigger's name.
+    pub name: String,
+    /// The Trigger's description; null when it has none.
+    pub description: Option<String>,
+    /// The Trigger's page on Honeycomb.
+    pub url: String,
+    /// The Honeycomb environment the Trigger belongs to; null when the payload names none.
+    pub environment: Option<String>,
+    /// Honeycomb's one-line summary of the alert.
+    pub summary: Option<String>,
+    /// The id of this firing, the same across Honeycomb's retries.
+    pub instance: String,
+    /// The query result that fired the Trigger.
+    pub result_url: Option<String>,
+    /// The `X-Honeycomb-Webhook-Delivery-ID` of the delivery.
+    pub delivery: Option<String>,
+    #[serde(flatten)]
+    pub source: Source,
+}
+
 /// A message posted in a Slack trigger's channel, outside a thread.
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]
