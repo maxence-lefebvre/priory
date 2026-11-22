@@ -6160,6 +6160,14 @@ fn each_memory_candidate_on_the_desk_says_whether_it_replaces_a_memory_runs_get_
     .unwrap();
     setup.seed();
     setup.candidates();
+    let unchecked = setup.priory(&["memories", &setup.factory(), "--json"]);
+    succeeded(&unchecked);
+    let unchecked: Value = serde_json::from_slice(&unchecked.stdout).unwrap();
+    assert_eq!(
+        unchecked["candidates"][1]["replaces"],
+        Value::Null,
+        "with a kit no commit of which is checked out here, whether it replaces one is unknown"
+    );
     setup
         .db()
         .execute_batch(

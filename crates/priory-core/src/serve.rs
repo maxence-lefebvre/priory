@@ -1157,6 +1157,10 @@ fn decide_memory(db: &Connection, remote: &Remote, id: &str, accept: bool, body:
         Err(crate::memories::Refused::Unsent(why)) => {
             Reply::error(503, &format!("{why}. Nothing was sent: try again"))
         }
+        Err(crate::memories::Refused::Unconfirmed(why)) => Reply::error(
+            504,
+            &format!("{why}. The log may hold it: read the candidates before you retry"),
+        ),
     }
 }
 

@@ -316,15 +316,23 @@ impl<'a> Held<'a> {
     }
 
     /// Each memory's text by name: the kit's at the commit runs get now, the factory's, then the
-    /// accepted candidates in their order.
-    fn texts(&self, db: &Connection, home: &Path) -> rusqlite::Result<BTreeMap<String, String>> {
+    /// accepted candidates in their order. And whether the kit's are in it: false when the factory
+    /// has a kit whose commit is not checked out here, as on a machine that only views.
+    fn texts(
+        &self,
+        db: &Connection,
+        home: &Path,
+    ) -> rusqlite::Result<(BTreeMap<String, String>, bool)> {
         let mut texts = BTreeMap::new();
         let commit: Option<String> = db
             .query_row("SELECT kit_commit FROM kit", [], |row| row.get(0))
             .optional()?
             .flatten();
-        let checkout = commit.map(|commit| home.join("kit").join(commit));
-        if let Some((kit, dir)) = self.kit.zip(checkout.filter(|dir| dir.is_dir())) {
+        let checkout = commit
+            .map(|commit| home.join("kit").join(commit))
+            .filter(|dir| dir.is_dir());
+        let complete = self.kit.is_none() || checkout.is_some();
+        if let Some((kit, dir)) = self.kit.zip(checkout) {
             let (files, _) = factory::load_kit(&dir, kit);
             texts.extend(
                 files
@@ -340,11 +348,12 @@ impl<'a> Held<'a> {
                 None => texts.remove(&name),
             };
         }
-        Ok(texts)
+        Ok((texts, complete))
     }
 
     /// Marks each candidate with `replaces`, whether runs get a memory of its name now, and
-    /// `current_text`, that memory's text or null.
+    /// `current_text`, that memory's text or null. `replaces` is null when only the kit, which is
+    /// not checked out here, could hold the name.
     pub fn mark(
         &self,
         db: &Connection,
@@ -354,10 +363,13 @@ impl<'a> Held<'a> {
         if candidates.is_empty() {
             return Ok(());
         }
-        let texts = self.texts(db, home)?;
+        let (texts, complete) = self.texts(db, home)?;
         for candidate in candidates {
             let current = candidate["name"].as_str().and_then(|name| texts.get(name));
-            candidate["replaces"] = json!(current.is_some());
+            candidate["replaces"] = match current {
+                None if !complete => Value::Null,
+                _ => json!(current.is_some()),
+            };
             candidate["current_text"] = json!(current);
         }
         Ok(())
@@ -372,12 +384,17 @@ pub enum Refused {
     Stale(String),
     /// The log, or the state file, could not be reached.
     Unsent(String),
+    /// The publish failed, after which the log may still hold the verdict.
+    Unconfirmed(String),
 }
 
 impl From<Refused> for String {
     fn from(refused: Refused) -> String {
         match refused {
-            Refused::Unknown(why) | Refused::Stale(why) | Refused::Unsent(why) => why,
+            Refused::Unknown(why)
+            | Refused::Stale(why)
+            | Refused::Unsent(why)
+            | Refused::Unconfirmed(why) => why,
         }
     }
 }
@@ -410,7 +427,7 @@ pub fn decide(log: &EventLog, db: &Connection, accept: bool, id: &str) -> Result
         (MEMORY_DROPPED, "dropped")
     };
     let message = Message::new(kind, json!({ "candidate": id })).subject(name.clone());
-    crate::runners::publish(log, &message).map_err(Refused::Unsent)?;
+    crate::runners::publish(log, &message).map_err(Refused::Unconfirmed)?;
     Ok(format!(
         "{name} {verb}: every runner applies it as it reads the log"
     ))

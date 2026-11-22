@@ -107,7 +107,9 @@ runner) and when it was written. `--json` prints `{ "candidates": [...] }`, each
 `description`, `text` and `forget`, `task`, `runner`, `written`, `decided` and `state`. Given the
 factory's folder `DIR`, each also carries `replaces`, whether runs get a memory of its name now, and
 `current_text`, that memory's text, or null. Those memories are the kit's at the commit runs get,
-the factory's, then the accepted candidates. `/api/desk` marks its candidates the same way.
+the factory's, then the accepted candidates. `replaces` is null, unknown, for a name the factory and
+the accepted candidates lack while the factory's kit has no commit checked out on this machine, as
+on a machine that only views. `/api/desk` marks its candidates the same way.
 
 `accept` and `drop` publish [`priory.memory.accepted`](events.md#priorymemoryaccepted) or
 [`priory.memory.dropped`](events.md#priorymemorydropped) on the log of the factory in `DIR`, `.` by
