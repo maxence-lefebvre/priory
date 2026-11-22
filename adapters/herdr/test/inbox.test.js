@@ -11,10 +11,10 @@ const { default: Inbox } = await import("../mods/priory-inbox/main.js");
 // an asleep task's unheard events, as its unheard test serves them.
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/unrouted.json", import.meta.url), "utf8"));
 
-/** The Inbox panel after its first read. */
-async function inbox() {
+/** The Inbox panel after its first read of `read`. */
+async function inbox(read = fixture) {
   herdr.reset();
-  herdr.replies.inbox = fixture;
+  herdr.replies.inbox = read;
   const view = new Inbox();
   const cx = context();
   view.init({}, cx);
@@ -98,6 +98,12 @@ test("lists the unheard groups first, an asleep task's with the command that tel
   assert.ok(shown.indexOf("github:owner/repo#9") < shown.indexOf("github:owner/repo#8"), shown);
   assert.match(shown, /task 14 asleep github:owner\/repo#9 GitHub pull request comment owner\/repo#9 Nov 17, 11:40 Cap the backoff at 10 minutes\. priory say 14 'Read the events that came while you slept\.'/);
   assert.match(shown, /Unrouted reached no task github:owner\/repo#8/);
+});
+
+test("with no owned group, the unheard groups still show above the empty line", async () => {
+  const { drawn } = await inbox({ ...fixture, unrouted: { ...fixture.unrouted, owned: [] } });
+
+  assert.match(text(drawn()), /Unheard no agent read them linear:ENG-24 .* Unrouted reached no task No event of a task's resource went unrouted\./);
 });
 
 test("a blocked task's unheard group resumes it, since it reads them when it resumes", async () => {

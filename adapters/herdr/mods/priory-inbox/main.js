@@ -131,11 +131,11 @@ export default class PrioryInbox extends View {
     if (!this.groups) return this.error ? [] : [div().text_color(t["text-2"]).child("Reading the unrouted events…")];
     const rest = neverOwned(this.groups.other);
     const restLine = rest ? [div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-3"]).child(rest)] : [];
-    if (!this.groups.owned.length) {
-      return [div().whitespace_normal().text_color(t["text-2"]).child("No event of a task's resource went unrouted. An event about an ended task's pull request or issue shows here."), ...restLine];
-    }
     const unheard = this.groups.unheard ?? [];
     const heard = unheard.length ? [this.heading("Unheard", "no agent read them", t), ...unheard.map((group) => this.unheard(group, t)), this.heading("Unrouted", "reached no task", t)] : [];
+    if (!this.groups.owned.length) {
+      return [...heard, div().whitespace_normal().text_color(t["text-2"]).child("No event of a task's resource went unrouted. An event about an ended task's pull request or issue shows here."), ...restLine];
+    }
     return [...heard, ...this.groups.owned.map((group) => this.card(group.resource, group, this.route(group, t), t)), ...restLine];
   }
 
@@ -153,14 +153,14 @@ export default class PrioryInbox extends View {
   unheard(group, t) {
     const { task } = group;
     const key = `unheard-${task.id}`;
-    const [first, ...rest] = unheardActs(task);
+    const acts = unheardActs(task);
     const line = (/** @type {string} */ words) => div().whitespace_normal().text_size(S["type-small"][0]).text_color(t["text-2"]).child(words);
-    const action = rest.includes("resume")
+    const action = acts.includes("resume")
       ? h_flex().gap(S["space-2"]).items_center()
         .child(this.button(key, `Resume task ${task.id}`, async (client) => { await client.resume(task.id); return `Resumed task ${task.id}.`; }, t))
         .child(line("It reads them when it resumes."))
-      : first === "say" ? line(group.follow_up ?? "").font_family(this.font.mono)
-        : first ? this.route({ ...group, resource: task.key }, t, first, key)
+      : acts.includes("say") ? line(group.follow_up ?? "").font_family(this.font.mono)
+        : acts.length ? this.route({ ...group, resource: task.key }, t, acts[0], key)
           : line("Its next run reads them.");
     return this.card(task.key, { ...group, resource: task.key }, action, t, key);
   }

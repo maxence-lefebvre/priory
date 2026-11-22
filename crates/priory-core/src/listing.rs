@@ -394,9 +394,9 @@ fn unheard_events(
 /// What `priory say` tells an asleep or blocked task that kept unheard events.
 const UNHEARD_SAY: &str = "Read the events that came while you slept.";
 
-/// The command that gets a task's unheard events to an agent: `say` with `say_text` wakes an asleep
-/// or blocked task, whose next run carries them; an ended task gets what an unrouted event of it
-/// would. None for a task whose next run reads them anyway.
+/// The command that gets a task's unheard events to an agent: `say` with `say_text`, which wakes an
+/// asleep task and reaches a blocked one when it resumes; for an ended task, what an unrouted event
+/// of it would get. None for a task whose next run reads them anyway.
 fn unheard_follow_up(
     task: &Value,
     say_text: Option<&str>,

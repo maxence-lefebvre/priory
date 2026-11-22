@@ -62,7 +62,7 @@ plan as a lane graph, and you can move or drop an entry before you answer.
 
 The inbox groups unrouted events by resource and offers actions to subscribe an existing task or request a new one. Above them, it lists the events a sleeping task kept that no agent read, with a Say that tells the task to read them.
 
-![The inbox on a 1440 px screen in light mode: unrouted events grouped by resource, each with its task and a button to subscribe the task or request a new one.](docs/images/web-view-inbox-1440-light.png)
+![The inbox on a 1440 px screen in light mode: first the events sleeping tasks kept that no agent read, each task with a Say or a route button, then the unrouted events grouped by resource.](docs/images/web-view-inbox-1440-light.png)
 
 ![The inbox on a phone in dark mode.](docs/images/web-view-inbox-390-dark.png)
 

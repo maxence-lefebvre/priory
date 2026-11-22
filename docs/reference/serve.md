@@ -335,7 +335,7 @@ event's `time` against now (`PRIORY_NOW` when set), so a task about to start or 
 | `events` | array | Its events, newest first, as in `owned` |
 | `follow_up` | string or null | `priory say ID 'Read the events that came while you slept.'` for an `asleep` or `blocked` task, whose next run carries them. For a done, failed or dropped task, the command `owned` gives for its key. Null for a task whose next run reads them anyway, such as a `queued` or `ready` one |
 | `say_text` | string or null | The text `follow_up` says to an `asleep` or `blocked` task, which the web Inbox's Say sends; null for any other task |
-| `request_text` | string or null | For a done task, the text of a new task keyed by its key, as in `owned`; null for any other task |
+| `request_text` | string or null | For a done task, the text of a new task keyed by its key, as in `owned`: null when its key is not a GitHub or Linear resource, and for any other task |
 
 `outsider`, beside `unrouted`, lists the comments and reviews from someone outside the repository,
 newest first: `seq`, `type`, `subject`, `time` and `actor`. No task takes them, so they come with
