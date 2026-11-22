@@ -140,3 +140,9 @@ export function countWords({ oldest, stopped, todos, reports, other }) {
   const also = rest.length > 1 ? `Also ${rest.slice(0, -1).join(", ")} and ${rest.at(-1)}.` : rest.length ? `Also ${rest[0]}.` : "";
   return [oldest && `Oldest waits ${oldest}.`, also].filter(Boolean).join(" ");
 }
+
+/** The Answer capsule's words for `n` open asks: offline it leaves the primary look and only opens the asks to read. */
+export function capsuleWords(n, offline) {
+  const asks = `${n} ${n === 1 ? "ask" : "asks"}`;
+  return offline ? { text: `Read ${asks}, offline`, icon: "unplug", off: true } : { text: `Answer ${asks}`, icon: "ask", off: false };
+}

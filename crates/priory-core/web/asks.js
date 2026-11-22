@@ -1,3 +1,5 @@
+import { taskLabel } from "./tasks.js";
+
 export const ASK_VIEWS = ["open", "snoozed", "answered", "all"];
 
 /** The groups of `askGroups` a saved view lists, in order. @param {string} view */
@@ -102,3 +104,9 @@ export function writeNote(status, body, ago, ask) {
   if (status === 504 || status === 0) return "The daemon may have applied this but did not confirm it. Check the ask's state before you send again.";
   return `Could not send: ${body?.error || `the server answered ${status}`}.`;
 }
+
+/** The ask detail's header once its options scroll away: the question, over the task key, step and revision. */
+export const shrunkHead = (ask) => ({
+  question: ask.question || ask.title,
+  place: [taskLabel(ask.key), ask.step, `revision ${ask.revision}`].filter(Boolean).join(", "),
+});
