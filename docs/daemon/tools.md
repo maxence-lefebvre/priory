@@ -427,6 +427,9 @@ priory subscribe 7 github:owner/name#57
 priory unsubscribe 7 linear:ENG-7
 ```
 
+`POST /api/subscribe` and `POST /api/unsubscribe` are their twins on `priory serve`, and the Herdr
+library's `subscribe` and `unsubscribe` run the commands ([serve.md](../reference/serve.md#writes)).
+
 `priory task ID --json` and `/api/tasks/ID` list the live subscriptions as `subscriptions`.
 
 ### `relate(kind, task)`

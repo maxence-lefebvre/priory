@@ -38,6 +38,9 @@ Both write the state file directly, with or without a running daemon. Only a per
 a run's shell it exits 2, and the `priory-person` guard denies it to every agent
 ([guard.md](../daemon/guard.md)).
 
+`POST /api/tasks/{id}/label` is its twin on `priory serve`, which needs the token and a running
+daemon ([serve.md](serve.md#writes)). The Herdr library's `label` runs the command.
+
 ## Errors
 
 The command exits 1 with one of these errors and records nothing:

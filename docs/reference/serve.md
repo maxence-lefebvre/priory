@@ -53,6 +53,8 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `POST /api/inbox/{seq}/read` | `priory inbox read SEQ` | as above |
 | `POST /api/tasks/{id}/say` | `priory say ID TEXT` | as above |
 | `POST /api/tasks/{id}/move` | `priory move ID --expected N [--band BAND] [--top \| --before TASK \| --after TASK]` | as above |
+| `POST /api/tasks/{id}/label` | `priory label TASK wrong (--evidence URL [--happened DATE] \| --clear)` | as above |
+| `POST /api/unsubscribe` | `priory unsubscribe TASK RESOURCE` | as above |
 | `POST /api/batches/{id}/edit` | `priory batch edit ID --expected N ...` | as above |
 | `POST /api/reports/pick` | `priory report pick PICK OPTION --expected N` | `{"ok": "<what the CLI prints>"}` |
 | `POST /api/reports/comment` | `priory report comment ROW --expected N TEXT` | as above |
@@ -188,6 +190,8 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/tasks/{id}/say` | `text`, a string: what the task's agent hears |
 | `POST /api/tasks/{id}/move` | `revision`, an integer: the state's revision the client showed, as `--expected`. Then `band`, one of the factory's bands, a place, or both. The place is one of `"top": true`, `before` or `after`, a task's id, as `--top`, `--before` and `--after`. A body with two places, or with neither a band nor a place, gets `400`, a newer state `409`, and a band the factory lacks or a task that is not active `422` |
 | `POST /api/subscribe` | `task`, an integer, and `resource`, a string such as `github:owner/name#7`, `linear:ENG-7` or `slack:C0123:1763500000.000100`, as `priory subscribe TASK RESOURCE`. Optionally `revision`, an integer, as `--expected`: a newer state gets `409`. A resource it cannot name gets `400`, a missing task `404`, and a resource another active task owns `422`, naming that task |
+| `POST /api/unsubscribe` | `task`, an integer, and `resource`, a string, as for `POST /api/subscribe`, as `priory unsubscribe TASK RESOURCE`. It takes no `revision`, as the CLI takes no `--expected`. A resource it cannot name gets `400`, a missing task `404`, and a task that does not subscribe to the resource `422` |
+| `POST /api/tasks/{id}/label` | `evidence`, an `http://` or `https://` URL, and optionally `happened`, an RFC 3339 instant or a date such as `2026-10-02`, to mark the task wrong; or `"clear": true` alone to withdraw its marks. As `priory label TASK wrong --evidence URL [--happened DATE]` and `--clear` (see [label.md](label.md)). A body with both or neither gets `400`, a missing task `404`, and evidence that is not a URL, a date after now or a clear with no mark `422` |
 | `POST /api/batches/{id}/edit` | `revision`, the plan revision the client showed, then one edit: `drop`, an entry id, with optionally `"with_successors": true`; or `move`, an entry id, with one of `"top": true`, `before` or `after`, an entry id; or `moment`, an object of `entry`, `other` and `moment`, which sets the moment of the edge from `entry` to `other`. A body with no edit, two edits, or a field its edit does not take gets `400`, a plan whose revision moved `409`, and an edit the plan refuses `422`. See [batches.md](../daemon/batches.md#editing-a-plan) |
 | `POST /api/inbox/{seq}/read` | `{}`: marks the report read, so its row leaves the desk. A sequence number that is not a report gets `422` |
 | `POST /api/reports/pick` | `pick`, the pick's id, `option`, one of its options, and `revision`, the report's revision the client showed |
@@ -321,7 +325,7 @@ group per resource, the group with the newest event first:
 | ----- | ---- | ------- |
 | `resource` | string | The resource, such as `github:owner/name#7` |
 | `task` | object | The newest task that owned it: `id`, `key`, `state`, `workflow` |
-| `events` | array | Its events, newest first: `seq`, `type`, `subject`, `time`, and `line`, the first line of its body, text or title, or null |
+| `events` | array | Its events, newest first: `seq`, `type`, `subject`, `time`, and `line`, the first line of its body, text or title, a check run's name and conclusion such as `test (ubuntu) failure`, or null |
 | `follow_up` | string or null | The command that routes its next event, each argument shell-quoted: `priory revive ID` for a failed or dropped task, `priory add --workflow WORKFLOW 'TEXT'` with the task's workflow and `request_text` for a done one, else `priory subscribe ID RESOURCE`. Null for a done task's resource that `request_text` cannot name, such as a Slack thread |
 | `request_text` | string or null | For a GitHub or Linear resource, the text of a new task keyed by it: `Follow up on URL after event SEQ`, the issue's URL, which `priory add` turns into the resource as key, and the newest event's sequence number, so each follow-up is a new request |
 
@@ -336,6 +340,8 @@ event's `time` against now (`PRIORY_NOW` when set), so a task about to start or 
 | `task` | object | The task that kept them: `id`, `key`, `state`, `workflow` |
 | `events` | array | Its events, newest first, as in `owned` |
 | `follow_up` | string or null | `priory say ID 'Read the events that came while you slept.'` for an `asleep` or `blocked` task, whose next run carries them. For a done, failed or dropped task, the command `owned` gives for its key. Null for a task whose next run reads them anyway, such as a `queued` or `ready` one |
+| `say_text` | string or null | The text `follow_up` says to an `asleep` or `blocked` task, which the web Inbox's Say sends; null for any other task |
+| `request_text` | string or null | For a done task, the text of a new task keyed by its key, as in `owned`: null when its key is not a GitHub or Linear resource, and for any other task |
 
 `outsider`, beside `unrouted`, lists the comments and reviews from someone outside the repository,
 newest first: `seq`, `type`, `subject`, `time` and `actor`. No task takes them, so they come with
@@ -440,7 +446,7 @@ The list then adds, after this runner's tasks, each task another runner holds wh
 | `key` | string | The task's key |
 | `runner` | string | The runner that holds it |
 | `hold` | string | `waiting` or `kept`, as that runner last published it |
-| `last_seen` | string or null | When that runner was last alive, from its last alive, claim or held message |
+| `last_seen` | string or null | When that runner was last alive, from its last alive or held message |
 | `since` | string | When the claim that gave it the key was published |
 | `workflow`, `band`, `lane` | string or null | From the task's request |
 | `title` | string or null | The request's TL;DR, else its subject |

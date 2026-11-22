@@ -92,16 +92,20 @@ process list or an error.
 - Slack limits both methods per app. An app outside the Slack Marketplace created after May 2025
   gets one call a minute and 15 messages per call, so it can watch one channel or thread per minute
   at most.
-- Each poll starts at the next watched thread, so a rate limit delays every thread in turn rather
-  than starving the later ones. A new intake starts at the thread the current minute picks, so
-  successive `--once` runs rotate too.
+- Each poll reads the threads of open waits first, then the threads of active tasks, then those of
+  ended tasks. Within each of the three, a poll starts at the next thread, so a rate limit delays
+  every thread of a group in turn rather than starving the later ones. A new intake starts at the
+  thread the current minute picks, so successive `--once` runs rotate too.
+- A thread a rate limit left unread for more than 5 polls in a row fails the poll with
+  `<n> threads behind: Slack rate-limited their reads for more than 5 polls`, and the desk shows the
+  Slack intake as failing until every thread reads again.
 - A failing channel publishes nothing. It fails the poll only after the other channels and the
   watched threads are published.
 - A thread the intake cannot read, such as one in a channel the bot is not a member of
   (`not_in_channel`) or a deleted one, fails the poll the same way, with an error that names
-  `thread <channel>:<thread_ts>`. A rate limit does not fail it: each poll starts at the next
-  thread, so every thread is read in turn. The desk then shows the Slack intake as failing until the thread
-  reads again or no wait or subscription names it.
+  `thread <channel>:<thread_ts>`. The desk then shows the Slack intake as failing until the
+  thread reads again or no wait or subscription names it. A rate limit alone fails the poll only
+  once a thread falls behind, as above.
 
 ## Message shortcut
 

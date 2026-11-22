@@ -58,8 +58,9 @@ task's next run. When such events came in the last 24 hours and are at least 5 m
 1 event kept by a sleeping task reached no agent. See it with `priory inbox --unrouted`.
 ```
 
-`priory desk --json` carries it as `counts.unheard`, 0 when there are none. See
-[routing.md](routing.md#events-no-agent-read).
+`priory desk --json` carries it as `counts.unheard`, 0 when there are none. The web Desk shows it
+as a calm row under the unrouted one, and the Herdr Desk's count line ends with "2 events no agent
+read." See [routing.md](routing.md#events-no-agent-read).
 
 A comment or review from someone outside the repository is not unrouted: its outcome is
 `outsider`. When some came in the last 24 hours, `priory desk` prints one more line:
@@ -78,7 +79,7 @@ waits. `priory desk` without `--json` prints neither. The ranking has six groups
 
 | Group | Items | `why` |
 | ----- | ----- | ----- |
-| Alarms | `blocked`, `failed`, an `uncertain` `prompt` or `command`, and an unread `intake` report: a source that fails to poll | `an alarm: work stopped and waits on a person` |
+| Alarms | `blocked`, `failed`, an `uncertain` `prompt` or `command`, an unread `intake` report: a source that fails to poll, and an unread `landed wrong` report: a task's merge that is red on its base branch or was reverted | `an alarm: work stopped and waits on a person` |
 | Asks that open a door | an ask whose answer lets an irreversible step run (its risk is `irreversible`), and an ask of a task that reviews a pull request, whose key ends in `:review:<login>` | ``it runs `<argv[0]>` in <target>`` for an ask that runs a command (see [tools.md](tools.md#commands-an-answer-runs)), ``it lets step `<step>` run`` for another ask that approves an irreversible step, or `it reviews a pull request` |
 | Plans | another ask at a human step, such as `approve-plan` | `it approves a plan` |
 | Other asks | every other ask, such as an agent's or an outside one | `it waits on a person` |

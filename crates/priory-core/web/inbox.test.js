@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { emptyDetail, eventWords, handled, unroutedNote, routeAction, neverOwned } from "./inbox.js";
+import { emptyDetail, eventWords, handled, unheardActs, unheardNote, unroutedNote, routeAction, neverOwned } from "./inbox.js";
 
 const event = (fields) => ({ seq: 4, type: "github.pull_request.comment", subject: "o/r#7", time: "2026-11-21T09:00:00Z", task: 1, outcome: "kept", prompt: null, wait: null, ...fields });
 
@@ -25,6 +25,23 @@ test("an owned group's action follows its owner, as priory inbox --unrouted prin
   assert.equal(routeAction({ state: "failed" }), "revive");
   assert.equal(routeAction({ state: "done" }), "request");
   assert.equal(routeAction({ state: "asleep" }), "subscribe");
+});
+
+test("the desk's unheard note is calm, and empty with none", () => {
+  assert.equal(unheardNote(0), "");
+  assert.equal(unheardNote(undefined), "");
+  assert.equal(unheardNote(1), "1 event kept by a sleeping task reached no agent");
+  assert.equal(unheardNote(4), "4 events kept by a sleeping task reached no agent");
+});
+
+test("an unheard group's actions follow its task: say to an asleep one, say or resume a blocked one, route an ended one", () => {
+  assert.deepEqual(unheardActs({ state: "asleep" }), ["say"]);
+  assert.deepEqual(unheardActs({ state: "blocked" }), ["say", "resume"]);
+  assert.deepEqual(unheardActs({ state: "done" }), ["request"]);
+  assert.deepEqual(unheardActs({ state: "failed" }), ["revive"]);
+  assert.deepEqual(unheardActs({ state: "dropped" }), ["revive"]);
+  assert.deepEqual(unheardActs({ state: "ready" }), []);
+  assert.deepEqual(unheardActs({ state: "queued" }), []);
 });
 
 test("events no task ever owned read as one count per source", () => {

@@ -380,3 +380,57 @@ fn a_given_task_s_run_ends_even_when_the_ack_of_the_gift_is_lost() {
     }
     assert!(alive(&mut a), "a's daemon rides out the lost ack");
 }
+
+#[test]
+fn a_task_reopened_after_its_hold_ended_starts_only_once_the_log_says_its_runner_keeps_it() {
+    let Some(database) = Database::new("reopened") else {
+        return;
+    };
+    let (mut a, _a_link) = runner_on(&database, "reopened", "a");
+    let (mut b, _b_link) = runner_on(&database, "reopened", "b");
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.calls(&[result("passed")]);
+    database.publish(&requested(1));
+    a.start_as(exe);
+    a.until_own_tasks(|rows| rows.first().is_some_and(|row| row[4] == "done"));
+    let ended = json!({ "key": KEY, "runner": "a", "hold": "ended" });
+    database.logged(&a, "priory.task.held", ended);
+    // a's `kept` never reaches the log, as a link lost right after the reopen would leave it.
+    database.execute(
+        r#"CREATE FUNCTION unsent() RETURNS trigger AS $$ BEGIN
+             IF NEW.message LIKE '%"runner":"a"%' AND NEW.message LIKE '%"hold":"kept"%' THEN
+               RAISE EXCEPTION 'the link dropped' USING ERRCODE = '08006';
+             END IF;
+             RETURN NEW;
+           END $$ LANGUAGE plpgsql;
+           CREATE TRIGGER unsent BEFORE INSERT ON priory_log_messages
+             FOR EACH ROW EXECUTE FUNCTION unsent()"#,
+    );
+    // The comment comes after the task was done, to the second.
+    std::thread::sleep(Duration::from_millis(1100));
+    database.publish(
+        &Message::new(
+            "github.issues.comment",
+            json!({ "repo": "owner/repo", "issue": 1, "actor": "ana", "body": "Still broken.",
+                "url": "u", "github_id": 901 }),
+        )
+        .subject("owner/repo#1")
+        .time(herdr_bus::Timestamp::now()),
+    );
+    a.until_own_tasks(|rows| rows[0][4] != "done");
+    until_unreachable(&a, true);
+
+    // The log still says the key ended, so b claims the next request for it, and wins.
+    database.publish(&requested(1));
+    b.start_as(exe);
+    let tasks = a.until_own_tasks(|rows| rows[0][4] == "dropped");
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+    let task = a.priory(&["task", &tasks[0][0], "--json"]);
+    let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
+    assert_eq!(task["reason"], "claimed by runner b", "{task}");
+    assert_eq!(
+        a.rows("runs").len(),
+        1,
+        "a ran the reopened task before the log said a keeps it"
+    );
+}

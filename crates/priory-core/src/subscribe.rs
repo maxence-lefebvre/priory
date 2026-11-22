@@ -67,6 +67,20 @@ pub fn apply(db: &mut Connection, request: &Request) -> rusqlite::Result<Result<
     subscribe(db, request.task, &request.resource, request.expected)
 }
 
+/// `POST /api/unsubscribe` on the daemon's socket: `{"unsubscribe": {"task", "resource"}}`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EndLine {
+    pub unsubscribe: End,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct End {
+    pub task: i64,
+    pub resource: String,
+}
+
 /// Ends `task`'s subscription to `resource`. What it owns otherwise, such as its key, a pull
 /// request it opened or one it waited on, it still owns.
 pub fn unsubscribe(

@@ -183,6 +183,23 @@ test("adds a task in the factory folder, with only the chips the person changed,
   ]);
 });
 
+test("ends a subscription and marks a task wrong or clears it, in the factory folder", async () => {
+  const run = fake();
+  const client = priory({ exec, binary: FAKE, factory: "/srv/factory" });
+  await client.unsubscribe(7, "github:owner/repo#7");
+  await client.label(7, { evidence: "https://github.com/owner/repo/pull/91", happened: "2026-10-02" });
+  await client.label(7, { evidence: "https://github.com/owner/repo/pull/91" });
+  await client.label(7, { clear: true });
+  await priory({ exec, binary: FAKE }).label(7, { clear: true });
+  assert.deepEqual(run.argv(), [
+    ["unsubscribe", "7", "github:owner/repo#7"],
+    ["label", "/srv/factory", "7", "wrong", "--evidence", "https://github.com/owner/repo/pull/91", "--happened", "2026-10-02"],
+    ["label", "/srv/factory", "7", "wrong", "--evidence", "https://github.com/owner/repo/pull/91"],
+    ["label", "/srv/factory", "7", "wrong", "--clear"],
+    ["label", "7", "wrong", "--clear"],
+  ]);
+});
+
 test("prints the attach command without running it", async () => {
   const run = fake();
   writeFileSync(join(run.dir, "attach.json"), "tmux -S /tmp/priory/sock attach -t 'run 4'\n");

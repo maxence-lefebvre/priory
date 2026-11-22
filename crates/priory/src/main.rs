@@ -258,11 +258,15 @@ fn watched() -> Result<Vec<intake::Watch>, String> {
     let watched = state::watched(&db).map_err(|error| format!("open waits: {error}"))?;
     watched
         .into_iter()
-        .map(|(resource, since)| {
+        .map(|(resource, since, rank)| {
             let since = since
                 .parse()
                 .map_err(|error| format!("wait on {resource} since `{since}`: {error}"))?;
-            Ok(intake::Watch { resource, since })
+            Ok(intake::Watch {
+                resource,
+                since,
+                rank,
+            })
         })
         .collect()
 }
@@ -494,7 +498,8 @@ fn score(args: Vec<String>) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let scored = state::open().and_then(|mut db| {
-        let scores = priory_core::score::score(&mut db, &factory, task, only.as_deref())?;
+        let scores =
+            priory_core::score::score(&mut db, &factory, &runtime::home(), task, only.as_deref())?;
         let rows = serde_json::Value::Array(scores.iter().map(|score| score.json()).collect());
         if json {
             println!("{}", serde_json::json!({ "scores": rows }));

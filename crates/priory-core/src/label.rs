@@ -121,3 +121,40 @@ pub fn clear(
     tx.commit().map_err(error)?;
     Ok(format!("task {task} is no longer marked wrong"))
 }
+
+/// `POST /api/tasks/{id}/label` on the daemon's socket: `{"label": {"task", "evidence", "happened",
+/// "clear"}}`, a mark with evidence or a clear.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Line {
+    pub label: Request,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Request {
+    pub task: i64,
+    pub evidence: Option<String>,
+    pub happened: Option<String>,
+    pub clear: bool,
+}
+
+/// Marks or clears as `priory label TASK wrong` does, at `now`.
+pub fn apply(
+    db: &mut Connection,
+    factory: &Factory,
+    request: &Request,
+    now: Timestamp,
+) -> Result<String, String> {
+    match &request.evidence {
+        Some(evidence) => mark(
+            db,
+            factory,
+            request.task,
+            evidence,
+            request.happened.as_deref(),
+            now,
+        ),
+        None => clear(db, factory, request.task, now),
+    }
+}

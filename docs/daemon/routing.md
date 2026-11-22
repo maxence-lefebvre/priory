@@ -229,6 +229,11 @@ Each group names its task and a command: `priory say ID` for an asleep or blocke
 run carries the events after the text, or what the owned group gives for an ended task. The Desk
 counts these events over the last 24 hours (see [desk.md](desk.md#unrouted-events)).
 
+The web and Herdr Inbox panels list these groups first, under Unheard. On the web, Say sends the
+group's `say_text` to an asleep or blocked task. A blocked task does not run on a say: it reads the
+events when it resumes, so its group also offers Resume. An ended task's group offers the owned
+group's Revive or Request a task. The Herdr panel has no Say: it shows an asleep task's command.
+
 ## What a kept message does
 
 What happens to a `kept` message depends on the task's state:

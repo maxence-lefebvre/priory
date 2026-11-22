@@ -407,6 +407,9 @@ The desk is the "Needs me" view. It lists, top to bottom:
 10. **Unrouted**: when events reached no task in the last 24 hours, one calm row under Asleep,
    "3 events reached no task in the last 24 hours", with the `queued` tile and the count, that
    opens the [Inbox](#inbox) panel's Unrouted view. It never ranks and never takes an alarm color.
+   Under it, when a task kept events no agent read (`counts.unheard`), one more calm row, "2 events
+   kept by a sleeping task reached no agent", with the `asleep` tile and the count, that opens the
+   same view at its Unheard section.
 11. Reports waiting for review, when there are any.
 On a phone, the **Answer capsule** floats above the tab bar: a full-width `--action` button,
 `--capsule` (54 px) tall, `--capsule-gap` above the tab bar, with `--radius-full` and
@@ -439,8 +442,17 @@ thread."); **Subscribe task 12** for an active one (`POST /api/subscribe` with t
 Inbox read was at). The daemon's sentence shows under the row, as a
 desk action's note does. A last `--text-2` line counts the events no task ever owned: "No task
 ever owned: 41 github events, 6 slack events." With no owned group: "No event of a task's resource
-went unrouted. An event about an ended task's pull request or issue shows here." Events open
-no detail, so the empty drawer beside the panel says "Open an event's task to read what the event
+went unrouted. An event about an ended task's pull request or issue shows here."
+
+When `unrouted.unheard` has groups, an **Unheard** section, "no agent read them", comes first, then
+an **Unrouted** heading, "reached no task", over the owned groups. Each unheard group is the owned
+group's card for one task: its key in mono with its event count, the caption line with its
+workflow, then its 5 newest events with the `asleep` tile. Under them, by the task's state:
+**Say to task 12** (`.btn secondary`, one tap, not armed) for an asleep task, which sends the
+group's `say_text` through the task's say verb, with "Say sends “...”" in `--text-2`; Say and the
+task page's **Resume** for a blocked one, whose line adds "It reads them when it resumes."; the
+owned group's Revive or Request a task for an ended one; "Its next run reads them." otherwise.
+Events open no detail, so the empty drawer beside the panel says "Open an event's task to read what the event
 did."
 
 ### Add
@@ -1284,8 +1296,8 @@ waiting, and the daemon does nothing different.
 The calm count, then the one next thing, then the explorer list.
 
 1. **Count** in `--type-pane-count`, as the web desk's: "2 asks need you. Oldest waits 42 min. 1
-   stopped. 2 snoozed. 3 events reached no task in 24 h." The last sentence shows only when the
-   count is above zero. The Unrouted view is the [Inbox](#inbox-1) panel.
+   stopped. 2 snoozed. 3 events reached no task in 24 h. 2 events no agent read." Each of the last
+   two sentences shows only when its count is above zero. The Unrouted view is the [Inbox](#inbox-1) panel.
 2. **The next thing**: a card on `--surface` with the desk's `next`: an alarm or the ask that ranks
    first, why it ranks first, its recommendation, and the buttons Answer… (primary, for an ask),
    Open task, Attach and Snooze 1 h. Answer… opens the
@@ -1414,6 +1426,10 @@ The web's [Inbox](#inbox) panel, as a tab in the center stack.
   workflow, with no Add card, since that text names the resource the new task must own.
 - The verb's sentence shows under the button in `--text-2`; a refusal says why. Subscribe carries
   the revision the panel read, as the web's does.
+- Unheard cards come first under an "Unheard" heading, then "Unrouted" over the owned cards, as on
+  the web. An asleep task's card shows its `follow_up` command in mono `--text-2` instead of Say,
+  which stays on the web. A blocked task's card has Resume task 15 and "It reads them when it
+  resumes."
 - While it reads: "Reading the unrouted events…"
 
 ### Tasks

@@ -4,7 +4,7 @@ use crate::{post, snooze, stall, state, sweep};
 use jiff::Timestamp;
 use priory_factory::explain;
 use priory_factory::factory::{Factory, Trigger};
-use priory_intake::intake::schedule;
+use priory_intake::intake::{CHECKED, schedule};
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OptionalExtension, Params, params};
 use serde_json::{Map, Value, json};
@@ -71,7 +71,8 @@ fn urgency() -> String {
     format!(
         "CASE WHEN desk.part = 1 OR desk.kind = 'batch' THEN NULL
            WHEN desk.kind IN ('blocked', 'failed', 'prompt', 'command')
-             OR desk.kind = 'report' AND desk.what LIKE 'intake: %' THEN 'alarm'
+             OR desk.kind = 'report' AND (desk.what LIKE 'intake: %'
+               OR desk.what LIKE 'priory: landed wrong: %') THEN 'alarm'
            WHEN desk.kind = 'ask' THEN (SELECT CASE WHEN {IRREVERSIBLE} THEN 'irreversible'
                WHEN tasks.key GLOB '*:review:*' THEN 'review'
                WHEN asks.kind = 'step' THEN 'plan' ELSE 'ask' END
@@ -95,6 +96,8 @@ const DESK_TITLE: &str = "CASE WHEN desk.kind = 'ask' THEN (SELECT coalesce(asks
            || (SELECT key FROM tasks WHERE tasks.id = desk.task) || ' ' || desk.kind
          WHEN desk.kind = 'report' AND desk.what LIKE 'intake: %' THEN 'the intake fails to poll '
            || substr(desk.what, 9, instr(substr(desk.what, 9), ':') - 1)
+         WHEN desk.kind = 'report' AND desk.what LIKE 'priory: landed wrong: %'
+           THEN 'a merge landed wrong'
          WHEN desk.kind = 'report' THEN 'a report from '
            || substr(desk.what, 1, instr(desk.what, ':') - 1)
          ELSE desk.kind || ' ' || desk.id END AS title";
@@ -321,8 +324,18 @@ pub fn unrouted(db: &Connection, since: i64, now: Timestamp) -> rusqlite::Result
     let unheard: Vec<Value> = unheard
         .into_iter()
         .map(|(task, events)| {
-            let follow_up = unheard_follow_up(&task, &events);
-            json!({ "task": task, "events": events, "follow_up": follow_up })
+            let state = task["state"].as_str().unwrap_or_default();
+            let say_text = ["asleep", "blocked"]
+                .contains(&state)
+                .then_some(UNHEARD_SAY);
+            let request_text = (state == "done")
+                .then(|| request_text(task["key"].as_str().unwrap_or_default(), &events))
+                .flatten();
+            let follow_up = unheard_follow_up(&task, say_text, request_text.as_deref());
+            json!({
+                "task": task, "events": events, "follow_up": follow_up,
+                "say_text": say_text, "request_text": request_text,
+            })
         })
         .collect();
     Ok(json!({
@@ -381,20 +394,23 @@ fn unheard_events(
     Ok(events)
 }
 
-/// The command that gets a task's unheard `events` to an agent: `say` wakes an asleep or blocked
-/// task, whose next run carries them; an ended task gets what an unrouted event of it would. None
-/// for a task whose next run reads them anyway.
-fn unheard_follow_up(task: &Value, events: &[Value]) -> Option<String> {
-    let id = &task["id"];
+/// What `priory say` tells an asleep or blocked task that kept unheard events.
+const UNHEARD_SAY: &str = "Read the events that came while you slept.";
+
+/// The command that gets a task's unheard events to an agent: `say` with `say_text`, which wakes an
+/// asleep task and reaches a blocked one when it resumes; for an ended task, what an unrouted event
+/// of it would get. None for a task whose next run reads them anyway.
+fn unheard_follow_up(
+    task: &Value,
+    say_text: Option<&str>,
+    request_text: Option<&str>,
+) -> Option<String> {
+    if let Some(text) = say_text {
+        return Some(format!("priory say {} {}", task["id"], quoted(text)));
+    }
     match task["state"].as_str().unwrap_or_default() {
-        "asleep" | "blocked" => Some(format!(
-            "priory say {id} {}",
-            quoted("Read the events that came while you slept.")
-        )),
         "done" | "failed" | "dropped" => {
-            let resource = task["key"].as_str().unwrap_or_default();
-            let request_text = request_text(resource, events);
-            follow_up(task, resource, request_text.as_deref())
+            follow_up(task, task["key"].as_str().unwrap_or_default(), request_text)
         }
         _ => None,
     }
@@ -533,12 +549,20 @@ fn event_json(
     let said = ["body", "text", "title"]
         .iter()
         .find_map(|field| message.data[field].as_str())
-        .and_then(|text| text.lines().find(|line| !line.trim().is_empty()));
+        .and_then(|text| text.lines().find(|line| !line.trim().is_empty()))
+        .map(str::to_owned)
+        .or_else(|| checked(&kind, &message.data));
     let event = json!({
         "seq": seq, "type": kind, "subject": subject,
         "time": time, "line": said, "url": message.data["url"].as_str(),
     });
     (resource, event)
+}
+
+/// A check run's name and conclusion, `test (ubuntu) failure`, as the line of its event.
+fn checked(kind: &str, data: &Value) -> Option<String> {
+    let name = data["name"].as_str().filter(|_| kind == CHECKED)?;
+    Some(format!("{name} {}", data["conclusion"].as_str()?))
 }
 
 /// Every task in start order, or the tasks of one lane, of one grade, or both.

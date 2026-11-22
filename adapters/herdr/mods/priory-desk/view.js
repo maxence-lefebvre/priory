@@ -144,6 +144,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue 
     stopped.length ? `${stopped.length} stopped.` : null,
     desk.counts.snoozed ? `${desk.counts.snoozed} snoozed.` : null,
     desk.counts.unrouted ? `${desk.counts.unrouted} ${desk.counts.unrouted === 1 ? "event" : "events"} reached no task in 24 h.` : null,
+    desk.counts.unheard ? `${desk.counts.unheard} ${desk.counts.unheard === 1 ? "event" : "events"} no agent read.` : null,
   ].filter(Boolean).join(" ");
 
   /** @type {Record<string, () => { title: string, note: string | null, rows: any[] }[]>} */

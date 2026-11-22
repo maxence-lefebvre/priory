@@ -567,6 +567,11 @@ DESIGN.md's "Inbox" section holds its visual rules; this section says how it wor
   group's `request_text` for a done one, so the new task owns the resource. A note under the
   group says what the verb did, or why priory refused it. One verb runs at a time, and after one
   succeeds the buttons stay disabled until a read shows its result.
+- **Unheard.** Before the owned groups, under Unheard, each task that kept events no agent read
+  shows its key, its state tile and its newest events (see
+  [routing.md](../daemon/routing.md#events-no-agent-read)). An asleep task's group shows its
+  `priory say` command, since Say stays on the web page. A blocked task's group has Resume task N,
+  which runs `priory resume N`. An ended task's group routes as an owned group does.
 
 ## The Tasks panel
 

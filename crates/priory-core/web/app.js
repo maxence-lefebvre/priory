@@ -7,7 +7,7 @@ import { linked } from "./links.js";
 import { around, dossier, nextPick, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
-import { emptyDetail, eventWords, handled, neverOwned, routeAction, unroutedNote } from "./inbox.js";
+import { emptyDetail, eventWords, handled, neverOwned, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
 import { actionNote, batchParts, dueParts, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
@@ -620,27 +620,53 @@ function unroutedRows() {
     queueMicrotask(loadUnrouted);
     return html`<p class="empty">Loading the unrouted events…</p>`;
   }
-  const { owned, other } = view.groups;
+  const { owned, other, unheard = [] } = view.groups;
   const rest = neverOwned(other);
   const restLine = rest ? html`<p class="meta unowned">${rest}</p>` : "";
-  if (!owned.length) return html`<p class="empty">No event of a task's resource went unrouted. An event about an ended task's pull request or issue shows here.</p>${restLine}`;
-  return [...owned.map((group) => {
+  const heard = unheard.length ? html`<div class="sec" id="unheard">Unheard<span>no agent read them</span></div>${unheard.map(unheardGroup)}<div class="sec">Unrouted<span>reached no task</span></div>` : "";
+  if (!owned.length) return html`${heard}<p class="empty">No event of a task's resource went unrouted. An event about an ended task's pull request or issue shows here.</p>${restLine}`;
+  return [heard, ...owned.map((group) => {
     const { task } = group;
-    const busy = view.busy === group.resource ? raw('aria-disabled="true"') : "";
     const notice = view.notices.get(group.resource);
-    const action = routeAction(task);
-    const route = action === "revive" ? taskActs(task.id, task.state)
-      : action === "request" ? (group.request_text
-        ? html`<button type="button" class="btn secondary" data-action="request-task" data-text="${group.request_text}" data-workflow="${task.workflow}">Request a task</button>`
-        : html`<p class="meta">No new task can take this resource from here: start one from its thread.</p>`)
-        : html`<button type="button" class="btn secondary" data-action="subscribe-task" data-resource="${group.resource}" data-task="${task.id}" ${busy}>Subscribe task ${task.id}</button>`;
     return html`<section class="ugroup" aria-label="${group.resource}"><p class="l1"><span class="mono">${group.resource}</span><span class="num">${group.events.length}</span></p>
       <p class="meta">${tile(task.state, "sm")}<a href="/tasks/${task.id}">task ${task.id}</a> ${task.state}, <span class="mono">${task.key}</span></p>
-      <ol class="hist">${group.events.slice(0, 5).map((event) => html`<li>${tile("queued", "sm")}<span><b title="${event.type}">${eventWords(event.type)}</b> ${event.subject || ""}${event.line ? html`<span class="meta">${event.line}</span>` : ""}</span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>
-      ${group.events.length > 5 ? html`<p class="meta">and ${group.events.length - 5} older</p>` : ""}
-      <div class="routeform">${route}</div>
+      ${eventRows(group.events, "queued")}
+      <div class="routeform">${routeButton(group, routeAction(task))}</div>
       ${notice ? html`<p class="note" role="status">${notice}</p>` : ""}</section>`;
   }), restLine];
+}
+
+// A group's 5 newest events as history rows, then how many are older.
+function eventRows(events, state) {
+  return html`<ol class="hist">${events.slice(0, 5).map((event) => html`<li>${tile(state, "sm")}<span><b title="${event.type}">${eventWords(event.type)}</b> ${event.subject || ""}${event.line ? html`<span class="meta">${event.line}</span>` : ""}</span>${timeTag(event.time, today(event.time) ? clock(event.time) : date(event.time))}</li>`)}</ol>
+    ${events.length > 5 ? html`<p class="meta">and ${events.length - 5} older</p>` : ""}`;
+}
+
+// The one button that routes a group's next event: revive, request a task or subscribe.
+function routeButton(group, action) {
+  const { task } = group;
+  if (action === "revive") return taskActs(task.id, task.state);
+  if (action === "request") return group.request_text
+    ? html`<button type="button" class="btn secondary" data-action="request-task" data-text="${group.request_text}" data-workflow="${task.workflow}">Request a task</button>`
+    : html`<p class="meta">No new task can take this resource from here: start one from its thread.</p>`;
+  const busy = state.unrouted.busy === group.resource ? raw('aria-disabled="true"') : "";
+  return html`<button type="button" class="btn secondary" data-action="subscribe-task" data-resource="${group.resource}" data-task="${task.id}" ${busy}>Subscribe task ${task.id}</button>`;
+}
+
+// One task's unheard events (DESIGN.md, Inbox), with what gets them to an agent.
+function unheardGroup(group) {
+  const { task } = group;
+  const [first, ...rest] = unheardActs(task);
+  const busy = state.taskBusy !== null || Boolean(state.failed);
+  const act = first === "say"
+    ? html`<button type="button" class="btn secondary" data-action="unheard-say" data-task="${task.id}" data-text="${group.say_text}" aria-disabled="${busy ? "true" : "false"}">Say to task ${task.id}</button>${taskActs(task.id, task.state, rest)}
+      <p class="meta">Say sends “${group.say_text}”${rest.includes("resume") ? " It reads them when it resumes." : ""}</p>`
+    : first ? routeButton({ ...group, resource: task.key }, first)
+      : html`<p class="meta">Its next run reads them.</p>`;
+  return html`<section class="ugroup" aria-label="task ${task.id}"><p class="l1"><span class="mono">${task.key}</span><span class="num">${group.events.length}</span></p>
+    <p class="meta">${tile(task.state, "sm")}<a href="/tasks/${task.id}">task ${task.id}</a> ${task.state}, ${task.workflow}</p>
+    ${eventRows(group.events, "asleep")}
+    <div class="routeform">${act}</div></section>`;
 }
 
 // The Inbox panel (DESIGN.md, Inbox): its one saved view, Unrouted, counts the events of a task's resources.
@@ -701,6 +727,8 @@ function needsMe(model, wide) {
   if (model.asleep) sections.push(html`<div class="sec"></div><a class="row one" href="/?view=asleep">${tile("asleep")}<span>${model.asleep} tasks asleep on waits</span><span class="num">${model.asleep}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
   const unrouted = unroutedNote(state.data.desk.counts?.unrouted);
   if (unrouted) sections.push(html`<a class="row one calm" href="/inbox?view=unrouted">${tile("queued")}<span>${unrouted}</span><span class="num">${state.data.desk.counts.unrouted}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
+  const unheard = unheardNote(state.data.desk.counts?.unheard);
+  if (unheard) sections.push(html`<a class="row one calm" href="/inbox?view=unrouted#unheard">${tile("asleep")}<span>${unheard}</span><span class="num">${state.data.desk.counts.unheard}</span><span class="chev">${icon("chevron-right", "s15")}</span></a>`);
   if (model.reports.length) sections.push(html`<div class="sec">Reports<span>${model.reports.length}</span></div>${model.reports.map(itemRow)}`);
   return sections;
 }
@@ -1230,10 +1258,10 @@ const ARMS = ["revive", "cancel"];
 const ENDED = ["done", "failed", "dropped"];
 const actsOf = (taskState) => (taskState === "blocked" ? ["resume", "cancel"] : ["failed", "dropped"].includes(taskState) ? ["revive"] : taskState === "done" ? [] : ["cancel"]);
 
-// The action buttons of a task in `taskState`, and its last action's note.
-function taskActs(task, taskState) {
+// The action buttons of a task in `taskState`, or the `acts` given, and its last action's note.
+function taskActs(task, taskState, acts = actsOf(taskState)) {
   const busy = state.taskBusy !== null || Boolean(state.failed);
-  const buttons = actsOf(taskState).map((act) => {
+  const buttons = acts.map((act) => {
     const armed = state.taskArmed?.task === task && state.taskArmed.act === act;
     const label = armed ? html`<span><small>Tap again to ${act}</small>${ACTS[act]}</span><span class="drain" aria-hidden="true"></span>` : ACTS[act];
     return html`<button id="act-${task}-${act}" class="btn secondary act ${armed ? "armed" : ""}" data-action="task-act" data-task="${task}" data-act="${act}" aria-disabled="${busy ? "true" : "false"}">${label}</button>`;
@@ -2901,6 +2929,10 @@ document.addEventListener("click", (event) => {
   if (action === "row-act") return rowAct(target);
   if (action === "move") return moveTask(target);
   if (action === "request-task") return requestTask(target.dataset.text, target.dataset.workflow);
+  if (action === "unheard-say") {
+    if (target.getAttribute("aria-disabled") !== "true") taskWrite(Number(target.dataset.task), "say", { text: target.dataset.text });
+    return;
+  }
   if (action === "subscribe-task") {
     if (state.unrouted.busy === null) subscribeTask(target.dataset.resource, Number(target.dataset.task));
     return;

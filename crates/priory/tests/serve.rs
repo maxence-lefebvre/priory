@@ -5761,6 +5761,58 @@ fn unrouted_events_split_into_ended_owners_with_their_follow_up_and_a_count_per_
 }
 
 #[test]
+fn an_unheard_group_carries_the_text_its_follow_up_sends() {
+    let mut setup = Setup::new("unheard-texts", SERVE);
+    unrouted_comment(&setup, 7, "2026-11-17T11:00:00Z");
+    unrouted_comment(&setup, 8, "2026-11-17T11:30:00Z");
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    let done = setup.owner("done", &["github:owner/repo#7"]);
+    let blocked = setup.owner("blocked", &["github:owner/repo#8"]);
+    // Each comment as the task that owns its pull request kept it while it was not running.
+    setup
+        .db()
+        .execute(
+            "UPDATE inbox SET outcome = 'kept', task = (SELECT task FROM owns
+               WHERE resource = 'github:' || inbox.subject)",
+            [],
+        )
+        .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let unheard = &api(&address, "/api/inbox?unrouted=1")["unrouted"]["unheard"];
+    let texts: Vec<_> = unheard
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|group| {
+            (
+                group["task"]["id"].clone(),
+                group["say_text"].clone(),
+                group["request_text"].clone(),
+            )
+        })
+        .collect();
+    let seq = &unheard[1]["events"][0]["seq"];
+    assert_eq!(
+        texts,
+        [
+            (
+                json!(blocked),
+                json!("Read the events that came while you slept."),
+                Value::Null
+            ),
+            (
+                json!(done),
+                Value::Null,
+                json!(format!(
+                    "Follow up on https://github.com/owner/repo/issues/7 after event {seq}"
+                ))
+            ),
+        ]
+    );
+}
+
+#[test]
 fn an_outsider_comment_is_counted_on_the_desk_and_listed_as_a_group_of_its_own() {
     let setup = Setup::new("desk-outsider", SERVE);
     let message = herdr_bus::Message::new(
@@ -5886,4 +5938,115 @@ fn the_subscribe_endpoint_subscribes_a_task_as_priory_subscribe_does() {
         .map(|row| row["resource"].clone())
         .collect();
     assert!(resources.contains(&json!(pull)), "{resources:?}");
+}
+
+#[test]
+fn the_unsubscribe_endpoint_ends_a_subscription_as_priory_unsubscribe_does() {
+    let mut setup = Setup::new("web-unsubscribe", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["pause"]));
+    let pull = "github:owner/repo#7";
+    succeeded(&setup.priory(&["subscribe", "1", pull]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let unsubscribe =
+        |extra: &str, body: Value| post(&address, "/api/unsubscribe", extra, &body.to_string());
+
+    let foreign = unsubscribe(
+        "Origin: http://evil.example\r\n",
+        json!({ "task": 1, "resource": pull }),
+    );
+    let malformed = unsubscribe("", json!({ "task": 1, "resource": "owner/repo#7" }));
+    let revised = unsubscribe("", json!({ "task": 1, "resource": pull, "revision": 1 }));
+    let missing = unsubscribe("", json!({ "task": 9, "resource": pull }));
+    let done = unsubscribe("", json!({ "task": 1, "resource": pull }));
+    let again = unsubscribe("", json!({ "task": 1, "resource": pull }));
+
+    assert_eq!(foreign.0, 403, "{}", foreign.1);
+    assert_eq!(malformed.0, 400, "{}", malformed.1);
+    assert_eq!(
+        revised.0, 400,
+        "unsubscribe takes no revision: {}",
+        revised.1
+    );
+    assert_eq!(missing.0, 404, "{}", missing.1);
+    assert_eq!(
+        done,
+        (
+            200,
+            json!({ "ok": "task 1 unsubscribed from github:owner/repo#7" }).to_string()
+        )
+    );
+    assert_eq!(again.0, 422, "{}", again.1);
+    let output = setup.priory(&["task", "1", "--json"]);
+    succeeded(&output);
+    let task_json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        !task_json["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["resource"] == pull && row["chosen"] == true),
+        "{task_json}"
+    );
+}
+
+#[test]
+fn the_label_endpoint_marks_a_task_wrong_and_clears_it_as_priory_label_does() {
+    let mut setup = Setup::new("web-label", SERVE);
+    setup.seed();
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let label = |extra: &str, task: &str, body: Value| {
+        post(
+            &address,
+            &format!("/api/tasks/{task}/label"),
+            extra,
+            &body.to_string(),
+        )
+    };
+    let evidence = "https://github.com/owner/repo/pull/91";
+
+    let foreign = label(
+        "Origin: http://evil.example\r\n",
+        "1",
+        json!({ "evidence": evidence }),
+    );
+    let both = label("", "1", json!({ "evidence": evidence, "clear": true }));
+    let neither = label("", "1", json!({}));
+    let missing = label("", "9", json!({ "evidence": evidence }));
+    let no_url = label("", "1", json!({ "evidence": "the fix" }));
+    let not_marked = label("", "1", json!({ "clear": true }));
+    let marked = label(
+        "",
+        "1",
+        json!({ "evidence": evidence, "happened": "2026-10-02" }),
+    );
+
+    assert_eq!(foreign.0, 403, "{}", foreign.1);
+    assert_eq!(both.0, 400, "{}", both.1);
+    assert_eq!(neither.0, 400, "{}", neither.1);
+    assert_eq!(missing.0, 404, "{}", missing.1);
+    assert_eq!(no_url.0, 422, "{}", no_url.1);
+    assert!(no_url.1.contains("is not a URL"), "{}", no_url.1);
+    assert_eq!(not_marked.0, 422, "{}", not_marked.1);
+    assert_eq!(
+        marked,
+        (
+            200,
+            json!({ "ok": format!("task 1 marked wrong: {evidence}") }).to_string()
+        )
+    );
+    let cleared = label("", "1", json!({ "clear": true }));
+    assert_eq!(
+        cleared,
+        (
+            200,
+            json!({ "ok": "task 1 is no longer marked wrong" }).to_string()
+        )
+    );
+    let output = setup.priory(&["label", &setup.factory(), "1", "wrong", "--clear"]);
+    assert!(
+        !output.status.success(),
+        "the web's clear withdrew the mark"
+    );
 }

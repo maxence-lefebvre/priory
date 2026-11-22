@@ -2296,22 +2296,25 @@ pub fn ended(db: &Connection, key: &str) -> rusqlite::Result<u64> {
 /// condition of an open hold, met or not, then each subscription of a task that has not failed or
 /// been dropped, and the own key of the newest task on a key that did, then the branch of each
 /// active task, or of a task done in the last 10 minutes whose branch no event named yet, so the
-/// intake sees a pull request its worker opened itself.
-pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
+/// intake sees a pull request its worker opened itself. Each comes with its rank: 0 for an open wait
+/// or hold, 1 for an active task, 2 for one that ended.
+pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String, u8)>> {
     db.prepare(
-        "SELECT resource, since FROM (
-           SELECT 0 AS source, waits.id, waits.resource, coalesce(waits.since, waits.created) AS since
+        "SELECT resource, since, rank FROM (
+           SELECT 0 AS source, waits.id, waits.resource, coalesce(waits.since, waits.created) AS since,
+             0 AS rank
            FROM waits
            JOIN tasks ON tasks.id = waits.task AND tasks.state NOT IN ('done', 'failed', 'dropped')
            WHERE waits.fired IS NULL AND waits.withdrawn IS NULL
            AND waits.kind IN ('linear_comment', 'linear_state', 'slack_reply', 'pull_request', 'checks', 'review')
            UNION ALL
-           SELECT 1, holds.id, holds.resource, holds.created FROM holds
+           SELECT 1, holds.id, holds.resource, holds.created, 0 FROM holds
            JOIN tasks ON tasks.id = holds.task AND tasks.state NOT IN ('done', 'failed', 'dropped')
            WHERE holds.kind IN ('merge', 'issue') AND holds.released IS NULL
            AND (holds.met IS NULL OR holds.kind = 'issue')
            UNION ALL
-           SELECT 2, subscriptions.rowid, subscriptions.resource, subscriptions.created
+           SELECT 2, subscriptions.rowid, subscriptions.resource, subscriptions.created,
+             CASE WHEN tasks.state IN ('done', 'failed', 'dropped') THEN 2 ELSE 1 END
            FROM subscriptions
            JOIN tasks ON tasks.id = subscriptions.task AND (tasks.state NOT IN ('failed', 'dropped')
              -- A comment on the own key of an ended task's newest generation asks for a revive.
@@ -2321,7 +2324,8 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
            WHERE NOT (tasks.state IN ('done', 'failed', 'dropped') AND subscriptions.resource = tasks.key
              AND tasks.key GLOB 'slack:*' AND julianday('now') - julianday(tasks.changed) >= 7)
            UNION ALL
-           SELECT 3, owns.rowid, owns.resource, tasks.changed FROM owns
+           SELECT 3, owns.rowid, owns.resource, tasks.changed,
+             CASE WHEN tasks.state IN ('done', 'failed', 'dropped') THEN 2 ELSE 1 END FROM owns
            JOIN tasks ON tasks.id = owns.task
            WHERE owns.resource GLOB 'github:*@*' AND (tasks.state NOT IN ('done', 'failed', 'dropped')
              OR (tasks.state = 'done' AND julianday('now') - julianday(tasks.changed) < 10.0 / 1440
@@ -2329,7 +2333,7 @@ pub fn watched(db: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
                  'github:' || json_extract(inbox.data, '$.repo') || '@' || json_extract(inbox.data, '$.head_branch'))))
          ) ORDER BY source, id",
     )?
-    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+    .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
     .collect()
 }
 
@@ -2622,14 +2626,14 @@ pub(crate) fn admissible<'r>(
         "SELECT id, workflow, step, trigger, state = 'queued', repo FROM tasks
              WHERE state IN ('queued', 'ready')
              -- With several runners, only a task whose key the log gives this one, and not one
-             -- whose `kept` it waits to read back.
-             AND (?1 IS NULL OR EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
+             -- whose `kept` it waits to read back. A lead task stays on its ask's runner.
+             AND (?1 IS NULL OR tasks.trigger = ?2 OR EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
                AND claims.runner = ?1
-               AND NOT (claims.hold = 'waiting' AND claims.published IS 'kept')))
+               AND NOT (claims.hold != 'kept' AND claims.published IS 'kept')))
              ORDER BY {START_ORDER}"
     ))?;
     let queued = statement
-        .query_map([runner], |row| {
+        .query_map(params![runner, crate::tools::LEAD_TRIGGER], |row| {
             Ok(Admission {
                 task: row.get(0)?,
                 workflow: row.get(1)?,
