@@ -2991,3 +2991,51 @@ fn an_open_memories_pr_step_takes_a_memories_repository_in_place_of_a_kit() {
 
     assert_eq!(outcome.code, 0, "{}", outcome.stderr);
 }
+
+/// A `[decisions.triage]` table with `extra` keys, and labeled cases with `nothing` thanks.
+fn decisions(name: &str, extra: &str, nothing: usize) -> Outcome {
+    let toml = format!(
+        "name = \"demo\"\n\n[decisions.triage]\nrun = \"python3 jev.py\"\nevaluation = \"triage.eval.toml\"\n{extra}"
+    );
+    let mut cases = String::new();
+    for (label, count) in [
+        ("nothing-to-do", nothing),
+        ("trivial", 3),
+        ("persons-call", 3),
+    ] {
+        for n in 0..count {
+            cases.push_str(&format!(
+                "[[cases]]\nname = \"{label}-{n}\"\nbody = \"b\"\nlabel = \"{label}\"\n"
+            ));
+        }
+    }
+    let mut files = with("factory.toml", &toml);
+    files.push(("triage.eval.toml", Box::leak(cases.into_boxed_str())));
+    check(&factory(name, &files))
+}
+
+#[test]
+fn a_decision_model_with_its_key_named_and_ten_cases_passes() {
+    let outcome = decisions("decisions-ok", "key_env = \"TYPESAFE_API_KEY\"\n", 4);
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn a_decision_model_refuses_a_pasted_key_bad_shares_a_long_timeout_and_too_few_cases() {
+    let extra = "key_env = \"sk-live-123\"\nagreement = 0.3\nthreshold = 1.5\ntimeout = \"60s\"\n";
+
+    let outcome = decisions("decisions-bad", extra, 2);
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "factory.toml:3: `[decisions.triage] key_env` names the environment variable that holds \
+         the model's key, such as TYPESAFE_API_KEY, never the key itself\n\
+         factory.toml:3: `[decisions.triage] agreement` is 0.3: give a share from 0.5 to 1, such as 0.9\n\
+         factory.toml:3: `[decisions.triage] threshold` is 1.5: give a share from 0.5 to 1, such as 0.9\n\
+         factory.toml:3: `[decisions.triage] timeout` is 60s: give at most 30s\n\
+         factory.toml:3: `[decisions.triage] evaluation` triage.eval.toml: triage needs at least 10 \
+         labeled cases, 3 of each class: this file has 8 (3 trivial, 2 nothing-to-do, 3 persons-call)\n"
+    );
+}

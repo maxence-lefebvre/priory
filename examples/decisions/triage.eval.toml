@@ -1,0 +1,56 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/triage-cases.json
+[[cases]]
+name = "thanks"
+body = "Thanks, this looks good to me."
+label = "nothing-to-do"
+
+[[cases]]
+name = "approval-note"
+kind = "github.pull_request_review.submitted"
+body = "Nice, ship it once CI is green."
+label = "nothing-to-do"
+
+[[cases]]
+name = "praise"
+body = "Great test coverage on this one."
+label = "nothing-to-do"
+
+[[cases]]
+name = "fyi"
+body = "FYI, I'll rebase my branch on this after it merges."
+label = "nothing-to-do"
+why = "Says what the reviewer will do, and asks nothing of the agent."
+
+[[cases]]
+name = "typo"
+kind = "github.pull_request_review_comment"
+body = "Typo: recieve."
+label = "trivial"
+
+[[cases]]
+name = "rename"
+kind = "github.pull_request_review_comment"
+body = "Rename `tmp` to `parsed`, it reads better."
+label = "trivial"
+
+[[cases]]
+name = "missing-test"
+body = "Please add a test for the empty input."
+label = "trivial"
+
+[[cases]]
+name = "scope"
+body = "Should this also cover the CLI, or is that another change?"
+label = "persons-call"
+
+[[cases]]
+name = "design"
+kind = "github.pull_request_review_comment"
+body = "I'd rather keep this in the parser than add a new module."
+label = "persons-call"
+why = "A design disagreement: the person decides."
+
+[[cases]]
+name = "unclear"
+body = "Hmm, not sure about this."
+label = "persons-call"

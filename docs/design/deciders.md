@@ -65,13 +65,13 @@ key_env = "TYPESAFE_API_KEY"               # the variable that holds the key, ne
 evaluation = "decisions/triage.eval.toml"  # a person's labeled cases
 agreement = 0.9                            # the least share of cases it must sort as the person did
 threshold = 0.9                            # the least probability Priory acts on
-timeout = 5                                # seconds; at most 30
-daily_calls = 200                          # calls per day, calibration included
+timeout = "5s"                             # at most 30s
+daily_calls = 200                          # calls the daemon makes in a local day
 ```
 
 `priory check` refuses an unknown point, a missing `run`, `key_env` or `evaluation`, an
-`agreement` or `threshold` outside 0.5 to 1, a `timeout` outside 1 to 30, and a `key_env` that is
-not a variable name. It refuses an evaluation file that breaks its point's rule for cases.
+`agreement` or `threshold` outside 0.5 to 1, a `timeout` over 30 seconds, `daily_calls = 0`, and a
+`key_env` that is not a variable name. It refuses an evaluation file that breaks its point's rule for cases.
 
 ### What Priory sends and reads
 
@@ -152,8 +152,8 @@ Two rules add to the judge's, because a decision acts on one class and not on a 
    when its `model` is the calibrated one. An alias that moves to a new release makes the point
    not calibrated until someone calibrates again. The script should send a versioned model.
 
-Calibration calls count toward `daily_calls`. Ten cases of a few hundred tokens each cost a
-fraction of a cent on Jev.
+Calibration calls do not count toward `daily_calls`: a person starts them. Ten cases of a few
+hundred tokens each cost a fraction of a cent on Jev.
 
 ## The fallback
 
@@ -183,11 +183,12 @@ trace.
 ## What the trace records
 
 Each call appends one `factory.decision.answered` record: the point, the item it was about (the
-feedback's URL), the model, the choice and its probability, whether it counted, the reason when it
-did not, the input tokens the answer reported, and the milliseconds the call took. A fallback that
-made no call (no table, not calibrated, over the day's calls) appends the same record with no
-model and its reason, so a person can see how often each fallback fires. The state itself is not
-recorded: the inbox holds the event it came from.
+feedback's URL), the model, the choice and its probability, whether Priory acted on it, the reason
+when it did not, the input tokens the answer reported, and the milliseconds the call took. A
+fallback that made no call (not calibrated, over the day's calls, an item too large) appends the
+same record with no model and its reason, so a person can see how often each fallback fires. A
+factory with no table appends none. The state itself is not recorded: the inbox holds the event it
+came from.
 
 ## The decision points, in order
 
@@ -249,11 +250,11 @@ diff over the model's context is `error`, as a diff over 100,000 bytes is for a 
    point is calibrated and under its day's calls, and mark the item settled when the answer is
    `nothing-to-do` at the threshold. The mark is Priory's, never the intake's: Priory removes one
    an event arrives with.
-5. `examples/decisions/jev.py`, a short script for Jev with no dependency beyond Python's
-   standard library, and a fake decision model for the tests.
-6. [factory.md](../reference/factory.md), [cli.md](../reference/cli.md), the
-   [trace schema](../trace-schema.md), [tools.md](../daemon/tools.md),
-   [waits.md](../daemon/waits.md) and the config schema.
+5. `examples/decisions/`, a starter with `jev.py`, a short script for Jev with no dependency beyond
+   Python's standard library, and ten labeled cases. A fake decision model for the tests.
+6. A new [decisions.md](../daemon/decisions.md), [factory.md](../reference/factory.md),
+   [cli.md](../reference/cli.md), the [trace schema](../trace-schema.md),
+   [tools.md](../daemon/tools.md), [waits.md](../daemon/waits.md) and the config schemas.
 
 Tests, through the CLI with the fake model only. None calls a real API:
 

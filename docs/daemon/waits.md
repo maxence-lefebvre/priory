@@ -88,6 +88,10 @@ wait 3 fired: ana commented on github:owner/name#57: Can you split this? https:/
 wait 3 fired: ana commented on src/lib.rs:12 of github:owner/name#57: Rename this. https://github.com/owner/name/pull/57#discussion_r802
 ```
 
+An item that a calibrated triage decision model sorted `nothing-to-do` fires no wait and no gate,
+as an approval fires no gate. It reaches the agent with the next prompt (see
+[decisions.md](decisions.md)).
+
 The line quotes the first line of a comment or of a review's summary, when the review has one.
 The event's own line follows with the whole body.
 

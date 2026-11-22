@@ -1,0 +1,11 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/factory.json
+name = "decisions"
+
+[decisions.triage]
+run = "python3 jev.py"                # with sh -c, in this folder
+key_env = "TYPESAFE_API_KEY"          # the variable that holds the key, never the key
+evaluation = "triage.eval.toml"       # ten feedback items a person sorted
+agreement = 0.9                       # the least share it must sort as the person did
+threshold = 0.9                       # the least probability Priory acts on
+timeout = "5s"
+daily_calls = 200

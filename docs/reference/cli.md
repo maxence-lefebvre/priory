@@ -187,6 +187,8 @@ See [Columns](#columns).
   with the factory's scorers. See [score.md](../daemon/score.md).
 - `priory score [DIR] --calibrate SCORER --budget USD [--json]`: measures a judge scorer against a
   person's labels.
+- `priory calibrate triage [DIR] [--json]`: measures the triage decision model against a person's
+  labeled cases. See [decisions.md](../daemon/decisions.md#calibration).
 - `priory bench capture [DIR] TASK --into FOLDER`, `priory bench replay [DIR] CASE --budget USD [--turn-timeout DURATION]`:
   turns a past task into a benchmark case, or plays one case. See
   [bench.md](../daemon/bench.md).

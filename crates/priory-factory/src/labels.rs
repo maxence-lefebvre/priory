@@ -88,6 +88,84 @@ pub fn load(path: &Path) -> Result<Labels, String> {
     Ok(labels)
 }
 
+/// The triage decision point's `*.eval.toml`: feedback items a person sorted.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(title = "triage cases")]
+pub struct TriageCases {
+    /// The labeled cases: at least 10, of which at least 3 of each class.
+    pub cases: Vec<TriageCase>,
+}
+
+/// One feedback item and the class a person gave it.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TriageCase {
+    /// A name, unique in the file.
+    pub name: String,
+    /// The event type, such as `github.pull_request_review_comment`; a pull request comment when
+    /// unset.
+    pub kind: Option<String>,
+    /// What the person wrote.
+    pub body: String,
+    /// The right class.
+    pub label: Class,
+    /// Why the person gave that class, for a reader.
+    pub why: Option<String>,
+}
+
+/// How an agent treats a feedback item, as the result tool's `feedback` field names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum Class {
+    Trivial,
+    NothingToDo,
+    PersonsCall,
+}
+
+impl Class {
+    pub const ALL: [Class; 3] = [Class::Trivial, Class::NothingToDo, Class::PersonsCall];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Class::Trivial => "trivial",
+            Class::NothingToDo => "nothing-to-do",
+            Class::PersonsCall => "persons-call",
+        }
+    }
+}
+
+/// Reads the triage cases at `path`, and refuses a file with fewer than [`CASES`] cases, fewer than
+/// [`EACH`] of a class, or two cases alike.
+pub fn load_triage(path: &Path) -> Result<TriageCases, String> {
+    let text = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let labels: TriageCases = toml::from_str(&text).map_err(|error| error.to_string())?;
+    let mut seen = BTreeSet::new();
+    if let Some(twice) = labels.cases.iter().find(|case| !seen.insert(&case.name)) {
+        return Err(format!("two cases named {}", twice.name));
+    }
+    let counts: Vec<usize> = Class::ALL
+        .iter()
+        .map(|class| {
+            labels
+                .cases
+                .iter()
+                .filter(|case| case.label == *class)
+                .count()
+        })
+        .collect();
+    if labels.cases.len() < CASES || counts.iter().any(|count| *count < EACH) {
+        return Err(format!(
+            "triage needs at least {CASES} labeled cases, {EACH} of each class: this file has {} ({} trivial, {} nothing-to-do, {} persons-call)",
+            labels.cases.len(),
+            counts[0],
+            counts[1],
+            counts[2]
+        ));
+    }
+    Ok(labels)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

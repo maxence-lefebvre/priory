@@ -156,6 +156,43 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                     .to_owned(),
             ));
         }
+        if let Some(decision) = &settings.value.decisions.triage {
+            let line = settings.lines.field("decisions");
+            let mut refuse = |message: String| problems.push(problem(settings, line, message));
+            if !variable(&decision.key_env) {
+                refuse(
+                    "`[decisions.triage] key_env` names the environment variable that holds the \
+                     model's key, such as TYPESAFE_API_KEY, never the key itself"
+                        .to_owned(),
+                );
+            }
+            for (key, share) in [
+                ("agreement", decision.agreement),
+                ("threshold", decision.threshold),
+            ] {
+                if let Some(share) = share.filter(|share| !(0.5..=1.0).contains(share)) {
+                    refuse(format!(
+                        "`[decisions.triage] {key}` is {share}: give a share from 0.5 to 1, such as 0.9"
+                    ));
+                }
+            }
+            if decision.timeout().as_secs() > 30 {
+                refuse(format!(
+                    "`[decisions.triage] timeout` is {}s: give at most 30s",
+                    decision.timeout().as_secs()
+                ));
+            }
+            if decision.daily_calls == Some(0) {
+                refuse("`[decisions.triage] daily_calls` is 0: give at least 1".to_owned());
+            }
+            let cases = factory.dir.join(&decision.evaluation);
+            if let Err(why) = labels::load_triage(&cases) {
+                refuse(format!(
+                    "`[decisions.triage] evaluation` {}: {why}",
+                    decision.evaluation.display()
+                ));
+            }
+        }
         if settings.value.webhooks.is_some() && settings.value.serve.is_none() {
             problems.push(problem(
                 settings,

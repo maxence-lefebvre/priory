@@ -139,6 +139,84 @@
       ],
       "type": "object"
     },
+    "Decision": {
+      "additionalProperties": false,
+      "description": "A decision model: a command that answers typed questions with probabilities, and how much of\nits answer Priory trusts.",
+      "properties": {
+        "agreement": {
+          "description": "The least share of labeled cases it must sort as the person did; 0.9 when unset.",
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": 0.5,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "daily_calls": {
+          "description": "The most calls the daemon makes in a day; 200 when unset.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "evaluation": {
+          "description": "The file of a person's labeled cases, relative to the factory's folder, named `*.eval.toml`.",
+          "type": "string"
+        },
+        "key_env": {
+          "description": "The environment variable that holds the model's key, never the key itself. The command\nsees it, `PATH` and `HOME`, and no other variable.",
+          "type": "string"
+        },
+        "run": {
+          "description": "The command, run with `sh -c` in the factory's folder. It reads the question as JSON on\nstdin and prints the answer as JSON.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "threshold": {
+          "description": "The least probability of an answer that Priory acts on; 0.9 when unset.",
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": 0.5,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "timeout": {
+          "default": null,
+          "description": "How long one call may run; 5s when unset, 30s at most.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run",
+        "key_env",
+        "evaluation"
+      ],
+      "type": "object"
+    },
+    "Decisions": {
+      "additionalProperties": false,
+      "description": "`[decisions]`: the decision model of each decision point. A point with none keeps its own\nbehaviour.",
+      "properties": {
+        "triage": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Decision"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Sorts a person's feedback on a pull request before it wakes the task."
+        }
+      },
+      "type": "object"
+    },
     "EventLog": {
       "additionalProperties": false,
       "description": "Where the event log lives: herdr-bus's file on this machine, or a Postgres database that\nseveral machines share.",
@@ -862,6 +940,14 @@
       "description": "How long one git, gh or tmux command may run before Priory kills it.",
       "pattern": "^0*[1-9][0-9]*[smh]$",
       "type": "string"
+    },
+    "decisions": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Decisions"
+        }
+      ],
+      "description": "A decision model for each decision point that names one."
     },
     "gate": {
       "description": "The project's gate: the command `priory gate` runs with `sh -c` in a task's worktree.",

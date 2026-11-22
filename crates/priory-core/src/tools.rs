@@ -1256,6 +1256,10 @@ pub(crate) fn event(
         )?;
         let mut line = crate::state::line(&kind_of_event, subject.as_deref(), &data);
         let data: Value = serde_json::from_str(&data).expect("inbox data is JSON");
+        // It reaches the task with the next prompt that wakes it for another reason.
+        if crate::decision::settled(&data) {
+            continue;
+        }
         let on = data["repo"]
             .as_str()
             .zip(data["pull_request"].as_u64())
@@ -1416,9 +1420,11 @@ fn reopened_by(resource: &str, place: Option<&str>, kind: &str, data: &Value) ->
         .to_owned()
 }
 
-/// Whether `data` is a review that asks the agent for nothing: an approval or a dismissal.
+/// Whether `data` asks the agent for nothing: an approval, a dismissal, or an item a calibrated
+/// decision model sorted `nothing-to-do`.
 fn settles(kind: &str, data: &Value) -> bool {
-    kind == REVIEWED && matches!(data["state"].as_str(), Some("approved" | "dismissed"))
+    (kind == REVIEWED && matches!(data["state"].as_str(), Some("approved" | "dismissed")))
+        || crate::decision::settled(data)
 }
 
 /// Who said what and where, when `data` is feedback on the pull request `resource`, at `place`

@@ -26,8 +26,9 @@ fn url<'a>(kind: &str, data: &'a Value) -> Option<&'a str> {
 
 /// The URL of an item the agent must sort. An item written by the login `gh api user` names, which
 /// the intake runs as, is the factory's person's own: it goes to the person, not the agent.
+/// An item a calibrated decision model sorted is no longer the agent's to sort.
 pub(crate) fn item<'a>(kind: &str, data: &'a Value) -> Option<&'a str> {
-    url(kind, data).filter(|_| data["own"] != true)
+    url(kind, data).filter(|_| data["own"] != true && crate::decision::class(data).is_none())
 }
 
 /// Whether any of the inbox events `seqs` is an item to sort.
@@ -89,6 +90,10 @@ pub(crate) fn sorted(
         let data: Value = serde_json::from_str(&row.get::<_, String>(1)?).unwrap_or(Value::Null);
         let kind = row.get::<_, String>(0)?;
         if let Some(url) = url(&kind, &data).filter(|_| item(&kind, &data).is_none()) {
+            if let Some(class) = crate::decision::class(&data) {
+                own.push((url.to_owned(), class.to_owned()));
+                continue;
+            }
             if !row.get::<_, bool>(2)? {
                 own.push((url.to_owned(), "persons-call".to_owned()));
             }

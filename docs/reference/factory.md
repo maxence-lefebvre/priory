@@ -29,6 +29,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `request` | table | no | `priory add` needs `--workflow` | The defaults of `priory add` and `POST /api/request`. See [`[request]`](#request) | |
 | `batch` | table | no | `priory batch add` is refused | How `priory batch add` plans batches. See [`[batch]`](#batch) | |
 | `caps` | table | no | no cap | Spend caps in dollars for every task and each lane. See [`[caps]`](#caps) | |
+| `decisions` | table | no | no decision model | A decision model for each decision point. See [`[decisions.triage]`](#decisionstriage) | |
 | `guard` | table | no | the built-in guards alone | Irreversible commands and MCP tools the tool guard denies on top of the built-in ones. See [`[guard]`](#guard) | |
 | `repos` | table of tables | no | no recipe runs | The setup, resume and teardown recipes of each repository. See [`[repos]`](#repos) | |
 
@@ -402,6 +403,34 @@ Spend caps in dollars, priced from `prices.toml`. See [spend.md](../daemon/spend
 
 Each cap is a number above zero. A run can overshoot a cap by one turn.
 
+## `[decisions.triage]`
+
+A decision model that sorts a person's feedback on a task's pull request or issue before the
+feedback wakes the task. Its answers count only after `priory calibrate triage` measured it on a
+person's labeled cases. See [decisions.md](../daemon/decisions.md).
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `run` | string | yes | | The command, run with `sh -c` in the factory's folder. It reads the question as JSON on stdin and prints the answer as JSON | `"python3 jev.py"` |
+| `key_env` | string | yes | | The environment variable that holds the model's key. Never the key itself. The command sees it, `PATH` and `HOME`, and no other variable | `"TYPESAFE_API_KEY"` |
+| `evaluation` | string | yes | | The file of labeled cases, relative to the factory's folder. See [Labeled cases](#labeled-triage-cases) | `"triage.eval.toml"` |
+| `agreement` | number | no | `0.9` | The least share of labeled cases the model must sort as the person did, from 0.5 to 1 | `0.9` |
+| `threshold` | number | no | `0.9` | The least probability of an answer that Priory acts on, from 0.5 to 1 | `0.95` |
+| `timeout` | string | no | `"5s"` | How long one call may run, at most `30s` | `"3s"` |
+| `daily_calls` | integer | no | `200` | The most calls the daemon makes in a local day | `500` |
+
+### Labeled triage cases
+
+The `evaluation` file holds `[[cases]]`, at least 10, with at least 3 of each class:
+
+| Key | Type | Required | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- |
+| `name` | string | yes | A name, unique in the file | `"thanks"` |
+| `kind` | string | no | The event type; `github.pull_request.comment` when unset | `"github.pull_request_review_comment"` |
+| `body` | string | yes | What the person wrote | `"Thanks, looks good."` |
+| `label` | string | yes | `trivial`, `nothing-to-do` or `persons-call` | `"nothing-to-do"` |
+| `why` | string | no | Why the person gave that class, for a reader | |
+
 ## Example
 
 <!-- example: factory/factory.toml -->
@@ -522,6 +551,11 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `[request] band` `<band>` is not one of <bands> `` | `[request] band` names a band the factory lacks |
 | `<n> is not a spend cap: give dollars above zero` | A `[caps]` value of zero or less, or not finite |
 | `` `[caps.lanes]` `<lane>` is not a lane such as `team/theme` `` | A `[caps.lanes]` key that is not `<team>/<theme>` |
+| `` `[decisions.triage] key_env` names the environment variable that holds the model's key, such as TYPESAFE_API_KEY, never the key itself `` | `key_env` is not a variable name, such as a pasted key |
+| `` `[decisions.triage] <key>` is <n>: give a share from 0.5 to 1, such as 0.9 `` | `agreement` or `threshold` is under 0.5 or over 1 |
+| `` `[decisions.triage] timeout` is <n>s: give at most 30s `` | `timeout` is over 30 seconds |
+| `` `[decisions.triage] daily_calls` is 0: give at least 1 `` | `daily_calls = 0` |
+| `` `[decisions.triage] evaluation` <file>: <why> `` | The labeled cases cannot be read, or hold fewer than 10 cases or fewer than 3 of a class |
 | `invalid socket address syntax` | `listen` is not an IP address and port, such as `127.0.0.1:7340` |
 
 Each line starts with the file and line, such as `factory.toml:3:1:`. A file that does not parse

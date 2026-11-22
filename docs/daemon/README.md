@@ -88,6 +88,8 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [tools.md](tools.md): the MCP tools, proofs and `priory gate`, moving between steps, code steps,
   the `run` action and approvals.
 - [waits.md](waits.md): asks and answers, wait conditions, and the checks gate before `done`.
+- [decisions.md](decisions.md): decision models, the triage model that settles feedback which asks
+  the agent for nothing, `priory calibrate`, and the fallback.
 - [asks.md](asks.md): delivering an outside ask's answer to the session that asked.
 - [outbox.md](outbox.md): prompt states and how the daemon types a prompt.
 - [reports.md](reports.md): reports of sections that a workflow writes, and the picks a person
