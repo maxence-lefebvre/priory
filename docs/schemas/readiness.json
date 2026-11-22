@@ -1,0 +1,111 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/readiness.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "Criterion": {
+      "description": "One thing an unattended agent needs from the repository.",
+      "properties": {
+        "by": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/FixedBy"
+            }
+          ],
+          "description": "Who can make the fix."
+        },
+        "detail": {
+          "description": "What was found when met, what is missing, or why it could not be checked.",
+          "type": "string"
+        },
+        "fix": {
+          "description": "How to meet the criterion.",
+          "type": "string"
+        },
+        "id": {
+          "description": "`agents-file`, `test-command`, `linter`, `setup`, `ci`, `gate` or `required-checks`.",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/Status"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "detail",
+        "fix",
+        "by"
+      ],
+      "type": "object"
+    },
+    "FixedBy": {
+      "description": "Who can make a criterion's fix.",
+      "oneOf": [
+        {
+          "const": "pull-request",
+          "description": "A pull request on the repository, which an agent can open.",
+          "type": "string"
+        },
+        {
+          "const": "factory",
+          "description": "A change to the factory's own files.",
+          "type": "string"
+        },
+        {
+          "const": "person",
+          "description": "A person, in the repository's settings.",
+          "type": "string"
+        }
+      ]
+    },
+    "Status": {
+      "enum": [
+        "met",
+        "missing",
+        "unknown"
+      ],
+      "type": "string"
+    }
+  },
+  "description": "What `priory check --repo PATH --json` prints.",
+  "properties": {
+    "criteria": {
+      "description": "Every criterion, in a fixed order.",
+      "items": {
+        "$ref": "#/definitions/Criterion"
+      },
+      "type": "array"
+    },
+    "met": {
+      "description": "How many criteria are met.",
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "missing": {
+      "description": "How many criteria are missing.",
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "repo": {
+      "description": "The repository folder as given.",
+      "type": "string"
+    },
+    "unknown": {
+      "description": "How many criteria could not be checked.",
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "repo",
+    "met",
+    "missing",
+    "unknown",
+    "criteria"
+  ],
+  "title": "Report",
+  "type": "object"
+}

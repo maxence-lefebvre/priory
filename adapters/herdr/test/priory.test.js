@@ -222,8 +222,8 @@ test("runs priory on the machine the settings name", async () => {
     calls.push([command, args, options.on]);
     return { code: 0, stdout: "{}", stderr: "" };
   };
-  await priory({ exec: spy, binary: "priory", on: "xps13" }).tasks();
-  assert.deepEqual(calls, [["priory", ["tasks", "--json"], "xps13"]]);
+  await priory({ exec: spy, binary: "priory", on: "desktop" }).tasks();
+  assert.deepEqual(calls, [["priory", ["tasks", "--json"], "desktop"]]);
 });
 
 // Herdr loads a mod's imports only from the mod's own folder, symlinks included, so each mod

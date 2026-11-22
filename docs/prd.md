@@ -141,7 +141,7 @@ permissions = { defaultMode = "auto", allow = ["Bash(cargo test:*)"], deny = ["B
 Read the issue and acceptance criteria, make the smallest correct change, test it.
 ```
 
-`runners/xps13.toml`, named by the machine's Tailscale hostname. Capacity is measured live, so the
+`runners/desktop.toml`, named by the machine's Tailscale hostname. Capacity is measured live, so the
 file holds the platform and, optionally, the share of the machine its agents may take together
 (R4.10):
 

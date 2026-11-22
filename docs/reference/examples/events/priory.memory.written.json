@@ -8,7 +8,7 @@
     "description": "When releases go out. Read it before you plan or merge a change near a release.",
     "text": "Releases go out on Tuesdays. Merge nothing risky on a Monday afternoon.",
     "task": "github:acme/widgets#42",
-    "runner": "xps13"
+    "runner": "desktop"
   },
   "links": []
 }

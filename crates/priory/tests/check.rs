@@ -61,7 +61,7 @@ fn valid() -> Vec<(&'static str, &'static str)> {
         ("agents/implementer/agent.md", AGENT),
         ("triggers/agent-label.toml", TRIGGER),
         ("workflows/implement.toml", WORKFLOW),
-        ("runners/xps13.toml", RUNNER),
+        ("runners/desktop.toml", RUNNER),
     ]
 }
 
@@ -131,7 +131,7 @@ fn a_factory_in_yaml_passes() {
             "workflows/implement.yaml",
             "start: implement\nsteps:\n  - id: implement\n    decides: model\n    agent: implementer\n    prompt: Implement the issue.\n    effect: reversible\n    next: { passed: done, failed: stop }\n",
         ),
-        ("runners/xps13.yaml", "platform: { os: linux }\n"),
+        ("runners/desktop.yaml", "platform: { os: linux }\n"),
     ];
 
     let outcome = check(&factory("yaml", &files));
@@ -351,11 +351,14 @@ fn the_bypass_permissions_mode_is_refused() {
 fn a_toml_syntax_error_names_its_file_and_line() {
     let runner = "platform = { os = \"linux\" }\nagents = { cpu = 50% }\n";
 
-    let outcome = check(&factory("toml-syntax", &with("runners/xps13.toml", runner)));
+    let outcome = check(&factory(
+        "toml-syntax",
+        &with("runners/desktop.toml", runner),
+    ));
 
     assert_eq!(outcome.code, 1);
     assert!(
-        outcome.stderr.starts_with("runners/xps13.toml:2:"),
+        outcome.stderr.starts_with("runners/desktop.toml:2:"),
         "{}",
         outcome.stderr
     );
@@ -1485,6 +1488,65 @@ fn a_sweep_table_passes_and_a_bad_one_names_its_line() {
             1,
             "factory.toml:3: `[sweep] repo` needs to be `owner/name`\n"
         )
+    );
+}
+
+#[test]
+fn repository_recipes_pass_and_a_bad_one_names_its_line() {
+    let good = "name = \"demo\"\n\n[repos.\"owner/repo\"]\nsetup = { argv = [\"npm\", \"ci\"], timeout = \"15m\" }\nresume = { shell = \"npm ci --prefer-offline\" }\nteardown = { shell = \"docker compose down\" }\n";
+    let ok = check(&factory("recipes-ok", &with("factory.toml", good)));
+    let bad = |name: &str, from: &str, to: &str| {
+        let text = good.replace(from, to);
+        check(&factory(name, &with("factory.toml", &text)))
+    };
+    let both = bad(
+        "recipes-both",
+        "argv = [\"npm\", \"ci\"]",
+        "argv = [\"npm\"], shell = \"npm ci\"",
+    );
+    let empty = bad("recipes-empty", "argv = [\"npm\", \"ci\"]", "argv = []");
+    let repo = bad("recipes-repo", "owner/repo", "repo");
+    let merge = bad(
+        "recipes-merge",
+        "docker compose down",
+        "gh pr merge --squash",
+    );
+    let unknown = bad("recipes-unknown", "teardown =", "cleanup =");
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (both.code, both.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[repos.\"owner/repo\"] setup` needs one of `argv` or `shell`, not both\n"
+        )
+    );
+    assert_eq!(
+        (empty.code, empty.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[repos.\"owner/repo\"] setup` needs a program in `argv`\n"
+        )
+    );
+    assert_eq!(
+        (repo.code, repo.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[repos]` key `repo` needs to be `owner/name`\n"
+        )
+    );
+    assert_eq!(
+        (merge.code, merge.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[repos.\"owner/repo\"] teardown` runs `gh pr merge --squash`, which the guard `gh-pr-merge` holds irreversible: a recipe runs with no person's approval\n"
+        )
+    );
+    assert_eq!(unknown.code, 1);
+    assert!(
+        unknown.stderr.contains("unknown field `cleanup`"),
+        "{}",
+        unknown.stderr
     );
 }
 

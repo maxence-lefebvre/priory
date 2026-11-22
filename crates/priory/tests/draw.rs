@@ -98,7 +98,7 @@ fn factory(name: &str, workflow: &str) -> PathBuf {
         ("agents/implementer/agent.md", AGENT),
         ("triggers/agent-label.toml", TRIGGER),
         ("workflows/implement.toml", workflow),
-        ("runners/xps13.toml", RUNNER),
+        ("runners/desktop.toml", RUNNER),
     ] {
         let file = dir.join(path);
         fs::create_dir_all(file.parent().unwrap()).unwrap();

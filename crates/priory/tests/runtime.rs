@@ -12819,6 +12819,180 @@ fn a_dirty_asleep_task_never_retires_and_says_why() {
     assert!(setup.worktree(1).join("notes.txt").exists());
 }
 
+impl Setup {
+    /// Gives `owner/repo` the recipes `table`, the body of its `[repos."owner/repo"]` table.
+    fn recipes(&self, table: &str) {
+        let text = format!("name = \"demo\"\n\n[repos.\"owner/repo\"]\n{table}\n");
+        fs::write(self.dir.join("factory/factory.toml"), text).unwrap();
+    }
+
+    fn faked(&self, file: &str) -> String {
+        fs::read_to_string(self.dir.join("fake").join(file)).unwrap_or_default()
+    }
+}
+
+#[test]
+fn a_setup_runs_in_a_new_worktree_before_its_agent_starts() {
+    let mut setup = Setup::new("recipe-setup");
+    setup.recipes(
+        r#"setup = { shell = "echo $PRIORY_TASK $PWD > $FAKE_DIR/set-up; while [ -e $FAKE_DIR/hold-setup ]; do sleep 0.05; done" }"#,
+    );
+    setup.hold("hold-setup");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    setup.written("fake/set-up");
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[7] == "runs its setup")
+    });
+    assert_eq!(tasks[0][4], "queued");
+    assert_eq!(setup.rows("runs"), Vec::<Vec<String>>::new());
+
+    setup.release("hold-setup");
+
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "done");
+    assert_eq!(tasks[0][7], "-");
+    assert_eq!(
+        setup.faked("set-up"),
+        format!("1 {}\n", setup.worktree(1).display())
+    );
+    assert_eq!(setup.rows("runs").len(), 1);
+}
+
+#[test]
+fn a_failed_setup_blocks_the_task_with_its_redacted_tail_and_a_resume_runs_it_again() {
+    let mut setup = Setup::new("recipe-setup-failed");
+    setup.recipes(
+        r#"setup = { shell = "[ -e $FAKE_DIR/fixed ] && exit 0; echo installing; echo token ghp_aaaaaaaaaaaaaaaaaaaaaaaa; echo 'npm ERR! missing script: build' >&2; exit 3" }"#,
+    );
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+
+    assert_eq!(
+        tasks[0][7],
+        "setup failed: exit 3. Its output ended with: installing | token [redacted] | npm ERR! missing script: build"
+    );
+    assert_eq!(setup.rows("runs"), Vec::<Vec<String>>::new());
+    let desk: Vec<_> = setup
+        .rows("desk")
+        .into_iter()
+        .filter(|row| row[1] == "blocked")
+        .map(|row| row[5].clone())
+        .collect();
+    assert_eq!(desk, [tasks[0][7].clone()]);
+
+    fs::write(setup.dir.join("fake/fixed"), "").unwrap();
+    let resumed = setup.priory(&["resume", "1"]);
+
+    assert!(resumed.status.success(), "{resumed:?}");
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    assert!(setup.typed()[0].starts_with("Implement the issue."));
+}
+
+#[test]
+fn a_setup_a_stopped_daemon_left_running_blocks_its_task() {
+    let mut setup = Setup::new("recipe-setup-restart");
+    setup.recipes(
+        r#"setup = { shell = "touch $FAKE_DIR/set-up; while [ -e $FAKE_DIR/hold-setup ]; do sleep 0.05; done" }"#,
+    );
+    setup.hold("hold-setup");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[7] == "runs its setup")
+    });
+
+    setup.crash();
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "blocked");
+    assert_eq!(tasks[0][7], "setup failed: interrupted by a daemon restart");
+    assert_eq!(setup.rows("runs"), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn a_teardown_runs_in_the_worktree_before_the_sweep_removes_it() {
+    let mut setup = Setup::ended("recipe-teardown", 1);
+    let torn = setup.dir.join("fake/torn");
+    setup.recipes(&format!(
+        r#"teardown = {{ argv = ["cp", "README.md", "{}"] }}"#,
+        torn.display()
+    ));
+
+    setup.swept();
+
+    assert_eq!(fs::read_to_string(torn).unwrap(), "demo\n");
+}
+
+#[test]
+fn a_failed_teardown_keeps_the_worktree_and_the_desk_says_why() {
+    let mut setup = Setup::ended("recipe-teardown-failed", 1);
+    setup.recipes(r#"teardown = { shell = "echo cannot stop the database; exit 1" }"#);
+    setup.work_on(1);
+    setup.push(1);
+    setup.merge(1);
+
+    setup.start();
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let wanted = "teardown failed: exit 1. Its output ended with: cannot stop the database";
+    while setup.stays(1).as_deref() != Some(wanted) {
+        assert!(
+            Instant::now() < deadline,
+            "the desk says {:?}\ndaemon: {}",
+            setup.stays(1),
+            fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(setup.worktree(1).is_dir());
+}
+
+#[test]
+fn a_retiring_task_tears_down_first_and_resumes_when_it_resurrects_without_a_new_setup() {
+    let mut setup = Setup::new("recipe-retire");
+    setup.recipes(concat!(
+        r#"setup = { shell = "echo $PRIORY_TASK >> $FAKE_DIR/set-up" }"#,
+        "\n",
+        r#"resume = { shell = "echo $PRIORY_TASK $PWD >> $FAKE_DIR/resumed" }"#,
+        "\n",
+        r#"teardown = { shell = "echo $PRIORY_TASK >> $FAKE_DIR/torn" }"#,
+    ));
+    setup.calls(&[wait(on_pull_7("pull_request")), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    setup.gone("priory-1");
+    setup.commit(1, "widget.txt");
+    setup.disk(10);
+    setup.publish(&requested(43));
+
+    setup.removed(1);
+
+    assert_eq!(setup.faked("torn"), "1\n");
+    assert_eq!(setup.faked("resumed"), "");
+    setup.disk(100);
+    setup.until("tasks", |rows| rows[1][4] == "done");
+    setup.publish(&closed());
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[2] == "3" && row[3] == "confirmed")
+    });
+    assert_eq!(
+        setup.faked("resumed"),
+        format!("1 {}\n", setup.worktree(1).display())
+    );
+    assert_eq!(setup.faked("set-up"), "1\n2\n");
+}
+
 #[test]
 fn a_task_that_waited_on_a_linear_issue_is_done_on_its_result_without_a_pull_request() {
     let mut setup = Setup::new("linear-done");

@@ -281,6 +281,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         let (stdout, stderr) = (script::collect(&out), script::collect(&err));
         tools::ran(&mut db, &trace, id, handler::INTERRUPTED, &stdout, &stderr)?;
     }
+    // A recipe never runs on unbounded: one a stopped daemon left running ends, and a setup or
+    // resume it ends blocks its task.
+    crate::recipe::orphans(&mut db, &trace, &home)?;
     // An answer's command never runs twice: one a stopped daemon left running ends `uncertain`.
     for (id, group) in state::orphan_answers(&db)? {
         if let Some((pid, _)) =
@@ -330,6 +333,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     });
     let mut scripts = Vec::new();
     let mut commands = Vec::new();
+    let mut recipes = crate::recipe::Running::default();
     let mut deliveries = deliver::adopt(&db)?;
     let mut pushing = push::Sending::default();
     let mut desktop = factory
@@ -375,6 +379,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         }
         start_answers(&mut db, &trace, &home, &mut commands)?;
         commands = run_commands(&mut db, &trace, &home, commands)?;
+        // A teardown that ended lets the sweep remove its worktree now, not a sweep later.
+        if crate::recipe::tick(&mut db, &trace, &home, &mut recipes)? {
+            swept = None;
+        }
         if let Some(kit) = &mut kit {
             kit.tick(&db)?;
         }
@@ -386,6 +394,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             &home,
             &scope,
             &mut commands,
+            &mut recipes,
             fetched,
         )?;
         compact_idle(&db, &trace, &home, &scope, fetched)?;
@@ -414,9 +423,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         }
         if swept.is_none_or(|at| at.elapsed() >= every) {
             swept = Some(Instant::now());
-            sweep::run(&db, &home)?;
+            sweep::run(&db, factory, &home)?;
             let short = || room::measure(&home).is_ok_and(|room| crate::room::short_of_disk(&room));
-            sweep::retire(&db, &home, short)?;
+            sweep::retire(&db, factory, &home, short)?;
         }
         match listening.lines.recv_timeout(EVERY) {
             Ok(line) => apply(
@@ -1120,6 +1129,7 @@ fn take(
 
 /// Ends runs that exited, timed out or wait on a prompt, fires due waits, starts every run that
 /// fits in the room, and types prompts.
+#[allow(clippy::too_many_arguments)]
 fn tend(
     db: &mut Connection,
     trace: &Trace,
@@ -1127,6 +1137,7 @@ fn tend(
     home: &Path,
     scope: &[String],
     commands: &mut Vec<(i64, Script)>,
+    recipes: &mut crate::recipe::Running,
     kit: Option<&crate::kit::Fetched>,
 ) -> Result<(), Error> {
     let factory = trace.factory;
@@ -1200,6 +1211,7 @@ fn tend(
             home,
             scope,
             &admission,
+            recipes,
             kit,
         )? {
             state::block(db, trace, admission.task, "failed", &reason)?;
@@ -1242,7 +1254,7 @@ fn diagnose(
             gone: true,
         }),
         Ok(Some(found)) if found.resource == "disk" => {
-            sweep::run(db, home)?;
+            sweep::run(db, factory, home)?;
             // An unreadable room confirms nothing.
             let gone =
                 short(db)?.is_ok_and(|after| after.is_none_or(|after| after.resource != "disk"));
@@ -1359,7 +1371,14 @@ fn act(
             .as_deref()
             .is_some_and(|worktree| !Path::new(worktree).exists())
     {
-        match restore_worktree(db, home, repo, trace.runner.as_deref(), due.task)? {
+        match restore_worktree(
+            db,
+            trace.factory,
+            home,
+            repo,
+            trace.runner.as_deref(),
+            due.task,
+        )? {
             Restored::Ready => {}
             Restored::Waits => return Ok(true),
             Restored::Failed(reason) => {
@@ -1503,6 +1522,7 @@ enum Restored {
 /// there is disk room; a task waiting for room says so in its reason.
 fn restore_worktree(
     db: &Connection,
+    factory: &Factory,
     home: &Path,
     repo: &str,
     runner: Option<&str>,
@@ -1524,7 +1544,21 @@ fn restore_worktree(
         return Ok(Restored::Waits);
     }
     match runtime::worktree(home, repo, &worktree_name(db, runner, task)?, None) {
-        Ok((_, _, base)) => state::set_base(db, task, base.as_deref())?,
+        Ok((worktree, _, added)) => {
+            state::set_base(db, task, added.base())?;
+            // The code step needs no resume; the task's next run starts it first.
+            let resume = factory.recipe(repo, factory::Moment::Resume);
+            if let (runtime::Added::Restored, Some(recipe)) = (&added, resume) {
+                crate::recipe::owe(
+                    db,
+                    factory,
+                    task,
+                    factory::Moment::Resume,
+                    &worktree,
+                    recipe,
+                )?;
+            }
+        }
         Err(reason) => return Ok(Restored::Failed(reason)),
     }
     db.execute("UPDATE tasks SET retired = NULL WHERE id = ?1", [task])?;
@@ -1566,7 +1600,7 @@ fn start_command(
 
 /// The environment a `run` action's or an answer's command gets: the task, Priory home, the state
 /// file and the factory folder, each absolute.
-fn command_env(
+pub(crate) fn command_env(
     home: &Path,
     factory: &Factory,
     task: i64,
@@ -1603,7 +1637,9 @@ fn start_answers(
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
             let restored = match repo_of(trace.factory, &trigger, repo.as_deref()) {
-                Some(repo) => restore_worktree(db, home, repo, trace.runner.as_deref(), task)?,
+                Some(repo) => {
+                    restore_worktree(db, trace.factory, home, repo, trace.runner.as_deref(), task)?
+                }
                 None => Restored::Failed(format!("task {task} names no repo")),
             };
             match restored {
@@ -1832,6 +1868,7 @@ fn open_issue(db: &Connection, factory: &Factory, due: &state::Due) -> Result<Do
 }
 
 /// Starts a run for `admission`. The outer error stops the daemon; the inner one blocks the task.
+#[allow(clippy::too_many_arguments)]
 fn start(
     db: &mut Connection,
     factory: &Factory,
@@ -1839,6 +1876,7 @@ fn start(
     home: &Path,
     scope: &[String],
     admission: &Admission,
+    recipes: &mut crate::recipe::Running,
     kit: Option<&crate::kit::Fetched>,
 ) -> Result<Result<(), String>, Error> {
     let candidates = crate::memories::layer(db, Some(admission.task))?;
@@ -1862,19 +1900,26 @@ fn start(
     if base.is_some() && parent_moved(db, home, admission.task)? {
         return Ok(Ok(()));
     }
-    let (worktree, branch) = match runtime::worktree(home, repo, &folder, base.as_deref()) {
-        Ok((worktree, branch, start)) => {
-            state::set_base(db, admission.task, start.as_deref())?;
+    let (worktree, branch, added) = match runtime::worktree(home, repo, &folder, base.as_deref()) {
+        Ok((worktree, branch, added)) => {
+            let start = added.base();
+            state::set_base(db, admission.task, start)?;
             if base.is_some() && start.is_some() {
                 db.execute(
                     "UPDATE tasks SET parent_head = ?2 WHERE id = ?1",
                     rusqlite::params![admission.task, start],
                 )?;
             }
-            (worktree, branch)
+            (worktree, branch, added)
         }
         Err(reason) => return Ok(Err(reason)),
     };
+    let task = admission.task;
+    match crate::recipe::before_run(db, factory, home, task, repo, &worktree, &added, recipes)? {
+        crate::recipe::Before::Go => {}
+        crate::recipe::Before::Waits => return Ok(Ok(())),
+        crate::recipe::Before::Blocked(reason) => return Ok(Err(reason)),
+    }
     let head = runtime::head(&worktree, &branch);
     if !tools::approved(db, admission.task, step, head.as_deref())? {
         return Ok(Ok(()));

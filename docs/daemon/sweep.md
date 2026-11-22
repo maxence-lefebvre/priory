@@ -16,6 +16,13 @@ It removes a folder and its branch `priory/<id>` only when all checks hold:
   branch (a `github.pull_request.closed` event with `merged` true). Otherwise it stays as
   `unpushed commits` when a commit is on no remote branch, else as `not merged`.
 
+When the task's repository has a [`teardown` recipe](runs.md#recipes), the sweep runs it in the
+worktree first, once all checks hold, and removes the worktree at the sweep after it succeeds. The
+daemon sweeps again as soon as a teardown ends. A failed teardown keeps the worktree. The desk says
+`teardown failed: <status>. Its output ended with: <lines>`, and no sweep runs it again until the
+factory's teardown changes. While it runs, the desk says `teardown runs` or
+`a process runs in it`.
+
 The sweep runs `git worktree remove`, then `git branch -d`, both without force, so git refuses what
 the checks missed. A squash-merged branch is not in the default branch, so `git branch -d` refuses
 it. The worktree goes, the branch stays, and no sweep looks again. A failed worktree removal is
@@ -25,8 +32,8 @@ logged and retried at the next sweep. A git command that cannot run keeps the wo
 `priory desk` runs the same checks without fetching or removing, and lists each kept folder with its
 reason: `no task <id>`, `task <id> still <state>`, `not a worktree of <clone>`,
 `not recorded as the worktree of task <id>`, `not on branch priory/<id>`, `uncommitted changes`,
-`untracked files`, `a process runs in it`, `unpushed commits` or `not merged`. It reads the refs of
-the last fetch.
+`untracked files`, `a process runs in it`, `unpushed commits`, `not merged`, `teardown runs` or
+`teardown failed: ...`. It reads the refs of the last fetch.
 
 ## Retiring asleep tasks
 
@@ -41,6 +48,12 @@ again.
 Its commits need not be pushed: the branch stays in Priory's clone on the same disk, and no sweep
 deletes an active task's branch. Requiring a push would keep most asleep tasks, since an agent
 pushes only at `open-pr`, and Priory does not take the irreversible step of pushing on its own.
+
+With a `teardown` recipe, a task's teardown runs before its retirement, one task at a time. The
+retirement waits for it, then measures the disk again before it takes the next task. A failed
+teardown keeps the worktree, with the reason `cannot retire: teardown failed: ...`, and the next
+task is tried. When the task resurrects, its `resume` recipe runs before its next run (see
+[runs.md](runs.md#recipes)).
 
 A retired task stays `asleep` with its `retired` time set. It keeps every wait, ask and event, so
 routing, holds and waits treat it as any asleep task. R4.1's states stay as they are. When its wait

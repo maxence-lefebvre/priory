@@ -2,7 +2,7 @@
 // It never stores /api replies; the page keeps its last listings itself.
 const SHELL = "priory-shell";
 // The page loaded these before the worker controlled it, so it fetches them again for offline starts.
-const FILES = ["/", "/boot.js", "/app.js", "/asks.js", "/add.js", "/links.js", "/reports.js", "/stack.js", "/desk.js", "/costs.js", "/inbox.js", "/flows.js", "/batches.js", "/terminal.js", "/tasks.js", "/runs.js", "/queue.js", "/pages.js", "/app.css", "/tokens/structure.css", "/tokens/themes.css", "/favicon.svg", "/icon-192.png"];
+const FILES = ["/", "/boot.js", "/app.js", "/asks.js", "/add.js", "/links.js", "/markdown.js", "/reports.js", "/stack.js", "/desk.js", "/costs.js", "/inbox.js", "/flows.js", "/batches.js", "/terminal.js", "/tasks.js", "/runs.js", "/queue.js", "/pages.js", "/app.css", "/tokens/structure.css", "/tokens/themes.css", "/favicon.svg", "/icon-192.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(SHELL).then((cache) => cache.addAll(FILES)));

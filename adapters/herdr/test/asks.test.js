@@ -371,24 +371,24 @@ test("the Attach menu's Open task opens the ask's task in the Task panel", async
 
 // Another runner's ask as `priory asks --json` lists it: `<runner>:<ask>`, its runner, last_seen and submissions.
 const remote = (fields) => ({
-  ...asks[0], id: "xps13:12", task: 4, runner: "xps13", last_seen: "2026-11-20T20:10:00Z", submissions: [], command: null, ...fields,
+  ...asks[0], id: "desktop:12", task: 4, runner: "desktop", last_seen: "2026-11-20T20:10:00Z", submissions: [], command: null, ...fields,
 });
 
 test("another runner's row names its runner, says when it was last seen once away, and what became of an answer sent to it", () => {
   const list = asksList([asks[0], remote({ submissions: [{ verb: "answer", text: "approved", outcome: null }] })], { view: "open", now });
   const [here, there] = list.sections[0].rows;
   assert.equal(here.runner, undefined);
-  assert.equal(there.runner, "xps13");
+  assert.equal(there.runner, "desktop");
   assert.equal(there.away, "last seen 40 min ago");
-  assert.deepEqual(there.sent, { text: "Sent to xps13: approved", refused: false });
+  assert.deepEqual(there.sent, { text: "Sent to desktop: approved", refused: false });
   assert.deepEqual(asksList([remote({ last_seen: "2026-11-20T20:49:00Z" })], { view: "open", now }).sections[0].rows[0].away, null);
 });
 
 test("the runner facet narrows to one runner's asks and offers each runner with its count", () => {
   const all = [{ ...asks[0], runner: "workstation" }, remote(), remote({ id: "laptop:3", runner: "laptop" })];
-  const list = asksList(all, { view: "open", now, facets: { runner: "xps13" } });
-  assert.deepEqual(list.sections[0].rows.map((row) => row.id), ["xps13:12"]);
-  assert.deepEqual(list.facets.runner, [["workstation", 1], ["xps13", 1], ["laptop", 1]]);
+  const list = asksList(all, { view: "open", now, facets: { runner: "desktop" } });
+  assert.deepEqual(list.sections[0].rows.map((row) => row.id), ["desktop:12"]);
+  assert.deepEqual(list.facets.runner, [["workstation", 1], ["desktop", 1], ["laptop", 1]]);
 });
 
 test("another runner's command ask names its runner, says the answer goes there, runs its command there and offers no snooze", () => {
@@ -404,7 +404,7 @@ test("another runner's command ask names its runner, says the answer goes there,
 test("a closed ask of another runner still says why it refused the answer sent to it", () => {
   const refused = { verb: "answer", revision: 2, text: "approved", sent: "2026-11-20T20:46:00Z", outcome: "refused", why: "ask 12 is answered" };
   const detail = askDetail(remote({ state: "answered", answer: "rejected", answered_at: "2026-11-20T20:47:00Z", submissions: [refused] }), { now, armed: null });
-  assert.deepEqual(detail.sent, { text: "xps13 refused approved: ask 12 is answered", refused: true });
+  assert.deepEqual(detail.sent, { text: "desktop refused approved: ask 12 is answered", refused: true });
 });
 
 test("an ask whose answer lets an irreversible step run shows the server's History line, and others none", () => {
@@ -420,8 +420,8 @@ test("another runner's ask lists each answer sent to it in its history, newest f
     { submission: "s2", verb: "answer", revision: 2, text: "approve", sent: "2026-11-20T20:40:00Z", outcome: null, why: null, applied: null },
   ];
   assert.deepEqual(askDetail(remote({ submissions }), { now, armed: null }).history, [
-    { tile: "queued", text: "Sent approve to xps13 for revision 2. Not applied yet", time: "20:40" },
-    { tile: "refused", text: "Sent reject to xps13 for revision 2. xps13 refused it: ask 12 is at revision 3", time: "20:30" },
+    { tile: "queued", text: "Sent approve to desktop for revision 2. Not applied yet", time: "20:40" },
+    { tile: "refused", text: "Sent reject to desktop for revision 2. desktop refused it: ask 12 is at revision 3", time: "20:30" },
     { tile: "ask", text: "Asked revision 2", time: "10:00" },
   ]);
 });
