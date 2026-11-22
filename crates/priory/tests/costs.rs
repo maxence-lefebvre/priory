@@ -496,4 +496,12 @@ fn costs_count_each_scorers_verdicts_in_the_window_by_the_split() {
             { "workflow": "implement", "scorer": "passed", "pass": 0, "fail": 1, "error": 0, "not_applicable": 0 },
         ])
     );
+    let text = setup.costs(&[]);
+    assert!(
+        text.ends_with(
+            "workflow\tcost\tnotes\n\nworkflow\tscorer\tpass\tfail\terror\tnot_applicable\n\
+             implement\tgate\t1\t0\t1\t1\nimplement\tpassed\t0\t1\t0\t0\n"
+        ),
+        "{text}"
+    );
 }

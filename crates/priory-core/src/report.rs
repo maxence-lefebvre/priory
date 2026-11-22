@@ -590,5 +590,15 @@ impl Costs {
         for (key, total) in &self.split {
             crate::state::emit(&format!("{key}\t{}", total.cells()));
         }
+        crate::state::emit("");
+        crate::state::emit(&format!(
+            "{}\tscorer\tpass\tfail\terror\tnot_applicable",
+            self.by
+        ));
+        for (key, scorer, [pass, fail, error, not_applicable]) in &self.scores {
+            crate::state::emit(&format!(
+                "{key}\t{scorer}\t{pass}\t{fail}\t{error}\t{not_applicable}"
+            ));
+        }
     }
 }

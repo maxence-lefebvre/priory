@@ -15,9 +15,13 @@ const TILES = {
   done: ["tile-ok", "on-tile", "check"], failed: ["tile-danger", "on-tile", "circle-x"], dropped: ["tile-muted", "on-tile", "minus"],
   moved: ["tile-muted", "on-tile", "arrow-right"], lost: ["tile-warn", "on-tile", "unplug"], ask: ["wait", "on-wait", "ask"],
   answered: ["tile-muted", "on-tile", "check"], withdrawn: ["tile-muted", "on-tile", "minus"],
+  // A scorer's verdict: an error means the scorer broke, not the run.
+  pass: ["tile-ok", "on-tile", "check"], fail: ["tile-danger", "on-tile", "circle-x"], error: ["tile-warn", "on-tile", "circle-alert"],
+  "not applicable": ["tile-muted", "on-tile", "minus"],
 };
 // A task state's text color (DESIGN.md, State tile); the other states take --text-2.
 const ROLE = /** @type {Record<string, string>} */ ({ running: "action-text", ready: "action-text", blocked: "warn-text", failed: "danger-text", done: "ok-text" });
+const VERDICT_ROLE = /** @type {Record<string, string>} */ ({ pass: "ok-text", fail: "danger-text", error: "warn-text" });
 
 /** @typedef {Record<string, import("gpui-kit").Color>} Palette */
 /** @typedef {ReturnType<typeof taskView>} Task */
@@ -141,12 +145,21 @@ export default class PrioryTask extends View {
     /** @param {string} title @param {number} count */
     const heading = (title, count) => h_flex().gap(S["space-2"]).text_size(S["type-caption"][0])
       .child(div().font_weight(600).child(title)).child(div().text_color(t["text-3"]).child(String(count)));
-    /** @param {string} id @param {string} tile @param {string} text @param {string | null} note */
-    const line = (id, tile, text, note) => h_flex().id(id).gap(S["space-2"]).py(S["space-1"]).items_start().border_t(1).border_color(t.line)
+    /** @param {string} id @param {string} tile @param {string} text @param {string | null} note @param {any[]} [below] */
+    const line = (id, tile, text, note, below = []) => h_flex().id(id).gap(S["space-2"]).py(S["space-1"]).items_start().border_t(1).border_color(t.line)
       .child(this.tile(tile, t))
       .child(v_flex().flex_1().min_w_0().gap(2)
         .child(div().whitespace_normal().text_size(S["type-small"][0]).child(text))
-        .when(Boolean(note), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(note ?? ""))));
+        .when(Boolean(note), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(note ?? "")))
+        .children(below));
+    /** @param {Task["history"][number]["scores"][number]} score */
+    const scored = (score) => h_flex().gap(S["space-2"]).pt(S["space-1"]).items_start().border_t(1).border_color(t.line)
+      .child(this.tile(score.verdict, t))
+      .child(v_flex().flex_1().min_w_0().gap(2)
+        .child(h_flex().gap(S["space-1"]).flex_wrap().text_size(S["type-small"][0])
+          .child(div().font_family(font.mono).child(score.scorer))
+          .child(div().font_weight(600).text_color(t[VERDICT_ROLE[score.verdict] ?? "text-2"]).child(score.verdict)))
+        .when(Boolean(score.reason), (el) => el.child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(score.reason ?? ""))));
     const pr = task.pr;
     return v_flex().id("task-scroll").flex_1().min_h_0().overflow_y_scrollbar().p(S["space-4"]).gap(S["space-4"])
       .child(v_flex().gap(S["space-2"])
@@ -168,7 +181,7 @@ export default class PrioryTask extends View {
       .when(task.inbox.length > 0, (el) => el.child(v_flex().gap(S["space-1"]).child(heading("Inbox", task.inboxTotal))
         .children(task.inbox.map((event) => line(`event-${event.id}`, event.tile, event.text, event.note)))))
       .when(task.history.length > 0, (el) => el.child(v_flex().gap(S["space-1"]).child(heading("History", task.history.length))
-        .children(task.history.map((run) => line(`run-${run.id}`, run.tile, run.text, run.when)))));
+        .children(task.history.map((run) => line(`run-${run.id}`, run.tile, run.text, run.when, run.scores.map(scored))))));
   }
 
   /** @param {string} state @param {Palette} t */

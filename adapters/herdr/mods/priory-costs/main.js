@@ -3,12 +3,14 @@ import { h_flex, v_flex, Button } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile } from "herdr";
 import { priory } from "./priory.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
-import { attentionView, costTiles, dayBars, money, splitTable, SPLITS } from "./view.js";
+import { attentionView, costTiles, dayBars, money, scoreTable, splitTable, SPLITS } from "./view.js";
 
 // From this width Costs and Attention sit side by side (DESIGN.md, Costs panel).
 const SIDE_BY_SIDE = 1024;
 // From this width each day's bar names its weekday.
 const WEEKDAYS = 520;
+// Below this width each score row stacks, as the web's does below 600 px.
+const SCORE_COLUMNS = 600;
 const CHART = 96;
 const RETRY_MS = 3000;
 const READ_EVERY_MS = 60_000;
@@ -25,6 +27,7 @@ const WHOLE = PathBuilder.fill().add_polygon([[0, 0], ["100%", 0], ["100%", "100
 /** @typedef {{ label: string, value: string, delta?: { text: string, direction: string } | null, note?: string }} Tile */
 /** @typedef {{ weekday: string, date: string, fraction: number, merges: number, current: boolean, text: string }} Bar */
 /** @typedef {{ dimension: string, rows: { name: string, cost: string, tokens: string, note: string }[], unpriced: { model: string, tokens: string }[], unknown: string | null }} Table */
+/** @typedef {{ dimension: string, rows: { name: string, scorer: string, rate: string, pass: number, fail: number, error: number, notApplicable: number, line: string }[] }} Scores */
 /** @typedef {{ part: string, label: string, fraction: number, value: string }} Part */
 /** @typedef {{ key: string, workflow: string, wall: string, text: string, parts: Part[] }} TaskTime */
 
@@ -199,7 +202,9 @@ export default class PrioryCosts extends View {
   /** @param {any} costs @param {Palette} t */
   costsPart(costs, t) {
     if (!costs.days.length && !costs.split.length) {
-      return [div().whitespace_normal().text_color(t["text-2"]).child("No cost in the last two weeks. Costs appear once a model step records its tokens. Price each model in prices.toml in the factory folder.")];
+      // Scores can land in a window with no cost, so they keep their table and its split chips.
+      return [div().whitespace_normal().text_color(t["text-2"]).child("No cost in the last two weeks. Costs appear once a model step records its tokens. Price each model in prices.toml in the factory folder."),
+        ...this.scoresPart(costs, t, true)];
     }
     const table = /** @type {Table} */ (splitTable(costs));
     const missing = [
@@ -212,10 +217,38 @@ export default class PrioryCosts extends View {
       v_flex().gap(S["space-2"]).child(this.heading("Each day", null, t)).child(this.days(costs, t)),
       v_flex().gap(S["space-2"])
         .child(h_flex().gap(S["space-2"]).items_center().flex_wrap()
-          .child(this.heading(`This week by ${costs.by}`, null, t)).child(div().flex_1())
-          .children(SPLITS.map((by) => this.chip(`by-${by}`, by, by === this.by, (cx) => this.split(by, cx), t, Boolean(this.error)))))
+          .child(this.heading(`This week by ${costs.by}`, null, t)).child(div().flex_1()).children(this.splitChips(t)))
         .child(this.splitRows(table, t)),
+      ...this.scoresPart(costs, t, false),
     ];
+  }
+
+  /** @param {Palette} t */
+  splitChips(t) {
+    return SPLITS.map((by) => this.chip(`by-${by}`, by, by === this.by, (cx) => this.split(by, cx), t, Boolean(this.error)));
+  }
+
+  /** Each scorer's verdicts by the split, or nothing when the window has no score. @param {any} costs @param {Palette} t @param {boolean} chips */
+  scoresPart(costs, t, chips) {
+    const table = /** @type {Scores} */ (scoreTable(costs));
+    if (!table.rows.length) return [];
+    /** @param {string[]} cells @param {boolean} head */
+    const row = (cells, head) => h_flex().min_h(head ? 28 : 36).gap(S["space-3"]).items_center().border_b(1).border_color(t.line)
+      .text_size(head ? S["type-caption"][0] : S["type-small"][0]).text_color(head ? t["text-3"] : t.text)
+      .children(cells.slice(0, 2).map((cell) => div().w(120).flex_none().whitespace_normal().font_family(head ? this.font.ui : this.font.mono).child(cell)))
+      .children(cells.slice(2).map((cell, index) => div().w(index ? 56 : 72).flex_none().whitespace_normal().text_right()
+        .when(!head && index === 0, (el) => el.font_weight(600)).child(cell)));
+    const stacked = (/** @type {Scores["rows"][number]} */ entry) => v_flex().py(S["space-2"]).gap(2).border_b(1).border_color(t.line)
+      .child(h_flex().gap(S["space-2"]).flex_wrap().font_family(this.font.mono).text_size(S["type-small"][0]).child(entry.name).child(entry.scorer))
+      .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(entry.line));
+    return [v_flex().id("costs-scores").gap(S["space-2"])
+      .child(h_flex().gap(S["space-2"]).items_center().flex_wrap()
+        .child(this.heading(`Scores by ${costs.by}`, null, t)).child(div().flex_1()).when(chips, (el) => el.children(this.splitChips(t))))
+      .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child("The pass rate leaves out errors and not applicable."))
+      .child(this.width < SCORE_COLUMNS
+        ? v_flex().children(table.rows.map(stacked))
+        : v_flex().id("costs-scores-table").overflow_x_scrollbar().child(row([table.dimension, "Scorer", "Pass rate", "pass", "fail", "error", "not applicable"], true))
+          .children(table.rows.map((entry) => row([entry.name, entry.scorer, entry.rate, ...[entry.pass, entry.fail, entry.error, entry.notApplicable].map(String)], false))))];
   }
 
   /** One bar per day of both weeks; a dotted line starts this week, so the split never rests on color. @param {any} costs @param {Palette} t */

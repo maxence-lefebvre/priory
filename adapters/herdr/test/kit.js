@@ -53,6 +53,13 @@ function pathTo(root, id) {
 /** The element with `id` in a drawn tree, or null. @param {any} root @param {string} id */
 export const find = (root, id) => pathTo(root, id)?.at(-1) ?? null;
 
+/** Every node of `kind` in a drawn tree, in order. @param {any} root @param {string} kind @returns {any[]} */
+export function all(root, kind) {
+  const node = nodeOf(root);
+  if (!node) return [];
+  return [...(node.kind === kind ? [node] : []), ...node.kids.flatMap((kid) => all(kid, kind))];
+}
+
 /** Every text a node and its children show, joined by spaces. @param {any} value @returns {string} */
 export function text(value) {
   if (typeof value === "string") return value;
@@ -125,7 +132,7 @@ export class View {}
 export const div = () => element("div");
 export const svg = (/** @type {string} */ path) => element("svg", null, { path });
 export const Background = {};
-export const PathBuilder = {};
+export const PathBuilder = { fill: () => element("path"), stroke: () => element("path") };
 
 // gpui-base
 export const h_flex = () => element("h_flex");
