@@ -22,23 +22,27 @@ Kubernetes, one factory shared by dozens of people, or a chat interface. The
 ## Where Priory lacks something
 
 Five gaps came out of the first reading. Each is something several products below have and Priory
-did not. Priory has since built parts of four of them, and this list says what remains.
+did not. Priory has since built parts of all five, and this list says what remains.
 
 1. **Spend caps inside a turn.** A factory sets caps per task, day and week on the factory, a
    trigger or a lane ([spend caps](daemon/spend.md)). A reached cap keeps new runs from starting.
    A task cap, or a factory or trigger day or week cap, also holds a running task with one ask.
-   The daemon checks a running task only between two turns, so one long turn can pass a cap. With
-   several runners, each daemon counts only its own spend.
+   The daemon checks a running task's caps only between two turns, so one long turn can pass a
+   cap. Only a step's own [`budget`](daemon/health.md#budget) is checked inside a turn, once a
+   minute. With several runners, each daemon counts only its own spend.
 2. **Graduated approval.** A trigger's [`intervention`](concepts.md) lets a person approve every
    plan, or a lead agent answer asks, and a workflow can route a plan by its grade. A
    [critic](daemon/score.md#gates) can refuse a plan no person reads, and a
-   [decision model](daemon/decisions.md) settles feedback that asks the agent for nothing. Priory
-   still has no policy that approves a single action by a stated confidence or risk level.
-   [approve-by-confidence.md](design/approve-by-confidence.md) designs answering a reversible ask
-   from the agent's stated confidence, and grants no approval.
-3. **Proof for the reviewer.** Priory's docs describe no built-in recording, screenshot or live
-   preview of a change for the reviewer. [reviewer-evidence.md](design/reviewer-evidence.md)
-   designs them.
+   [decision model](daemon/decisions.md) settles feedback that asks the agent for nothing. A
+   trigger's [`auto_answer`](daemon/waits.md#answered-by-auto) lets the daemon answer a reversible
+   ask with the agent's recommendation, at the confidence the agent states. It grants no approval:
+   Priory still has no policy that approves an irreversible action by a stated confidence or risk
+   level.
+3. **Proof for the reviewer.** A run's result can carry [evidence](daemon/evidence.md):
+   screenshots and recordings that a step's `record` command makes, served by the task's API and
+   listed in the pull request's body. The web view does not draw them yet. Priory has no live
+   preview of a change, shows no before and after, and puts no image on the pull request itself.
+   [reviewer-evidence.md](design/reviewer-evidence.md) designs them.
 4. **A learning loop.** An agent proposes a memory with `remember`, and a
    [nightly dream](setting-up-a-nightly-dream.md) proposes memories from what tasks concluded and
    what people answered. A person accepts each before other tasks get it. A memory's
@@ -52,11 +56,13 @@ did not. Priory has since built parts of four of them, and this list says what r
    repository. A factory cannot declare a token per agent or network rules.
    [agent-credentials.md](design/agent-credentials.md) designs them.
 
-Two more features came after the first reading. A [review limit](daemon/runs.md#review-limit)
+Three more features came after the first reading. A [review limit](daemon/runs.md#review-limit)
 holds new starts while too many pull requests of a lane or batch wait for a person. When two
 done-gate failures in a row on the same pull request have the same check names and conclusions,
 the daemon asks a person instead of waking the agent again
-([a fix that fails the same way](daemon/waits.md#a-fix-that-fails-the-same-way)).
+([a fix that fails the same way](daemon/waits.md#a-fix-that-fails-the-same-way)). A
+[staged trigger](daemon/tools.md#staged-tasks) runs its tasks as a trial: the model steps run on
+the real event, and no irreversible step runs.
 
 ## Mastra and Mastra Factory
 
@@ -528,7 +534,7 @@ read do not mention it. The first table holds the coding agent products:
 | Theme | Priory | Mastra and Mastra Factory | eve | OpenHands | Copilot cloud agent | Codex | Devin | Factory | Cursor cloud agents | Amp | Claude Code Actions and Code Review | Jules |
 | ----- | ------ | ------------------------- | --- | --------- | ------------------- | ----- | ----- | ------- | ------------------- | --- | ----------------------------------- | ----- |
 | Where it runs | Machines you own, each task in its own git worktree with the repository's setup recipe | Factory sandboxes per session, hosted or local | Vercel, or self-hosted | Cloud or Kubernetes | Not described | OpenAI's cloud environments for cloud tasks | Cognition's cloud; tools on your machines through Outposts | Cloud or local computers | Cursor's machines; tools on your machines through self-hosted pools | An orb per thread, in Amp's cloud or self-hosted | Actions on GitHub's or your runners; Code Review on Anthropic's | Read-only, no longer runs tasks |
-| Who approves | A person for each irreversible step unless marked autonomous with a reason; a lead agent can answer other asks | A person, or a phase's condition | A policy per tool: always, once, auto or never | Always, never, or only risky actions | Issue changes held below a confidence level | Approval prompts can go to a reviewer agent | Not described | Not described | Low-risk pull requests approved by policy | A project's Ship setting | Code Review never approves | A person, with a critic for plans nobody approved |
+| Who approves | A person for each irreversible step unless marked autonomous with a reason; a lead agent, or the daemon at the agent's stated confidence, can answer other asks | A person, or a phase's condition | A policy per tool: always, once, auto or never | Always, never, or only risky actions | Issue changes held below a confidence level | Approval prompts can go to a reviewer agent | Not described | Not described | Low-risk pull requests approved by policy | A project's Ship setting | Code Review never approves | A person, with a critic for plans nobody approved |
 | Scheduling and priority | Schedule triggers and events; bands from blocker to later; a review limit on waiting pull requests | Board phases; bands not described | Bands not described | A five-minute poll in the factory guide | Schedules, repository events and the API | Not described | Not described | Schedules, Slack, GitHub and webhooks | Bands not described | A schedule per thread, with a completion condition | GitHub events and cron | Suggested tasks |
 | Memory | Files in git, brought into a Claude Code run by path; an agent or a nightly dream proposes, a person accepts | Observations condensed from message history | Recall before and capture after each turn | An index plus daily logs, opt in | Repository facts with citations | Not described | Notes saved by Devin, tagged by session | A generated repository wiki | Named notes per automation | Learned memory not described | Not described | In the export |
 | Evaluation | Scorers as gates on a result, a critic for plans no person reads, calibrated judges and replay benchmarks | Eval runs with gates and tracked scorers | Eval files against a real agent | An experimental critic that scores a run while it works | Not described | Not described | Session Insights after a session | Agent Readiness for the repository | Resolution status per Bugbot finding | Not described | A verification step inside Code Review | A critic for plans |
@@ -540,7 +546,7 @@ The platforms, frameworks and workflow engines:
 | Theme | Priory | GitHub Agentic Workflows | Linear | SuperPlane | Kiro and Kiro Crew | Cline | Temporal | Inngest | LangSmith | CrewAI | Dagger |
 | ----- | ------ | ------------------------ | ------ | ---------- | ------------------ | ----- | -------- | ------- | --------- | ------ | ------ |
 | Where it runs | Machines you own, each task in its own git worktree with the repository's setup recipe | GitHub Actions workflows | Not described | One VM or Kubernetes in your cloud | Crew on your hardware, local or remote | A sandbox per session for cloud agents | Self-hosted or Temporal Cloud | Not described | Cloud, self-hosted or hybrid | Not described | A container per agent, in its own git branch |
-| Who approves | A person for each irreversible step unless marked autonomous with a reason; a lead agent can answer other asks | Not described | A person answers in the issue | A person's approval can be part of Verify | A person or a saved permission approves a workflow's plan | Auto Approve per type of action | A workflow blocks until an outside approval | An approval event, with a timeout | Fleet's inbox | A person's feedback on a flow step | Not described |
+| Who approves | A person for each irreversible step unless marked autonomous with a reason; a lead agent, or the daemon at the agent's stated confidence, can answer other asks | Not described | A person answers in the issue | A person's approval can be part of Verify | A person or a saved permission approves a workflow's plan | Auto Approve per type of action | A workflow blocks until an outside approval | An approval event, with a timeout | Fleet's inbox | A person's feedback on a flow step | Not described |
 | Scheduling and priority | Schedule triggers and events; bands from blocker to later; a review limit on waiting pull requests | Bands not described | Loops on a schedule or on events | Backlog qualifies each request first | A heartbeat every 60 seconds | Cron schedules; linked cards | Priorities 1 to 5 and weighted fairness keys | Keyed concurrency; priority in seconds | A message during a run is rejected, enqueued, interrupts or rolls back | Not described | Checks on repository events |
 | Memory | Files in git, brought into a Claude Code run by path; an agent or a nightly dream proposes, a person accepts | A persistent memory strategy | Learned memory not described | Learned memory not described | Semantic, episodic and lesson memories; confidence-gated semantic writes | A Memory Bank across sessions | Agent memory and state in workflows; learned memory not described | Not described | Engine learns review preferences for later scans | Scope and importance inferred on save; lessons from feedback | Learned memory not described |
 | Evaluation | Scorers as gates on a result, a critic for plans no person reads, calibrated judges and replay benchmarks | Yes or no evals; experiments with guardrails | Not described | Risk-matched evidence, recommended; a task time report | A reviewer session that reads the diff | Not described | Not described | Experiments and deferred scorers | Issues from failing traces; fix validation by replay | `crewai test` scores each task | The same checks on every change |

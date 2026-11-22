@@ -212,7 +212,7 @@ For that gate to hold, an agent must not be able to accept. Today the guard lets
 shell call `priory memories accept`. The first slice adds `memories accept` and `memories drop` to
 the person verbs, as `report pick` is. `priory memories` without a verb stays open, since it only
 lists. The guard closes the direct call and no more: a run has its person's account, and write
-access to the log still equals an accept, as [skills.md](../daemon/skills.md#limits) says.
+access to the log still equals an accept, as [skills.md](../daemon/skills.md#known-limits) says.
 
 ### How it avoids duplicates
 
@@ -283,7 +283,7 @@ person's clone. Three things stand in the way today:
   commit. Later slice 3 lets the pull request write an index beside the folder.
 - A person edits a memory by hand in their own repository, and the edit reaches no run: an accepted
   candidate still overrides the kit's file of its name
-  ([skills.md](../daemon/skills.md#limits)). Later slice 2 removes that limit, which matters more
+  ([skills.md](../daemon/skills.md#known-limits)). Later slice 2 removes that limit, which matters more
   here than in a kit nobody edits.
 - Any runner can win the claim of the pull request's task, so each needs push rights to the home
   repository, or the step fails there. A deploy key with write access to that one repository, on
@@ -378,7 +378,7 @@ Tests, through the CLI, with the fake `claude`:
    writes as several lines, so the turn end still counts the turn. A run that sent its result, or
    whose gate holds it, is left to its turn end, where an overrun stands.
 2. The kit takes over a name once it holds an accepted candidate's text, so a later edit in the
-   kit reaches runs. [skills.md](../daemon/skills.md#limits) lists this as not built. Removing that
+   kit reaches runs. [skills.md](../daemon/skills.md#known-limits) lists this as not built. Removing that
    one candidate is not enough: an older accepted candidate of the same name would show again. So
    each name records the accept up to which the kit has taken over, and every candidate and forget
    of the name up to it stops overriding the kit. The candidates stay in the state as history,

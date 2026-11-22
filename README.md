@@ -47,6 +47,27 @@ every poll:
 - Every step's outcome, tokens and time are recorded, so you can measure a workflow and its cost.
 - Spend caps per task, day or week stop a factory that overspends: past a cap, a task waits for
   you to raise the cap or stop it. See [docs/daemon/spend.md](docs/daemon/spend.md).
+- Agents share [skills and memories](docs/daemon/skills.md) kept in git, and one that names the
+  files it is about reaches only the runs that touch them. An agent proposes a memory, or a
+  nightly dream proposes memories from the day's tasks, and a person accepts each one.
+- [Scorers](docs/daemon/score.md) grade finished runs, and a step can use one as a gate that
+  refuses a result. A judge scorer counts only once it agrees with a person's labels, and a
+  [benchmark](docs/daemon/bench.md) replays past tasks to compare a change to the factory.
+- A trigger can run a [`pre` script](docs/intake/pre.md) that filters or changes its events, run
+  its tasks [staged](docs/daemon/tools.md#staged-tasks) as a trial that writes nothing, and let
+  the daemon [answer](docs/daemon/waits.md#answered-by-auto) a reversible ask when the agent
+  states enough confidence.
+- A [debate step](docs/daemon/debates.md) has two agents answer one question in turns, and ends
+  with their verdict or your pick. A [decision model](docs/daemon/decisions.md), once measured
+  against your labels, settles review feedback that asks the agent for nothing.
+- A run's result can carry [evidence](docs/daemon/evidence.md), such as a screenshot or a
+  recording, so you see the change work before you read the diff.
+- The queue holds new starts while too many pull requests wait for your
+  [review](docs/daemon/runs.md#review-limit), lets a blocker task
+  [stop a lower band's run](docs/daemon/room.md#urgent-wakes) at the end of its turn, and asks you
+  when a fix [fails the same checks](docs/daemon/waits.md#a-fix-that-fails-the-same-way) twice.
+- A repository's [setup, resume and teardown recipes](docs/daemon/runs.md#recipes) prepare each
+  worktree, so no run has to find out how to install and build it.
 
 ## The web view
 
@@ -127,8 +148,11 @@ as a website, with search, built from `main`.
   [test a factory with fake agents](docs/testing-a-factory.md),
   [add a second machine](docs/adding-a-second-machine.md),
   [share build caches](docs/sharing-build-caches.md),
-  [send traces to an OpenTelemetry backend](docs/sending-traces-to-opentelemetry.md) and
-  [evaluate a prompt change](docs/evaluating-a-prompt.md).
+  [send traces to an OpenTelemetry backend](docs/sending-traces-to-opentelemetry.md),
+  [evaluate a prompt change](docs/evaluating-a-prompt.md),
+  [set up a nightly dream](docs/setting-up-a-nightly-dream.md),
+  [filter and enrich events with a script](docs/filtering-and-enriching-events.md) and
+  [use Priory from your own session](docs/using-priory-from-your-own-session.md).
 - Reference: [docs/reference/](docs/reference/README.md) lists every
   [command](docs/reference/cli.md), every key of the factory's files, every HTTP endpoint and every
   intake message, with their JSON Schemas. [docs/trace-schema.md](docs/trace-schema.md) holds the

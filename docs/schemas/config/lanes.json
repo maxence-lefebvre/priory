@@ -1,0 +1,68 @@
+{
+  "$id": "https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/lanes.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Rule": {
+      "additionalProperties": false,
+      "description": "A rule sets at least one of `key`, `team`, `project` and `branch`, and matches a task that fits\neach one it sets.",
+      "properties": {
+        "branch": {
+          "description": "A pattern for the task's branch, in which `*` matches any run of characters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "description": "The task's key, exactly.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lane": {
+          "description": "The lane the rule gives, `<team>/<theme>`.",
+          "type": "string"
+        },
+        "project": {
+          "description": "The project of the task's source event, exactly.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "team": {
+          "description": "The team of the task's source event, exactly.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "lane"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "`lanes.toml`: how a task without a lane of its own gets one. Without the file, every task gets\nthe `{team}/misc` fallback.",
+  "properties": {
+    "fallback": {
+      "description": "A lane, in which `{team}` stands for the task's team, or `none` without one.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "rules": {
+      "description": "The rules, tried in order: the first that matches gives the lane.",
+      "items": {
+        "$ref": "#/definitions/Rule"
+      },
+      "type": "array"
+    }
+  },
+  "title": "lanes",
+  "type": "object"
+}
