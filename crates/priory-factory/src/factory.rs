@@ -1616,6 +1616,9 @@ pub struct Step {
     pub effect: Effect,
     /// The agent that runs a model step.
     pub agent: Option<String>,
+    /// Two agents who debate the model step's question for a fixed number of rounds, in place of
+    /// its `agent`.
+    pub debate: Option<Debate>,
     /// What a model step tells its agent.
     pub prompt: Option<String>,
     /// The answers a person picks from at a human step.
@@ -1823,6 +1826,50 @@ impl Proof {
             Proof::GatePassed => "gate-passed",
         }
     }
+}
+
+/// A debate step's `debate` table: two agents, in speaking order, the rounds after their
+/// openings, and the most the debate may cost.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Debate {
+    /// Exactly two different agents, in speaking order.
+    pub agents: Vec<String>,
+    /// How many rounds follow the opening, 1 to 5.
+    pub rounds: u32,
+    /// The most the debate may cost, such as `$3.00`, priced from `prices.toml`.
+    #[serde(deserialize_with = "usd")]
+    #[schemars(with = "String", regex(pattern = r"^\$[0-9]+(\.[0-9]{1,2})?$"))]
+    pub cap: f64,
+}
+
+impl Debate {
+    /// The most turns the debate can take: two openings, then two per round.
+    pub fn turns(&self) -> u32 {
+        2 + 2 * self.rounds
+    }
+}
+
+/// A dollar amount such as `$3.00`, above zero.
+fn usd<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+    let text = String::deserialize(deserializer)?;
+    text.strip_prefix('$')
+        .filter(|digits| {
+            let (whole, cents) = digits.split_once('.').unwrap_or((digits, "00"));
+            !whole.is_empty()
+                && (1..=2).contains(&cents.len())
+                && whole
+                    .bytes()
+                    .chain(cents.bytes())
+                    .all(|b| b.is_ascii_digit())
+        })
+        .and_then(|digits| digits.parse::<f64>().ok())
+        .filter(|dollars| *dollars > 0.0)
+        .ok_or_else(|| {
+            D::Error::custom(format!(
+                "{text:?} is not a cap such as \"$3.00\", above zero"
+            ))
+        })
 }
 
 impl Step {

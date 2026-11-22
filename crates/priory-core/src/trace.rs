@@ -110,6 +110,20 @@ pub(crate) fn ended(
     outcome: &str,
     run: Option<i64>,
 ) -> rusqlite::Result<()> {
+    ended_with(tx, trace, task, outcome, run, None, None)
+}
+
+/// As `ended`, naming `decider` in place of the step's own, and with a debate step's `debate`
+/// field. A debate's record carries no tokens, harness or model: each turn's own record does.
+pub(crate) fn ended_with(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    outcome: &str,
+    run: Option<i64>,
+    decider: Option<&str>,
+    debate: Option<Value>,
+) -> rusqlite::Result<()> {
     let ended = tx.query_row(
         "SELECT workflow, step, key, entered, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
          CAST(round((julianday('now') - julianday(entered)) * 86400000) AS INTEGER), tokens, model, generation,
@@ -148,7 +162,7 @@ pub(crate) fn ended(
         "run": run.map(|run| run.to_string()),
         "generation": ended.generation,
         "step": ended.step,
-        "decider": step.decides.name(),
+        "decider": decider.unwrap_or(step.decides.name()),
         "effect": step.effect,
         "outcome": outcome,
         "machine": trace.machine,
@@ -158,11 +172,14 @@ pub(crate) fn ended(
     if let Some(lane) = ended.lane {
         data["lane"] = json!(lane);
     }
+    if let Some(debate) = debate {
+        data["debate"] = debate;
+    }
     let agent = step
         .agent
         .as_ref()
         .and_then(|name| trace.factory.agents.get(name))
-        .filter(|_| step.decides == Decider::Model);
+        .filter(|_| step.decides == Decider::Model && step.debate.is_none());
     if agent.is_some() && crate::tools::GRADES.contains(&outcome) {
         data["grade"] = json!(outcome);
     }
@@ -212,6 +229,80 @@ pub(crate) fn ended(
         fields.retain(|_, value| !value.is_null());
     }
     append(tx, trace, "factory.step.ended", &ended.time, data)
+}
+
+/// The type of the record each debate turn appends.
+pub const DEBATE_TURN: &str = "factory.debate.turn_ended";
+
+/// Appends a `factory.debate.turn_ended` record for the turn `run` took in `debate`, with the
+/// tokens read since the last one, priced at its own agent's model, and clears them from the task,
+/// so the step's record never sums two models.
+pub(crate) fn turned(
+    tx: &Transaction,
+    trace: &Trace,
+    run: i64,
+    debate: i64,
+) -> rusqlite::Result<()> {
+    let turn = tx.query_row(
+        "SELECT tasks.id, tasks.workflow, runs.step, tasks.key, tasks.generation, tasks.lane,
+         tasks.tokens, tasks.model, runs.agent, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+         (SELECT verdict FROM positions WHERE positions.run = runs.id),
+         (SELECT count(*) FROM runs AS earlier WHERE earlier.debate = ?2 AND earlier.id < runs.id)
+         FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.id = ?1",
+        params![run, debate],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, i64>(11)?,
+            ))
+        },
+    )?;
+    let (task, workflow, step, key, generation, lane, tokens, model, agent, time, verdict, earlier) =
+        turn;
+    let Some(tokens) = tokens else {
+        return Ok(());
+    };
+    let defined = agent
+        .as_ref()
+        .and_then(|agent| trace.factory.agents.get(agent));
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "workflow": workflow,
+        "task": task.to_string(),
+        "key": key,
+        "lane": lane,
+        "run": run.to_string(),
+        "generation": generation,
+        "step": step,
+        "debate": debate.to_string(),
+        "turn": earlier + 1,
+        "agent": agent,
+        "verdict": verdict,
+        "harness": defined.map(|agent| json!(agent.value.harness)),
+        "model": model.or_else(|| defined.and_then(|agent| agent.value.model.clone())),
+        "machine": trace.machine,
+        "tokens": serde_json::from_str::<Value>(&tokens).ok(),
+    });
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    append(tx, trace, DEBATE_TURN, &time, data)?;
+    tx.execute(
+        "UPDATE tasks SET tokens = NULL, model = NULL WHERE id = ?1",
+        [task],
+    )
+    .map(drop)
 }
 
 /// What a handler call of a stalled run answered and cost.

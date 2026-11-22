@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 94;
+const VERSION: i64 = 95;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1693,6 +1693,39 @@ ALTER TABLE tasks ADD COLUMN protected TEXT;
 PRAGMA user_version = 94;
 ";
 
+// A debate at a step: the commit its agents read and how it ended; each position a debater took,
+// in order; and the debate each run took a turn of.
+const SCHEMA_95: &str = "
+CREATE TABLE IF NOT EXISTS debates (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  task       INTEGER NOT NULL REFERENCES tasks (id),
+  step       TEXT NOT NULL,
+  commit_sha TEXT,
+  started    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  ended      TEXT,
+  ended_as   TEXT,
+  reason     TEXT
+);
+CREATE INDEX IF NOT EXISTS debates_of_task ON debates (task);
+CREATE TABLE IF NOT EXISTS positions (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  debate   INTEGER NOT NULL REFERENCES debates (id),
+  run      INTEGER NOT NULL UNIQUE REFERENCES runs (id),
+  round    INTEGER NOT NULL,
+  agent    TEXT NOT NULL,
+  harness  TEXT NOT NULL,
+  model    TEXT,
+  verdict  TEXT NOT NULL,
+  argument TEXT NOT NULL,
+  concedes TEXT,
+  created  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE TRIGGER IF NOT EXISTS positions_are_immutable BEFORE UPDATE ON positions
+  BEGIN SELECT RAISE(ABORT, 'positions are immutable'); END;
+ALTER TABLE runs ADD COLUMN debate INTEGER REFERENCES debates (id);
+PRAGMA user_version = 95;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1706,7 +1739,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
-    SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94,
+    SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -2945,9 +2978,13 @@ pub(crate) fn admissible<'r>(
         else {
             continue;
         };
-        let agent = step
-            .agent
+        let speaker = match &step.debate {
+            Some(debate) => Some(crate::debate::speaker_of(db, admission.task, step, debate)?),
+            None => None,
+        };
+        let agent = speaker
             .as_ref()
+            .or(step.agent.as_ref())
             .and_then(|name| Some((name, &factory.agents.get(name)?.value)));
         let busy = match agent {
             Some((name, agent)) if matches!(agent.session, Session::Shared) => serving(db, name)?
@@ -3320,6 +3357,9 @@ pub(crate) struct NewRun<'a> {
     pub kit_hash: Option<&'a str>,
     /// The kit commit the run gets, if any.
     pub kit_commit: Option<&'a str>,
+    /// The debate the run takes a turn of. Its prompt carries no kept event: debaters judge, and
+    /// the next step reads the events.
+    pub debate: Option<i64>,
     /// The memories repository's commit the run gets, if any.
     pub memories_commit: Option<&'a str>,
 }
@@ -3345,7 +3385,7 @@ pub(crate) fn resumable(
     db.query_row(
         // A session the agent once shared stays shared, so two tasks cannot both resume it, even
         // after a harness change gave the agent another shared session.
-        "SELECT session FROM runs WHERE task = ?1 AND agent = ?2 AND ready = 1
+        "SELECT session FROM runs WHERE task = ?1 AND agent = ?2 AND ready = 1 AND debate IS NULL
          AND session NOT IN (SELECT session FROM shared_sessions)
          AND session NOT IN (SELECT session FROM runs GROUP BY session HAVING count(DISTINCT task) > 1)
          ORDER BY id DESC LIMIT 1",
@@ -3381,8 +3421,9 @@ pub(crate) fn thread(db: &Connection, session: &str) -> rusqlite::Result<Option<
 pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
-        "INSERT INTO runs (task, step, agent, tmux, session, kit_hash, kit_commit, memories_commit)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO runs (task, step, agent, tmux, session, kit_hash, kit_commit, memories_commit,
+           debate)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             run.task,
             run.step,
@@ -3391,7 +3432,8 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
             run.session,
             run.kit_hash,
             run.kit_commit,
-            run.memories_commit
+            run.memories_commit,
+            run.debate
         ],
     )?;
     let id = tx.last_insert_rowid();
@@ -3424,7 +3466,10 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
         params![run.task, route::branch(run.repo, run.branch)],
     )?;
     let mut text = run.prompt.unwrap_or_default().to_owned();
-    let unread = unread(&tx, run.task, true, None)?;
+    let unread = match run.debate {
+        Some(_) => Vec::new(),
+        None => unread(&tx, run.task, true, None)?,
+    };
     for (_, _, line) in &unread {
         if !text.is_empty() {
             text.push('\n');

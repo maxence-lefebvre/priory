@@ -21,6 +21,7 @@ its `README.md` says what it needs and which steps ask you first.
 | [`readiness`](../examples/readiness/README.md) | `priory add` starts a check of the repository. The agent drafts one issue per gap that `priory check --repo` finds, files them once you approve, and each issue becomes a task that ends on a pull request |
 | [`decisions`](../examples/decisions/README.md) | Not a whole factory: a `[decisions.triage]` table, a script for TypeSafe's Jev and ten labeled cases. Once calibrated, a review comment Jev sorts as `nothing-to-do` wakes no agent |
 | [`ship-and-watch`](../examples/ship-and-watch/README.md) | A `ship` label starts a task. After you merge its pull request, the agent watches the release for an hour, then drafts an announcement that posts once you approve it |
+| [`design-debate`](../examples/design-debate/README.md) | A `design-debate` label starts a task. A Claude Code agent and a Codex agent debate the linked design for up to three rounds, and a split asks you |
 
 Copy one into your working folder, then check it:
 

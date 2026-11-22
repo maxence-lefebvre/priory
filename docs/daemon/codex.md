@@ -80,5 +80,6 @@ Known limits:
   that project. Neither the config reading nor `enabled = false` was checked against a real Codex.
 - An agent whose harness changes mid-task starts a new session, since neither harness resumes the
   other's.
-- Codex keeps its transcripts under `~/.codex/sessions`, by thread. The traces slice reads token use
-  from there; Priory reads nothing from them yet.
+- Codex keeps its session files under `~/.codex/sessions`, by thread. Priory reads a run's token
+  counts from the file its hooks name as `transcript_path` (see [trace.md](trace.md)). Whether
+  real Codex names that file is unchecked: no test runs real Codex.

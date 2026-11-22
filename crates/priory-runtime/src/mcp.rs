@@ -17,8 +17,29 @@ fn instructions() -> String {
 /// Serves Priory's agent tools over MCP on stdin and stdout, for the run whose harness session is
 /// `session`. `local` answers the tools this process serves itself; every other call goes to the
 /// daemon, which applies it and replies.
-pub fn serve(session: &str, local: &Local) -> Result<(), String> {
-    serve_with(&tools(), &|params| call(session, params, local))
+pub fn serve(session: &str, local: &Local, debate: bool) -> Result<(), String> {
+    let mut tools = tools();
+    if debate && let Value::Array(listed) = &mut tools {
+        listed.push(position());
+    }
+    serve_with(&tools, &|params| call(session, params, local))
+}
+
+/// The tool that ends a debate turn, served only to a debate turn's run.
+fn position() -> Value {
+    json!({
+        "name": "position",
+        "description": "End this debate turn with your position: a verdict, which must be one of the step's outcomes, and your argument. Priory ends the debate when both agents name the same verdict, or asks a person.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "verdict": { "type": "string", "description": "One of the step's outcomes." },
+                "argument": { "type": "string", "description": "Why, in at most 4000 characters." },
+                "concedes": { "type": "string", "description": "What the other side got right, if anything." },
+            },
+            "required": ["verdict", "argument"],
+        },
+    })
 }
 
 /// Serves `tools` over MCP on stdin and stdout, answering each `tools/call` with `call`.

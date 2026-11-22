@@ -43,20 +43,28 @@ pub struct Answer {
 }
 
 /// A live run with its task's workflow.
-struct Run {
-    id: i64,
-    task: i64,
-    step: String,
-    agent: Option<String>,
-    workflow: String,
-    tmux: String,
-    session: String,
+pub(crate) struct Run {
+    pub id: i64,
+    pub task: i64,
+    pub step: String,
+    pub agent: Option<String>,
+    pub workflow: String,
+    pub tmux: String,
+    pub session: String,
+    /// The debate this run takes a turn of, if any.
+    pub debate: Option<i64>,
+}
+
+/// The live run of the harness session `session`.
+pub(crate) fn live_run(tx: &Transaction, session: &str) -> rusqlite::Result<Option<Run>> {
+    run(tx, session)
 }
 
 /// The live run of the harness session `session`.
 fn run(tx: &Transaction, session: &str) -> rusqlite::Result<Option<Run>> {
     tx.query_row(
-        "SELECT runs.id, runs.task, runs.step, runs.agent, tasks.workflow, runs.tmux, runs.session
+        "SELECT runs.id, runs.task, runs.step, runs.agent, tasks.workflow, runs.tmux, runs.session,
+         runs.debate
          FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL AND runs.session = ?1",
         [session],
         |row| {
@@ -68,6 +76,7 @@ fn run(tx: &Transaction, session: &str) -> rusqlite::Result<Option<Run>> {
                 workflow: row.get(4)?,
                 tmux: row.get(5)?,
                 session: row.get(6)?,
+                debate: row.get(7)?,
             })
         },
     )
@@ -189,6 +198,9 @@ pub(crate) fn call(
         .optional()?;
     let open_wait = open_wait(&tx, run.id)?;
     let refused = match (call.tool.as_str(), open_ask, open_wait) {
+        ("result" | "ask" | "wait", ..) if run.debate.is_some() => {
+            Some(crate::debate::ENDS_WITH_POSITION.to_owned())
+        }
         ("ask", Some(ask), _) | ("result" | "compact", Some(ask), _) => {
             Some(format!("run {} already waits on ask {ask}", run.id))
         }
@@ -241,6 +253,7 @@ pub(crate) fn call(
             stored
         }
         "compact" => compact(&tx, &run, &call.arguments, factory)?,
+        "position" => crate::debate::position(&tx, &run, &call.arguments, factory)?,
         tool => Err(format!("unknown tool {tool}")),
     };
     if stored.is_ok() {
@@ -2231,7 +2244,11 @@ pub(crate) fn stop(
     if let Some(kill) = over_spent(tx, &run, trace)? {
         return Ok(kill);
     }
-    if let Some(kill) = settle(tx, &run, trace)? {
+    let settled = match run.debate {
+        Some(debate) => crate::debate::settle(tx, &run, debate, trace)?,
+        None => settle(tx, &run, trace)?,
+    };
+    if let Some(kill) = settled {
         return Ok(kill);
     }
     nudge(tx, run.id, run.task)?;
@@ -2425,18 +2442,24 @@ const NUDGE: &str = include_str!("nudge.txt");
 
 /// Queues one nudge, ahead of any queued event, after a silent turn that Priory typed.
 fn nudge(tx: &Transaction, run: i64, task: i64) -> rusqlite::Result<()> {
-    let (nudgeable, ending): (bool, Option<String>) = tx.query_row(
-        "SELECT runs.nudgeable, tasks.ending FROM runs JOIN tasks ON tasks.id = runs.task
-         WHERE runs.id = ?1",
+    let (nudgeable, ending, debate): (bool, Option<String>, bool) = tx.query_row(
+        "SELECT runs.nudgeable, tasks.ending, runs.debate IS NOT NULL FROM runs
+         JOIN tasks ON tasks.id = runs.task WHERE runs.id = ?1",
         [run],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
     if !nudgeable {
         return Ok(());
     }
+    // A debate turn has one tool to end it, so its nudge names only that one.
+    let nudge = if debate {
+        crate::debate::NUDGE
+    } else {
+        NUDGE.trim_end()
+    };
     let text = match ending {
-        Some(ending) => format!("{}\n{ending}", NUDGE.trim_end()),
-        None => NUDGE.trim_end().to_owned(),
+        Some(ending) => format!("{nudge}\n{ending}"),
+        None => nudge.to_owned(),
     };
     let id = queue_first(tx, task, &text)?;
     tx.execute("UPDATE outbox SET nudge = 1 WHERE id = ?1", [id])
@@ -2463,7 +2486,11 @@ pub const GRADES: [&str; 3] = ["red", "yellow", "green"];
 
 /// Moves the run's task by its result, or puts it to sleep on its open ask or wait. `None` when
 /// none of them ended the turn; otherwise the tmux session to kill, if any.
-fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option<Option<String>>> {
+pub(crate) fn settle(
+    tx: &Transaction,
+    run: &Run,
+    trace: &Trace,
+) -> rusqlite::Result<Option<Option<String>>> {
     let workflows = &trace.factory.workflows;
     let outcome = tx
         .query_row(
@@ -2500,7 +2527,11 @@ fn settle(tx: &Transaction, run: &Run, trace: &Trace) -> rusqlite::Result<Option
             .and_then(|step| step.next.get(&outcome))
             .cloned()
             .unwrap_or_else(|| format!("{}?{outcome}", run.step));
-        trace::ended(tx, trace, run.task, &outcome, Some(run.id))?;
+        let debate = match run.debate {
+            Some(debate) => crate::debate::record(tx, trace.factory, debate)?,
+            None => None,
+        };
+        trace::ended_with(tx, trace, run.task, &outcome, Some(run.id), None, debate)?;
         if gates_plan(tx, run, &outcome, &target, workflows)? {
             tx.execute(
                 "INSERT INTO asks (task, step, kind, question, options, text) VALUES (?1, ?2, 'step', ?3, ?4, ?5)",
@@ -2862,7 +2893,7 @@ pub(crate) fn pull_request(tx: &Connection, task: i64) -> rusqlite::Result<Optio
     .optional()
 }
 
-fn end(tx: &Transaction, run: i64, ended_as: &str) -> rusqlite::Result<()> {
+pub(crate) fn end(tx: &Transaction, run: i64, ended_as: &str) -> rusqlite::Result<()> {
     tx.execute(
         &format!("UPDATE runs SET ended = {NOW}, ended_as = ?2 WHERE id = ?1"),
         params![run, ended_as],
@@ -3056,10 +3087,20 @@ fn step_in(
     drop_nudge(tx, task)?;
     set_ending(tx, task, Some(step))?;
     match step.decides {
+        // Each debate turn is a run of its own, whose start types the turn's prompt.
+        Decider::Model if step.debate.is_some() => {
+            set(tx, task, "ready", Some(target), None)?;
+            finish("moved")
+        }
         Decider::Model => {
             queue_first(tx, task, &entry_prompt(tx, task, step)?)?;
-            // An irreversible step starts a new run, whose start checks its approval.
-            let carry = |run: &&Run| run.agent == step.agent && step.effect != Effect::Irreversible;
+            // An irreversible step starts a new run, whose start checks its approval. A debater's
+            // process never carries into the next step.
+            let carry = |run: &&Run| {
+                run.agent == step.agent
+                    && step.effect != Effect::Irreversible
+                    && run.debate.is_none()
+            };
             let Some(run) = from.filter(carry) else {
                 set(tx, task, "ready", Some(target), None)?;
                 return finish("moved");
@@ -3241,6 +3282,9 @@ fn answer_in(
     let target = match (kind == "step", asked) {
         (false, _) => None,
         // A `plan` task's grading step: an approval moves it by its grade.
+        (true, Some(asked)) if asked.debate.is_some() => {
+            Some(answered_target(workflows, &workflow, &at, &chosen))
+        }
         (true, Some(asked)) if asked.decides == Decider::Model => Some(match chosen.as_str() {
             "approved" => {
                 let grade: Option<String> = match task {
@@ -3349,7 +3393,11 @@ fn answer_in(
     if let Some(hold) = hold {
         crate::hold::answered(tx, hold, &answer.text)?;
     } else if let Some(target) = target {
-        if !asked.is_some_and(|asked| asked.decides == Decider::Model) {
+        if asked.is_some_and(|asked| asked.debate.is_some()) {
+            // A person's pick on a debate that did not converge: the record's decider is human.
+            let debate = crate::debate::picked(tx, trace.factory, task, &at, &chosen)?;
+            trace::ended_with(tx, trace, task, &chosen, None, Some("human"), debate)?;
+        } else if !asked.is_some_and(|asked| asked.decides == Decider::Model) {
             approve(
                 tx,
                 task,
@@ -4520,6 +4568,9 @@ pub fn backfill_endings(db: &mut Connection, workflows: &Workflows) -> rusqlite:
 
 /// The line that tells a model step's agent how to end the step.
 pub(crate) fn ending(step: &Step) -> String {
+    if step.debate.is_some() {
+        return crate::debate::ending(step);
+    }
     let outcomes: Vec<_> = step.next.keys().map(String::as_str).collect();
     let end = format!(
         "End this step by calling the result tool of the priory MCP server with one of these outcomes: {}.",

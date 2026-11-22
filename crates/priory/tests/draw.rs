@@ -215,3 +215,48 @@ fn an_explicit_by_restyles_its_edge() {
             .ends_with("    linkStyle 7 stroke:#888,stroke-dasharray:4 4\n")
     );
 }
+
+#[test]
+fn a_debate_step_draws_as_a_model_step_with_both_agents_on_its_second_line() {
+    let debate = r#"start = "debate"
+
+[[steps]]
+id = "debate"
+decides = "model"
+effect = "read"
+debate = { agents = ["implementer", "skeptic"], rounds = 2, cap = "$3.00" }
+prompt = "Daemon or process?"
+timeout = "15m"
+next = { daemon = "done", process = "stop" }
+"#;
+    let dir = factory("debate", debate);
+    let priced = |agent: &str| {
+        AGENT.replace(
+            "harness = \"claude-code\"",
+            &format!("harness = \"claude-code\"\nmodel = \"m1\"\n# {agent}"),
+        )
+    };
+    fs::write(
+        dir.join("agents/implementer/agent.md"),
+        priced("implementer"),
+    )
+    .unwrap();
+    fs::create_dir_all(dir.join("agents/skeptic")).unwrap();
+    fs::write(dir.join("agents/skeptic/agent.md"), priced("skeptic")).unwrap();
+    fs::write(
+        dir.join("prices.toml"),
+        "[m1]\ninput = 1.0\noutput = 2.0\ncache_read = 0.1\ncache_write = 1.25\n",
+    )
+    .unwrap();
+
+    let outcome = draw(&dir, "implement");
+
+    assert_eq!(outcome.stderr, "");
+    assert!(
+        outcome
+            .stdout
+            .contains("    n0([\"debate<br/>model, read, debate: implementer and skeptic\"])\n"),
+        "{}",
+        outcome.stdout
+    );
+}

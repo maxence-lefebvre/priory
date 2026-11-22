@@ -2,9 +2,11 @@
 
 This page explains how a workflow step could have two agents debate one question for a fixed
 number of rounds, keep the transcript as the step's evidence, take their joint verdict as the
-step's result, and ask a person when they do not converge. It builds nothing. It holds the model,
-the first code slice with its tests, the slices after it, and the open questions with a
-recommendation for each.
+step's result, and ask a person when they do not converge. It holds the model, the first code
+slice with its tests, the slices after it, and the open questions with a recommendation for each.
+
+The first slice is built: see [debates.md](../daemon/debates.md). The later slices are not. Max
+approved every open question's recommendation on 2026-11-22, and the first slice follows them.
 
 The two agents should differ, ideally by harness: a Claude Code agent and a Codex agent. Two
 models that fail in different ways catch more than one model asked twice.
@@ -199,6 +201,14 @@ Room is checked for each turn like any run. A debate never holds two runs.
   decides before the work.
 
 ## The first slice: two agents, fixed rounds, a verdict or an ask
+
+Built. Two choices the slice made that this page left open:
+
+- Each turn appends a `factory.debate.turn_ended` record with its own tokens and model, and the
+  step's `factory.step.ended` record carries `debate` and no tokens. Cost reports count the turn
+  records ([trace-schema.md](../trace-schema.md#factorydebateturn_ended)).
+- Both harnesses now report token counts, so no check rule refuses a debater's harness. A debater
+  needs a model with a price instead.
 
 1. The `debate` table on a step, in the schema and the JSON Schemas, and the check rules above.
 2. The `position` tool, served only during a debate turn.

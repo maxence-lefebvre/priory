@@ -1,8 +1,8 @@
 use crate::factory::{
-    ASK_SHAPE, Agent, Backend, Benchmark, CODEX_PROMPT_LIMIT, Decider, Effect, Factory, Harness,
-    INSTRUCTIONS, Intervention, Loaded, Moment, OPEN_MEMORIES_PR, OnChange, PermissionMode,
-    Problem, Proof, Recipe, ScoreKind, ScoreOn, Scorer, Session, Step, Trigger, Until, Workflow,
-    join_instructions,
+    ASK_SHAPE, Agent, Backend, Benchmark, CODEX_PROMPT_LIMIT, Debate, Decider, Effect, Factory,
+    Harness, INSTRUCTIONS, Intervention, Loaded, Moment, OPEN_MEMORIES_PR, OnChange,
+    PermissionMode, Problem, Proof, Recipe, ScoreKind, ScoreOn, Scorer, Session, Step, Trigger,
+    Until, Workflow, join_instructions,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
 use crate::labels;
@@ -1547,14 +1547,25 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
         {
             report(format!("only a {} step has {field}", owner.name()));
         }
+        if step.debate.is_some() && step.decides != Decider::Model {
+            report("only a model step has a `debate`".into());
+        }
         match step.decides {
             Decider::Model => {
-                match &step.agent {
-                    Some(agent) if !factory.agents.contains_key(agent) => {
+                match (&step.agent, &step.debate) {
+                    (Some(_), Some(_)) => {
+                        report("a debate step has no `agent`: its `debate` names both".into())
+                    }
+                    (Some(agent), None) if !factory.agents.contains_key(agent) => {
                         report(format!("agent `{agent}` does not exist"))
                     }
-                    Some(_) => {}
-                    None => report("a model step needs an `agent`".into()),
+                    (_, Some(debate)) => {
+                        for message in debate_problems(factory, step, debate) {
+                            report(message);
+                        }
+                    }
+                    (Some(_), None) => {}
+                    (None, None) => report("a model step needs an `agent`".into()),
                 }
                 if step.prompt.is_none() {
                     report("a model step needs a `prompt`".into());
@@ -1750,6 +1761,64 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
             }
         }
     }
+}
+
+/// What is wrong with a debate step's `debate` and the keys beside it.
+fn debate_problems(factory: &Factory, step: &Step, debate: &Debate) -> Vec<String> {
+    let mut problems = Vec::new();
+    match debate.agents.as_slice() {
+        [first, second] if first == second => problems.push(format!(
+            "a debate's two agents must differ: `{first}` is named twice"
+        )),
+        [_, _] => {}
+        agents => problems.push(format!(
+            "a debate needs exactly two agents, in speaking order, not {}",
+            agents.len()
+        )),
+    }
+    if !(1..=5).contains(&debate.rounds) {
+        problems.push(format!(
+            "`rounds` is {}; a debate takes 1 to 5 rounds",
+            debate.rounds
+        ));
+    }
+    if !matches!(step.effect, Effect::None | Effect::Read) {
+        problems.push(format!(
+            "a debate step's effect is `none` or `read`, not `{}`: debaters judge and change nothing",
+            step.effect.name()
+        ));
+    }
+    if !step.proof.is_empty() {
+        problems.push("a debate step has no `proof`: debaters judge and change nothing".into());
+    }
+    if step.timeout.is_none() {
+        problems.push("a debate step needs a `timeout`: its cap cannot bound one turn".into());
+    }
+    let mut named = BTreeSet::new();
+    for name in &debate.agents {
+        if !named.insert(name) {
+            continue;
+        }
+        let Some(agent) = factory.agents.get(name) else {
+            problems.push(format!("agent `{name}` does not exist"));
+            continue;
+        };
+        if matches!(agent.value.session, Session::Shared) {
+            problems.push(format!(
+                "agent `{name}` keeps a shared session, and a debater needs its own"
+            ));
+        }
+        match &agent.value.model {
+            Some(model) if factory.prices.contains_key(model) => {}
+            Some(model) => problems.push(format!(
+                "agent `{name}`'s model `{model}` has no price in prices.toml, so the debate's cap cannot count it"
+            )),
+            None => problems.push(format!(
+                "agent `{name}` names no model, so prices.toml cannot price it for the debate's cap"
+            )),
+        }
+    }
+    problems
 }
 
 const UNKNOWN_GUARD: &str = "which is no built-in guard nor one of `[guard]` in factory.toml";

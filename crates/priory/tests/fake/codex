@@ -3,6 +3,9 @@
 # codex-config.json, then runs the fake claude with those hooks and that MCP server, under a thread
 # id it chooses as Codex does, or the one `codex resume <id>` names. FAKE_DIR/thread holds that id.
 # The prompt after `--` is the first turn, as Codex 0.170 takes it, which alone fires SessionStart.
+# Each turn writes Codex's session file, FAKE_DIR/codex-session.jsonl, in place of Claude's
+# transcript: a turn_context with the -c model, then a token_count event, which hooks name as
+# transcript_path.
 set -u
 printf '%s\n' "$@" > "$FAKE_DIR/codex-args.log"
 thread=''
@@ -37,4 +40,5 @@ print(json.dumps(config))
 settings=$(jq -c '{hooks: (.hooks // {})}' "$FAKE_DIR/codex-config.json")
 mcp=$(jq -c '{mcpServers: (.mcp_servers // {})}' "$FAKE_DIR/codex-config.json")
 printf '%s' "$prompt" > "$FAKE_DIR/codex-prompt"
-FAKE_LAZY_START=1 exec "$(dirname "$0")/claude" --session-id "$thread" --settings "$settings" --mcp-config "$mcp" ${prompt:+-- "$prompt"}
+model=$(jq -r '.model // "codex-default"' "$FAKE_DIR/codex-config.json")
+FAKE_CODEX_MODEL=$model FAKE_LAZY_START=1 exec "$(dirname "$0")/claude" --session-id "$thread" --settings "$settings" --mcp-config "$mcp" ${prompt:+-- "$prompt"}
