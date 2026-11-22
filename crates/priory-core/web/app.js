@@ -11,7 +11,7 @@ import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedP
 import { emptyDetail, eventWords, handled, neverOwned, sinceWords, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
-import { actionNote, arrivalAsk, batchParts, capsuleWords, countHead, countWords, dueParts, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
+import { actionNote, arrivalAsk, batchParts, capsuleWords, countHead, countWords, deskBanners, dueParts, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskLabel, taskViews, triageWords, workStep } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { PANELS, backTo, pageTitle } from "./pages.js";
@@ -360,7 +360,7 @@ function deskModel() {
   const other = items.filter((item) => !["ask", "blocked", "failed", "prompt", "command", "report", "todo"].includes(item.kind));
   // The capsule opens the ask that ranks first, not only the oldest one.
   const first = desk.ranked?.find((item) => item.kind === "ask");
-  return { next: desk.next, open, first: first ? byId.get(first.id) || open[0] : open[0], stopped, todos, reports, other, asleep: desk.counts.asleep, asleepTasks: queue.asleep, banner: desk.banner, intake: desk.intake, running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length };
+  return { next: desk.next, open, first: first ? byId.get(first.id) || open[0] : open[0], stopped, todos, reports, other, asleep: desk.counts.asleep, asleepTasks: queue.asleep, banners: deskBanners(desk), intake: desk.intake, running: queue.running, queue: queue.waiting, tasks, upNext: queue.up_next, needs: items.length };
 }
 const openAsks = () => deskModel().open;
 // The open asks the list shows, so previous, next and the ask after an answer stay in its facets.
@@ -683,9 +683,7 @@ function deskBody(wide) {
     ["asleep", "Asleep", model.asleep, current === "asleep"],
     ["all", "All", wide ? model.tasks.length + olderTasks() : null, current === "all"],
   ], "/");
-  const banner = [[model.banner, "hard-drive"], [model.intake, "unplug"]]
-    .filter(([text]) => text)
-    .map(([text, name]) => html`<div class="banner" role="status" ${name === "unplug" ? raw('id="intake"') : ""}>${icon(name, "s20")}<span>${text}</span></div>`);
+  const banner = model.banners.map(({ text, icon: name, intake }) => html`<div class="banner" role="status" ${intake ? raw('id="intake"') : ""}>${icon(name, "s20")}<span>${text}</span></div>`);
   let rows;
   if (current === "running") rows = model.running.length ? model.running.map(runRow) : html`<p class="empty">No run is live. Runs show here while an agent works.</p>`;
   else if (current === "queue") rows = listOrEmpty(model.queue.map(taskRow), html`The queue is empty. A task waits here for its turn; see <code>priory queue</code>.`);

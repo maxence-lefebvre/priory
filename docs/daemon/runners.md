@@ -294,7 +294,7 @@ returns. The runner publishes `priory.ask.applied` with the submission and its o
 `dismissed` or `refused` with the reason. Every runner lists each ask's submissions, pending until
 that message arrives, so a person sees what became of an answer on any machine.
 
-An answer that runs the ask's [command](tools.md#commands-an-answer-runs) runs it on the ask's runner.
+An answer that runs the ask's [command](../reference/tools.md#commands-an-answer-runs) runs it on the ask's runner.
 Without `--run`, or `run: true`, it is refused with `Runs on <runner>`.
 
 An ask of this machine whose name is `<runner>:<ask>` is answered here first. `priory answer` and

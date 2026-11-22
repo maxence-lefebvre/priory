@@ -188,7 +188,8 @@ fn every_example_config_matches_its_schema() {
             "scorers" => "scorer",
             "benchmarks" => "benchmark",
             "memories" => "memory",
-            "scripts" => continue,
+            // Neither has a schema: scripts are programs, and prices.toml's tables are model names.
+            "scripts" | "prices.toml" => continue,
             other => panic!("no schema for {other}"),
         };
         let value: serde_json::Value = match file.rsplit_once('.').unwrap().1 {

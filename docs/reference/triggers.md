@@ -423,6 +423,7 @@ env = ["AMPLITUDE_READ_TOKEN"]
 | `` unknown field `<key>`, expected one of ... `` | A key no table above lists |
 | `` missing field `workflow` `` | No `workflow` |
 | `<n> is not a spend cap: give dollars above zero` | A `caps` value of zero or less, or not finite |
+| `` `caps` needs prices.toml, which turns the steps' tokens into dollars `` | `caps` in a factory without `prices.toml` |
 | `` workflow `<name>` does not exist `` | `workflow` names no file under `workflows/` |
 | `` band `<band>` is not one of <bands> `` | `band` is not a band of the factory |
 | `` lane `<lane>` is not `<team>/<theme>` `` | A malformed `lane` |

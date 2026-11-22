@@ -796,3 +796,27 @@ fn a_marked_run_over_its_steps_budget_fails_rather_than_stopping() {
             .all(|prompt| !prompt.starts_with("Priory stopped"))
     );
 }
+
+#[test]
+fn a_spend_cap_ends_no_run_a_person_watches_in_tmux() {
+    let mut setup = Setup::new("cap-watched");
+    setup.caps("[caps]\ntask = 50.0\n");
+    setup.calls(&[serde_json::Value::Null, result("passed")]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") == 1);
+    let mut client = setup.watch("1");
+
+    setup.release("hold-stop");
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first()
+            .is_some_and(|row| row[4] == "done" || row[4] == "held")
+    });
+    client.kill().unwrap();
+    client.wait().unwrap();
+    assert_eq!(tasks[0][4], "done", "{tasks:?}");
+    let runs = setup.rows("runs");
+    assert!(runs.iter().all(|run| run[7] != "capped"), "{runs:?}");
+}

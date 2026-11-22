@@ -162,3 +162,17 @@ export function arrivalAsk({ from, list, view, asks }) {
   if (first === "asks" && id && list === "desk") return null;
   return asks[0].id;
 }
+
+/**
+ * The Desk's banners, each the daemon's sentence: the pause, the room, the intake, then one per
+ * day or week spend cap reached, as `priory desk` prints them.
+ * @param {any} desk `/api/desk`
+ */
+export function deskBanners(desk) {
+  return [
+    { text: desk.paused, icon: "pause", intake: false },
+    { text: desk.banner, icon: "hard-drive", intake: false },
+    { text: desk.intake, icon: "unplug", intake: true },
+    ...(desk.caps ?? []).map((/** @type {string} */ text) => ({ text, icon: "hourglass", intake: false })),
+  ].filter((banner) => banner.text);
+}

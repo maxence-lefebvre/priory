@@ -3040,6 +3040,7 @@ fn spend_caps_pass_and_a_cap_not_above_zero_or_a_malformed_lane_is_refused() {
     let mut files = with("factory.toml", good);
     files.retain(|(path, _)| *path != "triggers/agent-label.toml");
     files.push(("triggers/agent-label.toml", &trigger));
+    files.push(("prices.toml", PRICES));
     let ok = check(&factory("caps-ok", &files));
     let bad = "name = \"demo\"\n\n[caps]\ntask = 0\n\n[caps.lanes.intake]\nday = 1.0\n";
     let refused = check(&factory("caps-bad", &with("factory.toml", bad)));
@@ -3067,7 +3068,9 @@ fn spend_caps_pass_and_a_cap_not_above_zero_or_a_malformed_lane_is_refused() {
         trigger_refused.stderr
     );
     let lane = "name = \"demo\"\n\n[caps.lanes.intake]\nday = 1.0\n";
-    let lane = check(&factory("caps-lane-bad", &with("factory.toml", lane)));
+    let mut files = with("factory.toml", lane);
+    files.push(("prices.toml", PRICES));
+    let lane = check(&factory("caps-lane-bad", &files));
     assert_eq!(lane.code, 1);
     assert_eq!(
         lane.stderr,
@@ -3477,5 +3480,84 @@ fn a_debate_needs_a_cap() {
         outcome.stderr.contains("missing field `cap`"),
         "{}",
         outcome.stderr
+    );
+}
+
+const PRICES: &str =
+    "[claude-sonnet-5-5]\ninput = 2.0\noutput = 10.0\ncache_read = 0.1\ncache_write = 2.5\n";
+
+#[test]
+fn a_spend_cap_needs_a_price_table() {
+    let capped = format!("{FACTORY}\n\n[caps]\ntask = 5.0\nday = 50.0\n");
+    let refused = check(&factory("caps-unpriced", &with("factory.toml", &capped)));
+    assert_eq!(
+        (refused.code, refused.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[caps]` needs prices.toml, which turns the steps' tokens into dollars\n"
+        )
+    );
+
+    let trigger = format!("{TRIGGER}caps = {{ day = 10.0 }}\n");
+    let refused = check(&factory(
+        "caps-trigger-unpriced",
+        &with("triggers/agent-label.toml", &trigger),
+    ));
+    assert_eq!(
+        (refused.code, refused.stderr.as_str()),
+        (
+            1,
+            "triggers/agent-label.toml:8: `caps` needs prices.toml, which turns the steps' tokens into dollars\n"
+        )
+    );
+
+    let lane = format!("{FACTORY}\n\n[caps.lanes.\"core/intake\"]\nday = 10.0\n");
+    let refused = check(&factory("caps-lane-unpriced", &with("factory.toml", &lane)));
+    assert_eq!(refused.code, 1, "{}", refused.stderr);
+
+    let mut files = with("factory.toml", &capped);
+    files.push(("prices.toml", PRICES));
+    let priced = check(&factory("caps-priced", &files));
+    assert_eq!((priced.code, priced.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn a_spend_cap_warns_for_an_agent_whose_model_has_no_price_or_that_runs_codex() {
+    let capped = format!("{FACTORY}\n\n[caps]\nday = 50.0\n");
+    let unpriced = AGENT.replace("session = ", "model = \"claude-opus-5-5\"\nsession = ");
+    let mut files = with("factory.toml", &capped);
+    files.retain(|(path, _)| *path != "agents/implementer/agent.md");
+    files.push(("agents/implementer/agent.md", &unpriced));
+    files.push(("prices.toml", PRICES));
+    let warned = check(&factory("caps-model-unpriced", &files));
+    assert_eq!(
+        (warned.code, warned.stderr.as_str()),
+        (
+            0,
+            "warning: agents/implementer/agent.md:4: the spend caps count nothing for agent `implementer`: prices.toml has no price for its model `claude-opus-5-5`\n"
+        )
+    );
+
+    let alias = AGENT.replace("session = ", "model = \"sonnet\"\nsession = ");
+    let mut files = with("factory.toml", &capped);
+    files.retain(|(path, _)| *path != "agents/implementer/agent.md");
+    files.push(("agents/implementer/agent.md", &alias));
+    files.push(("prices.toml", PRICES));
+    let quiet = check(&factory("caps-model-alias", &files));
+    assert_eq!((quiet.code, quiet.stderr.as_str()), (0, ""));
+
+    let codex =
+        "+++\ndescription = \"Implements one task.\"\nharness = \"codex\"\n+++\nMake the change.\n";
+    let mut files = with("factory.toml", &capped);
+    files.retain(|(path, _)| *path != "agents/implementer/agent.md");
+    files.push(("agents/implementer/agent.md", codex));
+    files.push(("prices.toml", PRICES));
+    let warned = check(&factory("caps-codex", &files));
+    assert_eq!(
+        (warned.code, warned.stderr.as_str()),
+        (
+            0,
+            "warning: agents/implementer/agent.md:3: the spend caps count nothing for agent `implementer`: Priory reads no Codex tokens\n"
+        )
     );
 }

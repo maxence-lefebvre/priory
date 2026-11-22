@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, countWords, memoryNote, memoryTag, capsuleWords, countHead, arrivalAsk } from "./desk.js";
+import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, countWords, memoryNote, memoryTag, capsuleWords, countHead, deskBanners, arrivalAsk } from "./desk.js";
 
 const why = "work stopped and waits on a person";
 
@@ -175,4 +175,19 @@ test("a wide Desk opens its oldest ask on arrival, and stays empty once that dra
   assert.equal(arrivalAsk({ from: "/?view=running", list: "desk", view: "needs", asks }), null);
   assert.equal(arrivalAsk({ from: "/tasks", list: "desk", view: "running", asks }), null);
   assert.equal(arrivalAsk({ from: null, list: "desk", view: "needs", asks: [] }), null);
+});
+
+test("the desk's banners say why runs wait: the pause first, then room, intake and each cap reached", () => {
+  const cap = "spend cap reached: factory spent $50.10 of its day cap of $50.00; its new runs wait for the next day";
+  const lane = "spend cap reached: lane core/intake spent $12.40 of its day cap of $10.00; its new runs wait for the next day";
+  assert.deepEqual(deskBanners({ paused: "paused since 2026-11-22T21:40:00Z: freeze", banner: "waits for room", intake: "the intake fails", caps: [cap, lane] }), [
+    { text: "paused since 2026-11-22T21:40:00Z: freeze", icon: "pause", intake: false },
+    { text: "waits for room", icon: "hard-drive", intake: false },
+    { text: "the intake fails", icon: "unplug", intake: true },
+    { text: cap, icon: "hourglass", intake: false },
+    { text: lane, icon: "hourglass", intake: false },
+  ]);
+  assert.deepEqual(deskBanners({ paused: null, banner: null, intake: null, caps: [] }), []);
+  // A desk cached before the fields existed has neither.
+  assert.deepEqual(deskBanners({ banner: "waits for room" }), [{ text: "waits for room", icon: "hard-drive", intake: false }]);
 });
