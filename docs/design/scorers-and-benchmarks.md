@@ -390,7 +390,9 @@ Tests:
    Code's transcripts: a Codex run is a gap. The case folder, from a task with a `base_sha`. Tests capture a task of
    the end-to-end harness and compare the folder byte for byte, refuse a task with no start commit
    or no irreversible step, and mark a task whose transcript is gone as `partial`. The transcript
-   reader is a parser of outside text, so it gets a `proptest`.
+   reader is a parser of outside text, so it gets a `proptest`. A `failed` or `blocked` task that reached no irreversible
+   step is now captured up to the step it stopped at, for failure patterns
+   ([failure-patterns.md](failure-patterns.md)).
 2. Built. `priory bench replay` ([bench.md](../daemon/bench.md#replay)): the replay of one case
    under one configuration, with the endings, `--budget` and the estimate. The capture now
    records each model step's model, minutes and tokens as the case's `spent`, which the estimate

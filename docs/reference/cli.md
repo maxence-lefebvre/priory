@@ -194,6 +194,13 @@ See [Columns](#columns).
   tasks turned out. See [trace.md](../daemon/trace.md#grades).
 - `priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)`: marks a task's work
   wrong for the risk report, or withdraws the mark. See [label.md](label.md).
+- `priory patterns [--all] [--json]`, `priory patterns find [DIR] [--since <instant-or-duration>]`,
+  `priory patterns show ID [--json]`: lists the failure patterns on the desk, or every one, groups
+  the window's failed, blocked, repaired and marked-wrong tasks into patterns, or shows one pattern
+  with its tasks. See [patterns.md](../daemon/patterns.md).
+- `priory patterns (close | dismiss) [DIR] ID`, `priory patterns capture [DIR] ID --into FOLDER`:
+  closes a pattern as fixed or dismisses it as no pattern, or captures each of its tasks as a
+  benchmark case.
 - `priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]`: grades a task's finished runs
   with the factory's scorers. See [score.md](../daemon/score.md).
 - `priory score [DIR] --calibrate SCORER --budget USD [--json]`: measures a judge scorer against a

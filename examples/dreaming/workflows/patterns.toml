@@ -1,0 +1,14 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+start = "find"
+band = "later"
+
+# No agent and no model: a code step groups the day's failed, blocked, repaired and marked-wrong
+# tasks into failure patterns, which the desk shows once a pattern holds two tasks.
+[[steps]]
+id = "find"
+decides = "code"
+action = "run"
+run = "priory patterns find"   # in the factory folder; reads the last 24 hours
+effect = "read"
+timeout = "2m"
+next = { ok = "done", failed = "stop" }

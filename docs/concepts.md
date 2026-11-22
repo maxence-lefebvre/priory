@@ -73,3 +73,9 @@ See [docs/daemon/health.md](daemon/health.md).
 **Trace and reports.** Each step's end is recorded with its outcome, tokens and time. `priory report`
 reads these records, and the daemon can export them as OpenTelemetry spans. See
 [docs/daemon/trace.md](daemon/trace.md) and [docs/trace-schema.md](trace-schema.md).
+
+**Failure pattern.** The tasks that failed, blocked, were repaired or were marked wrong at one step
+for the same reason. A nightly code step groups the day's into patterns, the desk shows a pattern
+once it holds two tasks, and its count grows as new tasks match. A person closes it once a fix
+merged, dismisses it, or captures its tasks as benchmark cases to compare the fix on. See
+[docs/daemon/patterns.md](daemon/patterns.md).

@@ -170,6 +170,7 @@ fn main() -> ExitCode {
             }
         }
         Some("label") => label(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
+        Some("patterns") => patterns(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("relate") => relate(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("tldr") => match (args.next(), args.next(), args.next()) {
             (Some(task), Some(text), None) => tldr(&task.to_string_lossy(), &text.to_string_lossy()),
@@ -255,7 +256,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory check [DIR] --repo PATH [--json]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory intake pre [DIR] TRIGGER < EVENT.json    runs the trigger's pre script on one event, publishes nothing\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory daemon --view-only [DIR]    mirrors every runner's asks and tasks and serves them, runs nothing\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen [DIR] (TASK | --run RUN) [--history N] [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory recap [--since <instant-or-duration>] [--max-bytes N]\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--by lane] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo|lane] [--json]\n       priory grades [--since <instant-or-duration>] [--by lane] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]\n       priory score [DIR] --calibrate SCORER --budget USD [--json]\n       priory calibrate triage [DIR] [--json]\n       priory bench capture [DIR] TASK --into FOLDER\n       priory bench replay [DIR] CASE --budget USD [--turn-timeout DURATION]\n       priory bench FILE --base REF --head REF --budget USD [--runs N] [--case NAME] [--turn-timeout DURATION] [--post OWNER/NAME#N]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY\n       priory say [--generation N] [DIR] RUNNER:KEY TEXT\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory evidence add FILE --caption TEXT\n       priory evidence TASK [--json]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory memories [DIR] [--all] [--json]\n       priory memories (accept | drop) [DIR] CANDIDATE\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID [--debate]\n       priory mcp --outside\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT\n       priory hook PreToolUse --outside"
+        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory check [DIR] --repo PATH [--json]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory intake pre [DIR] TRIGGER < EVENT.json    runs the trigger's pre script on one event, publishes nothing\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory daemon --view-only [DIR]    mirrors every runner's asks and tasks and serves them, runs nothing\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen [DIR] (TASK | --run RUN) [--history N] [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory recap [--since <instant-or-duration>] [--max-bytes N]\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--by lane] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo|lane] [--json]\n       priory grades [--since <instant-or-duration>] [--by lane] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]\n       priory score [DIR] --calibrate SCORER --budget USD [--json]\n       priory calibrate triage [DIR] [--json]\n       priory bench capture [DIR] TASK --into FOLDER\n       priory bench replay [DIR] CASE --budget USD [--turn-timeout DURATION]\n       priory bench FILE --base REF --head REF --budget USD [--runs N] [--case NAME] [--turn-timeout DURATION] [--post OWNER/NAME#N]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY\n       priory say [--generation N] [DIR] RUNNER:KEY TEXT\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory patterns [--all] [--json]\n       priory patterns find [DIR] [--since <instant-or-duration>]\n       priory patterns show ID [--json]\n       priory patterns (close | dismiss) [DIR] ID\n       priory patterns capture [DIR] ID --into FOLDER\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory evidence add FILE --caption TEXT\n       priory evidence TASK [--json]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory memories [DIR] [--all] [--json]\n       priory memories (accept | drop) [DIR] CANDIDATE\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID [--debate]\n       priory mcp --outside\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT\n       priory hook PreToolUse --outside"
     );
     ExitCode::from(2)
 }
@@ -987,30 +988,220 @@ fn capture(args: &[String]) -> ExitCode {
                 into.display()
             ));
         }
-        let read = |path: &str| std::fs::read(path);
-        let case = priory_core::capture::capture(&db, &factory, task, &read)?;
-        for (path, text) in &case.files {
-            let file = into.join(path);
-            let written = file
-                .parent()
-                .map_or(Ok(()), std::fs::create_dir_all)
-                .and_then(|()| std::fs::write(&file, text));
-            written.map_err(|error| format!("{}: {error}", file.display()))?;
-        }
-        let state = match case.gaps {
-            0 => "complete".to_owned(),
-            1 => "partial, 1 gap".to_owned(),
-            gaps => format!("partial, {gaps} gaps"),
-        };
         println!(
-            "captured task {task} into {}: {} gh answer(s), {} answer(s), {state}",
-            into.display(),
-            case.gh,
-            case.answers
+            "{}",
+            priory_core::capture::capture_into(&db, &factory, task, &into)?
         );
         Ok(())
     });
     exit("bench capture", captured)
+}
+
+/// The trace of a person's command on the factory, on this machine.
+fn person_trace(factory: &factory::Factory) -> priory_core::trace::Trace<'_> {
+    priory_core::trace::Trace {
+        factory,
+        revision: runtime::revision(&factory.dir),
+        machine: priory_runtime::room::hostname(),
+        runner: None,
+        usage: priory_runtime::transcript::usage,
+    }
+}
+
+/// `priory patterns`: lists failure patterns, finds new ones in a window, shows, closes, dismisses
+/// or captures one.
+fn patterns(args: Vec<String>) -> ExitCode {
+    let (mut all, mut json, mut since, mut into) = (false, false, None, None);
+    let mut words = Vec::new();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--all" => all = true,
+            "--json" => json = true,
+            "--since" => match args.next() {
+                Some(window) => since = Some(window),
+                None => return usage(),
+            },
+            "--into" => match args.next() {
+                Some(folder) => into = Some(PathBuf::from(folder)),
+                None => return usage(),
+            },
+            _ if arg.starts_with("--") => return usage(),
+            _ => words.push(arg),
+        }
+    }
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    let flags = |allowed: &[bool]| allowed.iter().all(|flag| !flag);
+    match words[..] {
+        [] if since.is_none() && into.is_none() => {
+            let listed = state::open().and_then(|db| {
+                let patterns = priory_core::patterns::patterns(&db)
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .filter(|pattern| all || priory_core::patterns::shown(pattern))
+                    .collect::<Vec<_>>();
+                if json {
+                    let listed: Vec<Value> = patterns
+                        .iter()
+                        .map(|pattern| {
+                            let mut value = json!(pattern);
+                            value.as_object_mut().map(|fields| fields.remove("matches"));
+                            value
+                        })
+                        .collect();
+                    println!("{}", Value::Array(listed));
+                    return Ok(());
+                }
+                println!("id\tstate\tworkflow\tstep\ttasks\tlast\ttext");
+                for pattern in &patterns {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        pattern.id,
+                        pattern.state,
+                        pattern.workflow,
+                        pattern.step,
+                        pattern.tasks.len(),
+                        pattern.last,
+                        pattern.text
+                    );
+                }
+                Ok(())
+            });
+            exit("patterns", listed)
+        }
+        ["find", ref rest @ ..] if rest.len() <= 1 && flags(&[all, json, into.is_some()]) => {
+            let Some(factory) = load(Path::new(rest.first().copied().unwrap_or("."))) else {
+                return ExitCode::FAILURE;
+            };
+            let since = since.unwrap_or_else(|| priory_core::patterns::SINCE.to_owned());
+            let found = intake::now().and_then(|now| {
+                let now = now.to_string();
+                let mut db = state::open()?;
+                let start = report::start(&db, &since, &now)?;
+                let found =
+                    priory_core::patterns::find(&mut db, &person_trace(&factory), &start, &now)?;
+                let patterns =
+                    priory_core::patterns::patterns(&db).map_err(|error| error.to_string())?;
+                let new: usize = found.matched.values().sum();
+                println!(
+                    "{new} new {} from {start} to {now}",
+                    if new == 1 { "match" } else { "matches" }
+                );
+                for pattern in patterns
+                    .iter()
+                    .filter(|pattern| found.matched.contains_key(&pattern.id))
+                {
+                    println!(
+                        "{}\t{}\t{}/{}\t+{}, {} {}\t{}",
+                        pattern.id,
+                        pattern.state,
+                        pattern.workflow,
+                        pattern.step,
+                        found.matched[&pattern.id],
+                        pattern.tasks.len(),
+                        if pattern.tasks.len() == 1 {
+                            "task"
+                        } else {
+                            "tasks"
+                        },
+                        pattern.text
+                    );
+                }
+                Ok(())
+            });
+            exit("patterns find", found)
+        }
+        ["show", id] if flags(&[all, since.is_some(), into.is_some()]) => {
+            let shown = state::open().and_then(|db| {
+                let pattern = priory_core::patterns::pattern(&db, id)?;
+                if json {
+                    println!("{}", json!(pattern));
+                    return Ok(());
+                }
+                println!(
+                    "pattern {}: {}, {}/{}, {} tasks, last {}\n{}\n",
+                    pattern.id,
+                    pattern.state,
+                    pattern.workflow,
+                    pattern.step,
+                    pattern.tasks.len(),
+                    pattern.last,
+                    pattern.text
+                );
+                println!("task\tkey\tkind\thappened\ttext");
+                for found in &pattern.matches {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}",
+                        found.task, found.key, found.kind, found.happened, found.text
+                    );
+                }
+                Ok(())
+            });
+            exit("patterns show", shown)
+        }
+        [verb @ ("close" | "dismiss"), ref rest @ ..]
+            if !rest.is_empty()
+                && rest.len() <= 2
+                && flags(&[all, json, since.is_some(), into.is_some()]) =>
+        {
+            let (dir, id) = match rest {
+                [id] => (".", *id),
+                [dir, id] => (*dir, *id),
+                _ => return usage(),
+            };
+            let Some(factory) = load(Path::new(dir)) else {
+                return ExitCode::FAILURE;
+            };
+            let closed = state::open().and_then(|mut db| {
+                let text = priory_core::patterns::close(
+                    &mut db,
+                    &person_trace(&factory),
+                    id,
+                    verb == "dismiss",
+                )?;
+                println!("{text}");
+                Ok(())
+            });
+            exit(&format!("patterns {verb}"), closed)
+        }
+        ["capture", ref rest @ ..] if flags(&[all, json, since.is_some()]) => {
+            let (dir, id) = match rest {
+                [id] => (".", *id),
+                [dir, id] => (*dir, *id),
+                _ => return usage(),
+            };
+            let Some(into) = into else {
+                return usage();
+            };
+            let Some(factory) = load(Path::new(dir)) else {
+                return ExitCode::FAILURE;
+            };
+            let captured = state::open().and_then(|db| {
+                let pattern = priory_core::patterns::pattern(&db, id)?;
+                let mut kept = 0;
+                for task in priory_core::patterns::tasks(&pattern) {
+                    let folder = into.join(format!("task-{task}"));
+                    if folder.exists() {
+                        println!("skipped task {task}: {} already exists", folder.display());
+                        continue;
+                    }
+                    match priory_core::capture::capture_into(&db, &factory, task, &folder) {
+                        Ok(line) => {
+                            kept += 1;
+                            println!("{line}");
+                        }
+                        Err(error) => println!("skipped task {task}: {error}"),
+                    }
+                }
+                if kept == 0 {
+                    return Err(format!("no task of pattern {id} could be captured"));
+                }
+                Ok(())
+            });
+            exit("patterns capture", captured)
+        }
+        _ => usage(),
+    }
 }
 
 fn costs(args: Vec<String>) -> ExitCode {

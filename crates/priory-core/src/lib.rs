@@ -29,6 +29,7 @@ mod notify;
 mod otlp;
 pub mod outside;
 mod overlap;
+pub mod patterns;
 pub mod pending;
 pub mod post;
 mod preempt;

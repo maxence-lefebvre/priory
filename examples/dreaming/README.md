@@ -5,11 +5,15 @@ At 03:00, an agent reads what the day's tasks concluded and what people answered
 `memories` row lists them, and you accept or drop each one. At 06:00, a code step opens one pull
 request on your kit repository with the memories you accepted.
 
+At 02:45, a code step runs `priory patterns find`: it groups the day's failed, blocked, repaired and
+marked-wrong tasks into failure patterns, and the desk shows each pattern that holds two tasks. It
+runs no model.
+
 ## What it needs
 
 `claude` on `PATH`, `gh` logged in with push access to the kit repository, and `PRIORY_DB` set for
 the intake and the daemon. The agent runs `priory recap`, so put Priory's binary on the daemon's
-`PATH`. Replace `owner/abbey` in `factory.toml` and both triggers with your kit repository, and
+`PATH`. Replace `owner/abbey` in `factory.toml` and every trigger with your kit repository, and
 rename `runners/my-machine.toml` after your machine's Tailscale hostname.
 
 `prices.toml` prices `claude-sonnet-5-5`, the model `sonnet` names today. The dream step's
