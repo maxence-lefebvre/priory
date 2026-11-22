@@ -387,14 +387,22 @@ const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName hea
     __typename ... on CheckRun { databaseId name status conclusion completedAt url checkSuite { app { slug } } } \
     } } } } } } }";
 
-/// The open pull requests of `repo`, 100 per page.
+/// How many pull requests one GraphQL request reads. Each brings up to 50 reviews, 50 comments and
+/// 100 check runs, so 100 per request made about 20,000 nodes, which GitHub on a busy repository
+/// answered with a 504.
+const PULLS_PER_REQUEST: usize = 25;
+
+fn open_pulls_query() -> String {
+    format!(
+        "query($owner: String!, $name: String!, $endCursor: String) {{ repository(owner: $owner, name: $name) {{ \
+         pullRequests(states: OPEN, first: {PULLS_PER_REQUEST}, after: $endCursor) {{ pageInfo {{ hasNextPage endCursor }} \
+         nodes {{ ...pull }} }} }} }} {PULL_FIELDS}"
+    )
+}
+
+/// The open pull requests of `repo`, `PULLS_PER_REQUEST` per page.
 pub(super) fn open_pulls(repo: &str) -> Result<Vec<Pull>, String> {
     let (owner, name) = repo.split_once('/').unwrap_or_default();
-    let query = format!(
-        "query($owner: String!, $name: String!, $endCursor: String) {{ repository(owner: $owner, name: $name) {{ \
-         pullRequests(states: OPEN, first: 100, after: $endCursor) {{ pageInfo {{ hasNextPage endCursor }} \
-         nodes {{ ...pull }} }} }} }} {PULL_FIELDS}"
-    );
     let pages: Vec<serde_json::Value> = gh(
         "graphql",
         &[
@@ -405,7 +413,7 @@ pub(super) fn open_pulls(repo: &str) -> Result<Vec<Pull>, String> {
             "-f",
             &format!("name={name}"),
             "-f",
-            &format!("query={query}"),
+            &format!("query={}", open_pulls_query()),
         ],
     )?;
     let nodes = pages
@@ -419,45 +427,54 @@ pub(super) fn open_pulls(repo: &str) -> Result<Vec<Pull>, String> {
         .collect()
 }
 
-/// The pull requests `numbers` name, in one GraphQL query; none when `numbers` is empty.
+/// One query per `PULLS_PER_REQUEST` of `numbers`, each naming its pull requests by alias.
+fn by_number_queries(numbers: &BTreeSet<u64>) -> Vec<String> {
+    let numbers: Vec<u64> = numbers.iter().copied().collect();
+    numbers
+        .chunks(PULLS_PER_REQUEST)
+        .map(|chunk| {
+            let fields: String = chunk
+                .iter()
+                .map(|number| format!("pr{number}: pullRequest(number: {number}) {{ ...pull }} "))
+                .collect();
+            format!(
+                "query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {fields}}} }} {PULL_FIELDS}"
+            )
+        })
+        .collect()
+}
+
+/// The pull requests `numbers` name, `PULLS_PER_REQUEST` to a GraphQL query; none when `numbers`
+/// is empty.
 pub(super) fn pull_requests(
     repo: &str,
     numbers: &BTreeSet<u64>,
 ) -> Result<BTreeMap<u64, Pull>, String> {
-    if numbers.is_empty() {
-        return Ok(BTreeMap::new());
-    }
     let (owner, name) = repo.split_once('/').unwrap_or_default();
-    let fields: String = numbers
-        .iter()
-        .map(|number| format!("pr{number}: pullRequest(number: {number}) {{ ...pull }} "))
-        .collect();
-    let query = format!(
-        "query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {fields}}} }} {PULL_FIELDS}"
-    );
-    let answer: serde_json::Value = gh(
-        "graphql",
-        &[
-            "-f",
-            &format!("owner={owner}"),
-            "-f",
-            &format!("name={name}"),
-            "-f",
-            &format!("query={query}"),
-        ],
-    )?;
-    let found = answer["data"]["repository"]
-        .as_object()
-        .into_iter()
-        .flatten();
-    found
-        .filter(|(_, pull)| !pull.is_null())
-        .map(|(_, pull)| {
+    let mut pulls = BTreeMap::new();
+    for query in by_number_queries(numbers) {
+        let answer: serde_json::Value = gh(
+            "graphql",
+            &[
+                "-f",
+                &format!("owner={owner}"),
+                "-f",
+                &format!("name={name}"),
+                "-f",
+                &format!("query={query}"),
+            ],
+        )?;
+        let found = answer["data"]["repository"]
+            .as_object()
+            .into_iter()
+            .flatten();
+        for (_, pull) in found.filter(|(_, pull)| !pull.is_null()) {
             let pull: Pull = serde_json::from_value(pull.clone())
                 .map_err(|error| format!("gh api graphql: {error}"))?;
-            Ok((pull.number, pull))
-        })
-        .collect()
+            pulls.insert(pull.number, pull);
+        }
+    }
+    Ok(pulls)
 }
 
 impl Pull {
@@ -556,4 +573,76 @@ pub(super) fn issue_comments(repo: &str) -> Result<Vec<Value>, String> {
         &format!("repos/{repo}/issues/comments?sort=created&direction=desc&per_page=100"),
         &[],
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The most nodes a GraphQL selection can return: each `first:` or `last:` connection
+    /// multiplies the nodes under it, as GitHub counts them against its limits.
+    fn nodes(selection: &str) -> u64 {
+        let (mut total, mut stack, mut pending) = (0, vec![1u64], None);
+        let mut rest = selection;
+        while let Some(at) = rest.find(['{', '}', ':']) {
+            let (before, after) = rest.split_at(at);
+            match after.as_bytes()[0] {
+                b'{' => {
+                    let top = *stack.last().unwrap();
+                    let size = pending.take().map_or(top, |size: u64| top * size);
+                    if size != top {
+                        total += size;
+                    }
+                    stack.push(size);
+                }
+                b'}' => {
+                    stack.pop();
+                }
+                _ => {
+                    if before.ends_with("first") || before.ends_with("last") {
+                        let digits: String = after[1..]
+                            .trim_start()
+                            .chars()
+                            .take_while(char::is_ascii_digit)
+                            .collect();
+                        pending = digits.parse().ok();
+                    }
+                }
+            }
+            rest = &after[1..];
+        }
+        total
+    }
+
+    #[test]
+    fn the_node_count_reads_nested_connections() {
+        assert_eq!(
+            nodes("a(first: 10) { b(last: 5) { c } d(first: 2) { e } }"),
+            80
+        );
+    }
+
+    #[test]
+    fn one_request_of_the_pull_request_query_returns_at_most_6000_nodes() {
+        let per_pull = nodes(PULL_FIELDS);
+        let open = nodes(&open_pulls_query()) + PULLS_PER_REQUEST as u64 * per_pull;
+        let numbers: BTreeSet<u64> = (1..=200).collect();
+        let named = by_number_queries(&numbers);
+        assert!(open <= 6000, "{open} nodes per page of open pull requests");
+        for query in &named {
+            let aliases = query.matches(": pullRequest(number:").count() as u64;
+            let named = aliases * (1 + per_pull);
+            assert!(
+                named <= 6000,
+                "{named} nodes in one query of named pull requests"
+            );
+        }
+        assert_eq!(
+            named
+                .iter()
+                .map(|query| query.matches(": pullRequest(number:").count())
+                .sum::<usize>(),
+            200
+        );
+    }
 }

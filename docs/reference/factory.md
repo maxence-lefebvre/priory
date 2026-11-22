@@ -19,6 +19,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `pre_review` | string | no | none: an approval ask reaches the desk unreviewed | A judge [scorer](scorers.md) that reads the lessons kept for an approval step before that step asks a person. A result that repeats one goes back to the agent once, with the lessons. It never approves anything. See Pre-review in [score.md](../daemon/score.md#pre-review) | `"repeats-a-lesson"` |
 | `writing` | path | no | none: agents get only their own prompt | A file, relative to the factory folder, whose text Priory appends to the system prompt of every agent it starts. `priory check` refuses a missing file and warns past 4096 bytes. See [writing.md](../daemon/writing.md) | `"WRITING.md"` |
 | `sweep` | table | no | the built-in worktree sweep alone | How the daemon frees room. See [`[sweep]`](#sweep) | |
+| `intake` | table | no | a failing poll reports after 15 minutes | How the intake treats a failing poll. See [`[intake]`](#intake) | |
 | `search` | table | no | keyword search, no summarizer | How tasks are found. See [`[search]`](#search) | |
 | `log` | table | no | herdr-bus's file on this machine | Where the event log lives. See [`[log]`](#log) | |
 | `telemetry` | table | no | no export | Where trace records go. See [`[telemetry]`](#telemetry) | |
@@ -52,6 +53,14 @@ See [runs.md](../daemon/runs.md#overlapping-files) for how the overlap hold work
 | `preempt` | list of bands | no | `[]` | The bands whose task at the head of the queue, waiting for memory or disk, may stop runs of a lower band at the end of their turn | `["blocker"]` |
 | `review_limit` | integer, at least 1 | no | no limit | How many pull requests of a lane, or of a batch, may wait for a person before its new tasks wait to start. A task of the first band never waits | `5` |
 | `fair` | `lane` | no | oldest first | What the queue takes turns between inside a band, among the tasks no person ordered | `"lane"` |
+
+## `[intake]`
+
+See [desk.md](../daemon/desk.md#intake-banner) for the report and the banner a failing poll gives.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `alarm_after` | duration | no | `"15m"` | How long a source's polls fail before the intake posts its `intake` report, which the desk ranks as an alarm and Web Push sends. Until then, the desk shows only the banner `the intake retries <source> ...`. A source that cannot start reports at once | `"5m"` |
 
 ## `[sweep]`
 

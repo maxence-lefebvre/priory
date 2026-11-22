@@ -40,6 +40,8 @@ pub struct Settings {
     pub sweep: Sweep,
     #[serde(default)]
     pub queue: Queue,
+    #[serde(default)]
+    pub intake: IntakeSettings,
     /// The agent whose model reads a stalled run's screen; no handler runs without one.
     pub handler: Option<String>,
     /// How long a run goes without a hook event or a change on its pane before it counts as stalled.
@@ -956,6 +958,17 @@ pub struct Sweep {
     pub agent: Option<String>,
     /// The repository the sweeper works in and files its issue on, a GitHub `owner/name`.
     pub repo: Option<String>,
+}
+
+/// `[intake]`: how the intake treats a failing poll.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IntakeSettings {
+    /// How long a source's polls fail before the intake posts its report, which the desk ranks as
+    /// an alarm; 15 minutes when unset. Until then the desk shows only its banner.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub alarm_after: Option<Duration>,
 }
 
 /// How the queue orders tasks.
@@ -2502,6 +2515,14 @@ impl Factory {
             .as_ref()
             .and_then(|settings| settings.value.command_timeout)
             .unwrap_or(Duration::from_secs(300))
+    }
+
+    /// How long a source's polls fail before the intake reports it; 15 minutes when unset.
+    pub fn intake_alarm_after(&self) -> Duration {
+        self.settings
+            .as_ref()
+            .and_then(|settings| settings.value.intake.alarm_after)
+            .unwrap_or(Duration::from_secs(15 * 60))
     }
 
     /// The OTLP/HTTP base URL the daemon exports spans to; none sends nothing.

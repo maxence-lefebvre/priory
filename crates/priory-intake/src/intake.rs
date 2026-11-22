@@ -174,7 +174,8 @@ pub type Ended = fn(&str) -> Result<u64, String>;
 /// the intake polls the Slack threads, Linear issues and pull request repositories they name.
 /// `merged` reads the task pull requests merged since the time it is given, to read their merge
 /// commits' check runs.
-/// `health` records each poll's outcomes at the poll's time.
+/// `health` records each poll's outcomes at the poll's time, and how long a source fails before it
+/// reports: `[intake] alarm_after` for a poll, none for a source that cannot start.
 /// `ended` lets the Slack shortcut queue a thread again once its task ended.
 /// `report` records each `pre` script's failure, or none to mark the trigger's last one read.
 pub fn run(
@@ -182,7 +183,7 @@ pub fn run(
     once: bool,
     watched: fn() -> Result<Vec<Watch>, String>,
     merged: fn(&str) -> Result<Vec<Merge>, String>,
-    health: fn(&Outcomes, Timestamp) -> Result<(), String>,
+    health: fn(&Outcomes, Timestamp, Duration) -> Result<(), String>,
     ended: Ended,
     report: fn(&str, Option<&str>) -> Result<(), String>,
 ) -> Result<(), String> {
@@ -225,7 +226,9 @@ pub fn run(
     // A source the triggers need that cannot start, such as one without its key, ends the intake;
     // recording it first lets the desk say why while systemd restarts it.
     let started = |source: &str, error: String| {
-        if let Err(unrecorded) = now().and_then(|at| health(&[(source, Some(error.clone()))], at)) {
+        if let Err(unrecorded) =
+            now().and_then(|at| health(&[(source, Some(error.clone()))], at, Duration::ZERO))
+        {
             eprintln!("{unrecorded}");
         }
         error
@@ -339,7 +342,7 @@ pub fn run(
                 (source, errors.map(|errors| errors.join("; ")))
             })
             .collect();
-        let recorded = health(&outcomes, now()?);
+        let recorded = health(&outcomes, now()?, factory.intake_alarm_after());
         for error in recorded
             .err()
             .into_iter()

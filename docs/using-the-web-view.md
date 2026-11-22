@@ -70,8 +70,8 @@ your tailnet can connect. It assumes Tailscale runs on the machine and on the ph
 Under More, then Notifications, tap Turn on notifications, and allow them.
 
 A new ask now shows its title on the phone, or its task and step, and tapping it opens the ask. A
-task that turns blocked or failed shows `task <key> <state>`, and a failing intake shows
-`the intake fails to poll <source>`. A snoozed item sends nothing. Turn notifications off on the
+task that turns blocked or failed shows `task <key> <state>`, and an intake that has failed to poll a
+source for 15 minutes shows `the intake fails to poll <source>`. A snoozed item sends nothing. Turn notifications off on the
 same screen. [serve.md](daemon/serve.md#notifications) explains when a notification is sent and
 retried.
 

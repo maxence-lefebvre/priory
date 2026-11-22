@@ -349,6 +349,19 @@
       },
       "type": "object"
     },
+    "IntakeSettings": {
+      "additionalProperties": false,
+      "description": "`[intake]`: how the intake treats a failing poll.",
+      "properties": {
+        "alarm_after": {
+          "default": null,
+          "description": "How long a source's polls fail before the intake posts its report, which the desk ranks as\nan alarm; 15 minutes when unset. Until then the desk shows only its banner.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "IntercomWebhook": {
       "additionalProperties": false,
       "description": "Intercom conversation webhooks, at `POST /hooks/intercom`.",
@@ -1092,6 +1105,9 @@
         "string",
         "null"
       ]
+    },
+    "intake": {
+      "$ref": "#/definitions/IntakeSettings"
     },
     "kit": {
       "anyOf": [

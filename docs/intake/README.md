@@ -33,9 +33,15 @@ Each `gh api` call runs in its own process group. Past 5 minutes, or past `comma
 `factory.toml`, the call is killed and the poll fails with `timed out after <n>s`. So a hung call
 cannot hold up schedules, Linear and Slack forever.
 
-With `PRIORY_DB` set, the intake records each poll in the state. A source whose poll fails posts
-one `intake` report and shows a banner on the desk, and an intake that has not polled for 5 minutes
-shows one too: see [desk.md](../daemon/desk.md#intake-banner).
+When GitHub answers a `gh api` call with a 5xx, or with its GraphQL timeout, the intake tries the
+call again after 1 second, then after 3 seconds, in the same poll. A call past `command_timeout`
+is not tried again.
+
+With `PRIORY_DB` set, the intake records each poll in the state. A source whose poll fails shows a
+banner on the desk. Once its polls have failed for [`[intake]
+alarm_after`](../reference/factory.md#intake), 15 minutes by default, it also posts one `intake`
+report, which the desk ranks as an alarm. An intake that has not polled for 5 minutes shows a
+banner too: see [desk.md](../daemon/desk.md#intake-banner).
 
 ## Where messages go
 

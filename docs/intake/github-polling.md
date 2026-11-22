@@ -69,8 +69,8 @@ The events' ids are on their own pages.
 | Poll | Calls |
 | ---- | ----- |
 | A repository with N open pull requests and nothing new | 5 `gh` calls: 4 REST requests (`issues/events`, `issues`, `pulls/comments` and `issues/comments`, one page each) and 1 GraphQL query |
-| N over 100 | the query pages itself: ceil(N/100) requests, about 4 points each on `cli/cli` |
-| New pull request events | 1 more GraphQL query for the pull requests they name |
+| N over 25 | the query pages itself: ceil(N/25) requests |
+| New pull request events | 1 more GraphQL query per 25 pull requests they name |
 | A task pull request merged in the last 7 days | 1 more REST request per merge commit whose checks have not all completed ([why](pull-requests.md#check-runs-at-a-merge)) |
 | Over 100 new events in a stream since the last poll | 1 more REST page per 100 |
 
@@ -78,8 +78,13 @@ A subscription or a task branch adds no call for a repository a trigger already 
 trigger names, it adds that repository's 5 `gh` calls per poll, however many subscriptions and
 branches name it.
 
-At one poll a minute, that is 240 REST requests and about 240 GraphQL points an hour per repository,
-each against GitHub's 5,000 an hour. Review thread comments come from REST because the query would
+At one poll a minute, that is 240 REST requests and at least 60 GraphQL requests an hour per
+repository, each against GitHub's 5,000 an hour.
+
+One GraphQL request reads 25 pull requests. Each brings its last 50 reviews, its last 50 comments
+and the first 100 check runs of its head commit, so a request returns at most 5,050 nodes. At 100
+pull requests a request, it returned up to 20,200, and GitHub answered a busy repository's query
+with a 504. Review thread comments come from REST because the query would
 pay for every thread of every open pull request: about 20 more points per poll at 20 threads each.
 
 Each `gh api` call runs in its own process group. Past `command_timeout` in `factory.toml`, 5
@@ -109,8 +114,9 @@ A poll publishes reviews and checks before the issue streams. So a crash after a
 
 | What fails | Then |
 | ---------- | ---- |
+| `gh` with a 5xx or GitHub's GraphQL timeout | the call is tried again after 1 second, then after 3 seconds. If the third try fails too, it fails like any other `gh` error |
 | `gh` for one repository | that repository publishes nothing; the others still publish |
-| `gh`, without `--once` | the error is logged and retried on the next poll. With `PRIORY_DB` set, it shows on the desk until a poll succeeds: see [desk.md](../daemon/desk.md#intake-banner) |
+| `gh`, without `--once` | the error is logged and retried on the next poll. With `PRIORY_DB` set, it shows as a banner on the desk until a poll succeeds, and as an alarm once it has failed for `[intake] alarm_after`: see [desk.md](../daemon/desk.md#intake-banner) |
 | `gh`, with `--once` | the intake polls the other sources, records the failure, then exits non-zero |
 | a publish | the intake ends, so its restart recovers what it left out |
 
