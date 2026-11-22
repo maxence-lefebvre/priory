@@ -42,12 +42,30 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
+/// Undoes migration 93: the `pre` script's task columns and the pending requests.
+macro_rules! undo_pre {
+    () => {
+        "DROP VIEW task_text; CREATE VIEW task_text AS SELECT tasks.id AS task,
+    coalesce(json_extract(inbox.data, '$.title'), '') AS title,
+    coalesce(json_extract(inbox.data, '$.text'), json_extract(inbox.data, '$.body'),
+      json_extract(inbox.data, '$.description'), json_extract(inbox.data, '$.prompt'), '') AS request,
+    coalesce(tasks.tldr, '') AS tldr,
+    coalesce((SELECT group_concat(summary || ' ' || coalesce(evidence, ''), ' ') FROM results
+      WHERE results.task = tasks.id), '') AS results
+    FROM tasks LEFT JOIN inbox ON inbox.id = tasks.source; ALTER TABLE tasks DROP COLUMN pre_title; ALTER TABLE tasks DROP COLUMN pre_text;
+  ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
+  "
+    };
+}
+
+const UNDO_PRE: &str = undo_pre!();
+
 /// Takes a state file back before schema 28, which added search, 29, which added grades, 30,
 /// which added snoozes, 31, which added read reports, 32, which added the pause, 34, which added
 /// reports of sections, 36, which added deliveries, 37, which added progress, 39, which added run
 /// actions, 40, which added answer actions, 42, which added dispatches, 49, which added task ends, 51, which added a run's crossing of `compactAt`, 53, which added intervention levels, 56, which added the step an irreversible approval lets run, 58, which added withdrawal reasons, and 59, which added green stack gates and returned routed asks, 61, which added findings, 62, which added merge risk, 63, which added plan fields, 65, which added chosen subscriptions and approval generations, 66, which added the step a gate enters after the merge, 70, which added idle compactions and session definitions, and 71, which added cleared deliveries, ended snoozes and withdrawal times. Schema 38's visits
 /// table is created only if missing, so it stays.
-const UNDO_SINCE_SEARCH: &str = "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
+const UNDO_SINCE_SEARCH: &str = concat!(undo_pre!(), "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;
          ALTER TABLE asks DROP COLUMN withdrawn_at; ALTER TABLE waits DROP COLUMN withdrawn_at;
          ALTER TABLE tasks DROP COLUMN base_task; ALTER TABLE tasks DROP COLUMN batch; ALTER TABLE tasks DROP COLUMN batch_entry; DROP TABLE idle_compactions; ALTER TABLE shared_sessions DROP COLUMN definition; DROP INDEX todos_open_connector; ALTER TABLE todos DROP COLUMN connector; ALTER TABLE waits DROP COLUMN after; ALTER TABLE subscriptions DROP COLUMN chosen; ALTER TABLE approvals DROP COLUMN generation;
@@ -75,7 +93,7 @@ const UNDO_SINCE_SEARCH: &str = "ALTER TABLE claims DROP COLUMN generation; ALTE
   DROP VIEW task_text; DROP TABLE search; DROP TABLE summaries;
   DROP TABLE embedder; DROP TABLE vectors; ALTER TABLE tasks DROP COLUMN tldr; DROP TABLE dispatches;
   ALTER TABLE irreversible_asks DROP COLUMN lets;
-  ALTER TABLE tasks DROP COLUMN files; ALTER TABLE tasks DROP COLUMN files_run; DROP TABLE findings;";
+  ALTER TABLE tasks DROP COLUMN files; ALTER TABLE tasks DROP COLUMN files_run; DROP TABLE findings;");
 
 /// A factory, bus, state, Priory home, origin repository and fake `claude`, all under the test's
 /// own directory, and a tmux server in its own short directory. Dropping it kills the daemon and
@@ -1442,6 +1460,50 @@ fn the_first_prompt_is_the_step_prompt_and_the_task_events_typed_once_and_confir
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.typed().len(), 2, "the silent turn gets one nudge");
     assert!(setup.typed()[1].starts_with("Your last turn ended"));
+}
+
+#[test]
+fn the_first_prompt_carries_the_title_text_and_context_a_pre_script_gave() {
+    let mut setup = Setup::new("first-prompt-pre");
+    let source = labeled(42);
+    let mut request = requested(42);
+    request.data["source"] = json!(source.id.to_string());
+    request.data["title"] = json!("Division by zero in /divide");
+    request.data["text"] = json!("Fix the division.");
+    request.data["context"] = json!("312 users hit it today.");
+    request.data["pre"] = json!({
+        "script": "scripts/sentry-pre",
+        "changed": ["title", "text", "context"],
+        "seconds": 0.1
+    });
+    for message in [&source, &request] {
+        setup.publish(message);
+    }
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let typed = setup.typed();
+    let lines: Vec<_> = typed[0].lines().collect();
+    assert!(
+        lines[2].starts_with("github.issues.labeled owner/repo#42 {"),
+        "{lines:?}"
+    );
+    assert!(
+        lines[2].contains(r#""title":"Division by zero in /divide""#),
+        "{lines:?}"
+    );
+    assert!(
+        lines[2].contains(r#""text":"Fix the division.""#),
+        "{lines:?}"
+    );
+    assert_eq!(
+        lines[3..],
+        [
+            "Context from the trigger's pre script scripts/sentry-pre:",
+            "312 users hit it today."
+        ]
+    );
 }
 
 #[test]
@@ -6182,6 +6244,7 @@ fn a_state_file_whose_asks_an_approval_names_upgrades_to_outside_asks() {
     setup.crash();
     // The state file as version 32 left it: every ask belongs to a task.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(UNDO_PRE).unwrap();
     db.execute_batch(
         "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation;
          ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
@@ -10592,6 +10655,7 @@ fn an_approval_stored_before_generations_were_kept_is_asked_again_after_the_upgr
     setup.crash();
     // The state file as version 64 left it: an approval names no generation.
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(UNDO_PRE).unwrap();
     db.execute_batch(
         "ALTER TABLE claims DROP COLUMN generation; ALTER TABLE claims DROP COLUMN published_generation; ALTER TABLE tasks DROP COLUMN parent_pull_request; ALTER TABLE tasks DROP COLUMN parent_branch; ALTER TABLE tasks DROP COLUMN parent_head; DROP TABLE memories_repo; ALTER TABLE runs DROP COLUMN memories_commit; DROP TABLE kit; ALTER TABLE runs DROP COLUMN kit_commit; ALTER TABLE tasks DROP COLUMN base_sha; ALTER TABLE runs DROP COLUMN kit_hash; ALTER TABLE deliveries DROP COLUMN cleared; ALTER TABLE snoozes DROP COLUMN ended;
          DROP TRIGGER ask_withdrawn_at; DROP TRIGGER wait_withdrawn_at;

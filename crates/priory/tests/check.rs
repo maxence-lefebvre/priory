@@ -3053,6 +3053,105 @@ fn spend_caps_pass_and_a_cap_not_above_zero_or_a_malformed_lane_is_refused() {
     );
 }
 
+/// The valid factory with `[pre]` table `pre` on its trigger, and an executable `scripts/pre`.
+fn with_pre(name: &str, pre: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let trigger = format!("{TRIGGER}\n[pre]\n{pre}");
+    let mut files = with("triggers/agent-label.toml", &trigger);
+    files.push(("scripts/pre", "#!/bin/sh\nexit 0\n"));
+    files.push(("scripts/plain", "#!/bin/sh\nexit 0\n"));
+    let dir = factory(name, &files);
+    fs::set_permissions(dir.join("scripts/pre"), fs::Permissions::from_mode(0o755)).unwrap();
+    dir
+}
+
+#[test]
+fn a_pre_script_inside_the_factory_with_a_short_timeout_passes() {
+    let outcome = check(&with_pre(
+        "pre-valid",
+        "argv = [\"scripts/pre\", \"--min-level\", \"error\"]\ntimeout = \"60s\"\nenv = [\"AMPLITUDE_READ_TOKEN\"]\non_error = \"drop\"\n",
+    ));
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn check_refuses_a_pre_script_outside_the_factory_or_not_executable_and_a_long_timeout() {
+    let cases = [
+        (
+            "pre-outside",
+            "argv = [\"../outside\"]\n",
+            "triggers/agent-label.toml:9: `[pre] argv`: ../outside leaves the factory folder\n",
+        ),
+        (
+            "pre-absolute",
+            "argv = [\"/bin/true\"]\n",
+            "triggers/agent-label.toml:9: `[pre] argv`: /bin/true leaves the factory folder\n",
+        ),
+        (
+            "pre-plain",
+            "argv = [\"scripts/plain\"]\n",
+            "triggers/agent-label.toml:9: `[pre] argv`: scripts/plain is not executable: chmod +x it\n",
+        ),
+        (
+            "pre-missing",
+            "argv = [\"scripts/missing\"]\n",
+            "triggers/agent-label.toml:9: `[pre] argv`: scripts/missing is not a file in the factory folder\n",
+        ),
+        (
+            "pre-slow",
+            "argv = [\"scripts/pre\"]\ntimeout = \"2m\"\n",
+            "triggers/agent-label.toml:9: `[pre] timeout` is 120s: a pre script runs at most 60s\n",
+        ),
+        (
+            "pre-env",
+            "argv = [\"scripts/pre\"]\nenv = [\"NOT-A-NAME\"]\n",
+            "triggers/agent-label.toml:9: `[pre] env`: `NOT-A-NAME` is not a variable name\n",
+        ),
+    ];
+    for (name, pre, expected) in cases {
+        let outcome = check(&with_pre(name, pre));
+
+        assert_eq!(
+            (outcome.code, outcome.stderr.as_str()),
+            (1, expected),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn check_refuses_an_unknown_pre_on_error_with_its_line() {
+    let outcome = check(&with_pre(
+        "pre-on-error",
+        "argv = [\"scripts/pre\"]\non_error = \"retry\"\n",
+    ));
+
+    assert_eq!(
+        (outcome.code, outcome.stderr.as_str()),
+        (
+            1,
+            "triggers/agent-label.toml:11:12: unknown variant `retry`, expected `pass` or `drop`\n"
+        )
+    );
+}
+
+#[test]
+fn a_symlink_out_of_the_factory_is_refused_as_a_pre_script() {
+    let dir = with_pre("pre-symlink", "argv = [\"scripts/link\"]\n");
+    std::os::unix::fs::symlink("/bin/true", dir.join("scripts/link")).unwrap();
+
+    let outcome = check(&dir);
+
+    assert_eq!(
+        (outcome.code, outcome.stderr.as_str()),
+        (
+            1,
+            "triggers/agent-label.toml:9: `[pre] argv`: scripts/link leaves the factory folder\n"
+        )
+    );
+}
+
 #[test]
 fn a_budget_needs_a_claude_agent_a_price_table_and_an_amount_above_zero() {
     let budgeted = WORKFLOW.replace(

@@ -70,3 +70,4 @@ factory such as herdr-bowtie. Each message type also has a JSON Schema in
 | [watches.md](watches.md) | The Linear issues, Slack threads and pull requests an open wait makes the intake watch |
 | [cli.md](cli.md) | `priory request`, `priory add`, `priory batch add` and the `priory.task.requested.cli` event |
 | [task-requests.md](task-requests.md) | `factory.task.requested`, which creates tasks, and its `hold` |
+| [pre.md](pre.md) | A trigger's `pre` script, which passes, changes or drops a task request, and `factory.intake.dropped` |

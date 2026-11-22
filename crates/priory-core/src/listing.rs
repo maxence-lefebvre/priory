@@ -273,9 +273,12 @@ pub fn inbox(db: &Connection, since: i64) -> rusqlite::Result<Value> {
     rows(
         db,
         "SELECT seq, type, subject, task, outcome, time,
-           CASE type WHEN ?2 THEN json_extract(data, '$.line') END AS line, read
+           CASE type WHEN ?2 THEN json_extract(data, '$.line')
+             WHEN ?3 THEN 'dropped by ' || json_extract(data, '$.script')
+               || coalesce(': ' || coalesce(json_extract(data, '$.reason'),
+                 json_extract(data, '$.failed')), '') END AS line, read
          FROM inbox WHERE seq > ?1 ORDER BY seq",
-        params![since, post::REPORT],
+        params![since, post::REPORT, priory_intake::pre::DROPPED],
     )
 }
 

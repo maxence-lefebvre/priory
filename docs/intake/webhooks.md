@@ -9,6 +9,10 @@ Sentry, Honeycomb, Intercom, CloudWatch and Figma push events too, with no polli
 see [sentry.md](sentry.md), [honeycomb.md](honeycomb.md), [intercom.md](intercom.md),
 [cloudwatch.md](cloudwatch.md) and [figma.md](figma.md).
 
+For a trigger with a `pre` script, the server replies `202` once the source event is published,
+stores the request, and publishes what the script decides afterwards (see
+[pre.md](pre.md#where-it-runs)).
+
 Polling keeps running. A webhook only makes an event arrive sooner. A delivery that never arrives
 still reaches the factory through the next poll.
 

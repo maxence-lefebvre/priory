@@ -1,7 +1,10 @@
 #:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
 source = "sentry"
 on = "issue.created"
-filter = { project = "my-project", level = "error" }   # the project's slug
+filter = { project = "my-project" }                  # the project's slug
 repo = "owner/repo"
 workflow = "investigate"
 key = "issue.id"                                     # the task key is sentry:<issue id>
+
+[pre]
+argv = ["scripts/sentry-pre", "--min-level", "error"]   # drops warnings and below, keeps error and fatal
