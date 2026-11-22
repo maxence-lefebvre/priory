@@ -310,8 +310,8 @@ section in four ways:
 - Item 3 was on `main` already: `memories accept` and `memories drop` were person verbs before this
   note, so "What existed" is wrong on that point. The slice only adds the listing to the guard's
   tests.
-- The starter's agent has no `skills = []`, since an agent's `skills` list
-  ([agent-skills.md](agent-skills.md)) is not built.
+- The starter's agent has no `skills = []`. An agent's `skills` list
+  ([agent-skills.md](agent-skills.md)) was built after this slice.
 - `priory recap` finds a person's `say` as a prompt line that starts with `A person says: `, since
   Priory keeps no other record of it. A `say` of several lines shows its first.
 - A budget failure ends the run as `budget`. A missing transcript reads `its transcript gave no

@@ -11,6 +11,7 @@ config page gives a field table, a complete example and the errors `priory check
 | [agents.md](agents.md) | `agents/<name>/agent.md`: harness, model, session and permissions |
 | [triggers.md](triggers.md) | `triggers/<name>.toml`: one section per source, and `hold` |
 | [runners.md](runners.md) | `runners/<hostname>.toml`: platform and share of the machine |
+| [lanes.md](lanes.md) | `lanes.toml`: the rules that give a task its lane |
 | [views.md](views.md) | `views/<name>.toml`: the web view's layouts |
 | [memories.md](memories.md) | `memories/<name>.md`: the facts every run gets, and the index of them |
 | [scorers.md](scorers.md) | `scorers/<name>.toml`: the questions that grade a finished run |
@@ -64,6 +65,7 @@ or the Red Hat YAML extension:
 | `workflows/*.toml` | `config/workflow.json` |
 | `triggers/*.toml` | `config/trigger.json` |
 | `runners/*.toml` | `config/runner.json` |
+| `lanes.toml` | `config/lanes.json` |
 | `views/*.toml` | `config/view.json` |
 | `scorers/*.toml` | `config/scorer.json` |
 | `agents/*/agent.md` | `config/agent.json`, for tools that read frontmatter; editors do not |
@@ -71,6 +73,7 @@ or the Red Hat YAML extension:
 | `benchmarks/*.toml` | `config/benchmark.json` |
 | A case folder's `case.toml`, `gh/<n>.toml` and `answers.toml` | `config/case.json`, `config/case-gh.json`, `config/case-answers.json` |
 | A judge scorer's labeled cases | `config/judge-cases.json` |
+| A triage decision model's labeled cases | `config/triage-cases.json` (see [factory.md](factory.md#labeled-triage-cases)) |
 | A report a workflow writes | `report.json`, beside the two folders (see [reports.md](../daemon/reports.md)) |
 | What `priory check --repo PATH --json` prints | `readiness.json` (see [readiness.md](readiness.md)) |
 

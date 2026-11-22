@@ -594,6 +594,7 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `[asks] deliver`: <path> is not executable: chmod +x it `` | The `deliver` file has no execute bit |
 | `` [log] backend = "postgres" needs a priory built with `--features postgres` `` | `[log] backend = "postgres"` in a build without the Postgres adapter |
 | `` `[log] url_env` names the environment variable that holds the connection string, such as PRIORY_LOG_URL, never the string itself `` | `url_env` is not a variable name, such as a pasted URL |
+| `` `headers_env` names the environment variable that holds the headers, such as OTEL_EXPORTER_OTLP_HEADERS, never the headers themselves `` | `[telemetry] headers_env` is not a variable name, such as pasted headers |
 | `` the handler agent `<name>` does not exist `` | `handler` names no agent |
 | `` the handler agent `<name>` needs harness = "claude-code" `` | `handler` names a Codex agent |
 | `` the summarizer agent `<name>` does not exist `` | `[search] tldr` names no agent |
@@ -606,6 +607,7 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `[repos."<repo>"] <recipe>` runs `<command>`, which the guard `<guard>` holds irreversible: a recipe runs with no person's approval `` | A recipe that runs a command the [tool guard](../daemon/guard.md) denies, such as `gh pr merge` |
 | `` `[sweep] repo` needs to be `owner/name` `` | `[sweep] repo` is not a GitHub `owner/name`, such as a path or a name of `..` |
 | `` `[serve] listen` <address> is beyond this machine: set `public = true` to serve it `` | `listen` is not a loopback address and `public` is not set |
+| `` `[serve] extension_origins` <origin> is not a Chromium extension's origin, `chrome-extension://` and its 32-letter id `` | An entry of `extension_origins` that is not `chrome-extension://` and 32 letters |
 | `` `[webhooks]` needs a `[serve]` table to listen on `` | `[webhooks]` is set without `[serve]` |
 | `` `[slack.shortcut] users` is empty, so nobody could use the shortcut `` | `users = []` |
 | `` `[slack.shortcut] users` `<id>` is not a Slack user id such as U0123ABCD `` | A `users` entry that is not `U` or `W` then capital letters and digits, such as a display name |
@@ -623,6 +625,7 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `[decisions.triage] daily_calls` is 0: give at least 1 `` | `daily_calls = 0` |
 | `` `[decisions.triage] evaluation` <file>: <why> `` | The labeled cases cannot be read, or hold fewer than 10 cases or fewer than 3 of a class |
 | `` `[caps]` needs prices.toml, which turns the steps' tokens into dollars `` | `[caps]` in a factory without `prices.toml` |
+| `<rate> is not a price: give dollars per million tokens, zero or more` | A price in `prices.toml` that is negative or not a finite number |
 | `` `[consult.allow]` names `<name>`, which is no agent `` | An asking agent with no folder under `agents/` |
 | `` `[consult.allow]` names investigator `<name>` as an asker: an investigator cannot consult, so a consult is one hop `` | An investigator as a key of `[consult.allow]` |
 | `` `[consult.allow]` lets `<asker>` consult `<name>`, which is no agent `` | A target with no folder under `agents/` |
