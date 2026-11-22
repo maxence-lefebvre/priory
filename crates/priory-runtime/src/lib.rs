@@ -3,6 +3,7 @@ pub mod http;
 pub mod mcp;
 pub mod room;
 pub mod runtime;
+pub mod score;
 pub mod script;
 pub mod slice;
 pub mod transcript;

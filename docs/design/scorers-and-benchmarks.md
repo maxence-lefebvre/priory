@@ -7,7 +7,8 @@ its tests, the slices after it, and the open questions with a recommendation for
 
 ## What exists today
 
-- The PRD lists `scorers/` and `benchmarks/` among the factory's files. Nothing reads them.
+- The PRD lists `scorers/` and `benchmarks/` among the factory's files. `priory score` reads
+  `scorers/` ([score.md](../daemon/score.md)). Nothing reads `benchmarks/`.
 - `priory eval` compares two texts on a real model
   ([evaluating-a-prompt.md](../evaluating-a-prompt.md)). Each turn is a headless `claude -p` with no
   built-in tools, and a fake of Priory's MCP server that logs each call and answers `ok`. It counts
@@ -19,7 +20,8 @@ its tests, the slices after it, and the open questions with a recommendation for
   turns are a list of tool calls. It measures a workflow, not a model.
 - The state keeps what a task was asked: its request message and source event in the inbox, each
   prompt in the outbox, each ask with its answer, each result, and each step record with its tokens.
-- A new task's worktree starts at `origin/HEAD` after a fetch. Priory does not store that commit.
+- A new task's worktree starts at `origin/HEAD` after a fetch. Priory stores that commit as
+  `tasks.base_sha`.
 - The outcome labels and `priory report risk` ([risk-estimate.md](risk-estimate.md)) say how past
   tasks fared. They cannot compare two configurations: their tasks differ and are months apart.
 
@@ -343,6 +345,10 @@ What keeps it from running by itself:
 The comparison informs the merge. It never merges, and its status never approves a pull request.
 
 ## The first slice: the start commit, and code scorers on demand
+
+This slice is built. [score.md](../daemon/score.md) describes `priory score`, and
+[scorers.md](../reference/scorers.md) the scorer files. A `command` scorer's `run` is exec'd with no
+argument and no shell, and its cleared environment holds no `PATH`, so a script sets its own.
 
 The smallest change that is useful alone, and that every later slice needs:
 

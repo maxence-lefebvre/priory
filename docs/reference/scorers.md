@@ -40,11 +40,30 @@ A `command` scorer runs with a cleared environment and these variables:
 | `PRIORY_SCORE_HEAD` | The result's `commit` |
 | `PRIORY_SCORE_RESULT` | The path of a JSON file that holds the result |
 
-It answers `error: the result names no commit` for a result without a `commit`, and
-`error: no start commit` for a task created before Priory stored its start commit.
+The environment holds nothing else, not even `PATH`, so the shell's default `PATH` applies. A
+script that needs another tool sets `PATH` itself. `run` is exec'd with no argument and no shell:
+give a script a `#!` line. It runs in a scratch checkout under `PRIORY_HOME/scores/`, which Priory
+removes when it ends ([score.md](../daemon/score.md#a-command-scorer)).
 
 The `judge` kind, a model that grades a change, is not built yet. See
 [scorers-and-benchmarks.md](../design/scorers-and-benchmarks.md).
+
+## Reasons from `priory score`
+
+| Verdict | Reason | Cause |
+| ------- | ------ | ----- |
+| `pass`, `fail` or `error` | `exit <code>`, then `: <line>` when it printed something | A `command` scorer's program exited. 0 passes, 1 fails, any other code is an error. The line is the last one it printed |
+| `error` | `timed out after <seconds>s` | It ran past its `timeout`, and Priory killed its process group |
+| `error` | `killed by a signal` | A signal ended it |
+| `fail` | `the run asked and sent no result` | A `result` or `diff` scorer on a run that ended with an ask |
+| `error` | `the result names no commit` | The result has no `commit` |
+| `error` | `no start commit` | The task was created before Priory stored its start commit, `base_sha` |
+| `error` | `"<commit>" is not a commit id` | The result's `commit` is not a hexadecimal commit id |
+| `error` | `the task has no worktree` | The task never had a worktree |
+| `error` | `no clone holds the worktree <path>` | Priory's clone of the repository is gone |
+| `error` | `commit <sha> is not in <clone>` | The clone lacks the result's commit |
+| `error` | `` `run` names <path>, which is missing from the factory folder `` | `run` names no file |
+| `error` | `` `run` names <path>, which is not in the factory folder `` | `run` leads out of the factory folder, as through a link |
 
 ## Example
 
@@ -71,7 +90,9 @@ timeout = "20m"
 ```sh
 #!/bin/sh
 # Runs in a scratch checkout of the result's commit, with PRIORY_SCORE_BASE, PRIORY_SCORE_HEAD
-# and PRIORY_SCORE_RESULT set. Exit 0 passes, 1 fails, anything else is an error.
+# and PRIORY_SCORE_RESULT set, and nothing else. Exit 0 passes, 1 fails, anything else is an error.
+HOME=/home/me PATH=/home/me/.cargo/bin:/usr/bin:/bin
+export HOME PATH
 cargo test --quiet || exit 1
 ```
 

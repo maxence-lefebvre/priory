@@ -21718,3 +21718,222 @@ fn priory_score_names_a_scorer_the_factory_lacks() {
         "priory score: no scorer gate in scorers/\n"
     );
 }
+
+/// Writes the executable `scripts/<name>.sh` and a `command` scorer `<name>` that runs it.
+fn command_scorer(setup: &Setup, name: &str, timeout: &str, script: &str) {
+    let factory = setup.dir.join("factory");
+    let path = factory.join(format!("scripts/{name}.sh"));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    scorer(
+        setup,
+        name,
+        &format!(
+            "description = \"{name}\"\non = \"diff\"\nkind = \"command\"\nrun = \"scripts/{name}.sh\"\ntimeout = \"{timeout}\"\n"
+        ),
+    );
+}
+
+fn result_at(outcome: &str, commit: &str) -> serde_json::Value {
+    json!({ "name": "result", "arguments": { "outcome": outcome, "summary": format!("{outcome} it"), "commit": commit } })
+}
+
+/// Task 1's `plan` run commits `first.txt` and sends `ready` at that commit, which it returns.
+/// When `done`, the `implement` run sends `passed` at the same commit and the task ends; else its
+/// turn ends with no call.
+fn committed_task(name: &str, done: bool) -> (Setup, String) {
+    let mut setup = Setup::with_workflow(name, STEPS);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/submitted");
+    let commit = setup.commit(1, "first.txt");
+    let then = match done {
+        true => result_at("passed", &commit),
+        false => serde_json::Value::Null,
+    };
+    setup.calls(&[result_at("ready", &commit), then]);
+    setup.release("hold-call");
+    match done {
+        true => setup.until("tasks", |rows| rows[0][4] == "done"),
+        false => setup.until("runs", |rows| rows.len() == 2),
+    };
+    (setup, commit)
+}
+
+/// The rows' scorer, verdict and reason.
+fn verdicts(rows: &[[String; 5]]) -> Vec<[&str; 3]> {
+    rows.iter()
+        .map(|row| [row[2].as_str(), row[3].as_str(), row[4].as_str()])
+        .collect()
+}
+
+#[test]
+fn a_command_scorer_that_exits_0_1_and_2_scores_pass_fail_and_error() {
+    let (setup, _) = committed_task("score-exit", true);
+    command_scorer(&setup, "a-pass", "1m", "exit 0");
+    command_scorer(&setup, "b-fail", "1m", "exit 1");
+    command_scorer(&setup, "c-error", "1m", "echo broken >&2; exit 2");
+
+    let rows = scores(&setup, &[]);
+
+    let plan: Vec<_> = verdicts(&rows).into_iter().take(3).collect();
+    assert_eq!(
+        plan,
+        [
+            ["a-pass", "pass", "exit 0"],
+            ["b-fail", "fail", "exit 1"],
+            ["c-error", "error", "exit 2: broken"],
+        ]
+    );
+    assert_eq!(
+        fs::read_dir(setup.dir.join("home/scores")).unwrap().count(),
+        0,
+        "each scratch checkout is removed"
+    );
+}
+
+#[test]
+fn a_command_scorer_sees_the_three_inputs_and_none_of_the_callers_environment() {
+    let (setup, commit) = committed_task("score-inputs", true);
+    let seen = setup.dir.join("seen");
+    command_scorer(
+        &setup,
+        "inputs",
+        "1m",
+        &format!(
+            "env > {seen}/env; cp \"$PRIORY_SCORE_RESULT\" {seen}/result.json; pwd > {seen}/pwd",
+            seen = seen.display()
+        ),
+    );
+    fs::create_dir_all(&seen).unwrap();
+    let base = {
+        let shown = setup.priory(&["task", "1", "--json"]);
+        serde_json::from_slice::<serde_json::Value>(&shown.stdout).unwrap()["base_sha"].clone()
+    };
+
+    let rows = scores(&setup, &["--scorer", "inputs"]);
+
+    assert_eq!(rows[0][3], "pass", "{rows:?}");
+    let env = fs::read_to_string(seen.join("env")).unwrap();
+    let mut names: Vec<(&str, &str)> = env
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .filter(|(name, _)| !["PWD", "SHLVL", "_", "OLDPWD"].contains(name))
+        .collect();
+    names.sort();
+    let result = seen.join("result.json");
+    assert_eq!(
+        names.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+        [
+            "PRIORY_SCORE_BASE",
+            "PRIORY_SCORE_HEAD",
+            "PRIORY_SCORE_RESULT"
+        ]
+    );
+    assert_eq!(json!(names[0].1), base);
+    assert_eq!(names[1].1, commit);
+    let result: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(result).unwrap()).unwrap();
+    assert_eq!(
+        [&result["run"], &result["outcome"], &result["commit"]],
+        [&json!(2), &json!("passed"), &json!(commit)]
+    );
+    let pwd = fs::read_to_string(seen.join("pwd")).unwrap();
+    assert!(
+        pwd.starts_with(&setup.dir.join("home/scores").display().to_string()),
+        "{pwd}"
+    );
+    assert!(!Path::new(pwd.trim()).exists(), "{pwd} is removed");
+}
+
+#[test]
+fn a_command_scorer_past_its_timeout_is_killed_and_scores_error() {
+    let (setup, _) = committed_task("score-timeout", true);
+    let pid = setup.dir.join("slow.pid");
+    command_scorer(
+        &setup,
+        "slow",
+        "1s",
+        &format!("sleep 60 & echo $! > {}; wait", pid.display()),
+    );
+
+    let rows = scores(&setup, &["--scorer", "slow"]);
+
+    assert_eq!(verdicts(&rows)[0], ["slow", "error", "timed out after 1s"]);
+    let pid = fs::read_to_string(pid).unwrap();
+    // A killed child reparented to a subreaper can linger as a zombie, which is dead.
+    let alive = || {
+        fs::read_to_string(format!("/proc/{}/stat", pid.trim()))
+            .is_ok_and(|stat| !stat.rsplit(')').next().unwrap_or("").starts_with(" Z"))
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while alive() {
+        assert!(
+            Instant::now() < deadline,
+            "the scorer's child {pid} is killed"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_diff_scorer_on_an_earlier_result_reads_its_commit_after_a_later_run_changed_the_worktree() {
+    let (setup, commit) = committed_task("score-earlier", false);
+    setup.until("tasks", |rows| rows[0][3] == "implement");
+    setup.calls_left(0);
+    let later = setup.commit(1, "second.txt");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::write(worktree.join("unsaved.txt"), "unsaved\n").unwrap();
+    command_scorer(
+        &setup,
+        "earlier",
+        "1m",
+        "[ \"$(git rev-parse HEAD)\" = \"$PRIORY_SCORE_HEAD\" ] && [ -e first.txt ] && [ ! -e second.txt ] && [ ! -e unsaved.txt ] || exit 1",
+    );
+
+    let rows = scores(&setup, &["--scorer", "earlier"]);
+
+    assert_eq!(
+        rows.iter()
+            .map(|row| [row[0].as_str(), row[3].as_str()])
+            .collect::<Vec<_>>(),
+        [["1", "pass"]],
+        "{rows:?}"
+    );
+    assert_ne!(later, commit);
+    let head = git(&worktree).args(["rev-parse", "HEAD"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), later);
+    assert!(
+        worktree.join("unsaved.txt").exists(),
+        "the worktree is untouched"
+    );
+}
+
+#[test]
+fn a_diff_scorer_errors_on_a_result_with_no_commit_and_a_task_with_no_start_commit() {
+    let setup = scored_task("score-no-commit");
+    command_scorer(&setup, "gate", "1m", "exit 0");
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(
+        verdicts(&rows),
+        [
+            ["gate", "error", "the result names no commit"],
+            ["gate", "error", "the result names no commit"],
+        ]
+    );
+
+    let (setup, _) = committed_task("score-no-base", true);
+    command_scorer(&setup, "gate", "1m", "exit 0");
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute("UPDATE tasks SET base_sha = NULL", [])
+        .unwrap();
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(verdicts(&rows)[0], ["gate", "error", "no start commit"]);
+}

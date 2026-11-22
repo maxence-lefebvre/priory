@@ -3,9 +3,10 @@
 
 use crate::trace::{self, Trace};
 use priory_factory::factory::{Factory, Loaded, ScoreKind, Scorer};
-use priory_runtime::{eval, room, runtime, transcript};
+use priory_runtime::{eval, room, runtime, score as checkout, transcript};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 
 /// What a scorer answered for one run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,13 +87,24 @@ pub fn score(
     if runs.is_empty() {
         return Err(format!("task {task} has no finished run"));
     }
+    let (base, worktree): (Option<String>, Option<String>) = db
+        .query_row(
+            "SELECT base_sha, worktree FROM tasks WHERE id = ?1",
+            [task],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(error)?;
+    let started = Started {
+        base: base.as_deref(),
+        worktree: worktree.as_deref().map(Path::new),
+    };
     let mut scores = Vec::new();
     for run in &runs {
         for (name, scorer) in &scorers {
             let (verdict, reason) = match scorer.value.kind {
                 ScoreKind::Outcome => outcome(&scorer.value, run),
                 ScoreKind::AskShape => ask_shape(db, &scorer.value, run).map_err(error)?,
-                ScoreKind::Command => (Verdict::Error, "command scorers do not run yet".to_owned()),
+                ScoreKind::Command => command(factory, &scorer.value, &started, run),
             };
             scores.push(Score {
                 run: run.id,
@@ -144,6 +156,74 @@ fn finished(db: &Connection, task: i64) -> rusqlite::Result<Vec<Run>> {
             })
         })?
         .collect()
+}
+
+/// What a `diff` scorer needs of the task: the commit it started from and its worktree.
+struct Started<'a> {
+    base: Option<&'a str>,
+    worktree: Option<&'a Path>,
+}
+
+/// Runs a `command` scorer in a scratch checkout of the result's commit: exit 0 passes, 1 fails,
+/// any other ending is an error.
+fn command(factory: &Factory, scorer: &Scorer, started: &Started, run: &Run) -> (Verdict, String) {
+    let Some(result) = &run.result else {
+        return (Verdict::Fail, NO_RESULT.to_owned());
+    };
+    let Some(head) = result["commit"]
+        .as_str()
+        .filter(|commit| !commit.is_empty())
+    else {
+        return (Verdict::Error, "the result names no commit".to_owned());
+    };
+    let Some(base) = started.base else {
+        return (Verdict::Error, "no start commit".to_owned());
+    };
+    let Some(worktree) = started.worktree else {
+        return (Verdict::Error, "the task has no worktree".to_owned());
+    };
+    let program = match program(factory, scorer) {
+        Ok(program) => program,
+        Err(why) => return (Verdict::Error, why),
+    };
+    let result = result.to_string();
+    let job = checkout::Job {
+        home: &runtime::home(),
+        worktree,
+        program: &program,
+        base,
+        head,
+        result: result.as_bytes(),
+        timeout: scorer.timeout(),
+    };
+    match checkout::run_in_checkout(&job) {
+        Ok(ended) => match ended.code {
+            Some(0) => (Verdict::Pass, ended.reason),
+            Some(1) => (Verdict::Fail, ended.reason),
+            _ => (Verdict::Error, ended.reason),
+        },
+        Err(why) => (Verdict::Error, why),
+    }
+}
+
+/// The scorer's `run`, as an absolute path inside the factory folder.
+fn program(factory: &Factory, scorer: &Scorer) -> Result<PathBuf, String> {
+    let run = scorer
+        .run
+        .as_ref()
+        .ok_or("a `command` scorer needs `run`")?;
+    let named = run.display();
+    let inside =
+        |path: &Path| std::fs::canonicalize(&factory.dir).is_ok_and(|dir| path.starts_with(dir));
+    match std::fs::canonicalize(factory.dir.join(run)) {
+        Ok(path) if inside(&path) => Ok(path),
+        Ok(_) => Err(format!(
+            "`run` names {named}, which is not in the factory folder"
+        )),
+        Err(_) => Err(format!(
+            "`run` names {named}, which is missing from the factory folder"
+        )),
+    }
 }
 
 const NO_RESULT: &str = "the run asked and sent no result";
