@@ -94,6 +94,43 @@ pub fn debates<'w>(factory: &Factory, workflow: &'w Workflow) -> Vec<(&'w str, S
         .collect()
 }
 
+/// An investigator, the tools its `allow` names, and each MCP server's `read_only` sentence, for a
+/// person to review: the sentence is the wall that keeps it from writing, and Priory cannot check it.
+#[derive(Debug, serde::Serialize)]
+pub struct Investigator {
+    pub agent: String,
+    pub tools: Vec<String>,
+    pub servers: Vec<(String, Option<String>)>,
+}
+
+pub fn investigators(factory: &Factory) -> Vec<Investigator> {
+    let stated = |server: &str| {
+        factory
+            .settings
+            .as_ref()?
+            .value
+            .mcp
+            .get(server)?
+            .read_only
+            .clone()
+    };
+    factory
+        .agents
+        .iter()
+        .filter(|(_, agent)| agent.value.investigator)
+        .map(|(name, agent)| Investigator {
+            agent: name.clone(),
+            tools: agent.value.permissions.allow.clone(),
+            servers: agent
+                .value
+                .mcp_servers
+                .iter()
+                .map(|server| (server.clone(), stated(server)))
+                .collect(),
+        })
+        .collect()
+}
+
 fn harness_name(harness: &Harness) -> &'static str {
     match harness {
         Harness::ClaudeCode => "claude-code",

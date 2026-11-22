@@ -106,7 +106,7 @@ does and the page that describes it.
 - `priory tasks --graph [TASK] [--mermaid]`: draws how tasks relate, as a tree or a Mermaid
   flowchart. See [relations.md](../daemon/relations.md).
 - `priory task TASK [--json]`: prints one task with the events routed to it. `--json` adds its
-  brief, plan, pull request, runs and asks. See [routing.md](../daemon/routing.md#the-tasks-inbox).
+  brief, plan, pull request, runs, asks and consults. See [routing.md](../daemon/routing.md#the-tasks-inbox).
 - `priory queue [DIR] [--json]`: prints the waiting tasks in start order, then the held ones. See
   [runs.md](../daemon/runs.md#queue).
 - `priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]`:
@@ -212,8 +212,9 @@ See [Columns](#columns).
 
 An agent's settings and its shell call these. A person rarely does.
 
-- `priory mcp --session ID [--debate]`: the MCP server of one run, on stdio. `--debate` adds the
-  `position` tool, for a debate turn's run. See
+- `priory mcp --session ID [--debate] [--consult | --investigator]`: the MCP server of one run, on
+  stdio. `--debate` adds the `position` tool, for a debate turn's run. `--consult` adds the
+  `consult` tool; `--investigator` serves `result`, `memory` and `search` alone. See
   [tools.md](../daemon/tools.md#the-mcp-server).
 - `priory mcp --eval LOG [--describe TOOL TEXT]`: the fake MCP server of `priory eval`. See
   [prompt-evals.md](prompt-evals.md#priory-mcp---eval).

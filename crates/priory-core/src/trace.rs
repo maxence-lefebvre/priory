@@ -175,6 +175,9 @@ pub(crate) fn ended_with(
     if let Some(debate) = debate {
         data["debate"] = debate;
     }
+    if let Some((consult, asker)) = crate::consult::of_investigation(tx, task)? {
+        data["consult"] = json!({ "id": consult, "task": asker.to_string() });
+    }
     let agent = step
         .agent
         .as_ref()

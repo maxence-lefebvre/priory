@@ -415,7 +415,7 @@ pub(crate) fn tick(
              LEFT JOIN runs ON runs.task = tasks.id AND runs.ended IS NULL
              WHERE (tasks.state IN ('queued', 'ready')
                -- With several runners, only a task this runner may start, as the queue reads it.
-               AND (?1 IS NULL OR tasks.trigger = ?2 OR EXISTS (SELECT 1 FROM claims
+               AND (?1 IS NULL OR tasks.trigger IN (?2, 'priory/consult') OR EXISTS (SELECT 1 FROM claims
                  WHERE claims.key = tasks.key AND claims.runner = ?1)))
              OR (tasks.state = 'running' AND runs.ready AND runs.idle = 1 AND NOT EXISTS (
                SELECT 1 FROM outbox WHERE outbox.run = runs.id

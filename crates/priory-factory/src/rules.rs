@@ -482,6 +482,10 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             }
         }
     }
+    check_consult(factory, &mut problems);
+    for (name, agent) in &factory.agents {
+        check_investigator(factory, name, agent, &mut problems);
+    }
     for agent in factory.agents.values() {
         check_codex(factory, agent, &mut problems);
         check_shared(agent, &mut problems);
@@ -1014,7 +1018,12 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
         return;
     }
     // What a Codex run gets as `developer_instructions`, as the daemon joins it.
-    let size = join_instructions(&factory.codex_instructions(value), &factory.prompt(value)).len();
+    let name = file_name_of(agent);
+    let instructions = join_instructions(
+        &factory.codex_instructions(value),
+        &factory.consult_index(&name),
+    );
+    let size = join_instructions(&instructions, &factory.prompt(value)).len();
     if size > CODEX_PROMPT_LIMIT {
         let mut parts = Vec::new();
         if !factory.instructions().is_empty() {
@@ -1025,6 +1034,9 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
         }
         if factory.skills.keys().any(|name| value.gets_skill(name)) {
             parts.push("the skill index");
+        }
+        if !factory.consult_index(&name).is_empty() {
+            parts.push("the investigator index");
         }
         let (parts, they) = if parts.is_empty() {
             ("its own prompt".to_owned(), "it is")
@@ -1079,6 +1091,155 @@ fn check_auto_answer(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     }
 }
 
+/// The agent's name: the folder that holds its `agent.md`.
+fn file_name_of(agent: &Loaded<Agent>) -> String {
+    agent
+        .file
+        .parent()
+        .and_then(Path::file_name)
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// The tools an investigator's `allow` may never name: each one writes.
+const WRITING_TOOLS: [&str; 4] = ["Edit", "Write", "NotebookEdit", "Bash"];
+
+/// An investigator reads and never writes: every tool it may call is named, none of them writes,
+/// and each MCP server it names carries a person's statement of where its limit is enforced.
+fn check_investigator(
+    factory: &Factory,
+    name: &str,
+    agent: &Loaded<Agent>,
+    problems: &mut Vec<Problem>,
+) {
+    let value = &agent.value;
+    if !value.investigator {
+        return;
+    }
+    let mut refuse = |field: &str, message: String| {
+        problems.push(problem(
+            agent,
+            agent
+                .lines
+                .field(field)
+                .or(agent.lines.field("investigator")),
+            format!("investigator `{name}` {message}"),
+        ));
+    };
+    if !matches!(value.harness, Harness::ClaudeCode) {
+        refuse(
+            "harness",
+            "needs harness = \"claude-code\": only Claude Code takes per-tool rules".into(),
+        );
+    }
+    if !matches!(
+        value.permissions.default_mode,
+        Some(PermissionMode::DontAsk)
+    ) {
+        refuse(
+            "permissions",
+            "needs permissions.defaultMode = \"dontAsk\", so every tool it may call is named in `allow`".into(),
+        );
+    }
+    for rule in &value.permissions.allow {
+        let tool = rule.split('(').next().unwrap_or_default().trim();
+        let why = if WRITING_TOOLS.contains(&tool) {
+            "names a tool that writes"
+        } else if rule.contains('*') {
+            "holds a `*`: write out each tool by its exact name"
+        } else if tool.starts_with("mcp__") && !tool["mcp__".len()..].contains("__") {
+            "names a whole MCP server: write out each of its tools by its exact name"
+        } else {
+            continue;
+        };
+        refuse("permissions", format!("may not allow `{rule}`: it {why}"));
+    }
+    let stated = |server: &String| {
+        factory
+            .settings
+            .as_ref()
+            .and_then(|settings| settings.value.mcp.get(server))
+            .and_then(|mcp| mcp.read_only.as_deref())
+            .is_some_and(|sentence| !sentence.trim().is_empty())
+    };
+    for server in value.mcp_servers.iter().filter(|server| !stated(server)) {
+        refuse(
+            "mcpServers",
+            format!(
+                "names MCP server `{server}`, which needs a `read_only` sentence under [mcp.{server}] in factory.toml: where the service enforces that it only reads"
+            ),
+        );
+    }
+    if matches!(value.session, Session::Shared) {
+        refuse(
+            "session",
+            "cannot take session = \"shared\": each consult starts a fresh session, so no task's data reaches another's report".into(),
+        );
+    }
+    if value.connector_sign_in {
+        refuse(
+            "connectorSignIn",
+            "cannot take `connectorSignIn`: an unattended investigator never signs in".into(),
+        );
+    }
+    match &value.model {
+        None => refuse(
+            "model",
+            "needs a `model` with a price in prices.toml, so its cap can be enforced".into(),
+        ),
+        Some(model) if !factory.prices.contains_key(model) => refuse(
+            "model",
+            format!(
+                "runs model `{model}`, which prices.toml does not price, so its cap cannot be enforced"
+            ),
+        ),
+        Some(_) => {}
+    }
+}
+
+/// Each line of `[consult.allow]` names an agent that is no investigator, and investigators only.
+fn check_consult(factory: &Factory, problems: &mut Vec<Problem>) {
+    let Some(settings) = &factory.settings else {
+        return;
+    };
+    let Some(consult) = &settings.value.consult else {
+        return;
+    };
+    let line = settings.lines.field("consult");
+    let investigator = |name: &str| {
+        factory
+            .agents
+            .get(name)
+            .map(|agent| agent.value.investigator)
+    };
+    for (asker, targets) in &consult.allow {
+        let refused = match investigator(asker) {
+            None => Some(format!(
+                "`[consult.allow]` names `{asker}`, which is no agent"
+            )),
+            Some(true) => Some(format!(
+                "`[consult.allow]` names investigator `{asker}` as an asker: an investigator cannot consult, so a consult is one hop"
+            )),
+            Some(false) => None,
+        };
+        if let Some(message) = refused {
+            problems.push(problem(settings, line, message));
+        }
+        for target in targets {
+            let refused = match investigator(target) {
+                None => format!(
+                    "`[consult.allow]` lets `{asker}` consult `{target}`, which is no agent"
+                ),
+                Some(false) => format!(
+                    "`[consult.allow]` lets `{asker}` consult `{target}`, which is no investigator: set `investigator = true` on it"
+                ),
+                Some(true) => continue,
+            };
+            problems.push(problem(settings, line, refused));
+        }
+    }
+}
+
 /// A `hands-off` trigger names a lead, and a lead is a Claude Code agent with a shared session.
 fn check_lead(factory: &Factory, trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     let Some(lead) = &trigger.value.lead else {
@@ -1100,6 +1261,14 @@ fn check_lead(factory: &Factory, trigger: &Loaded<Trigger>, problems: &mut Vec<P
         ));
         return;
     };
+    if agent.value.investigator {
+        problems.push(problem(
+            trigger,
+            at,
+            format!("lead `{lead}` is an investigator, which only answers consults"),
+        ));
+        return;
+    }
     let shared = matches!(agent.value.session, Session::Shared);
     if !shared || !matches!(agent.value.harness, Harness::ClaudeCode) {
         problems.push(problem(
@@ -1695,9 +1864,27 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
                     (Some(agent), None) if !factory.agents.contains_key(agent) => {
                         report(format!("agent `{agent}` does not exist"))
                     }
+                    (Some(agent), None)
+                        if factory.agents[agent].value.investigator
+                            && !built_in(factory, workflow) =>
+                    {
+                        report(format!(
+                            "agent `{agent}` is an investigator, which only answers consults"
+                        ))
+                    }
                     (_, Some(debate)) => {
                         for message in debate_problems(factory, step, debate) {
                             report(message);
+                        }
+                        for agent in debate.agents.iter().filter(|agent| {
+                            factory
+                                .agents
+                                .get(*agent)
+                                .is_some_and(|agent| agent.value.investigator)
+                        }) {
+                            report(format!(
+                                "agent `{agent}` is an investigator, which only answers consults"
+                            ));
                         }
                     }
                     (Some(_), None) => {}
@@ -2001,6 +2188,15 @@ pub(crate) fn reachable<'a>(
         }
     }
     reached
+}
+
+/// Whether `workflow` is one Priory builds, such as a lead's or an investigator's: its own name
+/// has a `/`, which no workflow file's has, and its problems are reported where it comes from.
+fn built_in(factory: &Factory, workflow: &Loaded<Workflow>) -> bool {
+    factory
+        .workflows
+        .iter()
+        .any(|(name, other)| name.starts_with("priory/") && std::ptr::eq(other, workflow))
 }
 
 fn problem<T>(loaded: &Loaded<T>, line: Option<usize>, message: String) -> Problem {

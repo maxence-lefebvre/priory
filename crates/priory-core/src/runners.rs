@@ -909,7 +909,7 @@ pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Res
 /// runner, so it never goes on the log and never moves.
 fn lead(tx: &Transaction, task: i64) -> rusqlite::Result<bool> {
     tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND trigger = ?2)",
+        "SELECT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND trigger IN (?2, 'priory/consult'))",
         params![task, crate::tools::LEAD_TRIGGER],
         |row| row.get(0),
     )
@@ -927,7 +927,7 @@ fn adopt(db: &mut Connection, me: &str) -> rusqlite::Result<()> {
             "SELECT tasks.key, inbox.id, tasks.generation,
                tasks.state IN ('done', 'failed', 'dropped') FROM tasks
                JOIN inbox ON inbox.task = tasks.id AND inbox.outcome = 'created'
-             WHERE tasks.trigger IS NOT ?2 AND CASE WHEN tasks.state IN ('done', 'failed', 'dropped')
+             WHERE tasks.trigger IS NOT ?2 AND tasks.trigger IS NOT 'priory/consult' AND CASE WHEN tasks.state IN ('done', 'failed', 'dropped')
                THEN tasks.id = (SELECT max(id) FROM tasks AS later WHERE later.key = tasks.key)
                  AND NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key)
                ELSE NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
@@ -1399,17 +1399,26 @@ pub fn give(
         return Err(format!("runner {runner} has no runner file in runners/"));
     }
     crate::link::refuse_while_unreachable(db)?;
-    let lead = db
+    let local = db
         .query_row(
-            "SELECT EXISTS (SELECT 1 FROM tasks WHERE key = ?1 AND trigger = ?2)",
-            params![key, crate::tools::LEAD_TRIGGER],
-            |row| row.get::<_, bool>(0),
+            "SELECT trigger FROM tasks WHERE key = ?1 AND trigger IN (?2, ?3) LIMIT 1",
+            params![key, crate::tools::LEAD_TRIGGER, crate::consult::TRIGGER],
+            |row| row.get::<_, String>(0),
         )
+        .optional()
         .map_err(|error| error.to_string())?;
-    if lead {
-        return Err(format!(
-            "{key} is a lead task, which stays on the runner of the ask it answers"
-        ));
+    match local.as_deref() {
+        Some(crate::tools::LEAD_TRIGGER) => {
+            return Err(format!(
+                "{key} is a lead task, which stays on the runner of the ask it answers"
+            ));
+        }
+        Some(_) => {
+            return Err(format!(
+                "{key} is a consult task, which stays on the runner of the consult it answers"
+            ));
+        }
+        None => {}
     }
     let owned = db
         .query_row(

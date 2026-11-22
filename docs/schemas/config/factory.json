@@ -139,6 +139,49 @@
       ],
       "type": "object"
     },
+    "Consult": {
+      "additionalProperties": false,
+      "description": "`[consult]`: the bounds of one consult, and `[consult.allow]`, who may consult whom.",
+      "properties": {
+        "allow": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "default": {},
+          "description": "Each asking agent's investigators, by the asking agent's name. An agent with no line\nconsults nobody.",
+          "type": "object"
+        },
+        "cap": {
+          "default": null,
+          "description": "What one consult may cost, in dollars; 0.50 when unset.",
+          "exclusiveMinimum": 0,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "deadline": {
+          "default": null,
+          "description": "How long from the `consult` call to its report, the wait for room included; 15m when unset.",
+          "pattern": "^0*[1-9][0-9]*[smh]$",
+          "type": "string"
+        },
+        "per_task": {
+          "description": "How many consults one task may make; 5 when unset.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "Decision": {
       "additionalProperties": false,
       "description": "A decision model: a command that answers typed questions with probabilities, and how much of\nits answer Priory trusts.",
@@ -412,6 +455,20 @@
           "default": "PRIORY_LINEAR_WEBHOOK_SECRET",
           "description": "The environment variable that holds the webhook's signing secret, never the secret itself.",
           "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "McpServer": {
+      "additionalProperties": false,
+      "description": "`[mcp.<name>]`: a person's statement about one MCP server of their own harness config.",
+      "properties": {
+        "read_only": {
+          "description": "Where the service enforces that the server only reads, such as \"The token has the\norg:read and event:read scopes only.\" Priory cannot check it.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -966,6 +1023,17 @@
       "pattern": "^0*[1-9][0-9]*[smh]$",
       "type": "string"
     },
+    "consult": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Consult"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Who may consult which investigator, and the bounds of one consult."
+    },
     "critic": {
       "description": "The scorer that grades a plan no person reads: a grade that leads to a model or code step\nof a task without `intervention = \"plan\"`. It can only refuse the grade.",
       "type": [
@@ -1027,6 +1095,13 @@
     },
     "log": {
       "$ref": "#/definitions/EventLog"
+    },
+    "mcp": {
+      "additionalProperties": {
+        "$ref": "#/definitions/McpServer"
+      },
+      "description": "What a person states about each MCP server an investigator names, by the server's name.",
+      "type": "object"
     },
     "memories": {
       "anyOf": [

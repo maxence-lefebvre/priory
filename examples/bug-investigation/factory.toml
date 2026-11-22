@@ -22,3 +22,15 @@ secret_env = "FIGMA_WEBHOOK_PASSCODE"   # the variable holding the passcode the 
 [webhooks.intercom]
 secret_env = "INTERCOM_CLIENT_SECRET"   # the variable holding the app's client secret
 workspace = "my-workspace"              # your workspace id, from your Intercom URL
+
+# The investigator may ask the sentry agent one question at a time, which reads Sentry for it.
+[consult]
+deadline = "15m"
+cap = 0.50
+per_task = 5
+
+[consult.allow]
+investigator = ["sentry"]
+
+[mcp.sentry]
+read_only = "The Sentry token has the org:read, project:read and event:read scopes only."

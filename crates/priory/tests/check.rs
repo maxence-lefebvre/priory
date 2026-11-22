@@ -185,7 +185,7 @@ fn an_unknown_field_names_its_file_and_line() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, compactAt, idleCompactAt, onChange, memory, disk, mcpServers, skills, connectorSignIn, permissions\n"
+        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, compactAt, idleCompactAt, onChange, memory, disk, mcpServers, skills, connectorSignIn, investigator, permissions\n"
     );
 }
 
@@ -3835,5 +3835,178 @@ fn the_servers_url_is_an_http_address() {
             1,
             "factory.toml:3: `[serve] url` \"runner:7390\" is not an address: write it as https://host:port\n"
         )
+    );
+}
+
+const CONSULTING: &str = "name = \"demo\"\n\n[consult]\nallow = { implementer = [\"sentry\"] }\n\n[mcp.sentry]\nread_only = \"The token has the org:read and event:read scopes only.\"\n";
+
+const INVESTIGATOR: &str = r#"+++
+description = "Reads Sentry issues and answers questions about them."
+harness = "claude-code"
+model = "claude-haiku-5-5"
+investigator = true
+mcpServers = ["sentry"]
+permissions = { defaultMode = "dontAsk", allow = ["mcp__sentry__get_issue_details", "Read"] }
++++
+You read Sentry and answer one question.
+"#;
+
+const CONSULT_PRICES: &str =
+    "[\"claude-haiku-5-5\"]\ninput = 1.0\noutput = 5.0\ncache_read = 0.1\ncache_write = 1.25\n";
+
+/// The valid factory with the investigator sentry, which the implementer may consult, and
+/// `changes` over its files.
+fn consulting(name: &str, changes: &[(&str, &str)]) -> Outcome {
+    let mut files = with("factory.toml", CONSULTING);
+    files.push(("agents/sentry/agent.md", INVESTIGATOR));
+    files.push(("prices.toml", CONSULT_PRICES));
+    for (path, content) in changes {
+        files.retain(|(file, _)| file != path);
+        files.push((path, content));
+    }
+    check(&factory(name, &files))
+}
+
+#[test]
+fn an_investigator_that_a_worker_may_consult_passes() {
+    let outcome = consulting("investigator", &[]);
+
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+}
+
+#[test]
+fn each_investigator_rule_fails_with_its_line() {
+    let investigator = |from: &str, to: &str| INVESTIGATOR.replace(from, to);
+    let cases = [
+        (
+            "investigator-codex",
+            (
+                "agents/sentry/agent.md",
+                investigator("claude-code", "codex"),
+            ),
+            "agents/sentry/agent.md:3: investigator `sentry` needs harness = \"claude-code\": only Claude Code takes per-tool rules",
+        ),
+        (
+            "investigator-mode",
+            ("agents/sentry/agent.md", investigator("dontAsk", "auto")),
+            "agents/sentry/agent.md:7: investigator `sentry` needs permissions.defaultMode = \"dontAsk\", so every tool it may call is named in `allow`",
+        ),
+        (
+            "investigator-bash",
+            (
+                "agents/sentry/agent.md",
+                investigator("\"Read\"", "\"Bash(gh issue view:*)\""),
+            ),
+            "agents/sentry/agent.md:7: investigator `sentry` may not allow `Bash(gh issue view:*)`: it names a tool that writes",
+        ),
+        (
+            "investigator-write",
+            (
+                "agents/sentry/agent.md",
+                investigator("\"Read\"", "\"Write\""),
+            ),
+            "agents/sentry/agent.md:7: investigator `sentry` may not allow `Write`: it names a tool that writes",
+        ),
+        (
+            "investigator-pattern",
+            (
+                "agents/sentry/agent.md",
+                investigator("mcp__sentry__get_issue_details", "mcp__sentry__get_*"),
+            ),
+            "agents/sentry/agent.md:7: investigator `sentry` may not allow `mcp__sentry__get_*`: it holds a `*`: write out each tool by its exact name",
+        ),
+        (
+            "investigator-server",
+            (
+                "agents/sentry/agent.md",
+                investigator("mcp__sentry__get_issue_details", "mcp__sentry"),
+            ),
+            "agents/sentry/agent.md:7: investigator `sentry` may not allow `mcp__sentry`: it names a whole MCP server: write out each of its tools by its exact name",
+        ),
+        (
+            "investigator-unpriced",
+            (
+                "agents/sentry/agent.md",
+                investigator("claude-haiku-5-5", "claude-unpriced"),
+            ),
+            "agents/sentry/agent.md:4: investigator `sentry` runs model `claude-unpriced`, which prices.toml does not price, so its cap cannot be enforced",
+        ),
+        (
+            "investigator-shared",
+            (
+                "agents/sentry/agent.md",
+                investigator(
+                    "investigator = true\n",
+                    "investigator = true\nsession = \"shared\"\n",
+                ),
+            ),
+            "agents/sentry/agent.md:6: investigator `sentry` cannot take session = \"shared\": each consult starts a fresh session, so no task's data reaches another's report",
+        ),
+        (
+            "investigator-unstated",
+            (
+                "factory.toml",
+                CONSULTING.replace("[mcp.sentry]", "[mcp.honeycomb]"),
+            ),
+            "agents/sentry/agent.md:6: investigator `sentry` names MCP server `sentry`, which needs a `read_only` sentence under [mcp.sentry] in factory.toml: where the service enforces that it only reads",
+        ),
+        (
+            "investigator-step",
+            (
+                "workflows/implement.toml",
+                WORKFLOW.replacen("agent = \"implementer\"", "agent = \"sentry\"", 1),
+            ),
+            "workflows/implement.toml:4: step `implement`: agent `sentry` is an investigator, which only answers consults",
+        ),
+        (
+            "investigator-asker",
+            (
+                "factory.toml",
+                CONSULTING.replace("implementer = [", "sentry = ["),
+            ),
+            "factory.toml:3: `[consult.allow]` names investigator `sentry` as an asker: an investigator cannot consult, so a consult is one hop",
+        ),
+        (
+            "investigator-unknown-asker",
+            (
+                "factory.toml",
+                CONSULTING.replace("implementer = [", "nobody = ["),
+            ),
+            "factory.toml:3: `[consult.allow]` names `nobody`, which is no agent",
+        ),
+        (
+            "investigator-not-one",
+            (
+                "factory.toml",
+                CONSULTING.replace("[\"sentry\"]", "[\"implementer\"]"),
+            ),
+            "factory.toml:3: `[consult.allow]` lets `implementer` consult `implementer`, which is no investigator: set `investigator = true` on it",
+        ),
+    ];
+    for (name, (path, content), line) in cases {
+        let outcome = consulting(name, &[(path, &content)]);
+
+        assert_eq!(outcome.code, 1, "{name}: {}", outcome.stderr);
+        assert!(
+            outcome.stderr.lines().any(|problem| problem == line),
+            "{name}: {line}\nin:\n{}",
+            outcome.stderr
+        );
+    }
+}
+
+#[test]
+fn a_lead_cannot_be_an_investigator() {
+    let trigger = format!("{TRIGGER}intervention = \"hands-off\"\nlead = \"sentry\"\n");
+
+    let outcome = consulting(
+        "investigator-lead",
+        &[("triggers/agent-label.toml", &trigger)],
+    );
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/agent-label.toml:9: lead `sentry` is an investigator, which only answers consults\n"
     );
 }
