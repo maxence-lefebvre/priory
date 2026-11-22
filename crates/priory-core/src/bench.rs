@@ -3,6 +3,7 @@
 //! the benchmark's scorers. [`table`] turns those pairs into the comparison's table and its one
 //! verdict, from an exact sign test on the primary scorer. docs/daemon/bench.md describes it.
 
+use crate::judge;
 use crate::replay::{self, Ending};
 use crate::score::{self, Score, Verdict};
 use crate::trace::{self, Trace};
@@ -71,6 +72,8 @@ pub struct Comparison {
     pub cases: Vec<CaseRuns>,
     /// The cases a `command` scorer could not score on their start commit, each with why.
     pub broken: Vec<(String, String)>,
+    /// One line per judge scorer: its agreement, or why it was left out on both sides.
+    pub judges: Vec<String>,
 }
 
 /// The primary scorer's verdict.
@@ -348,6 +351,10 @@ pub fn table(comparison: &Comparison) -> String {
     }
     for (case, why) in &comparison.broken {
         text.push_str(&format!("dropped case {case}: {why}\n"));
+    }
+    for line in &comparison.judges {
+        text.push_str(line);
+        text.push('\n');
     }
 
     let mut rows = vec![
@@ -650,13 +657,45 @@ pub fn compare(
             scorers.push(scorer.clone());
         }
     }
+    let calibrations = score::Judging::new(db, heads, None).calibrations;
+    let mut judges = Vec::new();
+    // A judge that is not calibrated is left out whole, on both sides.
+    for (name, calibration) in &calibrations {
+        if !scorers.contains(name) {
+            continue;
+        }
+        match calibration {
+            Err(why) if *name == benchmark.value.primary => {
+                return Err(format!(
+                    "the primary scorer {name} is a judge whose verdict does not count yet: {why}"
+                ));
+            }
+            Err(why) => judges.push(format!("left out on both sides: {name}: {why}")),
+            Ok(calibration) => judges.push(format!(
+                "judge {name}: {}, agreed on {}",
+                heads.scorers[name]
+                    .value
+                    .model
+                    .as_deref()
+                    .unwrap_or_default(),
+                calibration.shown()
+            )),
+        }
+    }
     let scorers: Vec<(String, ScoreOn)> = scorers
         .into_iter()
+        .filter(|name| calibrations.get(name).is_none_or(Result::is_ok))
         .filter_map(|name| {
             let on = heads.scorers.get(&name)?.value.on;
             Some((name, on))
         })
         .collect();
+    // A judge is priced from what one call cost when it was calibrated.
+    let judged: f64 = scorers
+        .iter()
+        .filter_map(|(name, _)| calibrations.get(name)?.as_ref().ok())
+        .map(judge::Calibration::per_call)
+        .sum();
     let paths = [format!("{prefix}scorers"), format!("{prefix}benchmarks")];
     let ruler_moved = !git(
         &top,
@@ -699,7 +738,8 @@ pub fn compare(
     for case in &cases {
         for configuration in &configurations {
             let estimate = replay::estimate(&case.loaded.case, configuration, options.turn)?;
-            each += estimate.dollars;
+            // A judge scores each finished run, and a replay has at most one per model step.
+            each += estimate.dollars + judged * case.loaded.case.spent.len().max(1) as f64;
             overrun = overrun.max(estimate.overrun);
         }
     }
@@ -794,6 +834,11 @@ pub fn compare(
                     budget: options.budget - spent,
                     turn: options.turn,
                 };
+                let mut judging = score::Judging {
+                    calibrations: calibrations.clone(),
+                    budget: Some(options.budget - spent),
+                    spent: 0.0,
+                };
                 let replayed = replay::replay(
                     dir,
                     configuration,
@@ -801,15 +846,25 @@ pub fn compare(
                     &replay_options,
                     &mut |_| {},
                     &mut |db, home, task| {
-                        score::grade(db, heads, home, task, &names).unwrap_or_default()
+                        score::grade(db, heads, home, task, &names, &mut judging)
+                            .unwrap_or_default()
                     },
                 )?;
-                spent += replayed.spent;
+                let cost = replayed.spent + judging.spent;
+                spent += cost;
                 say(&format!(
-                    "{} pair {pair}: {side} {}, ${:.4}",
-                    case.name, replayed.ending, replayed.spent
+                    "{} pair {pair}: {side} {}, ${cost:.4}",
+                    case.name, replayed.ending
                 ));
+                // A judge that ran out of budget, or spent past it, leaves the pair unmeasured.
+                let judges_over = (judging.spent > 0.0 && spent > options.budget)
+                    || replayed.scores.iter().any(|score| {
+                        score.kind == ScoreKind::Judge && score.reason.starts_with("over budget")
+                    });
                 match &replayed.ending {
+                    _ if judges_over => {
+                        incomplete = Some("the budget ended inside a pair".to_owned());
+                    }
                     Ending::OverBudget => {
                         incomplete = Some("the budget ended inside a pair".to_owned());
                     }
@@ -824,7 +879,7 @@ pub fn compare(
                 played[at] = Some(Played {
                     verdicts: verdicts(&replayed.scores, &scorers),
                     ending: replayed.ending,
-                    cost: replayed.spent,
+                    cost,
                     took: replayed.took,
                 });
             }
@@ -854,6 +909,7 @@ pub fn compare(
         scorers,
         cases: ran,
         broken,
+        judges,
     };
     let text = table(&comparison);
     let call = verdict(&comparison);
@@ -1020,6 +1076,7 @@ mod tests {
             scorers: vec![("passed".to_owned(), RESULT)],
             cases,
             broken: vec![],
+            judges: vec![],
         }
     }
 
@@ -1031,6 +1088,8 @@ mod tests {
             kind: ScoreKind::Outcome,
             verdict,
             reason: String::new(),
+            cost: 0.0,
+            judged: None,
         }
     }
 
@@ -1349,6 +1408,7 @@ mod tests {
             ],
             cases: november(),
             broken: vec![],
+            judges: vec![],
         };
 
         assert_eq!(

@@ -200,25 +200,31 @@ benchmark file, its cases and its scorers come from `--head` for both sides.
 
 1. It writes the files of each commit into a scratch folder in `$TMPDIR`, and refuses a commit
    whose factory fails `priory check`.
-2. It prints an estimate: each case's recorded steps priced for each side's models, times
-   `--runs`. It refuses to start when the estimate is over the budget, and names the `--runs` that
-   would fit.
-3. Each `command` scorer of the benchmark runs once on each case's untouched start commit, from
+2. It reads each `judge` scorer's calibration from this machine's trace, as `priory score` does
+   ([score.md](score.md#judges)). A judge that is not calibrated is left out whole, on both sides,
+   and the table names it. It refuses to start when the primary scorer is such a judge.
+3. It prints an estimate: each case's recorded steps priced for each side's models, plus each
+   judge's calls priced at what one call cost when it was calibrated, one per recorded model step,
+   times `--runs`. It refuses to start when the estimate is over the budget, and names the `--runs`
+   that would fit.
+4. Each `command` scorer of the benchmark runs once on each case's untouched start commit, from
    Priory's clone on this machine. A case where one errors is dropped for both sides, and the
    table names it. So an `error` during the comparison points at the change.
-4. It replays each case in pairs: one replay of the base, one of the head, as
+5. It replays each case in pairs: one replay of the base, one of the head, as
    [Replay](#replay) describes. The side that goes first alternates from one pair to the next, so
    a warm cache or a drifting model service favors neither side. It prints one line per replay,
    such as `eng-412 pair 1: head reached open-pr, $0.4100`.
-5. Once a replay ends, and before its scratch folder goes, the benchmark's scorers grade it. A
+6. Once a replay ends, and before its scratch folder goes, the benchmark's scorers grade it. A
    `result` or `diff` scorer takes its verdict on the replay's last finished run. An `ask` scorer
-   takes the worst of its verdicts on the runs that asked: an error, then a fail, then a pass.
-6. It prints the table, and appends a `factory.bench.compared` record to this machine's trace
+   takes the worst of its verdicts on the runs that asked: an error, then a fail, then a pass. A
+   judge's calls count toward the budget, and the replay's printed cost includes them.
+7. It prints the table, and appends a `factory.bench.compared` record to this machine's trace
    ([the trace schema](../trace-schema.md#factorybenchcompared)).
 
 Before each pair, the comparison checks what it spent. Once the budget is spent, no later pair
 starts. A pair whose replay ends `over budget` or `cost unknown` is dropped whole, and no later
-pair starts. Either way the comparison is incomplete.
+pair starts. So is a pair where a judge ran out of budget, or spent past it. Either way the
+comparison is incomplete.
 
 ### The table
 
@@ -275,7 +281,13 @@ The table gives no verdict in two cases:
   Running again until a `better` shows up would find one by chance.
 
 The header also says when the diff between the two commits touches `scorers/` or `benchmarks/`,
-since the change then moved the ruler too, and it names the cases whose capture left gaps.
+since the change then moved the ruler too, and it names the cases whose capture left gaps. Each
+judge of the benchmark gets one line above the table, with its agreement:
+
+```text
+judge does-what-was-asked: opus, agreed on 9/10 labeled cases
+left out on both sides: tone: not calibrated: it agreed on 6/10 labeled cases, under 80%
+```
 
 ### Compare errors
 
@@ -294,6 +306,7 @@ since the change then moved the ruler too, and it names the cases whose capture 
 | `the comparison ran, but its comment was not posted: <why>` | With `--post`, `gh pr comment` failed. The table is printed and recorded |
 | `the comparison ran, but its status was not set: <why>` | With `--post`, `gh api` failed to set the status. The comment is posted |
 | `the estimate, $<x>, is over the $<y> budget: give --runs <n>, or --budget <z> or more` | The estimate is over the budget, and fewer runs would fit |
+| `the primary scorer <name> is a judge whose verdict does not count yet: not calibrated: <why>` | The primary scorer is a judge that is not calibrated |
 
 The [replay errors](#replay-errors) apply to each replay, and stop the comparison.
 

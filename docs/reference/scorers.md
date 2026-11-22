@@ -13,10 +13,14 @@ Schema: [`config/scorer.json`](../schemas/config/scorer.json).
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `description` | string | yes | | What the scorer checks, in one line | `"The step ended as passed."` |
 | `on` | `result`, `diff` or `ask` | yes | | What the scorer reads. Each kind reads one: see below | `"result"` |
-| `kind` | `outcome`, `command` or `ask-shape` | yes | | How the scorer answers | `"outcome"` |
+| `kind` | `outcome`, `command`, `ask-shape` or `judge` | yes | | How the scorer answers | `"outcome"` |
 | `expect` | list of strings | for `outcome` and `ask-shape` | | The outcomes that pass, or the parts of an ask's shape every ask must show | `["passed"]` |
 | `run` | path | for `command` | | An executable in the factory folder | `"scripts/score-gate.sh"` |
 | `timeout` | duration | no | `"20m"` | For `command`: how long it may run before Priory kills it | `"5m"` |
+| `model` | string | for `judge` | | The model that grades, as `claude --model` takes it | `"opus"` |
+| `prompt` | path | for `judge` | | A file beside the scorer that holds the judge's question | `"does-what-was-asked.md"` |
+| `evaluation` | path | for `judge` | | A file beside the scorer that holds its labeled cases, named `*.eval.toml` | `"does-what-was-asked.eval.toml"` |
+| `agreement` | number above 0, at most 1 | no | `0.8` | For `judge`: the least share of labeled cases its calibration must get right before its verdict counts | `0.8` |
 
 ## Kinds
 
@@ -25,6 +29,7 @@ Schema: [`config/scorer.json`](../schemas/config/scorer.json).
 | `outcome` | `result` | The result's outcome is one of `expect` |
 | `command` | `diff` | `run` exits 0 in a scratch checkout of the result's commit. Exit 1 fails, and any other ending is an error |
 | `ask-shape` | `ask` | Every ask the run made shows each part `expect` names |
+| `judge` | `diff` | `model` answers `pass` to the question in `prompt`, about the request, the result and the diff. Its verdict counts only once calibrated: see [score.md](../daemon/score.md#judges) |
 
 An ask's shape is the one `priory eval` reads ([prompt-evals.md](prompt-evals.md)): `short` when
 its question is one line of at most 25 words, `whatWaits` and `nextAction` when it filled them.
@@ -43,8 +48,26 @@ A `command` scorer runs with a cleared environment and these variables:
 It answers `error: the result names no commit` for a result without a `commit`, and
 `error: no start commit` for a task created before Priory stored its start commit.
 
-The `judge` kind, a model that grades a change, is not built yet. See
-[scorers-and-benchmarks.md](../design/scorers-and-benchmarks.md).
+A `judge` scorer answers `error: not calibrated: <why>` until `priory score --calibrate` stores
+an agreement at or above its `agreement` for its current `model`, prompt and labeled cases. It
+needs `priory score --budget`. A file in `scorers/` whose name ends in `.eval.toml` is a judge's
+labeled cases, not a scorer.
+
+## Labeled cases
+
+A judge's `evaluation` file, `scorers/<name>.eval.toml`, holds the cases a person labeled. It needs
+at least 10 cases, of which at least 3 `pass` and 3 `fail`.
+
+Schema: [`config/judge-cases.json`](../schemas/config/judge-cases.json).
+
+| Key of `[[cases]]` | Type | Required | Meaning |
+| ------------------ | ---- | -------- | ------- |
+| `name` | string | yes | A name, unique in the file |
+| `request` | string | yes | What the task was asked |
+| `result` | table | no | The run's result, such as `outcome` and `summary` |
+| `diff` | string | no | The change, as `git diff` prints it |
+| `verdict` | `pass` or `fail` | yes | The right verdict, which a person gives |
+| `why` | string | no | Why the person gave it, for a reader |
 
 ## Example
 
@@ -84,12 +107,137 @@ kind = "ask-shape"
 expect = ["short", "whatWaits", "nextAction"]
 ```
 
+<!-- example: factory/scorers/does-what-was-asked.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/scorer.json
+description = "The change does what the request asks, and nothing else."
+on = "diff"
+kind = "judge"
+model = "opus"                                  # not the model of an agent it grades
+prompt = "does-what-was-asked.md"               # the judge's question, beside this file
+evaluation = "does-what-was-asked.eval.toml"    # labeled cases, beside this file
+agreement = 0.8                                 # the least share of labeled cases it must get right
+```
+
+<!-- example: factory/scorers/does-what-was-asked.md -->
+```md
+Does the change do what the request asks, and nothing else?
+
+Pass a change that does all the request asks, with tests where the request names behaviour. Fail a
+change that leaves part of the request undone, or that also changes code the request does not need.
+A result's summary is the agent's claim: check it against the diff.
+```
+
+<!-- example: factory/scorers/does-what-was-asked.eval.toml -->
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/judge-cases.json
+[[cases]]
+name = "adds-flag"
+request = "Add a --quiet flag to the CLI that hides progress lines."
+result = { outcome = "passed", summary = "Added --quiet." }
+diff = """
++    "--quiet" => quiet = true,
+"""
+verdict = "pass"
+
+[[cases]]
+name = "adds-flag-and-test"
+request = "Add a --quiet flag to the CLI that hides progress lines."
+result = { outcome = "passed", summary = "Added --quiet with a test." }
+diff = """
++    "--quiet" => quiet = true,
++fn quiet_hides_progress() {
+"""
+verdict = "pass"
+
+[[cases]]
+name = "fixes-typo"
+request = "Fix the typo \"recieve\" in the README."
+result = { outcome = "passed", summary = "Fixed the typo." }
+diff = """
+-We recieve events.
++We receive events.
+"""
+verdict = "pass"
+
+[[cases]]
+name = "bumps-timeout"
+request = "Raise the fetch timeout from 30 to 60 seconds."
+result = { outcome = "passed", summary = "Raised it to 60." }
+diff = """
+-const FETCH: u64 = 30;
++const FETCH: u64 = 60;
+"""
+verdict = "pass"
+
+[[cases]]
+name = "renames-option"
+request = "Rename the option `colour` to `color`, keeping `colour` as an alias."
+result = { outcome = "passed", summary = "Renamed, with an alias." }
+diff = """
+-    #[serde(rename = "colour")]
++    #[serde(alias = "colour")]
+"""
+verdict = "pass"
+
+[[cases]]
+name = "flag-and-rewrite"
+request = "Add a --quiet flag to the CLI that hides progress lines."
+result = { outcome = "passed", summary = "Added --quiet and tidied the parser." }
+diff = """
++    "--quiet" => quiet = true,
+-fn parse(args: &[String]) {
++fn parse_arguments(input: Vec<String>) {
+"""
+verdict = "fail"
+
+[[cases]]
+name = "half-done"
+request = "Add --quiet and --verbose flags to the CLI."
+result = { outcome = "passed", summary = "Added both flags." }
+diff = """
++    "--quiet" => quiet = true,
+"""
+verdict = "fail"
+
+[[cases]]
+name = "wrong-file"
+request = "Fix the typo \"recieve\" in the README."
+result = { outcome = "passed", summary = "Fixed the typo." }
+diff = """
+-We recieve events.
++We receive events.
+--- a/CHANGELOG.md
++Fixed typos.
+"""
+verdict = "fail"
+
+[[cases]]
+name = "wrong-value"
+request = "Raise the fetch timeout from 30 to 60 seconds."
+result = { outcome = "passed", summary = "Raised it to 60." }
+diff = """
+-const FETCH: u64 = 30;
++const FETCH: u64 = 90;
+"""
+verdict = "fail"
+
+[[cases]]
+name = "drops-alias"
+request = "Rename the option `colour` to `color`, keeping `colour` as an alias."
+result = { outcome = "passed", summary = "Renamed it." }
+diff = """
+-    #[serde(rename = "colour")]
++    #[serde(rename = "color")]
+"""
+verdict = "fail"
+```
+
 ## Errors from `priory check`
 
 | Message | Cause |
 | ------- | ----- |
-| `` kind `judge` is not supported yet: use outcome, command or ask-shape `` | A `judge` scorer |
-| `` unknown variant `<kind>`, expected one of `outcome`, `command`, `ask-shape` `` | A kind not listed above |
+| `` unknown variant `<kind>`, expected one of `outcome`, `command`, `ask-shape`, `judge` `` | A kind not listed above |
 | `` kind `<kind>` reads on = "<on>", not "<other>" `` | An `on` that does not fit the kind |
 | `` an `outcome` scorer needs `expect`: the outcomes that pass `` | An `outcome` scorer with no `expect` |
 | `` an `ask-shape` scorer needs `expect`: some of short, whatWaits, nextAction `` | An `ask-shape` scorer with no `expect` |
@@ -100,4 +248,18 @@ expect = ["short", "whatWaits", "nextAction"]
 | `` `run` names <path>, which is not executable: chmod +x it `` | `run` names a file without its execute bit |
 | `` `run` names <path>, which is not in the factory folder `` | `run` is absolute or climbs out with `..` |
 | `` `<key>` is for kind `command`, not `<kind>` `` | `run` or `timeout` on another kind |
+| `` `<key>` is for kind `judge`, not `<kind>` `` | `model`, `prompt`, `evaluation` or `agreement` on another kind |
+| `` a `judge` scorer takes no `expect`: its answer is pass or fail `` | A `judge` scorer with `expect` |
+| `` a `judge` scorer needs `model`: the model that grades `` | A `judge` scorer with no `model` |
+| `` a `judge` scorer needs `prompt`: a file beside it with the judge's whole prompt `` | A `judge` scorer with no `prompt` |
+| `` a `judge` scorer needs `evaluation`: a file beside it with its labeled cases `` | A `judge` scorer with no `evaluation` |
+| `` `<key>` names <path>, which is missing from scorers/ `` | `prompt` or `evaluation` names no file |
+| `` `<key>` names <path>, which is not beside the scorer `` | `prompt` or `evaluation` is absolute or climbs out with `..` |
+| `` `evaluation` <path>: a judge needs at least 10 labeled cases, 3 of them pass and 3 fail: this file has <n> (<p> pass, <f> fail) `` | Too few labeled cases, or too few of one verdict |
+| `` `evaluation` <path>: two cases named <name> `` | Two labeled cases share a name |
+| `` `agreement` is <x>: give a share above 0 and at most 1, such as 0.8 `` | An `agreement` out of range |
+
+`priory check` also warns, and passes, when a judge's `model` is the model of an agent of the
+factory, since a model tends to prefer its own work:
+`` warning: scorers/<name>.toml:<line>: the judge's model `<model>` is also the model of agent `<agent>`: a model tends to prefer its own work ``.
 | `` unknown field `<key>`, expected one of ... `` | A key the table above does not list |

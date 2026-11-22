@@ -897,7 +897,7 @@ pub struct Scorer {
     pub description: String,
     /// What it reads: `result`, `diff` or `ask`.
     pub on: ScoreOn,
-    /// How it answers: `outcome`, `command` or `ask-shape`.
+    /// How it answers: `outcome`, `command`, `ask-shape` or `judge`.
     pub kind: ScoreKind,
     /// For `outcome`, the outcomes that pass. For `ask-shape`, what every ask must show: `short`,
     /// `whatWaits` and `nextAction`.
@@ -910,11 +910,28 @@ pub struct Scorer {
     #[serde(default, deserialize_with = "duration")]
     #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub timeout: Option<Duration>,
+    /// For `judge`, the model that grades, such as `opus`.
+    pub model: Option<String>,
+    /// For `judge`, the file beside the scorer that holds the judge's whole prompt.
+    pub prompt: Option<PathBuf>,
+    /// For `judge`, the file beside the scorer that holds its labeled cases, named `*.eval.toml`.
+    pub evaluation: Option<PathBuf>,
+    /// For `judge`, the least share of labeled cases it must get right before its verdict counts;
+    /// 0.8 when unset.
+    #[schemars(range(min = 0.0, max = 1.0))]
+    pub agreement: Option<f64>,
 }
+
+/// The share of labeled cases a judge must get right when its file names no `agreement`.
+pub const AGREEMENT: f64 = 0.8;
 
 impl Scorer {
     pub fn timeout(&self) -> Duration {
         self.timeout.unwrap_or(Duration::from_secs(20 * 60))
+    }
+
+    pub fn agreement(&self) -> f64 {
+        self.agreement.unwrap_or(AGREEMENT)
     }
 }
 
@@ -950,6 +967,8 @@ pub enum ScoreKind {
     Command,
     /// Passes when every ask shows each part `expect` names.
     AskShape,
+    /// Asks `model` to grade the change, once its calibration agrees with a person's labels.
+    Judge,
 }
 
 impl ScoreKind {
@@ -958,6 +977,7 @@ impl ScoreKind {
             ScoreKind::Outcome => "outcome",
             ScoreKind::Command => "command",
             ScoreKind::AskShape => "ask-shape",
+            ScoreKind::Judge => "judge",
         }
     }
 }
@@ -983,12 +1003,6 @@ pub struct Benchmark {
 
 /// The parts of an ask's shape an `ask-shape` scorer can expect.
 pub const ASK_SHAPE: [&str; 3] = ["short", "whatWaits", "nextAction"];
-
-/// Only a scorer's kind, read before the whole file so a kind not built yet gets its own message.
-#[derive(Deserialize)]
-struct KindOf {
-    kind: Option<String>,
-}
 
 /// `triggers/<name>.toml` or `.yaml`: an event source, its filter and the workflow its events
 /// start. The file name is the trigger's name.
@@ -2223,20 +2237,13 @@ pub fn load(dir: &Path) -> (Factory, Vec<Problem>) {
             found.define(&mut factory.views, stem(&file), &file, value, lines);
         }
     }
-    for file in found.config_files("scorers") {
-        let Some((kind, lines)) = found.parse::<KindOf>(&file) else {
-            continue;
-        };
-        if kind.kind.as_deref() == Some("judge") {
-            let file = found.relative(&file);
-            found.problems.push(Problem {
-                file,
-                at: lines.field("kind").map(|line| line.to_string()),
-                message: "kind `judge` is not supported yet: use outcome, command or ask-shape"
-                    .into(),
-            });
-            continue;
-        }
+    // A judge's labeled cases sit beside it as `<name>.eval.toml`, and are no scorer.
+    let scorers = found.config_files("scorers").into_iter().filter(|file| {
+        !file
+            .file_stem()
+            .is_some_and(|stem| stem.to_string_lossy().ends_with(".eval"))
+    });
+    for file in scorers.collect::<Vec<_>>() {
         if let Some((value, lines)) = found.parse::<Scorer>(&file) {
             found.define(&mut factory.scorers, stem(&file), &file, value, lines);
         }

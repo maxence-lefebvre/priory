@@ -1,11 +1,13 @@
 //! `priory score`: grades the latest finished run of each step of a task with the factory's
 //! scorers, and appends one `factory.run.scored` trace record per score.
 
+use crate::judge::{self, Calibration};
 use crate::trace::{self, Trace};
 use priory_factory::factory::{Factory, Loaded, ScoreKind, Scorer};
 use priory_runtime::{eval, room, runtime, script, transcript};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -38,17 +40,56 @@ pub struct Score {
     pub kind: ScoreKind,
     pub verdict: Verdict,
     pub reason: String,
+    /// What a judge's call cost, in dollars; 0 for a scorer that calls no model.
+    pub cost: f64,
+    /// For a calibrated judge, its model and the calibration its verdict rests on.
+    pub judged: Option<Judged>,
+}
+
+/// The model and calibration behind a judge's verdict.
+pub struct Judged {
+    pub model: String,
+    pub calibration: Calibration,
 }
 
 impl Score {
     pub fn json(&self) -> Value {
-        json!({
+        let mut value = json!({
             "run": self.run,
             "step": self.step,
             "scorer": self.scorer,
             "verdict": self.verdict.name(),
             "reason": self.reason,
-        })
+        });
+        if let Some(judged) = &self.judged {
+            value["agreement"] = json!(judged.calibration.shown());
+        }
+        value
+    }
+}
+
+/// What the judges of one scoring may use: each judge's calibration or why it does not count, the
+/// budget in dollars, if one was given, and what they spent of it.
+pub struct Judging {
+    pub calibrations: BTreeMap<String, Result<Calibration, String>>,
+    pub budget: Option<f64>,
+    pub spent: f64,
+}
+
+impl Judging {
+    /// Reads the calibration of each judge scorer of `factory` from `db`, this machine's state.
+    pub fn new(db: &Connection, factory: &Factory, budget: Option<f64>) -> Judging {
+        let calibrations = factory
+            .scorers
+            .iter()
+            .filter(|(_, scorer)| scorer.value.kind == ScoreKind::Judge)
+            .map(|(name, _)| (name.clone(), judge::calibrated(db, factory, name)))
+            .collect();
+        Judging {
+            calibrations,
+            budget,
+            spent: 0.0,
+        }
     }
 }
 
@@ -73,6 +114,7 @@ pub fn score(
     home: &Path,
     task: i64,
     only: Option<&str>,
+    budget: Option<f64>,
 ) -> Result<Vec<Score>, String> {
     let names: Vec<&str> = match only {
         Some(name) if factory.scorers.contains_key(name) => vec![name],
@@ -82,7 +124,8 @@ pub fn score(
     if names.is_empty() {
         return Err("the factory has no scorers: add one to scorers/".to_owned());
     }
-    let scores = grade(db, factory, home, task, &names)?;
+    let mut judging = Judging::new(db, factory, budget);
+    let scores = grade(db, factory, home, task, &names, &mut judging)?;
     let error = |error: rusqlite::Error| error.to_string();
     let machine = room::hostname();
     let trace = Trace {
@@ -111,6 +154,7 @@ pub fn grade(
     home: &Path,
     task: i64,
     names: &[&str],
+    judging: &mut Judging,
 ) -> Result<Vec<Score>, String> {
     let error = |error: rusqlite::Error| error.to_string();
     let mut scorers: Vec<(&String, &Loaded<Scorer>)> = Vec::new();
@@ -143,10 +187,18 @@ pub fn grade(
     let mut scores = Vec::new();
     for run in &runs {
         for (name, scorer) in &scorers {
+            let (mut cost, mut judged) = (0.0, None);
             let (verdict, reason) = match scorer.value.kind {
                 ScoreKind::Outcome => outcome(&scorer.value, run),
                 ScoreKind::AskShape => ask_shape(db, &scorer.value, run).map_err(error)?,
                 ScoreKind::Command => command(factory, home, &found, &scorer.value, run),
+                ScoreKind::Judge => {
+                    let graded = judge(db, factory, home, &found, name, run, task, judging)
+                        .map_err(error)?;
+                    cost = graded.cost;
+                    judged = graded.judged;
+                    (graded.verdict, graded.reason)
+                }
             };
             scores.push(Score {
                 run: run.id,
@@ -155,6 +207,8 @@ pub fn grade(
                 kind: scorer.value.kind,
                 verdict,
                 reason,
+                cost,
+                judged,
             });
         }
     }
@@ -244,6 +298,43 @@ fn ask_shape(db: &Connection, scorer: &Scorer, run: &Run) -> rusqlite::Result<(V
     })
 }
 
+/// What a `diff` scorer reads of a run: its repository, start commit, result commit and result.
+struct Target<'a> {
+    repo: &'a str,
+    base: &'a str,
+    head: &'a str,
+    result: &'a Value,
+}
+
+/// The change a `diff` scorer reads, or the verdict when there is none to read.
+fn target<'a>(task: &'a Task, run: &'a Run) -> Result<Target<'a>, (Verdict, String)> {
+    let error = |reason: String| (Verdict::Error, reason);
+    let Some(result) = &run.result else {
+        return Err((Verdict::Fail, NO_RESULT.to_owned()));
+    };
+    let Some(head) = result["commit"].as_str() else {
+        return Err(error("the result names no commit".to_owned()));
+    };
+    // The agent wrote it, and git would read a value starting with `-` as an option.
+    if !(7..=64).contains(&head.len()) || !head.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(error(format!(
+            "the result's commit {head:?} is not a commit hash"
+        )));
+    }
+    let Some(base) = &task.base else {
+        return Err(error("no start commit".to_owned()));
+    };
+    let Some(repo) = &task.repo else {
+        return Err(error("the task names no repository".to_owned()));
+    };
+    Ok(Target {
+        repo,
+        base,
+        head,
+        result,
+    })
+}
+
 fn command(
     factory: &Factory,
     home: &Path,
@@ -251,24 +342,115 @@ fn command(
     scorer: &Scorer,
     run: &Run,
 ) -> (Verdict, String) {
-    let error = |reason: String| (Verdict::Error, reason);
-    let Some(result) = &run.result else {
-        return (Verdict::Fail, NO_RESULT.to_owned());
-    };
-    let Some(head) = result["commit"].as_str() else {
-        return error("the result names no commit".to_owned());
-    };
-    // The agent wrote it, and git would read a value starting with `-` as an option.
-    if !(7..=64).contains(&head.len()) || !head.chars().all(|c| c.is_ascii_hexdigit()) {
-        return error(format!("the result's commit {head:?} is not a commit hash"));
+    match target(task, run) {
+        Err(answer) => answer,
+        Ok(at) => on_commit(factory, home, at.repo, at.base, at.head, scorer, at.result),
     }
-    let Some(base) = &task.base else {
-        return error("no start commit".to_owned());
+}
+
+/// A judge's verdict on one run, with what it cost.
+struct Graded {
+    verdict: Verdict,
+    reason: String,
+    cost: f64,
+    judged: Option<Judged>,
+}
+
+/// Asks the judge scorer `name` about `run`'s change, once its calibration counts and within the
+/// budget `judging` holds.
+#[allow(clippy::too_many_arguments)]
+fn judge(
+    db: &Connection,
+    factory: &Factory,
+    home: &Path,
+    task: &Task,
+    name: &str,
+    run: &Run,
+    id: i64,
+    judging: &mut Judging,
+) -> rusqlite::Result<Graded> {
+    let answer = |verdict, reason: String| Graded {
+        verdict,
+        reason,
+        cost: 0.0,
+        judged: None,
     };
-    let Some(repo) = &task.repo else {
-        return error("the task names no repository".to_owned());
+    let calibration = match judging.calibrations.get(name) {
+        Some(Ok(calibration)) => calibration.clone(),
+        Some(Err(why)) => return Ok(answer(Verdict::Error, why.clone())),
+        None => return Ok(answer(Verdict::Error, "not calibrated".to_owned())),
     };
-    on_commit(factory, home, repo, base, head, scorer, result)
+    let at = match target(task, run) {
+        Ok(at) => at,
+        Err((verdict, reason)) => return Ok(answer(verdict, reason)),
+    };
+    let Some(budget) = judging.budget else {
+        return Ok(answer(
+            Verdict::Error,
+            "a judge costs money: give --budget USD".to_owned(),
+        ));
+    };
+    if judging.spent >= budget {
+        return Ok(answer(
+            Verdict::Error,
+            "over budget: the judges spent the budget".to_owned(),
+        ));
+    }
+    let diff = match diff(home, at.repo, at.base, at.head) {
+        Ok(diff) => diff,
+        Err(why) => return Ok(answer(Verdict::Error, why)),
+    };
+    let request = request(db, id)?;
+    let opened = match judge::open(factory, name) {
+        Ok(opened) => opened,
+        Err(why) => return Ok(answer(Verdict::Error, why)),
+    };
+    let read = judge::Read {
+        request: &request,
+        result: at.result,
+        diff: &diff,
+    };
+    let asked = judge::ask(&opened, &home.join("scores"), &read, budget - judging.spent);
+    judging.spent += asked.cost;
+    let judged = Some(Judged {
+        model: opened.model.to_owned(),
+        calibration,
+    });
+    Ok(Graded {
+        verdict: asked.verdict,
+        reason: asked.reason,
+        cost: asked.cost,
+        judged,
+    })
+}
+
+/// What `head` changed since `base`, from Priory's clone of `repo` under `home`.
+fn diff(home: &Path, repo: &str, base: &str, head: &str) -> Result<String, String> {
+    let clone = home.join("repos").join(repo);
+    let output = git(&clone)
+        .args(["diff", "--no-color", "--no-ext-diff", base, head, "--"])
+        .output()
+        .map_err(|why| format!("cannot run git: {why}"))?;
+    if !output.status.success() {
+        let why = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        return Err(format!("cannot read the diff of {head}: {why}"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The data of the message that asked for task `id`, as JSON, or a line that says it is gone.
+fn request(db: &Connection, id: i64) -> rusqlite::Result<String> {
+    let data: Option<String> = db
+        .query_row(
+            "SELECT data FROM inbox WHERE task = ?1 ORDER BY seq LIMIT 1",
+            [id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(data
+        .and_then(|data| serde_json::from_str::<Value>(&data).ok())
+        .map(|data| serde_json::to_string_pretty(&data).unwrap_or_default())
+        .unwrap_or_else(|| "(the request is not in the inbox)".to_owned()))
 }
 
 /// Runs the `command` scorer `scorer` on the commit `head` of `repo`, from Priory's clone under

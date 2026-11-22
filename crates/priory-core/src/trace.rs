@@ -720,10 +720,31 @@ pub(crate) fn scored(
         "verdict": score.verdict.name(),
         "reason": score.reason,
     });
+    if let (Some(judged), Value::Object(fields)) = (&score.judged, &mut data) {
+        fields.insert("model".to_owned(), json!(judged.model));
+        fields.insert(
+            "agreement".to_owned(),
+            json!((judged.calibration.agreement() * 10_000.0).round() / 10_000.0),
+        );
+        fields.insert("cases".to_owned(), json!(judged.calibration.cases));
+    }
     if let Value::Object(fields) = &mut data {
         fields.retain(|_, value| !value.is_null());
     }
     append(tx, trace, "factory.run.scored", &time, data)
+}
+
+/// Appends a `factory.scorer.calibrated` record: a judge scorer ran on every one of its labeled
+/// cases, and `data` holds its agreement with the hashes of its prompt and cases.
+pub(crate) fn calibrated(tx: &Transaction, trace: &Trace, data: Value) -> rusqlite::Result<()> {
+    let time: String = tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
+        row.get(0)
+    })?;
+    let mut data = data;
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    append(tx, trace, "factory.scorer.calibrated", &time, data)
 }
 
 /// Appends a `factory.bench.compared` record: a comparison of two commits on a benchmark ended.

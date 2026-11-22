@@ -24,7 +24,8 @@
 # turn, as Codex 0.170 does, and no UserPromptSubmit or Stop.
 # With -p, it is a handler call: it appends its stdin to handler.log, ended by ---, and its args to
 # handler-args.log, then prints Claude's --output-format json with the first line of
-# FAKE_DIR/handler as its result, which it pops, or a leave answer when none is left. With
+# FAKE_DIR/handler as its result, which it pops, or a leave answer when none is left. A line that
+# starts with a double quote is a JSON string, decoded, so a result can hold several lines. With
 # FAKE_DIR/handler-fail, it then exits 1.
 # A call with an `output` key stands for a built-in tool that ran: it appends the tool_use and its
 # tool_result, with that output, to FAKE_DIR/transcript.jsonl as Claude writes them, and no hook hears it.
@@ -37,7 +38,8 @@ if [[ " $* " == *" -p "* ]]; then
     answer=$(head -n 1 "$FAKE_DIR/handler")
     sed -i 1d "$FAKE_DIR/handler"
   fi
-  jq -nc --arg answer "$answer" '{type: "result", subtype: "success", is_error: false, result: $answer, session_id: "fake-session",
+  jq -nc --arg answer "$answer" '{type: "result", subtype: "success", is_error: false,
+    result: (if ($answer | startswith("\"")) then ($answer | fromjson) else $answer end), session_id: "fake-session",
     total_cost_usd: 0.0021, usage: {input_tokens: 300, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 40},
     modelUsage: {"claude-fake-haiku": {inputTokens: 300, outputTokens: 20, cacheReadInputTokens: 0, cacheCreationInputTokens: 40, costUSD: 0.0021}}}'
   [ -e "$FAKE_DIR/handler-fail" ] && exit 1

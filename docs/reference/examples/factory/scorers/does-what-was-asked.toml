@@ -1,0 +1,8 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/scorer.json
+description = "The change does what the request asks, and nothing else."
+on = "diff"
+kind = "judge"
+model = "opus"                                  # not the model of an agent it grades
+prompt = "does-what-was-asked.md"               # the judge's question, beside this file
+evaluation = "does-what-was-asked.eval.toml"    # labeled cases, beside this file
+agreement = 0.8                                 # the least share of labeled cases it must get right

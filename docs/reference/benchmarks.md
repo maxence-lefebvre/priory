@@ -16,6 +16,9 @@ Schema: [`config/benchmark.json`](../schemas/config/benchmark.json).
 | `scorers` | list of strings | no | `[]` | Other scorers, shown beside the primary one with no verdict | `["passed", "short-ask"]` |
 | `cases` | list of paths | yes | | The case folders, each relative to the benchmark file's folder ([cases.md](cases.md)) | `["cases/eng-412"]` |
 
+A `judge` scorer that is not calibrated is left out of the comparison on both sides, and a primary
+one stops the comparison before it starts ([bench.md](../daemon/bench.md#what-it-does)).
+
 `priory check` does not read the case folders. `priory bench` loads them from the head commit and
 fails on one that is missing.
 
