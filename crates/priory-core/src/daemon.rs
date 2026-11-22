@@ -698,6 +698,8 @@ enum Input {
     Connector(crate::todo::ConnectorLine),
     Todo(crate::todo::Line),
     Subscribe(subscribe::Line),
+    Unsubscribe(subscribe::EndLine),
+    Label(crate::label::Line),
     Deliver(deliver::Line),
     Add(AddLine),
     Signal(Signal),
@@ -867,6 +869,18 @@ fn take(
             None,
         )),
         Ok(Input::Subscribe(line)) => Ok((replied(subscribe::apply(db, &line.subscribe)?), None)),
+        Ok(Input::Unsubscribe(line)) => {
+            let end = &line.unsubscribe;
+            Ok((
+                replied(subscribe::unsubscribe(db, end.task, &end.resource)?),
+                None,
+            ))
+        }
+        Ok(Input::Label(line)) => {
+            let labeled = intake::now()
+                .and_then(|now| crate::label::apply(db, trace.factory, &line.label, now));
+            Ok((replied(labeled), None))
+        }
         Ok(Input::BatchEdit(line)) => {
             Ok((replied(crate::batch::apply(db, &line.batch_edit)), None))
         }

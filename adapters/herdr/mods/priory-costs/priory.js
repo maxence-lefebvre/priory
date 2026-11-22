@@ -34,6 +34,11 @@ export function priory({ exec, binary = "priory-oss", on = null, factory = null 
     // Sends the resource's next event to the task, unless the state moved past `revision`.
     subscribe: (/** @type {Id} */ task, /** @type {string} */ resource, /** @type {number | null} */ revision = null) =>
       call(["subscribe", String(task), resource, ...expected(revision)]),
+    // Ends the task's subscription; what the task owns otherwise, such as its key, stays.
+    unsubscribe: (/** @type {Id} */ task, /** @type {string} */ resource) => call(["unsubscribe", String(task), resource]),
+    // Marks the task wrong with a URL that shows it, for the risk report, or clears every mark.
+    label: (/** @type {Id} */ task, /** @type {{ evidence?: string, happened?: string, clear?: boolean }} */ { evidence, happened, clear = false }) =>
+      call(["label", ...inFactory, String(task), "wrong", ...(clear ? ["--clear"] : ["--evidence", String(evidence), ...(happened ? ["--happened", happened] : [])])]),
     // One task with its brief, plan, pull request, runs and asks, as `/api/tasks/{id}` serves it.
     task: (/** @type {Id} */ id) => read("task", String(id)),
     queue: () => read("queue", ...inFactory),

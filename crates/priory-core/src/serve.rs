@@ -544,6 +544,8 @@ enum Write<'a> {
     Subscribe,
     Unsubscribe,
     Follow,
+    Unfollow,
+    Label(&'a str),
     TodoAdd,
     TodoDone(i64),
     Seen,
@@ -565,6 +567,7 @@ impl<'a> Write<'a> {
             "/api/push/subscribe" => return Some(Write::Subscribe),
             "/api/push/unsubscribe" => return Some(Write::Unsubscribe),
             "/api/subscribe" => return Some(Write::Follow),
+            "/api/unsubscribe" => return Some(Write::Unfollow),
             "/api/todos" => return Some(Write::TodoAdd),
             "/api/seen" => return Some(Write::Seen),
             _ => {}
@@ -592,6 +595,12 @@ impl<'a> Write<'a> {
             .and_then(|rest| rest.strip_suffix("/move"))
         {
             return Some(Write::Move(task));
+        }
+        if let Some(task) = path
+            .strip_prefix("/api/tasks/")
+            .and_then(|rest| rest.strip_suffix("/label"))
+        {
+            return Some(Write::Label(task));
         }
         if let Some((task, act)) = path
             .strip_prefix("/api/tasks/")
@@ -702,6 +711,26 @@ struct FollowBody {
 #[serde(deny_unknown_fields)]
 struct Unsubscribe {
     endpoint: String,
+}
+
+/// `POST /api/unsubscribe`'s body. It takes no revision, as `priory unsubscribe` takes no
+/// `--expected`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UnfollowBody {
+    task: i64,
+    resource: String,
+}
+
+/// `POST /api/tasks/{id}/label`'s body: `evidence` and an optional `happened` to mark the task
+/// wrong, or `clear: true`, as `priory label TASK wrong`.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LabelBody {
+    evidence: Option<String>,
+    happened: Option<String>,
+    #[serde(default)]
+    clear: bool,
 }
 
 /// Sends a write to the daemon on its socket, as the CLI verb does; this thread never writes the
@@ -1175,13 +1204,7 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
         Write::Follow => {
             let body: FollowBody = serde_json::from_slice(body).map_err(bad)?;
             let Some(resource) = crate::subscribe::resource(&body.resource) else {
-                return Err(Reply::error(
-                    400,
-                    &format!(
-                        "`{}` is not a resource: name github:owner/name#7, linear:ENG-7 or slack:C0123:1763500000.000100",
-                        body.resource
-                    ),
-                ));
+                return Err(not_a_resource(&body.resource));
             };
             let request = crate::subscribe::Request {
                 task: body.task,
@@ -1190,6 +1213,40 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
             };
             let sent = Sent::Task(request.task, request.expected);
             Ok((line(&crate::subscribe::Line { subscribe: request }), sent))
+        }
+        Write::Unfollow => {
+            let body: UnfollowBody = serde_json::from_slice(body).map_err(bad)?;
+            let Some(resource) = crate::subscribe::resource(&body.resource) else {
+                return Err(not_a_resource(&body.resource));
+            };
+            let end = crate::subscribe::End {
+                task: body.task,
+                resource,
+            };
+            let sent = Sent::Task(end.task, None);
+            Ok((line(&crate::subscribe::EndLine { unsubscribe: end }), sent))
+        }
+        Write::Label(task) => {
+            let body: LabelBody = serde_json::from_slice(body).map_err(bad)?;
+            if body.clear != body.evidence.is_none() || (body.clear && body.happened.is_some()) {
+                return Err(Reply::error(
+                    400,
+                    "send evidence and an optional happened to mark, or clear: true alone",
+                ));
+            }
+            let task = task
+                .parse()
+                .map_err(|_| Reply::error(404, &format!("there is no task {task}")))?;
+            let request = crate::label::Request {
+                task,
+                evidence: body.evidence,
+                happened: body.happened,
+                clear: body.clear,
+            };
+            Ok((
+                line(&crate::label::Line { label: request }),
+                Sent::Task(task, None),
+            ))
         }
         Write::TodoAdd => {
             let add: todo::Add = serde_json::from_slice(body).map_err(bad)?;
@@ -1226,6 +1283,15 @@ fn write_line(db: &Connection, write: &Write, body: &[u8]) -> Result<(String, Se
             Ok((line(&state::SeenLine { seen }), Sent::Nothing))
         }
     }
+}
+
+fn not_a_resource(resource: &str) -> Reply {
+    Reply::error(
+        400,
+        &format!(
+            "`{resource}` is not a resource: name github:owner/name#7, linear:ENG-7 or slack:C0123:1763500000.000100"
+        ),
+    )
 }
 
 fn line(message: &impl serde::Serialize) -> String {
@@ -1559,6 +1625,19 @@ mod tests {
                 let line: crate::state::MoveLine = serde_json::from_str(&line).unwrap();
                 prop_assert!(line.r#move.band.is_some() || line.r#move.place.is_some());
                 prop_assert_eq!(line.r#move.task, 2);
+            }
+        }
+
+        #[test]
+        fn a_label_body_becomes_one_mark_or_one_clear_or_is_refused(
+            body in r#"\{("evidence": ?"[a-z:/.]{0,12}"|"happened": ?"[0-9-]{0,10}"|"clear": ?(true|false)|"x": ?1)(, ?("evidence": ?"[a-z:/]{0,8}"|"happened": ?"[0-9-]{0,10}"|"clear": ?(true|false))){0,2}\}|.{0,40}"#
+        ) {
+            let written = DB.with(|db| write_line(db, &Write::Label("3"), body.as_bytes()));
+            if let Ok((line, _)) = written {
+                let line: crate::label::Line = serde_json::from_str(&line).unwrap();
+                prop_assert_eq!(line.label.clear, line.label.evidence.is_none());
+                prop_assert!(!line.label.clear || line.label.happened.is_none());
+                prop_assert_eq!(line.label.task, 3);
             }
         }
 
