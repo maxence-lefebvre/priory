@@ -392,7 +392,8 @@ event that requested the task, so a reply posted before the task existed still r
 
 The subscription to the task's own key carries only what people say, edit and close: reviews,
 comments, review thread comments, a pull request or issue closed, a Linear comment, state change or
-edit of the title, description, labels, assignee or priority, and a Slack reply. A check run, a label or a push on the task's own pull request wakes nothing, since
+edit of the title, description, labels, assignee or priority, a Linear issue that left the watched
+view (`linear.issue.left`), and a Slack reply. A check run, a label or a push on the task's own pull request wakes nothing, since
 each would start a run; the checks gate and waits take those. A subscription made with `subscribe`
 carries every event, on the task's own key too: `subscribe` to the own key turns its subscription
 into one that carries every event.

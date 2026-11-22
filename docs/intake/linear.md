@@ -50,7 +50,7 @@ Their fields and examples are in [events.md](../reference/events.md#linear).
 | Type | One message per |
 | ---- | --------------- |
 | `linear.issue.entered` | issue found in a view that was not in it at the previous poll |
-| `linear.issue.left` | issue gone from a view that was in it at the previous poll |
+| `linear.issue.left` | issue gone from a view that was in it at the previous poll. The daemon tells the issue's task, or asks a person whether to drop it when it has not run yet (see [runs.md](../daemon/runs.md#holds)) |
 | `linear.view.changed` | poll that finds a view's filter changed since the previous poll |
 | `linear.issue.created` | issue created |
 | `linear.issue.state_changed` | history entry that moves an issue from one state to another |

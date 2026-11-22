@@ -9573,6 +9573,86 @@ fn a_blockers_hold_releases_the_task_when_its_issue_has_no_open_blocker_left() {
     setup.until("tasks", |rows| rows[0][4] == "running");
 }
 
+fn left_view() -> Message {
+    let mut left = linear_7("linear.issue.left", &[]);
+    left.data["view"] = json!("My loop backlog");
+    left
+}
+
+#[test]
+fn an_issue_that_leaves_the_view_before_its_task_ran_asks_to_drop_or_keep_it() {
+    for (name, answer, state) in [
+        ("left-view-drop", "drop", "dropped"),
+        ("left-view-keep", "keep", "queued"),
+    ] {
+        let mut setup = Setup::new(name);
+        setup.memory(0);
+        let source = linear_7("linear.issue.entered", &[]);
+        let mut request = requested(42);
+        request.data["key"] = json!("linear:ENG-7");
+        request.data["source"] = json!(source.id.to_string());
+        setup.publish(&source);
+        setup.publish(&request);
+        setup.start();
+        setup.until("tasks", |rows| rows.len() == 1);
+
+        setup.publish(&left_view());
+
+        let asks = setup.until("asks", |rows| rows.len() == 1);
+        assert_eq!(
+            [&*asks[0][1], &asks[0][3], &asks[0][4]],
+            [
+                "1",
+                "ENG-7 left the view My loop backlog. Drop the task?",
+                "[\"drop\",\"keep\"]"
+            ],
+            "{name}"
+        );
+        assert_eq!(
+            held_as(&setup, "1"),
+            [
+                "held".to_owned(),
+                "held: left the view My loop backlog, until a person answers whether to keep it"
+                    .to_owned()
+            ],
+            "{name}"
+        );
+
+        person(&setup, "answer", &[&asks[0][0], answer, "--revision", "1"]);
+
+        assert_eq!(held_as(&setup, "1")[0], state, "{name}");
+        if answer == "drop" {
+            assert_eq!(
+                held_as(&setup, "1")[1],
+                "dropped by a person after its issue left the view"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_issue_that_leaves_the_view_wakes_its_asleep_task() {
+    let mut setup = Setup::new("left-view-asleep");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    let mut request = requested(42);
+    request.data["key"] = json!("linear:ENG-7");
+    setup.publish(&request.subject("linear:ENG-7"));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+
+    setup.publish(&left_view().time(herdr_bus::Timestamp::now()));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(inbox[1][4], "woke");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    assert!(
+        setup.typed()[1].starts_with("linear.issue.left ENG-7 {"),
+        "{:?}",
+        setup.typed()
+    );
+    assert!(setup.rows("asks").is_empty());
+}
+
 #[test]
 fn a_blockers_hold_stays_when_the_newest_blockers_are_unknown() {
     let mut setup = Setup::new("hold-blockers-unknown");

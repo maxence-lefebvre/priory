@@ -1856,6 +1856,11 @@ pub(crate) fn route_in(
         crate::post::report(tx, "linear", &refiltered(&message.data))?;
     }
     crate::hold::event(tx, &resources)?;
+    if message.kind == "linear.issue.left"
+        && let Some(resource) = resources.first()
+    {
+        crate::hold::left(tx, resource, message.data["view"].as_str())?;
+    }
     if message.kind == priory_intake::intake::PR_CLOSED && message.data["merged"] == true {
         crate::tools::restack_stacked(tx, trace, seq, &message.data)?;
     }
@@ -2116,9 +2121,10 @@ fn delivered(
     Ok(None)
 }
 
-/// The events a task's subscription to its own key carries: what people say, edit and close. Checks,
+/// The events a task's subscription to its own key carries: what people say, edit, close and take
+/// out of a view. Checks,
 /// labels and pushes stay with the checks gate and waits, since each would start a run.
-pub(crate) const OWN_KEY: [&str; 10] = [
+pub(crate) const OWN_KEY: [&str; 11] = [
     "github.pull_request_review.submitted",
     "github.pull_request.comment",
     "github.pull_request_review_comment",
@@ -2128,6 +2134,7 @@ pub(crate) const OWN_KEY: [&str; 10] = [
     "linear.comment.created",
     "linear.issue.state_changed",
     "linear.issue.updated",
+    "linear.issue.left",
     "slack.thread.replied",
 ];
 
