@@ -1501,7 +1501,9 @@ function paintTerminal(app, rendered = false) {
   const box = app?.querySelector("[data-term]");
   // A page without the pane gives back a keyboard it held.
   if (!box) return app && keyboard.leave();
-  const { screen } = watch.state();
+  const kept = watch.state();
+  // The watch may still hold the run shown before, until it polls the one in this box.
+  const screen = kept.run === Number(box.dataset.term) ? kept.screen : null;
   // A grant this page holds on a run it no longer shows goes back, so that run's outbox resumes.
   keyboard.at(box.dataset.end ? null : Number(box.dataset.term));
   if (terminal.run !== box.dataset.term) Object.assign(terminal, { run: box.dataset.term, left: 0, typing: false, line: "", said: null, saying: false, menu: false, keys: "" });

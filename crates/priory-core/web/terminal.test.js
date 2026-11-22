@@ -523,3 +523,8 @@ test("a grant another device replaced ends the bar with the server's reason", as
   assert.equal(await sent, false);
   assert.deepEqual([session.state().held, session.state().ended], [null, "Your keyboard grant of run 4 ended (replaced): take the keyboard again."]);
 });
+
+test("the cursor counts terminal cells: a wide character takes two, and an accent stays on its letter", () => {
+  const under = (line, x) => screenRows([line], { x, y: 0 })[0].find((part) => part.cursor).text;
+  assert.deepEqual([under("界a", 2), under("🙂a", 2), under("éx", 1), under("éx", 0)], ["a", "a", "x", "é"]);
+});

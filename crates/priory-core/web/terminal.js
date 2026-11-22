@@ -372,24 +372,28 @@ export function screenRows(lines, cursor = null) {
   });
 }
 
-// `parts` with the cell at column `x` split out as the cursor's, padded with spaces past the row's
-// end. A `[redacted]` stays whole and carries the cursor itself.
-// shortcut: counts a cell per code point, so a wide character before the cursor shifts it; count widths if agents print CJK.
+const graphemes = new Intl.Segmenter("en", { granularity: "grapheme" });
+// shortcut: wide cells are emoji and the main CJK blocks, not the full East Asian Width table; add ranges if agents print others.
+const WIDE = /\p{Extended_Pictographic}|[\u1100-\u115F\u2E80-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE4F\uFF00-\uFF60\uFFE0-\uFFE6\u{20000}-\u{3FFFD}]/u;
+
+// `parts` with the character on cell `x` split out as the cursor's, padded with spaces past the
+// row's end. A `[redacted]` stays whole and carries the cursor itself.
 function withCursor(parts, x) {
   const out = [];
-  let column = 0;
+  let column = 0, found = false;
   for (const part of parts) {
-    const chars = [...part.text];
-    const at = x - column;
-    column += chars.length;
-    if (at < 0 || at >= chars.length) out.push(part);
+    const pieces = [...graphemes.segment(part.text)].map(({ segment }) => segment);
+    const cells = pieces.map((piece) => (WIDE.test(piece) ? 2 : 1));
+    let at = -1;
+    for (let i = 0; i < cells.length; column += cells[i++]) if (!found && at < 0 && column + cells[i] > x) at = i;
+    if (at < 0) out.push(part);
     else if (part.hidden) out.push({ ...part, cursor: true });
-    else {
-      const pieces = [[chars.slice(0, at).join("")], [chars[at], true], [chars.slice(at + 1).join("")]];
-      for (const [text, cursor] of pieces) if (text) out.push(cursor ? { ...part, text, cursor } : { ...part, text });
+    else for (const [text, cursor] of [[pieces.slice(0, at).join("")], [pieces[at], true], [pieces.slice(at + 1).join("")]]) {
+      if (text) out.push(cursor ? { ...part, text, cursor } : { ...part, text });
     }
+    found ||= at >= 0;
   }
-  if (column > x) return out;
+  if (found) return out;
   if (x > column) out.push({ text: " ".repeat(x - column), cls: "", hidden: false });
   return out.concat({ text: " ", cls: "", hidden: false, cursor: true });
 }
