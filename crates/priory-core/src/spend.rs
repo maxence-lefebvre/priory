@@ -165,8 +165,10 @@ impl Book {
     }
 }
 
-/// The records a cost counts: model steps, handler calls and summarizer calls, as `priory costs`.
-const PRICED: &str = "(trace.type IN ('factory.handler.called', 'factory.summarizer.called')
+/// The records a cost counts: model steps, debate turns, handler calls and summarizer calls, as
+/// `priory costs`. A debate step's own record carries no tokens.
+const PRICED: &str = "(trace.type IN ('factory.handler.called', 'factory.summarizer.called',
+    'factory.debate.turn_ended')
   OR (trace.type = 'factory.step.ended' AND json_extract(trace.event, '$.data.decider') = 'model'))";
 
 /// The rows a query of `(model, input, output, cache_read, cache_write)` returns, priced. A model

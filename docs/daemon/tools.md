@@ -17,8 +17,9 @@ nothing.
 
 ## Ending a turn
 
-Three tools end a turn: `result`, `ask` and `wait`. A run holds a result, or an open ask, an open
-wait or both. A `result` after an open ask or wait is refused, as is a second `ask` or a second
+Three tools end a turn: `result`, `ask` and `wait`. A debate turn ends with a fourth,
+[`position`](../reference/tools.md#positionverdict-argument-concedes). A run holds a result, or an
+open ask, an open wait or both. A `result` after an open ask or wait is refused, as is a second `ask` or a second
 `wait`. An ask and a wait side by side wake the task on the first answer or event (see An ask
 beside a wait in [waits.md](waits.md)).
 
@@ -132,6 +133,7 @@ When the run's turn ends, its `Stop` moves the task by its result to `next[outco
 | ---------- | ---------------------------------------------------- | ------------------------- |
 | model step, same agent | at that step, `running`, with its prompt queued | `moved`, into a new run |
 | model step, other agent or irreversible | at that step, `ready`, with its prompt queued | `moved` |
+| debate step | at that step, `ready`: each turn's run types its own prompt, see [debates.md](debates.md) | `moved` |
 | human step | at that step, `asleep`, with an ask of its `options` | `asleep`                  |
 | code step  | at that step, `ready`: see Code steps                | `moved`                   |
 | `done`     | `done`, or `asleep` on its checks: see Done and checks | `done`, or `asleep`       |

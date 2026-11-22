@@ -14,12 +14,14 @@ use std::time::Duration;
 const IDLE: Duration = Duration::from_secs(5);
 
 /// Makes this process store each webhook request whose trigger has a `pre` script, and starts the
-/// thread that runs them. Requests a stopped server left are run first.
+/// thread that runs them. Requests a stopped server left are run first, even when no trigger has a
+/// `pre` script any more.
 pub fn start(factory: &Factory) {
     if factory
         .triggers
         .values()
         .all(|trigger| trigger.value.pre.is_none())
+        && !stored()
     {
         return;
     }
@@ -62,8 +64,23 @@ pub fn store(db: &Connection, pending: &Pending) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// The oldest stored request.
-fn oldest(db: &Connection) -> rusqlite::Result<Option<(i64, Pending)>> {
+/// Whether the state file holds a request a stopped server left. An error counts as one, so the
+/// thread that runs them starts and reports it.
+fn stored() -> bool {
+    state::open()
+        .and_then(|db| {
+            db.query_row(
+                "SELECT EXISTS (SELECT 1 FROM pending_requests)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())
+        })
+        .unwrap_or(true)
+}
+
+/// The oldest stored request, or why its row does not parse.
+fn oldest(db: &Connection) -> rusqlite::Result<Option<(i64, Result<Pending, String>)>> {
     let row: Option<(i64, String)> = db
         .query_row(
             "SELECT seq, pending FROM pending_requests ORDER BY seq LIMIT 1",
@@ -71,7 +88,10 @@ fn oldest(db: &Connection) -> rusqlite::Result<Option<(i64, Pending)>> {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    Ok(row.and_then(|(seq, text)| Some((seq, serde_json::from_str(&text).ok()?))))
+    Ok(row.map(|(seq, text)| {
+        let pending = serde_json::from_str(&text).map_err(|error| error.to_string());
+        (seq, pending)
+    }))
 }
 
 fn drain(
@@ -97,6 +117,20 @@ fn run_all(
     let db = state::open()?;
     let bus = log::open(event_log).map_err(|error| error.to_string())?;
     while let Some((seq, pending)) = oldest(&db).map_err(|error| error.to_string())? {
+        // A row an older Priory wrote, or a broken one, would hold every later request behind it.
+        let pending = match pending {
+            Ok(pending) => pending,
+            Err(error) => {
+                post::report(
+                    &db,
+                    "priory",
+                    &format!("dropped a stored webhook request that does not parse: {error}"),
+                )?;
+                db.execute("DELETE FROM pending_requests WHERE seq = ?1", [seq])
+                    .map_err(|error| error.to_string())?;
+                continue;
+            }
+        };
         let decided = match triggers.get(&pending.trigger) {
             Some(trigger) => pre::run_pending(&pending, trigger)?,
             // A trigger removed since: its request as the server built it.

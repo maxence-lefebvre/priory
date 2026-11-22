@@ -64,6 +64,35 @@ such as a revert, arrives as a second record that points at the first. Each reco
 | `duration_ms`      | yes      | Wall time from start to end                                           |
 | `tokens`           | no       | For `model` steps: `input`, `output`, `cache_read`, `cache_write`, summed over the step's turns |
 | `overrun`          | no       | For a `model` step with a `budget` whose turn sent its result over it: `budget_usd` and `spent_usd`, priced with `prices.toml`. See [health.md](daemon/health.md#budget) |
+| `debate`           | no       | For a debate step: the debate, below. Its record has no `harness`, `model` or `tokens`, since each turn's `factory.debate.turn_ended` carries its own |
+
+A debate step's `decider` is `model` when its agents agreed, and `human` when a person picked the
+outcome. Its `debate` holds:
+
+| Field             | Meaning                                                              |
+| ----------------- | -------------------------------------------------------------------- |
+| `id`              | The debate's id                                                      |
+| `agents`          | The two agents, in speaking order                                    |
+| `rounds`          | The rounds run after the openings, 0 when the openings agreed        |
+| `openings_agreed` | Whether both openings named the same verdict                         |
+| `changed`         | The agents whose verdict changed during the debate, possibly none    |
+| `cost_usd`        | The debate's cost, the sum of its turns, each priced at its own model |
+
+## `factory.debate.turn_ended`
+
+One turn of a debate step, appended when the turn ends, so each turn is priced at its own agent's
+model. Its `data` holds `factory`, `factory_revision`, `workflow`, `task`, `key`, `lane`, `run`,
+`generation`, `step`, `harness`, `model`, `machine` and `tokens` as above, and:
+
+| Field     | Required | Meaning                                                          |
+| --------- | -------- | ---------------------------------------------------------------- |
+| `debate`  | yes      | The debate's id, as the step's record names it                   |
+| `turn`    | yes      | The turn's place in the debate: 1 and 2 are the openings          |
+| `agent`   | yes      | The agent that spoke                                             |
+| `verdict` | no       | The verdict of the turn's position; absent for a turn with none  |
+
+A turn that a nudge follows appends one record per harness turn. `priory costs` and spend caps
+count these records, and not the debate step's own.
 
 ## `factory.task.repaired`
 

@@ -57,6 +57,11 @@ The object may hold these fields, each a string. Any other field fails the scrip
 The scope means a script cannot name another source's task. `github:owner/name#42` printed by a
 Sentry trigger's script becomes `sentry:github:owner/name#42`, which no GitHub event reaches.
 
+A GitHub, Linear or Slack event names its own issue, pull request or thread, not the printed key.
+So the task the request creates or joins also subscribes to the resource the trigger named before
+the script ran, such as `github:owner/name#43` or `linear:ENG-12`. Each merged issue's comments,
+edits and closes still reach the task (see [routing.md](../daemon/routing.md#resources-what-a-task-owns)).
+
 A script cannot change the workflow, the trigger, the repository, a hold or `intervention`.
 `priory check` reads those from files to say which paths reach an irreversible step and who
 answers asks.
@@ -105,8 +110,16 @@ A script can run twice. An intake that stops after the script ran and before the
 again at its next start, and so does a server restarted while requests wait. So a `pre` script
 reads and changes nothing outside. Effects belong in a workflow step.
 
+A drop is final for its event. A Linear view publishes `linear.issue.entered` once, when an issue
+joins it, and no later edit of that issue runs the trigger again. So a script that drops an issue
+because it lacks a fact today, such as an estimate, leaves it in the view with no task until it
+leaves the view and enters it again. Filter on facts that do not change, or let the request through
+and let a step wait for the fact.
+
 `priory inbox` lists a dropped request after its source event, with `dropped by <script>: <reason>`
-in its `line` column.
+in its `line` column. `priory inbox --unrouted` lists each drop whose key no task has, with its
+trigger, script, reason and key, apart from the events no trigger wanted (see
+[serve.md](../reference/serve.md#unrouted)).
 
 ## Where it runs
 
@@ -122,7 +135,11 @@ once for the whole factory, so `pre` runs once per event, not once per runner.
 A webhook sender waits for its reply, and a script may take 60 seconds. So the server still replies
 `202` once it published the source event. In that same step it stores the request in the state
 file, then runs `pre` on the stored requests one at a time, oldest first, and publishes each
-decision. A server that restarts finds the stored requests and runs them.
+decision. A server that restarts finds the stored requests and runs them. It does so even when no
+trigger has a `pre` script any more: a request whose trigger lost its script, or was removed, is
+published as the trigger built it. A stored request that does not parse, such as one an older
+Priory wrote, is deleted and posts one report from `priory`,
+`dropped a stored webhook request that does not parse: <error>`, so the requests behind it run.
 
 Each process runs one script at a time, so a slow script delays the events behind it by at most its
 timeout each.

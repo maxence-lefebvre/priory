@@ -13,6 +13,36 @@
       ],
       "type": "string"
     },
+    "Debate": {
+      "additionalProperties": false,
+      "description": "A debate step's `debate` table: two agents, in speaking order, the rounds after their\nopenings, and the most the debate may cost.",
+      "properties": {
+        "agents": {
+          "description": "Exactly two different agents, in speaking order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "cap": {
+          "description": "The most the debate may cost, such as `$3.00`, priced from `prices.toml`.",
+          "pattern": "^\\$[0-9]+(\\.[0-9]{1,2})?$",
+          "type": "string"
+        },
+        "rounds": {
+          "description": "How many rounds follow the opening, 1 to 5.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agents",
+        "rounds",
+        "cap"
+      ],
+      "type": "object"
+    },
     "Decider": {
       "description": "Who decides a step's outcome: a `code` action, a `model` run or a `human`.",
       "enum": [
@@ -147,6 +177,17 @@
             }
           ],
           "description": "The command a human step's answer runs, as an ask's `command`."
+        },
+        "debate": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Debate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Two agents who debate the model step's question for a fixed number of rounds, in place of\nits `agent`."
         },
         "decides": {
           "$ref": "#/definitions/Decider"

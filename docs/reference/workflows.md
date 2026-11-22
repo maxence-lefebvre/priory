@@ -29,7 +29,8 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `id` | string | yes | | The step's id, unique in the workflow. `done` and `stop` are reserved | `"implement"` |
 | `decides` | `code`, `model` or `human` | yes | | Who decides the outcome: a built-in action, an agent's run or a person | `"model"` |
 | `effect` | `none`, `read`, `reversible` or `irreversible` | yes | | What the step may change | `"reversible"` |
-| `agent` | string | model steps | | The agent that runs the step, by folder name under `agents/` | `"implementer"` |
+| `agent` | string | model steps without `debate` | | The agent that runs the step, by folder name under `agents/` | `"implementer"` |
+| `debate` | table | no | none | Model steps only, in place of `agent`: two agents who debate the step's prompt. `agents`, exactly two different agents in speaking order; `rounds`, the rounds after the openings, 1 to 5; `cap`, the most the debate may cost, such as `"$3.00"`, priced from `prices.toml`. See [Debate steps](#debate-steps) | `{ agents = ["architect", "skeptic"], rounds = 3, cap = "$3.00" }` |
 | `prompt` | string | model steps | | What the step tells its agent | `"Implement the plan."` |
 | `timeout` | duration | no | none, or `command_timeout` for a command | How long one turn of a model step, a `run` action's command, or the command a human step's answer runs, may run before Priory ends it | `"30m"` |
 | `budget` | string | no | none | Model steps only. The dollars the task may spend at this step, as an amount above zero. At each turn end, Priory prices the step's tokens with `prices.toml`, by the model the transcript names. A turn over it that sent a result moves the task and its `factory.step.ended` record carries `overrun`. Any other turn over it, or a turn whose cost is unknown, ends the run and fails the task. See [health.md](../daemon/health.md#budget) | `"1.00"` |
@@ -51,7 +52,7 @@ The outcomes of a step come from:
 
 | `decides` | Its outcome is |
 | --------- | -------------- |
-| `model` | the `outcome` field of the run's `result` |
+| `model` | the `outcome` field of the run's `result`, or a debate's shared verdict |
 | `human` | the option the person picks; every option needs a `next` |
 | `code` | the action's status, such as `opened` or `failed`. A `run` action's is the last line of its stdout when `next` names it, else `ok` on exit 0 and `failed` otherwise |
 
@@ -298,6 +299,35 @@ view and the Herdr adapter draw them:
 When `factory.toml` sets `[sweep] agent` and no `workflows/sweep.toml` exists, the factory also gets
 the built-in `sweep` workflow. See [sweep.md](../daemon/sweep.md).
 
+## Debate steps
+
+A debate step is a model step whose `debate` names two agents in place of `agent`. They answer the
+step's prompt alone first, then answer each other's latest position for `rounds` rounds. The
+verdicts are the keys of `next`. When both agents name the same verdict, the daemon writes the
+step's result with it. When they do not, the task asks a person to pick one. See
+[debates.md](../daemon/debates.md).
+
+```toml
+[[steps]]
+id = "debate-design"
+decides = "model"
+effect = "read"
+debate = { agents = ["architect", "skeptic"], rounds = 3, cap = "$3.00" }
+prompt = "Should the cache live in the daemon or in its own process? Read docs/design/cache.md."
+timeout = "15m"
+next = { daemon = "implement", process = "implement-split", undecided = "ask-design" }
+```
+
+A debate step needs a `timeout` and an effect of `none` or `read`, and takes no `agent` or
+`proof`. Each debater needs its own session and a model priced in `prices.toml`, so the cap counts
+every turn. Both harnesses, Claude Code and Codex, report token counts.
+
+`priory check --explain` prints each debate's worst case in a last table, `workflow`, `step` and
+`debate`: `2 agents, up to 8 turns, cap $3.00`. It adds `both agents run <harness> with model
+<model>, so the debate mostly agrees with itself` when both agents share a harness and a model.
+`priory draw` draws a debate step as a model step with `debate: architect and skeptic` on its
+second line.
+
 ## Errors from `priory check`
 
 Errors about one step start with `` step `<id>`: `` and point at the step's line.
@@ -313,6 +343,19 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` agent `<name>` does not exist `` | A model step names no agent under `agents/` |
 | `` a model step needs an `agent` `` | A model step without `agent` |
 | `` a model step needs a `prompt` `` | A model step without `prompt` |
+| `` only a model step has a `debate` `` | `debate` on a human or code step |
+| `` a debate step has no `agent`: its `debate` names both `` | A step with both `agent` and `debate` |
+| `a debate needs exactly two agents, in speaking order, not <n>` | `debate.agents` names one agent, or three |
+| `` a debate's two agents must differ: `<name>` is named twice `` | The same agent twice |
+| `` `rounds` is <n>; a debate takes 1 to 5 rounds `` | `rounds` outside 1 to 5 |
+| `` a debate step's effect is `none` or `read`, not `<effect>`: debaters judge and change nothing `` | A debate step that may change something |
+| `` a debate step has no `proof`: debaters judge and change nothing `` | `proof` on a debate step |
+| `` a debate step needs a `timeout`: its cap cannot bound one turn `` | A debate step without `timeout` |
+| `` agent `<name>` keeps a shared session, and a debater needs its own `` | A debater with `session = "shared"` |
+| `` agent `<name>`'s model `<model>` has no price in prices.toml, so the debate's cap cannot count it `` | A debater whose model has no price |
+| `` agent `<name>` names no model, so prices.toml cannot price it for the debate's cap `` | A debater with no `model` |
+| `"<text>" is not a cap such as "$3.00", above zero` | A bad `cap` |
+| `` missing field `cap` `` | A `debate` without `cap` |
 | `` option `<option>` has no `next` `` | A human step's option leads nowhere |
 | `` `next` has outcome `<outcome>`, which is not an option `` | A human step's `next` names an answer it does not offer |
 | `` a code step needs an `action` `` | A code step without `action` |

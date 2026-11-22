@@ -38,6 +38,7 @@ A task gets its resources at these moments:
 | When | Resource | Example |
 | ---- | -------- | ------- |
 | The task is created | its trigger key, and a subscription to it when the key names an issue, a pull request, a Linear issue or a Slack thread | `github:owner/name#42`, `linear:ENG-7`, `cli:docs-1` |
+| A request whose `pre` script printed another `key` creates the task or joins it | a subscription to the issue, pull request or thread the trigger named before the script | `github:owner/name#43` |
 | Its first run starts | its branch | `github:owner/name@priory/3` |
 | A wait of its names a pull request | that pull request | `github:owner/name#57` |
 | A wait of its names a Linear issue or a Slack thread | that issue or thread | `linear:ENG-7`, `slack:C0123:1763500000.000100` |
@@ -217,6 +218,10 @@ a done task's merged pull request. So `priory inbox --unrouted [--since SEQ]` an
   resource's GitHub or Linear URL when it is done, since a done task cannot be revived and `add`
   keys the new task by that URL, and `priory subscribe ID RESOURCE` when it is still active. A
   done task's Slack thread gets no command: no CLI verb keys a task by a thread.
+- Requests a trigger's `pre` script dropped are listed with the trigger, the script, its reason
+  and the key, such as `linear:ENG-12`. Their source events are not counted with the rest. A
+  script judges each event once, so an issue it dropped stays without a task until a new event of
+  it matches a trigger (see [pre.md](../intake/pre.md#one-decision-per-event)).
 - The rest, which no task ever owned, are one count per source.
 
 The web Inbox panel's Unrouted view offers the same actions from a phone: Revive, the Add sheet, or

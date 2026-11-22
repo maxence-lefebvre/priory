@@ -383,6 +383,59 @@ fn a_script_that_exits_1_drops_the_request_with_its_first_line_and_creates_no_ta
 }
 
 #[test]
+fn inbox_unrouted_lists_a_drop_with_its_trigger_script_reason_and_issue_and_counts_it_nowhere_else()
+{
+    let setup = Setup::polled("drop-unrouted", PRE, &[labeled(101, 42, "agent")]);
+    setup.script("#!/bin/sh\ncat >/dev/null\necho 'no estimate yet'\nexit 1\n");
+    succeeded(&setup.intake());
+    setup.route();
+
+    let listed: Value =
+        serde_json::from_str(&setup.priory(&["inbox", "--unrouted", "--json"])).unwrap();
+
+    let unrouted = &listed["unrouted"];
+    // Only the baseline poll's event of issue 41, which no trigger wanted.
+    assert_eq!(
+        unrouted["other"],
+        json!([{ "source": "github", "events": 1 }]),
+        "{unrouted}"
+    );
+    let dropped = unrouted["dropped"].as_array().unwrap();
+    assert_eq!(dropped.len(), 1, "{unrouted}");
+    let source = &setup.of("github.issues.labeled")[0];
+    let seq = dropped[0]["seq"].clone();
+    assert!(seq.is_i64(), "{seq}");
+    assert_eq!(
+        dropped[0],
+        json!({
+            "seq": seq,
+            "trigger": "agent-label",
+            "script": "scripts/pre",
+            "reason": "no estimate yet",
+            "failed": null,
+            "key": "github:owner/repo#42",
+            "time": source.time.to_string(),
+            "event": {
+                "seq": dropped[0]["event"]["seq"],
+                "type": "github.issues.labeled",
+                "subject": source.subject,
+                "time": source.time.to_string(),
+                "line": "Fix the thing",
+                "url": source.data["url"],
+            }
+        })
+    );
+    let text = setup.priory(&["inbox", "--unrouted"]);
+    assert_eq!(
+        text,
+        format!(
+            "Dropped by a pre script, each judged once:\n  {}  agent-label  github:owner/repo#42  dropped by scripts/pre: no estimate yet\nNo task ever owned: 1 github event.\n",
+            dropped[0]["seq"]
+        )
+    );
+}
+
+#[test]
 fn a_script_that_prints_five_fields_creates_a_task_with_each() {
     let setup = Setup::polled("five", PRE, &[labeled(101, 42, "agent")]);
     setup.script(
@@ -487,6 +540,33 @@ fn two_events_whose_script_prints_the_same_key_create_one_task_and_the_second_ro
         )
         .unwrap();
     assert_eq!(second, (Some(1), "kept".to_owned()));
+
+    // Each merged issue's own later events reach the task, though they name no printed key.
+    setup.answer(&[
+        labeled(104, 42, "bug"),
+        labeled(103, 43, "bug"),
+        labeled(102, 43, "agent"),
+        labeled(101, 42, "agent"),
+        labeled(100, 41, "bug"),
+    ]);
+    succeeded(&setup.intake());
+    setup.route();
+    for id in [103, 104] {
+        let event = setup
+            .of("github.issues.labeled")
+            .into_iter()
+            .find(|event| event.data["github_id"] == id)
+            .unwrap();
+        let routed: Option<i64> = setup
+            .db()
+            .query_row(
+                "SELECT task FROM inbox WHERE id = ?1",
+                [event.id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(routed, Some(1), "event {id}");
+    }
 }
 
 #[test]

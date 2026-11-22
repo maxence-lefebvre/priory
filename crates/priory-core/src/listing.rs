@@ -291,6 +291,8 @@ pub fn inbox(db: &Connection, since: i64) -> rusqlite::Result<Value> {
 pub fn unrouted(db: &Connection, since: i64, now: Timestamp) -> rusqlite::Result<Value> {
     let mut owned: Vec<(String, Value, Vec<Value>)> = Vec::new();
     let mut other: Vec<(String, usize)> = Vec::new();
+    let dropped = dropped_requests(db, since)?;
+    let sources: Vec<&Value> = dropped.iter().map(|drop| &drop["event"]["seq"]).collect();
     for (resource, event) in unrouted_events(db, since, None)? {
         if let Some((_, _, events)) = owned.iter_mut().find(|(named, ..)| *named == resource) {
             events.push(event);
@@ -298,6 +300,10 @@ pub fn unrouted(db: &Connection, since: i64, now: Timestamp) -> rusqlite::Result
         }
         if let Some(task) = owner(db, &resource)? {
             owned.push((resource, task, vec![event]));
+            continue;
+        }
+        // A trigger wanted it: `dropped` lists it with the script's reason.
+        if sources.contains(&&event["seq"]) {
             continue;
         }
         let source = resource.split(':').next().unwrap_or_default().to_owned();
@@ -350,7 +356,7 @@ pub fn unrouted(db: &Connection, since: i64, now: Timestamp) -> rusqlite::Result
         })
         .collect();
     Ok(json!({
-        "unrouted": { "owned": owned, "other": other, "unheard": unheard },
+        "unrouted": { "owned": owned, "dropped": dropped, "other": other, "unheard": unheard },
         "outsider": outsider_events(db, since, None)?,
     }))
 }
@@ -552,6 +558,38 @@ fn unrouted_events(
         events.push((resource, event));
     }
     Ok(events)
+}
+
+/// Each request a trigger's `pre` script dropped after `since`, newest first, with its source event,
+/// unless a task has its key since. A view entry is judged once, so nothing else lists it.
+fn dropped_requests(db: &Connection, since: i64) -> rusqlite::Result<Vec<Value>> {
+    let mut statement = db.prepare(
+        "SELECT dropped.seq, dropped.time, dropped.data,
+           source.seq, source.type, source.subject, source.time, source.data
+         FROM inbox AS dropped
+         LEFT JOIN inbox AS source ON source.id = json_extract(dropped.data, '$.source')
+         WHERE dropped.type = ?1 AND dropped.seq > ?2
+           AND NOT EXISTS (SELECT 1 FROM tasks WHERE tasks.key = json_extract(dropped.data, '$.key'))
+         ORDER BY dropped.seq DESC",
+    )?;
+    let mut rows = statement.query(params![priory_intake::pre::DROPPED, since])?;
+    let mut dropped = Vec::new();
+    while let Some(row) = rows.next()? {
+        let data: Value = serde_json::from_str(&row.get::<_, String>(2)?).unwrap_or(Value::Null);
+        let event = match row.get::<_, Option<i64>>(3)? {
+            Some(seq) => {
+                let data: String = row.get(7)?;
+                event_json(seq, row.get(4)?, row.get(5)?, row.get(6)?, &data).1
+            }
+            None => Value::Null,
+        };
+        dropped.push(json!({
+            "seq": row.get::<_, i64>(0)?, "time": row.get::<_, String>(1)?,
+            "trigger": data["trigger"], "script": data["script"], "reason": data["reason"],
+            "failed": data["failed"], "key": data["key"], "event": event,
+        }));
+    }
+    Ok(dropped)
 }
 
 /// An inbox entry as the unrouted listing shows it, with the first resource it names.

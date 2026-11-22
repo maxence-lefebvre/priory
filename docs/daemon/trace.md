@@ -14,8 +14,9 @@ such as a merge or a revert, appends `factory.step.labeled` (see Outcome labels)
 `factory.gate.ran`, which a step's `gate-passed` proof reads (see Proofs in
 [tools.md](tools.md#proofs)). Each score of `priory score` appends `factory.run.scored` (see
 [score.md](score.md)), and each complete `priory score --calibrate` of a judge appends
-`factory.scorer.calibrated` (see [score.md](score.md#calibration)). `priory report` reads only
-`factory.step.ended`.
+`factory.scorer.calibrated` (see [score.md](score.md#calibration)). Each turn of a debate appends
+`factory.debate.turn_ended` with that turn's tokens (see [debates.md](debates.md#cost)). `priory
+report` reads only `factory.step.ended`.
 
 Records live in the `trace` table of the state file, one CloudEvents JSON object per row. R9.3 keeps
 task state in Priory's own SQLite file and the event log in herdr-bus's. A bus write could not commit
@@ -36,7 +37,8 @@ OpenTelemetry export).
 | `started` | when the task entered the step, so it includes the time the task waited for a run |
 | `harness`, `model`, `tokens` | for a model step: the agent's harness, the model the transcript names, else the agent's |
 
-A model step's `tokens` come from Claude's session transcript, the file that `transcript_path` names. A run records the file
+A model step's `tokens` come from the harness's session file, the file that the hooks'
+`transcript_path` names: Claude's transcript, or Codex's session file. A run records the file
 and its length at `SessionStart`, since a resumed session's file already holds earlier runs' turns.
 At each `Stop`, the daemon reads the lines added since and adds each assistant message's usage to the
 task's current step. Claude writes a message once per content block, each line with its usage, so a
@@ -44,13 +46,23 @@ message id counts once. A run the daemon blocks or finds lost is read as it ends
 carries on the same step. Entering a step starts its count again. No assistant message read means no
 `tokens`. An unreadable transcript keeps its offset, so the next read counts its turns once.
 
+A Codex session file holds a `token_count` event after each model call. The daemon adds each
+event's `last_token_usage`, and counts an event that repeats the previous cumulative usage once.
+Codex counts cached input inside `input_tokens`, so Priory records `input_tokens` less
+`cached_input_tokens` as `input` and `cached_input_tokens` as `cache_read`. `output_tokens` is
+`output`, and `cache_write_input_tokens`, when present, `cache_write`. The model is the latest
+`turn_context` line's `model`.
+
 Known limits:
 
 - A run live when the daemon upgraded to this schema has no transcript recorded. Its first `Stop`
   only marks where reading starts, so that turn's tokens are lost, not counted with other runs'
   turns.
 - A step using two models, such as an agent whose model changed between runs, records the last one.
-  `--cost` prices all its tokens at that model's price.
+  `--cost` prices all its tokens at that model's price. A debate is the exception: each turn's
+  record carries its own model.
+- Codex's hooks pass `transcript_path` from Codex's session. That it names the session file, and the
+  shape of that file's lines, come from Codex's source, not from a run of real Codex.
 - `factory_revision` names the last commit, even with uncommitted changes.
 
 ## OpenTelemetry export

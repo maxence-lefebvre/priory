@@ -391,7 +391,8 @@ lead = "lead"                  # agents/lead/agent.md, with session = "shared"
 
 `[pre]` names a script of the factory that runs on each event the trigger matches, before the
 request is published. What the script does with the request is in
-[pre.md](../intake/pre.md). Every source takes it, except `triggers/cli.toml`.
+[pre.md](../intake/pre.md). Every source takes it, except `triggers/cli.toml`, where `priory check`
+refuses it.
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
@@ -469,6 +470,7 @@ env = ["AMPLITUDE_READ_TOKEN"]
 | `` `intervention = "hands-off"` needs a `lead`: the agent that answers asks in the person's place `` | `hands-off` without `lead` |
 | `` lead `<agent>` does not exist `` | `lead` names no file under `agents/` |
 | `` lead `<agent>` needs harness = "claude-code" and session = "shared" `` | A `lead` that is a Codex agent or has a `per-task` session |
+| `` `[pre]` runs on every source except `triggers/cli.toml`: priory add and priory request never run it `` | A `[pre]` table on the `cli` trigger |
 | `` `[pre] argv`: <program> leaves the factory folder `` | An absolute `argv[0]`, one with `..`, or a symbolic link that resolves outside the factory folder |
 | `` `[pre] argv`: <program> is not a file in the factory folder `` | `argv[0]` names no file |
 | `` `[pre] argv`: <program> is not executable: chmod +x it `` | `argv[0]` is a file without an execute bit |

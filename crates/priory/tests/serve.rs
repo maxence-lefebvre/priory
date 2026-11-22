@@ -5900,7 +5900,7 @@ fn an_outsider_comment_is_counted_on_the_desk_and_listed_as_a_group_of_its_own()
     assert_eq!(desk["counts"]["unrouted"], 0);
     assert_eq!(
         unrouted["unrouted"],
-        json!({ "owned": [], "other": [], "unheard": [] })
+        json!({ "owned": [], "dropped": [], "other": [], "unheard": [] })
     );
     assert_eq!(unrouted["outsider"][0]["subject"], "owner/repo#7");
     assert_eq!(unrouted["outsider"][0]["actor"], "stranger");
@@ -6222,6 +6222,53 @@ fn a_server_restarted_before_the_pre_script_ended_runs_it_again_and_publishes_on
         ran.lines().count(),
         2,
         "once before the restart, once after"
+    );
+}
+
+#[test]
+fn a_server_whose_triggers_lost_their_pre_still_publishes_stored_requests_past_a_broken_one() {
+    let mut setup = Setup::sentry_pre("sentry-pre-removed");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let (status, _) = setup.send_sentry(&address, "issue", &sentry_issue("created", "python"));
+    assert_eq!(status, 202);
+    let runs = setup.dir.join("factory/runs");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !runs.exists() {
+        assert!(Instant::now() < deadline, "the script never started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    setup.server_log();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute(
+        "INSERT INTO pending_requests (seq, id, pending) VALUES (0, 'broken', 'not json')",
+        [],
+    )
+    .unwrap();
+    let trigger = setup.dir.join("factory/triggers/sentry-errors.toml");
+    let text = fs::read_to_string(&trigger).unwrap();
+    let (kept, _) = text.split_once("\n[pre]").unwrap();
+    fs::write(&trigger, kept).unwrap();
+
+    setup.start(&["serve", &setup.factory()]);
+
+    let requests = setup.until_requests(1);
+    assert_eq!(requests[0].data["key"], "sentry:1234567890");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while setup.pending() > 0 {
+        assert!(Instant::now() < deadline, "a request stays pending");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let reports: Vec<String> = db
+        .prepare("SELECT json_extract(data, '$.line') FROM inbox WHERE outcome = 'report'")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert!(
+        reports[0].starts_with("dropped a stored webhook request that does not parse: "),
+        "{reports:?}"
     );
 }
 

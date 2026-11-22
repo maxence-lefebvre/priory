@@ -422,7 +422,7 @@ line as `line`, and, once read, when it was read as `read`. Both are null on a m
 ## Unrouted
 
 The events that reached no task and changed nothing (see
-[routing.md](../daemon/routing.md#events-that-reach-no-task)), as an object `unrouted` with three
+[routing.md](../daemon/routing.md#events-that-reach-no-task)), as an object `unrouted` with four
 arrays. `priory inbox --unrouted --since SEQ` keeps the events after sequence number `SEQ`.
 
 `owned` groups the events whose first resource a task owned or subscribed to, in any state, one
@@ -435,6 +435,22 @@ group per resource, the group with the newest event first:
 | `events` | array | Its events, newest first: `seq`, `type`, `subject`, `time`, and `line`, the first line of its body, text or title, a check run's name and conclusion such as `test (ubuntu) failure`, or null |
 | `follow_up` | string or null | The command that routes its next event, each argument shell-quoted: `priory revive ID` for a failed or dropped task, `priory add --workflow WORKFLOW 'TEXT'` with the task's workflow and `request_text` for a done one, else `priory subscribe ID RESOURCE`. Null for a done task's resource that `request_text` cannot name, such as a Slack thread |
 | `request_text` | string or null | For a GitHub or Linear resource, the text of a new task keyed by it: `Follow up on URL after event SEQ`, the issue's URL, which `priory add` turns into the resource as key, and the newest event's sequence number, so each follow-up is a new request |
+
+`dropped` lists the task requests a trigger's `pre` script dropped, newest first, except one whose
+key a task has since. Each source event is judged once (see
+[pre.md](../intake/pre.md#one-decision-per-event)), so only this list shows that an event a trigger
+wanted made no task. Its source event is not counted in `other`:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `seq` | integer | The drop record's sequence number |
+| `time` | string | When the request was built |
+| `trigger` | string | The trigger whose script dropped it |
+| `script` | string | The script, `argv[0]` |
+| `reason` | string or null | The first line the script printed when it exited 1 |
+| `failed` | string or null | How the script failed, when `on_error = "drop"` dropped it |
+| `key` | string | The key the request had, such as `linear:ENG-12` |
+| `event` | object or null | Its source event, as in `owned`, or null when the inbox lacks it |
 
 `unheard` groups, one group per task, the newest event first, the events that a task kept and no
 agent read: the outcome `kept`, for the task that routing gave it to or for a second task through
@@ -459,7 +475,8 @@ no command.
 
 Without `--json`, `priory inbox --unrouted` prints each owned group as its resource, event count
 and task, one line per event, then its follow-up, and last one line such as `No task ever owned: 2
-github events, 1 linear event.` Before that line, it prints each unheard group as `task ID STATE
+github events, 1 linear event.` After the owned groups, it prints `Dropped by a pre script, each judged once:` and one line per
+drop: `SEQ  TRIGGER  KEY  dropped by SCRIPT: REASON`. Before the last line, it prints each unheard group as `task ID STATE
 kept N events no agent read:`, one line per event, then its follow-up. Then it prints the outsider events as a group of their own,
 `from outside the repository: N events`, one line per event with its author.
 
@@ -606,7 +623,7 @@ an integer, is the number of ended runs left out. `priory runs --json` prints ev
 | `agent` | string or null | The agent it ran |
 | `started` | RFC 3339 | When it started |
 | `ended` | RFC 3339 or null | When it ended; null while it is live |
-| `end` | string or null | How it ended, such as `done`, `moved`, `blocked`, `lost` or `exited`. See [runs.md](../daemon/runs.md) |
+| `end` | string or null | How it ended, such as `done`, `moved`, `debated`, `blocked`, `lost` or `exited`. `debated`: a debate turn that the next speaker follows. See [runs.md](../daemon/runs.md) |
 | `outcome` | string or null | Its result's outcome, such as `passed` or `approved`, or null without a result |
 | `model` | string or null | The model its `factory.step.ended` event recorded |
 | `tokens` | object or null | That event's `input`, `output`, `cache_read` and `cache_write` token counts |

@@ -1,0 +1,13 @@
+# Dollars per million tokens of each kind, for each debater's model. The debate's cap counts every
+# turn at its own model's price, so each model needs one. Set them to your provider's prices.
+["claude-opus-5-5"]
+input = 5.0
+output = 25.0
+cache_read = 0.5
+cache_write = 6.25
+
+["gpt-5.5"]
+input = 1.25
+output = 10.0
+cache_read = 0.125
+cache_write = 0.0

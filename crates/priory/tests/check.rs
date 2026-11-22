@@ -3159,6 +3159,26 @@ fn check_refuses_an_unknown_pre_on_error_with_its_line() {
 }
 
 #[test]
+fn check_refuses_a_pre_script_on_the_cli_trigger_which_nothing_runs() {
+    use std::os::unix::fs::PermissionsExt;
+    let cli = "source = \"cli\"\nrepo = \"owner/repo\"\nworkflow = \"implement\"\n\n[pre]\nargv = [\"scripts/pre\"]\n";
+    let mut files = with("triggers/cli.toml", cli);
+    files.push(("scripts/pre", "#!/bin/sh\nexit 1\n"));
+    let dir = factory("pre-cli", &files);
+    fs::set_permissions(dir.join("scripts/pre"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    let outcome = check(&dir);
+
+    assert_eq!(
+        (outcome.code, outcome.stderr.as_str()),
+        (
+            1,
+            "triggers/cli.toml:5: `[pre]` runs on every source except `triggers/cli.toml`: priory add and priory request never run it\n"
+        )
+    );
+}
+
+#[test]
 fn a_symlink_out_of_the_factory_is_refused_as_a_pre_script() {
     let dir = with_pre("pre-symlink", "argv = [\"scripts/link\"]\n");
     std::os::unix::fs::symlink("/bin/true", dir.join("scripts/link")).unwrap();
@@ -3282,5 +3302,180 @@ fn a_decision_model_refuses_a_pasted_key_bad_shares_a_long_timeout_and_too_few_c
          factory.toml:3: `[decisions.triage] timeout` is 60s: give at most 30s\n\
          factory.toml:3: `[decisions.triage] evaluation` triage.eval.toml: triage needs at least 10 \
          labeled cases, 3 of each class: this file has 8 (3 trivial, 2 nothing-to-do, 3 persons-call)\n"
+    );
+}
+
+const DEBATER: &str = "+++\ndescription = \"Debates.\"\nharness = \"claude-code\"\nmodel = \"m1\"\n+++\nYou debate.\n";
+
+const CODEX_DEBATER: &str =
+    "+++\ndescription = \"Debates.\"\nharness = \"codex\"\nmodel = \"m2\"\n+++\nYou debate.\n";
+
+const DEBATE_PRICES: &str = "[m1]\ninput = 1.0\noutput = 2.0\ncache_read = 0.1\ncache_write = 1.25\n\n[m2]\ninput = 2.0\noutput = 8.0\ncache_read = 0.2\ncache_write = 0.0\n";
+
+/// A factory whose workflow starts with a debate step, with `debate` as its table and `extra`
+/// keys after it.
+fn debate_factory(name: &str, debate: &str, extra: &str) -> PathBuf {
+    let workflow = format!(
+        "start = \"debate\"\n\n[[steps]]\nid = \"debate\"\ndecides = \"model\"\ndebate = {debate}\nprompt = \"Daemon or process?\"\n{extra}next = {{ daemon = \"done\", process = \"stop\" }}\n"
+    );
+    factory(
+        name,
+        &[
+            ("factory.toml", FACTORY),
+            ("agents/architect/agent.md", DEBATER),
+            ("agents/skeptic/agent.md", CODEX_DEBATER),
+            ("prices.toml", DEBATE_PRICES),
+            ("triggers/agent-label.toml", TRIGGER),
+            ("workflows/implement.toml", &workflow),
+            ("runners/xps13.toml", RUNNER),
+        ],
+    )
+}
+
+const TWO: &str = r#"{ agents = ["architect", "skeptic"], rounds = 3, cap = "$3.00" }"#;
+
+const READ: &str = "effect = \"read\"\ntimeout = \"15m\"\n";
+
+#[test]
+fn a_debate_step_with_two_priced_agents_passes_and_explain_prints_its_worst_case() {
+    let dir = debate_factory("debate-valid", TWO, READ);
+    let outcome = check(&dir);
+    assert_eq!(outcome.stderr, "");
+    assert_eq!(outcome.code, 0);
+
+    let explained = Command::new(env!("CARGO_BIN_EXE_priory"))
+        .args(["check", "--explain"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(explained.stdout).unwrap();
+    assert!(
+        stdout.ends_with(
+            "workflow\tstep\tdebate\nimplement\tdebate\t2 agents, up to 8 turns, cap $3.00\n"
+        ),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn explain_notes_a_debate_whose_agents_share_a_harness_and_a_model() {
+    let dir = debate_factory("debate-same", TWO, READ);
+    fs::write(dir.join("agents/skeptic/agent.md"), DEBATER).unwrap();
+    let explained = Command::new(env!("CARGO_BIN_EXE_priory"))
+        .args(["check", "--explain"])
+        .arg(&dir)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(explained.stdout).unwrap();
+    assert!(
+        stdout.contains("cap $3.00; both agents run claude-code with model m1, so the debate mostly agrees with itself\n"),
+        "{stdout}"
+    );
+}
+
+/// The one problem `priory check` reports for the debate step, on its line.
+fn debate_problem(name: &str, debate: &str, extra: &str) -> String {
+    let outcome = check(&debate_factory(name, debate, extra));
+    assert_eq!(outcome.code, 1, "{}", outcome.stdout);
+    outcome.stderr
+}
+
+fn at_debate(message: &str) -> String {
+    format!("workflows/implement.toml:3: step `debate`: {message}\n")
+}
+
+#[test]
+fn a_debate_needs_two_different_agents_and_one_to_five_rounds() {
+    assert_eq!(
+        debate_problem(
+            "debate-one",
+            r#"{ agents = ["architect"], rounds = 3, cap = "$3.00" }"#,
+            READ
+        ),
+        at_debate("a debate needs exactly two agents, in speaking order, not 1")
+    );
+    assert_eq!(
+        debate_problem(
+            "debate-twice",
+            r#"{ agents = ["architect", "architect"], rounds = 3, cap = "$3.00" }"#,
+            READ
+        ),
+        at_debate("a debate's two agents must differ: `architect` is named twice")
+    );
+    assert_eq!(
+        debate_problem(
+            "debate-rounds",
+            r#"{ agents = ["architect", "skeptic"], rounds = 6, cap = "$3.00" }"#,
+            READ
+        ),
+        at_debate("`rounds` is 6; a debate takes 1 to 5 rounds")
+    );
+}
+
+#[test]
+fn a_debate_step_changes_nothing_and_needs_a_timeout() {
+    assert_eq!(
+        debate_problem(
+            "debate-reversible",
+            TWO,
+            "effect = \"reversible\"\ntimeout = \"15m\"\n"
+        ),
+        at_debate(
+            "a debate step's effect is `none` or `read`, not `reversible`: debaters judge and change nothing"
+        )
+    );
+    assert_eq!(
+        debate_problem(
+            "debate-approves",
+            TWO,
+            "effect = \"read\"\ntimeout = \"15m\"\napproves = [\"debate\"]\n"
+        ),
+        at_debate("only a human step has `approves`")
+            + &at_debate("approves `debate`, which is not an irreversible step")
+    );
+    assert_eq!(
+        debate_problem("debate-timeout", TWO, "effect = \"read\"\n"),
+        at_debate("a debate step needs a `timeout`: its cap cannot bound one turn")
+    );
+    assert_eq!(
+        debate_problem(
+            "debate-agent",
+            TWO,
+            "effect = \"read\"\ntimeout = \"15m\"\nagent = \"architect\"\n"
+        ),
+        at_debate("a debate step has no `agent`: its `debate` names both")
+    );
+}
+
+#[test]
+fn a_debates_cap_needs_a_price_for_each_agents_model() {
+    let dir = debate_factory("debate-unpriced", TWO, READ);
+    fs::write(
+        dir.join("prices.toml"),
+        "[m1]\ninput = 1.0\noutput = 2.0\ncache_read = 0.1\ncache_write = 1.25\n",
+    )
+    .unwrap();
+    let outcome = check(&dir);
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        at_debate(
+            "agent `skeptic`'s model `m2` has no price in prices.toml, so the debate's cap cannot count it"
+        )
+    );
+}
+
+#[test]
+fn a_debate_needs_a_cap() {
+    let outcome = check(&debate_factory(
+        "debate-no-cap",
+        r#"{ agents = ["architect", "skeptic"], rounds = 3 }"#,
+        READ,
+    ));
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.contains("missing field `cap`"),
+        "{}",
+        outcome.stderr
     );
 }

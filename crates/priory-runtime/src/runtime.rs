@@ -561,6 +561,8 @@ pub struct Launch<'a> {
     pub scope: &'a [String],
     /// Variables the run gets on top of the daemon's own, each `NAME=value`.
     pub env: &'a [String],
+    /// The run takes a turn of a debate, so its MCP server serves `position`.
+    pub debate: bool,
     /// The MCP servers of the person's config the run gets, or turns off, beside Priory's own.
     pub servers: &'a Servers,
 }
@@ -687,7 +689,7 @@ impl Harness for Codex {
                 "mcp_servers.priory",
                 json!({
                     "command": exe,
-                    "args": ["mcp", "--session", launch.session],
+                    "args": mcp_args(launch),
                     "env": mcp_env(launch.home),
                     "default_tools_approval_mode": "approve",
                 }),
@@ -1317,7 +1319,7 @@ fn mcp_config(exe: &Path, launch: &Launch) -> String {
         "priory".to_owned(),
         json!({
             "command": exe,
-            "args": ["mcp", "--session", launch.session],
+            "args": mcp_args(launch),
             "env": mcp_env(launch.home),
         }),
     );
@@ -1335,6 +1337,15 @@ fn write_private(file: &Path, text: &str) -> std::io::Result<()> {
         .open(file)?;
     written.set_permissions(fs::Permissions::from_mode(0o600))?;
     written.write_all(text.as_bytes())
+}
+
+/// `priory mcp --session <id>`, with `--debate` for a debate turn.
+fn mcp_args<'a>(launch: &Launch<'a>) -> Vec<&'a str> {
+    let mut args = vec!["mcp", "--session", launch.session];
+    if launch.debate {
+        args.push("--debate");
+    }
+    args
 }
 
 /// What `priory mcp` needs from the daemon: its home, and its state file as an absolute path, since
