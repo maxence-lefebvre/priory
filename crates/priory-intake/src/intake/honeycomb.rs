@@ -1,6 +1,5 @@
-use super::sentry::{accepted, publish_new};
 use super::webhook::opened;
-use super::{id, output};
+use super::{accepted, id, output, publish_new};
 use crate::log::{self, Log};
 use herdr_bus::{Message, Timestamp};
 use priory_factory::factory::{EventLog, Factory, Trigger};
@@ -103,7 +102,13 @@ fn observe(
         "baseline": false,
     });
     let required = ["trigger", "name", "url", "instance", "time"];
-    if let Some(field) = required.iter().find(|key| data[**key].is_null()) {
+    // `status` and `test` decide whether to publish, so a mistyped one must not pass as a default.
+    let lacking = required
+        .into_iter()
+        .find(|key| data[*key].is_null())
+        .or_else(|| (!payload["status"].is_string()).then_some("status"))
+        .or_else(|| (!payload["test"].is_boolean()).then_some("test"));
+    if let Some(field) = lacking {
         return Err(format!(
             "the payload lacks `{field}`: give the webhook the payload template in docs/intake/honeycomb.md"
         ));
