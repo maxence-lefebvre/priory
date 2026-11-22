@@ -187,22 +187,46 @@ Known limits:
 - tmux refuses to attach from inside another tmux client unless you unset `TMUX` first.
 - An attach without `--read-only` resizes the agent's window to your terminal.
 
-## Trusting a clone
+## Trusting the worktrees and the clone
 
 Claude asks whether to trust a folder on its first run there, before any hook fires. Priory never
-answers that dialog or writes Claude's settings. A worktree inherits trust from its repository, so a
-person trusts each clone once, after Priory created it:
+answers that dialog or writes Claude's settings. Which trusted folder covers a task's worktree
+depends on the Claude Code version. Tested with a worktree under `worktrees/` of a clone under
+`repos/`:
+
+| Claude Code | Trusting `repos/<owner>/<name>` | Trusting `worktrees/` |
+| ----------- | ------------------------------- | --------------------- |
+| 2.1.42 | shows the dialog | covers the worktree |
+| 2.1.198 | covers the worktree | covers the worktree |
+| 2.1.310 and 2.1.330 | covers the worktree | shows the dialog |
+
+So a person trusts both, once: the worktrees folder before the first run, and each clone after
+Priory created it.
 
 ```sh
+cd "$PRIORY_HOME/worktrees" && claude              # accept the dialog, then /exit
 cd "$PRIORY_HOME/repos/<owner>/<name>" && claude   # accept the dialog, then /exit
 ```
 
-A run that sends no `SessionStart` within 60 seconds of its start ends as `exited`. The daemon kills
-its tmux session and blocks its task with the reason `claude showed no SessionStart within 60s;
-trust the clone once: cd <clone path> && claude, accept, exit`, then `. Its pane ended with: ` and
-the last 5 non-empty lines of its pane, joined by ` | `, so a person sees the dialog or warning that
-stopped it. The daemon log gets the last 30. A line the pane wrapped counts as one line, so a secret
-that wraps is hidden whole. Both hide secrets as the screen does (see
-[serve.md](serve.md#a-runs-screen)), and show `[redacted]` alone when one still shows. Its queued prompts stay queued. A prompt it was launched
-with returns to the queue, so the task's next run gets them. A Codex run blocks with the Codex
-instruction under Codex.
+Each second, the daemon reads the screen of every run that has sent no `SessionStart`. When it
+shows Claude's trust dialog, the daemon ends the run as `exited`, kills its tmux session and blocks
+its task at once with the reason `claude asked whether to trust <worktree path>; Priory never
+answers it. Trust the worktrees folder and the clone once: cd <worktrees path> && claude, accept,
+exit, then cd <clone path> && claude, accept, exit`. The desk shows the blocked task with that
+reason. After both folders are trusted, `priory resume` starts the task again.
+
+A run that sends no `SessionStart` within 60 seconds of its start, for another reason, also ends
+as `exited`. The daemon kills its tmux session and blocks its task with the reason `claude showed
+no SessionStart within 60s; trust the worktrees folder and the clone once: ...`, the same commands,
+then `. Its pane ended with: ` and the last 5 non-empty lines of its pane, joined by ` | `, so a
+person sees the dialog or warning that stopped it. The daemon log gets the last 30. A line the
+pane wrapped counts as one line, so a secret that wraps is hidden whole. Both hide secrets as the
+screen does (see [serve.md](serve.md#a-runs-screen)), and show `[redacted]` alone when one still
+shows.
+
+In both cases, its queued prompts stay queued. A prompt it was launched with returns to the queue,
+so the task's next run gets them. A Codex run blocks with the Codex instruction under Codex.
+
+Priory does not read Claude's trust store to warn ahead of a run. The store is Claude's private
+file, and the rule that reads it changed twice in the versions above, so a check could call a
+folder trusted while Claude still shows the dialog.

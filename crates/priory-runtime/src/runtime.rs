@@ -232,8 +232,8 @@ impl Added {
 }
 
 /// The task's worktree folder `name` on `priory/<name>`, from the local branch `from` of Priory's
-/// own clone of `repo` (`owner/name`), else from its default branch. The clone has no checkout: a person trusts it once in Claude, and
-/// its worktrees inherit that trust. A worktree of that clone left on that branch by an interrupted
+/// own clone of `repo` (`owner/name`), else from its default branch. The clone has no checkout: a person trusts it and the worktrees
+/// folder once in Claude, which covers its worktrees. A worktree of that clone left on that branch by an interrupted
 /// start is reused. The third value says whether the folder was kept, added back, or new.
 pub fn worktree(
     home: &Path,
@@ -589,8 +589,13 @@ pub trait Harness {
     fn program(&self) -> &'static str;
     /// The program's arguments for `launch`, whose hooks and MCP server run `exe`.
     fn args(&self, exe: &Path, launch: &Launch) -> Result<Vec<String>, String>;
-    /// What a person does once, in `clone`, before the harness runs Priory's hooks there.
-    fn trust(&self, exe: &Path, clone: &str) -> String;
+    /// What a person does once, in `clone` and the folder `worktrees` that holds Priory's
+    /// worktrees, before the harness runs Priory's hooks there.
+    fn trust(&self, exe: &Path, clone: &str, worktrees: &str) -> String;
+    /// Whether `screen` shows the harness's dialog asking to trust its folder.
+    fn asks_trust(&self, _screen: &str) -> bool {
+        false
+    }
     /// A file the harness reads at start, and its text, which `launch` writes first.
     fn file(&self, _launch: &Launch) -> Option<(PathBuf, String)> {
         None
@@ -657,8 +662,18 @@ impl Harness for ClaudeCode {
         Ok(args)
     }
 
-    fn trust(&self, _exe: &Path, clone: &str) -> String {
-        format!("trust the clone once: cd {clone} && claude, accept, exit")
+    /// Claude 2.1.42 trusts a worktree by a trusted folder above it, and 2.1.310 by its trusted
+    /// clone, so only both folders cover every version.
+    fn trust(&self, _exe: &Path, clone: &str, worktrees: &str) -> String {
+        format!(
+            "trust the worktrees folder and the clone once: cd {worktrees} && claude, accept, exit, then cd {clone} && claude, accept, exit"
+        )
+    }
+
+    fn asks_trust(&self, screen: &str) -> bool {
+        screen.contains("Accessing workspace:")
+            && (screen.contains("Yes, I trust this folder")
+                || screen.contains("Quick safety check"))
     }
 
     /// The servers' definitions can hold tokens, which a command line would show to every process.
@@ -740,7 +755,7 @@ impl Harness for Codex {
 
     /// Codex runs only hooks a person trusted in its `/hooks` review, by their hash, so Priory's
     /// hooks never change between runs and this command shows the same ones.
-    fn trust(&self, exe: &Path, clone: &str) -> String {
+    fn trust(&self, exe: &Path, clone: &str, _worktrees: &str) -> String {
         let overrides: String = codex_hooks(exe)
             .into_iter()
             .filter_map(|(key, value)| override_of(key, value).ok())
@@ -1957,6 +1972,21 @@ pub fn send(home: &Path, line: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn claudes_trust_dialog_is_seen_in_each_version_tested_and_nothing_else_is() {
+        let dialog = |options: &str| {
+            format!(
+                " Accessing workspace:\n /home/a/worktrees/o/r/1\n Quick safety check: Is this a project you created or one you trust?\n{options}\n Enter to confirm · Esc to cancel"
+            )
+        };
+        // 2.1.42 and 2.1.198 preselect yes, 2.1.330 no.
+        assert!(ClaudeCode.asks_trust(&dialog(" ❯ 1. Yes, I trust this folder\n   2. No, exit")));
+        assert!(ClaudeCode.asks_trust(&dialog(" ❯ No, exit\n   Yes, I trust this folder")));
+        assert!(!ClaudeCode.asks_trust("  Trust this folder?"));
+        assert!(!ClaudeCode.asks_trust(" Do you want to use this API key?\n ❯ No (recommended)"));
+        assert!(!Codex.asks_trust(&dialog(" ❯ No, exit")));
+    }
 
     #[test]
     fn remove_sealed_removes_a_home_holding_a_sealed_snapshot() {

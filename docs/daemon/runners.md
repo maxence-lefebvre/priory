@@ -11,6 +11,11 @@ waiting tasks and the return. The sections below explain each part.
 
 ![Two runners, a and b, and the log between them. Both read a task request and claim its key, and the first claim in the log wins, so a owns the task. Runner a publishes an alive message once a minute, the hold waiting, then the hold kept, and starts the first run once it reads kept back. When a is cut off, its kept tasks go on and its waiting tasks stay unstarted. Its lease ends 30 minutes after its last alive message, and b claims its waiting tasks and runs them. Back on the log, a reads it before any run and drops each task that moved to b.](../images/diagrams/runners.svg)
 
+Each runner has its own Priory home, so Claude's folder trust does not carry between machines. On
+each runner, a person trusts the worktrees folder before its first run and each clone once Priory
+made it, as [Trusting the worktrees and the clone](sessions.md#trusting-the-worktrees-and-the-clone)
+says. A task that moves to another runner can stop on that runner's trust dialog.
+
 ## When ownership applies
 
 Ownership applies when the factory has two or more runner files. A daemon is the runner named by

@@ -3229,7 +3229,7 @@ fn a_prompt_reaches_the_agent_pane_when_a_person_opened_another_pane() {
 }
 
 #[test]
-fn a_run_with_no_session_start_within_60_seconds_ends_and_names_the_clone_to_trust() {
+fn a_run_with_no_session_start_within_60_seconds_ends_and_names_the_folders_to_trust() {
     let mut setup = Setup::new("untrusted");
     setup.publish(&requested(42));
     setup.hold("silent");
@@ -3248,10 +3248,64 @@ fn a_run_with_no_session_start_within_60_seconds_ends_and_names_the_clone_to_tru
     assert_eq!(
         tasks[0][7],
         format!(
-            "claude showed no SessionStart within 60s; trust the clone once: cd {} && claude, accept, exit",
+            "claude showed no SessionStart within 60s; trust the worktrees folder and the clone once: cd {} && claude, accept, exit, then cd {} && claude, accept, exit",
+            setup.dir.join("home/worktrees").display(),
             clone.display()
         )
     );
+    let outbox = setup.rows("outbox");
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(outbox[0][3], "queued");
+}
+
+/// Claude Code 2.1.330's folder trust dialog, as a run in a new worktree shows it.
+const TRUST_DIALOG: &str = "────────────────────────────────────────
+ Accessing workspace:
+
+ WORKTREE
+
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source
+ project, or work from your team). If not, take a moment to review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel
+";
+
+#[test]
+fn a_run_on_claudes_trust_dialog_blocks_at_once_and_names_the_folders_to_trust() {
+    let mut setup = Setup::new("trust-dialog");
+    setup.publish(&requested(42));
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::write(
+        setup.dir.join("fake/silent"),
+        TRUST_DIALOG.replace("WORKTREE", &worktree.display().to_string()),
+    )
+    .unwrap();
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+
+    // Well before the 60 seconds a run without SessionStart gets.
+    let tasks = setup.within(20, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+
+    assert_eq!(
+        tasks[0][7],
+        format!(
+            "claude asked whether to trust {}; Priory never answers it. Trust the worktrees folder and the clone once: cd {} && claude, accept, exit, then cd {} && claude, accept, exit",
+            worktree.display(),
+            setup.dir.join("home/worktrees").display(),
+            setup.dir.join("home/repos/owner/repo").display()
+        )
+    );
+    assert_eq!(setup.rows("runs")[0][7], "exited");
+    setup.gone("priory-1");
     let outbox = setup.rows("outbox");
     assert_eq!(outbox.len(), 1);
     assert_eq!(outbox[0][3], "queued");

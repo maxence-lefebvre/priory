@@ -1200,7 +1200,7 @@ fn tend(
                 Some(diagnose(db, factory, share, home, &run.agent)?)
             };
             tools::fail(db, trace, run.task, run.id, &reason, repair.as_ref())?;
-        } else if let Some((ended_as, reason)) = verdict(&run, factory) {
+        } else if let Some((ended_as, reason)) = verdict(&run, factory, home) {
             // A debate turn past its timeout goes to the person, as a debate that did not converge.
             if ended_as == "timeout"
                 && let Some(tmux) = crate::debate::timed_out(db, trace, &run.session, &reason)?
@@ -1331,25 +1331,44 @@ fn diagnose(
     }
 }
 
-/// Why a live run must end: no `SessionStart`, a permission prompt, or a turn past its step's timeout.
-fn verdict(run: &state::LiveRun, factory: &Factory) -> Option<(&'static str, String)> {
-    if run.late {
-        // Claude and Codex ask whether to trust a folder, and Codex its hooks, before any hook; Priory
-        // never answers.
+/// Why a live run must end: its harness's trust dialog, no `SessionStart`, a permission prompt, or
+/// a turn past its step's timeout.
+fn verdict(run: &state::LiveRun, factory: &Factory, home: &Path) -> Option<(&'static str, String)> {
+    // Claude and Codex ask whether to trust a folder, and Codex its hooks, before any hook; Priory
+    // never answers.
+    let harness = harness_of(factory, &run.agent);
+    let trust = || {
         let clone = run
             .worktree
             .as_deref()
             .and_then(|worktree| runtime::clone_of(Path::new(worktree)))
             .map_or_else(|| "<clone>".to_owned(), |clone| clone.display().to_string());
-        let harness = harness_of(factory, &run.agent);
         let exe = runtime::exe().unwrap_or_else(|_| "priory".into());
+        let worktrees = home.join("worktrees").display().to_string();
+        harness.trust(&exe, &clone, &worktrees)
+    };
+    let rows = (!run.ready).then(|| runtime::screen(&run.tmux).join("\n"));
+    if let Some(rows) = &rows
+        && harness.asks_trust(rows)
+    {
+        let trust = trust();
+        let reason = format!(
+            "{} asked whether to trust {}; Priory never answers it. {}{}",
+            harness.program(),
+            run.worktree.as_deref().unwrap_or("its folder"),
+            trust[..1].to_uppercase(),
+            &trust[1..]
+        );
+        return Some(("exited", reason));
+    }
+    if run.late {
         let mut reason = format!(
             "{} showed no SessionStart within {}; {}",
             harness.program(),
             state::READY_WITHIN.replace(" seconds", "s"),
-            harness.trust(&exe, &clone)
+            trust()
         );
-        let rows = runtime::screen(&run.tmux).join("\n");
+        let rows = rows.unwrap_or_default();
         let secrets = crate::screen::secrets(&factory.secret_envs());
         // When a secret still shows after redaction, no row of the pane is kept.
         let shown = crate::screen::redact(&rows, &secrets, None)
