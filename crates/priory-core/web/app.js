@@ -2835,8 +2835,6 @@ async function moveTask(target) {
 }
 
 // Lists whose rows open a page of their own, so they take the whole width, with no drawer.
-// The Inbox has none either: its events open no detail.
-const NO_DRAWER = new Set(["tasks", "runs", "queue", "inbox"]);
 const OWN_PAGE_LISTS = { tasks: tasksBody, runs: runsBody, queue: queueBody };
 
 const keyHints = () => html`<div class="keys"><span><kbd>J</kbd><kbd>K</kbd>move</span><span><kbd>Enter</kbd>open</span><span><kbd>Esc</kbd>close</span><span><kbd>N</kbd>add</span></div>`;
@@ -2964,7 +2962,7 @@ function page() {
   const here = current();
   const arrival = size === "wide" && here === "desk" && !selectedAsk() && arrivalAsk({ from: state.drawn, list: state.list, view: deskView(), asks: openAsks() });
   if (arrival) {
-    Object.assign(state, { list: "desk", listUrl: routeKey() });
+    Object.assign(state, { list: "desk", listUrl: routeKey(), from: routeKey() });
     history.replaceState(history.state, "", `/asks/${encodeURIComponent(arrival)}`);
   }
   state.drawn = routeKey();
@@ -3007,10 +3005,12 @@ function page() {
     const capped = taskId || batchId || here === "memories" ? "page" : "";
     return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}<div class="list ${capped}">${utility}</div></div>${wide ? "" : nav("bar")}`;
   }
-  if (NO_DRAWER.has(list)) return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}${listPanel(list, wide)}</div>${wide ? "" : nav("bar")}`;
+  if (OWN_PAGE_LISTS[list]) return html`${staleStrip()}${top}<div class="${size} no-drawer">${wide ? nav("rail") : ""}${listPanel(list, wide)}</div>${wide ? "" : nav("bar")}`;
   if (!wide) return html`${staleStrip()}${top}<div class="medium">${listPanel(list, false)}${drawer(false, [list])}</div>${nav("bar")}`;
   const layoutNode = view().layout;
   const plain = layoutNode.tabs?.every((child) => child.panel);
+  // Events open no detail, so a wide Inbox takes the drawer's width too.
+  if (plain && list === "inbox") return html`${staleStrip()}${top}<div class="wide no-drawer">${nav("rail")}${listPanel(list, true)}</div>`;
   const main = plain ? listPanel(list, true) : tree(layoutNode, list);
   return html`${staleStrip()}${top}<div class="wide">${nav("rail")}${main}${drawer(true, plain ? [list] : shownPanels(layoutNode, list))}</div>`;
 }

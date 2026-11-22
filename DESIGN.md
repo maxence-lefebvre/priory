@@ -246,7 +246,8 @@ and the rubric red `--count`.
 - **Drawer**, `--drawer` (640 px) on `--surface`: the selected ask, task or run. It opens beside
   the list and never covers it. A person who arrives on the Desk's Needs me view finds its oldest
   ask open in the drawer, its row marked; once they close it, the drawer stays empty until they
-  leave the Desk. Tasks, Runs, Queue and the Inbox have no drawer: the list takes the width.
+  leave the Desk. Tasks, Runs and Queue have no drawer, nor has the Inbox in a plain tabs
+  layout: the list takes the width.
 - **Page width**: the task, batch and memories pages, and the Inbox's groups, are at most 960 px
   wide, against the rail. The Tasks, Runs and Queue tables keep the full width.
 - **Back link**: its chevron lines up with the context line under it.
@@ -511,7 +512,7 @@ workflow, then its 5 newest events with the `asleep` tile. Under them, by the ta
 group's `say_text` through the task's say verb, with "Say sends “...”" in `--text-2`; Say and the
 task page's **Resume** for a blocked one, whose line adds "It reads them when it resumes."; the
 owned group's Revive or Request a task for an ended one; "Its next run reads them." otherwise.
-Events open no detail, so the Inbox has no drawer on wider screens.
+Events open no detail, so the Inbox has no drawer on wide screens.
 
 ### Add
 

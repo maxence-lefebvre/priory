@@ -256,7 +256,7 @@ a.autolink { color: var(--action-text); text-decoration: underline; text-underli
 .routeform .task-acts { margin: 0; }
 .routeform > .meta, .routeform .acts-note { flex-basis: 100%; margin: 0; }
 .ugroup > .meta { display: flex; align-items: center; gap: 6px; }
-.unowned { padding: 12px 16px; border-top: 1px solid var(--line); }
+.unowned { padding: 12px var(--gutter); border-top: 1px solid var(--line); }
 .hist li .meta { display: block; }
 .hist .scores { list-style: none; margin: 8px 0 0; padding: 0; }
 .hist .scores li { grid-template-columns: 22px minmax(0, 1fr); padding: 6px 0; border-top: 1px solid var(--line); }
@@ -289,13 +289,12 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 .lhead .cnt .w span { display: block; font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); }
 .wide .facet > summary, .wide a.facet { height: var(--control-fine); font-size: 13.5px; }
 .wide .views a { height: var(--control-fine); font-size: 13.5px; }
-/* The back link's chevron lines up with the context line under it. */
 .wide .top .back { margin-left: -16px; }
 /* A page reads at 960 px against the rail; the Tasks, Runs and Queue tables keep the full width. */
 .wide .page > .scroll > *, .wide .inbox > :is(.lhead, .views), .wide .inbox > .scroll > * { max-width: 960px; }
-/* A check's or feedback item's result sits beside its name, the results in one column. */
-.wide .hist.pair { display: grid; grid-template-columns: 22px auto minmax(0, 1fr); column-gap: 10px; }
+.wide .hist.pair { display: grid; grid-template-columns: 22px fit-content(60%) minmax(0, 1fr); column-gap: 10px; }
 .wide .hist.pair li { grid-column: 1 / -1; grid-template-columns: subgrid; }
+.wide .hist.pair li > span { overflow-wrap: anywhere; }
 .tbl { border-collapse: collapse; width: calc(100% - 40px); margin: 6px 20px 0; font: 400 14px/18px var(--font-ui); table-layout: fixed; }
 .tbl th { text-align: left; font: 600 var(--type-caption) var(--font-ui); color: var(--text-3); padding: 8px 8px 6px; }
 .tbl td { height: var(--row-wide); padding: 0 8px; border-top: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
