@@ -456,7 +456,8 @@ wanted made no task. Its source event is not counted in `other`:
 `unheard` groups, one group per task, the newest event first, the events that a task kept and no
 agent read: the outcome `kept`, for the task that routing gave it to or for a second task through
 a subscription, no prompt carries it, no wait took it, and the task is not `running`. Only feedback, closes, Linear state changes and edits, Slack replies, the kinds a task's own
-key carries, and a `priory add` that joined the task count, and not the agent's own. An event shows once it is 5 minutes old, by the
+key carries, and a `priory add` that joined the task count, and not the agent's own or an item the
+triage model settled (see [decisions.md](../daemon/decisions.md#triage)). An event shows once it is 5 minutes old, by the
 event's `time` against now (`PRIORY_NOW` when set), so a task about to start or wake is left out:
 
 | Field | Type | Meaning |

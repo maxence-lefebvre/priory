@@ -28216,6 +28216,24 @@ fn a_thanks_a_calibrated_model_sorts_as_nothing_to_do_wakes_no_one() {
 }
 
 #[test]
+fn a_settled_item_is_neither_listed_nor_counted_as_unheard() {
+    let setup = asleep_with_decisions("decision-not-unheard", ANSWERS, true);
+    let written = herdr_bus::Timestamp::now() - jiff::SignedDuration::from_mins(10);
+
+    setup.publish(&pull_comment("Thanks, looks good.").time(written));
+
+    stays_asleep(&setup);
+    assert_eq!(setup.decided()[0]["acted"], true);
+    let output = setup.priory(&["inbox", "--unrouted", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(listed["unrouted"]["unheard"], json!([]), "{listed}");
+    let desk = setup.priory(&["desk", "--json"]);
+    let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+    assert_eq!(desk["counts"]["unheard"], 0, "{desk}");
+}
+
+#[test]
 fn the_next_wake_carries_a_settled_item_and_the_result_records_it_unasked() {
     let setup = asleep_with_decisions("decision-carried", ANSWERS, true);
     setup.publish(&pull_comment("Thanks, looks good."));
