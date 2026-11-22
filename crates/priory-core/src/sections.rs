@@ -392,6 +392,17 @@ pub(crate) fn pick(
             if let Err(error) = priory_intake::request::check(factory, request) {
                 return Ok(Err(format!("pick {}: {error}", pick.id)));
             }
+            // The agent was told to apply the first choice, and may still be at it.
+            if let Some(before) = &pick.chosen {
+                let text = format!(
+                    "The person changed their pick on {} in your report from {before} to {}: do not apply {before}. Priory requested {}'s task and filled the pick's applied.",
+                    pick.id, choice.option, choice.option
+                );
+                if let Err(error) = crate::tools::say(&tx, task, &text, &state, &factory.workflows)?
+                {
+                    return Ok(Err(format!("pick {}: {error}", pick.id)));
+                }
+            }
             tx.execute(
                 "INSERT INTO dispatches (pick, request) VALUES (?1, ?2)",
                 params![

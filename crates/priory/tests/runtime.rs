@@ -13645,6 +13645,34 @@ fn an_agreed_pick_changes_until_the_workflow_applies_it_and_wakes_the_task_with_
 }
 
 #[test]
+fn a_pick_changed_to_an_option_that_requests_a_task_tells_the_agent_not_to_apply_the_first() {
+    let requests = json!({ "Later": {
+        "workflow": "implement", "key": "fnd-2409", "text": "Fix the DWARF pause", "repo": "owner/repo"
+    } });
+    let setup = asleep_on_a_report("report-change-request", &bonjour(requests));
+    let first = setup.priory(&["report", "pick", PICK, "Take", "--expected", "1"]);
+    assert!(first.status.success(), "{first:?}");
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+
+    let changed = setup.priory(&["report", "pick", PICK, "Later", "--expected", "2"]);
+
+    assert!(changed.status.success(), "{changed:?}");
+    setup.until("tasks", |rows| rows.len() == 2);
+    let line = format!(
+        "The person changed their pick on {PICK} in your report from Take to Later: do not apply Take. Priory requested Later's task and filled the pick's applied."
+    );
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !setup
+        .typed()
+        .iter()
+        .any(|typed| typed.lines().any(|typed| typed == line))
+    {
+        assert!(Instant::now() < deadline, "{:?}", setup.typed());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
 fn a_pick_at_a_stale_revision_is_refused_and_changes_nothing() {
     let setup = asleep_on_a_report("report-stale", &bonjour(serde_json::Value::Null));
 
