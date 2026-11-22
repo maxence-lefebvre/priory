@@ -619,6 +619,18 @@ fn system_prompt(launch: &Launch) -> String {
         .join("\n\n")
 }
 
+/// The Claude Code tools an investigator's run never gets: each writes, or starts a subagent,
+/// which can carry its own permission mode.
+pub const INVESTIGATOR_DENIED: [&str; 7] = [
+    "Edit",
+    "MultiEdit",
+    "Write",
+    "NotebookEdit",
+    "Bash",
+    "Agent",
+    "Task",
+];
+
 pub struct ClaudeCode;
 
 impl Harness for ClaudeCode {
@@ -656,6 +668,16 @@ impl Harness for ClaudeCode {
             "--permission-mode".to_owned(),
             launch.permission_mode.to_owned(),
         ]);
+        if launch.tools == crate::mcp::Tools::Investigator {
+            // Claude merges `allow` across the person's, the repository's and the flag's settings,
+            // so a person's `Bash(git:*)` would reach an investigator. An empty list loads none
+            // but `--settings`, and the denied tools beat any `allow` (docs/design/consult.md).
+            args.extend(["--setting-sources".to_owned(), String::new()]);
+            args.extend([
+                "--disallowedTools".to_owned(),
+                INVESTIGATOR_DENIED.join(","),
+            ]);
+        }
         args.extend(["--settings".to_owned(), settings(exe, &launch.permissions)]);
         // Without the flag, every server of the person's own Claude config would reach the run too.
         args.push("--strict-mcp-config".to_owned());
@@ -1990,6 +2012,69 @@ mod tests {
         assert!(!ClaudeCode.asks_trust("  Trust this folder?"));
         assert!(!ClaudeCode.asks_trust(" Do you want to use this API key?\n ❯ No (recommended)"));
         assert!(!Codex.asks_trust(&dialog(" ❯ No, exit")));
+    }
+
+    /// The launch of an investigator, or of a worker when `tools` says so, in a throwaway home.
+    fn launch_of<'a>(home: &'a Path, servers: &'a Servers, tools: crate::mcp::Tools) -> Launch<'a> {
+        Launch {
+            tmux: "priory-7",
+            dir: Path::new("/w/7"),
+            home,
+            session: "s-7",
+            resume: None,
+            model: Some("claude-haiku-5-5"),
+            effort: None,
+            body: "You read Sentry.",
+            instructions: "",
+            plugin: None,
+            memories: None,
+            prompt: Some("One question."),
+            permissions: json!({ "defaultMode": "dontAsk", "allow": ["Read"] }),
+            permission_mode: "dontAsk",
+            scope: &[],
+            env: &[],
+            debate: false,
+            servers,
+            tools,
+        }
+    }
+
+    #[test]
+    fn an_investigators_claude_loads_no_user_or_project_settings_and_has_no_tool_that_writes() {
+        let home = Path::new("/h");
+        let exe = Path::new("/bin/priory");
+        let servers = Servers::default();
+        let launch = launch_of(home, &servers, crate::mcp::Tools::Investigator);
+
+        let args = ClaudeCode.args(exe, &launch).unwrap();
+
+        assert_eq!(
+            args,
+            [
+                "--session-id",
+                "s-7",
+                "--model",
+                "claude-haiku-5-5",
+                "--append-system-prompt",
+                "You read Sentry.",
+                "--permission-mode",
+                "dontAsk",
+                "--setting-sources",
+                "",
+                "--disallowedTools",
+                "Edit,MultiEdit,Write,NotebookEdit,Bash,Agent,Task",
+                "--settings",
+                &settings(exe, &launch.permissions),
+                "--strict-mcp-config",
+                "--mcp-config",
+                "/h/prompts/s-7.mcp.json",
+            ]
+        );
+
+        let worker = launch_of(home, &servers, crate::mcp::Tools::Worker);
+        let args = ClaudeCode.args(exe, &worker).unwrap();
+        assert!(!args.contains(&"--setting-sources".to_owned()), "{args:?}");
+        assert!(!args.contains(&"--disallowedTools".to_owned()), "{args:?}");
     }
 
     #[test]

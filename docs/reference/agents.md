@@ -80,7 +80,9 @@ refuses one that could write:
 | ---- | --- |
 | `harness = "claude-code"` | Only Claude Code takes per-tool rules |
 | `permissions.defaultMode = "dontAsk"` | Claude Code denies every call that would prompt, so the run can call only what `allow` names, and reads in its worktree |
-| No `allow` rule names `Edit`, `Write`, `NotebookEdit` or `Bash`, holds a `*`, or names a whole MCP server such as `mcp__sentry` | Each MCP tool is written out by its exact name, so a tool the server adds later is denied until a person adds it |
+| No `allow` rule names `Edit`, `MultiEdit`, `Write`, `NotebookEdit` or `Bash` | Each of them writes |
+| No `allow` rule names `Agent` or `Task` | Each starts a subagent, which can carry its own permission mode |
+| No `allow` rule holds a `*` or names a whole MCP server such as `mcp__sentry` | Each MCP tool is written out by its exact name, so a tool the server adds later is denied until a person adds it |
 | Each of its `mcpServers` has a `read_only` sentence under [`[mcp.<name>]`](factory.md#mcpname) | The person states where the service enforces that the server only reads. Priory cannot check it |
 | No `session = "shared"` and no `connectorSignIn` | Each consult starts a fresh session, and an unattended run never signs in |
 | A `model` that `prices.toml` prices | The daemon prices the run's tokens each second against `[consult] cap` |
@@ -100,6 +102,13 @@ You read Sentry and answer one question.
 
 `priory check --explain` prints each investigator's `allow` rules and each server's `read_only`
 sentence, so a person can review both.
+
+The daemon also starts an investigator's `claude` with two flags that no factory file sets:
+
+| Flag | Effect |
+| ---- | ------ |
+| `--setting-sources ""` | Claude Code loads no user, project or local settings file. Only Priory's `--settings` apply, so an `allow` rule in `~/.claude/settings.json` or in the repository's `.claude/settings.json` never reaches the run. A key the person keeps there, such as `env` or `apiKeyHelper`, does not reach it either |
+| `--disallowedTools Edit,MultiEdit,Write,NotebookEdit,Bash,Agent,Task` | Claude Code denies these tools even if a rule allows them |
 
 ## Examples
 
@@ -162,7 +171,8 @@ Answer in one short paragraph.
 | `` a codex agent takes its own prompt on its command line, as `developer_instructions`: it is <n> bytes, over the limit of 8192 `` | A Codex agent whose prompt and writing guide pass 8192 bytes. With instructions, memories or skills the run gets, the message names them too. See [skills.md](../daemon/skills.md#a-codex-run) |
 | `` investigator `<name>` needs harness = "claude-code": only Claude Code takes per-tool rules `` | A Codex investigator |
 | `` investigator `<name>` needs permissions.defaultMode = "dontAsk", so every tool it may call is named in `allow` `` | An investigator in another mode |
-| `` investigator `<name>` may not allow `<rule>`: it names a tool that writes `` | An `allow` rule of `Edit`, `Write`, `NotebookEdit` or `Bash` |
+| `` investigator `<name>` may not allow `<rule>`: it names a tool that writes `` | An `allow` rule of `Edit`, `MultiEdit`, `Write`, `NotebookEdit` or `Bash` |
+| `` investigator `<name>` may not allow `<rule>`: it starts a subagent, which can carry its own permission mode `` | An `allow` rule of `Agent` or `Task`, such as `Agent(Explore)` |
 | `` investigator `<name>` may not allow `<rule>`: it holds a `*`: write out each tool by its exact name `` | A pattern in `allow`, such as `mcp__sentry__get_*` |
 | `` investigator `<name>` may not allow `<rule>`: it names a whole MCP server: write out each of its tools by its exact name `` | A rule such as `mcp__sentry` |
 | `` investigator `<name>` names MCP server `<server>`, which needs a `read_only` sentence under [mcp.<server>] in factory.toml: where the service enforces that it only reads `` | A server with no `read_only` sentence |

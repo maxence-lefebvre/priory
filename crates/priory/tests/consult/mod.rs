@@ -274,6 +274,44 @@ fn a_consult_sleeps_the_worker_and_the_investigators_report_wakes_it_as_its_next
 }
 
 #[test]
+fn an_investigators_claude_loads_no_user_or_project_settings_and_has_no_tool_that_writes() {
+    let mut setup = consulting("consult-read-only", "");
+    setup.calls(&[
+        consult("sentry"),
+        reported("Release 4.2."),
+        result("passed"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows[1][7].starts_with("waits for room")
+    });
+    let worker = setup.claude_args(0);
+    setup.hold("hold-call");
+    setup.memory(60);
+    let investigator = setup.claude_args(1);
+
+    // Claude merges `allow` across the person's, the repository's and the flag's settings, so
+    // only the flag's may reach an investigator.
+    assert_eq!(
+        arg(&investigator, "--setting-sources").as_deref(),
+        Some(""),
+        "{investigator:?}"
+    );
+    assert_eq!(
+        arg(&investigator, "--disallowedTools").as_deref(),
+        Some("Edit,MultiEdit,Write,NotebookEdit,Bash,Agent,Task"),
+        "{investigator:?}"
+    );
+    for flag in ["--setting-sources", "--disallowedTools"] {
+        assert!(!worker.contains(&flag.to_owned()), "{worker:?}");
+    }
+    setup.release("hold-call");
+    setup.until("tasks", |rows| with(rows, 4, "done") == 2);
+}
+
+#[test]
 fn the_index_lists_only_the_investigators_an_agent_may_consult() {
     let mut setup = consulting("consult-index", "");
     setup.calls(&[consult("honeycomb"), consult("nobody")]);
@@ -688,4 +726,101 @@ fn a_restart_between_the_ask_and_the_report_starts_one_investigator_and_reports_
     );
     assert_eq!(typed_with(&setup, "consult 1 reported by sentry:").len(), 1);
     assert_eq!(traced(&setup, "factory.consult.reported").len(), 1);
+}
+
+/// Runs the real `claude -p` in `project`, with a throwaway `home`, on the prompt to run
+/// `touch marker`, with the flags an investigator's launch adds when `investigator` says so.
+fn touch_with_real_claude(home: &Path, project: &Path, investigator: bool) -> bool {
+    let servers = priory_runtime::servers::Servers::default();
+    let launch = priory_runtime::runtime::Launch {
+        tmux: "real",
+        dir: project,
+        home,
+        session: "real",
+        resume: None,
+        model: None,
+        effort: None,
+        body: "",
+        instructions: "",
+        plugin: None,
+        memories: None,
+        prompt: None,
+        permissions: json!({ "defaultMode": "dontAsk", "allow": ["Read"] }),
+        permission_mode: "dontAsk",
+        scope: &[],
+        env: &[],
+        debate: false,
+        servers: &servers,
+        tools: priory_runtime::mcp::Tools::Investigator,
+    };
+    let args = priory_runtime::runtime::Harness::args(
+        &priory_runtime::runtime::ClaudeCode,
+        Path::new("/bin/true"),
+        &launch,
+    )
+    .unwrap();
+    let mut command = harness::command("claude");
+    command
+        .current_dir(project)
+        .env("HOME", home)
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CLAUDECODE")
+        .args(["-p", "--permission-mode", "dontAsk", "--settings"])
+        .arg(json!({ "permissions": { "allow": ["Read"] } }).to_string());
+    if investigator {
+        for flag in ["--setting-sources", "--disallowedTools"] {
+            command.args([flag.to_owned(), arg(&args, flag).unwrap()]);
+        }
+    }
+    let output = command
+        .args([
+            "--",
+            "Use the Bash tool to run exactly this command: touch marker. Then say DONE or DENIED.",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let touched = project.join("marker").exists();
+    let _ = fs::remove_file(project.join("marker"));
+    touched
+}
+
+#[test]
+#[ignore = "runs the real claude, which needs a sign-in and spends tokens: run it with --ignored"]
+fn the_real_claude_denies_an_investigator_a_bash_rule_of_the_persons_or_the_repositorys_settings() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("real-claude-investigator");
+    let _ = fs::remove_dir_all(&dir);
+    let (home, project) = (dir.join("home"), dir.join("project"));
+    let allow = json!({ "permissions": { "allow": ["Bash(touch:*)"] } }).to_string();
+    for settings in [home.join(".claude"), project.join(".claude")] {
+        fs::create_dir_all(&settings).unwrap();
+    }
+    // Claude finds the repository's settings at its git root, which would be Priory's own.
+    let init = harness::command("git")
+        .arg("init")
+        .arg("-q")
+        .arg(&project)
+        .status();
+    assert!(init.unwrap().success());
+    // The person accepted the trust dialog once, so Claude reads the repository's settings.
+    let trusted = json!({ "projects": { project.display().to_string(): { "hasTrustDialogAccepted": true } } });
+    fs::write(home.join(".claude.json"), trusted.to_string()).unwrap();
+
+    for file in [
+        home.join(".claude/settings.json"),
+        project.join(".claude/settings.json"),
+    ] {
+        fs::write(&file, &allow).unwrap();
+        assert!(
+            touch_with_real_claude(&home, &project, false),
+            "without the flags, {} lets the touch run",
+            file.display()
+        );
+        assert!(
+            !touch_with_real_claude(&home, &project, true),
+            "with them, {} reaches the investigator",
+            file.display()
+        );
+        fs::remove_file(&file).unwrap();
+    }
 }
