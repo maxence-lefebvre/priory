@@ -183,7 +183,8 @@ Amplitude. That text can hold instructions. It then travels into a worker that c
   the tool guard and the approval rule, whatever a report says.
 - Before a report is stored, it is searched for the values of the factory's known secrets, as an
   evidence item is ([reviewer-evidence.md](reviewer-evidence.md)). A match refuses the result,
-  and the investigator is told to answer without the value.
+  and the investigator is told to answer without the value. The search reads the report without
+  its escape sequences and control characters, so none can split a secret.
 
 A report can still carry customer data from the system it read. The investigator's instructions
 say to summarize and to quote the least it can. No code checks that.

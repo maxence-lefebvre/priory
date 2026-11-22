@@ -218,11 +218,7 @@ pub(crate) fn answer(
         )));
     }
     let secrets = crate::screen::secrets(&trace.factory.secret_envs());
-    if secrets
-        .iter()
-        .any(|secret| summary.contains(secret.as_str()))
-        || crate::screen::holds_secret(summary)
-    {
+    if crate::screen::holds_any_secret(summary, &secrets) {
         return Ok(Err(
             "the report holds the value of a secret Priory knows: answer again without it"
                 .to_owned(),

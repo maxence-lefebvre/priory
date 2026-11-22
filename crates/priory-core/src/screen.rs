@@ -35,6 +35,34 @@ pub(crate) fn holds_secret(text: &str) -> bool {
     SHAPES.is_match(text)
 }
 
+/// An escape sequence of ECMA-48, in its 7-bit or 8-bit form: a control sequence such as a colour
+/// code, a string such as an OSC 8 link, or a two-byte escape.
+static ESCAPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r"(?:\x1b\[|\u{9b})[0-?]*[ -/]*[@-~]",
+        r"|(?:\x1b[\]PX^_]|[\u{90}\u{98}\u{9d}\u{9e}\u{9f}])[^\x07\x1b\u{9c}]*(?:\x07|\x1b\\|\u{9c})",
+        r"|\x1b[ -/]*[0-~]",
+    ))
+    .expect("the escape sequence compiles")
+});
+
+/// A control or format character other than a line break or a tab, such as NUL or a zero-width space.
+static CONTROL: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[[\p{Cc}\p{Cf}]&&[^\n\t]]").expect("the control class compiles"));
+
+/// Whether `text` holds one of the `exact` values or a secret shape once its escape sequences and
+/// control characters are gone, so none can split a secret. It looks again with only the control
+/// characters gone, for a secret inside a sequence's string, such as a link's address.
+pub(crate) fn holds_any_secret(text: &str, exact: &[String]) -> bool {
+    let plain = CONTROL
+        .replace_all(&ESCAPE.replace_all(text, ""), "")
+        .into_owned();
+    let bare = CONTROL.replace_all(text, "").into_owned();
+    [plain, bare]
+        .iter()
+        .any(|text| exact.iter().any(|secret| text.contains(secret.as_str())) || holds_secret(text))
+}
+
 static PEM_END: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"-----END [A-Z ]*PRIVATE KEY-----").expect("the PEM end compiles")
 });
@@ -285,8 +313,31 @@ pub fn reply(screen: Value, have: Option<&str>) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{HIDDEN, redact};
+    use super::{HIDDEN, holds_any_secret, redact};
     use proptest::prelude::*;
+
+    #[test]
+    fn a_secret_split_by_escape_sequences_or_control_characters_is_found() {
+        let exact = ["s3cret-serve-token-41".to_owned()];
+        for text in [
+            "s3cret-\x1b[1;31mserve-token-41",
+            "s3cret-\u{9b}0mserve-token-41",
+            "s3cret-\x1b]8;;https://x\x1b\\serve-\x1b7token-41",
+            "s3cret-\u{200b}serve\r-token\x00-41",
+            "\x1b]8;;s3cret-serve-token-41\x07link\x1b]8;;\x07",
+            "\x1b]0;unended s3cret-serve-token-41",
+        ] {
+            assert!(holds_any_secret(text, &exact), "{text:?}");
+        }
+        assert!(holds_any_secret(
+            "ghp_abcdefghij\x1b[0mklmnopqrstuvwxyz",
+            &[]
+        ));
+        assert!(!holds_any_secret(
+            "\x1b[1mRelease\x1b[0m 4.2.\n\tDone.",
+            &exact
+        ));
+    }
 
     #[test]
     fn a_secret_the_marker_holds_is_skipped_and_one_that_keeps_coming_back_hides_the_screen() {

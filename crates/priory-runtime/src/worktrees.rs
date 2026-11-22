@@ -151,14 +151,66 @@ fn occupied(path: &Path) -> bool {
         })
 }
 
-/// Whether the process is a git command Priory runs, or a child of one, which ends on its own.
+/// Whether the process is a git command Priory runs, or a child of one, which ends on its own: its
+/// `PRIORY_GIT` names a running Priory process, which is its ancestor, and the ancestor's child on
+/// the way carries the same marker. Any process can set the variable, but only Priory's own git
+/// commands are both its children and carry it.
 fn own(process: &Path) -> bool {
-    let own = format!("{}={}", OWN_GIT.0, OWN_GIT.1);
-    fs::read(process.join("environ")).is_ok_and(|environ| {
-        environ
-            .split(|byte| *byte == 0)
-            .any(|var| var == own.as_bytes())
-    })
+    let Some(value) = marker(process) else {
+        return false;
+    };
+    let Ok(priory) = value.parse::<u32>() else {
+        return false;
+    };
+    if !is_priory(priory) {
+        return false;
+    }
+    let mut below = process.to_owned();
+    // A bound on the walk, since pids can be reused while it reads.
+    for _ in 0..64 {
+        let Some(parent) = parent(&below) else {
+            return false;
+        };
+        if parent == priory {
+            return marker(&below).as_deref() == Some(value.as_str());
+        }
+        if parent <= 1 {
+            return false;
+        }
+        below = Path::new("/proc").join(parent.to_string());
+    }
+    false
+}
+
+/// The value of `PRIORY_GIT` in the process's environment.
+fn marker(process: &Path) -> Option<String> {
+    let environ = fs::read(process.join("environ")).ok()?;
+    let prefix = format!("{OWN_GIT}=");
+    environ
+        .split(|byte| *byte == 0)
+        .find_map(|var| var.strip_prefix(prefix.as_bytes()))
+        .map(|value| String::from_utf8_lossy(value).into_owned())
+}
+
+/// The pid of the process's parent, read from its `stat`, whose command name may hold any byte.
+fn parent(process: &Path) -> Option<u32> {
+    let stat = fs::read(process.join("stat")).ok()?;
+    let after = stat.iter().rposition(|byte| *byte == b')')?;
+    let rest = String::from_utf8_lossy(&stat[after + 1..]).into_owned();
+    rest.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// Whether process `pid` runs the same program as this process, Priory, even one replaced on disk
+/// since it started.
+fn is_priory(pid: u32) -> bool {
+    let program = |link: PathBuf| {
+        fs::read_link(link).ok().map(|path| {
+            let path = path.to_string_lossy().into_owned();
+            path.strip_suffix(" (deleted)").unwrap_or(&path).to_owned()
+        })
+    };
+    let own = program(PathBuf::from("/proc/self/exe"));
+    own.is_some() && own == program(Path::new("/proc").join(pid.to_string()).join("exe"))
 }
 
 /// Removes the worktree and its branch. Git refuses both when anything is left to lose.

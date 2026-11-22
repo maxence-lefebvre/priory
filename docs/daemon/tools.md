@@ -303,6 +303,9 @@ obey. An investigator reads text that outsiders wrote, which can hold instructio
 is what each side can do: the investigator can only read, and the worker stays under the tool guard
 and the approval rule whatever a report says. Before a report is stored, it is searched for the
 values of the secrets Priory knows, as `priory screen` hides them, and for keys by their shape.
+The search reads the report without its escape sequences and control characters, such as a colour
+code or a zero-width space, so none can split a secret, and again with only the control characters
+gone, for a secret inside a link's address.
 
 When no report comes, the task wakes with a line that says why: the deadline passed, the cost
 reached the cap, the investigator's run failed, or it needs a sign-in, which goes to the desk as a
