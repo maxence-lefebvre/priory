@@ -2,7 +2,7 @@
 
 This guide shows how to play a task through your own factory folder, from its request to its final
 state, before any real agent runs. It assumes a clone of this repository with its
-[build prerequisites](../GETTING_STARTED.md#build-from-source), and a factory that passes
+[build prerequisites](../GETTING_STARTED.md#1-build-priory), and a factory that passes
 `priory check`.
 
 The test copies your factory into a scratch folder and replaces its runners with one for the test

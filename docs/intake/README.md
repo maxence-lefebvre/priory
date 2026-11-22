@@ -39,7 +39,8 @@ shows one too: see [desk.md](../daemon/desk.md#intake-banner).
 ## Where messages go
 
 The intake publishes on the output `factory.intake` of [herdr-bus](https://github.com/flupke/herdr-bus),
-a message log in one SQLite file that `HERDR_BUS_DB` names. Several consumers can read one output,
+a message log in one SQLite file that `HERDR_BUS_DB` names, `~/.local/share/herdr-bus/bus.db` by
+default. Several consumers can read one output,
 each at its own position.
 
 These pages are the contract for every consumer of that output: the Priory daemon, and another

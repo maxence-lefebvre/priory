@@ -27,6 +27,6 @@ priory check my-factory
 ```
 
 Replace the placeholders `owner/repo` and `your-login` in its `triggers/` files, and rename
-`runners/my-machine.toml` after your machine's Tailscale hostname. Then run it as [Getting started](../GETTING_STARTED.md#5-run-it) runs its
+`runners/my-machine.toml` after your machine's Tailscale hostname. Then run it as [Getting started](../GETTING_STARTED.md#4-run-the-daemon) runs its
 `example` folder: use `my-factory` in place of `example`, and the starter's workflow, the file name
 under its `workflows/`, in place of `implement`.
