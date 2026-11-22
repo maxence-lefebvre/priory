@@ -17,8 +17,8 @@ Priory is a Rust program with two long-running processes. The intake polls GitHu
 and your schedules. The daemon turns what the intake finds, and what webhooks deliver, into tasks,
 and runs one agent per task in its own tmux session and git worktree. The daemon also serves a web
 view that works on a phone, where you answer what the agents ask. A Herdr adapter and a browser
-extension for GitHub's pull request page show the same asks, and ten starter factories give you a
-workflow to begin from.
+extension for GitHub's pull request page show the same asks, and
+[starter factories](docs/starting-from-a-starter.md) give you a workflow to begin from.
 
 ## The problem it solves
 
@@ -32,8 +32,8 @@ every poll:
 - An agent that waits holds no process. It names what it waits for, such as a pull request's
   checks, and goes to sleep. The daemon resumes its session when that event arrives.
 - Every question an agent asks lands on one list, the desk, with options and a recommendation.
-  You answer it from the command line, or a trigger hands its tasks' questions to a lead agent and
-  keeps only the irreversible ones for you.
+  You answer it from the command line, or a [trigger](docs/concepts.md) hands its tasks'
+  questions to a lead agent and keeps only the irreversible ones for you.
 - Every workflow step declares who decides it (a model, a person or code) and what it changes. So
   `priory check` can refuse a workflow before it runs, for example one that pushes code with no
   person's approval. `priory check --explain` lists what a person approves before each
