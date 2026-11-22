@@ -339,7 +339,6 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
   .tbl .fifth { display: block; margin-top: 6px; color: var(--text-2); font: 400 var(--type-small) var(--font-ui); }
   .tbl td.q .fifth > span:not(.task-acts) { display: inline; overflow: visible; }
   .tbl td.q .fifth .task-acts { display: flex; flex-wrap: wrap; }
-  .tbl td.q .fifth .task-acts span { display: revert; overflow: visible; }
   .tbl td.q .tag + .fifth { margin-top: 0; }
 }
 @container (max-width: 560px) {

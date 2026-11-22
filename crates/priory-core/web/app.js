@@ -2904,7 +2904,8 @@ function render() {
   const scrolls = state.scrolls.get(state.renderedKey) || [];
   app.querySelectorAll(".scroll").forEach((element, i) => { element.scrollTop = scrolls[i] || 0; });
   if (typed && app.querySelector("#token")) app.querySelector("#token").value = typed;
-  if (focused) [...app.querySelectorAll(focused)].find((element) => !element.closest("[inert]"))?.focus({ preventScroll: true });
+  // The Desk table draws some controls twice and CSS hides one copy: focus goes to the shown one.
+  if (focused) [...app.querySelectorAll(focused)].find((element) => !element.closest("[inert]") && element.getClientRects().length)?.focus({ preventScroll: true });
   if (caret !== undefined) app.querySelector(`#${caret[0]}`)?.setSelectionRange(caret[1], caret[2], caret[3]);
   // A link or control inside a row, such as its key, batch or Move menu, acts on its own.
   for (const row of app.querySelectorAll("[data-href]")) row.addEventListener("click", (event) => { if (!event.target.closest("a, button, details")) go(row.dataset.href); });
