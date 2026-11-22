@@ -369,7 +369,8 @@ const UNHEARD_AFTER: jiff::SignedDuration = jiff::SignedDuration::from_mins(5);
 /// Each event after `since`, and within `window` (from, to) when given, newest first, that a task
 /// that is not running kept, itself or through a subscription, that no prompt carries and no wait took, written more than
 /// `UNHEARD_AFTER` before `now` by someone other than the agent, with its task. Only what people
-/// say, edit and close counts: checks and pushes stay with the checks gate. Each comes with whether
+/// say, edit and close counts: checks and pushes stay with the checks gate, and an item a decision
+/// model settled waits for the task's next prompt by design. Each comes with whether
 /// its task waits on a step's ask.
 fn unheard_events(
     db: &Connection,
@@ -400,6 +401,7 @@ fn unheard_events(
            AND inbox.type IN (SELECT value FROM json_each(?4))
            AND julianday(inbox.time) <= julianday(?5)
            AND coalesce(json_extract(inbox.data, '$.own'), 0) != 1
+           AND coalesce(json_extract(inbox.data, '$.decided.class'), '') != 'nothing-to-do'
            AND inbox.seq NOT IN (SELECT inbox FROM waits WHERE task = kept.task
              AND inbox IS NOT NULL)
          ORDER BY inbox.seq DESC",

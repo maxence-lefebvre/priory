@@ -3510,6 +3510,9 @@ fn answer_in(
         Err(error) => return Ok(Err(error)),
     };
     let options: Vec<String> = serde_json::from_str(&options).expect("options are stored as JSON");
+    if let Some(applied) = crate::gates::answered(tx, answer.ask, &answer.text, &answer.by)? {
+        return Ok(applied);
+    }
     let hold = crate::hold::of_ask(tx, answer.ask)?;
     let (chosen, note) = match answer.text.split_once(':') {
         Some((option, note))
@@ -4133,6 +4136,16 @@ pub(crate) fn say(
             "task {task} has no run yet: say it once its agent started"
         )));
     }
+    // A debater never reads it: the step after the debate does, with its first prompt.
+    if crate::debate::open(tx, task)? {
+        tx.execute(
+            "INSERT INTO outbox (task, text, state) VALUES (?1, ?2, 'held')",
+            params![task, text],
+        )?;
+        return Ok(Ok(format!(
+            "task {task} is in a debate at step {at}: the step after the debate reads it"
+        )));
+    }
     let prompt = wake(tx, task, text)?;
     tx.execute("UPDATE outbox SET wakes = 1 WHERE id = ?1", [prompt])?;
     if state == "asleep" {
@@ -4324,7 +4337,7 @@ fn regenerate(tx: &Transaction, task: i64, generation: i64) -> rusqlite::Result<
         [task],
     )?;
     tx.execute(
-        "UPDATE outbox SET state = 'withdrawn' WHERE task = ?1 AND state = 'queued'",
+        "UPDATE outbox SET state = 'withdrawn' WHERE task = ?1 AND state IN ('queued', 'held')",
         [task],
     )?;
     tx.execute(

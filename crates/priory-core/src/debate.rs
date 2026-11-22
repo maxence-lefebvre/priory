@@ -66,6 +66,16 @@ pub(crate) fn speaker_of(
     Ok(speaker(debate, taken as usize).0.to_owned())
 }
 
+/// Whether `task` has a debate that has not ended. No debater reads an event or a `say` that
+/// arrives during it: the step after the debate does.
+pub(crate) fn open(db: &Connection, task: i64) -> rusqlite::Result<bool> {
+    db.query_row(
+        "SELECT EXISTS (SELECT 1 FROM debates WHERE task = ?1 AND ended IS NULL)",
+        [task],
+        |row| row.get(0),
+    )
+}
+
 /// The positions of `debate`, in order.
 pub(crate) fn positions(db: &Connection, debate: i64) -> rusqlite::Result<Vec<Position>> {
     let mut statement = db.prepare(

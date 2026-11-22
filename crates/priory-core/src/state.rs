@@ -2185,7 +2185,12 @@ pub(crate) fn route_in(
             .is_some(),
         None => false,
     };
-    let outbox = if let Some(task) = task.filter(|_| running && outcome == "kept") {
+    // A debater never reads what the task keeps: the step after the debate reads it unread.
+    let debating = match task {
+        Some(id) if running => crate::debate::open(tx, id)?,
+        _ => false,
+    };
+    let outbox = if let Some(task) = task.filter(|_| running && !debating && outcome == "kept") {
         let text = line(
             &message.kind,
             message.subject.as_deref(),
@@ -2294,7 +2299,7 @@ pub(crate) fn route_in(
                 kill.extend(crate::tools::event(tx, task, seq, factory)?.1);
             } else {
                 tx.execute(
-                    "UPDATE inbox SET outbox = (SELECT max(id) FROM outbox WHERE task = ?2 AND state = 'queued')
+                    "UPDATE inbox SET outbox = (SELECT max(id) FROM outbox WHERE task = ?2 AND state IN ('queued', 'held'))
                      WHERE seq = ?1",
                     [seq, task],
                 )?;
@@ -2494,7 +2499,8 @@ fn delivered(
     }
     if kept.is_none()
         && tx.execute(
-            "INSERT INTO outbox (task, text) SELECT id, ?2 FROM tasks WHERE id = ?1 AND state = 'running'",
+            "INSERT INTO outbox (task, text) SELECT id, ?2 FROM tasks WHERE id = ?1 AND state = 'running'
+             AND NOT EXISTS (SELECT 1 FROM debates WHERE task = ?1 AND ended IS NULL)",
             params![task, placed(tx, task, resources, &line)?],
         )? == 1
     {
@@ -3551,18 +3557,68 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
     if crate::triage::any(&tx, &events)? {
         text = format!("{text}\n{}", crate::triage::RULE);
     }
+    let held = match run.debate {
+        Some(_) => Vec::new(),
+        None => held(&tx, run.task)?,
+    };
+    for (_, said) in &held {
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(said);
+    }
+    // The step after a debate reads what came during it with the entry prompt the debate queued.
+    let entry: Option<i64> = match run.prompt {
+        None if !text.is_empty() => tx.query_row(
+            "SELECT min(outbox.id) FROM outbox WHERE task = ?1 AND state = 'queued' AND compact = 0
+                 AND (SELECT debate FROM runs WHERE task = ?1 AND id < ?2 ORDER BY id DESC LIMIT 1)
+                   IS NOT NULL",
+            params![run.task, id],
+            |row| row.get(0),
+        )?,
+        _ => None,
+    };
     if !text.is_empty() {
-        tx.execute(
-            "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
-            params![run.task, text],
-        )?;
-        carry(&tx, run.task, tx.last_insert_rowid(), &unread)?;
+        let prompt = match entry {
+            Some(entry) => {
+                tx.execute(
+                    "UPDATE outbox SET text = text || char(10) || ?2 WHERE id = ?1",
+                    params![entry, text],
+                )?;
+                entry
+            }
+            None => {
+                tx.execute(
+                    "INSERT INTO outbox (task, text) VALUES (?1, ?2)",
+                    params![run.task, text],
+                )?;
+                tx.last_insert_rowid()
+            }
+        };
+        carry(&tx, run.task, prompt, &unread)?;
+        for (id, _) in &held {
+            tx.execute(
+                "UPDATE inbox SET outbox = ?1 WHERE outbox = ?2",
+                params![prompt, id],
+            )?;
+            tx.execute("DELETE FROM outbox WHERE id = ?1", [id])?;
+        }
     }
     if run.shared {
         share(&tx, run)?;
     }
     tx.commit()?;
     Ok(id)
+}
+
+/// The texts a person said to `task` during a debate, by outbox id, which its next run after the
+/// debate reads with its first prompt.
+fn held(tx: &Transaction, task: i64) -> rusqlite::Result<Vec<(i64, String)>> {
+    let mut statement =
+        tx.prepare("SELECT id, text FROM outbox WHERE task = ?1 AND state = 'held' ORDER BY id")?;
+    statement
+        .query_map([task], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect()
 }
 
 /// Each event `task` kept that no prompt carries, by seq, with whether a subscription delivered it

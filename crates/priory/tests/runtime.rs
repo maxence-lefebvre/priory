@@ -28812,6 +28812,24 @@ fn a_thanks_a_calibrated_model_sorts_as_nothing_to_do_wakes_no_one() {
 }
 
 #[test]
+fn a_settled_item_is_neither_listed_nor_counted_as_unheard() {
+    let setup = asleep_with_decisions("decision-not-unheard", ANSWERS, true);
+    let written = herdr_bus::Timestamp::now() - jiff::SignedDuration::from_mins(10);
+
+    setup.publish(&pull_comment("Thanks, looks good.").time(written));
+
+    stays_asleep(&setup);
+    assert_eq!(setup.decided()[0]["acted"], true);
+    let output = setup.priory(&["inbox", "--unrouted", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let listed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(listed["unrouted"]["unheard"], json!([]), "{listed}");
+    let desk = setup.priory(&["desk", "--json"]);
+    let desk: serde_json::Value = serde_json::from_slice(&desk.stdout).unwrap();
+    assert_eq!(desk["counts"]["unheard"], 0, "{desk}");
+}
+
+#[test]
 fn the_next_wake_carries_a_settled_item_and_the_result_records_it_unasked() {
     let setup = asleep_with_decisions("decision-carried", ANSWERS, true);
     setup.publish(&pull_comment("Thanks, looks good."));
@@ -29389,12 +29407,10 @@ fn an_event_that_arrives_while_the_gate_grades_waits_for_its_verdict() {
     assert_ne!(setup.rows("outbox")[1][3], "confirmed");
 }
 
-#[test]
-fn a_judge_gates_only_while_its_latest_calibration_passes() {
-    let mut setup = Setup::with_workflow(
-        "gate-judge-uncalibrated",
-        &GATED_STEP.replace("check", "asked"),
-    );
+/// Task 1 at `GATED_STEP` gated by the judge `asked` with no calibration, holding outcome passed
+/// on the one ask that names the judge.
+fn held_by_an_uncalibrated_judge(name: &str) -> (Setup, serde_json::Value) {
+    let mut setup = Setup::with_workflow(name, &GATED_STEP.replace("check", "asked"));
     judge_scorer(&setup, "0.8");
     setup.hold("hold-call");
     setup.publish(&requested(42));
@@ -29405,22 +29421,66 @@ fn a_judge_gates_only_while_its_latest_calibration_passes() {
         "outcome": "passed", "summary": "Adds a.txt.", "commit": commit
     } })]);
     setup.release("hold-call");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let ask = loop {
+        let asks = asks_json(&setup);
+        if let Some(ask) = asks["asks"].as_array().and_then(|asks| asks.first()) {
+            break ask.clone();
+        }
+        assert!(Instant::now() < deadline, "no ask: {asks}");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    (setup, ask)
+}
 
-    setup.until("tasks", |rows| rows[0][4] == "done");
+#[test]
+fn a_judge_that_lost_its_calibration_holds_the_result_on_one_ask_that_names_it() {
+    let (setup, ask) = held_by_an_uncalibrated_judge("gate-judge-uncalibrated");
 
+    let question = ask["question"].as_str().unwrap();
+    assert!(
+        question.contains("asked is not calibrated: no agreement stored"),
+        "{ask}"
+    );
+    assert_eq!(ask["options"], json!(["grade again", "let it through"]));
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+    assert_eq!(results(&setup), 0);
     let scores = gate_scores(&setup);
     assert_eq!(
         [&scores[0][0], &scores[0][1]],
         [&json!("asked"), &json!("error")]
     );
-    assert!(
-        scores[0][2]
-            .as_str()
-            .unwrap()
-            .starts_with("not calibrated: "),
-        "{scores:?}"
-    );
     assert!(!setup.dir.join("fake/handler-args.log").exists());
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(asks_json(&setup)["asks"].as_array().unwrap().len(), 1);
+    assert_eq!(gate_scores(&setup).len(), 1, "the judge graded once");
+
+    let answered = setup.priory(&["answer", "1", "let it through", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    assert_eq!(results(&setup), 1);
+    assert_eq!(setup.typed().len(), 1, "{:?}", setup.typed());
+}
+
+#[test]
+fn grade_again_after_a_calibration_lets_the_judge_grade_the_held_result() {
+    let (setup, _) = held_by_an_uncalibrated_judge("gate-judge-regrade");
+    let mut answers = AGREE_NINE.to_vec();
+    answers.push("pass\nIt adds a.txt.");
+    judge_answers(&setup, &answers);
+    assert!(calibrate(&setup, &["--budget", "1"]).status.success());
+
+    let answered = setup.priory(&["answer", "1", "grade again", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let scores = gate_scores(&setup);
+    assert_eq!(
+        [&scores[1][0], &scores[1][1]],
+        [&json!("asked"), &json!("pass")]
+    );
+    assert_eq!(results(&setup), 1);
 }
 
 #[test]

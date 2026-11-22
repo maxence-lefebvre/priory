@@ -597,3 +597,69 @@ fn a_debates_verdict_toward_an_irreversible_step_still_needs_its_approving_human
     let asks = asks_json(&setup);
     assert_eq!(asks["asks"][0]["step"], "approve", "{asks}");
 }
+
+/// A debate whose `daemon` verdict leads to an `implement` step the implementer runs.
+const DEBATE_THEN_IMPLEMENT: &str = r#"
+start = "debate"
+
+[[steps]]
+id = "debate"
+decides = "model"
+effect = "read"
+debate = { agents = ["architect", "skeptic"], rounds = 1, cap = "$5.00" }
+prompt = "Should the cache live in the daemon or in its own process?"
+timeout = "15m"
+next = { daemon = "implement", process = "stop" }
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+effect = "reversible"
+prompt = "Implement the verdict."
+next = { passed = "done" }
+"#;
+
+#[test]
+fn an_event_and_a_say_during_a_debate_turn_reach_the_step_after_the_debate_and_no_debater() {
+    let mut setup = debating("debate-told", DEBATE_THEN_IMPLEMENT);
+    setup.calls(&[
+        position("daemon", "No new service file."),
+        position("daemon", "Agreed."),
+        json!({ "name": "result", "arguments": { "outcome": "passed", "summary": "Done.",
+                                                 "feedback": { "u": "trivial" } } }),
+    ]);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/submitted");
+
+    setup.publish(&issue_commented(901));
+    setup.until("inbox", |rows| rows.len() == 2);
+    let said = setup.priory(&["say", "1", "Keep the old API working."]);
+    assert!(said.status.success(), "{said:?}");
+    assert!(
+        String::from_utf8_lossy(&said.stdout).contains("after the debate"),
+        "{said:?}"
+    );
+    setup.release("hold-call");
+
+    until_state(&setup, "done");
+    let typed = setup.typed();
+    assert_eq!(typed.len(), 3, "{typed:?}");
+    for turn in &typed[..2] {
+        assert!(!turn.contains("Also the empty case."), "{turn}");
+        assert!(!turn.contains("Keep the old API working."), "{turn}");
+    }
+    assert!(
+        typed[2].starts_with("Implement the verdict."),
+        "{}",
+        typed[2]
+    );
+    assert!(typed[2].contains("Also the empty case."), "{}", typed[2]);
+    assert!(
+        typed[2].contains("Keep the old API working."),
+        "{}",
+        typed[2]
+    );
+}

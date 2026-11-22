@@ -24,7 +24,7 @@ The model gets the item's event type, body, file path and review state, and one 
 question among `trivial`, `persons-call` and `nothing-to-do`. When it answers `nothing-to-do` with
 a probability at or above `threshold`, the daemon marks the event with `decided`, and the item
 settles. It fires no wait and no checks gate, and wakes no task that subscribes to it. It stays
-unread. The next prompt that wakes the task for another reason carries it. The sorting rule does
+unread, and the Inbox does not list it as unheard. The next prompt that wakes the task for another reason carries it. The sorting rule does
 not name it, and the task's next result records it as `nothing-to-do`, unless the agent's
 `feedback` gives the item a class of its own, which wins. A running task reads it at once, as
 before.
