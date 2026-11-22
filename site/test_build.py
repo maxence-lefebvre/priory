@@ -86,6 +86,14 @@ class Chapters(unittest.TestCase):
         self.assertNotIn("<!-- include", home)
         self.assertIn("docs/concepts.md", home)
 
+    def test_home_and_readme_give_the_install_script_and_nix_first(self):
+        script = "curl -fsSL https://raw.githubusercontent.com/maxence-lefebvre/priory/main/install.sh | sh"
+        nix = "nix profile install github:maxence-lefebvre/priory"
+        for text in (build.home(PAGES), (build.ROOT / "README.md").read_text(encoding="utf-8")):
+            self.assertIn(script, text)
+            self.assertIn(nix, text)
+            self.assertLess(text.index(script), text.index("cargo install --path crates/priory"))
+
 
 if __name__ == "__main__":
     unittest.main()

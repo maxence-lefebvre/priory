@@ -70,7 +70,16 @@ spend, merges and your attention.
 
 ## Get started
 
-Build Priory from a clone, with the Rust toolchain that `rust-toolchain.toml` pins:
+Install the latest release's binary to `~/.local/bin`, or build it with Nix:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/maxence-lefebvre/priory/main/install.sh | sh
+nix profile install github:maxence-lefebvre/priory
+```
+
+[How to install Priory](docs/installing-a-release.md) says what the script checks and how to add
+Priory to a flake. To build from a clone instead, with the Rust toolchain that
+`rust-toolchain.toml` pins:
 
 ```sh
 git clone https://github.com/maxence-lefebvre/priory
@@ -105,7 +114,7 @@ as a website, with search, built from `main`.
 - Tutorial: [GETTING_STARTED.md](GETTING_STARTED.md), from a build to a first answered ask.
 - How-to guides, one task each:
   [start from a starter](docs/starting-from-a-starter.md),
-  [install a release](docs/installing-a-release.md),
+  [install Priory](docs/installing-a-release.md),
   [use the web view, on a phone too](docs/using-the-web-view.md),
   [run Priory as services](docs/running-as-services.md),
   [test a factory with fake agents](docs/testing-a-factory.md),

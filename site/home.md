@@ -21,22 +21,21 @@
 
 ## Start in three steps
 
-<p class="sub">Priory needs Linux, git, tmux, gh logged in to GitHub, openssl, claude or codex, and the Rust toolchain.</p>
+<p class="sub">Priory needs Linux, git, tmux, gh logged in to GitHub, openssl, and claude or codex.</p>
 
 <ol class="steps">
 <li>
 
-### Build Priory
+### Install Priory
 
 ```sh
-git clone https://github.com/maxence-lefebvre/priory
-cd priory
-cargo install --path crates/priory
+curl -fsSL https://raw.githubusercontent.com/maxence-lefebvre/priory/main/install.sh | sh
+nix profile install github:maxence-lefebvre/priory
 ```
 
-Build from source with the pinned Rust toolchain.
+Install the release binary with the script, or build it with Nix. Building from source with `cargo install --path crates/priory` works too.
 
-[Build Priory](GETTING_STARTED.md#1-build-priory)
+[Install Priory](docs/installing-a-release.md)
 
 </li>
 <li>
