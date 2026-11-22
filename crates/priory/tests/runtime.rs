@@ -22581,3 +22581,166 @@ fn a_kit_commit_that_check_would_refuse_is_refused_whole_and_the_trace_names_the
         .collect();
     assert_eq!(traced, [json!(good), json!(good)]);
 }
+
+/// Writes a `command` scorer `name` and its script `scripts/<name>.sh` into the setup's factory.
+fn command_scorer(setup: &Setup, name: &str, timeout: &str, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let toml = format!(
+        "description = \"{name}\"\non = \"diff\"\nkind = \"command\"\nrun = \"scripts/{name}.sh\"\ntimeout = \"{timeout}\"\n"
+    );
+    scorer(setup, name, &toml);
+    let path = setup.dir.join(format!("factory/scripts/{name}.sh"));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, script).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Task 1 runs `plan`, whose result names a commit of `a.txt`, then `implement`, whose result names
+/// none, then `b.txt` lands on its branch. Returns the setup and the plan's commit.
+fn committed_task(name: &str) -> (Setup, String) {
+    let mut setup = Setup::with_workflow(name, STEPS);
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    let planned = setup.commit(1, "a.txt");
+    let ready = json!({ "name": "result", "arguments": { "outcome": "ready", "summary": "ready it", "commit": planned } });
+    setup.calls(&[ready, result("passed")]);
+    setup.release("hold-call");
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    setup.commit(1, "b.txt");
+    (setup, planned)
+}
+
+#[test]
+fn a_command_scorer_runs_on_its_results_commit_and_its_exit_code_is_the_verdict() {
+    let (setup, planned) = committed_task("score-command");
+    let seen = setup.dir.join("seen");
+    let ok = format!(
+        "#!/bin/sh\n{{ env; echo \"head $(git rev-parse HEAD)\"; ls; cat \"$PRIORY_SCORE_RESULT\"; echo; }} > {}\necho the tests pass\n",
+        seen.display()
+    );
+    command_scorer(&setup, "ok", "1m", &ok);
+    command_scorer(
+        &setup,
+        "no",
+        "1m",
+        "#!/bin/sh\necho two tests fail\nexit 1\n",
+    );
+    command_scorer(&setup, "broken", "1m", "#!/bin/sh\necho no cargo\nexit 2\n");
+    command_scorer(&setup, "slow", "1s", "#!/bin/sh\nsleep 30\n");
+    let base = setup.pushed("main");
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(
+        rows.iter()
+            .map(|row| [
+                row[0].as_str(),
+                row[2].as_str(),
+                row[3].as_str(),
+                row[4].as_str()
+            ])
+            .collect::<Vec<_>>(),
+        [
+            ["1", "broken", "error", "exit 2: no cargo"],
+            ["1", "no", "fail", "two tests fail"],
+            ["1", "ok", "pass", "the tests pass"],
+            ["1", "slow", "error", "timed out after 1s"],
+            ["2", "broken", "error", "the result names no commit"],
+            ["2", "no", "error", "the result names no commit"],
+            ["2", "ok", "error", "the result names no commit"],
+            ["2", "slow", "error", "the result names no commit"],
+        ]
+    );
+    let seen = fs::read_to_string(&seen).unwrap();
+    assert!(seen.contains(&format!("head {planned}\n")), "{seen}");
+    assert!(
+        seen.contains("\na.txt\n") && !seen.contains("b.txt"),
+        "{seen}"
+    );
+    assert!(
+        seen.contains(&format!("PRIORY_SCORE_BASE={base}\n")),
+        "{seen}"
+    );
+    assert!(
+        seen.contains(&format!("PRIORY_SCORE_HEAD={planned}\n")),
+        "{seen}"
+    );
+    assert!(seen.contains("\"outcome\":\"ready\""), "{seen}");
+    assert!(
+        !seen.contains("PRIORY_DB=") && !seen.contains("FAKE_DIR="),
+        "{seen}"
+    );
+    let scratch = setup.dir.join("home/scores");
+    assert!(scratch.read_dir().unwrap().next().is_none());
+}
+
+#[test]
+fn a_command_scorer_on_a_task_with_no_start_commit_is_an_error() {
+    let (setup, _) = committed_task("score-no-base");
+    command_scorer(&setup, "ok", "1m", "#!/bin/sh\nexit 0\n");
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute("UPDATE tasks SET base_sha = NULL", [])
+        .unwrap();
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(rows[0][3..], ["error", "no start commit"]);
+}
+
+#[test]
+fn a_command_scorer_refuses_a_result_commit_that_is_not_a_hash_before_git_reads_it() {
+    let (setup, _) = committed_task("score-bad-commit");
+    // The result tool takes only a full SHA, but a stored result is older than that rule.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "DROP TRIGGER results_are_immutable;
+         UPDATE results SET commit_sha = '--orphan=x' WHERE run = 1;",
+    )
+    .unwrap();
+    command_scorer(&setup, "ok", "1m", "#!/bin/sh\nexit 0\n");
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(
+        rows[0][3..],
+        [
+            "error",
+            "the result's commit \"--orphan=x\" is not a commit hash"
+        ]
+    );
+    let branches = git(&setup.dir.join("home/repos/owner/repo"))
+        .args(["branch", "--list", "x"])
+        .output()
+        .unwrap();
+    assert!(branches.stdout.is_empty());
+}
+
+#[test]
+fn a_command_scorer_whose_run_leads_outside_the_factory_folder_is_an_error_and_never_runs() {
+    use std::os::unix::fs::PermissionsExt;
+    let (setup, _) = committed_task("score-outside");
+    let ran = setup.dir.join("ran");
+    let outside = setup.dir.join("outside.sh");
+    fs::write(&outside, format!("#!/bin/sh\ntouch {}\n", ran.display())).unwrap();
+    fs::set_permissions(&outside, fs::Permissions::from_mode(0o755)).unwrap();
+    command_scorer(&setup, "escape", "1m", "#!/bin/sh\nexit 0\n");
+    let link = setup.dir.join("factory/scripts/escape.sh");
+    fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+
+    let rows = scores(&setup, &[]);
+
+    assert_eq!(
+        rows[0][3..],
+        [
+            "error",
+            "`run` names scripts/escape.sh, which leads outside the factory folder"
+        ]
+    );
+    assert!(!ran.exists());
+}
