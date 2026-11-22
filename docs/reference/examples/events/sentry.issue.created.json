@@ -1,0 +1,22 @@
+{
+  "id": "1833aec5-ebf2-5829-9a22-932f024ead54",
+  "type": "sentry.issue.created",
+  "subject": "API-3F",
+  "time": "2026-11-17T10:58:21.679Z",
+  "data": {
+    "issue": "1234567890",
+    "short_id": "API-3F",
+    "title": "ZeroDivisionError: division by zero",
+    "culprit": "app.views in divide",
+    "url": "https://acme.sentry.io/issues/1234567890/",
+    "project": "api",
+    "level": "error",
+    "category": "error",
+    "actor": "Sentry",
+    "delivery": "b1f2a3c4-5d6e-4f70-8a9b-0c1d2e3f4a5b",
+    "time": "2026-11-17T10:58:21.679000+00:00",
+    "baseline": false,
+    "triggers": ["sentry-errors"]
+  },
+  "links": [{ "label": "issue", "url": "https://acme.sentry.io/issues/1234567890/" }]
+}

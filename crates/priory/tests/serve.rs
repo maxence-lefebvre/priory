@@ -4968,7 +4968,8 @@ fn use_factory(setup: &Setup, from: &Path) {
         .replace(
             "[webhooks.linear]\nsecret_env = \"PRIORY_LINEAR_WEBHOOK_SECRET\"",
             "",
-        );
+        )
+        .replace("SENTRY_CLIENT_SECRET", "TEST_SECRET");
     if !text.contains("[serve]") {
         text.push_str("\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n");
     }

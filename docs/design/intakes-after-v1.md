@@ -36,6 +36,9 @@ Event type names follow the existing style, `<source>.<object>.<past tense verb>
 
 ## Sentry
 
+**Built.** `POST /hooks/sentry` publishes `sentry.issue.created`. See
+[sentry.md](../intake/sentry.md). The other issue actions are not mapped yet.
+
 **Trigger on.** A new issue: `sentry.issue.created`. Sentry's issue webhook also sends `resolved`,
 `assigned`, `archived` and `unresolved` actions, which could become `sentry.issue.resolved` and so
 on. Sentry sends `issue.created` only for the categories `OUTAGE`, `ERROR` and `FEEDBACK`.

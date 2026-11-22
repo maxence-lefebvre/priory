@@ -2,3 +2,10 @@
 name = "bug-investigation"
 writing = "WRITING.md"
 gate = "make test"   # your project's tests, which `priory gate` runs
+
+[serve]
+listen = "127.0.0.1:7340"   # reach it from Sentry through a tunnel, such as tailscale funnel 7340
+token_env = "PRIORY_TOKEN"
+
+[webhooks.sentry]
+secret_env = "SENTRY_CLIENT_SECRET"   # the variable holding the integration's Client Secret
