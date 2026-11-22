@@ -1,7 +1,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -28,6 +28,12 @@ impl TmuxDir {
 
     pub fn path(&self) -> &Path {
         &self.0
+    }
+
+    /// The default socket of a tmux server started in this directory, while the directory exists.
+    pub fn socket(&self) -> Option<PathBuf> {
+        let uid = fs::metadata(&self.0).ok()?.uid();
+        Some(self.0.join(format!("tmux-{uid}")).join("default"))
     }
 
     /// Kills every process started with this directory, the tmux server among them, then the
@@ -58,11 +64,15 @@ impl TmuxDir {
             let _ = Command::new("kill").arg("-9").args(&found).output();
             std::thread::sleep(Duration::from_millis(20));
         }
-        let _ = Command::new("tmux")
-            .env_remove("TMUX")
-            .env("TMUX_TMPDIR", &self.0)
-            .arg("kill-server")
-            .output();
+        // Through the directory's own socket: a bare kill-server can reach the person's server.
+        if let Some(socket) = self.socket() {
+            let _ = Command::new("tmux")
+                .env_remove("TMUX")
+                .arg("-S")
+                .arg(socket)
+                .arg("kill-server")
+                .output();
+        }
     }
 }
 

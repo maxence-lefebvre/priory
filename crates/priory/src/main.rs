@@ -2358,13 +2358,16 @@ fn answer(mut args: Vec<String>) -> ExitCode {
     if let Some(at) = run {
         args.remove(at);
     }
-    let Some((Some(revision), rest)) = revised(args) else {
+    let Some((revision, rest)) = revised(args) else {
         return usage();
     };
     let (dir, ask, text) = match &rest[..] {
         [ask, text] => (".", ask, text),
         [dir, ask, text] => (dir.as_str(), ask, text),
         _ => return usage(),
+    };
+    let Some(revision) = revision else {
+        return unrevised("answer", ask);
     };
     // This machine's ask by its number or name, else another runner's, which goes through the log
     // and applies when that runner reads it.
@@ -2562,12 +2565,7 @@ fn dismiss(args: Vec<String>) -> ExitCode {
     let local = ask_id(ask);
     if let Some((runner, id)) = remote_id(ask, &local) {
         let Some(revision) = revision else {
-            return exit(
-                "dismiss",
-                Err(format!(
-                    "dismissing ask {ask} of runner {runner} needs --revision N"
-                )),
-            );
+            return unrevised("dismiss", ask);
         };
         let Some(factory) = load(Path::new(&dir)) else {
             return ExitCode::FAILURE;
@@ -2588,6 +2586,14 @@ fn dismiss(args: Vec<String>) -> ExitCode {
     let line =
         serde_json::to_string(&tools::Dismiss { dismiss, revision }).expect("a dismiss serializes");
     send("dismiss", &line)
+}
+
+/// Refuses an `answer` or `dismiss` of `ask` that lacks the ask's revision, as an argument error.
+fn unrevised(verb: &str, ask: &str) -> ExitCode {
+    eprintln!(
+        "priory {verb}: ask {ask} needs --revision N, the revision `priory asks` prints for it"
+    );
+    ExitCode::from(2)
 }
 
 /// Splits `[--revision N | --expected N] [--] ARGS` into the revision and the other arguments.

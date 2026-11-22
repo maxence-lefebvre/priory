@@ -124,7 +124,8 @@ pub const PERSON: &str = "priory-person";
 /// The guard on a script nested too deep for the guard to read, which nothing grants.
 pub const UNREADABLE: &str = "unreadable";
 
-/// The `priory` verbs only a person runs, as an answer approves a step. `report pick` is one too.
+/// The `priory` verbs only a person runs, as an answer approves a step. `report pick`,
+/// `memories accept`, `memories drop`, `batch edit` and `score --calibrate` are too.
 pub const PERSON_VERBS: &[&str] = &[
     "answer",
     "dismiss",
@@ -153,7 +154,12 @@ pub fn person_verb(args: &[String]) -> bool {
     let mut words = vec!["priory".to_owned()];
     words.extend_from_slice(args);
     match positional(&words)[..] {
-        ["report", "pick", ..] => true,
+        ["report", "pick", ..] | ["memories", "accept" | "drop", ..] | ["batch", "edit", ..] => {
+            true
+        }
+        ["score", ..] => args
+            .iter()
+            .any(|arg| arg == "--calibrate" || arg.starts_with("--calibrate=")),
         [verb, ..] => PERSON_VERBS.contains(&verb),
         [] => false,
     }
@@ -235,6 +241,12 @@ impl Guards {
             return Some(Hit {
                 guard: UNREADABLE.to_owned(),
                 call: format!("a script nested more than {DEPTH} levels deep"),
+            });
+        }
+        if words[0] == UNSPLIT {
+            return Some(Hit {
+                guard: UNREADABLE.to_owned(),
+                call: "an env -S string that expands a variable or that env refuses".to_owned(),
             });
         }
         if help(words) {
@@ -689,6 +701,10 @@ pub fn commands(script: &str) -> Vec<Vec<String>> {
 
 /// The command the splitter records for a script nested past `DEPTH`: no program has this name.
 const TOO_DEEP: &str = "\0too deeply nested for the guard to read";
+
+/// The command the splitter records for an `env -S` string it cannot split: no program has this
+/// name.
+const UNSPLIT: &str = "\0an env -S string the guard cannot split";
 
 fn parse(script: &str, depth: usize, found: &mut Vec<Vec<String>>) {
     if depth > DEPTH {
@@ -1214,12 +1230,15 @@ fn unwrap(words: &[String], depth: usize, found: &mut Vec<Vec<String>>) {
                         (None, 0)
                     };
                     if after > 0 {
-                        let mut script = value.unwrap_or_default().to_owned();
-                        for word in rest.iter().skip(after) {
-                            script.push(' ');
-                            script.push_str(&single_quoted(word));
-                        }
-                        return parse(&script, depth + 1, found);
+                        let Some(split) = env_split(value.unwrap_or_default()) else {
+                            return found.push(vec![UNSPLIT.to_owned()]);
+                        };
+                        // env reads the split words as its own arguments, options included.
+                        let words: Vec<String> = std::iter::once("env".to_owned())
+                            .chain(split)
+                            .chain(rest.iter().skip(after).cloned())
+                            .collect();
+                        return unwrap(&words, depth + 1, found);
                     }
                     if ["-u", "-C", "--unset", "--chdir"].contains(&arg.as_str()) {
                         index += 2;
@@ -1289,9 +1308,80 @@ fn unwrap(words: &[String], depth: usize, found: &mut Vec<Vec<String>>) {
 }
 
 /// How many leading words of `args` are options, counting the values of those in `values`.
-/// `word` as one shell word, so `env -S` hands it on as the separate argument it was.
-fn single_quoted(word: &str) -> String {
-    format!("'{}'", word.replace('\'', "'\\''"))
+/// What a backslash and the character after it make in an `env -S` string.
+enum Escape {
+    Char(char),
+    Separator,
+    Stop,
+}
+
+fn escape(c: char) -> Option<Escape> {
+    Some(match c {
+        '\\' | '"' | '\'' | '#' | '$' => Escape::Char(c),
+        'f' => Escape::Char('\x0c'),
+        'n' => Escape::Char('\n'),
+        'r' => Escape::Char('\r'),
+        't' => Escape::Char('\t'),
+        'v' => Escape::Char('\x0b'),
+        '_' => Escape::Separator,
+        'c' => Escape::Stop,
+        _ => return None,
+    })
+}
+
+/// `text` split into words as GNU `env -S` splits it, or None where it expands a variable, whose
+/// value the guard cannot know, or where env refuses it.
+fn env_split(text: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word: Option<String> = None;
+    let mut quote = None;
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some('\'') => match c {
+                '\'' => quote = None,
+                '\\' => {
+                    let next = chars.next()?;
+                    let word = word.get_or_insert_default();
+                    if next != '\\' && next != '\'' {
+                        word.push('\\');
+                    }
+                    word.push(next);
+                }
+                _ => word.get_or_insert_default().push(c),
+            },
+            Some(_) => match c {
+                '"' => quote = None,
+                '\\' => match escape(chars.next()?)? {
+                    Escape::Char(c) => word.get_or_insert_default().push(c),
+                    Escape::Separator => word.get_or_insert_default().push(' '),
+                    Escape::Stop => return None,
+                },
+                '$' => return None,
+                _ => word.get_or_insert_default().push(c),
+            },
+            None => match c {
+                ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r' => words.extend(word.take()),
+                '#' if word.is_none() => break,
+                '\'' | '"' => {
+                    quote = Some(c);
+                    word.get_or_insert_default();
+                }
+                '\\' => match escape(chars.next()?)? {
+                    Escape::Char(c) => word.get_or_insert_default().push(c),
+                    Escape::Separator => words.extend(word.take()),
+                    Escape::Stop => break,
+                },
+                '$' => return None,
+                _ => word.get_or_insert_default().push(c),
+            },
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    words.extend(word);
+    Some(words)
 }
 
 fn options(args: &[String], values: &[&str]) -> usize {
@@ -1367,6 +1457,12 @@ mod tests {
             "env --split-string=gh pr merge 12",
             "env --split-string='gh pr' merge 12",
             "env -Sgh pr merge 12",
+            r"env -S 'gh\_pr\_merge\_12'",
+            r"env --split-string='gh\_pr' merge 12",
+            r#"env -S 'g"h" pr merge 12'"#,
+            r"env -S '-i gh pr merge\_12'",
+            r"env -S 'FOO=1 gh pr merge 12 \c # rest'",
+            r"env -S 'env -S gh\\_pr\\_merge\\_12'",
             "if true; then gh pr merge 12; fi",
         ] {
             assert_eq!(hit(command).as_deref(), Some("gh-pr-merge"), "{command}");
@@ -1757,6 +1853,11 @@ mod tests {
             "priory give github:o/r#12 b",
             "priory eval prompts/review.md",
             "priory label 7 wrong --evidence https://example.com/pull/9",
+            "priory memories accept 3",
+            "priory memories drop ~/factory 3",
+            "priory score --budget 5 --calibrate review",
+            "priory score . --calibrate=review --budget 5",
+            "priory batch edit 2 --expected 1 --drop 4",
         ] {
             let hits = guards.hits("Bash", Some(command), &git);
             assert_eq!(hits[0].guard, "priory-person", "{command}");
@@ -1766,6 +1867,10 @@ mod tests {
             "priory tasks",
             "priory report reply 3 ok",
             "priory gate",
+            "priory memories --all",
+            "priory score 7 --budget 1",
+            "priory batch show 2",
+            "priory batch add 12 13",
         ] {
             assert_eq!(hit(command), None, "{command}");
         }
@@ -1819,6 +1924,33 @@ mod tests {
         );
         assert_eq!(hit("echo 'gh pr merge 12' | grep merge"), None);
         assert_eq!(hit("grep x <<< 'gh pr merge 12'"), None);
+    }
+
+    #[test]
+    fn an_env_split_string_is_split_as_env_splits_it() {
+        assert_eq!(
+            commands(r"env -S 'gh\_pr\_merge\_12'"),
+            [["gh", "pr", "merge", "12"]]
+        );
+        assert_eq!(
+            commands(r#"env -S "a\\'b \"c d\\_e\" 'f\\_g\\'h' \\#i #j" j"#),
+            [["a'b", "c d e", "f\\_g'h", "#i", "j"]]
+        );
+        for command in [
+            r"env -S 'echo gh\_pr\_merge'",
+            r"env -S 'echo hi #gh pr merge 12'",
+            r"env -S 'echo hi \c gh pr merge 12'",
+        ] {
+            assert_eq!(hit(command), None, "{command}");
+        }
+        for command in [
+            r"env -S 'gh pr ${VERB} 12'",
+            r"env -S 'gh pr $VERB 12'",
+            r"env -S 'gh pr merge \q 12'",
+            r#"env -S 'gh pr "merge 12'"#,
+        ] {
+            assert_eq!(hit(command).as_deref(), Some(UNREADABLE), "{command}");
+        }
     }
 
     #[test]
@@ -1999,6 +2131,10 @@ mod tests {
 
     use proptest::prelude::*;
 
+    fn single_quoted(word: &str) -> String {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
+
     fn double_quoted(script: &str) -> String {
         let escaped: String = script
             .chars()
@@ -2063,6 +2199,14 @@ mod tests {
         #[test]
         fn any_text_is_split_without_panicking(script in "\\PC{0,300}") {
             commands(&script);
+        }
+
+        #[test]
+        fn any_env_split_string_is_split_or_refused_without_panicking(
+            text in "[a-z '\"$#{}_\\\\cntq\t-]{0,200}",
+        ) {
+            env_split(&text);
+            commands(&format!("env -S {}", single_quoted(&text)));
         }
 
         #[test]

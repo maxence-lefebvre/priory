@@ -92,28 +92,28 @@ INSERT INTO feedback_triage (task,item,class,run) VALUES
 (1,'https://github.com/acme/shop/pull/212#discussion_r802','trivial',102),
 (1,'https://github.com/acme/shop/pull/212#discussion_r803','nothing-to-do',102),
 (1,'https://github.com/acme/shop/pull/212#pullrequestreview-301','persons-call',102);
--- a second and third runner: this state is workstation's, laptop is live, xps13 was last seen 40 minutes ago
+-- a second and third runner: this state is workstation's, laptop is live, desktop was last seen 40 minutes ago
 INSERT INTO runner (id,name) VALUES (1,'workstation');
-INSERT INTO leases (runner,alive) VALUES ('workstation',unixepoch('now')),('laptop',unixepoch('now','-1 minutes')),('xps13',unixepoch('now','-40 minutes'));
+INSERT INTO leases (runner,alive) VALUES ('workstation',unixepoch('now')),('laptop',unixepoch('now','-1 minutes')),('desktop',unixepoch('now','-40 minutes'));
 INSERT INTO remote_asks (runner,ask,version,data) VALUES
-('xps13',12,1,json_object('id',12,'task',4,'key','ENG-260','step','approve-pr','kind','step','lane','payments','band','now','state','open','revision',1,'since',strftime('%Y-%m-%dT%H:%M:%SZ','now','-2 hours'),'title','Merge the rate limiter','question','Merge the rate limiter?','text','The checkout webhook now drops calls past 20 a second per merchant.','options',json('["approved","rejected"]'),'recommendation','approved','free_text',json('false'),'risk',json('[]'),'refused',json('[]'),'command',NULL,'answer',NULL,'answered_at',NULL)),
+('desktop',12,1,json_object('id',12,'task',4,'key','ENG-260','step','approve-pr','kind','step','lane','payments','band','now','state','open','revision',1,'since',strftime('%Y-%m-%dT%H:%M:%SZ','now','-2 hours'),'title','Merge the rate limiter','question','Merge the rate limiter?','text','The checkout webhook now drops calls past 20 a second per merchant.','options',json('["approved","rejected"]'),'recommendation','approved','free_text',json('false'),'risk',json('[]'),'refused',json('[]'),'command',NULL,'answer',NULL,'answered_at',NULL)),
 ('laptop',3,1,json_object('id',3,'task',2,'key','ENG-262','step','deploy','kind','step','lane','payments','band','now','state','open','revision',1,'since',strftime('%Y-%m-%dT%H:%M:%SZ','now','-12 minutes'),'title','Deploy to staging','question','Deploy to staging?','text','The checks passed on the merge commit.','options',json('["approved","rejected"]'),'recommendation','approved','free_text',json('false'),'risk',json('[]'),'refused',json('[]'),'command',json_object('argv',json('["./deploy","staging"]'),'target','shell','dir','/home/max/acme/shop','runs',json('["approved"]')),'answer',NULL,'answered_at',NULL)),
 ('laptop',4,2,json_object('id',4,'task',5,'key','ENG-263','step','plan','kind','agent','lane','search','band','today','state','open','revision',2,'since',strftime('%Y-%m-%dT%H:%M:%SZ','now','-25 minutes'),'title','Split the migration','question','Split the migration in two pull requests?','text','The index migration and the backfill touch different tables.','options',json('["split it","keep one","ask the team"]'),'recommendation',NULL,'risk',json('[]'),'refused',json('[]'),'command',NULL,'answer',NULL,'answered_at',NULL));
 INSERT INTO remote_submissions (submission,runner,ask,revision,verb,text,sent,outcome,why,applied) VALUES
-('0193f0a2-demo-0001','xps13',12,1,'answer','approved',strftime('%Y-%m-%dT%H:%M:%SZ','now','-5 minutes'),NULL,NULL,NULL),
+('0193f0a2-demo-0001','desktop',12,1,'answer','approved',strftime('%Y-%m-%dT%H:%M:%SZ','now','-5 minutes'),NULL,NULL,NULL),
 ('0193f0a2-demo-0002','laptop',4,1,'answer','keep one',strftime('%Y-%m-%dT%H:%M:%SZ','now','-9 minutes'),'refused','ask 4 is at revision 2',strftime('%Y-%m-%dT%H:%M:%SZ','now','-8 minutes'));
--- two tasks the other runners hold, from their claims: laptop keeps one, xps13 waits on one
+-- two tasks the other runners hold, from their claims: laptop keeps one, desktop waits on one
 INSERT INTO inbox (id,type,subject,time,data,links,outcome) VALUES
 ('r-262','priory.task.requested','ENG-262',strftime('%Y-%m-%dT%H:%M:%SZ','now','-50 minutes'),'{"key":"ENG-262","workflow":"implement","band":"now","lane":"payments","tldr":"Deploy the rate limiter to staging"}','[]','ignored'),
 ('r-264','priory.task.requested','ENG-264',strftime('%Y-%m-%dT%H:%M:%SZ','now','-30 minutes'),'{"key":"ENG-264","workflow":"implement","band":"today","lane":"search","tldr":"Reindex the product catalog"}','[]','ignored'),
 ('c-262','priory.task.claimed','ENG-262',strftime('%Y-%m-%dT%H:%M:%SZ','now','-48 minutes'),'{"key":"ENG-262","runner":"laptop"}','[]','ignored'),
-('c-264','priory.task.claimed','ENG-264',strftime('%Y-%m-%dT%H:%M:%SZ','now','-28 minutes'),'{"key":"ENG-264","runner":"xps13"}','[]','ignored');
+('c-264','priory.task.claimed','ENG-264',strftime('%Y-%m-%dT%H:%M:%SZ','now','-28 minutes'),'{"key":"ENG-264","runner":"desktop"}','[]','ignored');
 INSERT INTO claims (key,runner,request,hold,won,generation) VALUES
 ('ENG-262','laptop','r-262','kept',(SELECT seq FROM inbox WHERE id='c-262'),2),
-('ENG-264','xps13','r-264','waiting',(SELECT seq FROM inbox WHERE id='c-264'),1);
--- a cancel sent to xps13's task, which xps13 has not read yet
+('ENG-264','desktop','r-264','waiting',(SELECT seq FROM inbox WHERE id='c-264'),1);
+-- a cancel sent to desktop's task, which desktop has not read yet
 INSERT INTO remote_task_submissions (submission,runner,key,generation,act,sent) VALUES
-('0193f0a2-demo-0003','xps13','ENG-264',1,'cancel',strftime('%Y-%m-%dT%H:%M:%SZ','now','-3 minutes'));
+('0193f0a2-demo-0003','desktop','ENG-264',1,'cancel',strftime('%Y-%m-%dT%H:%M:%SZ','now','-3 minutes'));
 -- events a task kept that no agent read: an asleep task, the blocked task 3 and a done task
 INSERT INTO tasks (id,key,workflow,step,state,band,lane,trigger,source,repo,tldr,created,changed,entered,model,branch) VALUES
 (10,'linear:ENG-245','implement','implement','asleep','today','payments','linear','seed-10','acme/shop','Retry webhook deliveries',strftime('%Y-%m-%dT%H:%M:%SZ','now','-6 hours'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-90 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-90 minutes'),'claude-sonnet-5-5','eng-245'),

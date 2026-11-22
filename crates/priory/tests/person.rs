@@ -27,6 +27,11 @@ fn a_person_verb_refuses_inside_a_run() {
         ],
         &["report", "pick", "3", "skip", "--expected", "2"],
         &["label", "7", "wrong", "--clear"],
+        &["memories", "accept", "3"],
+        &["memories", "drop", ".", "3"],
+        &["score", "--calibrate", "review", "--budget", "5"],
+        &["score", ".", "--calibrate=review", "--budget", "5"],
+        &["batch", "edit", "2", "--expected", "1", "--drop", "4"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_priory"))
             .args(args)

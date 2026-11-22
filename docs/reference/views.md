@@ -54,7 +54,7 @@ task's page stays on its runner, so a tap opens its row in place, with the actio
 Resume, Cancel, Release and Say for a `kept` task, Cancel for a `waiting` one. Each goes to its
 runner through the log, and the row then shows "Sent to laptop: cancel", or what laptop did with it.
 
-![Tasks on a 1440 px screen in light mode: the saved views Active, Blocked and Ended, the filters State, Lane, Workflow and Runner, and a table of tasks with their state, key, title, workflow and step, lane, band and age. A blocked task shows its reason under its title, and three tasks carry a batch 1 tag. The last two rows are tasks the runners laptop and xps13 hold, each with a server tile, its hold word, and the runner it is on; one shows the cancel sent to xps13.](../images/web-view-tasks-1440-light.png)
+![Tasks on a 1440 px screen in light mode: the saved views Active, Blocked and Ended, the filters State, Lane, Workflow and Runner, and a table of tasks with their state, key, title, workflow and step, lane, band and age. A blocked task shows its reason under its title, and three tasks carry a batch 1 tag. The last two rows are tasks the runners laptop and desktop hold, each with a server tile, its hold word, and the runner it is on; one shows the cancel sent to desktop.](../images/web-view-tasks-1440-light.png)
 
 ![Tasks on a phone in dark mode.](../images/web-view-tasks-390-dark.png)
 
