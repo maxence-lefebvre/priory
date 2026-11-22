@@ -197,7 +197,7 @@ implement	gate	11	3	1	0
 ```
 
 A `notes` cell names what has no cost, such as `price missing for m2: 1500 tokens` or
-`tokens unknown for 1 records`.
+`tokens unknown for 1 record`.
 
 It reads the same records as `report --cost`: model steps, handler calls and summarizer calls, and
 prices them from the same `prices.toml` in `DIR` (default: the current folder).

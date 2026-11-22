@@ -3,7 +3,7 @@ use priory_core::{
     daemon, deliver, embed, evidence, grades, label, listing, post, progress, proof, relate,
     report, risk, runners, search, sections, serve, snooze, state, subscribe, todo, tools,
 };
-use priory_factory::{explain, factory, readiness, rules};
+use priory_factory::{explain, factory, plural, readiness, rules};
 use priory_intake::{intake, request};
 use priory_runtime::{eval, mcp, runtime};
 use serde_json::{Value, json};
@@ -2937,7 +2937,11 @@ fn asking_session() -> Option<String> {
 /// each task that kept events no agent read, then one count per source for the rest.
 fn print_unrouted(unrouted: &serde_json::Value) {
     let events = |count: u64, what: &str| {
-        format!("{count} {what}event{}", if count == 1 { "" } else { "s" })
+        priory_factory::plural(
+            count as usize,
+            &format!("{what}event"),
+            &format!("{what}events"),
+        )
     };
     for group in unrouted["owned"].as_array().into_iter().flatten() {
         let task = &group["task"];
@@ -3083,10 +3087,9 @@ fn print_outsider(events: &serde_json::Value) {
     let Some(events) = events.as_array().filter(|events| !events.is_empty()) else {
         return;
     };
-    let plural = if events.len() == 1 { "" } else { "s" };
     println!(
-        "from outside the repository: {} event{plural}",
-        events.len()
+        "from outside the repository: {}",
+        plural(events.len(), "event", "events")
     );
     for event in events {
         println!(
@@ -3547,7 +3550,7 @@ fn check(args: Vec<OsString>) -> ExitCode {
     }
     let skills = match factory.skills.len() {
         0 => String::new(),
-        n => format!(", {}", count(n, "skill")),
+        n => format!(", {}", plural(n, "skill", "skills")),
     };
     let memories = match factory.memories.len() {
         0 => String::new(),
@@ -3556,18 +3559,18 @@ fn check(args: Vec<OsString>) -> ExitCode {
     };
     let scorers = match factory.scorers.len() {
         0 => String::new(),
-        n => format!(", {}", count(n, "scorer")),
+        n => format!(", {}", plural(n, "scorer", "scorers")),
     };
     let benchmarks = match factory.benchmarks.len() {
         0 => String::new(),
-        n => format!(", {}", count(n, "benchmark")),
+        n => format!(", {}", plural(n, "benchmark", "benchmarks")),
     };
     println!(
         "ok: {}, {}, {}, {}{skills}{memories}{scorers}{benchmarks}",
-        count(factory.agents.len(), "agent"),
-        count(factory.triggers.len(), "trigger"),
-        count(factory.workflows.len(), "workflow"),
-        count(factory.runners.len(), "runner"),
+        plural(factory.agents.len(), "agent", "agents"),
+        plural(factory.triggers.len(), "trigger", "triggers"),
+        plural(factory.workflows.len(), "workflow", "workflows"),
+        plural(factory.runners.len(), "runner", "runners"),
     );
     ExitCode::SUCCESS
 }
@@ -3819,14 +3822,6 @@ fn draw(dir: &Path, workflow: &std::ffi::OsStr) -> ExitCode {
             ExitCode::SUCCESS
         }
         None => exit("draw", Err(format!("unknown workflow `{name}`"))),
-    }
-}
-
-fn count(n: usize, noun: &str) -> String {
-    if n == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{n} {noun}s")
     }
 }
 

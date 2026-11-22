@@ -26,7 +26,8 @@ These ends make a task `failed`:
   it stays failed.
 - A second unexpected exit of the run its repair restarted, before that run stored a result, ask or
   wait.
-- A turn over its step's `budget`, or one whose cost Priory cannot price, as Budget says.
+- A turn over its step's `budget`, or one whose cost Priory cannot price, at its end or inside it,
+  as Budget says.
 
 Everything else that stops a task needs a person and makes it `blocked`: no `SessionStart`, an exit
 before `SessionStart`, a permission prompt, a timeout, a run lost twice, a code step's action that
@@ -53,11 +54,28 @@ A budget bounds one step and fails the task, so nothing waits on a person at nig
 gate that turns red the same way after a fix asks a person instead of waking the agent again (see
 [A fix that fails the same way](waits.md#a-fix-that-fails-the-same-way)). A
 [spend cap](spend.md) bounds a task, a trigger, a lane or the factory, and holds the task with an
-ask. Both can apply: the budget is checked at the turn end, and the caps between turns.
+ask. Both can apply: the budget is checked inside and at the end of a turn, and the caps between
+turns.
 
 The amount shows cents, or six decimals when cents would hide that it passed the budget. A failed
-task gets no repair: the budget would stop the restarted run too. The check runs at turn ends, so
-one turn can pass the budget before the daemon sees it. The step's `timeout` bounds that turn.
+task gets no repair: the budget would stop the restarted run too.
+
+### Inside a turn
+
+A turn can pass the budget before it ends, so the daemon also reads the transcript of each run in
+the middle of a turn at a step with a `budget`. It reads at its first tick after the transcript
+grows, then at most once a minute while it keeps growing, and it reads only what the transcript
+gained since the step's count. It prices the count plus those tokens as at a turn end. Then:
+
+| Inside the turn | The daemon |
+| --------------- | ---------- |
+| Under the budget, or no whole message yet | Goes on, and counts nothing: the turn end counts the turn |
+| Over it | Ends the run as `budget` and fails the task, with the same reason as at a turn end |
+| `prices.toml` has no price for the transcript's model | Ends the run as `budget` and fails the task: `step <id> has a budget, and run <n>'s cost is unknown: price missing for <model>` |
+| The run sent its result, or a gate holds it | Leaves it to its turn end, where an overrun stands |
+
+The check reads tokens Claude has written, so a turn can still pass the budget by up to a minute of
+its spending, and by the message it is writing. The step's `timeout` bounds the turn.
 
 ## Repair
 

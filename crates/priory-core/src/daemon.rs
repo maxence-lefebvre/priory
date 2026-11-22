@@ -334,6 +334,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         .desktop_notifications()
         .then(notify::Desktop::default);
     let mut reads = Reads::default();
+    let mut peeked = tools::Peeked::default();
     let mut grading = crate::gates::Grading::default();
     let every = factory.sweep().every.unwrap_or(SWEEP);
     let mut swept: Option<Instant> = None;
@@ -385,6 +386,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             &mut recipes,
             fetched,
         )?;
+        // Committed first, so a crash before the kill leaves an ended run, not a lost one.
+        for tmux in tools::over_budget_in_turn(&mut db, &trace, &mut peeked)? {
+            runtime::kill(&tmux);
+        }
         compact_idle(&db, &trace, &home, &scope, fetched)?;
         handle_stalls(&mut db, &trace, &home, &mut stalls)?;
         let counter = counting.get(&home);

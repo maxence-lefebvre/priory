@@ -184,7 +184,7 @@ amount. It cannot check the model's price: an agent names `sonnet`, and the tran
 full model, so that check runs at the first turn end.
 
 The check runs at turn ends, so one turn can pass the budget before the daemon sees it. The
-`timeout` bounds that turn, and later slice 1 checks inside a turn. `priory costs --by workflow`
+`timeout` bounds that turn, and later slice 1, built, checks inside a turn. `priory costs --by workflow`
 shows what each night cost.
 
 ### How it avoids secrets
@@ -371,7 +371,12 @@ Tests, through the CLI, with the fake `claude`:
 ## Later slices
 
 1. The budget inside a turn: the daemon reads a live run's transcript on its tick, once a minute,
-   for a step with a `budget`, and ends the run when it passes.
+   for a step with a `budget`, and ends the run when it passes. This slice is built:
+   [health.md](../daemon/health.md#inside-a-turn) describes it. It differs in three ways. The
+   daemon's tick runs every second, so it reads at the first tick after the transcript grows, then
+   at most once a minute. The read counts nothing, since a later read may split a message Claude
+   writes as several lines, so the turn end still counts the turn. A run that sent its result, or
+   whose gate holds it, is left to its turn end, where an overrun stands.
 2. The kit takes over a name once it holds an accepted candidate's text, so a later edit in the
    kit reaches runs. [skills.md](../daemon/skills.md#limits) lists this as not built. Removing that
    one candidate is not enough: an older accepted candidate of the same name would show again. So

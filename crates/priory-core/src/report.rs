@@ -293,13 +293,20 @@ impl Total {
             .iter()
             .map(|(model, tokens)| {
                 format!(
-                    "price missing for {model}: {} tokens",
-                    tokens.0.iter().sum::<i64>()
+                    "price missing for {model}: {}",
+                    priory_factory::plural(
+                        tokens.0.iter().sum::<i64>() as usize,
+                        "token",
+                        "tokens"
+                    )
                 )
             })
             .collect();
         if self.unknown > 0 {
-            notes.push(format!("tokens unknown for {} records", self.unknown));
+            notes.push(format!(
+                "tokens unknown for {}",
+                priory_factory::plural(self.unknown as usize, "record", "records")
+            ));
         }
         let notes = if notes.is_empty() {
             "-".to_owned()

@@ -30,7 +30,7 @@ logged and retried at the next sweep. A git command that cannot run keeps the wo
 `cannot check: <error>`.
 
 `priory desk` runs the same checks without fetching or removing, and lists each kept folder with its
-reason: `no task <id>`, `task <id> still <state>`, `not a worktree of <clone>`,
+reason: `no task <id>`, `kept while task <id> is <state>`, `not a worktree of <clone>`,
 `not recorded as the worktree of task <id>`, `not on branch priory/<id>`, `uncommitted changes`,
 `untracked files`, `a process runs in it`, `unpushed commits`, `not merged`, `teardown runs` or
 `teardown failed: ...`. It reads the refs of the last fetch.

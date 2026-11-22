@@ -184,6 +184,9 @@ export const spansHtml = (spans) => spans
   })
   .join("");
 
+/** A count and its noun: "1 task", "2 tasks"; `many` covers irregular plurals. @param {number} count @param {string} one @param {string} [many] */
+export const plural = (count, one, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
+
 /** "with <lead>" for an open ask or desk item routed to a lead, else null. @param {any} ask */
 export const routedMark = (ask) => (ask?.routed_to && (ask.state ?? "open") === "open" ? `with ${ask.routed_to}` : null);
 
@@ -294,9 +297,9 @@ export function prStack(stack, latest = null) {
   const failing = checks.filter((/** @type {any} */ check) => check.conclusion && !["success", "skipped", "neutral"].includes(check.conclusion)).length;
   const running = checks.filter((/** @type {any} */ check) => !check.conclusion).length;
   const known = !checks.length ? null
-    : failing ? `${failing} of ${checks.length} checks failing`
-    : running ? `${running} of ${checks.length} checks running`
-    : `${checks.length} checks pass`;
+    : failing ? `${failing} of ${plural(checks.length, "check")} failing`
+    : running ? `${running} of ${plural(checks.length, "check")} running`
+    : plural(checks.length, "check passes", "checks pass");
   return {
     label: `${stack.length} PRs`,
     entries: stack.map((pull, at) => ({

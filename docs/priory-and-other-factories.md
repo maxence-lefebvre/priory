@@ -1,8 +1,9 @@
 # Priory and other agent factories
 
-This page compares Priory with ten other products that run coding agents for a team, and one that is
-shutting down. It says what each one does that Priory does not, and what Priory has that the pages
-read do not describe. Every claim about another product links the vendor's own page it comes from.
+This page compares Priory with twenty other products: ten that run coding agents for a team, and
+ten agent platforms, frameworks and workflow engines that Priory's ideas overlap. It also notes
+three that shut down or changed product. It says what each one does that Priory does not, and what
+Priory has that the pages read do not describe. Every claim about another product links the vendor's own page it comes from.
 Those pages were read on 2026-11-22, and products change fast, so check the linked page before you
 rely on a claim. No product was run for this page: "has a cap" means its docs say so, and "not
 described" means the pages read do not mention it, not that the product lacks it.
@@ -20,22 +21,42 @@ Kubernetes, one factory shared by dozens of people, or a chat interface. The
 
 ## Where Priory lacks something
 
-Five gaps came out of the reading. Each is something several products below have and Priory does
-not.
+Five gaps came out of the first reading. Each is something several products below have and Priory
+did not. Priory has since built parts of four of them, and this list says what remains.
 
-1. **Spend caps at run time.** Priory prices a task after the fact, from token counts and the
-   factory's `prices.toml`. Only its measuring commands, `priory score`, `priory bench` and
-   `priory eval`, take a dollar budget. Nothing stops a factory task at a cap.
+1. **Spend caps inside a turn.** A factory sets caps per task, day and week on the factory, a
+   trigger or a lane ([spend caps](daemon/spend.md)). A reached cap keeps new runs from starting.
+   A task cap, or a factory or trigger day or week cap, also holds a running task with one ask.
+   The daemon checks a running task only between two turns, so one long turn can pass a cap. With
+   several runners, each daemon counts only its own spend.
 2. **Graduated approval.** A trigger's [`intervention`](concepts.md) lets a person approve every
-   plan, or a lead agent answer asks, and a workflow can route a plan by its grade. Priory has no
-   policy that approves a single action by a stated confidence or risk level.
+   plan, or a lead agent answer asks, and a workflow can route a plan by its grade. A
+   [critic](daemon/score.md#gates) can refuse a plan no person reads, and a
+   [decision model](daemon/decisions.md) settles feedback that asks the agent for nothing. Priory
+   still has no policy that approves a single action by a stated confidence or risk level.
+   [approve-by-confidence.md](design/approve-by-confidence.md) designs answering a reversible ask
+   from the agent's stated confidence, and grants no approval.
 3. **Proof for the reviewer.** Priory's docs describe no built-in recording, screenshot or live
-   preview of a change for the reviewer.
-4. **A learning loop.** An agent proposes a memory with `remember`, and a person accepts it before
-   other tasks get it. Priory does not draw memories from review comments or finished sessions by
-   itself, and does not flag or merge stale memories.
+   preview of a change for the reviewer. [reviewer-evidence.md](design/reviewer-evidence.md)
+   designs them.
+4. **A learning loop.** An agent proposes a memory with `remember`, and a
+   [nightly dream](setting-up-a-nightly-dream.md) proposes memories from what tasks concluded and
+   what people answered. A person accepts each before other tasks get it. A memory's
+   [`paths`](reference/memories.md) bring it into a Claude Code run that reads, edits or creates a
+   matching file. Priory does not flag or merge stale
+   memories, and does not check a result against past rejections before a person sees it.
 5. **The run's environment.** Agents run in the task's git worktree with the owner's credentials.
-   A factory cannot declare setup, resume or teardown commands, a token per agent, or network rules.
+   A repository's [setup, resume and teardown recipes](reference/factory.md#repos) run around its
+   worktrees, an agent names the MCP servers and skills its runs get, and
+   [`priory check --repo`](reference/readiness.md) scores what an unattended agent needs from a
+   repository. A factory cannot declare a token per agent or network rules.
+   [agent-credentials.md](design/agent-credentials.md) designs them.
+
+Two more features came after the first reading. A [review limit](daemon/runs.md#review-limit)
+holds new starts while too many pull requests of a lane or batch wait for a person. When two
+done-gate failures in a row on the same pull request have the same check names and conclusions,
+the daemon asks a person instead of waking the agent again
+([a fix that fails the same way](daemon/waits.md#a-fix-that-fails-the-same-way)).
 
 ## Mastra and Mastra Factory
 
@@ -254,6 +275,233 @@ What they do that Priory does not:
 What Priory has that the pages read do not describe: memory learned between runs, priority bands,
 and an agent that sleeps between events in one session, where each event starts a new Actions run.
 
+## GitHub Agentic Workflows
+
+Copilot's section above links GitHub's description of agentic workflows. Their prompt files for
+agents ([prompt index](https://github.github.com/gh-aw/llms.txt)) describe the following, and a
+persistent memory strategy.
+
+What it does that Priory does not:
+
+- An `experiments:` block gives each run the variant used least so far by default, or a weighted
+  random one, and names a hypothesis, a metric and guardrail metrics. Once every mandatory
+  guardrail has its minimum samples and supported observations, a failing one gives a `REJECT`
+  decision
+  ([experiments](https://raw.githubusercontent.com/github/gh-aw/main/.github/aw/experiments.md)).
+- Writes go through declared safe outputs, and the guide sets a `max` on outputs such as
+  `create-issue` and `add-comment`
+  ([safe outputs](https://raw.githubusercontent.com/github/gh-aw/main/.github/aw/safe-outputs.md)).
+- The intent guide puts no-op conditions, cases that must create no attention and no writes, in
+  the workflow's prompt body
+  ([intent](https://raw.githubusercontent.com/github/gh-aw/main/.github/aw/intent.md)).
+- `max-ai-credits` sets a budget per run. `max-daily-ai-credits` blocks new runs once the
+  triggering user's use of the workflow over the last 24 hours passes it
+  ([frontmatter keys](https://raw.githubusercontent.com/github/gh-aw/main/.github/aw/syntax-agentic.md)).
+- Evals are yes or no questions, answered `YES`, `NO` or `UNKNOWN`
+  ([evals](https://raw.githubusercontent.com/github/gh-aw/main/.github/aw/evals.md)).
+
+Its loop guide stops a fix loop on a repeated identical signature
+([loop patterns](https://raw.githubusercontent.com/github/gh-aw/main/.github/aw/loop.md)), as
+Priory does for red checks. What Priory has that the pages read do not describe: priority bands,
+and runs on machines you own outside a CI service.
+
+## Linear's agent platform
+
+Linear lets other vendors' agents work on its issues
+([agents](https://linear.app/developers/agents)), and runs Loops of its own
+([Loops](https://linear.app/docs/loops)).
+
+What Linear does that Priory does not:
+
+- An issue delegated to an agent keeps its assignee, "so humans maintain ownership while agents act
+  on their behalf" ([agents](https://linear.app/developers/agents)).
+- An agent session shows the agent's thoughts, actions, questions and errors on the issue, and an
+  `elicitation` waits for a person's answer there
+  ([agent interaction](https://linear.app/developers/agent-interaction)).
+- An agent offers options with the `select` signal, and a person can send `stop` to stop it
+  ([signals](https://linear.app/developers/agent-signals)).
+- Loops run on a schedule or on supported events, and stop when the workspace runs out of AI
+  credits ([Loops](https://linear.app/docs/loops)).
+
+Priory's Linear intake reads issues and writes nothing back to them. What Priory has that the pages
+read do not describe: memory learned between runs, and scorers or benchmarks.
+
+## SuperPlane
+
+SuperPlane is a factory whose 1.0.0 release came out on 2026-10-27
+([releases](https://github.com/superplanehq/superplane/releases)). Its guide names four stages,
+Backlog, Implement, Verify and Done, and verification can include a person's approval
+([one-shot engineering](https://docs.superplane.com/fundamentals/one-shot-engineering/)). It
+installs on one VM or on Kubernetes in your cloud
+([docs index](https://docs.superplane.com/llms.txt)).
+
+What SuperPlane does that Priory does not:
+
+- The Backlog stage analyses and qualifies each request before work starts
+  ([backlog automation](https://docs.superplane.com/fundamentals/automation-backlog/)).
+- The Verify guide recommends evidence that matches the task's risk
+  ([verify](https://docs.superplane.com/fundamentals/verify/)).
+- Team and Enterprise plans set budget limits per group, user or workspace, and a maximum spend
+  per task
+  ([costs and budgets](https://docs.superplane.com/billing/costs-budgets/)).
+- A task time report uses the median, and separates time running from time waiting
+  ([task time](https://docs.superplane.com/fundamentals/performance-task-time/)).
+
+What Priory has that the pages read do not describe: priority bands, and memory learned between
+runs.
+
+## Kiro and Kiro Crew
+
+Kiro is an agent in an IDE, a CLI and the web ([docs index](https://kiro.dev/llms.txt)). Kiro
+Crew is an open-source agent that runs locally or remotely on your hardware
+([Crew](https://kiro.dev/docs/crew.md)).
+
+What they do that Priory does not:
+
+- Crew's Task Runner has an independent reviewer session read the actual `git diff`. The Task Runner
+  reverts and retries a failed step, at most 3 times, then plans again
+  ([Task Runner](https://kiro.dev/docs/crew/features/task-runner.md)).
+- Crew keeps semantic, episodic and lesson memories. A consolidator replaces its preferences every
+  30 messages, and a model's semantic memory write needs a confidence of 0.8 or more
+  ([Crew memory](https://kiro.dev/docs/crew/features/memory.md)).
+- One Crew dashboard reaches remote crews over SSH, AWS SSM or Fargate, with a status badge for each
+  ([multi-instance](https://kiro.dev/docs/crew/features/multi-instance.md)).
+- A Crew heartbeat checks every 60 seconds and reports only when something changes
+  ([cron and heartbeats](https://kiro.dev/docs/crew/features/cron.md)).
+- A Kiro workflow can show its proposed plan for approval before any step runs. A saved
+  permission decision, or trusting all tools, approves it without asking
+  ([workflows](https://kiro.dev/docs/workflows.md)).
+
+What Priory has that the pages read do not describe: a queue with priority bands, and a dollar cap
+per task.
+
+## Cline
+
+Cline is a coding agent with a CLI, an SDK, cloud agents and a Kanban board. It can run on a
+remote machine over SSH, and a Memory Bank keeps context across sessions
+([docs index](https://docs.cline.bot/llms.txt)).
+
+What Cline does that Priory does not:
+
+- The Kanban board, a research preview, gives each card its own worktree
+  ([Kanban](https://docs.cline.bot/usage/kanban.md)). A linked card starts when the card before it
+  is done and moved to trash ([Kanban workflow](https://docs.cline.bot/kanban/core-workflow.md)).
+- `cline schedule` runs cron schedules, and can list upcoming runs, trigger one and pause one
+  ([scheduling](https://docs.cline.bot/cli/scheduling.md)).
+- Auto Approve is set per type of action
+  ([auto approve](https://docs.cline.bot/features/auto-approve.md)).
+- The SDK limits a session with `maxTokensPerTurn` and `maxIterations`, and stops it after
+  consecutive mistakes
+  ([going to production](https://docs.cline.bot/sdk/guides/going-to-production.md)).
+- A cloud agent runs in a sandbox per session that pauses after 15 idle minutes
+  ([cloud agents](https://docs.cline.bot/usage/cloud-agents.md)).
+
+What Priory has that the pages read do not describe: priority bands, a built-in dollar cap, and
+scorers or benchmarks. The SDK guide shows code that aborts a session past a cost
+([going to production](https://docs.cline.bot/sdk/guides/going-to-production.md)).
+
+## Temporal
+
+Temporal is a durable workflow engine. Its docs cover AI agents built on it, with agent memory and
+state, and workflows that block until an outside approval ([durable AI](https://docs.temporal.io/ai.md)).
+
+What Temporal does that Priory does not:
+
+- A task queue takes a priority from 1 to 5, and fairness keys with weights keep one key with a
+  large backlog from taking all the dispatches
+  ([priority and fairness](https://docs.temporal.io/develop/task-queue-priority-fairness.md)).
+  That page covers self-hosted Temporal and Temporal Cloud.
+- A schedule has an overlap policy, a catchup window, backfill, jitter, and a note on pause
+  ([schedules](https://docs.temporal.io/schedule.md)).
+- Worker versioning pins a workflow to the version it started on, or lets it upgrade, and can send a
+  share of new workflows to a new version
+  ([worker versioning](https://docs.temporal.io/production-deployment/worker-deployments/worker-versioning.md)).
+
+What Priory has that the pages read do not describe: memory learned between tasks, spend caps,
+scorers, and a desk where a person answers agents' asks.
+
+## Inngest
+
+Inngest is a durable workflow engine for AI applications
+([docs index](https://www.inngest.com/llms.txt)). `step.waitForEvent()` pauses an agent for an
+approval, with a timeout
+([human in the loop](https://www.inngest.com/docs-markdown/durable-execution/durable-agents/human-in-the-loop)),
+as a Priory ask with a time wait does.
+
+What Inngest does that Priory does not:
+
+- Concurrency takes a key, so one account's steps do not use another account's slots
+  ([concurrency](https://www.inngest.com/docs-markdown/durable-execution/flow-control/concurrency)).
+- Priority is a number of seconds a run moves ahead, computed from the event
+  ([priority](https://www.inngest.com/docs-markdown/durable-execution/flow-control/priority)).
+- An experiment keeps its variant on retries and records it in the trace
+  ([experiments](https://www.inngest.com/docs-markdown/agent-evals/experiments)).
+- A deferred scorer, in beta, waits for a later signal and scores the run that started it
+  ([deferred scoring](https://www.inngest.com/docs-markdown/agent-evals/deferred-scoring)).
+
+What Priory has that the pages read do not describe: memory, and spend caps.
+
+## LangSmith and the LangGraph platform
+
+LangChain documents LangSmith, Fleet and its open-source packages, LangGraph among them, in one
+place ([docs index](https://docs.langchain.com/llms.txt)).
+
+What LangSmith does that Priory does not:
+
+- The LLM Gateway enforces spend policies per organization, workspace, user or key, over an hour, a
+  day, a week or a month. The request that crosses a cap still succeeds, and later calls get a `402`
+  ([spend policies](https://docs.langchain.com/langsmith/llm-gateway-spend-policies.md)). It routes
+  Claude Code, Codex and Gemini CLI
+  ([gateway for coding agents](https://docs.langchain.com/langsmith/llm-gateway-coding-agents.md)).
+- Engine groups failing production traces into tracked issues, proposes a fix, and attaches new
+  traces that match the same failure ([Engine](https://docs.langchain.com/langsmith/engine.md)).
+  Fix validation, in private beta, replays an issue's traces against the fix
+  ([fix validation](https://docs.langchain.com/langsmith/engine-fix-validation.md)).
+- Fleet has a central inbox for reviewing agent actions across all agents, and runs in the cloud,
+  self-hosted or hybrid
+  ([Fleet access and oversight](https://docs.langchain.com/langsmith/fleet/access-and-oversight.md)).
+- Engine turns a reviewer's actions on its issues into general rules for later scans
+  ([Engine](https://docs.langchain.com/langsmith/engine.md)).
+- A chosen strategy rejects or enqueues a message that arrives during a run, or lets it interrupt
+  the run or roll it back ([double texting](https://docs.langchain.com/langsmith/double-texting.md)).
+
+What Priory has that the pages read do not describe: priority bands.
+
+## CrewAI
+
+CrewAI's docs cover crews of agents and flows ([memory](https://docs.crewai.com/edge/en/concepts/memory.md),
+[human feedback in flows](https://docs.crewai.com/edge/en/learn/human-feedback-in-flows.md)).
+
+What CrewAI does that Priory does not:
+
+- `@human_feedback(learn=True)` draws lessons from a person's corrections, and can apply past
+  lessons to a text or eligible Pydantic output before the person sees it
+  ([human feedback in flows](https://docs.crewai.com/edge/en/learn/human-feedback-in-flows.md)).
+- Memory has a model infer scope, categories and importance on save, and recall ranks by semantic
+  similarity, recency and importance ([memory](https://docs.crewai.com/edge/en/concepts/memory.md)).
+- `crewai test` runs a crew several times and scores each task with a model
+  ([testing](https://docs.crewai.com/edge/en/concepts/testing.md)).
+- Checkpointing lets a crew resume after a failure or fork into another branch
+  ([checkpointing](https://docs.crewai.com/edge/en/concepts/checkpointing.md)).
+
+What Priory has that the pages read do not describe: priority bands, and spend caps.
+
+## Dagger
+
+Dagger runs CI checks on a local or a shared remote engine, the same for machine-generated or
+handwritten changes ([introduction](https://docs.dagger.io/getting-started/introduction)). Cloud
+Checks start them on repository events ([Cloud Checks](https://docs.dagger.io/cloud-checks)). Its
+agent runtime is an experimental API ([Agent API](https://docs.dagger.io/reference/api/agent)).
+
+What Dagger does that Priory does not:
+
+- container-use gives each agent a fresh container in its own git branch, and keeps the complete
+  command history and logs of what the agent did
+  ([container-use](https://github.com/dagger/container-use)).
+
+What Priory has that the pages read do not describe: a task queue, approvals, memory learned
+between tasks, and spend caps.
+
 ## Google Jules
 
 Google is shutting Jules down on 2026-12-31, and it has been read-only since 2026-11-11
@@ -265,17 +513,36 @@ includes memories and scheduled tasks. It is listed for its ideas.
 - Suggested Tasks scanned a repository for `#TODO`s and proposed plans
   ([suggested tasks](https://jules.google/docs/suggested-tasks)).
 
+## Roo Code and Sweep
+
+Roo Code's docs say the extension was shut down on May 15th
+([Roo Code docs](https://docs.roocode.com/)). Sweep's repository now says "We're now building an AI
+coding assistant for JetBrains" ([repository](https://github.com/sweepai/sweep)). Neither is
+compared here.
+
 ## Side by side
 
 Each cell sums up the section above it, with its source there. "Not described" means the pages
-read do not mention it.
+read do not mention it. The first table holds the coding agent products:
 
 | Theme | Priory | Mastra and Mastra Factory | eve | OpenHands | Copilot cloud agent | Codex | Devin | Factory | Cursor cloud agents | Amp | Claude Code Actions and Code Review | Jules |
 | ----- | ------ | ------------------------- | --- | --------- | ------------------- | ----- | ----- | ------- | ------------------- | --- | ----------------------------------- | ----- |
-| Where it runs | Machines you own, each task in its own git worktree | Factory sandboxes per session, hosted or local | Vercel, or self-hosted | Cloud or Kubernetes | Not described | OpenAI's cloud environments for cloud tasks | Cognition's cloud; tools on your machines through Outposts | Cloud or local computers | Cursor's machines; tools on your machines through self-hosted pools | An orb per thread, in Amp's cloud or self-hosted | Actions on GitHub's or your runners; Code Review on Anthropic's | Read-only, no longer runs tasks |
+| Where it runs | Machines you own, each task in its own git worktree with the repository's setup recipe | Factory sandboxes per session, hosted or local | Vercel, or self-hosted | Cloud or Kubernetes | Not described | OpenAI's cloud environments for cloud tasks | Cognition's cloud; tools on your machines through Outposts | Cloud or local computers | Cursor's machines; tools on your machines through self-hosted pools | An orb per thread, in Amp's cloud or self-hosted | Actions on GitHub's or your runners; Code Review on Anthropic's | Read-only, no longer runs tasks |
 | Who approves | A person for each irreversible step unless marked autonomous with a reason; a lead agent can answer other asks | A person, or a phase's condition | A policy per tool: always, once, auto or never | Always, never, or only risky actions | Issue changes held below a confidence level | Approval prompts can go to a reviewer agent | Not described | Not described | Low-risk pull requests approved by policy | A project's Ship setting | Code Review never approves | A person, with a critic for plans nobody approved |
-| Scheduling and priority | Schedule triggers and events; bands from blocker to later | Board phases; bands not described | Bands not described | A five-minute poll in the factory guide | Schedules, repository events and the API | Not described | Not described | Schedules, Slack, GitHub and webhooks | Bands not described | A schedule per thread, with a completion condition | GitHub events and cron | Suggested tasks |
-| Memory | Files in git; an agent proposes, a person accepts | Observations condensed from message history | Recall before and capture after each turn | An index plus daily logs, opt in | Repository facts with citations | Not described | Notes saved by Devin, tagged by session | A generated repository wiki | Named notes per automation | Learned memory not described | Not described | In the export |
-| Evaluation | Scorers, calibrated judges and replay benchmarks, run on demand | Eval runs with gates and tracked scorers | Eval files against a real agent | An experimental critic that scores a run while it works | Not described | Not described | Session Insights after a session | Agent Readiness for the repository | Resolution status per Bugbot finding | Not described | A verification step inside Code Review | A critic for plans |
-| Cost control | Cost per task after the fact; caps only on measuring commands | A dollar limit before each model call, approximate | Not described | Not described | Budgets; the user budget is a hard stop | A token budget on a goal | Budgets that block new work | Model policy and analytics; no cap described | Not described | Orbs priced per hour | Turn limits and timeouts; a monthly limit for Code Review | Not described |
+| Scheduling and priority | Schedule triggers and events; bands from blocker to later; a review limit on waiting pull requests | Board phases; bands not described | Bands not described | A five-minute poll in the factory guide | Schedules, repository events and the API | Not described | Not described | Schedules, Slack, GitHub and webhooks | Bands not described | A schedule per thread, with a completion condition | GitHub events and cron | Suggested tasks |
+| Memory | Files in git, brought into a Claude Code run by path; an agent or a nightly dream proposes, a person accepts | Observations condensed from message history | Recall before and capture after each turn | An index plus daily logs, opt in | Repository facts with citations | Not described | Notes saved by Devin, tagged by session | A generated repository wiki | Named notes per automation | Learned memory not described | Not described | In the export |
+| Evaluation | Scorers as gates on a result, a critic for plans no person reads, calibrated judges and replay benchmarks | Eval runs with gates and tracked scorers | Eval files against a real agent | An experimental critic that scores a run while it works | Not described | Not described | Session Insights after a session | Agent Readiness for the repository | Resolution status per Bugbot finding | Not described | A verification step inside Code Review | A critic for plans |
+| Cost control | Caps per task, day and week on the factory, a trigger or a lane, checked at run starts and between turns | A dollar limit before each model call, approximate | Not described | Not described | Budgets; the user budget is a hard stop | A token budget on a goal | Budgets that block new work | Model policy and analytics; no cap described | Not described | Orbs priced per hour | Turn limits and timeouts; a monthly limit for Code Review | Not described |
 | Multi-machine | Several runners you own, sharing one event log | A sandbox per session | Durable sessions on Vercel or a Postgres store | Kubernetes | Not described | Cached cloud containers | Cloud machines and Outposts | Several computers with a shared folder | Team pools of self-hosted workers | An orb per thread | Not described | Not described |
+
+The platforms, frameworks and workflow engines:
+
+| Theme | Priory | GitHub Agentic Workflows | Linear | SuperPlane | Kiro and Kiro Crew | Cline | Temporal | Inngest | LangSmith | CrewAI | Dagger |
+| ----- | ------ | ------------------------ | ------ | ---------- | ------------------ | ----- | -------- | ------- | --------- | ------ | ------ |
+| Where it runs | Machines you own, each task in its own git worktree with the repository's setup recipe | GitHub Actions workflows | Not described | One VM or Kubernetes in your cloud | Crew on your hardware, local or remote | A sandbox per session for cloud agents | Self-hosted or Temporal Cloud | Not described | Cloud, self-hosted or hybrid | Not described | A container per agent, in its own git branch |
+| Who approves | A person for each irreversible step unless marked autonomous with a reason; a lead agent can answer other asks | Not described | A person answers in the issue | A person's approval can be part of Verify | A person or a saved permission approves a workflow's plan | Auto Approve per type of action | A workflow blocks until an outside approval | An approval event, with a timeout | Fleet's inbox | A person's feedback on a flow step | Not described |
+| Scheduling and priority | Schedule triggers and events; bands from blocker to later; a review limit on waiting pull requests | Bands not described | Loops on a schedule or on events | Backlog qualifies each request first | A heartbeat every 60 seconds | Cron schedules; linked cards | Priorities 1 to 5 and weighted fairness keys | Keyed concurrency; priority in seconds | A message during a run is rejected, enqueued, interrupts or rolls back | Not described | Checks on repository events |
+| Memory | Files in git, brought into a Claude Code run by path; an agent or a nightly dream proposes, a person accepts | A persistent memory strategy | Learned memory not described | Learned memory not described | Semantic, episodic and lesson memories; confidence-gated semantic writes | A Memory Bank across sessions | Agent memory and state in workflows; learned memory not described | Not described | Engine learns review preferences for later scans | Scope and importance inferred on save; lessons from feedback | Learned memory not described |
+| Evaluation | Scorers as gates on a result, a critic for plans no person reads, calibrated judges and replay benchmarks | Yes or no evals; experiments with guardrails | Not described | Risk-matched evidence, recommended; a task time report | A reviewer session that reads the diff | Not described | Not described | Experiments and deferred scorers | Issues from failing traces; fix validation by replay | `crewai test` scores each task | The same checks on every change |
+| Cost control | Caps per task, day and week on the factory, a trigger or a lane, checked at run starts and between turns | A budget per run; a 24-hour limit per triggering user | Loops stop at the workspace's credits | Team and Enterprise budgets, and a maximum per task | Dollar cap not described | Tokens per turn and iterations; custom code can abort past a cost | Not described | Not described | Spend policies at the gateway; the request that crosses a cap succeeds | Not described | Not described |
+| Multi-machine | Several runners you own, sharing one event log | Not described | Not described | Not described | One dashboard over remote crews | Remote execution over SSH | Not described | Not described | Not described | Not described | Local or a shared remote engine |

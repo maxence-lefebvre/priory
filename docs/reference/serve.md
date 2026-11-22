@@ -34,7 +34,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/links` | `priory links --json` | an object: [Links](#links) |
 | `/api/flows` | `priory flows --json` | an object: [Flows](#flows) |
 | `/api/reports` | `priory report list --json` | `reports`: each task's report as `task`, `date`, `greeting` and `put`, newest first |
-| `/api/reports/latest` | `priory report show --json` | the [report](#report) written last |
+| `/api/reports/latest` | `priory report show --json` | the [report](#report) written last. With no report yet it answers `200` with `report` set to `null` and the state's `revision`, where `priory report show` fails; the web view draws an empty Reports panel |
 | `/api/reports/{task}` | `priory report show TASK --json` | the task's [report](#report) |
 | `/api/costs?since=WINDOW&by=SPLIT` | `priory costs --json --since WINDOW --by SPLIT` | an object: [Costs](#costs) |
 | `/api/grades?since=WINDOW` | `priory grades --json --since WINDOW` | an object: [Grades](#grades) |

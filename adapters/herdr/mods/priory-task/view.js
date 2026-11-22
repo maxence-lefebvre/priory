@@ -1,6 +1,6 @@
 // The Task panel's view model: `priory task ID --json` in, what the panel draws out. No drawing, no IO.
 
-import { age, ago, autolink, eventWords, prStack } from "./priory.js";
+import { age, ago, autolink, eventWords, plural, prStack } from "./priory.js";
 
 // The runs History shows, newest first.
 const HISTORY = 10;
@@ -28,9 +28,9 @@ function checksLine(checks) {
   if (!checks.length) return null;
   const failing = checks.filter((check) => check.conclusion && !["success", "skipped", "neutral"].includes(check.conclusion)).length;
   const running = checks.filter((check) => !check.conclusion).length;
-  return failing ? `${failing} of ${checks.length} checks failing`
-    : running ? `${running} of ${checks.length} checks running`
-    : `${checks.length} checks pass`;
+  return failing ? `${failing} of ${plural(checks.length, "check")} failing`
+    : running ? `${running} of ${plural(checks.length, "check")} running`
+    : plural(checks.length, "check passes", "checks pass");
 }
 
 /**

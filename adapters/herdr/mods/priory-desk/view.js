@@ -1,6 +1,6 @@
 // The Desk panel's view model: Priory's listings in, the count, sections and rows out. No drawing, no IO.
 
-import { age, ago, autolink, prStack, routedMark, runnerOf, seenAgo, sentNote, sinceWords } from "./priory.js";
+import { age, ago, autolink, plural, prStack, routedMark, runnerOf, seenAgo, sentNote, sinceWords } from "./priory.js";
 
 const STOPPED = ["blocked", "failed", "prompt", "delivery"];
 const SNOOZABLE = ["ask", "blocked", "failed", "prompt"];
@@ -64,7 +64,7 @@ function progressLines(progress) {
   const criteria = progress.acceptanceCriteria ?? [];
   return [
     progress.goal ? `Goal: ${progress.goal}` : null,
-    criteria.length ? `${criteria.length} acceptance ${criteria.length === 1 ? "criterion" : "criteria"}` : null,
+    criteria.length ? plural(criteria.length, "acceptance criterion", "acceptance criteria") : null,
     progress.latestChange ? `Latest: ${progress.latestChange}` : null,
     progress.nextAction ? `Next: ${progress.nextAction}` : null,
   ].filter(Boolean);
@@ -90,7 +90,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue,
     const back = item.back_early;
     /** @type {any[] | null} */
     const candidates = item.kind === "memories" ? memories?.candidates ?? item.candidates ?? [] : null;
-    if (candidates) item = { ...item, what: `${candidates.length} memory ${candidates.length === 1 ? "candidate" : "candidates"}: ${candidates.map((candidate) => candidate.name).join(", ")}` };
+    if (candidates) item = { ...item, what: `${plural(candidates.length, "memory candidate")}: ${candidates.map((candidate) => candidate.name).join(", ")}` };
     const text = ask ? ask.title || ask.question : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : itemText(item, now);
     return {
       id: `${item.kind}:${item.id}`,
@@ -160,9 +160,9 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue,
     asks.length ? `Oldest waits ${age(asks[0].since, now)}.` : null,
     stopped.length ? `${stopped.length} stopped.` : null,
     desk.counts.snoozed ? `${desk.counts.snoozed} snoozed.` : null,
-    desk.counts.unrouted ? `${desk.counts.unrouted} ${desk.counts.unrouted === 1 ? "event" : "events"} reached no task in 24 h.` : null,
-    desk.counts.unheard ? `${desk.counts.unheard} ${desk.counts.unheard === 1 ? "event" : "events"} no agent read.` : null,
-    desk.counts.dropped ? `${desk.counts.dropped} ${desk.counts.dropped === 1 ? "request" : "requests"} a script dropped in 24 h.` : null,
+    desk.counts.unrouted ? `${plural(desk.counts.unrouted, "event")} reached no task in 24 h.` : null,
+    desk.counts.unheard ? `${plural(desk.counts.unheard, "event")} no agent read.` : null,
+    desk.counts.dropped ? `${plural(desk.counts.dropped, "request")} a script dropped in 24 h.` : null,
   ].filter(Boolean).join(" ");
 
   /** @type {Record<string, () => { title: string, note: string | null, rows: any[] }[]>} */
@@ -175,7 +175,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue,
         title: "Later",
         note: "no action needed",
         rows: [
-          ...(asleep ? [{ ...taskRow({ id: "asleep", state: "asleep", tldr: `${asleep} ${asleep === 1 ? "task" : "tasks"} asleep on waits` }), id: "asleep", task: null, count: asleep }] : []),
+          ...(asleep ? [{ ...taskRow({ id: "asleep", state: "asleep", tldr: `${plural(asleep, "task")} asleep on waits` }), id: "asleep", task: null, count: asleep }] : []),
           ...later.map(itemRow),
         ],
       },
