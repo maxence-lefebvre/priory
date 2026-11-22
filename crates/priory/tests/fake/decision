@@ -2,7 +2,8 @@
 # A fake decision model. It reads the question on stdin and answers from answers.tsv in its working
 # folder: the first line whose text the question's state holds gives its choice, probability and
 # model.
-# The choice `sleep` sleeps that many seconds, and `garbage` prints what is not an answer.
+# The choice `sleep` sleeps that many seconds, `garbage` prints what is not an answer, and `leak`
+# fails with the key in its error.
 input=$(cat)
 printf '%s\n' "$input" >> calls.log
 env > seen-env
@@ -18,6 +19,7 @@ while IFS="$tab" read -r text choice probability model; do
       case "$choice" in
         sleep) sleep "$probability" ;;
         garbage) echo "not an answer" ;;
+        leak) echo "bad key $TYPESAFE_API_KEY" >&2; exit 1 ;;
         *) printf '{"model":"%s","answers":{"triage":{"type":"choice","choice":"%s","probabilities":{"%s":%s}}},"usage":{"input_tokens":100}}\n' \
              "$model" "$choice" "$choice" "$probability" ;;
       esac

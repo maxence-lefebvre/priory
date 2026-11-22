@@ -16,16 +16,18 @@ the daemon marks an item. Then it asks the triage model when all of these hold:
   not an approval or a dismissal, a pull request comment, a review thread comment, an issue
   comment or a Linear comment, not written by the factory's own login;
 - its author is not an outsider (see [routing.md](routing.md));
-- a task owns or subscribes to the pull request, branch, issue or Linear issue it is on;
+- a task that is not done owns or subscribes to the pull request, branch, issue or Linear issue it
+  is on. Feedback on a done task's pull request reopens it as before;
 - the factory names `[decisions.triage]`.
 
 The model gets the item's event type, body, file path and review state, and one `choice`
 question among `trivial`, `persons-call` and `nothing-to-do`. When it answers `nothing-to-do` with
 a probability at or above `threshold`, the daemon marks the event with `decided`, and the item
-settles as an approval does. It fires no wait, fires no checks gate and reopens no done task. It
-stays unread. The next prompt that wakes the task for another reason carries it. The sorting rule
-does not name it, and the task's next result records it as `nothing-to-do` with no word from the
-agent. A running task reads it at once, as before.
+settles. It fires no wait and no checks gate, and wakes no task that subscribes to it. It stays
+unread. The next prompt that wakes the task for another reason carries it. The sorting rule does
+not name it, and the task's next result records it as `nothing-to-do`, unless the agent's
+`feedback` gives the item a class of its own, which wins. A running task reads it at once, as
+before.
 
 Any other answer leaves the item as it would be with no model: the agent sorts it.
 
@@ -70,7 +72,10 @@ agreement: 10/10 labeled cases, 100%, needs 90%: calibrated
 ```
 
 It appends a `factory.decision.calibrated` record ([the trace schema](../trace-schema.md#factorydecisioncalibrated))
-with the agreement, the model, the threshold, and the SHA-256 of `run` and of the evaluation file.
+with the agreement, the model, the threshold, the SHA-256 of the evaluation file, and a SHA-256
+over `run`, each file `run` names in the factory's folder, such as `jev.py`, and Priory's question.
+A script outside the folder, or a module it imports, is not hashed: name the script by its path
+in the folder.
 The point counts as calibrated while all of these hold:
 
 - the latest record matches `run`, the evaluation file and `threshold` as they are now;
@@ -91,10 +96,10 @@ when:
 | `why` | Cause |
 | ----- | ----- |
 | `not calibrated: ...` | No matching calibration, an agreement under `agreement`, or a miss. No call is made |
-| `the day's <n> calls are spent` | The daemon made `daily_calls` calls in this local day. No call is made |
+| `the day's <n> calls are spent` | The daemon made `daily_calls` calls in this local day, failed ones included. No call is made |
 | `the item is over 16384 bytes` | No call is made |
 | `<key_env> is unset` | The key's variable is unset or empty |
-| `it exited <code>: <first line of stderr>` | The command failed |
+| `it exited <code>: <first line of stderr>` | The command failed. The line is cut to 200 characters, and the key's value in it reads `<KEY_ENV>` |
 | `it ran past <n>s` | The command ran past `timeout`. Priory kills its process group |
 | `the answer ...` | The answer is not JSON, names no model, picks no option or gives it no probability |
 | `answered by <model>, calibrated on <model>` | Another model answered |

@@ -139,8 +139,9 @@ judge's do, with the same parts:
 - **The run** is `priory calibrate POINT [DIR] [--json]`. It asks the model each case, in order,
   and prints one row per case, then the agreement, as `priory score --calibrate` does.
 - **The record** is a `factory.decision.calibrated` trace record with the point, the agreement,
-  the model that answered, the threshold, and the SHA-256 of `run` and of the evaluation file.
-  Editing either, or the threshold, makes the point not calibrated again.
+  the model that answered, the threshold, the SHA-256 of the evaluation file, and a SHA-256 over
+  `run`, the files it names in the factory's folder and Priory's question. Editing any of them,
+  or the threshold, makes the point not calibrated again.
 
 Two rules add to the judge's, because a decision acts on one class and not on a verdict:
 
@@ -201,10 +202,12 @@ sleep again.
 With a calibrated model, Priory asks it to sort each item the agent would sort, before it routes
 the event. Only one answer changes what Priory does:
 
-- **`nothing-to-do` at or above `threshold`**: the item settles, as an approval does. It fires no
-  wait and no checks gate, and reopens no done task. It stays unread, so the next prompt that
-  wakes the task for another reason carries it, already sorted: the rule does not name it, and the
-  next result records its class with no word from the agent.
+- **`nothing-to-do` at or above `threshold`**: the item settles. It fires no wait and no checks
+  gate, and wakes no subscriber. It stays unread, so the next prompt that wakes the task for
+  another reason carries it, already sorted: the rule does not name it, and the next result
+  records its class with no word from the agent, unless the agent gives it a class of its own.
+  Feedback on a done task is not asked about: it reopens the task as before, since a settled item
+  would reach no task.
 - **`trivial` or `persons-call`**: today's behaviour. The agent sorts it.
 
 A running task reads the item at once, as today: it is already awake, so there is nothing to save.

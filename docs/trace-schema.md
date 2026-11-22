@@ -558,7 +558,7 @@ record.
 | ------------------ | -------- | ----------------------------------------------------------------------- |
 | `point`            | yes      | The decision point, `triage`                                            |
 | `model`            | yes      | The model that answered every case, as the answers named it             |
-| `run_sha256`       | yes      | The SHA-256 of the point's `run`                                        |
+| `run_sha256`       | yes      | The SHA-256 of the point's `run`, each file it names in the factory's folder, and Priory's question |
 | `cases_sha256`     | yes      | The SHA-256 of its evaluation file                                      |
 | `threshold`        | yes      | The point's `threshold` when it was calibrated                          |
 | `cases`            | yes      | The labeled cases it asked                                              |
@@ -590,6 +590,7 @@ appends none. The record holds no text of the item: the inbox holds the event.
     "probability": 0.97,
     "input_tokens": 212,
     "millis": 340,
+    "called": true,
     "acted": true
   }
 }
@@ -600,6 +601,7 @@ appends none. The record holds no text of the item: the inbox holds the event.
 | `point`        | yes      | The decision point, `triage`                                                 |
 | `item`         | yes      | The feedback item's URL                                                      |
 | `acted`        | yes      | Whether Priory settled the item on the answer                                |
+| `called`       | yes      | Whether Priory ran the command. `daily_calls` counts these                   |
 | `millis`       | yes      | How long the check and the call took                                         |
 | `why`          | no       | Why Priory did not act, such as `under the threshold 0.9` or `it ran past 5s` |
 | `model`        | no       | The model that answered, when a call answered                                |

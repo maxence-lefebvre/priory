@@ -91,7 +91,10 @@ pub(crate) fn sorted(
         let kind = row.get::<_, String>(0)?;
         if let Some(url) = url(&kind, &data).filter(|_| item(&kind, &data).is_none()) {
             if let Some(class) = crate::decision::class(&data) {
-                own.push((url.to_owned(), class.to_owned()));
+                // The agent's own class for it, as a correction, wins.
+                if !given.contains_key(url) {
+                    own.push((url.to_owned(), class.to_owned()));
+                }
                 continue;
             }
             if !row.get::<_, bool>(2)? {

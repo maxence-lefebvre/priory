@@ -27974,3 +27974,126 @@ fn a_calibration_with_a_failed_call_stores_nothing() {
         "{stored:?}"
     );
 }
+
+#[test]
+fn a_failing_call_keeps_the_key_out_of_the_trace() {
+    let answers = "Thanks\tleak\t-\t-\n";
+    let setup = asleep_with_decisions("decision-leak", answers, true);
+
+    wakes_as_today(&setup, "it exited 1: bad key <TYPESAFE_API_KEY>");
+
+    let trace = serde_json::to_string(&setup.trace()).unwrap();
+    assert!(!trace.contains(KEY.1), "{trace}");
+}
+
+#[test]
+fn editing_the_script_run_names_after_calibration_makes_the_model_uncalibrated() {
+    let named = |factory: &Path| {
+        let file = factory.join("factory.toml");
+        let text = fs::read_to_string(&file).unwrap();
+        fs::write(
+            file,
+            text.replace("run = \"decision\"", "run = \"decision script.sh\""),
+        )
+        .unwrap();
+        fs::write(factory.join("script.sh"), "edited\n").unwrap();
+    };
+    let mut setup = Setup::new("decision-script-edited");
+    setup.decides(ANSWERS);
+    let factory = setup.dir.join("factory");
+    let file = factory.join("factory.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    fs::write(
+        &file,
+        text.replace("run = \"decision\"", "run = \"decision script.sh\""),
+    )
+    .unwrap();
+    fs::write(factory.join("script.sh"), "first\n").unwrap();
+    let output = setup.calibrate();
+    assert!(output.status.success(), "{output:?}");
+    named(&factory);
+    setup.calls(&[wait(on_pull_7("review"))]);
+    setup.publish(&requested(42));
+    setup.start_with(Path::new(env!("CARGO_BIN_EXE_priory")), &[KEY]);
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+
+    wakes_as_today(&setup, "not calibrated: no calibration");
+}
+
+#[test]
+fn the_agents_own_class_for_a_settled_item_wins() {
+    let setup = asleep_with_decisions("decision-corrected", ANSWERS, true);
+    setup.publish(&pull_comment("Thanks, looks good."));
+    stays_asleep(&setup);
+    setup.publish(&thread_comment());
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let comment = "https://github.com/owner/repo/pull/7#issuecomment-701";
+
+    let (text, error) =
+        result_sorting(&setup, json!({ THREAD_URL: "trivial", comment: "trivial" }));
+
+    assert!(!error, "{text}");
+    let triage = task_json(&setup, "1")["triage"].clone();
+    let class = triage
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["item"] == comment)
+        .map(|item| item["class"].clone());
+    assert_eq!(class, Some(json!("trivial")), "{triage:?}");
+}
+
+#[test]
+fn a_failed_call_counts_toward_the_daily_calls() {
+    let once = |factory: &Path| {
+        let file = factory.join("factory.toml");
+        let text = fs::read_to_string(&file).unwrap();
+        fs::write(file, format!("{text}daily_calls = 1\n")).unwrap();
+    };
+    let answers = "Thanks\tgarbage\t-\t-\n";
+    let setup = asleep_deciding("decision-daily-failed", answers, true, once, &[KEY]);
+    setup.publish(&pull_comment("Thanks, looks good."));
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+    let calls = || {
+        fs::read_to_string(setup.dir.join("factory/calls.log"))
+            .unwrap()
+            .lines()
+            .count()
+    };
+    let before = calls();
+    let mut second = pull_comment("Thanks again.");
+    second.data["github_id"] = json!(702);
+    second.data["url"] = json!("https://github.com/owner/repo/pull/7#issuecomment-702");
+
+    setup.publish(&second);
+
+    let decided = (0..50)
+        .map(|_| {
+            std::thread::sleep(Duration::from_millis(100));
+            setup.decided()
+        })
+        .find(|decided| decided.len() == 2)
+        .expect("a second record");
+    assert_eq!(decided[1]["why"], "the day's 1 calls are spent");
+    assert_eq!(calls(), before);
+}
+
+#[test]
+fn a_settled_comment_on_a_subscribed_issue_wakes_no_one() {
+    let mut setup = Setup::new("decision-subscribed");
+    setup.decides(ANSWERS);
+    let output = setup.calibrate();
+    assert!(output.status.success(), "{output:?}");
+    setup.calls(&[wait(json!({ "type": "time", "until": "1 hour" }))]);
+    setup.publish(&requested(42));
+    setup.start_with(Path::new(env!("CARGO_BIN_EXE_priory")), &[KEY]);
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    let mut thanks = issue_commented(901);
+    thanks.data["body"] = json!("Thanks, looks good.");
+    thanks.data["url"] = json!("https://github.com/owner/repo/issues/42#issuecomment-901");
+
+    setup.publish(&thanks);
+
+    stays_asleep(&setup);
+    assert_eq!(setup.decided()[0]["acted"], true);
+}

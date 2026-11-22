@@ -94,7 +94,7 @@ fn call(factory: &Factory, decision: &Decision, question: &Value) -> Result<Answ
         .args(["-c", &decision.run])
         .current_dir(&factory.dir)
         .env_clear()
-        .env(&decision.key_env, key);
+        .env(&decision.key_env, &key);
     for name in ["PATH", "HOME"] {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
@@ -106,7 +106,15 @@ fn call(factory: &Factory, decision: &Decision, question: &Value) -> Result<Answ
         .ok_or_else(|| format!("it ran past {}s", timeout.as_secs()))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let first = stderr.lines().next().unwrap_or_default();
+        let first: String = stderr
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .take(200)
+            .collect();
+        // The trace and the terminal keep this line, so the key never reaches them.
+        let first = first.replace(&key, &format!("<{}>", decision.key_env));
         return Err(match output.status.code() {
             Some(code) => format!("it exited {code}: {first}"),
             None => format!("it was killed: {first}"),
@@ -136,9 +144,21 @@ fn point(factory: &Factory) -> Result<Point<'_>, String> {
         .ok_or("the factory names no [decisions.triage]")?;
     let path = factory.dir.join(&decision.evaluation);
     let cases = std::fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    // shortcut: a script outside the factory folder, or one it imports, is not hashed; name the
+    // script in `run` by its path in the folder.
+    let mut run = decision.run.clone().into_bytes();
+    run.extend(question(Value::Null).to_string().into_bytes());
+    for word in decision.run.split_whitespace() {
+        let file = factory.dir.join(word);
+        if file.is_file() {
+            run.extend(
+                std::fs::read(&file).map_err(|error| format!("{}: {error}", file.display()))?,
+            );
+        }
+    }
     Ok(Point {
         decision,
-        run_sha256: sha256(decision.run.as_bytes()),
+        run_sha256: sha256(&run),
         cases_sha256: sha256(&cases),
     })
 }
@@ -310,9 +330,10 @@ pub fn calibrate(db: &mut Connection, factory: &Factory) -> Result<Calibrated, S
 /// The model the triage point is calibrated on, or why its answers do not count.
 fn calibrated(db: &Connection, factory: &Factory) -> Result<String, String> {
     let point = point(factory).map_err(|why| format!("not calibrated: {why}"))?;
-    let stored: Option<(String, f64, i64)> = db
+    let stored: Option<(String, i64, i64, i64)> = db
         .query_row(
-            "SELECT json_extract(event, '$.data.model'), json_extract(event, '$.data.agreement'),
+            "SELECT json_extract(event, '$.data.model'), json_extract(event, '$.data.agreed'),
+               json_extract(event, '$.data.cases'),
                json_array_length(json_extract(event, '$.data.misses'))
              FROM trace WHERE type = 'factory.decision.calibrated'
                AND json_extract(event, '$.data.point') = ?1
@@ -326,17 +347,18 @@ fn calibrated(db: &Connection, factory: &Factory) -> Result<String, String> {
                 point.cases_sha256,
                 point.decision.threshold()
             ],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()
         .map_err(|error| format!("not calibrated: {error}"))?;
-    let Some((model, agreement, misses)) = stored else {
+    let Some((model, agreed, cases, misses)) = stored else {
         return Err(
             "not calibrated: no calibration for this command, threshold and cases: run priory calibrate triage"
                 .to_owned(),
         );
     };
     let needs = point.decision.agreement();
+    let agreement = agreed as f64 / cases.max(1) as f64;
     if agreement < needs {
         return Err(format!(
             "not calibrated: it agreed on {}, under {}",
@@ -382,11 +404,12 @@ pub(crate) fn triage(
     if crate::route::outsider(message) || !held(db, message)? {
         return Ok(());
     }
-    let mut record = json!({ "point": TRIAGE, "item": item, "acted": false });
+    let mut record = json!({ "point": TRIAGE, "item": item, "acted": false, "called": false });
     let started = Instant::now();
     let answered = asked(db, factory, decision, message)?;
     record["millis"] = json!(started.elapsed().as_millis() as u64);
-    match answered {
+    record["called"] = json!(matches!(&answered, Ok(_) | Err(Asked::Failed(_))));
+    match answered.map_err(Asked::why) {
         Err(why) => record["why"] = json!(why),
         Ok((answer, calibrated)) => {
             record["model"] = json!(answer.model);
@@ -429,30 +452,43 @@ pub(crate) fn triage(
     tx.commit()
 }
 
-/// The model's answer and the model it is calibrated on, or why Priory made no call or the call
-/// failed.
+/// Why a feedback item got no answer: Priory made no call, or the call failed.
+enum Asked {
+    Skipped(String),
+    Failed(String),
+}
+
+impl Asked {
+    fn why(self) -> String {
+        match self {
+            Asked::Skipped(why) | Asked::Failed(why) => why,
+        }
+    }
+}
+
+/// The model's answer and the model it is calibrated on, or why there is none.
 fn asked(
     db: &Connection,
     factory: &Factory,
     decision: &Decision,
     message: &Message,
-) -> rusqlite::Result<Result<(Answer, String), String>> {
+) -> rusqlite::Result<Result<(Answer, String), Asked>> {
     let calibrated = match calibrated(db, factory) {
         Ok(model) => model,
-        Err(why) => return Ok(Err(why)),
+        Err(why) => return Ok(Err(Asked::Skipped(why))),
     };
     let today: u32 = db.query_row(
         "SELECT count(*) FROM trace WHERE type = 'factory.decision.answered'
-           AND json_extract(event, '$.data.model') IS NOT NULL
+           AND json_extract(event, '$.data.called') = 1
            AND date(time, 'localtime') = date('now', 'localtime')",
         [],
         |row| row.get(0),
     )?;
     if today >= decision.daily_calls() {
-        return Ok(Err(format!(
+        return Ok(Err(Asked::Skipped(format!(
             "the day's {} calls are spent",
             decision.daily_calls()
-        )));
+        ))));
     }
     let data = &message.data;
     let state = json!({
@@ -469,17 +505,34 @@ fn asked(
         state => state,
     };
     if state.to_string().len() > STATE_LIMIT {
-        return Ok(Err(format!("the item is over {STATE_LIMIT} bytes")));
+        return Ok(Err(Asked::Skipped(format!(
+            "the item is over {STATE_LIMIT} bytes"
+        ))));
     }
-    Ok(call(factory, decision, &question(state)).map(|answer| (answer, calibrated)))
+    Ok(call(factory, decision, &question(state))
+        .map(|answer| (answer, calibrated))
+        .map_err(Asked::Failed))
 }
 
-/// Whether a task owns or subscribes to a resource `message` is about.
+/// Whether a task that is not done owns or subscribes to a resource `message` is about, and the
+/// inbox does not hold it yet: a redelivered message is routed once. A done task's feedback reopens
+/// it as before, since a settled item would reach no task.
 fn held(db: &Connection, message: &Message) -> rusqlite::Result<bool> {
+    let seen: bool = db.query_row(
+        "SELECT EXISTS (SELECT 1 FROM inbox WHERE id = ?1)",
+        [message.id.to_string()],
+        |row| row.get(0),
+    )?;
+    if seen {
+        return Ok(false);
+    }
     for resource in crate::route::resources(message) {
         let held: bool = db.query_row(
-            "SELECT EXISTS (SELECT 1 FROM owns WHERE resource = ?1)
-               OR EXISTS (SELECT 1 FROM subscriptions WHERE resource = ?1)",
+            "SELECT EXISTS (SELECT 1 FROM owns JOIN tasks ON tasks.id = owns.task
+                 WHERE owns.resource = ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped'))
+               OR EXISTS (SELECT 1 FROM subscriptions JOIN tasks ON tasks.id = subscriptions.task
+                 WHERE subscriptions.resource = ?1
+                 AND tasks.state NOT IN ('done', 'failed', 'dropped'))",
             [&resource],
             |row| row.get(0),
         )?;
