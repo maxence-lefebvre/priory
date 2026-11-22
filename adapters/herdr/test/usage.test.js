@@ -51,7 +51,7 @@ test("at 320 px the line keeps whole numbers, leaves Claude to the detail, and w
   view.width = 320;
   const tree = draw(view, cx);
   assert.equal(text(find(tree, "usage-line")), "Priory $12 of $40 today · $171 of $200 wk · 2 held");
-  const warn = "#9C5000";
+  const warn = "#8A5A00";
   assert.equal(find(tree, "usage-week").calls.text_color[0], warn);
   assert.notEqual(find(tree, "usage-today").calls.text_color[0], warn);
   view.width = 1280;

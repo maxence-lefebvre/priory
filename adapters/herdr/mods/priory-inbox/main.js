@@ -1,8 +1,8 @@
-import { View, div, svg } from "gpui-kit";
+import { View, div } from "gpui-kit";
 import { h_flex, v_flex, Button } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
 import { follow, priory } from "./priory.js";
-import { selectable } from "./ui.js";
+import { selectable, stateTile } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { droppedWhy, eventWords, neverOwned, routeAction, unheardActs } from "./view.js";
 
@@ -10,12 +10,12 @@ const RETRY_MS = 3000;
 // The events a group shows, newest first, as the web view's Inbox does.
 const SHOWN = 5;
 const ICON = (/** @type {string} */ name) => `mods/priory-inbox/icons/${name}.svg`;
-// A task state's tile: its fill, its ink and its icon, as the Task panel's; null draws a dot.
-/** @type {Record<string, [string, string, string | null]>} */
+// A task state's tile: its role and its icon, as the Task panel's; null draws a dot.
+/** @type {Record<string, [string, string | null]>} */
 const TILES = {
-  queued: ["tile-muted", "on-tile", "circle-dashed"], held: ["tile-hold", "on-tile", "pause"], ready: ["tile-live", "on-tile-live", "circle-dot"],
-  running: ["tile-live", "on-tile-live", null], asleep: ["tile-muted", "on-tile", "moon"], blocked: ["tile-warn", "on-tile", "hand"],
-  done: ["tile-ok", "on-tile", "check"], failed: ["tile-danger", "on-tile", "circle-x"], dropped: ["tile-muted", "on-tile", "minus"],
+  queued: ["tile-muted", "circle-dashed"], held: ["tile-hold", "pause"], ready: ["tile-live", "circle-dot"],
+  running: ["tile-live", null], asleep: ["tile-muted", "moon"], blocked: ["tile-warn", "hand"],
+  done: ["tile-ok", "check"], failed: ["tile-danger", "circle-x"], dropped: ["tile-muted", "minus"],
 };
 
 /** @typedef {Record<string, import("gpui-kit").Color>} Palette */
@@ -39,7 +39,7 @@ async function connect() {
   const home = found.code === 0 ? found.stdout.trim() : "";
   if (!home.startsWith("/")) throw new Error(`No home folder on ${on ?? "this machine"}`);
   if (binary.startsWith("~/")) binary = home + binary.slice(1);
-  return { theme: config.theme ?? "indigo", client: priory({ exec, binary, on, factory: config.factory ?? null }) };
+  return { theme: config.theme ?? "graphite", client: priory({ exec, binary, on, factory: config.factory ?? null }) };
 }
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
@@ -63,7 +63,7 @@ export default class PrioryInbox extends View {
     this.settles = 0;
     /** @type {Map<string, string>} what the last action on each group did */
     this.notices = new Map();
-    this.font = FONTS.indigo;
+    this.font = FONTS.graphite;
     /** @type {ReturnType<typeof priory>} the client of the last read, which its wait uses */
     let client;
     cx.spawn((cx) => follow({
@@ -80,6 +80,7 @@ export default class PrioryInbox extends View {
       wait: (since) => client.wait(since),
       sleep: (ms) => cx.sleep(ms),
       failed: (error) => {
+        this.theme = this.priory?.theme ?? this.theme;
         this.priory = null;
         this.error = message(error);
         cx.notify();
@@ -112,15 +113,16 @@ export default class PrioryInbox extends View {
 
   /** @param {import("gpui-kit").Context} cx */
   render(cx) {
-    const theme = this.priory?.theme ?? "indigo";
+    // The last theme read stays while Priory is unreachable.
+    const theme = (this.theme = this.priory?.theme ?? this.theme ?? "graphite");
     const t = /** @type {Palette} */ (palette(theme, cx.theme().appearance));
-    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.indigo;
+    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.graphite;
     const count = this.groups ? this.groups.owned.reduce((sum, group) => sum + group.events.length, 0) : null;
     return v_flex().id("priory-inbox").size_full().min_h_0().bg(t.bg).text_color(t.text).font_family(this.font.ui).text_size(S["type-body"][0])
       .child(h_flex().flex_none().h(S["pane-head"]).px(S["space-4"]).gap(S["space-2"]).items_center().border_b(1).border_color(t.line)
         .child(div().font_weight(650).child("Inbox"))
         .child(div().flex_1())
-        .child(h_flex().h(S["pane-chip"]).px(S["space-3"]).gap(S["space-2"]).items_center().rounded(S["radius-full"]).bg(t.emph).text_color(t["on-emph"])
+        .child(h_flex().h(S["pane-chip"]).px(S["space-3"]).gap(S["space-2"]).items_center().rounded(S["radius-md"]).bg(t.emph).text_color(t["on-emph"])
           .text_size(S["type-small"][0]).font_weight(500).child("Unrouted").when(count !== null, (el) => el.child(String(count)))))
       .when(Boolean(this.error), (el) => el.child(div().flex_none().px(S["space-4"]).py(S["space-2"]).whitespace_normal().text_size(S["type-small"][0])
         .text_color(t["warn-text"]).border_b(1).border_color(t.line)
@@ -254,8 +256,7 @@ export default class PrioryInbox extends View {
 
   /** @param {string} state @param {Palette} t */
   tile(state, t) {
-    const [fill, ink, icon] = TILES[state] ?? ["tile-muted", "on-tile", "circle-help"];
-    return h_flex().size(S["pane-tile"]).flex_none().items_center().justify_center().rounded(S["radius-tile"]).bg(t[fill]).accessibility_label(state)
-      .child(icon ? svg(ICON(icon)).size(14).text_color(t[ink]) : div().size(8).rounded(999).bg(t[ink]));
+    const [role, icon] = TILES[state] ?? ["tile-muted", "circle-help"];
+    return stateTile(state, icon && ICON(icon), role, t);
   }
 }

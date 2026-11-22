@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { autolink, follow, priory, spansHtml } from "../lib/priory.js";
+import { autolink, follow, markdownHtml, markdownText, priory, spansHtml } from "../lib/priory.js";
 
 const FAKE = new URL("./fake-priory", import.meta.url).pathname;
 
@@ -275,6 +275,50 @@ test("spansHtml escapes the text and the URL, keeps each line as a paragraph and
     spansHtml([{ text: "<b>it's</b> " }, { text: "ENG-8", url: "https://x.test/?a=1&b=\"2\"" }, { text: "\nnext\n\nlast" }]),
     '<p>&lt;b&gt;it&#39;s&lt;/b&gt; <a href="https://x.test/?a=1&amp;b=&quot;2&quot;">ENG-8</a></p><p>next</p><p></p><p>last</p>',
   );
+});
+
+// Real rows of Max's report, 2026-11-22: a Markdown link whose label holds backticks.
+test("markdownHtml links a Markdown link's label and keeps its backticks as written", () => {
+  assert.equal(
+    markdownHtml("[Error: malformed path - found `*To` without `Begin`](https://rayon.sentry.io/issues/7861662530/)", [], null),
+    '<p><a href="https://rayon.sentry.io/issues/7861662530/">Error: malformed path - found `*To` without `Begin`</a></p>',
+  );
+});
+
+test("markdownHtml draws bold, inline code and autolinks, and links nothing inside code", () => {
+  const links = [{ pattern: String.raw`\b[A-Z]{2,5}-\d+\b`, url: "https://linear.app/i/$0" }];
+  assert.equal(
+    markdownHtml("**FND-2390** lands; run `ENG-7 <x>` & see ENG-8", links, null),
+    '<p><strong><a href="https://linear.app/i/FND-2390">FND-2390</a></strong> lands; run <code>ENG-7 &lt;x&gt;</code> &amp; see <a href="https://linear.app/i/ENG-8">ENG-8</a></p>',
+  );
+});
+
+// Herdr's TextView drops <br>, so each line of a paragraph is a paragraph of its own.
+test("markdownHtml draws headings, lists and fenced code, one paragraph per line", () => {
+  const text = "## Today\nfirst line\nsecond line\n\n- one\n- **two**\n\n1. a\n2) b\n\n- [x] done\n- [ ] open\n\n```sh\ncargo test\n  <b>\n```";
+  assert.equal(
+    markdownHtml(text, [], null),
+    "<h4>Today</h4><p>first line</p><p>second line</p><ul><li>one</li><li><strong>two</strong></li></ul><ol><li>a</li><li>b</li></ol>" +
+      "<ul><li>\u2611 done</li><li>\u2610 open</li></ul><pre><code>cargo test\n  &lt;b&gt;</code></pre>",
+  );
+});
+
+test("markdownHtml escapes raw HTML, links only https targets and loads no image", () => {
+  assert.equal(
+    markdownHtml('<img src=x onerror="a()"> [bad](javascript:alert(1)) [plain](http://x.dev) ![chart](https://img.test/c.png)', [], null),
+    "<p>&lt;img src=x onerror=&quot;a()&quot;&gt; [bad](javascript:alert(1)) [plain](http://x.dev) chart</p>",
+  );
+});
+
+test("markdownHtml strips a heading's closing hashes and stays linear on a long heading", () => {
+  assert.equal(markdownHtml("### Plan ##\n# C# #", [], null), "<h5>Plan</h5><h3>C#</h3>");
+  const started = performance.now();
+  markdownHtml(`# x${" ".repeat(64_000)}!`, [], null);
+  assert.ok(performance.now() - started < 200, "a 64 KB heading took over 200 ms");
+});
+
+test("markdownText is the text Markdown shows, for a one-line label", () => {
+  assert.equal(markdownText("[Fix `x`](https://a.test/) is **done**\n- next"), "Fix `x` is done next");
 });
 
 test("checkState, stateWords and prStack are the web view's, word for word", () => {

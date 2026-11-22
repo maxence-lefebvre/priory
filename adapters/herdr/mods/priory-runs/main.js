@@ -2,7 +2,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Popover } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile, setShared } from "herdr";
 import { age, follow, plural, priory } from "./priory.js";
-import { selectable } from "./ui.js";
+import { selectable, stateTile } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { filtered } from "./tasks.js";
 import { duration, RUN_FACETS, RUN_VIEWS, runState, runViews, tokenText } from "./view.js";
@@ -16,13 +16,13 @@ const EMPTY = /** @type {Record<string, string>} */ ({
   recent: "No run in the last 7 days. A run shows here once an agent starts a step.",
   live: "No run is live. Runs show here while an agent works.",
 });
-// A run state's tile (DESIGN.md, Run states): its fill, its ink and its icon; null draws a dot.
-/** @type {Record<string, [string, string, string | null]>} */
+// A run state's tile (DESIGN.md, Run states): its role and its icon; null draws a dot.
+/** @type {Record<string, [string, string | null]>} */
 const TILES = {
-  running: ["tile-live", "on-tile-live", null], done: ["tile-ok", "on-tile", "check"], moved: ["tile-muted", "on-tile", "arrow-right"],
-  asleep: ["tile-muted", "on-tile", "moon"], blocked: ["tile-warn", "on-tile", "hand"], lost: ["tile-warn", "on-tile", "unplug"],
-  restarted: ["tile-muted", "on-tile", "rotate-ccw"], cancelled: ["tile-muted", "on-tile", "x"], dropped: ["tile-muted", "on-tile", "minus"],
-  exited: ["tile-danger", "on-tile", "log-out"], failed: ["tile-danger", "on-tile", "circle-x"],
+  running: ["tile-live", null], done: ["tile-ok", "check"], moved: ["tile-muted", "arrow-right"],
+  asleep: ["tile-muted", "moon"], blocked: ["tile-warn", "hand"], lost: ["tile-warn", "unplug"],
+  restarted: ["tile-muted", "rotate-ccw"], cancelled: ["tile-muted", "x"], dropped: ["tile-muted", "minus"],
+  exited: ["tile-danger", "log-out"], failed: ["tile-danger", "circle-x"],
 };
 // A run state's text color; the other states take --text-2.
 const ROLE = /** @type {Record<string, string>} */ ({ running: "action-text", done: "ok-text", blocked: "warn-text", lost: "warn-text", exited: "danger-text", failed: "danger-text" });
@@ -45,7 +45,7 @@ async function connect() {
   const home = found.code === 0 ? found.stdout.trim() : "";
   if (!home.startsWith("/")) throw new Error(`No home folder on ${on ?? "this machine"}`);
   if (binary.startsWith("~/")) binary = home + binary.slice(1);
-  return { theme: config.theme ?? "indigo", client: priory({ exec, binary, on, factory: config.factory ?? null }) };
+  return { theme: config.theme ?? "graphite", client: priory({ exec, binary, on, factory: config.factory ?? null }) };
 }
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
@@ -66,7 +66,7 @@ export default class PrioryRuns extends View {
     this.popover = null;
     /** Whether Recent shows the runs older than 7 days too. */
     this.older = false;
-    this.font = FONTS.indigo;
+    this.font = FONTS.graphite;
     /** @type {ReturnType<typeof priory>} the client of the last read, which its wait uses */
     let client;
     cx.spawn((cx) => follow({
@@ -81,6 +81,7 @@ export default class PrioryRuns extends View {
       wait: (since) => client.wait(since),
       sleep: (ms) => cx.sleep(ms),
       failed: (error) => {
+        this.theme = this.priory?.theme ?? this.theme;
         this.priory = null;
         this.error = message(error);
         cx.notify();
@@ -91,9 +92,10 @@ export default class PrioryRuns extends View {
 
   /** @param {import("gpui-kit").Context} cx */
   render(cx) {
-    const theme = this.priory?.theme ?? "indigo";
+    // The last theme read stays while Priory is unreachable.
+    const theme = (this.theme = this.priory?.theme ?? this.theme ?? "graphite");
     const t = /** @type {Palette} */ (palette(theme, cx.theme().appearance));
-    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.indigo;
+    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.graphite;
     const now = Date.now();
     const runs = this.runs ?? [];
     const views = /** @type {Record<string, any[]>} */ (runViews(filtered(runs, this.picks, /** @type {any} */ (RUN_FACETS))));
@@ -151,7 +153,7 @@ export default class PrioryRuns extends View {
     return v_flex().flex_none().px(S["space-4"]).py(S["space-2"]).gap(S["space-2"]).border_b(1).border_color(t.line)
       .child(h_flex().gap(S["space-2"]).flex_wrap().children(RUN_VIEWS.map((id) => {
         const on = this.view === id;
-        return chip(`view-${id}`, on).rounded(S["radius-full"]).font_weight(on ? 600 : 500).bg(on ? t.emph : t.surface).text_color(on ? t["on-emph"] : t.text)
+        return chip(`view-${id}`, on).rounded(S["radius-md"]).font_weight(on ? 600 : 500).bg(on ? t.emph : t.surface).text_color(on ? t["on-emph"] : t.text)
           .on_click((_event, cx) => { [this.view, this.popover] = [id, null]; cx.notify(); })
           .child(LABELS[id]).child(div().opacity(0.7).child(String(views[id].length)));
       })))
@@ -180,8 +182,7 @@ export default class PrioryRuns extends View {
 
   /** @param {string} state @param {Palette} t */
   tile(state, t) {
-    const [fill, ink, icon] = TILES[state] ?? ["tile-muted", "on-tile", "circle-help"];
-    return h_flex().size(S["pane-tile"]).flex_none().items_center().justify_center().rounded(S["radius-tile"]).bg(t[fill]).accessibility_label(state)
-      .child(icon ? svg(ICON(icon)).size(14).text_color(t[ink]) : div().size(8).rounded(999).bg(t[ink]));
+    const [role, icon] = TILES[state] ?? ["tile-muted", "circle-help"];
+    return stateTile(state, icon && ICON(icon), role, t);
   }
 }

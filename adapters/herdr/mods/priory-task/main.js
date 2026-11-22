@@ -1,25 +1,25 @@
-import { View, div, svg } from "gpui-kit";
+import { View, div } from "gpui-kit";
 import { h_flex, v_flex, Button } from "gpui-base";
 import { appHome, exec, focused, home as herdrHome, layout as shown, panes, readTextFile, run, setShared, shared } from "herdr";
 import { showAsks } from "./layout.js";
 import { follow, priory } from "./priory.js";
-import { selectable } from "./ui.js";
+import { selectable, stateTile } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { taskView } from "./view.js";
 
 const RETRY_MS = 3000;
 const ICON = (/** @type {string} */ name) => `mods/priory-task/icons/${name}.svg`;
-// A state's tile: its fill, its ink and its icon, as DESIGN.md's state tiles; null draws a dot.
-/** @type {Record<string, [string, string, string | null]>} */
+// A state's tile: its role and its icon, as DESIGN.md's state tiles; null draws a dot.
+/** @type {Record<string, [string, string | null]>} */
 const TILES = {
-  queued: ["tile-muted", "on-tile", "circle-dashed"], held: ["tile-hold", "on-tile", "pause"], ready: ["tile-live", "on-tile-live", "circle-dot"],
-  running: ["tile-live", "on-tile-live", null], asleep: ["tile-muted", "on-tile", "moon"], blocked: ["tile-warn", "on-tile", "hand"],
-  done: ["tile-ok", "on-tile", "check"], failed: ["tile-danger", "on-tile", "circle-x"], dropped: ["tile-muted", "on-tile", "minus"],
-  moved: ["tile-muted", "on-tile", "arrow-right"], lost: ["tile-warn", "on-tile", "unplug"], ask: ["wait", "on-wait", "ask"],
-  answered: ["tile-muted", "on-tile", "check"], withdrawn: ["tile-muted", "on-tile", "minus"],
+  queued: ["tile-muted", "circle-dashed"], held: ["tile-hold", "pause"], ready: ["tile-live", "circle-dot"],
+  running: ["tile-live", null], asleep: ["tile-muted", "moon"], blocked: ["tile-warn", "hand"],
+  done: ["tile-ok", "check"], failed: ["tile-danger", "circle-x"], dropped: ["tile-muted", "minus"],
+  moved: ["tile-muted", "arrow-right"], lost: ["tile-warn", "unplug"], ask: ["wait", "ask"],
+  answered: ["tile-muted", "check"], withdrawn: ["tile-muted", "minus"],
   // A scorer's verdict: an error means the scorer broke, not the run.
-  pass: ["tile-ok", "on-tile", "check"], fail: ["tile-danger", "on-tile", "circle-x"], error: ["tile-warn", "on-tile", "circle-alert"],
-  "not applicable": ["tile-muted", "on-tile", "minus"],
+  pass: ["tile-ok", "check"], fail: ["tile-danger", "circle-x"], error: ["tile-warn", "circle-alert"],
+  "not applicable": ["tile-muted", "minus"],
 };
 // A task state's text color (DESIGN.md, State tile); the other states take --text-2.
 const ROLE = /** @type {Record<string, string>} */ ({ running: "action-text", ready: "action-text", blocked: "warn-text", failed: "danger-text", done: "ok-text" });
@@ -47,16 +47,22 @@ async function connect() {
   const client = priory({ exec, binary, on, factory: config.factory ?? null });
   // Links are optional: without a factory priory can read, the panel shows its text unlinked.
   const links = await client.links().then((read) => read.links, () => []);
-  return { theme: config.theme ?? "indigo", client, links };
+  return { theme: config.theme ?? "graphite", client, links };
 }
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
 
 // One task in detail, opened from another Priory panel; Herdr has no task view of its own.
 export default class PrioryTask extends View {
-  init() {
+  /** @param {unknown} _props @param {import("gpui-kit").AsyncContext} cx */
+  init(_props, cx) {
     /** @type {{ theme: string, client: ReturnType<typeof priory>, links: { pattern: string, url: string }[] } | null} */
     this.priory = null;
+    // Connect before any task opens, so the empty panel already draws the factory's theme.
+    cx.spawn(async (cx) => {
+      this.priory ??= await connect().catch(() => null);
+      cx.notify();
+    });
     /** @type {number | null} the task shown */
     this.id = null;
     /** @type {any} its last read, `priory task ID --json` */
@@ -85,6 +91,7 @@ export default class PrioryTask extends View {
       wait: (since) => client.wait(since),
       sleep: (ms) => cx.sleep(ms),
       failed: (error) => {
+        this.theme = this.priory?.theme ?? this.theme;
         this.priory = null;
         this.error = message(error);
         cx.notify();
@@ -98,9 +105,10 @@ export default class PrioryTask extends View {
   render(cx) {
     const request = /** @type {{ task?: number } | null} */ (shared("priory.task.open"));
     if (request?.task != null && request.task !== this.id) this.show(request.task, cx);
-    const theme = this.priory?.theme ?? "indigo";
+    // The last theme read stays while Priory is unreachable.
+    const theme = (this.theme = this.priory?.theme ?? this.theme ?? "graphite");
     const t = /** @type {Palette} */ (palette(theme, cx.theme().appearance));
-    const font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.indigo;
+    const font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.graphite;
     const task = this.task ? taskView(this.task, { now: Date.now(), links: this.priory?.links ?? [] }) : null;
     const note = (/** @type {string} */ text) => div().p(S["space-4"]).whitespace_normal().text_color(t["text-2"]).child(text);
     return v_flex().id("priory-task").size_full().min_h_0().bg(t.bg).text_color(t.text).font_family(font.ui).text_size(S["type-body"][0])
@@ -111,7 +119,7 @@ export default class PrioryTask extends View {
           : this.error ? div() : note(`Loading task ${this.id}…`));
   }
 
-  /** @param {Task} task @param {Palette} t @param {typeof FONTS.indigo} font */
+  /** @param {Task} task @param {Palette} t @param {typeof FONTS.graphite} font */
   header(task, t, font) {
     return h_flex().flex_none().h(S["pane-head"]).px(S["space-4"]).gap(S["space-2"]).items_center().border_b(1).border_color(t.line)
       .child(this.tile(task.state, t))
@@ -125,7 +133,7 @@ export default class PrioryTask extends View {
 
   /** @param {string} id @param {string} label @param {boolean} readOnly @param {number} task @param {Palette} t */
   terminalButton(id, label, readOnly, task, t) {
-    return Button.new(id).h(S["control-fine"] - 4).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-card"])
+    return Button.new(id).h(S["control-fine"] - 4).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-md"])
       .border(1).border_color(t["control-line"]).bg(t.surface).text_color(t.text).text_size(S["type-small"][0]).font_weight(600)
       .hover((s) => s.bg(t.raised)).focus((s) => s.border(2).border_color(t["action-text"]))
       .on_click(() => setShared("priory.attach", { task, at: Date.now(), readOnly })).child(label);
@@ -134,7 +142,7 @@ export default class PrioryTask extends View {
   // The Asks panel is the one place to answer, as the Desk's Answer… opens it.
   /** @param {number | string} ask @param {Palette} t */
   answerButton(ask, t) {
-    return Button.new(`answer-ask:${ask}`).h(S["control-fine"] - 4).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-card"])
+    return Button.new(`answer-ask:${ask}`).h(S["control-fine"] - 4).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-md"])
       .border(1).border_color(t.action).bg(t.action).text_color(t["on-action"]).text_size(S["type-small"][0]).font_weight(600)
       .hover((s) => s.opacity(0.88)).focus((s) => s.border_color(t["on-action"]))
       .on_click(() => {
@@ -151,7 +159,7 @@ export default class PrioryTask extends View {
       .child(selectable("offline", `Reconnecting to priory: ${this.error}.${last}`));
   }
 
-  /** @param {Task} task @param {Palette} t @param {typeof FONTS.indigo} font */
+  /** @param {Task} task @param {Palette} t @param {typeof FONTS.graphite} font */
   body(task, t, font) {
     /** @param {string} title @param {number} count */
     const heading = (title, count) => h_flex().gap(S["space-2"]).text_size(S["type-caption"][0])
@@ -198,8 +206,7 @@ export default class PrioryTask extends View {
 
   /** @param {string} state @param {Palette} t */
   tile(state, t) {
-    const [fill, ink, icon] = TILES[state] ?? ["tile-muted", "on-tile", null];
-    return h_flex().size(18).flex_none().items_center().justify_center().rounded(S["radius-tile"]).bg(t[fill])
-      .child(icon ? svg(ICON(icon)).size(12).text_color(t[ink]) : div().size(6).rounded(3).bg(t[ink]));
+    const [role, icon] = TILES[state] ?? ["tile-muted", null];
+    return stateTile(state, icon && ICON(icon), role, t, "small");
   }
 }

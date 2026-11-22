@@ -17,7 +17,7 @@ const BY_WORD = { code: "code decides", model: "a model decides", human: "a pers
 const BY = /** @type {(keyof typeof BY_WORD)[]} */ (Object.keys(BY_WORD));
 
 /** @typedef {Record<string, import("gpui-kit").Color>} Palette */
-/** @typedef {typeof FONTS.indigo} Fonts */
+/** @typedef {typeof FONTS.graphite} Fonts */
 /** @typedef {ReturnType<typeof timeline>} Drawing */
 /** @typedef {Drawing["nodes"][number]} Node */
 /** @typedef {{ from: string, to: string, outcome: string, by: string, d: string, mid: { x: number, y: number }, back: boolean, vertical: boolean, ungated: boolean }} Edge */
@@ -38,7 +38,7 @@ async function connect() {
   const home = found.code === 0 ? found.stdout.trim() : "";
   if (!home.startsWith("/")) throw new Error(`No home folder on ${on ?? "this machine"}`);
   if (binary.startsWith("~/")) binary = home + binary.slice(1);
-  return { theme: config.theme ?? "indigo", client: priory({ exec, binary, on, factory: config.factory ?? null }) };
+  return { theme: config.theme ?? "graphite", client: priory({ exec, binary, on, factory: config.factory ?? null }) };
 }
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
@@ -76,7 +76,7 @@ export default class PrioryFlows extends View {
     /** @type {Set<string>} the workflows whose steps show as text */
     this.asText = new Set();
     /** @type {Fonts} */
-    this.font = FONTS.indigo;
+    this.font = FONTS.graphite;
     this.load(cx);
   }
 
@@ -92,6 +92,7 @@ export default class PrioryFlows extends View {
         this.flows = await this.priory.client.flows();
         this.error = null;
       } catch (error) {
+        this.theme = this.priory?.theme ?? this.theme;
         this.priory = null;
         this.error = message(error);
       }
@@ -102,9 +103,10 @@ export default class PrioryFlows extends View {
 
   /** @param {import("gpui-kit").Context} cx */
   render(cx) {
-    const theme = this.priory?.theme ?? "indigo";
+    // The last theme read stays while Priory is unreachable.
+    const theme = (this.theme = this.priory?.theme ?? this.theme ?? "graphite");
     const t = /** @type {Palette} */ (palette(theme, cx.theme().appearance));
-    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.indigo;
+    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.graphite;
     const pad = this.width >= S["pane-split"] ? S["space-5"] : S["space-4"];
     return v_flex().id("priory-flows").size_full().min_h_0().bg(t.bg).text_color(t.text).font_family(this.font.ui).text_size(S["type-body"][0])
       .on_size_change(({ width }, cx) => {
@@ -250,7 +252,7 @@ export default class PrioryFlows extends View {
 
   /** @param {string} id @param {string} label @param {(cx: import("gpui-kit").Context) => void} action @param {Palette} t */
   secondary(id, label, action, t) {
-    return Button.new(id).h(S["control-fine"] - 4).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-card"]).border(1).border_color(t["control-line"])
+    return Button.new(id).h(S["control-fine"] - 4).px(S["space-3"]).flex().flex_none().items_center().rounded(S["radius-md"]).border(1).border_color(t["control-line"])
       .bg(t.surface).text_color(t.text).text_size(S["type-small"][0]).font_weight(600).hover((s) => s.bg(t.raised))
       .focus((s) => s.border(2).border_color(t["action-text"])).on_click((_event, cx) => action(cx)).child(label);
   }

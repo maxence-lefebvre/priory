@@ -36,7 +36,7 @@ function element(kind, id = null, props = {}) {
 }
 
 /** An element's node, or the node itself, as `find` returns it. @param {any} value */
-const nodeOf = (value) => (value && (value[NODE] ?? (Array.isArray(value.kids) ? value : null))) || null;
+export const nodeOf = (value) => (value && (value[NODE] ?? (Array.isArray(value.kids) ? value : null))) || null;
 
 /** The path of nodes from `root` to the element with `id`, or null. @param {any} root @param {string} id */
 function pathTo(root, id) {

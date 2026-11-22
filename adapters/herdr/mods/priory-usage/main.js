@@ -36,7 +36,7 @@ async function connect() {
   const home = found.code === 0 ? found.stdout.trim() : "";
   if (!home.startsWith("/")) throw new Error(`No home folder on ${on ?? "this machine"}`);
   if (binary.startsWith("~/")) binary = home + binary.slice(1);
-  return { theme: config.theme ?? "indigo", on, home, client: priory({ exec, binary, on, factory: config.factory ?? null }) };
+  return { theme: config.theme ?? "graphite", on, home, client: priory({ exec, binary, on, factory: config.factory ?? null }) };
 }
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
@@ -120,9 +120,10 @@ export default class PrioryUsage extends View {
 
   /** @param {import("gpui-kit").Context} cx */
   render(cx) {
-    const theme = this.priory?.theme ?? "indigo";
+    // The last theme read stays while Priory is unreachable.
+    const theme = (this.theme = this.priory?.theme ?? this.theme ?? "graphite");
     const t = /** @type {Palette} */ (palette(theme, cx.theme().appearance));
-    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.indigo;
+    this.font = FONTS[/** @type {keyof typeof FONTS} */ (theme)] ?? FONTS.graphite;
     return this.overlay ? this.detail(t) : this.line(t);
   }
 
@@ -130,7 +131,7 @@ export default class PrioryUsage extends View {
   detail(t) {
     const costs = this.costs;
     const body = v_flex().id("usage-detail").size_full().min_h_0().overflow_y_scrollbar().p(S["space-3"]).gap(S["space-3"])
-      .bg(t.surface).text_color(t.text).font_family(this.font?.ui ?? FONTS.indigo.ui).text_size(S["type-caption"][0]);
+      .bg(t.surface).text_color(t.text).font_family(this.font?.ui ?? FONTS.graphite.ui).text_size(S["type-caption"][0]);
     if (!costs) return body.child(div().text_color(this.error ? t["warn-text"] : t["text-3"]).child(this.error ? selectable("usage-error", `Could not read costs: ${this.error}`) : "Reading costs…"));
     const heading = (/** @type {string} */ title, /** @type {string} */ meta = "") => h_flex().justify_between().font_weight(600).text_color(t["text-3"])
       .child(title).when(Boolean(meta), (el) => el.child(div().font_weight(400).child(meta)));
@@ -154,12 +155,12 @@ export default class PrioryUsage extends View {
         }))))
       .child(section("usage-workflows").child(heading("This week by workflow", money(costs.current.cost_usd)))
         .children((costs.split ?? []).map((/** @type {any} */ row) => h_flex().justify_between()
-          .child(div().font_family(this.font?.mono ?? FONTS.indigo.mono).child(String(row[costs.by] ?? "-")))
+          .child(div().font_family(this.font?.mono ?? FONTS.graphite.mono).child(String(row[costs.by] ?? "-")))
           .child(div().text_color(t["text-2"]).child(money(row.cost_usd))))))
       .when(held.length > 0, (el) => el.child(section("usage-held").child(heading("Held at a cap", String(held.length)))
         .children(held.map((row) => h_flex().id(`held-${row.task}`).gap(S["space-2"]).items_start().px(S["space-2"]).py(S["space-1"]).rounded(S["radius-sm"])
           .hover((s) => s.bg(t.raised)).on_click(() => this.openTask(row.task))
-          .child(div().flex_none().font_family(this.font?.mono ?? FONTS.indigo.mono).text_color(t["action-text"]).child(row.key))
+          .child(div().flex_none().font_family(this.font?.mono ?? FONTS.graphite.mono).text_color(t["action-text"]).child(row.key))
           .child(div().flex_1().min_w_0().whitespace_normal().text_color(t["text-2"]).child(`spent ${money(row.spent_usd)} of ${owner(row.scope)} ${row.period} cap of ${money(row.cap_usd)}`))))))
       .when(Boolean(this.claude), (el) => el.child(section("usage-claude").child(heading("Claude subscription"))
         .child(this.bar("claude-fill", "7-day limit", `${Math.round(this.claude?.used ?? 0)}%${this.claude?.resets ? `, resets in ${left(this.claude.resets - Date.now() / 1000)}` : ""}`, (this.claude?.used ?? 0) / 100, t))));
@@ -170,8 +171,8 @@ export default class PrioryUsage extends View {
     const fill = fraction >= 1 ? t["tile-danger"] : fraction >= WARN ? t["tile-warn"] : t["text-2"];
     return v_flex().gap(S["space-1"])
       .child(h_flex().justify_between().gap(S["space-2"]).child(div().truncate().child(label)).child(div().flex_none().text_color(t["text-2"]).child(value)))
-      .child(div().h(6).w_full().rounded(S["radius-full"]).bg(t.raised).overflow_hidden()
-        .child(div().id(id).h_full().rounded(S["radius-full"]).bg(fill).w(`${Math.round(Math.min(1, fraction) * 100)}%`)));
+      .child(div().h(6).w_full().rounded(S["radius-sm"]).bg(t.raised).overflow_hidden()
+        .child(div().id(id).h_full().rounded(S["radius-sm"]).bg(fill).w(`${Math.round(Math.min(1, fraction) * 100)}%`)));
   }
 
   /** @param {number} task */
@@ -210,7 +211,7 @@ export default class PrioryUsage extends View {
     }
     return h_flex().id("usage-line").size_full().px(S["space-3"]).gap(S["space-2"]).items_center().overflow_hidden().whitespace_nowrap()
       .hover((s) => s.bg(t.raised)).on_click(() => this.open())
-      .bg(t.bar).border_t(1).border_color(t.line).font_family(this.font?.ui ?? FONTS.indigo.ui).text_size(12)
+      .bg(t.bar).border_t(1).border_color(t.line).font_family(this.font?.ui ?? FONTS.graphite.ui).text_size(12)
       .on_size_change(({ width }, cx) => {
         if (Math.abs(width - this.width) < 1) return;
         this.width = width;

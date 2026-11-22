@@ -78,9 +78,10 @@ state database and never writes a file in the factory.
 
 - **Which Priory.** A mod runs the program that the `priory` object of Herdr's `settings.json`
   names, on the Herdr machine it names: `{"priory": {"binary": "~/.local/bin/priory-oss",
-  "machine": "desktop", "factory": "/home/me/factory", "theme": "indigo", "web":
+  "machine": "desktop", "factory": "/home/me/factory", "theme": "graphite", "web":
   "http://127.0.0.1:7070"}}`. Every field is optional.
-  `theme` is `indigo`, `ink`, `parchment` or `abbey`, and defaults to `indigo`. `binary` defaults
+  `theme` is `graphite`, `indigo`, `ink`, `parchment` or `abbey`, and defaults to `graphite`. A panel
+  keeps the last theme it read while Priory is unreachable. `binary` defaults
   to `~/.local/bin/priory-oss`, and a leading `~` means the home folder on Priory's machine. A name
   without a slash is looked up on the `PATH`. `machine` defaults to the machine Herdr runs on. `factory` is the folder
   that `queue` and `schedules` read for up next, `costs` reads its prices from, and `flows` draws. The program must find its state file, so set
