@@ -268,3 +268,69 @@ fn the_reference_pages_show_every_example_file_as_it_is() {
         .collect();
     assert!(unshown.is_empty(), "no reference page shows {unshown:?}");
 }
+
+/// The commands `priory` prints with no arguments, one per line, without the leading `usage:`
+/// and any trailing note.
+fn usage_lines() -> Vec<String> {
+    let output = Command::new(env!("CARGO_BIN_EXE_priory")).output().unwrap();
+    String::from_utf8(output.stderr)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let line = line.trim_start_matches("usage:").trim();
+            line.split("    ").next().unwrap().to_string()
+        })
+        .collect()
+}
+
+/// Every `priory ...` code span of `text`.
+fn commands(text: &str) -> Vec<&str> {
+    text.split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|span| span.starts_with("priory "))
+        .collect()
+}
+
+#[test]
+fn the_cli_page_lists_every_usage_line_and_nothing_else() {
+    let page = fs::read_to_string(reference().join("cli.md")).unwrap();
+    let usage = usage_lines();
+    let documented = commands(&page);
+    let missing: Vec<_> = usage
+        .iter()
+        .filter(|line| !documented.contains(&line.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "cli.md misses these usage lines: {missing:#?}"
+    );
+
+    for command in documented {
+        let verb = words(command).nth(1).unwrap();
+        // A verb's lines include the lines that only mention it, which keeps the check lenient.
+        let lines: Vec<_> = usage
+            .iter()
+            .filter(|line| words(line).skip(1).any(|word| word == verb))
+            .collect();
+        assert!(
+            !lines.is_empty(),
+            "cli.md names `{command}`, whose verb `priory` does not have"
+        );
+        for flag in words(command).filter(|word| word.starts_with("--")) {
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| words(line).any(|word| word == flag)),
+                "cli.md names `{command}`, whose verb {verb} takes no {flag}"
+            );
+        }
+    }
+}
+
+/// The words of a command, without its brackets, bars and placeholders' punctuation.
+fn words(command: &str) -> impl Iterator<Item = &str> {
+    command
+        .split(|c: char| !(c.is_alphanumeric() || c == '-'))
+        .filter(|word| !word.is_empty())
+}

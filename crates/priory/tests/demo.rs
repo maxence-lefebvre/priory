@@ -30,7 +30,7 @@ fn the_demo_sends_answers_to_both_other_runners_asks() {
 
     for (ask, option, revision, runner) in [
         ("laptop:4", "split it", "2", "laptop"),
-        ("xps13:12", "approved", "1", "xps13"),
+        ("desktop:12", "approved", "1", "desktop"),
     ] {
         let sent = Command::new(real)
             .args(["answer"])
