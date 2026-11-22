@@ -159,6 +159,8 @@ it needs the token, passes the Origin rule and reaches the daemon on its socket.
 - A repeated `request` gets the first outcome and sends nothing, even once the grant ended.
   `uncertain` means the daemon stopped between storing the request and its outcome, or tmux did
   not answer within the command timeout: it may have reached the pane, and it is never sent again.
+- A grant follows a run carried into the next step on the same pane, so the earlier run's id
+  still reaches it.
 - A secret of an expired, returned or replaced grant gets `403`, naming why it ended. A run that
   ended gets `404`, and a stale `revision` `409`.
 

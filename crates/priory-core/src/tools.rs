@@ -2832,10 +2832,16 @@ fn step_in(
                  SELECT ?1, ?2, ?3, ?4, ?5, 1, 1, transcript, read, thread FROM runs WHERE id = ?6",
                 params![task, target, run.agent, run.tmux, run.session, run.id],
             )?;
+            let carried = tx.last_insert_rowid();
             // Its process carries on, so an unconfirmed prompt may still sit in its input.
             tx.execute(
                 "UPDATE outbox SET run = ?2 WHERE run = ?1 AND state IN ('attempted', 'uncertain')",
-                params![run.id, tx.last_insert_rowid()],
+                params![run.id, carried],
+            )?;
+            // The pane stays the same, so a person typing in it keeps the keyboard.
+            tx.execute(
+                "UPDATE keyboard_grants SET run = ?2 WHERE run = ?1 AND ended IS NULL",
+                params![run.id, carried],
             )?;
             set(tx, task, "running", Some(target), None)?;
             Ok(None)

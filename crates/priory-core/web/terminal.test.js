@@ -493,6 +493,22 @@ test("leaving the run, signing out or a switch gives the grant back, and a late 
   assert.equal(signedOut(), 0, "a stale 401 signs nobody out");
 });
 
+test("a run carried into the next step on the same pane keeps the grant, and a new pane gives it back", async () => {
+  const { session, asked, granted, reply, settle } = desk();
+  session.at(4, "1/priory-1");
+  session.take(4, 8);
+  await granted();
+  session.at(5, "1/priory-1");
+  assert.deepEqual([session.state().run, session.state().held], [5, { grant: 1, ends: "2026-11-22T14:15:00Z" }]);
+  session.send({ key: "Enter" });
+  await settle();
+  assert.equal(asked.at(-1).path, "/api/runs/5/keys");
+  await reply(200, { outcome: "sent" });
+  session.at(6, "2/priory-2");
+  assert.deepEqual([asked.at(-1).path, asked.at(-1).body], ["/api/runs/5/keyboard/return", { secret: "s1" }]);
+  assert.equal(session.state().held, null);
+});
+
 test("a grant expires at its end, and its stuck send never blocks the next grant", async () => {
   const { session, asked, granted, reply, tick, settle } = desk();
   session.at(4);

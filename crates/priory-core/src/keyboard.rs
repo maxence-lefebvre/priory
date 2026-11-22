@@ -19,6 +19,9 @@ const MOST: usize = 1024;
 /// The most bytes a request id may hold.
 const REQUEST: usize = 64;
 const NOW: &str = "strftime('%Y-%m-%dT%H:%M:%SZ', 'now')";
+/// A grant on run ?1's pane: of ?1, or of the run that carried ?1's process into the next step.
+const ON_PANE: &str = "run IN (SELECT pane.id FROM runs AS pane JOIN runs AS asked ON asked.id = ?1
+  WHERE pane.task = asked.task AND pane.tmux = asked.tmux AND pane.session IS asked.session)";
 
 /// What one request sends: printable text, pasted as is, or one key of `KEYS`.
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -176,7 +179,7 @@ pub(crate) fn give_back(
 ) -> rusqlite::Result<Result<String, String>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let grant = match open(&tx, held)? {
-        Ok(grant) => grant,
+        Ok((grant, _)) => grant,
         Err(refused) => return Ok(Err(refused)),
     };
     end(&tx, trace, grant, "returned")?;
@@ -184,15 +187,17 @@ pub(crate) fn give_back(
     Ok(Ok(format!("run {}'s keyboard returned", held.run)))
 }
 
-/// The open grant `held` names, or why there is none.
-fn open(db: &Connection, held: &Held) -> rusqlite::Result<Result<i64, String>> {
-    let found: Option<(i64, Option<String>)> = db
+/// The open grant `held` names and the run it is on now, or why there is none.
+fn open(db: &Connection, held: &Held) -> rusqlite::Result<Result<(i64, i64), String>> {
+    let found: Option<(i64, i64, Option<String>)> = db
         .query_row(
-            "SELECT id, CASE WHEN why IS NULL AND julianday(ends) <= julianday('now')
-               THEN 'expired' ELSE why END
-             FROM keyboard_grants WHERE run = ?1 AND hash = ?2",
+            &format!(
+                "SELECT id, run, CASE WHEN why IS NULL AND julianday(ends) <= julianday('now')
+                   THEN 'expired' ELSE why END
+                 FROM keyboard_grants WHERE hash = ?2 AND {ON_PANE}"
+            ),
             params![held.run, held.hash],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
     Ok(match found {
@@ -200,11 +205,11 @@ fn open(db: &Connection, held: &Held) -> rusqlite::Result<Result<i64, String>> {
             "no keyboard grant of run {} has this secret: take the keyboard",
             held.run
         )),
-        Some((_, Some(why))) => Err(format!(
+        Some((_, _, Some(why))) => Err(format!(
             "your keyboard grant of run {} ended ({why}): take the keyboard again",
             held.run
         )),
-        Some((grant, None)) => Ok(grant),
+        Some((grant, run, None)) => Ok((grant, run)),
     })
 }
 
@@ -230,7 +235,7 @@ pub(crate) fn keys(
     };
     let any: Option<i64> = tx
         .query_row(
-            "SELECT id FROM keyboard_grants WHERE run = ?1 AND hash = ?2",
+            &format!("SELECT id FROM keyboard_grants WHERE hash = ?2 AND {ON_PANE}"),
             params![held.run, held.hash],
             |row| row.get(0),
         )
@@ -246,11 +251,11 @@ pub(crate) fn keys(
         let outcome = outcome.unwrap_or_else(|| "uncertain".to_owned());
         return Ok(Ok(reply(&outcome, error.as_deref(), true)));
     }
-    let grant = match open(&tx, &held)? {
-        Ok(grant) => grant,
+    let (grant, on) = match open(&tx, &held)? {
+        Ok(found) => found,
         Err(refused) => return Ok(Err(refused)),
     };
-    let run = match state::live_run(&tx, &state::Attach::Run(keys.run)) {
+    let run = match state::live_run(&tx, &state::Attach::Run(on)) {
         Ok(run) => run,
         Err(refused) => return Ok(Err(refused)),
     };

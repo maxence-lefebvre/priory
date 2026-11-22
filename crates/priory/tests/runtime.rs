@@ -21228,6 +21228,45 @@ fn an_expired_returned_or_replaced_grant_is_refused_and_each_end_is_recorded() {
 }
 
 #[test]
+fn a_run_carried_into_the_next_step_keeps_its_keyboard_grant_and_its_prompt_waits_for_it() {
+    let mut setup = Setup::with_workflow("keys-carried", STEPS);
+    setup.calls(&[result("ready")]);
+    setup.hold("hold-call");
+    let (mut server, address) = serving(&setup, TYPE, &[("TEST_TOKEN", SERVE_TOKEN)]);
+    setup.publish(&requested(42));
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("TEST_TOKEN", SERVE_TOKEN)],
+    );
+    setup.written("fake/submitted");
+    let secret = take_keyboard(&address);
+
+    setup.release("hold-call");
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+
+    assert_eq!(runs[0][7], "moved");
+    let grants: (i64, Option<String>) = rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .query_row("SELECT run, why FROM keyboard_grants", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(grants, (2, None));
+    assert_eq!(setup.rows("outbox")[1][3], "queued");
+    assert_eq!(setup.typed().len(), 1);
+    // A page that still draws run 1 reaches the grant on the same pane.
+    let (status, _) = post(
+        &address,
+        "/api/runs/1/keyboard/return",
+        json!({ "secret": secret }),
+    );
+    assert_eq!(status, 200);
+    setup.until("outbox", |rows| rows[1][3] == "confirmed");
+    server.kill().unwrap();
+    server.wait().unwrap();
+}
+
+#[test]
 fn the_outbox_types_nothing_into_a_run_whose_keyboard_a_person_holds() {
     let (setup, mut server, address) = Setup::typing("keys-outbox");
     let secret = take_keyboard(&address);

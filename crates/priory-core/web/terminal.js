@@ -215,7 +215,7 @@ export async function giveBack(post, run, secret) {
  */
 export function keyboardSession({ post, signOut = () => {}, changed = () => {}, format = (iso) => iso, timer = setTimeout, clear = clearTimeout, now = Date.now }) {
   // `generation` moves whenever the page leaves a run; `held` carries the grant, its secret and its queue.
-  let generation = 0, run = null, held = null, returning = false, ended = null, note = null, pasting = false, expiry = null;
+  let generation = 0, run = null, pane = null, held = null, returning = false, ended = null, note = null, pasting = false, expiry = null;
 
   function drop(why) {
     clear(expiry);
@@ -225,11 +225,15 @@ export function keyboardSession({ post, signOut = () => {}, changed = () => {}, 
 
   return {
     state: () => ({ run, held: held && { grant: held.grant, ends: held.ends }, returning, ended, note, pasting }),
-    /** The pane shows run `next`: a grant on another run goes back. */
-    at(next) {
+    /**
+     * The pane shows run `next` on tmux pane `on`: a grant on another pane goes back. A run carried
+     * into the next step keeps its pane, and the server moved the grant with it.
+     */
+    at(next, on = null) {
       if (next === run) return;
+      if (held && next !== null && on !== null && on === pane) return void ((run = next), changed());
       this.leave();
-      run = next;
+      [run, pane] = [next, on];
     },
     /** The page left the run, or signs out: its grant goes back, without waiting. */
     leave() {
