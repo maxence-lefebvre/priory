@@ -86,7 +86,6 @@ compactAt = 150000             # compact between turns once the context reaches 
 memory = "6GB"                 # what a runner must have free to admit a run
 disk = "20GB"                  # disk a run reserves above the runner's floor
 mcpServers = ["github"]
-skills = ["review-comments"]   # unset: every skill; []: none
 permissions = { defaultMode = "auto", allow = ["Bash(cargo test:*)"], deny = ["Bash(git push:*)"] }
 +++
 # Implementation
