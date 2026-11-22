@@ -34,6 +34,11 @@ does and the page that describes it.
 
 - `priory intake [DIR] [--once]`: polls the sources and publishes events. `--once` polls once and
   exits. See [the intake](../intake/README.md).
+- `priory intake pre [DIR] TRIGGER < EVENT.json`: runs the trigger's `pre` script on one source
+  event, read on stdin as the log holds it, and prints `{ "outcome", "failed", "message" }`:
+  `published` or `dropped`, how the script failed or null, and the message the intake would
+  publish. It publishes nothing and posts no report. It fails for a trigger without `[pre]`. See
+  [pre.md](../intake/pre.md).
 - `priory daemon [DIR] [--once]`: routes events to tasks and runs agents. `--once` routes what is
   pending, starts no run and exits. See [the daemon](../daemon/README.md).
 - `priory daemon --view-only [DIR]`: on a machine with no runner file, mirrors every runner's asks

@@ -24,6 +24,7 @@ mod model;
 mod notify;
 mod otlp;
 mod overlap;
+pub mod pending;
 pub mod post;
 pub mod progress;
 pub mod proof;

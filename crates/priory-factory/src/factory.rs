@@ -1129,6 +1129,52 @@ pub struct Trigger {
     pub lead: Option<String>,
     /// Spend caps in dollars for the trigger's tasks.
     pub caps: Option<Limits>,
+    /// A script of the factory that runs on each matching event before it becomes a task request,
+    /// and can drop the request or change it.
+    pub pre: Option<Pre>,
+}
+
+/// A trigger's `[pre]` script. Priory execs `argv` with no shell, writes the event and the request
+/// as JSON on its stdin, and reads its decision from its exit and stdout.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Pre {
+    /// The command and its arguments. The first is an executable file inside the factory folder.
+    #[schemars(length(min = 1))]
+    pub argv: Vec<String>,
+    /// How long it may run, at most `60s`; 10 seconds when unset.
+    #[serde(default, deserialize_with = "duration")]
+    #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
+    pub timeout: Option<Duration>,
+    /// Environment variables copied from the process that runs it, beside `PATH`, `LANG` and
+    /// `HOME`.
+    #[serde(default)]
+    pub env: Vec<String>,
+    /// What a script that fails does with the request: `pass` publishes it unchanged, `drop`
+    /// drops it. `pass` when unset.
+    #[serde(default)]
+    pub on_error: OnError,
+}
+
+impl Pre {
+    /// The longest `timeout` a `pre` script may have.
+    pub const MAX_TIMEOUT: Duration = Duration::from_secs(60);
+
+    /// Its timeout, 10 seconds when unset.
+    pub fn timeout(&self) -> Duration {
+        self.timeout.unwrap_or(Duration::from_secs(10))
+    }
+}
+
+/// What a failed `pre` script does with its request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum OnError {
+    /// The request is published unchanged, with `pre.failed`.
+    #[default]
+    Pass,
+    /// The request is dropped.
+    Drop,
 }
 
 /// Why a task is held, and the conditions that release it once all of them hold. With none, a

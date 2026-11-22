@@ -6113,6 +6113,120 @@ fn a_signed_sentry_issue_created_delivery_publishes_the_event_and_requests_a_tas
     assert_eq!(published[1].subject.as_deref(), Some("sentry:1234567890"));
 }
 
+impl Setup {
+    /// The Sentry factory with a `pre` script on its trigger that waits for the file `go` in the
+    /// factory folder, counts its runs in `runs`, then prints a key in GitHub's shape.
+    fn sentry_pre(name: &str) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let setup = Setup::sentry_hooks(name);
+        let trigger = setup.dir.join("factory/triggers/sentry-errors.toml");
+        let mut text = fs::read_to_string(&trigger).unwrap();
+        text.push_str("\n[pre]\nargv = [\"scripts/pre\"]\ntimeout = \"60s\"\n");
+        fs::write(&trigger, text).unwrap();
+        let script = setup.dir.join("factory/scripts/pre");
+        fs::create_dir_all(script.parent().unwrap()).unwrap();
+        fs::write(
+            &script,
+            "#!/bin/sh\ncat >/dev/null\necho run >> \"$PRIORY_FACTORY/runs\"\nwhile [ ! -e \"$PRIORY_FACTORY/go\" ]; do sleep 0.05; done\necho '{\"key\": \"github:owner/name#42\"}'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        setup
+    }
+
+    /// Waits until the log holds `count` task requests, and returns them.
+    fn until_requests(&self, count: usize) -> Vec<herdr_bus::Message> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let requests: Vec<_> = self
+                .published()
+                .into_iter()
+                .filter(|message| message.kind == "factory.task.requested")
+                .collect();
+            if requests.len() >= count {
+                return requests;
+            }
+            assert!(Instant::now() < deadline, "{requests:?}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn pending(&self) -> i64 {
+        rusqlite::Connection::open(self.dir.join("priory.db"))
+            .unwrap()
+            .query_row("SELECT count(*) FROM pending_requests", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    }
+}
+
+#[test]
+fn a_sentry_delivery_gets_its_202_before_the_pre_script_ends_and_the_key_stays_sentrys() {
+    let mut setup = Setup::sentry_pre("sentry-pre");
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, reply) = setup.send_sentry(&address, "issue", &sentry_issue("created", "python"));
+
+    assert_eq!(
+        (status, reply.as_str()),
+        (202, r#"{"outcome":"published"}"#)
+    );
+    let kinds: Vec<_> = setup.published().into_iter().map(|m| m.kind).collect();
+    assert_eq!(kinds, ["sentry.issue.created"]);
+    fs::write(setup.dir.join("factory/go"), "").unwrap();
+    let requests = setup.until_requests(1);
+    assert_eq!(requests[0].data["key"], "sentry:github:owner/name#42");
+    assert_eq!(
+        requests[0].data["pre"]["key"],
+        json!({ "from": "sentry:1234567890", "to": "sentry:github:owner/name#42" })
+    );
+    succeeded(&setup.priory(&["daemon", &setup.factory(), "--once"]));
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let owned: Vec<String> = db
+        .prepare("SELECT resource FROM owns")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(owned, ["sentry:github:owner/name#42"]);
+}
+
+#[test]
+fn a_server_restarted_before_the_pre_script_ended_runs_it_again_and_publishes_once() {
+    let mut setup = Setup::sentry_pre("sentry-pre-restart");
+    let address = setup.start(&["serve", &setup.factory()]);
+    let (status, _) = setup.send_sentry(&address, "issue", &sentry_issue("created", "python"));
+    assert_eq!(status, 202);
+    assert_eq!(setup.pending(), 1);
+    let runs = setup.dir.join("factory/runs");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !runs.exists() {
+        assert!(Instant::now() < deadline, "the script never started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    setup.server_log();
+
+    fs::write(setup.dir.join("factory/go"), "").unwrap();
+    setup.start(&["serve", &setup.factory()]);
+
+    let requests = setup.until_requests(1);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while setup.pending() > 0 {
+        assert!(Instant::now() < deadline, "the request stays pending");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(requests.len(), 1);
+    assert_eq!(setup.until_requests(1).len(), 1);
+    let ran = fs::read_to_string(&runs).unwrap();
+    assert_eq!(
+        ran.lines().count(),
+        2,
+        "once before the restart, once after"
+    );
+}
+
 #[test]
 fn a_sentry_delivery_with_a_wrong_or_missing_signature_gets_401_before_it_is_read() {
     let mut setup = Setup::sentry_hooks("sentry-refused");

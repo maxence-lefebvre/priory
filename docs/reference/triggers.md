@@ -21,6 +21,7 @@ cannot tell which keys a source refuses; `priory check` does.
 - [`schedule`](#schedule)
 - [Task requests: `triggers/cli.toml` and `hold`](#task-requests-triggersclitoml-and-hold)
 - [`intervention` and `lead`](#intervention-and-lead)
+- [`pre`](#pre)
 - [Errors from `priory check`](#errors-from-priory-check)
 
 ## Keys every trigger takes
@@ -37,6 +38,7 @@ cannot tell which keys a source refuses; `priory check` does.
 | `intervention` | `plan` or `hands-off` | no | a person answers every ask | Who answers its tasks' asks. See [`intervention` and `lead`](#intervention-and-lead) | `"plan"` |
 | `lead` | string | with `hands-off` | | The agent that answers asks of a `hands-off` task | `"lead"` |
 | `caps` | table | no | no cap | Spend caps in dollars for its tasks: `task`, `day` and `week`, each above zero. See [spend.md](../daemon/spend.md) | `{ task = 2.0, day = 10.0 }` |
+| `pre` | table | no | | A script that runs on each matching event before its task request, and can drop or change it. See [`pre`](#pre) | `{ argv = ["scripts/sentry-pre"] }` |
 
 Without a `repo`, a Linear, Sentry, Honeycomb, Intercom or Slack trigger's tasks block before their first run.
 
@@ -385,6 +387,34 @@ intervention = "hands-off"
 lead = "lead"                  # agents/lead/agent.md, with session = "shared"
 ```
 
+## `pre`
+
+`[pre]` names a script of the factory that runs on each event the trigger matches, before the
+request is published. What the script does with the request is in
+[pre.md](../intake/pre.md). Every source takes it, except `triggers/cli.toml`.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `argv` | list of strings | yes | | The command and its arguments, run with no shell. The first is an executable file inside the factory folder | `["scripts/sentry-pre", "--min-level", "error"]` |
+| `timeout` | duration | no | `10s` | How long it may run, at most `60s`, counted from its start | `"10s"` |
+| `env` | list of strings | no | `[]` | Variables copied from the process that runs it, beside `PATH`, `LANG`, `HOME`, `PRIORY_FACTORY` and `PRIORY_TRIGGER` | `["AMPLITUDE_READ_TOKEN"]` |
+| `on_error` | `pass` or `drop` | no | `pass` | What a script that fails does with the request: `pass` publishes it unchanged, `drop` drops it | `"drop"` |
+
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "sentry"
+on = "issue.created"
+repo = "owner/name"
+filter = { project = "api" }
+workflow = "bug-investigation"
+key = "issue.id"
+
+[pre]
+argv = ["scripts/sentry-pre", "--min-level", "error"]
+timeout = "10s"
+env = ["AMPLITUDE_READ_TOKEN"]
+```
+
 ## Errors from `priory check`
 
 | Message | Cause |
@@ -439,3 +469,10 @@ lead = "lead"                  # agents/lead/agent.md, with session = "shared"
 | `` `intervention = "hands-off"` needs a `lead`: the agent that answers asks in the person's place `` | `hands-off` without `lead` |
 | `` lead `<agent>` does not exist `` | `lead` names no file under `agents/` |
 | `` lead `<agent>` needs harness = "claude-code" and session = "shared" `` | A `lead` that is a Codex agent or has a `per-task` session |
+| `` `[pre] argv`: <program> leaves the factory folder `` | An absolute `argv[0]`, one with `..`, or a symbolic link that resolves outside the factory folder |
+| `` `[pre] argv`: <program> is not a file in the factory folder `` | `argv[0]` names no file |
+| `` `[pre] argv`: <program> is not executable: chmod +x it `` | `argv[0]` is a file without an execute bit |
+| `` `[pre] argv` needs a program `` | `argv = []` |
+| `` `[pre] timeout` is <n>s: a pre script runs at most 60s `` | A `timeout` over `60s` |
+| `` `[pre] env`: `<name>` is not a variable name `` | An `env` entry that is not letters, digits and `_`, starting with a letter or `_` |
+| `` unknown variant `<value>`, expected `pass` or `drop` `` | Another `on_error` |

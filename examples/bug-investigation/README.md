@@ -19,7 +19,9 @@ with the Issue webhook pointed at `<url>/hooks/sentry`. Put the integration's Cl
 `SENTRY_CLIENT_SECRET` and a token in `PRIORY_TOKEN`. Replace `my-project` in
 `triggers/sentry-issue.toml` with your project's slug, or delete the file and the `[serve]` and
 `[webhooks.sentry]` tables to use GitHub alone. See
-[docs/intake/sentry.md](../../docs/intake/sentry.md).
+[docs/intake/sentry.md](../../docs/intake/sentry.md). Its `pre` script,
+`scripts/sentry-pre`, drops issues below `error` and keeps `error` and `fatal` (see
+[How to filter and enrich events with a script](../../docs/filtering-and-enriching-events.md)).
 
 The CloudWatch trigger needs the same server, reachable from AWS, and an EventBridge rule whose
 API destination posts to `<url>/hooks/cloudwatch`. Put the connection's API key value in

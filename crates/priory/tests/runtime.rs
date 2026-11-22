@@ -1213,6 +1213,50 @@ fn the_first_prompt_is_the_step_prompt_and_the_task_events_typed_once_and_confir
 }
 
 #[test]
+fn the_first_prompt_carries_the_title_text_and_context_a_pre_script_gave() {
+    let mut setup = Setup::new("first-prompt-pre");
+    let source = labeled(42);
+    let mut request = requested(42);
+    request.data["source"] = json!(source.id.to_string());
+    request.data["title"] = json!("Division by zero in /divide");
+    request.data["text"] = json!("Fix the division.");
+    request.data["context"] = json!("312 users hit it today.");
+    request.data["pre"] = json!({
+        "script": "scripts/sentry-pre",
+        "changed": ["title", "text", "context"],
+        "seconds": 0.1
+    });
+    for message in [&source, &request] {
+        setup.publish(message);
+    }
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let typed = setup.typed();
+    let lines: Vec<_> = typed[0].lines().collect();
+    assert!(
+        lines[2].starts_with("github.issues.labeled owner/repo#42 {"),
+        "{lines:?}"
+    );
+    assert!(
+        lines[2].contains(r#""title":"Division by zero in /divide""#),
+        "{lines:?}"
+    );
+    assert!(
+        lines[2].contains(r#""text":"Fix the division.""#),
+        "{lines:?}"
+    );
+    assert_eq!(
+        lines[3..],
+        [
+            "Context from the trigger's pre script scripts/sentry-pre:",
+            "312 users hit it today."
+        ]
+    );
+}
+
+#[test]
 fn an_event_kept_while_the_run_is_running_is_typed_after_the_next_stop() {
     let mut setup = Setup::new("message");
     setup.publish(&requested(42));

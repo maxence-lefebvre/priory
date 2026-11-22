@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 89;
+const VERSION: i64 = 90;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1606,6 +1606,32 @@ CREATE TABLE IF NOT EXISTS spend_reached (
 PRAGMA user_version = 89;
 ";
 
+// A `pre` script's title, text and context for a task, and the requests a server stores until it
+// runs their `pre` script.
+const SCHEMA_90: &str = "
+ALTER TABLE tasks ADD COLUMN pre_title TEXT;
+ALTER TABLE tasks ADD COLUMN pre_text TEXT;
+ALTER TABLE tasks ADD COLUMN pre_context TEXT;
+ALTER TABLE tasks ADD COLUMN pre_script TEXT;
+DROP VIEW task_text;
+CREATE VIEW task_text AS SELECT tasks.id AS task,
+  coalesce(tasks.pre_title, json_extract(inbox.data, '$.title'), '') AS title,
+  coalesce(tasks.pre_text, json_extract(inbox.data, '$.text'), json_extract(inbox.data, '$.body'),
+    json_extract(inbox.data, '$.description'), json_extract(inbox.data, '$.prompt'), '')
+    || coalesce(char(10) || tasks.pre_context, '') AS request,
+  coalesce(tasks.tldr, '') AS tldr,
+  coalesce((SELECT group_concat(summary || ' ' || coalesce(evidence, ''), ' ') FROM results
+    WHERE results.task = tasks.id), '') AS results
+  FROM tasks LEFT JOIN inbox ON inbox.id = tasks.source;
+CREATE TABLE IF NOT EXISTS pending_requests (
+  seq     INTEGER PRIMARY KEY AUTOINCREMENT,
+  id      TEXT NOT NULL UNIQUE,
+  pending TEXT NOT NULL,
+  stored  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+PRAGMA user_version = 90;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1619,6 +1645,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_66, SCHEMA_67, SCHEMA_68, SCHEMA_69, SCHEMA_70, SCHEMA_71, SCHEMA_72, SCHEMA_73,
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
+    SCHEMA_90,
 ];
 
 /// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
@@ -1939,8 +1966,10 @@ pub(crate) fn route_in(
         Decision::Create(new) => {
             tx.execute(
                 "INSERT INTO tasks
-                   (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, repo, entered, tldr, intervention, lead)
-                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?12, ?13, ?14)",
+                   (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, repo, entered, tldr, intervention, lead,
+                    pre_title, pre_text, pre_context, pre_script)
+                 VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?12, ?13, ?14,
+                   ?15, ?16, ?17, ?18)",
                 params![
                     new.key,
                     new.workflow,
@@ -1959,7 +1988,11 @@ pub(crate) fn route_in(
                         .filter(|tldr| !tldr.is_empty())
                         .map(|tldr| crate::search::fit(tldr, counter)),
                     new.intervention.map(|intervention| intervention.as_str()),
-                    new.lead
+                    new.lead,
+                    new.title,
+                    new.text,
+                    new.context,
+                    new.pre.as_ref().map(|pre| &pre.script)
                 ],
             )?;
             let id = tx.last_insert_rowid();
@@ -3326,11 +3359,12 @@ pub(crate) fn unread(
     except: Option<i64>,
 ) -> rusqlite::Result<Vec<(i64, bool, String)>> {
     let mut statement = tx.prepare(
-        "SELECT seq, 0, type, subject, data FROM inbox WHERE outbox IS NULL AND seq IS NOT ?3
+        "SELECT seq, 0, type, subject, data, id = (SELECT source FROM tasks WHERE id = ?1)
+         FROM inbox WHERE outbox IS NULL AND seq IS NOT ?3
            AND ((task = ?1 AND outcome = 'kept')
              OR (?2 AND id = (SELECT source FROM tasks WHERE id = ?1)))
          UNION ALL
-         SELECT inbox.seq, 1, inbox.type, inbox.subject, inbox.data
+         SELECT inbox.seq, 1, inbox.type, inbox.subject, inbox.data, 0
          FROM subscription_deliveries AS heard JOIN inbox ON inbox.seq = heard.seq
          WHERE heard.task = ?1 AND heard.outcome = 'kept' AND heard.outbox IS NULL
            AND heard.seq IS NOT ?3
@@ -3339,17 +3373,63 @@ pub(crate) fn unread(
     let mut rows = statement.query(params![task, source, except])?;
     let mut events = Vec::new();
     while let Some(row) = rows.next()? {
-        events.push((
-            row.get(0)?,
-            row.get(1)?,
-            line(
-                &row.get::<_, String>(2)?,
-                row.get::<_, Option<String>>(3)?.as_deref(),
-                &row.get::<_, String>(4)?,
-            ),
-        ));
+        let (kind, subject) = (row.get::<_, String>(2)?, row.get::<_, Option<String>>(3)?);
+        let data = row.get::<_, String>(4)?;
+        let line = match row.get::<_, bool>(5)? {
+            true => requested(tx, task, &kind, subject.as_deref(), &data)?,
+            false => line(&kind, subject.as_deref(), &data),
+        };
+        events.push((row.get(0)?, row.get(1)?, line));
     }
     Ok(events)
+}
+
+/// The line of `task`'s source event, with the title and text its trigger's `pre` script gave in
+/// place of the event's, and the context it added after it.
+fn requested(
+    tx: &Transaction,
+    task: i64,
+    kind: &str,
+    subject: Option<&str>,
+    data: &str,
+) -> rusqlite::Result<String> {
+    let (title, text, context, by): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = tx.query_row(
+        "SELECT pre_title, pre_text, pre_context, pre_script FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let mut said = match (
+        &title,
+        &text,
+        serde_json::from_str::<serde_json::Value>(data),
+    ) {
+        (None, None, _) | (_, _, Err(_)) => line(kind, subject, data),
+        (_, _, Ok(mut value)) => {
+            if let Some(title) = title {
+                value["title"] = serde_json::json!(title);
+            }
+            if let Some(text) = text {
+                let field = ["text", "body", "description", "prompt"]
+                    .into_iter()
+                    .find(|field| value[*field].is_string())
+                    .unwrap_or("text");
+                value[field] = serde_json::json!(text);
+            }
+            line(kind, subject, &value.to_string())
+        }
+    };
+    if let Some(context) = context {
+        let by = by.unwrap_or_default();
+        said.push_str(&format!(
+            "\nContext from the trigger's pre script {by}:\n{context}"
+        ));
+    }
+    Ok(said)
 }
 
 /// Records that prompt `outbox` carries the `unread` events of `task`.

@@ -30,7 +30,8 @@ Each type has a JSON Schema in [`docs/schemas/events/`](../schemas/events/), nam
 - Intercom: [`intercom.conversation.created`](#intercomconversationcreated)
 - Slack: [`slack.message.posted`](#slackmessageposted), [`slack.thread.replied`](#slackthreadreplied)
 - Others: [`schedule.fired`](#schedulefired), [`priory.task.requested.cli`](#priorytaskrequestedcli),
-  [`factory.task.requested`](#factorytaskrequested), [`factory.intake.baseline`](#factoryintakebaseline)
+  [`factory.task.requested`](#factorytaskrequested), [`factory.intake.dropped`](#factoryintakedropped),
+  [`factory.intake.baseline`](#factoryintakebaseline)
 - Runners: [`priory.task.claimed`](#priorytaskclaimed), [`priory.task.held`](#priorytaskheld),
   [`priory.runner.alive`](#prioryrunneralive), [`priory.ask.answered`](#prioryaskanswered),
   [`priory.ask.dismissed`](#prioryaskdismissed), [`priory.ask.posted`](#prioryaskposted),
@@ -1359,6 +1360,23 @@ Schema: [`factory.task.requested.json`](../schemas/events/factory.task.requested
 | `batch` | object, optional | `priory batch add`: `issues`, the batch's issues as task keys, and `entries`, the workflow of each entry's task. The task it creates plans that batch. See [batches.md](../daemon/batches.md) |
 | `scheduled` | RFC 3339, optional | When the firing was due. Schedule sources only |
 | `prompt` | string or null, optional | The trigger's `prompt`. Schedule sources only |
+| `title` | string, optional | The task's title in place of the source event's, at most 200 characters. From the trigger's `pre` script |
+| `text` | string, optional | The task's request text in place of the source event's, at most 16 KiB. From the trigger's `pre` script |
+| `context` | string, optional | Text the task reads after its request, under a line that names the script, at most 16 KiB. From the trigger's `pre` script |
+| `pre` | object, optional | What the trigger's `pre` script did. A trigger with one only. See below |
+
+The `pre` object holds `script`, the trigger's `argv[0]`, and nothing else when the script changed
+nothing. Otherwise it adds:
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `changed` | array of strings | The fields the script changed, of `title`, `text`, `context`, `band`, `lane` and `key` |
+| `band`, `lane`, `key` | object | `{ "from", "to" }`: the value before and after, for each of these it changed |
+| `title`, `text`, `context` | object | `{ "from", "to" }`: the length in characters before and after, null for none, for each of these it changed |
+| `seconds` | number | How long the script ran |
+| `failed` | string | How the script failed, such as `exit 2: <stderr tail>` or `timed out`. The request is then the one the trigger built |
+
+See [pre.md](../intake/pre.md).
 
 <!-- example: events/factory.task.requested.json -->
 ```json
@@ -1374,6 +1392,45 @@ Schema: [`factory.task.requested.json`](../schemas/events/factory.task.requested
     "lane": "core/intake",
     "trigger": "agent-label",
     "source": "98c30eca-6e69-591d-b9ab-d4731abf371a"
+  },
+  "links": []
+}
+```
+
+### `factory.intake.dropped`
+
+A trigger's `pre` script dropped a task request: it exited 1, or it failed with `on_error = "drop"`.
+It takes the id the request would have had, so the log holds one decision per source event and
+trigger. The source event is still published before it. Subject: the request's key. See
+[pre.md](../intake/pre.md).
+Schema: [`factory.intake.dropped.json`](../schemas/events/factory.intake.dropped.json).
+
+| Field | Type | Meaning |
+| ----- | ---- | ------- |
+| `trigger` | string | The trigger's name |
+| `source` | UUID string | The `id` of the source event's message |
+| `key` | string | The key the request had |
+| `script` | string | The trigger's `argv[0]` |
+| `exit` | integer or null | The script's exit code; null when it was killed, timed out or could not start |
+| `reason` | string or null | The first line the script printed on stdout when it exited 1, if any |
+| `seconds` | number | How long the script ran |
+| `failed` | string, optional | How the script failed, when `on_error = "drop"` dropped the request |
+
+<!-- example: events/factory.intake.dropped.json -->
+```json
+{
+  "id": "ef68a451-bc80-5a71-820f-2fb320bb3a8d",
+  "type": "factory.intake.dropped",
+  "subject": "sentry:4812",
+  "time": "2026-11-17T15:18:55Z",
+  "data": {
+    "trigger": "sentry-api",
+    "source": "98c30eca-6e69-591d-b9ab-d4731abf371a",
+    "key": "sentry:4812",
+    "script": "scripts/sentry-pre",
+    "exit": 1,
+    "reason": "level warning is below error",
+    "seconds": 0.042
   },
   "links": []
 }
