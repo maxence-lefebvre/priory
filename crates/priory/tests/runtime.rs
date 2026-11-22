@@ -30587,13 +30587,23 @@ fn a_step_with_no_lesson_gets_no_pre_review() {
 
 #[test]
 fn a_rejection_becomes_a_lesson_that_the_pre_review_reads_at_the_tasks_next_result() {
-    let mut setup = Setup::with_workflow("pre-review-loop", LESSONED);
+    rejected_then("pre-review-loop", passed_with_evidence());
+}
+
+#[test]
+fn an_agent_that_forgets_its_rejections_lesson_still_gets_its_pre_review() {
+    rejected_then(
+        "pre-review-loop-forgotten",
+        json!([forget("lesson-approve-pr-1"), passed_with_evidence()]),
+    );
+}
+
+/// A result rejected with a note, then `next` as the agent's next turn: the pre-review reads the
+/// rejection's lesson and sends that result back.
+fn rejected_then(name: &str, next: serde_json::Value) {
+    let mut setup = Setup::with_workflow(name, LESSONED);
     pre_review(&setup, RELEASE_DAY, &["fail\nIt still has no test."]);
-    setup.calls(&[
-        passed_with_evidence(),
-        passed_with_evidence(),
-        passed_with_evidence(),
-    ]);
+    setup.calls(&[passed_with_evidence(), next, passed_with_evidence()]);
     setup.publish(&requested(42));
     setup.start();
     setup.until("asks", |rows| rows.len() == 1);
@@ -30629,7 +30639,29 @@ fn a_rejection_becomes_a_lesson_that_the_pre_review_reads_at_the_tasks_next_resu
 
 #[test]
 fn an_uncalibrated_pre_review_lets_the_result_reach_the_approval_ask_and_asks_nothing() {
-    let mut setup = Setup::with_workflow("pre-review-uncalibrated", LESSONED);
+    let (setup, asks) = uncalibrated_pre_review("pre-review-uncalibrated", LESSONED);
+
+    assert!(asks[0][3].starts_with("approve-pr: "), "{asks:?}");
+    let scores = gate_scores(&setup);
+    assert_eq!(scores[0][1], json!("error"), "{scores:?}");
+    assert!(!setup.dir.join("fake/handler-args.log").exists());
+}
+
+#[test]
+fn a_step_that_gates_on_the_pre_review_judge_still_holds_the_result_while_uncalibrated() {
+    let workflow = LESSONED.replace(
+        "next = { passed = \"approve-pr\", failed = \"stop\" }",
+        "next = { passed = \"approve-pr\", failed = \"stop\" }\ngate = { passed = [\"asked\"] }",
+    );
+    let (_setup, asks) = uncalibrated_pre_review("pre-review-uncalibrated-gate", &workflow);
+
+    assert!(asks[0][3].contains("asked is not calibrated"), "{asks:?}");
+}
+
+/// Task 1 of `workflow`, whose `implement` step ends `passed`, with the uncalibrated judge `asked`
+/// as the factory's pre-review and one lesson for `implement/approve-pr`. Returns its first ask.
+fn uncalibrated_pre_review(name: &str, workflow: &str) -> (Setup, Vec<Vec<String>>) {
+    let mut setup = Setup::with_workflow(name, workflow);
     judge_scorer(&setup, "0.8");
     let file = setup.dir.join("factory/scorers/asked.toml");
     let toml = fs::read_to_string(&file).unwrap();
@@ -30648,8 +30680,5 @@ fn an_uncalibrated_pre_review_lets_the_result_reach_the_approval_ask_and_asks_no
     setup.start();
 
     let asks = setup.until("asks", |rows| rows.len() == 1);
-    assert!(asks[0][3].starts_with("approve-pr: "), "{asks:?}");
-    let scores = gate_scores(&setup);
-    assert_eq!(scores[0][1], json!("error"), "{scores:?}");
-    assert!(!setup.dir.join("fake/handler-args.log").exists());
+    (setup, asks)
 }

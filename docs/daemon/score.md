@@ -337,7 +337,9 @@ result for the `pre_review` judge, as for any gate, when all of these hold:
 - at least one lesson exists for that approval step: the kit's, the memories repository's, the
   factory's, an accepted one, or one proposed from this task's own rejection. A `forget` or
   `remember` by the task's own agent hides none of them, since the pre-review checks that agent;
-- no pre-review refused a result of this run before.
+- no pre-review refused a result of this run before;
+- the step's own `gate` does not name the `pre_review` judge. When it does, the judge grades as
+  that gate, without the lessons, and an uncalibrated judge still asks for calibration.
 
 The judge reads the request, the result and, on `diff`, the diff, as any judge does. After them,
 between markers of their own, it reads the lessons, one per line as `<name>: <text>`. Only the
