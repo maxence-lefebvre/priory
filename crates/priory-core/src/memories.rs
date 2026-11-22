@@ -173,7 +173,7 @@ fn repeat(
     text: &str,
 ) -> rusqlite::Result<Option<String>> {
     let layer = layer(tx, Some(task))?;
-    let sources = crate::kit::sources(factory, kit, &layer);
+    let sources = crate::kit::sources(factory, kit, &layer, None);
     if sources.memory(name).is_some_and(|memory| {
         memory.description.trim() == description && memory.text().trim() == text
     }) {
