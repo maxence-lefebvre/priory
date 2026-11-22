@@ -93,6 +93,7 @@ at its write. A forget removes the memory of its name. The tools are in
 | `pending` | On the log, and waits for a person | Its own task's |
 | `accepted` | A person accepted it | Every task's, on every runner |
 | `dropped` | A person dropped it | None |
+| `retired` | A person accepted it, then dropped it | None: the kit's or the factory's memory of its name, if any, applies again |
 
 ### `priory memories`
 
@@ -113,7 +114,9 @@ on a machine that only views. `/api/desk` marks its candidates the same way.
 
 `accept` and `drop` publish [`priory.memory.accepted`](events.md#priorymemoryaccepted) or
 [`priory.memory.dropped`](events.md#priorymemorydropped) on the log of the factory in `DIR`, `.` by
-default, and print `<name> accepted: every runner applies it as it reads the log`.
+default, and print `<name> accepted: every runner applies it as it reads the log`. `drop` of an
+`accepted` candidate retires it: it publishes `priory.memory.dropped` with `retire: true` and prints
+`<name> retired: every runner applies it as it reads the log`.
 `POST /api/memories/{id}/accept` and `POST /api/memories/{id}/drop` are their twins (see
 [serve.md](serve.md#writes)). They check this
 runner's state file first and refuse:
@@ -122,11 +125,14 @@ runner's state file first and refuse:
 | ------- | ----- |
 | `no memory candidate <id>` | This runner never read that id |
 | `candidate <id> is not on the log yet: try again once its runner reaches the log` | It is `sending` |
-| `candidate <id> is accepted`, `candidate <id> is dropped` | A person already decided it |
+| `candidate <id> is accepted` | `accept` of a candidate a person already accepted |
+| `candidate <id> is dropped`, `candidate <id> is retired` | A person already dropped or retired it |
 | `the log is unreachable since <time>: try again when it is back` | This runner is cut off from the log |
 
-A candidate takes one verdict. The first accept or drop in log order stands, and every runner
-records a later one as `refused`.
+A candidate takes one accept or drop. The first in log order stands, and every runner records a
+later one as `refused`. After an accept, only a retire applies. A retired candidate stays out of
+every run and out of the daily pull request to the kit, so a fix to the kit's memory of its name
+reaches runs again. An open pull request that still holds the retired text is not changed: close it.
 
 ### Errors from the tools
 

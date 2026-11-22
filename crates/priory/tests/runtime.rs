@@ -25549,6 +25549,53 @@ fn a_forget_of_a_kit_memory_hides_it_from_its_own_task_at_once_and_from_every_ru
 }
 
 #[test]
+fn a_person_retires_an_accepted_memory_and_later_runs_get_the_kits_again() {
+    let mut a = runner("retire", "a", None);
+    a.kit_repo();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    a.calls(&[json!([
+        remember("kit-fact", "The kit moved to Mercurial."),
+        ask()
+    ])]);
+    a.publish(&requested(1));
+    a.start_with(exe, &[("PRIORY_NOW", T0)]);
+    let candidates = a.until_candidates(|candidates| {
+        candidates.len() == 1 && candidates[0]["state"] == "pending"
+    });
+    let id = candidate(&candidates, "kit-fact", Some("The kit moved to Mercurial."));
+    a.decide("accept", &id);
+    a.publish(&requested(2));
+    assert_eq!(
+        remembered(&a.claude_args(1)),
+        [(
+            "kit-fact.md".to_owned(),
+            "The kit moved to Mercurial.".to_owned()
+        )]
+    );
+
+    let factory = a.dir.join("factory");
+    let retired = a.priory(&["memories", "drop", factory.to_str().unwrap(), &id]);
+    assert!(retired.status.success(), "{retired:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&retired.stdout),
+        "kit-fact retired: every runner applies it as it reads the log\n"
+    );
+    a.until_candidates(|candidates| candidates[0]["state"] == "retired");
+    a.publish(&requested(3));
+
+    assert_eq!(
+        remembered(&a.claude_args(2)),
+        [("kit-fact.md".to_owned(), "The kit lives in git.".to_owned())],
+        "the retired candidate no longer overrides the kit"
+    );
+    let again = a.priory(&["memories", "drop", factory.to_str().unwrap(), &id]);
+    assert_eq!(
+        String::from_utf8_lossy(&again.stderr),
+        format!("priory memories: candidate {id} is retired\n")
+    );
+}
+
+#[test]
 fn remember_refuses_a_bad_name_a_long_text_and_a_credential_and_a_dropped_candidate_takes_no_accept()
  {
     let mut setup = Setup::with_workflow("remember-refused", STEPS);

@@ -23,12 +23,19 @@
     },
     "MemoryDropped": {
       "additionalProperties": false,
-      "description": "A person drops a memory candidate with `priory memories drop`. No run gets it, not even its own\ntask's.",
+      "description": "A person drops a memory candidate with `priory memories drop`. No run gets it, not even its own\ntask's. A drop of an accepted candidate retires it.",
       "properties": {
         "candidate": {
           "description": "The `id` of the `priory.memory.written` message.",
           "format": "uuid",
           "type": "string"
+        },
+        "retire": {
+          "description": "True when a person drops a candidate already accepted, which retires it. A drop without it\napplies only to a candidate no one decided yet.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "required": [
@@ -37,7 +44,7 @@
       "type": "object"
     }
   },
-  "description": "A person drops a memory candidate with `priory memories drop`. No run gets it, not even its own\ntask's.",
+  "description": "A person drops a memory candidate with `priory memories drop`. No run gets it, not even its own\ntask's. A drop of an accepted candidate retires it.",
   "properties": {
     "data": {
       "$ref": "#/definitions/MemoryDropped"

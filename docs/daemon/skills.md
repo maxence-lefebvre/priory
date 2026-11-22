@@ -166,7 +166,9 @@ and the text it replaces (see [desk.md](desk.md#memory-candidates)).
 
 Each publishes its verdict on the log, and every runner applies it as it reads it. A drop also
 takes the candidate from its own task's later runs. A candidate takes one verdict: the first in log
-order stands.
+order stands. The one exception is a retire: `priory memories drop`, or Drop through the endpoint,
+of an accepted candidate takes it out of every later run and out of the daily pull request, so a
+wrong accept is not kept for good.
 
 ### Accepted memories move into the kit
 
@@ -200,8 +202,8 @@ Each firing is a task request, so the runners claim its key as they claim any ot
 runner runs the step (see [runners.md](runners.md#claims)). That runner:
 
 1. Fetches the kit's `ref` into its mirror under Priory home.
-2. Takes, for each name, the accepted candidate whose accept came last in log order. A pending or
-   dropped candidate never goes in.
+2. Takes, for each name, the accepted candidate whose accept came last in log order. A pending,
+   dropped or retired candidate never goes in.
 3. On top of the ref's commit, writes each accepted memory as `<memories>/<name>.md`, byte for byte
    the file runs get, and removes the file of each accepted forget. `<memories>` is the kit's
    `memories` folder, `memories` by default.
@@ -224,8 +226,8 @@ the claim. A runner without them ends the step `failed`, with git's or gh's erro
 
 - An accepted candidate stays in the state file once the kit holds it, and still overrides the
   kit's file of its name. So a later edit of that file in git reaches no run, and the next pull
-  request proposes the candidate's text again. Dropping a candidate once the fetched kit holds it
-  is not built yet.
+  request proposes the candidate's text again, until a person retires the candidate with
+  `priory memories drop`. A retire does not change a pull request already open: close it.
 - `priory/memories` is Priory's own branch: each firing rebuilds it from the kit's ref, so a commit
   pushed to it is lost.
 - The kit's `ref` must be a branch, or unset, for the pull request to open onto it.
