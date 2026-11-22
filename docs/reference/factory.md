@@ -403,7 +403,25 @@ Spend caps in dollars, priced from `prices.toml`. See [spend.md](../daemon/spend
 | `week` | number | no | no cap | Dollars the factory may spend in a week from Monday 00:00 local time, as `day` | `200.0` |
 | `lanes` | table of tables | no | no lane cap | Each lane's `task`, `day` and `week` caps, by its `<team>/<theme>` name. A lane's `day` or `week` cap only holds new runs | `{ "core/intake" = { day = 10.0 } }` |
 
-Each cap is a number above zero. A run can overshoot a cap by one turn.
+Each cap is a number above zero. A run can overshoot a cap by one turn. A factory with a cap needs
+`prices.toml` beside `factory.toml`, which prices each model the transcripts name (see
+[trace.md](../daemon/trace.md#costs)):
+
+<!-- example: factory/prices.toml -->
+```toml
+# Dollars per million tokens of each kind, by the model name the transcript gives.
+["claude-sonnet-5-5"]
+input = 3.0
+output = 15.0
+cache_read = 0.3
+cache_write = 3.75
+
+["claude-haiku-5-5"]
+input = 1.0
+output = 5.0
+cache_read = 0.1
+cache_write = 1.25
+```
 
 ## `[decisions.triage]`
 
@@ -560,7 +578,15 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `[decisions.triage] timeout` is <n>s: give at most 30s `` | `timeout` is over 30 seconds |
 | `` `[decisions.triage] daily_calls` is 0: give at least 1 `` | `daily_calls = 0` |
 | `` `[decisions.triage] evaluation` <file>: <why> `` | The labeled cases cannot be read, or hold fewer than 10 cases or fewer than 3 of a class |
+| `` `[caps]` needs prices.toml, which turns the steps' tokens into dollars `` | `[caps]` in a factory without `prices.toml` |
 | `invalid socket address syntax` | `listen` is not an IP address and port, such as `127.0.0.1:7340` |
 
 Each line starts with the file and line, such as `factory.toml:3:1:`. A file that does not parse
 reports only its parse error, so fix those first.
+
+In a factory with a spend cap and `prices.toml`, `priory check` also warns, and passes, for the
+agent of a model step whose spend no cap counts:
+`` warning: agents/<name>/agent.md:<line>: the spend caps count nothing for agent `<name>`: <why> ``,
+where `<why>` is `` prices.toml has no price for its model `<model>` `` or
+`Priory reads no Codex tokens`. A Claude Code alias such as `sonnet` never warns: the transcript
+names the full model, which `priory check` cannot know.

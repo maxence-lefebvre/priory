@@ -545,6 +545,15 @@ fn notice(db: &Connection, row: i64) -> rusqlite::Result<Option<String>> {
         )
         .optional()?
         .map(|title| (title, format!("/asks/{item}")))
+    } else if state.as_deref() == Some("cap") {
+        // Gone once the cap's window ended or its spend fell back under it.
+        db.query_row(
+            "SELECT line FROM spend_reached WHERE rowid = ?1",
+            [item],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|line| (line, "/".to_owned()))
     } else if let Some(kind @ ("report" | "prompt" | "command")) = state.as_deref() {
         crate::listing::alarm(db, kind, item)?.map(|(title, task)| {
             let url = task.map_or_else(|| "/".to_owned(), |task| format!("/tasks/{task}"));

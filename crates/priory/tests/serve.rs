@@ -7529,3 +7529,52 @@ fn each_memory_candidate_on_the_desk_says_whether_it_replaces_a_memory_runs_get_
         "priory memories DIR --json, which Herdr reads, marks them the same"
     );
 }
+
+#[test]
+fn a_day_cap_reached_pushes_its_line_once() {
+    let settings = format!("{SERVE}\n[caps]\nday = 1.0\n");
+    let mut setup = Setup::new("push-cap", &settings);
+    fs::write(
+        setup.dir.join("factory/prices.toml"),
+        "[\"claude-fake-5\"]\ninput = 1.0\noutput = 0.0\ncache_read = 0.0\ncache_write = 0.0\n",
+    )
+    .unwrap();
+    setup.seed();
+    // No task starts, so none turns blocked and sends an alarm of its own.
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let phone = setup.subscribe(&address, "https://web.push.apple.com/phone");
+    let db = setup.db();
+
+    // Two million input tokens at a dollar per million: $2.00 of today's $1.00.
+    db.execute(
+        "INSERT INTO trace (id, type, time, event) VALUES ('spent-1', 'factory.step.ended',
+           strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+           '{\"data\":{\"decider\":\"model\",\"model\":\"claude-fake-5\",\"tokens\":{\"input\":2000000}}}')",
+        [],
+    )
+    .unwrap();
+    setup.until_pushes(1);
+    let ask = setup.ask_more(&db, "Merge the docs fix?");
+
+    let pushes = setup.until_pushes(2);
+    let payloads: Vec<Value> = pushes
+        .iter()
+        .map(|push| {
+            without_id(
+                serde_json::from_slice(&decrypt(&base64(&push["body"]), &phone.0, &phone.1))
+                    .unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        payloads,
+        [
+            json!({
+                "title": "spend cap reached: factory spent $2.00 of its day cap of $1.00; its new runs wait for the next day",
+                "url": "/"
+            }),
+            json!({ "title": "Merge the docs fix?", "url": format!("/asks/{ask}") }),
+        ]
+    );
+}
