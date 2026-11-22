@@ -32,6 +32,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `agent` | string | model steps | | The agent that runs the step, by folder name under `agents/` | `"implementer"` |
 | `prompt` | string | model steps | | What the step tells its agent | `"Implement the plan."` |
 | `timeout` | duration | no | none, or `command_timeout` for a command | How long one turn of a model step, a `run` action's command, or the command a human step's answer runs, may run before Priory ends it | `"30m"` |
+| `budget` | string | no | none | Model steps only. The dollars the task may spend at this step, as an amount above zero. At each turn end, Priory prices the step's tokens with `prices.toml`, by the model the transcript names. A turn over it that sent a result moves the task and its `factory.step.ended` record carries `overrun`. Any other turn over it, or a turn whose cost is unknown, ends the run and fails the task. See [health.md](../daemon/health.md#budget) | `"1.00"` |
 | `options` | array of strings | human steps | `[]` | The answers a person picks from | `["open", "stop"]` |
 | `question` | string | no | the step's id | Human steps only: what the ask says. It may name fields of the task's event, as `command` does. See [Fields of the task's event](#fields-of-the-tasks-event) | `"Compare pull request {pull_request}?"` |
 | `approves` | array of strings | no | `[]` | Human steps only: the irreversible steps this answer approves | `["open-pr"]` |
@@ -342,6 +343,10 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` start `<id>` waits for a merge, and a task starts before it owns a pull request `` | The start step sets `after` |
 | `` reopen `<id>` is not a model step `` | `reopen` names a missing step, or a human or code step |
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A bad `timeout` |
+| `` step `<id>`: `budget` "<text>" is not an amount of dollars above zero, such as "1.00" `` | A `budget` such as `"-1"`, `"0"` or `"one"` |
+| `` step `<id>`: `budget` needs prices.toml, which turns the step's tokens into dollars `` | A `budget` in a factory without `prices.toml` |
+| `` step `<id>`: `budget` needs a Claude Code agent: Priory reads no Codex tokens `` | A `budget` on a step whose agent is a Codex agent |
+| `` step `<id>`: only a model step has a `budget` `` | A `budget` on a human or code step |
 | ``invalid value: integer `0`, expected a nonzero usize`` | `max_prs` is 0 |
 | `` `guard.allow` names `<name>`, which is no built-in guard nor one of `[guard]` in factory.toml `` | A workflow's or a step's `guard.allow` names a guard that does not exist |
 | `` `guard.allow` names `<name>`, which only a person's approval grants, so only an irreversible step may name it `` | A workflow's `guard.allow` names `gh-pr-merge` or `gh-pr-approve` |

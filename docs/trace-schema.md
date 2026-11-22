@@ -13,7 +13,7 @@ such as a revert, arrives as a second record that points at the first. Each reco
 {
   "specversion": "1.0",
   "id": "0196f1c2-7a3e-7c41-9b2d-5e8f0a1b2c3d",
-  "source": "factory://example/xps13",
+  "source": "factory://example/desktop",
   "type": "factory.step.ended",
   "time": "2026-11-17T16:20:05Z",
   "datacontenttype": "application/json",
@@ -32,7 +32,7 @@ such as a revert, arrives as a second record that points at the first. Each reco
     "outcome": "green",
     "harness": "claude-code",
     "model": "claude-opus-5-5",
-    "machine": "xps13",
+    "machine": "desktop",
     "started": "2026-11-17T16:12:41Z",
     "duration_ms": 444000,
     "tokens": { "input": 51234, "output": 3120, "cache_read": 402113, "cache_write": 20480 }
@@ -62,6 +62,7 @@ such as a revert, arrives as a second record that points at the first. Each reco
 | `started`          | yes      | When the step started                                                 |
 | `duration_ms`      | yes      | Wall time from start to end                                           |
 | `tokens`           | no       | For `model` steps: `input`, `output`, `cache_read`, `cache_write`, summed over the step's turns |
+| `overrun`          | no       | For a `model` step with a `budget` whose turn sent its result over it: `budget_usd` and `spent_usd`, priced with `prices.toml`. See [health.md](daemon/health.md#budget) |
 
 ## `factory.task.repaired`
 
@@ -73,7 +74,7 @@ names the run that failed.
 {
   "specversion": "1.0",
   "id": "0196f1d4-0000-7000-8000-000000000004",
-  "source": "factory://example/xps13",
+  "source": "factory://example/desktop",
   "type": "factory.task.repaired",
   "time": "2026-11-19T10:04:12Z",
   "datacontenttype": "application/json",
@@ -86,7 +87,7 @@ names the run that failed.
     "run": "0196f1b0-0000-7000-8000-000000000002",
     "generation": 1,
     "step": "plan",
-    "machine": "xps13",
+    "machine": "desktop",
     "cause": "disk full (10.0 GB of disk free, keeps 20.0 GB free)",
     "action": "sweep",
     "outcome": "failed"
@@ -111,7 +112,7 @@ It shares `factory`, `factory_revision`, `workflow`, `task`, `key`, `generation`
 {
   "specversion": "1.0",
   "id": "0196f1d5-0000-7000-8000-000000000006",
-  "source": "factory://example/xps13",
+  "source": "factory://example/desktop",
   "type": "factory.task.reopened",
   "time": "2026-11-20T18:12:40Z",
   "datacontenttype": "application/json",
@@ -123,7 +124,7 @@ It shares `factory`, `factory_revision`, `workflow`, `task`, `key`, `generation`
     "key": "github:example/app#42",
     "generation": 2,
     "step": "implement",
-    "machine": "xps13",
+    "machine": "desktop",
     "resource": "github:example/app#57",
     "pull_request": "github:example/app#57"
   }
@@ -145,7 +146,7 @@ The tool guard denied a run's irreversible call (see [guard.md](daemon/guard.md)
 {
   "specversion": "1.0",
   "id": "0196f1d5-0000-7000-8000-000000000007",
-  "source": "factory://example/xps13",
+  "source": "factory://example/desktop",
   "type": "factory.tool.denied",
   "time": "2026-11-21T10:02:11Z",
   "datacontenttype": "application/json",
@@ -158,7 +159,7 @@ The tool guard denied a run's irreversible call (see [guard.md](daemon/guard.md)
     "key": "github:example/app#42",
     "generation": 1,
     "step": "implement",
-    "machine": "xps13",
+    "machine": "desktop",
     "tool": "Bash",
     "guard": "gh-pr-merge",
     "call": "gh -R example/app pr merge 57",
@@ -185,7 +186,7 @@ A person snoozed a desk item of a task, or cleared its snooze. Both share `facto
 {
   "specversion": "1.0",
   "id": "0196f1d6-0000-7000-8000-000000000005",
-  "source": "factory://example/xps13",
+  "source": "factory://example/desktop",
   "type": "factory.task.snoozed",
   "time": "2026-11-20T17:02:11Z",
   "datacontenttype": "application/json",
@@ -197,7 +198,7 @@ A person snoozed a desk item of a task, or cleared its snooze. Both share `facto
     "key": "github:example/app#42",
     "generation": 1,
     "step": "approve-pr",
-    "machine": "xps13",
+    "machine": "desktop",
     "item": { "kind": "ask", "id": "7" },
     "until": "2026-11-23T08:00:00Z"
   }
@@ -230,7 +231,7 @@ A task's progress changed, through the `progress` tool or `priory progress`. It 
 {
   "specversion": "1.0",
   "id": "0196f1d6-0000-7000-8000-000000000006",
-  "source": "factory://example/xps13",
+  "source": "factory://example/desktop",
   "type": "factory.task.progressed",
   "time": "2026-11-20T17:10:42Z",
   "datacontenttype": "application/json",
@@ -242,7 +243,7 @@ A task's progress changed, through the `progress` tool or `priory progress`. It 
     "key": "github:example/app#42",
     "generation": 1,
     "step": "implement",
-    "machine": "xps13",
+    "machine": "desktop",
     "progress": {
       "goal": "Fix the docs",
       "acceptanceCriteria": [{ "id": "AC1", "description": "cargo test passes", "required": true }],
@@ -275,7 +276,7 @@ task's grade when it was labeled. A task no step graded has no `step_event`.
 {
   "specversion": "1.0",
   "id": "0196f1d0-0000-7000-8000-000000000003",
-  "source": "factory://example/xps13",
+  "source": "factory://example/desktop",
   "type": "factory.step.labeled",
   "time": "2026-11-18T09:02:11Z",
   "data": {
@@ -303,7 +304,7 @@ cleared the mark. Its `data` holds `factory`, `factory_revision`, `workflow`, `t
 {
   "specversion": "1.0",
   "id": "0196f1d0-0000-7000-8000-000000000004",
-  "source": "factory://example/xps13",
+  "source": "factory://example/desktop",
   "type": "factory.step.unlabeled",
   "time": "2026-11-19T10:15:00Z",
   "data": {
@@ -352,7 +353,7 @@ the gate ran, and `time` is when it ended.
 {
   "specversion": "1.0",
   "id": "0196f1d6-0000-7000-8000-000000000008",
-  "source": "factory://example/xps13",
+  "source": "factory://example/desktop",
   "type": "factory.gate.ran",
   "time": "2026-11-21T10:04:30Z",
   "datacontenttype": "application/json",
@@ -365,7 +366,7 @@ the gate ran, and `time` is when it ended.
     "key": "github:example/app#42",
     "generation": 1,
     "step": "implement",
-    "machine": "xps13",
+    "machine": "desktop",
     "commit": "3f9c2a7e5b1d4c6f8a0e2b4d6f8a1c3e5b7d9f0a",
     "exit": 0,
     "duration_ms": 84200
@@ -393,7 +394,7 @@ holds the text typed or the grant's secret.
 {
   "specversion": "1.0",
   "id": "0196f1d6-0000-7000-8000-000000000009",
-  "source": "factory://example/xps13",
+  "source": "factory://example/desktop",
   "type": "factory.terminal.keys",
   "time": "2026-11-21T10:05:02Z",
   "datacontenttype": "application/json",
@@ -406,7 +407,7 @@ holds the text typed or the grant's secret.
     "key": "github:example/app#42",
     "generation": 1,
     "step": "implement",
-    "machine": "xps13",
+    "machine": "desktop",
     "grant": "3",
     "request": "r7",
     "input": "text",
@@ -441,7 +442,7 @@ and `time` is when the score was recorded. Scoring a run again appends another r
 {
   "specversion": "1.0",
   "id": "0196f1d6-0000-7000-8000-000000000009",
-  "source": "factory://example/xps13",
+  "source": "factory://example/desktop",
   "type": "factory.run.scored",
   "time": "2026-11-21T11:20:02Z",
   "datacontenttype": "application/json",
@@ -454,7 +455,7 @@ and `time` is when the score was recorded. Scoring a run again appends another r
     "key": "github:example/app#42",
     "generation": 1,
     "step": "implement",
-    "machine": "xps13",
+    "machine": "desktop",
     "scorer": "gate",
     "kind": "command",
     "verdict": "pass",
@@ -485,14 +486,14 @@ calibration that the budget cut short appends no record.
 {
   "specversion": "1.0",
   "id": "0196f1d6-0000-7000-8000-00000000000b",
-  "source": "factory://example/xps13",
+  "source": "factory://example/desktop",
   "type": "factory.scorer.calibrated",
   "time": "2026-11-22T10:04:41Z",
   "datacontenttype": "application/json",
   "data": {
     "factory": "example",
     "factory_revision": "999daf0",
-    "machine": "xps13",
+    "machine": "desktop",
     "scorer": "does-what-was-asked",
     "model": "opus",
     "prompt_sha256": "5d41402abc4b2a76b9719d911017c592ae0b6c5c3b4c2d1e8f0a9b8c7d6e5f40",
@@ -529,7 +530,7 @@ and to mark a repeat. `factory` is the head commit's factory name, and `source` 
 {
   "specversion": "1.0",
   "id": "0196f1d6-0000-7000-8000-00000000000a",
-  "source": "factory://example/xps13",
+  "source": "factory://example/desktop",
   "type": "factory.bench.compared",
   "time": "2026-11-22T15:04:11Z",
   "datacontenttype": "application/json",
@@ -547,7 +548,7 @@ and to mark a repeat. `factory` is the head commit's factory name, and `source` 
     "runs": 3,
     "spent": 31.2,
     "budget": 40.0,
-    "machine": "xps13",
+    "machine": "desktop",
     "pull_request": "owner/factory#12"
   }
 }

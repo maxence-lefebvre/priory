@@ -72,7 +72,7 @@ Installing needs Node.js. Pipe the views into `install` on the machine Herdr run
 
 ```sh
 priory views --json | adapters/herdr/install
-ssh xps13 priory views --json | adapters/herdr/install   # Priory on another machine
+ssh desktop priory views --json | adapters/herdr/install   # Priory on another machine
 ```
 
 `install` links each folder in `adapters/herdr/mods/` into Herdr's mods folder, and writes one
@@ -170,7 +170,7 @@ layout of a view that is gone. It never regenerates without that click.
 ## Installing for a Herdr on another machine
 
 The mods run on the machine that runs Herdr, and `priory` runs where the `priory` object of
-`settings.json` says: its `machine` is the Herdr machine that runs the program, such as `"xps13"`.
+`settings.json` says: its `machine` is the Herdr machine that runs the program, such as `"desktop"`.
 Copy the mods with `install --copy` on the machine whose folder Syncthing shares, and set `machine`
 in `settings.json`, which Herdr reads from the same folder, to the machine that runs Priory. Without
 `machine`, a mod runs `priory` on the machine Herdr's window runs on, which is the Windows machine
@@ -183,7 +183,7 @@ state database and never writes a file in the factory.
 
 - **Which Priory.** A mod runs the program that the `priory` object of Herdr's `settings.json`
   names, on the Herdr machine it names: `{"priory": {"binary": "~/.local/bin/priory-oss",
-  "machine": "xps13", "factory": "/home/me/factory", "theme": "indigo", "web":
+  "machine": "desktop", "factory": "/home/me/factory", "theme": "indigo", "web":
   "http://127.0.0.1:7070"}}`. Every field is optional.
   `theme` is `indigo`, `ink`, `parchment` or `abbey`, and defaults to `indigo`. `binary` defaults
   to `~/.local/bin/priory-oss`, and a leading `~` means the home folder on Priory's machine. A name

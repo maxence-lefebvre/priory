@@ -1,0 +1,15 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
+start = "dream"
+band = "later"
+
+# No human step and no irreversible step: it asks nothing at night. Its only writes are memory
+# candidates, which reach no other task until a person accepts them.
+[[steps]]
+id = "dream"
+decides = "model"
+agent = "dreamer"
+prompt = "Run `priory recap`. Propose at most 5 memories with remember, then send your result."
+effect = "reversible"
+timeout = "20m"
+budget = "1.00"                # dollars this step's run may spend
+next = { proposed = "done", nothing = "done", failed = "stop" }

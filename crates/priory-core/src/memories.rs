@@ -89,6 +89,7 @@ pub(crate) fn write(
     db: &mut Connection,
     call: &Call,
     trace: &Trace,
+    kit: Option<&crate::kit::Fetched>,
 ) -> rusqlite::Result<Result<String, String>> {
     let fields = (|| {
         let name = argument(call, "name")?.trim().to_owned();
@@ -112,6 +113,11 @@ pub(crate) fn write(
     let Some((task, key)) = caller(&tx, &call.session)? else {
         return Ok(Err(format!("no run has session {}", call.session)));
     };
+    if let Some((description, text)) = &kept
+        && let Some(why) = repeat(&tx, trace.factory, kit, task, &name, description, text)?
+    {
+        return Ok(Err(why));
+    }
     let mut data = json!({ "name": name, "task": key, "runner": trace.runner });
     match &kept {
         Some((description, text)) => {
@@ -152,6 +158,55 @@ pub(crate) fn write(
     Ok(Ok(format!(
         "{what} as candidate {id}: your task's later runs see it now, and other tasks' runs once a person accepts it"
     )))
+}
+
+/// Why a `remember` of `name` repeats what exists, if it does: the memory the task sees under that
+/// name, a candidate of that name that waits for a person, or one a person dropped, with the same
+/// description and text. A changed text is a correction, never a repeat.
+fn repeat(
+    tx: &Transaction,
+    factory: &Factory,
+    kit: Option<&crate::kit::Fetched>,
+    task: i64,
+    name: &str,
+    description: &str,
+    text: &str,
+) -> rusqlite::Result<Option<String>> {
+    let layer = layer(tx, Some(task))?;
+    let sources = crate::kit::sources(factory, kit, &layer);
+    if sources.memory(name).is_some_and(|memory| {
+        memory.description.trim() == description && memory.text().trim() == text
+    }) {
+        return Ok(Some(format!("{name} already holds this text")));
+    }
+    let same = "name = ?1 AND description = ?2 AND text = ?3 AND accepted IS NULL";
+    let pending: Option<String> = tx
+        .query_row(
+            &format!("SELECT id FROM memory_candidates WHERE {same} AND dropped IS NULL LIMIT 1"),
+            params![name, description, text],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(id) = pending {
+        return Ok(Some(format!(
+            "candidate {id} already proposes this text for {name}, and waits for a person"
+        )));
+    }
+    let dropped: Option<String> = tx
+        .query_row(
+            &format!(
+                "SELECT substr(decided, 1, 10) FROM memory_candidates WHERE {same}
+                 AND dropped IS NOT NULL ORDER BY dropped DESC LIMIT 1"
+            ),
+            params![name, description, text],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(dropped.map(|date| {
+        format!(
+            "a person dropped this text for {name} on {date}: propose it again only with new evidence"
+        )
+    }))
 }
 
 /// Handles a memory message read from the log: records a candidate, or a person's accept or drop.

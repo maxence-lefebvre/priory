@@ -1,0 +1,9 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/factory.json
+name = "readiness"
+
+[request]
+workflow = "readiness"         # what priory add starts without --workflow
+
+# Filing an issue notifies everyone who watches the repository, so it gets a guard of its own.
+[guard]
+commands = [{ name = "gh-issue-create", run = ["gh", "issue", "create"] }]

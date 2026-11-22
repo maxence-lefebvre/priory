@@ -1,0 +1,8 @@
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/factory.json
+name = "dreaming"
+
+# Your own repository of skills, instructions and memories. Every run reads it, and the daily pull
+# request of accepted memories opens on it.
+[kit]
+repo = "git@github.com:owner/abbey.git"
+ref = "main"

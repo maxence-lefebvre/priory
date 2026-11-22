@@ -22,6 +22,9 @@ does and the page that describes it.
 - `priory check [DIR] [--explain [--json]]`: checks the factory's files and prints each problem with
   its file and line. `--explain` lists each irreversible step with what approves it, and the
   outcomes the daemon verifies. See [workflows.md](workflows.md#irreversible-steps-and-their-gates).
+- `priory check [DIR] --repo PATH [--json]`: scores what an unattended agent needs from the
+  repository at `PATH`, and prints each criterion missing with its fix. It only reads. `DIR` adds the
+  factory's `gate`. See [readiness.md](readiness.md).
 - `priory draw [DIR] WORKFLOW`: prints a workflow as a Mermaid flowchart.
 - `priory flows [DIR] --json`: prints every workflow as the Flows panels draw it. See
   [serve.md](serve.md#flows).
@@ -150,6 +153,10 @@ See [Columns](#columns).
   output. Read it when a code step failed. See [tools.md](../daemon/tools.md#code-steps).
 - `priory trace`: prints every trace record, one JSON object per line. See
   [trace.md](../daemon/trace.md).
+- `priory recap [--since <instant-or-duration>] [--max-bytes N]`: prints, oldest first, what the
+  window's tasks concluded and what people answered and said, redacted and at most `N` bytes, for a
+  nightly dream to read. `--since` is `24h` and `--max-bytes` is `200000` by default. See
+  [memories.md](memories.md#priory-recap).
 
 ## Reports and measures
 

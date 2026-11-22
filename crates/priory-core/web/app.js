@@ -1,18 +1,20 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, snoozeShortcut, snoozed, stillArmed, submitted, takesText, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, snoozeShortcut, snoozed, stillArmed, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
+import { markdown } from "./markdown.js";
 import { around, dossier, nextPick, refusal } from "./reports.js";
 import { prStack } from "./stack.js";
 import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedPairs } from "./flows.js";
 import { emptyDetail, eventWords, handled, neverOwned, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
-import { actionNote, batchParts, dueParts, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
+import { actionNote, batchParts, countWords, dueParts, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskViews, triageWords } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
+import { PANELS, backTo, pageTitle } from "./pages.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
 
 const ICONS = {
@@ -91,6 +93,7 @@ function html(strings, ...values) {
 }
 // Agent text with the factory's autolinks; `linked` escapes it.
 const autolinked = (text, repo) => raw(linked(text ?? "", state.data?.links || [], repo ?? null));
+const md = (text, repo) => html`<div class="md">${raw(markdown(text, state.data?.links || [], repo ?? null))}</div>`;
 const icon = (name, size = "") => raw(`<svg class="ico ${size}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`);
 
 // Task and run states: role and icon (DESIGN.md, State tile).
@@ -118,11 +121,6 @@ const stateWord = (state) => {
   return html`<span class="sti t-${kind}">${name ? icon(name, "s15") : raw('<i class="dot"></i>')}${state}</span>`;
 };
 
-const PANELS = {
-  desk: ["Desk", "desk"], asks: ["Asks", "asks"], tasks: ["Tasks", "tasks"], runs: ["Runs", "runs"],
-  inbox: ["Inbox", "inbox"], reports: ["Reports", "reports"], queue: ["Queue", "queue"],
-  terminal: ["Terminal", "terminal"], workflow: ["Flows", "workflow"], costs: ["Costs", "costs"],
-};
 const CLI = { terminal: "priory attach" };
 
 // The last listings read and when, kept on this device, so an offline start shows them with their age.
@@ -140,6 +138,8 @@ const state = {
   signInError: null,
   list: "desk",
   listUrl: "/",
+  // The last list the person opened; a task or batch page opened next keeps it in its history entry.
+  from: null,
   snapshot: null,
   rendered: 0,
   scrolls: new Map(),
@@ -434,7 +434,7 @@ function memoriesPage() {
   const back = html`<div class="top"><a class="back" href="/">${icon("chevron-left", "s22")}Desk</a></div>`;
   const candidates = state.data.desk.items.find((item) => item.kind === "memories")?.candidates || [];
   const n = candidates.length;
-  const intro = html`<div class="ask mhead"><h2 class="question">${n === 1 ? "1 memory candidate" : `${n} memory candidates`}</h2>
+  const intro = html`<div class="ask mhead"><h1 class="question">${n === 1 ? "1 memory candidate" : `${n} memory candidates`}</h1>
     <p class="note">${icon("brain", "s15")}<span>An agent wrote each one. Accept gives it to every task's runs, on every runner. Drop discards it, and the task that wrote it stops getting it.</span></p></div>`;
   const list = n ? candidates.map(memoryCandidate) : html`<p class="empty">No memory candidate waits. Agents write them with the remember and forget tools.</p>`;
   return html`${back}<div class="scroll">${intro}${list}</div>`;
@@ -617,15 +617,9 @@ function savedViews(list, base, facets = "") {
     html`<a href="${base}?view=${key}${facets}" aria-current="${on ? "true" : "false"}">${label}${count === null ? "" : html`<span class="num">${count}</span>`}</a>`)}</nav>`;
 }
 
-function countLine(model) {
-  const oldest = model.open[0];
-  const parts = [];
-  if (oldest) parts.push(`Oldest waits ${age(oldest.since)}.`);
-  if (model.stopped.length) parts.push(`${model.stopped.length} stopped.`);
-  return parts.join(" ");
-}
+const countLine = (model) => countWords({ oldest: model.open[0] ? age(model.open[0].since) : null, stopped: model.stopped.length, todos: model.todos.length, reports: model.reports.length, other: model.other.length });
 
-function upNext(model) {
+function upNext(model, queueLink = true) {
   const next = (model.upNext || []).slice(0, 3);
   const when = (run) => {
     if (run.kind === "queued") return onRoom(run) ? "now, on room" : "now";
@@ -637,7 +631,8 @@ function upNext(model) {
   const body = next.length
     ? html`<ol>${next.map((run) => html`<li>${timeTag(run.at, when(run))}${run.task ? html`<a href="/tasks/${run.task}">${what(run)}</a>` : html`<span>${what(run)}</span>`}</li>`)}</ol>`
     : html`<p>Nothing is queued or scheduled to run next.</p>`;
-  return html`<div class="sec">Up next<span>next 3 runs</span></div><div class="strip">${body}</div>`;
+  const link = queueLink ? html`<a class="open" href="/queue">Open the queue</a>` : "";
+  return html`<div class="sec">Up next<span>next 3 runs</span></div><div class="strip">${body}${link}</div>`;
 }
 
 // The one next thing (DESIGN.md, Desk): the desk's `next`, an alarm or the ask that ranks first, and why.
@@ -827,14 +822,20 @@ function needsMe(model, wide) {
   return sections;
 }
 
+// The fifth column's content, again under the question: CSS shows it when that column folds. Its
+// ids take a prefix, so each stays unique and focus comes back to the copy that was used.
+const fold = (content) => (content ? html`<div class="fifth">${raw(html`${content}`.text.replaceAll(' id="', ' id="fold-'))}</div>` : "");
+const review = html`<span class="task-acts"><a class="btn secondary act" href="/memories">Review</a></span>`;
+const itemActs = (item) => (["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : rowActs(item));
+
 function deskTable(model, selected) {
   const itemLine = (item) => item.kind === "memories" ? html`<tr>
-    <td>${stateWord("memories")}</td><td class="mono"></td><td></td><td class="q full"><span>${item.candidates?.length ?? 0} memory candidates: ${(item.candidates || []).map((candidate) => candidate.name).join(", ")}</span></td>
-    <td class="recw"><span class="task-acts"><a class="btn secondary act" href="/memories">Review</a></span></td><td class="r">${timeTag(item.since)}</td></tr>` : html`<tr>
+    <td>${stateWord("memories")}</td><td class="mono"></td><td></td><td class="q full"><span>${item.candidates?.length ?? 0} memory candidates: ${(item.candidates || []).map((candidate) => candidate.name).join(", ")}</span>${fold(review)}</td>
+    <td class="recw">${review}</td><td class="r">${timeTag(item.since)}</td></tr>` : html`<tr>
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${item.kind === "batch" ? html`<a href="/batches/${item.id}">${item.key || ""}</a>` : ["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}">${item.key || ""}</a>` : item.key || ""}</td><td>${item.step || ""}</td>
-    <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span></td><td class="recw">${["blocked", "failed"].includes(item.kind) ? taskActs(item.task, item.kind) : rowActs(item)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
+    <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span>${fold(itemActs(item))}</td><td class="recw">${itemActs(item)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const todoLine = (item) => html`<tr>
-    <td>${stateWord("todo")}</td><td class="mono"></td><td></td><td class="q full"><span>${todoText(item)}</span></td><td class="recw">${todoDone(item.id)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
+    <td>${stateWord("todo")}</td><td class="mono"></td><td></td><td class="q full"><span>${todoText(item)}</span>${fold(todoDone(item.id))}</td><td class="recw">${todoDone(item.id)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const group = (title, count) => html`<tr class="grp"><td colspan="6">${title}<span>${count}</span></td></tr>`;
   return html`<table class="tbl">
     <thead><tr><th>State</th><th>Task</th><th>Step</th><th>Waits on you</th><th>Recommends</th><th class="r">Age</th></tr></thead>
@@ -863,9 +864,11 @@ function askView() {
 function askTableRow(ask, selected) {
   const answered = ask.state === "answered";
   const when = answered && ask.answered_at ? timeTag(ask.answered_at, today(ask.answered_at) ? clock(ask.answered_at) : age(ask.answered_at)) : timeTag(ask.since);
+  const status = answered ? ask.answer + byLine(ask) : ask.state === "withdrawn" ? ask.withdrawn_why || "" : snoozed(ask, Date.now()) ? snoozedUntil(ask) : sentNote(ask) ? sentLine(ask) : null;
+  const folded = status ?? (ask.recommendation ? html`Recommends <b>${ask.recommendation}</b>` : "");
   return html`<tr data-href="/asks/${ask.id}" aria-current="${String(ask.id) === selected ? "true" : "false"}">
-    <td>${stateWord(ask.state === "open" ? "ask" : ask.state)}</td><td class="mono">${ask.key}</td><td>${ask.step}</td><td class="q"><span>${ask.title || ask.question}</span>${runnerTag(ask)}${routedTag(ask)}</td>
-    <td class="recw">${answered ? ask.answer + byLine(ask) : ask.state === "withdrawn" ? ask.withdrawn_why || "" : snoozed(ask, Date.now()) ? snoozedUntil(ask) : sentNote(ask) ? sentLine(ask) : ask.recommendation || ""}</td><td class="r">${when}</td></tr>`;
+    <td>${stateWord(ask.state === "open" ? "ask" : ask.state)}</td><td class="mono">${ask.key}</td><td>${ask.step}</td><td class="q"><span>${ask.title || ask.question}</span>${runnerTag(ask)}${routedTag(ask)}${fold(folded)}</td>
+    <td class="recw">${status ?? ask.recommendation ?? ""}</td><td class="r">${when}</td></tr>`;
 }
 
 // Each facet's key, label, an ask's values and the order the picker offers them. An ask with no
@@ -1083,11 +1086,12 @@ function optionList(ask, wide) {
 function askDetail(id, wide) {
   const ask = state.data.asks.find((candidate) => String(candidate.id) === id);
   const { answered, withdrawn } = state.data.older.asks;
+  const heading = layout() === "compact" ? html`<h1 class="sr">Ask #${id}</h1>` : "";
   if (!ask && answered + withdrawn) {
     loadOlder("asks");
-    return html`<p class="empty">Loading ask ${id}…</p>`;
+    return html`${heading}<p class="empty">Loading ask ${id}…</p>`;
   }
-  if (!ask) return html`<p class="empty">No ask ${id} here. It may belong to another factory. Check <code>priory asks --all</code>.</p>`;
+  if (!ask) return html`${heading}<p class="empty">No ask ${id} here. It may belong to another factory. Check <code>priory asks --all</code>.</p>`;
   const open = listedAsks();
   const at = open.findIndex((candidate) => String(candidate.id) === id);
   const back = [state.listUrl, state.list === "asks" ? "Asks" : "Desk"];
@@ -1137,10 +1141,11 @@ function askDetail(id, wide) {
     : html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}${sentShown}${routedNote(ask) ? html`<p class="routednote">${icon("corner-down-right", "s15")}${routedNote(ask)}</p>` : ""}${ask.recommendation ? html`<div class="rec"><span><b>Recommended: ${ask.recommendation}.</b></span>
         ${ask.next_action ? html`<span class="then">${icon("corner-down-right", "s15")}<span>${ask.next_action}</span></span>` : ""}</div>` : ""}
       <div class="opts" role="group" aria-label="Options">${optionButtons}</div>${lockedNote}${more}${elsewhere}`;
+  const question = autolinked(ask.question || ask.title, ask.repo);
   const top = html`<div class="ask">
     <a class="ctx" href="${ask.task && !owner ? `/tasks/${ask.task}` : "/asks"}">${wide ? "" : tile("ask", "sm")}<span class="mono">${ask.key}</span><span>${ask.step}</span><span>${ask.lane || ""}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${runnerTag(ask)}${wide ? "" : html`<span>${timeTag(ask.since)}</span><span>revision ${ask.revision}</span>`}</a>
     ${ask.risk_estimate ? html`<p class="note">${icon("lock", "s15")}<span>${ask.risk_estimate.line}</span></p>` : ""}
-    <h2 class="question">${autolinked(ask.question || ask.title, ask.repo)}</h2>${decided}</div>`;
+    ${layout() === "compact" ? html`<h1 class="question">${question}</h1>` : html`<h2 class="question">${question}</h2>`}${decided}</div>`;
   // A go ask reads its batch's plan first; the planning task's own plan result says the same.
   const planned = batch ? [
     ["batchplan", "Plan", html`<section class="sect" id="batchplan"><div class="sh">${icon("layers", "s15")}Plan, ${batch.entries.length} tasks in start order<span class="meta">rev ${batch.plan_revision}</span></div>${laneKey()}${laneGraph(batch, editable)}${planEditOf(batch).note ? html`<p class="note" role="status">${planEditOf(batch).note}</p>` : ""}</section>`],
@@ -1151,7 +1156,7 @@ function askDetail(id, wide) {
   const sections = [...planned.map(([key, label]) => [key, label]), ["why", "Why"], ...read.map(([key, label]) => [key, label]), ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
   const jump = html`<nav class="jump" aria-label="Sections">${sections.map(([key, label], i) => html`<a href="#${key}" aria-current="${i === 0 ? "true" : "false"}">${label}</a>`)}</nav>`;
   const why = html`<section class="sect" id="why"><div class="sh">${icon("message-text", "s15")}What the agent asks<span class="meta">${ask.run ? html`run <span class="mono">${ask.run}</span>` : ""}</span></div>
-    <p class="text">${autolinked(ask.text || ask.question, ask.repo)}</p>
+    ${md(ask.text || ask.question, ask.repo)}
     ${ask.tradeoff ? html`<p class="fact">${icon("scale", "s15")}<span><b>Trade-off.</b> ${ask.tradeoff}</span></p>` : ""}
     ${ask.what_waits ? html`<p class="fact">${icon("hourglass", "s15")}<span><b>What waits.</b> ${ask.what_waits}</span></p>` : ""}</section>`;
   const command = !ask.command ? "" : typeof ask.command === "string"
@@ -1336,15 +1341,16 @@ function splitsSection(batch) {
 
 // The batch page (DESIGN.md, Batch page): /batches/<id>.
 function batchPage(id) {
-  const back = html`<div class="top"><a class="back" href="/tasks">${icon("chevron-left", "s22")}Tasks</a></div>`;
+  const [href, label] = backTo(history.state?.from ?? null);
+  const back = html`<div class="top"><a class="back" href="${href}">${icon("chevron-left", "s22")}${label}</a></div>`;
   const batch = batchOf(id);
   if (!batch) {
     const failed = state.batch?.error;
-    return html`${back}<p class="empty">${failed ? html`Could not load batch ${id}: ${failed}. <code>priory batch show ${id}</code> shows it.` : `Loading batch ${id}…`}</p>`;
+    return html`${back}<h1 class="sr">Batch ${id}</h1><p class="empty">${failed ? html`Could not load batch ${id}: ${failed}. <code>priory batch show ${id}</code> shows it.` : `Loading batch ${id}…`}</p>`;
   }
   return html`${back}<div class="scroll"><div class="ask bhead">
     <p class="ctx">${tile("batch", "sm")}<a class="mono" href="/tasks/${batch.task}">${batch.key}</a><span>${batch.state}</span><span>${batch.lane || ""}</span>${batch.went ? html`<span>went ${timeTag(batch.went)} ago by ${batch.went_by}</span>` : ""}<span>plan rev ${batch.plan_revision}</span></p>
-    <h2 class="question">${batch.title || batch.key}</h2>${stageBar(batch)}</div>
+    <h1 class="question">${batch.title || batch.key}</h1>${stageBar(batch)}</div>
     <section class="sect" id="entries"><div class="sh">${icon("layers", "s15")}${batch.entries.length} entries in start order</div>${laneKey()}${laneGraph(batch, false)}</section>
     ${closesSection(batch)}${splitsSection(batch)}</div>`;
 }
@@ -1447,11 +1453,12 @@ async function taskWrite(task, act, body) {
 // A task's page: its state, reason, actions, a box to say something to its agent, then its brief,
 // plan, pull request and trace.
 function taskPage(id) {
-  const back = html`<div class="top"><a class="back" href="/tasks">${icon("chevron-left", "s22")}Tasks</a></div>`;
+  const [href, label] = backTo(history.state?.from ?? null);
+  const back = html`<div class="top"><a class="back" href="${href}">${icon("chevron-left", "s22")}${label}</a></div>`;
   const task = taskOf({ task: id });
   if (!task) {
     const failed = state.task?.error;
-    return html`${back}<p class="empty">${failed ? `Could not load task ${id}: ${failed}.` : `Loading task ${id}…`}</p>`;
+    return html`${back}<h1 class="sr">Task ${id}</h1><p class="empty">${failed ? `Could not load task ${id}: ${failed}.` : `Loading task ${id}…`}</p>`;
   }
   const said = state.taskBusy === task.id ? raw('aria-disabled="true"') : "";
   const say = ENDED.includes(task.state) ? "" : html`<form class="writeform" data-action="say" data-task="${task.id}"><label class="sr" for="say">Say to the agent</label>
@@ -1459,9 +1466,16 @@ function taskPage(id) {
   const sections = taskSections(task).map(([, , section]) => section);
   return html`${back}<div class="scroll"><div class="ask task">
     <p class="ctx">${tile(task.state, "sm")}<span class="mono">${task.key}</span><span>${task.state}</span><span>${task.workflow} ${task.step}</span><span>${task.lane || ""}</span><span>${task.band || ""}</span>${task.batch == null ? "" : html`<a href="/batches/${task.batch}">batch ${task.batch}</a>`}</p>
-    <h2 class="question">${autolinked(task.tldr || task.brief?.title || task.brief?.request?.split("\n")[0] || task.key, task.repo)}</h2>
+    <h1 class="question">${autolinked(task.tldr || task.brief?.title || task.brief?.request?.split("\n")[0] || task.key, task.repo)}</h1>
     ${task.reason ? html`<p class="text t-${role(task.state)}">${autolinked(task.reason, task.repo)}</p>` : ""}
-    ${taskActs(task.id, task.state)}${say}</div>${sections}${terminalSection(task)}</div>`;
+    ${taskAsks(task)}${taskActs(task.id, task.state)}${say}</div>${sections}${terminalSection(task)}</div>`;
+}
+
+// The task's open asks, each with a way to answer it (DESIGN.md, Task detail).
+function taskAsks(task) {
+  const asks = openAsksOf(state.data.asks, task.id);
+  if (!asks.length) return "";
+  return html`<ul class="taskasks" aria-label="Open asks">${asks.map((ask) => html`<li>${tile("ask", "sm")}<span>${ask.title || ask.question}<span class="age">${timeTag(ask.since)}</span></span><a class="btn primary" href="/asks/${encodeURIComponent(ask.id)}">Answer…</a></li>`)}</ul>`;
 }
 
 // Brief, Plan, PR and Trace, each left out when the task lacks it. Agent text shows with its autolinks.
@@ -1472,7 +1486,7 @@ function taskSections(task) {
   const { request, result } = task.brief || {};
   if (request || result) {
     sections.push(["brief", "Brief", sect("brief", "file-text", "Brief", result ? `${result.step}, run ${result.run}` : "",
-      html`${request ? html`<p class="meta">The request</p><p class="text">${autolinked(request, task.repo)}</p>` : ""}${result ? html`<p class="text">${autolinked(result.summary, task.repo)}</p>` : ""}`)]);
+      html`${request ? html`<p class="meta">The request</p>${md(request, task.repo)}` : ""}${result ? md(result.summary, task.repo) : ""}`)]);
   }
   const progress = progressView(task.progress);
   if (progress) {
@@ -1480,7 +1494,7 @@ function taskSections(task) {
     const criteria = progress.criteria.length ? html`<p class="meta">Acceptance criteria</p><ol class="hist crit">${progress.criteria.map((criterion) => html`<li><span class="mono">${criterion.id}</span><span>${autolinked(criterion.description, task.repo)}</span><span class="tag">${criterion.state}</span></li>`)}</ol>` : "";
     sections.push(["progress", "Progress", sect("progress", "check", "Progress", "", html`${line("Goal", progress.goal)}${criteria}${line("Latest change", progress.latestChange)}${line("Next", progress.nextAction)}`)]);
   }
-  if (task.plan) sections.push(["plan", "Plan", sect("plan", "check", "Plan", `${task.plan.step}, run ${task.plan.run}`, html`<p class="text">${autolinked(task.plan.summary, task.repo)}</p>`)]);
+  if (task.plan) sections.push(["plan", "Plan", sect("plan", "check", "Plan", `${task.plan.step}, run ${task.plan.run}`, md(task.plan.summary, task.repo))]);
   const pr = task.pull_request;
   if (pr) {
     sections.push(["pr", "PR", sect("pr", "workflow", `#${pr.number} ${pr.title || ""}`, pr.review || "",
@@ -2569,8 +2583,8 @@ function morePage() {
   return html`<div class="top"><h1>More</h1></div><div class="scroll"><ul class="links">
     ${rest.map((panel) => html`<li><a href="/${panel}">${icon(PANELS[panel][1], "s20")}${PANELS[panel][0]}<span class="chev">${icon("chevron-right", "s15")}</span></a></li>`)}
     <li><a href="/settings/appearance">${icon("settings", "s20")}Appearance<span class="chev">${icon("chevron-right", "s15")}</span></a></li>
-    <li><a href="/settings/notifications">${icon("bell", "s20")}Notifications<span class="chev">${icon("chevron-right", "s15")}</span></a></li>
-    <li><a href="/" data-action="sign-out">${icon("lock", "s20")}Sign out of this device<span class="chev">${icon("chevron-right", "s15")}</span></a></li></ul></div>`;
+    <li><a href="/settings/notifications">${icon("bell", "s20")}Notifications<span class="chev">${icon("chevron-right", "s15")}</span></a></li></ul>
+    <div class="signout"><button class="btn secondary" data-action="sign-out">${icon("lock", "s20")}Sign out of this device</button></div></div>`;
 }
 
 // Appearance
@@ -2708,7 +2722,7 @@ function deskPhone(withCapsule = true) {
   const { model, views, banner, rows } = deskBody(false);
   const n = model.open.length;
   return html`<div class="top"><span class="fac">${state.data.views.factory}</span>${connection()}</div>
-    <div class="panel" role="region" aria-label="Desk"><div class="scroll ${withCapsule ? "desk-end" : ""}">
+    <div class="panel" role="region" aria-label="Desk"><h1 class="sr">Desk</h1><div class="scroll ${withCapsule ? "desk-end" : ""}">
       <div class="count"><span class="n num">${n}</span><span class="w">${n === 1 ? "ask needs you" : "asks need you"}<span>${countLine(model)}</span></span></div>
       ${nextCard(model)}${views}${banner}${rows}</div>${withCapsule ? capsule(model) : ""}</div>`;
 }
@@ -2773,7 +2787,7 @@ function queueBody(wide) {
   const views = savedViews([["waiting", "Waiting", waiting, current === "waiting"], ["held", "Held", held.length, current === "held"], ["ended", "Last day", queue.ended.length, current === "ended"]], "/queue");
   if (current === "held") return { views, rows: listOrEmpty(held.map((task) => taskListRow({ ...task, reason: task.reason || "held" })), "No task is held. A task waits here while a person or a condition holds it.") };
   if (current === "ended") return { views, rows: listOrEmpty(queue.ended.map((task) => taskListRow({ ...task, since: task.ended })), "No task ended in the last day.") };
-  const strip = upNext(deskModel());
+  const strip = upNext(deskModel(), false);
   if (!bands.length) return { views, rows: html`${strip}<p class="empty">The queue is empty. A task waits here for its turn once it is added.</p>` };
   if (wide) {
     const groups = bands.map((group) => html`<tr class="grp"><td colspan="5">Band ${group.band}<span>${group.tasks.length}</span></td></tr>${group.tasks.map((task) => queueTableRow(task, bands))}`);
@@ -2890,6 +2904,7 @@ function render() {
   if (typeof state.taskArmed?.task === "string" && remoteGeneration(state.taskArmed.task) !== state.taskArmed.generation) disarmTask();
   if (state.memoryArmed && current() !== "memories") disarmMemory();
   app.innerHTML = page().text;
+  document.title = state.token && state.data ? pageTitle(location.pathname, { tasks: [...state.data.tasks, state.task?.body].filter(Boolean) }) : "Priory";
   paintTerminal(app, true);
   observeTerminal(app);
   // A render must not restart the countdown; CSP allows no inline style, so it is set here.
@@ -2902,7 +2917,8 @@ function render() {
   const scrolls = state.scrolls.get(state.renderedKey) || [];
   app.querySelectorAll(".scroll").forEach((element, i) => { element.scrollTop = scrolls[i] || 0; });
   if (typed && app.querySelector("#token")) app.querySelector("#token").value = typed;
-  if (focused) [...app.querySelectorAll(focused)].find((element) => !element.closest("[inert]"))?.focus({ preventScroll: true });
+  // The Desk table draws some controls twice and CSS hides one copy: focus goes to the shown one.
+  if (focused) [...app.querySelectorAll(focused)].find((element) => !element.closest("[inert]") && element.getClientRects().length)?.focus({ preventScroll: true });
   if (caret !== undefined) app.querySelector(`#${caret[0]}`)?.setSelectionRange(caret[1], caret[2], caret[3]);
   // A link or control inside a row, such as its key, batch or Move menu, acts on its own.
   for (const row of app.querySelectorAll("[data-href]")) row.addEventListener("click", (event) => { if (!event.target.closest("a, button, details")) go(row.dataset.href); });
@@ -2927,6 +2943,9 @@ function page() {
   if (["desk", "asks"].includes(here) && !selectedAsk()) Object.assign(state, { list: here, listUrl: routeKey() });
   const taskId = here === "tasks" && /^\d+$/.test(route()[1] || "") ? Number(route()[1]) : null;
   const batchId = here === "batches" && /^\d+$/.test(route()[1] || "") ? route()[1] : null;
+  if (PANELS[here] && !selectedAsk() && !taskId) state.from = routeKey();
+  // A detail page keeps the list it was opened from in its history entry, so Back restores its link.
+  else if ((taskId || batchId) && !history.state?.from) history.replaceState({ ...history.state, from: state.from }, "");
   if (size === "compact") {
     let body;
     if (selectedAsk()) body = askDetail(selectedAsk(), false);
@@ -2967,7 +2986,7 @@ function page() {
   return html`${staleStrip()}${top}<div class="wide">${nav("rail")}${main}${drawer(true, plain ? [list] : shownPanels(layoutNode, list))}</div>`;
 }
 
-const notFound = () => html`<p class="empty">No such page. Go back to the <a class="ghost" href="/">Desk</a>.</p>`;
+const notFound = () => html`<div class="top"><h1>Page not found</h1></div><div class="scroll"><div class="empty notfound"><p>No page lives at this address.</p><a class="btn secondary" href="/">Open the Desk</a></div></div>`;
 
 const track = (observer) => (state.observers.push(observer), observer);
 

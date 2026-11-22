@@ -245,6 +245,8 @@ Use `consult` when the worker needs a fact it has no tool to read.
 1. The proof of the three harness facts, and a run's MCP servers made real: the daemon passes
    the servers its agent lists, with `--strict-mcp-config`, so a run gets those and no others.
    Without this, a worker may already hold the server and an investigator may hold the worker's.
+   Built: a run gets the servers its agent lists and no others, for Claude Code and Codex
+   ([agents.md](../reference/agents.md#mcpservers)). Not built: the proof with a real harness.
 2. `investigator` on an agent, `[consult]` and `[mcp.<name>]` in `factory.toml`, in the schema
    and the JSON Schemas, with the check rules above.
 3. The `consult` tool, served only to runs of an agent in `[consult.allow]`.

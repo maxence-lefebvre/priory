@@ -124,3 +124,19 @@ export function memoryNote(verb, status, body) {
   if (status === 504 || status === 0) return "The server may have sent this but did not confirm it. Check the list before you send again.";
   return `Could not ${verb} it: ${body?.error || `the server answered ${status}`}.`;
 }
+
+/**
+ * The line under the Desk's ask count: how long the oldest ask waits, then every other item the
+ * Needs me view counts, so the two counts add up. @param {{ oldest: string | null, stopped: number, todos: number, reports: number, other: number }} counts
+ */
+export function countWords({ oldest, stopped, todos, reports, other }) {
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  const rest = [
+    stopped && `${stopped} stopped`,
+    todos && plural(todos, "to-do", "to-dos"),
+    reports && plural(reports, "report", "reports"),
+    other && `${other} waiting`,
+  ].filter(Boolean);
+  const also = rest.length > 1 ? `Also ${rest.slice(0, -1).join(", ")} and ${rest.at(-1)}.` : rest.length ? `Also ${rest[0]}.` : "";
+  return [oldest && `Oldest waits ${oldest}.`, also].filter(Boolean).join(" ");
+}

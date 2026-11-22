@@ -1,10 +1,10 @@
 {
   "id": "0196f1c4-2c3d-7e5f-9a0b-1c2d3e4f5a6b",
   "type": "priory.ask.dismissed",
-  "subject": "xps13:8",
+  "subject": "desktop:8",
   "time": "2026-11-21T10:21:00Z",
   "data": {
-    "runner": "xps13",
+    "runner": "desktop",
     "ask": 8,
     "revision": 2,
     "submission": "0196f1c4-2c3d-7e5f-9a0b-1c2d3e4f5a6b"

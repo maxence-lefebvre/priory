@@ -1868,6 +1868,8 @@ mod tests {
             "priory report reply 3 ok",
             "priory gate",
             "priory memories --all",
+            "priory memories",
+            "priory memories --json",
             "priory score 7 --budget 1",
             "priory batch show 2",
             "priory batch add 12 13",

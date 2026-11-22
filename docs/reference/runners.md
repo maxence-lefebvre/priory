@@ -21,7 +21,7 @@ A share is a number followed by `%`, above 0 and at most 100, such as `"60%"`.
 
 ## Example
 
-<!-- example: factory/runners/xps13.toml -->
+<!-- example: factory/runners/laptop.toml -->
 ```toml
 #:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/runner.json
 platform = { os = "linux", arch = "x86_64" }

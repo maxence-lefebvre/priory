@@ -19,6 +19,7 @@ fires at startup, so its paste and confirmation stay as they are.
 | Priory duty | Claude Code | Codex |
 | ----------- | ----------- | ----- |
 | The `priory` MCP server | `--mcp-config` | `-c mcp_servers.priory={command, args, env}`, with `default_tools_approval_mode = "approve"` in place of Claude's `mcp__priory` allow rule |
+| The agent's `mcpServers`, and no other server | `--strict-mcp-config`, with the definitions copied into the `--mcp-config` file | the definitions stay in the person's own Codex config. Codex has no strict flag, so every other server of `$CODEX_HOME/config.toml` and the worktree's `.codex/config.toml` gets `-c mcp_servers.<name>.enabled=false` |
 | Session id (R5.5) | `--session-id <UUID>` Priory chooses | the thread from the `SessionStart` hook's `session_id`, stored on the run; `priory runs` shows it |
 | Resume | `--resume <session>` | `codex resume <thread>` |
 | First prompt | pasted after `SessionStart` | the last argument, `-- <prompt>` |
@@ -72,6 +73,10 @@ Known limits:
   `auto_review` runs before the deny hook, come from Codex's documentation, unchecked. That
   `SessionStart` comes with the first turn was seen with Codex 0.170.
 - Priory invoked by a bare name, as from `PATH`, names its resolved binary; set `PRIORY_EXE` then.
+- Priory turns off only the MCP servers it reads in `$CODEX_HOME/config.toml` and the worktree's
+  `.codex/config.toml`. A server from a Codex profile, or from a config in a folder above the
+  worktree, still starts. A name Priory found in the worktree's file starts only if Codex trusts
+  that project. Neither the config reading nor `enabled = false` was checked against a real Codex.
 - An agent whose harness changes mid-task starts a new session, since neither harness resumes the
   other's.
 - Codex keeps its transcripts under `~/.codex/sessions`, by thread. The traces slice reads token use
