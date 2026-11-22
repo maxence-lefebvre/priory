@@ -15,6 +15,10 @@ and Since you looked names the session that added a task. Claude Code's docs con
 facts below; they do not say whether a `!` line passes through `PreToolUse`, so that one stays
 unchecked.
 
+A later decision changed one row of the model: the session may answer and dismiss an ask, within
+the limit a lead has. [Answers from the session](#answers-from-the-session) holds it, and it is
+built.
+
 A person's session is not a run. Priory did not start it, it has no task, and the person sits in
 front of it. Today such a session reaches Priory through `priory ask ID JSON`, which the person's
 own instruction files tell the model to type.
@@ -57,7 +61,8 @@ tell them apart, because an answer is an approval and only a person approves.
 | Add a task | the model and the person | the `add` tool, `/priory:add`; open to agents today |
 | Ask the person a question that outlives the session | the model | the `ask` tool |
 | Add a to-do to the desk | the model and the person | the `todo` tool |
-| Answer or dismiss an ask | the person only | the desk, or a line the person runs |
+| Answer or dismiss an ask a lead could answer | the model, recorded as the session, and the person | the `answer` and `dismiss` tools; the desk, or a line the person runs |
+| Answer or dismiss any other ask | the person only | the desk, or a line the person runs |
 | Resume, revive, cancel, hold, move, say, pause, snooze, give, label, pick | the person only | as above |
 | End a step, wait, grant an approval | nobody here | the session has no task |
 
@@ -78,9 +83,12 @@ agent's.
 | `ask(id, question, options, recommendation, tradeoff, ...)` | stores an outside ask under `id` | `priory ask ID JSON` |
 | `add(text, workflow?, band?, lane?, repo?)` | asks for a task | `priory add` |
 | `todo(text, band?, due?)` | adds a to-do to the desk | `priory todo add` |
+| `answer(ask, revision, answer)` | answers an ask a lead could answer, as the session | `priory answer --expected REVISION` |
+| `dismiss(ask, revision)` | dismisses an ask a lead could answer, as the session | `priory dismiss --expected REVISION` |
 
-It serves no `answer`, `dismiss`, `result`, `wait` or any person verb. A call to one is an unknown
-tool, as for any MCP server.
+It serves no `result`, `wait` or other person verb. A call to one is an unknown tool, as for any
+MCP server. The first slice served no `answer` or `dismiss` either; the next section says why it
+now does.
 
 The server refuses to start when `PRIORY_SESSION` is set: a run has its own server and must not
 gain `ask` under another identity. It stores the asking session as `priory ask` does, from the
@@ -93,6 +101,26 @@ below.
 
 A task added through `add` records the session that asked, so the desk and `priory tasks` show
 that a session added it, not the person.
+
+### Answers from the session
+
+Max decided on 2026-11-22 that a person's own session may answer and dismiss asks through
+`priory mcp --outside`, within one limit the lead set: only an ask that `explain::delegable` allows.
+That is the rule a `hands-off` lead and an auto answer already share: no command, no step that
+`approves`, and no irreversible step reachable without a person. The session is not the person,
+and the person sits in front of it, so it gets what a lead gets and no more.
+
+- The daemon refuses any other ask with a reason that says a person answers it in the desk. It also
+  refuses an ask no lead is sent: Priory's own asks (a hold's, a gate's, a spend cap's), a graded
+  plan's approval, a debate's pick, an outside ask that carries a command, and an outside ask the same session put
+  to the person.
+- Both tools take the ask's `revision`, as `priory answer --expected` does, and refuse a stale one.
+- The decision is recorded as the session's, never a person's: `answered_by` is
+  `session:<session>`, the trace gets `factory.ask.session_answered` or
+  `factory.ask.session_dismissed`, Since you looked names the session, and the web view and the
+  Herdr panels say "by session <session>", as they say "by auto" for an auto answer.
+- The outside server is not a run: it still refuses to start where `PRIORY_SESSION` is set, and the
+  hook still denies `priory answer` typed by the model, which would be recorded as a person's.
 
 ### The plugin for Claude Code
 
@@ -146,7 +174,8 @@ Delivery to a Codex session and to a terminal outside hc is later slice 2.
 ### What the plugin is not
 
 - Not a way to run a task. A person's session that wants work done calls `add`, and a run does it.
-- Not a second desk. The web view and the Herdr panels stay the place to answer.
+- Not a second desk. The web view and the Herdr panels stay the place to answer what a person
+  must.
 - Not a way for a run to gain tools. `--outside` and `--session` never mix.
 
 ## The first slice: `priory mcp --outside` and the plugin folder
@@ -205,6 +234,8 @@ Tests, through the CLI as the MCP tests do for a run's server:
 5. A status line: the count of open asks and blocked tasks, from `priory desk --json`.
 6. `ask` with `wait`: the tool holds for up to a few minutes for an answer, for a person who
    answers at once on their phone. See open question 3.
+7. `answer` and `dismiss` for the asks a lead could answer, recorded as the session's decision.
+   Built: see [Answers from the session](#answers-from-the-session).
 
 ## Open questions
 

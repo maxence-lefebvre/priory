@@ -512,7 +512,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `state` | string | `open`, `answered` or `withdrawn` |
 | `withdrawn_reason` | string or null | Why a withdrawn ask closed, one of the [withdrawal reasons](../daemon/waits.md#why-an-ask-or-wait-was-withdrawn): `dismissed`, `sibling-fired`, `moved-on`, `revived` or `predecessor-revived` |
 | `withdrawn_at` | string or null | When the ask was withdrawn, in UTC. Null for an ask withdrawn before Priory kept the time, with no withdrawal on record |
-| `withdrawn_why` | string or null | `withdrawn_reason` in words: `dismissed`, `a wait of its run fired first`, `a later run called another tool`, `its task was revived` or `the task it waits on was revived` |
+| `withdrawn_why` | string or null | `withdrawn_reason` in words: `dismissed`, `dismissed by session <session>` when a person's own session dismissed it, `a wait of its run fired first`, `a later run called another tool`, `its task was revived` or `the task it waits on was revived` |
 | `revision` | integer | The question's revision. `priory answer` and `priory dismiss` take it |
 | `question` | string | The question |
 | `options` | array of strings | The options |
@@ -524,7 +524,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `ran` | object or null | The command its answer ran: `status` (`running`, `done`, `failed` or `uncertain`), `revision`, `error`, `stdout` and `stderr`. Null when no answer ran it |
 | `coordinator`, `run_id`, `session` | string or null | Who asked from outside Priory: its coordinator, its run id and its session |
 | `answer`, `answered_at` | string or null | The answer and when it came |
-| `answered_by` | string or null | Who answered: `cli`, `serve`, `agent:<lead>` for a lead's answer, or `auto` for the daemon's answer at the task's [`auto_answer`](triggers.md#auto_answer) level. Null when unanswered, or answered before Priory recorded it |
+| `answered_by` | string or null | Who answered: `cli`, `serve`, `agent:<lead>` for a lead's answer, `auto` for the daemon's answer at the task's [`auto_answer`](triggers.md#auto_answer) level, or `session:<session>` for a person's own session through [`priory mcp --outside`](../daemon/tools.md#answers-from-the-session), which a dismissed ask keeps too. Null when unanswered, or answered before Priory recorded it |
 | `confidence`, `rationale` | string or null | How sure the agent was of its recommendation, `high`, `medium` or `low`, and why. Null when it stated none. See [tools.md](tools.md#confidence) |
 | `routed_to` | string or null | The lead the ask is routed to, which answers it in the person's place, or null for a person. See [tools.md](../daemon/tools.md#hands-off) |
 | `delivery` | object or null | The latest delivery of an outside ask's answer or dismissal to its session: `state` (`queued`, `running`, `delivered` or `failed`), `revision`, `tries`, `error`, `since` and `cleared`, when a person cleared a failed one from the desk with `priory deliver --clear`. Null when nothing was delivered. See [asks.md](../daemon/asks.md) |

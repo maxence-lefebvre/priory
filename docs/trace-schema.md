@@ -727,6 +727,46 @@ met its task's `auto_answer` level (see [waits.md](daemon/waits.md#answered-by-a
 | `rationale`  | yes      | The agent's one-line reason                                      |
 | `level`      | yes      | The task's `auto_answer` level when the ask was stored           |
 
+## `factory.ask.session_answered` and `factory.ask.session_dismissed`
+
+A person's own session answered or dismissed an ask through the `answer` or `dismiss` tool of
+[`priory mcp --outside`](daemon/tools.md#answers-from-the-session). The record names the session,
+never a person. An ask of a task shares `factory`, `factory_revision`, `workflow`, `task`, `key`,
+`generation`, `step` and `machine` with `factory.step.ended`. An outside ask has no task, so its
+record has no `workflow`, `task`, `generation` or `step`.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-00000000000f",
+  "source": "factory://example/desktop",
+  "type": "factory.ask.session_answered",
+  "time": "2026-11-22T10:12:03Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "14",
+    "key": "github:example/app#42",
+    "generation": 1,
+    "step": "implement",
+    "machine": "desktop",
+    "ask": "14",
+    "revision": 1,
+    "session": "t9 8f3c2a10",
+    "option": "sqlite"
+  }
+}
+```
+
+| Field      | Required | Meaning                                                                         |
+| ---------- | -------- | ------------------------------------------------------------------------------- |
+| `ask`      | yes      | The ask: its number, or an outside ask's name                                   |
+| `revision` | yes      | The revision the session decided                                                |
+| `session`  | yes      | The session: its hc terminal, then a space and its Claude session, or `outside` |
+| `option`   | answered | The answer. A `factory.ask.session_dismissed` record has none                   |
+
 ## `factory.bench.compared`
 
 A comparison of two commits of the factory on a benchmark ended (see

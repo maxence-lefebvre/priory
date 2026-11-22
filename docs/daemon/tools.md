@@ -23,7 +23,7 @@ nothing.
 
 `priory mcp --outside` is a stdio MCP server for a session Priory did not start, such as a person's
 own Claude Code session. The [Claude Code plugin](../adapters/claude-plugin.md) starts it. It
-serves five tools, and none that answers, dismisses or ends a step:
+serves seven tools, and none that ends a step or acts on a task:
 
 | Tool | Does | Same as |
 | ---- | ---- | ------- |
@@ -32,9 +32,11 @@ serves five tools, and none that answers, dismisses or ends a step:
 | `task(id)` | one task in detail | `priory task ID --json` |
 | `ask(id, question, options, recommendation, tradeoff, ...)` | stores an outside ask under `id` | `priory ask ID JSON` |
 | `add(text, workflow?, band?, lane?, repo?)` | asks for a task | `priory add` |
+| `answer(ask, revision, answer)` | answers an ask a lead could answer, as this session | `priory answer --expected REVISION ASK ANSWER` |
+| `dismiss(ask, revision)` | dismisses an ask a lead could answer, as this session | `priory dismiss --expected REVISION ASK` |
 
-A call to any other tool, such as `answer`, is a JSON-RPC error, `unknown tool answer`, and stores
-nothing. The server sends each call to the daemon as `{"outside": {"tool": ..., "session": ...,
+A call to any other tool, such as `result` or `cancel`, is a JSON-RPC error, `unknown tool
+result`, and stores nothing. The server sends each call to the daemon as `{"outside": {"tool": ..., "session": ...,
 "arguments": ...}}`. With no daemon listening, the call fails with `no priory daemon listens on
 ...` and stores nothing.
 
@@ -70,6 +72,37 @@ An `add` takes the same request as [`POST /api/request`](../reference/serve.md#w
 replies with its JSON: `key`, `id` and `outcome`. The task records the session as `added_by`, or
 `outside` without an hc terminal. `priory task ID --json` and `priory tasks --json` show it, and
 the desk's Since you looked ends the task request's line with `, added by session <session>`.
+
+### Answers from the session
+
+`answer` and `dismiss` let the session decide an ask, within the limit a [lead](#hands-off) and
+[auto](waits.md#answered-by-auto) have. The daemon refuses an ask that the same rule refuses: one
+that runs a command, one at a step that `approves` an irreversible step, and one whose answer can
+let an irreversible step run before a person decides again. It also refuses an ask no lead is sent: Priory's own asks, such as a hold's,
+a gate's or a spend cap's, a graded plan's approval and a debate's pick, an outside ask that
+carries a command, and an outside ask the same session asked. The reply names the reason and says a person answers it:
+
+```text
+ask 14 waits for a person: step approve-pr approves irreversible step open-pr. A person answers it in the desk.
+```
+
+`ask` is the ask's number, or an outside ask's name. `revision` is required, as it is for `priory
+answer`: an ask at another revision is refused with `ask 14 is at revision 2, not 1`, and the
+session reads it again with `asks`. An answer applies as a person's does: it moves a step's task by
+its option, or wakes an agent with `Answer to ask 14 (revision 1): ...`. A dismissal wakes the agent
+with `Session <session> dismissed ask 14 without an answer. Continue your task.`
+
+Priory never records the decision as a person's. The ask's `answered_by` is `session:` and the
+session's name, as [The asking session](#the-asking-session) names it, or `session:outside` without
+an hc terminal. A dismissed ask keeps it too, and its `withdrawn_why` reads `dismissed by session
+<session>`. The daemon appends `factory.ask.session_answered` or `factory.ask.session_dismissed` to
+the trace (see [trace-schema.md](../trace-schema.md#factoryasksession_answered-and-factoryasksession_dismissed)), the desk's Since
+you looked lists `ask 14 answered "ship" by session t9 8f3c2a10`, and the web view and the Herdr
+panels show "by session t9 8f3c2a10". The reply says so: `ask 14 answered; Priory records that
+session t9 8f3c2a10 decided it, not a person`.
+
+The guard is unchanged: the [outside hook](#the-outside-hook) still denies `priory answer` typed by
+the model, and a run still cannot start the server, since `PRIORY_SESSION` is set in its pane.
 
 ### The outside hook
 

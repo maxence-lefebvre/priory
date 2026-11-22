@@ -114,7 +114,8 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   of its last update, and the options stay disabled until it reconnects.
 - **Routed asks.** An open ask with `routed_to` shows "with <lead>" in its row, and its detail says
   the lead is answering and that the person can still answer first. An answered ask shows
-  `answered_by` as "by agent:<lead>" or "by a person", in its row, its decided line and the
+  `answered_by` as "by agent:<lead>", "by auto", "by session <session>" for a person's own session,
+  or "by a person", in its row, its decided line and the
   History. The Desk panel shows the same mark under a routed ask's question. The helpers
   `routedMark`, `routedNote` and `answeredBy` live in `lib/priory.js`, as in the web view's
   `asks.js`; a test keeps the two word for word.

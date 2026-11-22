@@ -221,7 +221,8 @@ An agent's settings and its shell call these. A person rarely does.
 - `priory hook EVENT`: sends one of the harness's hook signals to the daemon. See
   [signals.md](../daemon/signals.md).
 - `priory mcp --outside`: the MCP server of a person's own session, which Priory did not start, on
-  stdio. It serves `desk`, `asks`, `task`, `ask` and `add`, and no tool that answers. It exits 2
+  stdio. It serves `desk`, `asks`, `task`, `ask`, `add`, `answer` and `dismiss`. `answer` and
+  `dismiss` decide only an ask a lead could answer, recorded as the session's decision. It exits 2
   when `PRIORY_SESSION` is set, or when `PRIORY_HOME` or `PRIORY_DB` is unset. See
   [tools.md](../daemon/tools.md#the-outside-server).
 - `priory hook PreToolUse --outside`: the `PreToolUse` hook of a person's own session. It denies a
