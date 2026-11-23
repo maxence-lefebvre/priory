@@ -30,7 +30,7 @@ pub(super) fn fire(
             .time(slot);
         let task = request(name, trigger, &source);
         if trigger.pre.is_none() {
-            publish(bus, &source)?;
+            super::publish_polled(bus, &source, "schedule", false)?;
             publish(bus, &task)?;
             continue;
         }
@@ -42,7 +42,11 @@ pub(super) fn fire(
         let seq = bus
             .publish(super::OUTPUT, &source)
             .map_err(|error| format!("publish on {}: {error}", super::OUTPUT))?;
-        let new = first || newest.is_none_or(|newest| seq > newest);
+        let appended = newest.is_none_or(|newest| seq > newest);
+        if appended {
+            super::counted("schedule", "poll", "published");
+        }
+        let new = first || appended;
         if new && let Some(decided) = crate::pre::apply(name, trigger, &source, task)? {
             publish(bus, &decided)?;
         }

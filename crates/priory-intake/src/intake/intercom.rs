@@ -45,6 +45,7 @@ impl IntercomWebhook {
     /// notification again after any other reply than `2xx`, so the route makes no call to Intercom.
     pub fn receive(&self, bus: &mut Result<Box<dyn Log>, String>, request: &Request) -> Reply {
         if !self.signed(request) {
+            super::counted("intercom", "webhook", "refused");
             return Reply::error(401, "X-Hub-Signature is missing or does not match the body");
         }
         let Ok(payload) = serde_json::from_slice::<Value>(request.body) else {
@@ -67,7 +68,7 @@ impl IntercomWebhook {
             Ok(bus) => bus,
             Err(error) => return Reply::error(500, &error),
         };
-        match publish_new(bus, &triggers, &message) {
+        match publish_new(bus, &triggers, &message, "intercom") {
             Ok(true) => accepted("published"),
             Ok(false) => accepted("dropped"),
             Err(error) => Reply::error(500, &error),

@@ -75,6 +75,121 @@ const STREAMS: [&str; 4] = [LABELED, OPENED, REVIEWED, CHECKED];
 pub(crate) const TASK_REQUESTED: &str = "factory.task.requested";
 const BASELINE: &str = "factory.intake.baseline";
 const EVERY: Duration = Duration::from_secs(60);
+
+/// The counter of the events the intake and the webhooks publish, by source, way and outcome.
+pub const EVENTS: &str = "priory.intake.events";
+/// The counter of the events a poll published for a source whose webhooks the factory takes.
+pub const MISSED: &str = "priory.intake.poll.missed";
+/// The counter of failed polls, by source and reason.
+pub const FAILURES: &str = "priory.intake.poll.failures";
+
+/// The GitHub types a webhook delivery publishes, which a poll publishes only when it was missed.
+const HOOKED_GITHUB: [&str; 8] = [
+    OPENED,
+    LABELED,
+    PR_OPENED,
+    PR_LABELED,
+    PR_CLOSED,
+    REVIEWED,
+    COMMENTED,
+    THREAD_COMMENTED,
+];
+
+/// Counts one event of `source` that arrived `via` a poll or a webhook, by `outcome`: `published`,
+/// `duplicate` or `refused`.
+pub(crate) fn counted(source: &'static str, via: &'static str, outcome: &'static str) {
+    priory_runtime::ticks::count(
+        EVENTS,
+        &[
+            ("priory.source", source),
+            ("priory.via", via),
+            ("outcome", outcome),
+        ],
+    );
+}
+
+/// Counts one failed poll of `source` from its errors.
+fn poll_failed(source: &'static str, errors: &[String]) {
+    let reason = failure_reason(errors);
+    priory_runtime::ticks::count(FAILURES, &[("priory.source", source), ("reason", reason)]);
+}
+
+/// Why a poll failed: `timeout` when one of its calls timed out, else `error`.
+fn failure_reason(errors: &[String]) -> &'static str {
+    if errors.iter().any(|error| error.contains("timed out after")) {
+        "timeout"
+    } else {
+        "error"
+    }
+}
+
+/// Publishes a source event a poll of `source` found, and counts it: `published` when the log
+/// lacked it, and also `missed` when a webhook should have published it first; `duplicate` when a
+/// webhook's report of it holds its id. An event a poll reads again, the log holding the poll's own,
+/// counts nothing.
+fn publish_polled(
+    bus: &dyn Log,
+    message: &Message,
+    source: &'static str,
+    missed: bool,
+) -> Result<(), String> {
+    if !priory_runtime::ticks::on() {
+        return publish(bus, message);
+    }
+    match held(bus, message)? {
+        None => {
+            counted(source, "poll", "published");
+            if missed {
+                priory_runtime::ticks::count(MISSED, &[("priory.source", source)]);
+            }
+        }
+        Some(stored) if stored.data.get("delivery").is_some() => {
+            counted(source, "poll", "duplicate");
+        }
+        Some(_) => {}
+    }
+    Ok(())
+}
+
+/// Publishes `message`, and returns the message the log already held under its id, if any: none
+/// when the log appended it.
+fn held(bus: &dyn Log, message: &Message) -> Result<Option<Message>, String> {
+    let newest = bus
+        .messages(OUTPUT, None, 1)
+        .map_err(|error| format!("read {OUTPUT}: {error}"))?
+        .first()
+        .map(|stored| stored.seq);
+    let seq = bus
+        .publish(OUTPUT, message)
+        .map_err(|error| format!("publish on {OUTPUT}: {error}"))?;
+    if newest.is_none_or(|newest| seq > newest) {
+        return Ok(None);
+    }
+    let stored = bus
+        .message(seq)
+        .map_err(|error| format!("read {OUTPUT}: {error}"))?;
+    Ok(Some(stored.message))
+}
+
+/// Publishes a webhook delivery's `message` from `source` and counts it, `published` or
+/// `duplicate`; returns the message the log already held under its id, if any.
+fn publish_delivered(
+    bus: &dyn Log,
+    message: &Message,
+    source: &'static str,
+) -> Result<Option<Message>, String> {
+    let stored = held(bus, message)?;
+    counted(
+        source,
+        "webhook",
+        if stored.is_none() {
+            "published"
+        } else {
+            "duplicate"
+        },
+    );
+    Ok(stored)
+}
 /// How far back a writer looks for the other writer's report of the same change.
 const LOOKBACK_SECONDS: i64 = 7 * 24 * 60 * 60;
 const LOOKBACK_MESSAGES: usize = 5000;
@@ -288,7 +403,7 @@ pub fn run(
         };
         // Each source's errors this poll; a wait starts a source the triggers left off, and a
         // missing key fails that poll only.
-        let mut failed: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        let mut failed: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
         if linear.is_none() && names("linear:") {
             match linear::Linear::start(bus, Vec::new()) {
                 Ok(started) => linear = Some(started),
@@ -315,7 +430,8 @@ pub fn run(
         };
         let (found, errors) = fetch(&polled, &cursors, &merges, &mut unchecked);
         // A publish error ends the intake: its restart recovers the source it left behind.
-        publish_all(bus, &triggers, found, &mut cursors, &mut published)?;
+        let hooked = factory.github_webhook().is_some().then_some(&repos);
+        publish_all(bus, &triggers, found, &mut cursors, &mut published, hooked)?;
         failed.entry("github").or_default().extend(errors);
         if let Some(reviews) = &mut reviews {
             let errors = reviews.poll(bus, now()?)?;
@@ -323,7 +439,9 @@ pub fn run(
         }
         if let Some(linear) = &mut linear {
             match linear.fetch(&watching) {
-                Ok(polled) => linear.publish_all(bus, polled)?,
+                Ok(polled) => {
+                    linear.publish_all(bus, polled, factory.linear_webhook().is_some())?
+                }
                 Err(error) => failed.entry("linear").or_default().push(error),
             }
         }
@@ -343,6 +461,11 @@ pub fn run(
                 (source, errors.map(|errors| errors.join("; ")))
             })
             .collect();
+        for (source, errors) in &failed {
+            if !errors.is_empty() {
+                poll_failed(source, errors);
+            }
+        }
         let recorded = health(&outcomes, now()?, factory.intake_alarm_after());
         for error in recorded
             .err()
@@ -484,12 +607,15 @@ fn fetch(
     (polled, failed)
 }
 
+/// Publishes what a GitHub poll found. `hooked` holds the repositories a GitHub webhook reports, when
+/// the factory takes one, so that an event it should have published first counts as missed.
 fn publish_all(
     bus: &dyn Log,
     triggers: &[(&str, &Trigger)],
     polled: Vec<Polled>,
     cursors: &mut Cursors,
     published: &mut HashSet<Uuid>,
+    hooked: Option<&BTreeSet<&str>>,
 ) -> Result<(), String> {
     // Taken at the first event a webhook may also report, and held so none publishes meanwhile.
     let mut delivered: Option<(std::fs::File, Vec<Message>)> = None;
@@ -513,11 +639,15 @@ fn publish_all(
                 };
                 // A crash may have stopped the webhook between its event and its task requests.
                 if let Some(other) = delivered.iter().find(|other| same_change(other, &source)) {
+                    counted("github", "poll", "duplicate");
                     dispatch(bus, triggers, other)?;
                     continue;
                 }
             }
-            publish(bus, &source)?;
+            let missed = hooked.is_some_and(|repos| repos.contains(event.repo.as_str()))
+                && HOOKED_GITHUB.contains(&source.kind.as_str())
+                && !event.baseline;
+            publish_polled(bus, &source, "github", missed)?;
             dispatch(bus, triggers, &source)?;
         }
         let cursor = cursors.get(&stream).copied();
@@ -624,24 +754,18 @@ fn publish_new(
     bus: &dyn Log,
     triggers: &[(&str, &Trigger)],
     message: &Message,
+    source: &'static str,
 ) -> Result<bool, String> {
-    let newest = bus
-        .messages(OUTPUT, None, 1)
-        .map_err(|error| format!("read {OUTPUT}: {error}"))?
-        .first()
-        .map(|stored| stored.seq);
-    let seq = bus
-        .publish(OUTPUT, message)
-        .map_err(|error| format!("publish on {OUTPUT}: {error}"))?;
-    if newest.is_none_or(|newest| seq > newest) {
-        dispatch(bus, triggers, message)?;
-        return Ok(true);
+    match publish_delivered(bus, message, source)? {
+        None => {
+            dispatch(bus, triggers, message)?;
+            Ok(true)
+        }
+        Some(stored) => {
+            dispatch(bus, triggers, &stored)?;
+            Ok(false)
+        }
     }
-    let stored = bus
-        .message(seq)
-        .map_err(|error| format!("read {OUTPUT}: {error}"))?;
-    dispatch(bus, triggers, &stored.message)?;
-    Ok(false)
 }
 
 fn accepted(outcome: &str) -> Reply {
@@ -811,6 +935,56 @@ pub(crate) fn id(name: &str) -> Uuid {
         b"https://github.com/maxence-lefebvre/priory/intake",
     );
     Uuid::new_v5(&namespace, name.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_poll_with_a_timed_out_call_fails_by_timeout_and_any_other_by_error() {
+        let errors = |texts: &[&str]| {
+            texts
+                .iter()
+                .map(|text| (*text).to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            failure_reason(&errors(&[
+                "gh api repos/a/b/issues failed: HTTP 404",
+                "gh api graphql: timed out after 300s",
+            ])),
+            "timeout"
+        );
+        assert_eq!(failure_reason(&errors(&["HTTP 502"])), "error");
+    }
+
+    #[test]
+    fn a_linear_poll_misses_what_the_webhook_reports_and_nothing_else() {
+        let event = |kind: &str, data: serde_json::Value| Message::new(kind, data);
+        let reports = linear_webhook::reports;
+        assert!(reports(&event(
+            linear::CREATED,
+            json!({ "baseline": false })
+        )));
+        assert!(reports(&event(
+            linear::STATE_CHANGED,
+            json!({ "baseline": false })
+        )));
+        assert!(!reports(&event(
+            linear::CREATED,
+            json!({ "baseline": true })
+        )));
+        assert!(!reports(&event(
+            linear::COMMENTED,
+            json!({ "triggers": [] })
+        )));
+        assert!(reports(&event(
+            linear::COMMENTED,
+            json!({ "triggers": ["t"] })
+        )));
+        assert!(!reports(&event("linear.issue.entered", json!({}))));
+    }
 }
 
 #[cfg(test)]

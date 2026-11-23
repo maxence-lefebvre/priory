@@ -1,12 +1,26 @@
 use super::linear::{COMMENTED, CREATED, STATE_CHANGED, event};
 use super::webhook::{opened, unhex};
-use super::{claim, dispatch, now, output, publish, reported};
+use super::{claim, dispatch, now, output, publish_delivered, reported};
 use crate::log::{self, Log};
 use hmac::{Hmac, KeyInit, Mac};
 use priory_factory::factory::{EventLog, Factory, Trigger};
 use priory_runtime::http::{Reply, Request};
 use serde_json::{Value, json};
 use sha2::Sha256;
+
+/// Whether Linear's webhook reports `message`, a poll's event: a created issue or a state change
+/// outside a view, or a comment a trigger requests. Its first poll's events are no deliveries.
+pub(super) fn reports(message: &herdr_bus::Message) -> bool {
+    let requested = message.data["triggers"]
+        .as_array()
+        .is_some_and(|triggers| !triggers.is_empty());
+    message.data["baseline"] != true
+        && match message.kind.as_str() {
+            CREATED | STATE_CHANGED => true,
+            COMMENTED => requested,
+            _ => false,
+        }
+}
 
 /// How far `webhookTimestamp` may be from now, in milliseconds: Linear's documented replay window.
 const WINDOW_MS: u64 = 60_000;
@@ -44,6 +58,7 @@ impl LinearWebhook {
     /// delivery Priory takes or drops on purpose gets it.
     pub fn receive(&self, bus: &mut Result<Box<dyn Log>, String>, request: &Request) -> Reply {
         if !self.signed(request) {
+            super::counted("linear", "webhook", "refused");
             return Reply::error(
                 401,
                 "Linear-Signature is missing or does not match the body",
@@ -57,7 +72,10 @@ impl LinearWebhook {
         };
         match now() {
             Ok(now) if now.as_millisecond().abs_diff(sent) <= WINDOW_MS => {}
-            Ok(_) => return Reply::error(401, "`webhookTimestamp` is over a minute from now"),
+            Ok(_) => {
+                super::counted("linear", "webhook", "refused");
+                return Reply::error(401, "`webhookTimestamp` is over a minute from now");
+            }
             Err(error) => return Reply::error(500, &error),
         }
         let (kind, name, data) = match self.observe(&payload) {
@@ -79,9 +97,10 @@ impl LinearWebhook {
             message.data["delivery"] = json!(delivery.and_then(|v| std::str::from_utf8(v).ok()));
             let _claim = claim()?;
             if reported(bus, &message)? {
+                super::counted("linear", "webhook", "duplicate");
                 return Ok(false);
             }
-            publish(bus, &message)?;
+            publish_delivered(bus, &message, "linear")?;
             dispatch(bus, &triggers, &message)?;
             Ok(true)
         });

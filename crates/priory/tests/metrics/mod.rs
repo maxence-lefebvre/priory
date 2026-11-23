@@ -312,7 +312,7 @@ fn priory_metrics_naming_an_unknown_group_stops_the_daemon_with_its_name() {
     assert_eq!(
         stderr,
         "priory daemon: PRIORY_METRICS names `nope`, which is not a metrics group: the groups are \
-         process, log, runs, or none\n"
+         process, log, runs, intake, or none\n"
     );
 }
 
@@ -674,4 +674,262 @@ fn a_run_on_claudes_trust_dialog_counts_as_a_start_that_ended_in_error() {
         point(request, "priory.run.starts.active", &harness),
         Some(0.0)
     );
+}
+
+/// `[serve]` and a GitHub webhook, whose secret is `TEST_SECRET`.
+const HOOKS: &str = "\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n\n[webhooks.github]\nsecret_env = \"TEST_SECRET\"\n";
+
+const SECRET: &str = "s3cret";
+
+/// An event of `owner/repo`'s issue events: issue `number` labeled `label`, as `gh api` lists it.
+fn issue_event(id: u64, number: u64, label: &str) -> Value {
+    json!({
+        "id": id,
+        "event": "labeled",
+        "created_at": "2026-11-17T10:00:00Z",
+        "actor": { "login": "max" },
+        "label": { "name": label, "color": "ededed" },
+        "issue": {
+            "id": 9000 + number,
+            "number": number,
+            "title": "Fix the thing",
+            "html_url": format!("https://github.com/owner/repo/issues/{number}"),
+            "user": { "login": "max" },
+            "created_at": "2026-11-17T09:00:00Z"
+        }
+    })
+}
+
+impl Setup {
+    /// Makes `gh` in `bin` print `events` for `owner/repo`'s issue events, and `[]` for any other
+    /// call; or fail every call with `fail`.
+    fn issue_events(&self, events: &Value, fail: Option<&str>) {
+        let answer = self.dir.join("fake/events.json");
+        fs::write(&answer, events.to_string()).unwrap();
+        let script = match fail {
+            Some(error) => format!("#!/bin/sh\necho '{error}' >&2\nexit 1\n"),
+            None => format!(
+                "#!/bin/sh\ncase \"$*\" in\n  *repos/owner/repo/issues/events*) cat '{}' ;;\n  *) echo '[]' ;;\nesac\n",
+                answer.display()
+            ),
+        };
+        let gh = self.dir.join("bin/gh");
+        fs::create_dir_all(gh.parent().unwrap()).unwrap();
+        fs::write(&gh, script).unwrap();
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// `priory <verb> <factory> <args>`, with `bin` and then the real `curl` first on `PATH`.
+    fn process(&self, verb: &str, args: &[&str]) -> std::process::Command {
+        let path = std::env::join_paths(
+            std::iter::once(self.dir.join("bin"))
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let mut command = self.command(env!("CARGO_BIN_EXE_priory"));
+        command
+            .arg(verb)
+            .arg(self.dir.join("factory"))
+            .args(args)
+            .env("PATH", path)
+            .env("TEST_TOKEN", "t0ken")
+            .env("TEST_SECRET", SECRET);
+        command
+    }
+
+    /// Starts `priory intake` as this setup's process, its stderr in `daemon.log`.
+    fn start_intake(&mut self) {
+        let log = fs::File::create(self.dir.join("daemon.log")).unwrap();
+        self.daemon = Some(self.process("intake", &[]).stderr(log).spawn().unwrap());
+    }
+}
+
+/// The attributes of `priory.intake.events` for one event of `source` `via` a poll or a webhook.
+fn event(source: &str, via: &str, outcome: &str) -> Value {
+    json!({ "priory.source": source, "priory.via": via, "outcome": outcome })
+}
+
+#[test]
+fn an_intake_counts_the_events_its_poll_publishes_and_those_a_webhook_should_have_sent_first() {
+    let collector = Collector::start();
+    let mut setup = Setup::new("metrics-intake-poll");
+    setup.metrics(
+        &collector,
+        &format!("metrics = [\"intake\"]\nmetrics_every = \"10s\"\n{HOOKS}"),
+    );
+    setup.issue_events(&json!([issue_event(100, 41, "bug")]), None);
+    let baseline = setup.process("intake", &["--once"]).output().unwrap();
+    assert!(
+        baseline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+    setup.issue_events(
+        &json!([issue_event(101, 42, "agent"), issue_event(100, 41, "bug")]),
+        None,
+    );
+
+    setup.start_intake();
+
+    let github = json!({ "priory.source": "github" });
+    let polled = |request: &Value| {
+        point(
+            request,
+            "priory.intake.events",
+            &event("github", "poll", "published"),
+        )
+        .is_some()
+            && point(request, "priory.intake.poll.age", &github).is_some()
+    };
+    let requests = collector.until(&setup, |requests| requests.iter().any(polled));
+    let request = requests.iter().find(|request| polled(request)).unwrap();
+    assert_eq!(service(request), "intake");
+    assert_eq!(
+        point(
+            request,
+            "priory.intake.events",
+            &event("github", "poll", "published")
+        ),
+        Some(1.0)
+    );
+    assert_eq!(
+        point(request, "priory.intake.poll.missed", &github),
+        Some(1.0)
+    );
+    let age = point(request, "priory.intake.poll.age", &github);
+    assert!(
+        age.is_some_and(|age| (0.0..60.0).contains(&age)),
+        "{request}"
+    );
+    assert!(points(request, "priory.intake.poll.failures").is_empty());
+    let counter = request["body"]["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|metric| metric["name"] == "priory.intake.events")
+        .cloned()
+        .unwrap();
+    assert_eq!(counter["sum"]["isMonotonic"], true);
+    assert!(!names(request).contains(&"process.uptime".to_owned()));
+}
+
+#[test]
+fn an_intake_counts_each_failed_poll_and_its_source_s_age_since_it_started_failing() {
+    let collector = Collector::start();
+    let mut setup = Setup::new("metrics-intake-failing");
+    setup.metrics(
+        &collector,
+        "metrics = [\"intake\"]\nmetrics_every = \"10s\"\n",
+    );
+    setup.issue_events(&json!([]), Some("HTTP 404: Not Found"));
+
+    setup.start_intake();
+
+    let failure = json!({ "priory.source": "github", "reason": "error" });
+    let github = json!({ "priory.source": "github" });
+    let failed = |request: &Value| {
+        point(request, "priory.intake.poll.failures", &failure).is_some_and(|n| n >= 1.0)
+            && point(request, "priory.intake.poll.age", &github).is_some()
+    };
+    let requests = collector.until(&setup, |requests| requests.iter().any(failed));
+    let request = requests.iter().find(|request| failed(request)).unwrap();
+    assert!(points(request, "priory.intake.poll.missed").is_empty());
+    assert!(
+        points(request, "priory.intake.events").is_empty(),
+        "{request}"
+    );
+}
+
+/// `sha256=` and the hex HMAC-SHA256 of `body` under `SECRET`, as GitHub signs a delivery.
+fn signed(body: &str) -> String {
+    use hmac::{KeyInit, Mac};
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(SECRET.as_bytes()).unwrap();
+    mac.update(body.as_bytes());
+    let hex: String = mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("sha256={hex}")
+}
+
+/// POSTs an `issues` delivery to `<address>/hooks/github` and returns the status.
+fn deliver(address: &str, delivery: &str, signature: &str, body: &str) -> u16 {
+    let mut stream = TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(60)))
+        .unwrap();
+    let request = format!(
+        "POST /hooks/github HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\n\
+         X-GitHub-Event: issues\r\nX-GitHub-Delivery: {delivery}\r\nX-Hub-Signature-256: {signature}\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response[9..12].parse().unwrap()
+}
+
+#[test]
+fn the_server_counts_a_delivery_published_then_redelivered_and_one_whose_signature_fails() {
+    let collector = Collector::start();
+    let mut setup = Setup::new("metrics-intake-webhook");
+    setup.metrics(
+        &collector,
+        &format!("metrics = [\"intake\"]\nmetrics_every = \"10s\"\n{HOOKS}"),
+    );
+    let mut server = setup
+        .process("serve", &[])
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = BufReader::new(server.stderr.take().unwrap());
+    setup.daemon = Some(server);
+    let address = loop {
+        let mut line = String::new();
+        assert!(stderr.read_line(&mut line).unwrap() > 0, "serve exited");
+        if let Some(address) = line.trim().strip_prefix("priory: serving on http://") {
+            break address.to_owned();
+        }
+    };
+    let mut log = fs::File::create(setup.dir.join("daemon.log")).unwrap();
+    std::thread::spawn(move || std::io::copy(&mut stderr, &mut log));
+    let now = herdr_bus::Timestamp::now().to_string();
+    let body = json!({
+        "action": "labeled",
+        "issue": {
+            "id": 9042,
+            "number": 42,
+            "title": "Fix the thing",
+            "html_url": "https://github.com/owner/repo/issues/42",
+            "user": { "login": "max" },
+            "created_at": now,
+            "updated_at": now
+        },
+        "label": { "id": 1, "name": "agent", "color": "ededed" },
+        "repository": { "id": 1, "full_name": "owner/repo" },
+        "sender": { "login": "max" }
+    })
+    .to_string();
+
+    assert_eq!(deliver(&address, "d-1", &signed(&body), &body), 202);
+    assert_eq!(deliver(&address, "d-2", &signed(&body), &body), 202);
+    assert_eq!(deliver(&address, "d-3", "sha256=00", &body), 401);
+
+    let counted = |request: &Value| {
+        ["published", "duplicate", "refused"].iter().all(|outcome| {
+            point(
+                request,
+                "priory.intake.events",
+                &event("github", "webhook", outcome),
+            ) == Some(1.0)
+        })
+    };
+    let requests = collector.until(&setup, |requests| requests.iter().any(counted));
+    let request = requests.iter().find(|request| counted(request)).unwrap();
+    assert_eq!(service(request), "serve");
+    assert!(points(request, "priory.intake.poll.age").is_empty());
+    assert!(points(request, "priory.intake.poll.missed").is_empty());
 }

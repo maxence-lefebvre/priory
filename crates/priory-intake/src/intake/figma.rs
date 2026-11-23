@@ -43,6 +43,7 @@ impl FigmaWebhook {
         let payload = serde_json::from_slice::<Value>(request.body).unwrap_or(Value::Null);
         let passcode = payload["passcode"].as_str().map(str::as_bytes);
         if !passcode.is_some_and(|passcode| http::same(passcode, self.passcode.as_bytes())) {
+            super::counted("figma", "webhook", "refused");
             return Reply::error(
                 400,
                 "the body is not JSON, or its passcode is missing or is not the webhook's",
@@ -62,7 +63,7 @@ impl FigmaWebhook {
             Ok(bus) => bus,
             Err(error) => return Reply::error(500, &error),
         };
-        match publish_new(bus, &triggers, &message) {
+        match publish_new(bus, &triggers, &message, "figma") {
             Ok(true) => ok("published"),
             Ok(false) => ok("dropped"),
             Err(error) => Reply::error(500, &error),

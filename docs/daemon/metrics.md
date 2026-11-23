@@ -3,8 +3,8 @@
 Priory can send its own health as OpenTelemetry metrics, beside the spans of
 [the trace export](trace.md#opentelemetry-export). Spans say what a task did after its step ends.
 Metrics say how each Priory process is doing every interval: how long its loop takes, how much
-memory and CPU it uses, whether the daemon reaches its log, and how long its runs take to start. [The metrics
-reference](../reference/metrics.md) lists every metric. The design and the groups still to come
+memory and CPU it uses, whether the daemon reaches its log, how long its runs take to start, and whether the intake
+keeps up. [The metrics reference](../reference/metrics.md) lists every metric. The design and the groups still to come
 are in [the metrics design note](../design/metrics.md).
 
 ## Switching it on
@@ -15,13 +15,13 @@ off unless `factory.toml` names the groups to send:
 ```toml
 [telemetry]
 otlp = "http://127.0.0.1:4318"
-metrics = ["process", "log", "runs"]   # the groups, by name
-metrics_every = "60s"                  # how often each process sends
-metrics_cap = 1000                     # data points per minute, per process
+metrics = ["process", "log", "runs", "intake"]   # the groups, by name
+metrics_every = "60s"                            # how often each process sends
+metrics_cap = 1000                               # data points per minute, per process
 ```
 
-[`[telemetry]`](../reference/factory.md#telemetry) lists the keys. The groups are `process`, `log`
-and `runs`. `priory check` refuses an unknown group, a `metrics_every` under 10 seconds and a
+[`[telemetry]`](../reference/factory.md#telemetry) lists the keys. The groups are `process`, `log`,
+`runs` and `intake`. `priory check` refuses an unknown group, a `metrics_every` under 10 seconds and a
 `metrics_cap` of 0.
 
 `PRIORY_METRICS` replaces `metrics` for one process, as a comma-separated list such as `process,log`,
@@ -30,7 +30,7 @@ for one, without editing the factory every runner shares. A process refuses to s
 variable names an unknown group:
 
 ```text
-priory daemon: PRIORY_METRICS names `nope`, which is not a metrics group: the groups are process, log, runs, or none
+priory daemon: PRIORY_METRICS names `nope`, which is not a metrics group: the groups are process, log, runs, intake, or none
 ```
 
 ## Which process sends what
@@ -42,6 +42,8 @@ inside itself, so its server requests count in the daemon's tick.
 
 Each process sends only the groups it owns. All three send `process`, about themselves. Only the
 daemon sends `log` and `runs`: the intake and `priory serve` skip them when `metrics` names them.
+Each process sends its own part of `intake`: the intake its polls, and the process whose server
+takes webhooks, the daemon or `priory serve`, its deliveries.
 
 The resource of every request names the factory, the host, the runner and the process, as
 [the reference](../reference/metrics.md#resource) lists. `service.name` is `priory`, as on spans, so
@@ -115,6 +117,32 @@ The daemon reads the starts and the recipes from the state file. It counts those
 it started, so a restart counts again from zero. The state keeps when each run's `SessionStart`
 arrived, to the millisecond, its harness, and whether it resumed a session. A run from before
 Priory kept them counts once its `SessionStart` arrives, by its agent's harness, as `first`.
+
+## The intake group
+
+The intake group says whether the intake keeps up with its sources, and whether webhooks arrive.
+
+- **The events.** `priory.intake.events` counts each source event a poll or a webhook delivery
+  publishes, by source, by `poll` or `webhook`, and by outcome. `published` is an event the log
+  lacked. `duplicate` is one the other writer already reported: a webhook's redelivery, a
+  delivery the poll already published, or a poll's event a delivery already published
+  ([webhooks.md](../intake/webhooks.md#duplicates)). A poll that reads its own event again, as a
+  schedule's slot or a watched Slack thread's replies, counts nothing. `refused` is a delivery the
+  server refused for its signature, secret or passcode, or Linear's stale timestamp.
+- **The missed webhooks.** `priory.intake.poll.missed` counts the events a poll published for a
+  source whose webhook the factory takes, GitHub or Linear, of a type that webhook publishes. A
+  factory that opened its server to GitHub expects it near zero. A rising count says deliveries
+  stopped, and the poll caught them up to a minute late. A change that a poll reads in the second
+  before its delivery arrives counts too.
+- **The failures.** `priory.intake.poll.failures` counts each source's failed polls, `timeout`
+  when one of its calls passed `command_timeout`, else `error`.
+- **The poll age.** `priory.intake.poll.age` gives the seconds since each source's last good poll,
+  read from the state, as the desk's [intake banner](desk.md#intake-banner) reads it. The intake
+  sends it only with `PRIORY_DB` set.
+
+The counters start at the process's start. To count its publishes, the process reads the newest
+message on `factory.intake` before each one, and the stored message when the log already held its
+id.
 
 ## The cap
 

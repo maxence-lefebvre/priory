@@ -41,6 +41,7 @@ impl HoneycombWebhook {
     pub fn receive(&self, bus: &mut Result<Box<dyn Log>, String>, request: &Request) -> Reply {
         let token = request.header("x-honeycomb-webhook-token");
         if !token.is_some_and(|token| http::same(token, self.secret.as_bytes())) {
+            super::counted("honeycomb", "webhook", "refused");
             return Reply::error(
                 401,
                 "X-Honeycomb-Webhook-Token is missing or is not the Shared Secret",
@@ -67,7 +68,7 @@ impl HoneycombWebhook {
             Ok(bus) => bus,
             Err(error) => return Reply::error(503, &error),
         };
-        match publish_new(bus, &triggers, &message) {
+        match publish_new(bus, &triggers, &message, "honeycomb") {
             Ok(true) => accepted("published"),
             Ok(false) => accepted("dropped"),
             Err(error) => Reply::error(503, &error),

@@ -1,5 +1,5 @@
 use super::gh::gh;
-use super::{BASELINE, OUTPUT, dispatch, id, publish};
+use super::{BASELINE, OUTPUT, dispatch, id, publish, publish_polled};
 use crate::log::{self, Log};
 use herdr_bus::{Message, Timestamp};
 use priory_factory::factory::Trigger;
@@ -64,7 +64,7 @@ impl<'a> Reviews<'a> {
                 }
             };
             for event in events {
-                publish(bus, &event)?;
+                publish_polled(bus, &event, "github", false)?;
                 dispatch(bus, &self.triggers, &event)?;
             }
             publish(bus, &marker_message(&stream, &marker))?;

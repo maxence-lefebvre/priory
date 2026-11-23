@@ -45,6 +45,7 @@ impl CloudwatchWebhook {
     pub fn receive(&self, bus: &mut Result<Box<dyn Log>, String>, request: &Request) -> Reply {
         let token = request.header(TOKEN);
         if !token.is_some_and(|token| http::same(token, self.secret.as_bytes())) {
+            super::counted("cloudwatch", "webhook", "refused");
             return Reply::error(
                 401,
                 "X-Priory-Webhook-Token is missing or is not the connection's API key",
@@ -67,7 +68,7 @@ impl CloudwatchWebhook {
             Ok(bus) => bus,
             Err(error) => return Reply::error(500, &error),
         };
-        match publish_new(bus, &triggers, &message) {
+        match publish_new(bus, &triggers, &message, "cloudwatch") {
             Ok(true) => accepted("published"),
             Ok(false) => accepted("dropped"),
             Err(error) => Reply::error(500, &error),

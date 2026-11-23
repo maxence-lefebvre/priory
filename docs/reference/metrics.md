@@ -11,6 +11,7 @@ on. [metrics.md](../daemon/metrics.md) explains how each process samples and sen
 | `process` | the daemon, the intake and `priory serve`, each about itself |
 | `log` | the daemon only. The intake and `priory serve` skip it when `metrics` or `PRIORY_METRICS` names it |
 | `runs` | the daemon only, as for `log` |
+| `intake` | the intake, for its polls, and the daemon or `priory serve`, for the webhook deliveries its server takes. Only the intake sends `priory.intake.poll.age` |
 
 ## Resource
 
@@ -66,6 +67,18 @@ and as `<name>@<machine id>` when it reads on another.
 | `priory.worktree.phase.duration` | histogram | `s` | `priory.phase` = `clone`, `fetch`, `checkout`, `setup`, `resume`, `teardown`; `outcome` = `ok`, `error`, `timeout` | `clone`, `fetch` and `checkout` timed around their `git` commands as a task's worktree is added. `setup`, `resume` and `teardown` from the recipe's start to its end, `ok` for `exit 0`. `timeout` is a command past `command_timeout`, or a recipe past its `timeout` |
 | `priory.worktrees.active` | gauge | `{worktree}` | | the task folders under `worktrees/` in Priory home, as the sweep lists them |
 
+## intake
+
+| Metric | Kind | Unit | Attributes | Value |
+| ------ | ---- | ---- | ---------- | ----- |
+| `priory.intake.events` | counter | `{event}` | `priory.source` = `github`, `linear`, `slack`, `schedule`, `sentry`, `figma`, `cloudwatch`, `honeycomb`, `intercom`; `priory.via` = `poll`, `webhook`; `outcome` = `published`, `duplicate`, `refused` | each source event the process published or turned away. `published`: the log lacked it. `duplicate`: the log held its id, or the other writer's report of the same change. A poll counts `duplicate` only for a webhook's report, not for an event it reads again. `refused`: a delivery the server refused for its signature, secret, passcode or a stale Linear timestamp. Task requests and markers count nothing |
+| `priory.intake.poll.missed` | counter | `{event}` | `priory.source` = `github`, `linear` | the events a poll published, not as a duplicate, of a type the factory's webhook for that source publishes: for GitHub, an issue opened or labeled, a pull request opened, labeled or closed, a review or a pull request comment, on a repository a trigger names; for Linear, a created issue, a state change, or a comment a trigger requests. Never from a first poll's baseline |
+| `priory.intake.poll.failures` | counter | `{poll}` | `priory.source` = `github`, `linear`, `slack`; `reason` = `timeout`, `error` | each poll of a source that failed. `timeout` when one of its calls ended with `timed out after <n>s` |
+| `priory.intake.poll.age` | gauge | `s` | `priory.source` | from the state's `intake_sources`: since the source's last poll, or since it started failing while it fails. Absent without `PRIORY_DB` |
+
+A counter has no point until it counts once, so a process that took no delivery sends no
+`priory.intake.events`.
+
 ## Dropped points
 
 | Metric | Kind | Unit | Attributes | Value |
@@ -76,9 +89,10 @@ and as `<name>@<machine id>` when it reads on another.
 
 | Message | Cause |
 | ------- | ----- |
-| `` priory <process>: PRIORY_METRICS names `<group>`, which is not a metrics group: the groups are process, log, runs, or none `` | `PRIORY_METRICS` names an unknown group. The process does not start |
+| `` priory <process>: PRIORY_METRICS names `<group>`, which is not a metrics group: the groups are process, log, runs, intake, or none `` | `PRIORY_METRICS` names an unknown group. The process does not start |
 | `` priory <process>: metrics past metrics_cap = <n>: dropped <count> <kind> points `` | an interval had more points than the cap left room for |
 | `` priory <process>: sending metrics to <otlp> failed (<error>) `` | the endpoint refused a request or did not answer, logged once per error text |
 | `` priory <process>: metrics: cannot read the process's own use: <error> `` | the process could not read `/proc/self`, or `self` in `PRIORY_PROC`. The interval sends the rest |
 | `` priory daemon: metrics: cannot read the log's state: <error> `` | the daemon's metrics thread could not read the state file. The interval sends the rest |
 | `` priory daemon: metrics: cannot read the runs' state: <error> `` | the same, for the `runs` group. The interval sends the rest |
+| `` priory intake: metrics: cannot read the intake's polls: <error> `` | the intake's metrics thread could not read the state file named by `PRIORY_DB`. The interval sends the rest |
