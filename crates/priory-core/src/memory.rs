@@ -146,7 +146,7 @@ pub(crate) fn started(pid: u32) -> Option<i64> {
     fields.get(19)?.parse().ok()
 }
 
-/// How long the oldest waiting grant holds back the grants behind it. A build it waits for ends
+/// How long a waiting grant that does not fit holds back the grants behind it. A build it waits for ends
 /// within minutes, so it is rarely overtaken, and a grant behind a head that cannot fit still has most
 /// of its 1-hour default timeout left to run.
 const PATIENCE: &str = "-300 seconds";
@@ -154,7 +154,8 @@ const PATIENCE: &str = "-300 seconds";
 /// Grants waiting grants oldest first while each fits beside the live runs and held grants. A grant
 /// does not count its own run's promise, which would make it wait for that run to end. The first that
 /// does not fit holds back the rest, so a large build is never starved. Once it has waited past
-/// `PATIENCE`, later grants that fit go first, and it stays first in line for the next room.
+/// `PATIENCE`, later grants that fit go first, and it keeps its place ahead of them for the next
+/// room.
 fn admit(db: &Connection, factory: &Factory, share: &Share, room: &Room) -> rusqlite::Result<()> {
     let mut statement = db.prepare(
         "SELECT id, bytes, task, created <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?1)
@@ -170,10 +171,10 @@ fn admit(db: &Connection, factory: &Factory, share: &Share, room: &Room) -> rusq
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (index, (id, bytes, task, overdue)) in waiting.into_iter().enumerate() {
+    for (id, bytes, task, overdue) in waiting {
         let promised = state::promised(db, factory, task)?.memory;
         if !room::fits(room, share, promised, bytes) {
-            if index == 0 && overdue {
+            if overdue {
                 continue;
             }
             break;
@@ -258,7 +259,8 @@ mod tests {
     fn a_head_that_cannot_fit_holds_back_a_smaller_grant_before_the_bound() {
         let db = state::memory();
         hold(&db, 8);
-        waiting(&db, 10, 299);
+        // `created` has whole seconds, so the test stays well inside the bound.
+        waiting(&db, 10, 240);
         waiting(&db, 4, 10);
 
         admit(&db, &Factory::default(), &share(), &room()).unwrap();
@@ -286,5 +288,18 @@ mod tests {
 
         // 15 GB is enough for either the head or the 6 GB behind it, and the head goes first.
         assert_eq!(states(&db), [held(10), wait(6), held(4)]);
+    }
+
+    #[test]
+    fn every_grant_past_the_bound_that_cannot_fit_lets_a_smaller_one_through() {
+        let db = state::memory();
+        hold(&db, 8);
+        waiting(&db, 10, 400);
+        waiting(&db, 9, 350);
+        waiting(&db, 2, 10);
+
+        admit(&db, &Factory::default(), &share(), &room()).unwrap();
+
+        assert_eq!(states(&db), [held(8), wait(10), wait(9), held(2)]);
     }
 }

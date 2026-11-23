@@ -21,18 +21,29 @@ pub fn scope_in(text: &str, slice: &str) -> Option<String> {
     (scope.ends_with(".scope") && parts.next() == Some(slice)).then(|| path.to_owned())
 }
 
-/// The memory the cgroup `path` uses now, from its `memory.current` under `/sys/fs/cgroup`, or
-/// under `PRIORY_CGROUP` when set.
+/// The memory the cgroup `path` holds that measured free memory does not count as free: its
+/// anonymous and shared memory, from its `memory.stat` under `/sys/fs/cgroup`, or under
+/// `PRIORY_CGROUP` when set.
 pub fn memory(path: &str) -> Option<u64> {
     memory_in(&root(), path)
 }
 
-/// The memory the cgroup `path` uses now, from its `memory.current` under `root`.
+/// `memory`, under `root`. `memory.current` also counts the file cache charged to the cgroup, such
+/// as a build's output, which `MemAvailable` already counts as free, so it is not read.
 pub fn memory_in(root: &Path, path: &str) -> Option<u64> {
-    let file = root
-        .join(path.trim_start_matches('/'))
-        .join("memory.current");
-    std::fs::read_to_string(file).ok()?.trim().parse().ok()
+    let file = root.join(path.trim_start_matches('/')).join("memory.stat");
+    stat_of(&std::fs::read_to_string(file).ok()?)
+}
+
+/// `anon` plus `shmem`, in bytes, from the text of a `memory.stat` file.
+pub fn stat_of(text: &str) -> Option<u64> {
+    let field = |key: &str| {
+        text.lines().find_map(|line| {
+            let (name, value) = line.split_once(' ')?;
+            (name == key).then(|| value.trim().parse::<u64>().ok())?
+        })
+    };
+    field("anon")?.checked_add(field("shmem")?)
 }
 
 fn root() -> PathBuf {
@@ -72,14 +83,33 @@ mod tests {
     }
 
     #[test]
-    fn memory_reads_memory_current_under_the_root() {
+    fn memory_counts_anonymous_and_shared_memory_and_leaves_out_the_file_cache() {
         let root = std::env::temp_dir().join(format!("priory-cgroup-{}", std::process::id()));
         let dir = root.join(SCOPE.trim_start_matches('/'));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("memory.current"), "4294967296\n").unwrap();
+        // A build: 5 GB charged, of which 4 GB is its output's file cache.
+        std::fs::write(dir.join("memory.current"), format!("{}\n", 5u64 << 30)).unwrap();
+        std::fs::write(
+            dir.join("memory.stat"),
+            format!(
+                "anon {}\nfile {}\nkernel 1048576\nshmem {}\nfile_mapped 0\n",
+                (1u64 << 30) - (1 << 20),
+                (4u64 << 30) + (1 << 20),
+                1u64 << 20
+            ),
+        )
+        .unwrap();
 
-        assert_eq!(memory_in(&root, SCOPE), Some(4 << 30));
+        assert_eq!(memory_in(&root, SCOPE), Some(1 << 30));
         assert_eq!(memory_in(&root, "/user.slice/gone.scope"), None);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_stat_without_anon_or_shmem_measures_nothing() {
+        assert_eq!(stat_of("anon 10\nshmem 5\n"), Some(15));
+        assert_eq!(stat_of("anon 10\n"), None);
+        assert_eq!(stat_of("anon_thp 10\nshmem 5\n"), None);
+        assert_eq!(stat_of(""), None);
     }
 }

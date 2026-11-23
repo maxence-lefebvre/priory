@@ -11,9 +11,9 @@ duration such as `90s`, `15m` or `2h`.
    measured free memory, minus the memory live runs promised and do not use yet and every held
    grant, minus N, stays at or above `(1 - memory share) × MemTotal`, as the room check for runs
    does (see [Room](room.md)). A grant leaves out the promise of its own task's run, which would
-   otherwise wait for itself. The oldest waiting grant that does not fit holds back every grant
-   behind it, even a smaller one that fits, so a large build is never starved. Once it has waited
-   5 minutes, later grants that fit go first, in order, and it stays first in line for the next
+   otherwise wait for itself. A waiting grant that does not fit holds back every grant behind it,
+   even a smaller one that fits, so a large build is never starved. Once it has waited 5 minutes,
+   later grants that fit go first, in order, and it keeps its place ahead of them for the next
    room. A build it waits for usually ends within 5 minutes, and a grant behind it still has most
    of its 1-hour default timeout left.
 3. The command polls the daemon every 250 ms. Once its grant is held, it starts a shell that waits

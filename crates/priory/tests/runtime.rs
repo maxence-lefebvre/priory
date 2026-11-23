@@ -2742,7 +2742,8 @@ fn two_admissions_in_one_tick_count_each_others_declared_memory() {
     });
 }
 
-/// Puts the live pane of tmux session `tmux` in a scope of `priory-agents.slice` that uses `gb` GB.
+/// Puts the live pane of tmux session `tmux` in a scope of `priory-agents.slice` that holds `gb` GB
+/// of anonymous memory, beside 8 GB of file cache that `memory.current` also counts.
 fn scoped(setup: &Setup, tmux: &str, gb: u64) {
     let listed = setup.tmux(&[
         "list-panes",
@@ -2762,7 +2763,14 @@ fn scoped(setup: &Setup, tmux: &str, gb: u64) {
     let scope = "user.slice/user-1000.slice/user@1000.service/priory.slice/priory-agents.slice/run-r1.scope";
     let dir = setup.dir.join("cgroup").join(scope);
     fs::create_dir_all(&dir).unwrap();
-    write_atomic(&dir.join("memory.current"), &format!("{}\n", gb << 30));
+    write_atomic(
+        &dir.join("memory.current"),
+        &format!("{}\n", (gb + 8) << 30),
+    );
+    write_atomic(
+        &dir.join("memory.stat"),
+        &format!("anon {}\nfile {}\nshmem 0\n", gb << 30, 8u64 << 30),
+    );
     fs::create_dir_all(setup.dir.join("proc").join(&pid)).unwrap();
     write_atomic(
         &setup.dir.join("proc").join(&pid).join("cgroup"),
@@ -2786,7 +2794,11 @@ fn a_run_that_uses_its_promised_memory_does_not_count_it_twice() {
     setup.until("tasks", |rows| rows.len() == 2 && rows[1][7] == reason);
     let runs = setup.rows("runs");
     assert_eq!(runs.len(), 1);
-    // Its scope now uses the 4 GB, which the 12 GB measured free already leaves out.
+    // File cache is free memory already, so 8 GB of it in the scope frees no promise.
+    scoped(&setup, &runs[0][3], 0);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[1][7], reason);
+    // Its scope now holds 4 GB of its own, which the 12 GB measured free already leaves out.
     scoped(&setup, &runs[0][3], 4);
 
     let tasks = setup.until("tasks", |rows| rows[1][4] == "running");

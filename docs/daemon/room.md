@@ -25,11 +25,14 @@ disk free, needs 8.0 GB and keeps 20.0 GB free`.
 
 A live run promises its agent's `memory` and `disk` from start to end. What a run already uses is
 already missing from measured free memory, so the room subtracts only the part of each memory
-promise the run does not use yet: `max(0, memory - use)`. A run's use is the `memory.current` of
-its systemd scope in the agents slice (below), read from cgroup v2 under `/sys/fs/cgroup`. The
-daemon finds the scope from the cgroup of the run's tmux pane process, and keeps that process in
-memory for the run's life. A run with no scope in the slice, as on a host without systemd, or whose
-use cannot be read, keeps its whole promise. Disk promises always count in full, since no run
+promise the run does not use yet: `max(0, memory - use)`. A run's use is the `anon` plus `shmem`
+in the `memory.stat` of its systemd scope in the agents slice (below), read from cgroup v2 under
+`/sys/fs/cgroup`. The scope's file cache, such as a build's output, is left out, since
+`MemAvailable` already counts it as free. The daemon finds the scope from the cgroup of the run's
+tmux pane process. It keeps that process and its start time in memory for the run's life, so a
+reused pid is never read, and asks tmux again after 30 seconds when it found no pane. A run with no
+scope in the slice, as on a host without systemd, or whose use cannot be read, keeps its whole
+promise. Disk promises always count in full, since no run
 reports its disk use. Held memory grants (see Memory gate) also count in full, since a granted
 command may not have allocated yet. So two runs admitted in turn cannot take the same free room,
 and no run starts into memory a build holds. The daemon measures again before each admission, since a start's
