@@ -196,14 +196,14 @@ pub fn git(dir: &Path) -> Command {
     let mut command = Command::new("git");
     command
         .env(OWN_GIT, std::process::id().to_string())
+        .arg("-C")
+        .arg(dir)
         .args([
             "-c",
             "core.hooksPath=/dev/null",
             "-c",
             "core.fsmonitor=false",
-        ])
-        .arg("-C")
-        .arg(dir);
+        ]);
     command
 }
 

@@ -313,8 +313,12 @@ fn git_folders(binds: &mut Binds, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Writes `text` to `file`, over what an earlier run may have left, so the jail binds it read-only.
+/// Makes `file` hold `text`, over what an earlier run may have left, so the jail binds it
+/// read-only. It writes only a file that differs, since git on the host may be reading it.
 fn pin(file: &Path, text: &str) -> Result<(), String> {
+    if std::fs::read_to_string(file).is_ok_and(|held| held == text) {
+        return Ok(());
+    }
     std::fs::write(file, text).map_err(|error| format!("{}: {error}", file.display()))
 }
 
