@@ -3,7 +3,7 @@
   "private": true,
   "packageManager": "pnpm@12.21.0",
   "scripts": {
-    "web:build": "pnpm --filter @priory/web build",
-    "web:check": "pnpm --filter @priory/web check"
+    "web:build": "node crates/priory-core/web/build.mjs",
+    "web:check": "node crates/priory-core/web/build.mjs --check"
   }
 }
