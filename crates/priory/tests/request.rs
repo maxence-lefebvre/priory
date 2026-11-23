@@ -892,3 +892,26 @@ fn a_factory_of_several_runners_refuses_batch_add() {
     );
     assert!(setup.published().is_empty());
 }
+
+#[test]
+fn a_key_that_names_a_pull_request_keys_and_subscribes_its_task_to_it() {
+    let setup = Setup::new("github-key");
+    let factory = setup.dir.join("factory");
+
+    succeeded(&setup.request(&[
+        "--workflow",
+        "implement",
+        "--key",
+        "github:owner/repo#43",
+        "Answer the review",
+    ]));
+    succeeded(&setup.priory(&["daemon", factory.to_str().unwrap(), "--once"]));
+
+    let published = setup.published();
+    assert_eq!(published[1].message.data["key"], "github:owner/repo#43");
+    assert_eq!(setup.tasks()[0][1], "github:owner/repo#43");
+    let task = setup.priory(&["task", "1", "--json"]);
+    succeeded(&task);
+    let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
+    assert_eq!(task["subscriptions"][0]["resource"], "github:owner/repo#43");
+}

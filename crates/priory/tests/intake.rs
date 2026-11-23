@@ -1463,6 +1463,136 @@ fn a_comment_and_a_thread_comment_on_a_watched_pull_request_publish_once_and_bot
     );
 }
 
+/// The task requests on `factory.intake`, as (trigger, key), oldest first.
+fn requests(setup: &Setup) -> Vec<(String, String)> {
+    setup
+        .published()
+        .iter()
+        .filter(|stored| stored.message.kind == "factory.task.requested")
+        .map(|stored| {
+            let data = &stored.message.data;
+            (
+                data["trigger"].as_str().unwrap().to_owned(),
+                data["key"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// A conversation comment as the pull request query lists it.
+fn pull_comment(id: u64, login: &str, kind: &str, association: &str) -> serde_json::Value {
+    json!({
+        "databaseId": id,
+        "body": "Why this name?",
+        "url": format!("https://github.com/owner/repo/pull/43#issuecomment-{id}"),
+        "createdAt": "2026-11-17T12:00:00Z",
+        "author": { "login": login, "__typename": kind },
+        "authorAssociation": association
+    })
+}
+
+#[test]
+fn a_comment_trigger_requests_a_task_for_a_comment_on_its_author_s_pull_request() {
+    let setup = Setup::baseline("pr-comment-trigger");
+    pr_trigger(
+        &setup,
+        "my-prs",
+        "on = \"pull_request.comment\"\nfilter = { author = \"max\" }\n",
+    );
+    pr_trigger(
+        &setup,
+        "my-threads",
+        "on = \"pull_request_review_comment\"\nfilter = { author = \"max\" }\n",
+    );
+    let mut mine = pull(43, false, json!([]), json!([]));
+    mine["author"] = json!({ "login": "max" });
+    mine["comments"] = json!({ "nodes": [
+        pull_comment(701, "ana", "User", "MEMBER"),
+        // Someone without write access starts nothing.
+        pull_comment(703, "mallory", "User", "NONE"),
+    ] });
+    let mut theirs = pull(44, false, json!([]), json!([]));
+    theirs["author"] = json!({ "login": "dev" });
+    let mut other = pull_comment(702, "ana", "User", "MEMBER");
+    other["url"] = json!("https://github.com/owner/repo/pull/44#issuecomment-702");
+    theirs["comments"] = json!({ "nodes": [other] });
+    setup.answer(&[
+        (OPEN_PULLS, open_pulls(&[mine, theirs])),
+        (
+            REVIEW_COMMENTS,
+            json!([review_comment(802, None, "ana", "User")]),
+        ),
+    ]);
+
+    succeeded(&setup.intake());
+
+    assert_eq!(
+        requests(&setup),
+        [
+            ("my-prs".to_owned(), "github:owner/repo#43".to_owned()),
+            ("my-threads".to_owned(), "github:owner/repo#43".to_owned()),
+        ]
+    );
+    let comment = setup
+        .published()
+        .into_iter()
+        .find(|stored| stored.message.data["github_id"] == 701)
+        .unwrap();
+    assert_eq!(comment.message.data["author"], "max");
+}
+
+#[test]
+fn a_bot_review_starts_a_task_only_when_the_commenter_filter_names_the_bot() {
+    let setup = Setup::baseline("pr-bot-review");
+    pr_trigger(
+        &setup,
+        "my-reviews",
+        "on = \"pull_request_review.submitted\"\nfilter = { author = \"max\" }\n",
+    );
+    pr_trigger(
+        &setup,
+        "bot-reviews",
+        "on = \"pull_request_review.submitted\"\nfilter = { author = \"max\", commenter = \"rayon-bot\" }\n",
+    );
+    let review = |id: u64, login: &str, kind: &str| {
+        json!({
+            "databaseId": id,
+            "state": "COMMENTED",
+            "body": "Looks risky.",
+            "submittedAt": "2026-11-17T12:00:00Z",
+            "url": format!("https://github.com/owner/repo/pull/43#pullrequestreview-{id}"),
+            "commit": { "oid": "abc123" },
+            "author": { "login": login, "__typename": kind },
+            "authorAssociation": "MEMBER"
+        })
+    };
+    let mut mine = pull(
+        43,
+        false,
+        json!([review(501, "rayon-bot", "Bot"), review(502, "ana", "User")]),
+        json!([]),
+    );
+    mine["author"] = json!({ "login": "max" });
+    setup.answer(&[(OPEN_PULLS, open_pulls(&[mine]))]);
+
+    succeeded(&setup.intake());
+
+    assert_eq!(
+        requests(&setup),
+        [
+            ("bot-reviews".to_owned(), "github:owner/repo#43".to_owned()),
+            ("my-reviews".to_owned(), "github:owner/repo#43".to_owned()),
+        ]
+    );
+    let bot = setup
+        .published()
+        .into_iter()
+        .find(|stored| stored.message.data["github_id"] == 501)
+        .unwrap();
+    assert_eq!(bot.message.data["bot"], true);
+    assert_eq!(bot.message.data["triggers"], json!(["bot-reviews"]));
+}
+
 /// An RFC 3339 time `seconds` ago.
 fn ago(seconds: i64) -> serde_json::Value {
     let now = herdr_bus::Timestamp::now().as_second();

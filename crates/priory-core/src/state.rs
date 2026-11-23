@@ -2290,7 +2290,10 @@ pub(crate) fn route_in(
         )?;
     }
     // A review event goes to its review task first, even when an older task is keyed by its PR.
+    // A comment's task request joins whichever active task owns its pull request.
+    let feedback = route::feedback(message, factory);
     let (keyed, owners) = match (route::requests(message), route::review(message)) {
+        (true, _) if feedback => (keyed(tx, resources.first())?, owners(tx, &resources)?),
         (true, _) => (keyed(tx, resources.first())?, Vec::new()),
         (false, Some(review)) => (keyed(tx, Some(&review))?, owners(tx, &resources)?),
         (false, None) => (None, owners(tx, &resources)?),
@@ -2369,6 +2372,7 @@ pub(crate) fn route_in(
             }
             (Some(id), "created")
         }
+        Decision::Keep(id) if feedback => (Some(id), "coalesced"),
         Decision::Keep(id) if route::tick(message, factory) => (
             Some(id),
             if wakes(tx, id, factory)? {

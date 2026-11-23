@@ -217,6 +217,10 @@ impl Github {
                 data["github_id"] = review["id"].clone();
                 super::pulls::associate(&mut data, &review["author_association"]);
                 data["open"] = json!(pull["state"] == "open");
+                author(&mut data, &pull["user"]["login"]);
+                if review["user"]["type"] == "Bot" {
+                    data["bot"] = json!(true);
+                }
                 let name = format!("github:{repo}:pulls/reviews:{}", review["id"]);
                 (REVIEWED, name, data)
             }
@@ -274,6 +278,7 @@ fn feedback(event: &str, repo: &str, payload: &Value) -> Option<Observed> {
             "open": pull["state"] == "open",
         });
         head_repo(&mut branches, pull);
+        author(&mut branches, &pull["user"]["login"]);
         let number = pull["number"].as_u64()?;
         return Some(comment(
             THREAD_COMMENTED,
@@ -294,7 +299,8 @@ fn feedback(event: &str, repo: &str, payload: &Value) -> Option<Observed> {
     });
     super::pulls::associate(&mut data, &found["author_association"]);
     // The issue in the payload names no branch: routing finds the task by its pull request.
-    let branches = json!({ "open": issue["state"] == "open" });
+    let mut branches = json!({ "open": issue["state"] == "open" });
+    author(&mut branches, &issue["user"]["login"]);
     Some(comment(
         COMMENTED,
         repo,
@@ -308,6 +314,13 @@ fn feedback(event: &str, repo: &str, payload: &Value) -> Option<Observed> {
 fn head_repo(data: &mut Value, pull: &Value) {
     if let Some(head) = pull["head"]["repo"]["full_name"].as_str() {
         data["head_repo"] = json!(head);
+    }
+}
+
+/// Sets `author`, the login that opened the pull request, when the payload names one.
+fn author(data: &mut Value, login: &Value) {
+    if login.is_string() {
+        data["author"] = login.clone();
     }
 }
 

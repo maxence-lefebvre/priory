@@ -39,6 +39,13 @@
             "null"
           ]
         },
+        "author": {
+          "description": "The GitHub login who opened the pull request; absent when GitHub does not say.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "base_branch": {
           "description": "The branch the pull request merges into.",
           "type": [

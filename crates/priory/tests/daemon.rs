@@ -595,3 +595,104 @@ fn a_review_event_goes_to_the_review_task_over_an_older_task_keyed_by_its_pull_r
 
     assert_eq!(routes(&setup)[3], route("2", "kept"));
 }
+
+const MY_PRS: &str = r#"
+source = "github"
+repo = "owner/repo"
+on = "pull_request.comment"
+filter = { author = "max" }
+workflow = "implement"
+"#;
+
+/// A setup whose factory also starts a task for a comment on one of max's pull requests.
+fn with_my_prs(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    setup
+}
+
+/// A comment by ana on max's pull request `number`, which the `my-prs` trigger matched.
+fn pull_comment(number: u64, id: u64) -> Message {
+    Message::new(
+        "github.pull_request.comment",
+        json!({
+            "repo": "owner/repo",
+            "pull_request": number,
+            "url": format!("https://github.com/owner/repo/pull/{number}#issuecomment-{id}"),
+            "head_branch": "feature",
+            "head_sha": "abc123",
+            "base_branch": "main",
+            "actor": "ana",
+            "author": "max",
+            "open": true,
+            "body": "Why this name?",
+            "github_id": id,
+            "time": "2026-11-23T10:00:00Z",
+            "baseline": false,
+            "triggers": ["my-prs"]
+        }),
+    )
+    .subject(format!("owner/repo#{number}"))
+}
+
+/// The task request the `my-prs` trigger publishes for `comment`.
+fn comment_requested(comment: &Message, number: u64) -> Message {
+    let mut request = requested(comment, number);
+    request.data["trigger"] = json!("my-prs");
+    request.data["band"] = json!(null);
+    request
+}
+
+#[test]
+fn a_comment_on_an_unowned_pull_request_starts_one_task_that_later_comments_reach() {
+    let setup = with_my_prs("comment-unowned");
+    let first = pull_comment(43, 701);
+    let second = pull_comment(43, 702);
+    for message in [
+        &first,
+        &comment_requested(&first, 43),
+        &second,
+        &comment_requested(&second, 43),
+    ] {
+        setup.publish(message);
+    }
+
+    succeeded(&setup.daemon());
+
+    assert_eq!(setup.rows("tasks").len(), 1);
+    assert_eq!(setup.rows("tasks")[0][1], "github:owner/repo#43");
+    assert_eq!(
+        routes(&setup),
+        [
+            route("-", "ignored"),
+            route("1", "created"),
+            route("1", "kept"),
+            route("1", "coalesced")
+        ]
+    );
+    let task = setup.priory(&["task", "1", "--json"]);
+    succeeded(&task);
+    let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
+    assert_eq!(task["subscriptions"][0]["resource"], "github:owner/repo#43");
+}
+
+#[test]
+fn a_comment_on_a_pull_request_another_task_owns_goes_to_that_task_and_starts_none() {
+    let setup = with_my_prs("comment-owned");
+    let source = labeled(42);
+    setup.publish(&source);
+    setup.publish(&requested(&source, 42));
+    succeeded(&setup.daemon());
+    succeeded(&setup.priory(&["subscribe", "1", "github:owner/repo#43"]));
+    let comment = pull_comment(43, 701);
+    setup.publish(&comment);
+    setup.publish(&comment_requested(&comment, 43));
+
+    succeeded(&setup.daemon());
+
+    assert_eq!(setup.rows("tasks").len(), 1);
+    assert_eq!(
+        routes(&setup)[2..],
+        [route("1", "kept"), route("1", "coalesced")]
+    );
+}

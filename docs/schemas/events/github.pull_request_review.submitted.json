@@ -39,6 +39,13 @@
             "null"
           ]
         },
+        "author": {
+          "description": "The GitHub login who opened the pull request; absent when GitHub does not say.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "base_branch": {
           "description": "The branch the pull request merges into.",
           "type": [
@@ -53,6 +60,13 @@
         "body": {
           "description": "The review's summary Markdown, as written; empty when the reviewer wrote none.",
           "type": "string"
+        },
+        "bot": {
+          "description": "True when a bot reviewed; absent otherwise. A trigger starts a task from a bot's review\nonly when its `commenter` filter names the bot.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "commit": {
           "description": "The commit the review was written on, which `head_sha` passes once a commit is pushed after it.",

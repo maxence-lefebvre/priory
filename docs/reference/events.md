@@ -363,6 +363,8 @@ The pull request fields, and:
 | `body` | string | The review's summary Markdown, as written; empty when the reviewer wrote none |
 | `commit` | string or null | The commit the review was written on; `head_sha` passes it once a commit is pushed after the review |
 | `actor` | string or null | Who reviewed |
+| `bot` | boolean, optional | `true` when a bot reviewed, absent otherwise. A trigger starts a task from it only when its `commenter` names the bot |
+| `author` | string, optional | The login that opened the pull request; absent when GitHub does not say |
 | `open` | boolean | Whether the pull request was open when the intake read it. A done task reopens only for feedback on an open one |
 | `github_id` | integer | GitHub's review id |
 | `association` | string, optional | GitHub's `author_association`, such as `OWNER`, `COLLABORATOR` or `NONE`. Feedback from anyone but `OWNER`, `MEMBER` or `COLLABORATOR` reaches no task (see [routing.md](../daemon/routing.md#outcomes)) |
@@ -407,6 +409,7 @@ The pull request fields, and:
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `actor` | string or null | Who commented; null for a deleted user |
+| `author` | string, optional | The login that opened the pull request; absent when GitHub does not say |
 | `open` | boolean | Whether the pull request was open when the intake read it. A done task reopens only for feedback on an open one |
 | `body` | string | The comment's Markdown, as written |
 | `github_id` | integer | GitHub's comment id |
@@ -452,6 +455,7 @@ The pull request fields, and:
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `actor` | string or null | Who commented; null for a deleted user |
+| `author` | string, optional | The login that opened the pull request; absent when GitHub does not say |
 | `open` | boolean | Whether the pull request was open when the intake read it. A done task reopens only for feedback on an open one |
 | `body` | string | The comment's Markdown, as written |
 | `path` | string | The file the thread is on |

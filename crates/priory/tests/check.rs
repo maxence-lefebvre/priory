@@ -999,7 +999,7 @@ fn a_pull_request_trigger_rejects_other_events_and_keys() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "triggers/agent-label.toml:3: a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled`, `pull_request.opened` or `pull_request.review_requested`, not `pull_request.closed`\n\
+        "triggers/agent-label.toml:3: a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled`, `pull_request.opened`, `pull_request.comment`, `pull_request_review_comment`, `pull_request_review.submitted` or `pull_request.review_requested`, not `pull_request.closed`\n\
          triggers/keyed.toml:7: a GitHub trigger's `key` is `pull_request.number`\n"
     );
 }
@@ -1363,6 +1363,25 @@ fn a_slack_trigger_names_its_channel_and_filters_on_text_only() {
          triggers/wrong.toml:1: a Slack trigger needs `channel = \"<channel id>\"`\n\
          triggers/wrong.toml:3: a Slack trigger filters on `text` only\n\
          triggers/wrong.toml:5: a Slack trigger's `key` is `message.ts`\n"
+    );
+}
+
+#[test]
+fn a_comment_trigger_filters_on_the_pull_request_s_author() {
+    let good = "source = \"github\"\nrepo = \"owner/name\"\non = \"pull_request_review.submitted\"\nfilter = { author = \"max\", commenter = \"rayon-bot\" }\nworkflow = \"implement\"\n";
+    let bare = "source = \"github\"\nrepo = \"owner/name\"\non = \"pull_request.comment\"\nworkflow = \"implement\"\n";
+    let label = "source = \"github\"\nrepo = \"owner/name\"\non = \"pull_request_review_comment\"\nfilter = { author = \"max\", label = \"x\" }\nworkflow = \"implement\"\n";
+    let mut files = with("triggers/agent-label.toml", good);
+    files.push(("triggers/bare.toml", bare));
+    files.push(("triggers/label.toml", label));
+
+    let outcome = check(&factory("comment-triggers", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/bare.toml:3: a `pull_request.comment` trigger needs `filter = { author = \"<GitHub login>\" }`, and takes `commenter` too\n\
+         triggers/label.toml:4: a `pull_request_review_comment` trigger needs `filter = { author = \"<GitHub login>\" }`, and takes `commenter` too\n"
     );
 }
 

@@ -21,15 +21,23 @@ polled ones (see [watches.md](watches.md)). Polling and API cost are in [github-
 
 ## Trigger
 
-A `github` trigger can start a task from two pull request events. Its keys are in
+A `github` trigger can start a task from five pull request events. Its keys are in
 [triggers.md](../reference/triggers.md#github).
 
 | `on` | `filter` | `key` |
 | ---- | -------- | ----- |
 | `pull_request.labeled` | `label`, optional | `pull_request.number` |
 | `pull_request.opened` | none | `pull_request.number` |
+| `pull_request.comment`, `pull_request_review_comment`, `pull_request_review.submitted` | `author`, and `commenter`, optional | `pull_request.number` |
 
-No trigger starts a task from a close, a review, a comment or a check. Their `triggers` is always empty.
+A comment or review matches a trigger when the pull request's `author` is the filter's `author`.
+With `commenter`, the comment's `actor` must be that login too. Without it, a bot's review matches
+no trigger. A comment or review by someone without write access, whose `association` is not
+`OWNER`, `MEMBER` or `COLLABORATOR`, matches no trigger either. Its task request starts a task only
+when no active task owns the pull request (see
+[routing.md](../daemon/routing.md#comments-on-a-pull-request-no-task-owns)).
+
+No trigger starts a task from a close or a check. Their `triggers` is always empty.
 
 ## Events
 
@@ -45,6 +53,9 @@ Their fields and examples are in [events.md](../reference/events.md#github).
 | `github.pull_request_review_comment` | comment in a review thread; bots' comments are skipped |
 | `github.check_run.completed` | completed check run on a pull request's head commit, or on its merge commit, per pull request |
 | `github.pull_request.check_runs` | head whose check runs first appeared, or that has none past the grace period |
+
+A review, a comment and a review thread comment carry `author`, the login that opened the pull
+request, when GitHub names one. A review by a bot also carries `bot: true`.
 
 `merged` on a close is true only when the pull request is merged and this is its last `closed`
 event the poll read.
@@ -125,5 +136,5 @@ Each message id is the UUIDv5 of a name:
   commit per pull request.
 - A poll reads the repository's newest 100 review thread comments. More than 100 between two polls
   loses the oldest, unless a webhook delivered them.
-- A comment's author is a bot when GitHub types the account `Bot`. A person or an agent that
-  comments through a personal access token is not one.
+- A comment's or review's author is a bot when GitHub types the account `Bot`. A person or an
+  agent that comments through a personal access token is not one.

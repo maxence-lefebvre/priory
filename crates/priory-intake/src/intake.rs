@@ -878,14 +878,22 @@ impl Observed {
     }
 
     fn matching<'a>(&self, triggers: &[(&'a str, &Trigger)]) -> Vec<&'a str> {
+        let field = |name: &str| self.data[name].as_str();
+        let outsider = field("association")
+            .is_some_and(|association| !["OWNER", "MEMBER", "COLLABORATOR"].contains(&association));
         let matches = |trigger: &Trigger| {
-            let label = trigger
-                .filter
-                .as_ref()
-                .and_then(|filter| filter.get("label"));
+            let filter = |key: &str| trigger.filter.as_ref().and_then(|filter| filter.get(key));
+            // A bot's review starts a task only for a trigger that names the bot.
+            let commenter = match filter("commenter") {
+                Some(commenter) => field("actor") == Some(commenter.as_str()),
+                None => self.data["bot"] != true,
+            };
             trigger.repo.as_deref() == Some(self.repo.as_str())
                 && format!("github.{}", trigger.on) == self.kind
-                && label.is_none_or(|label| self.label.as_ref() == Some(label))
+                && filter("label").is_none_or(|label| self.label.as_ref() == Some(label))
+                && filter("author").is_none_or(|author| field("author") == Some(author.as_str()))
+                && commenter
+                && !outsider
                 && (!self.baseline || trigger.backfill == Some(true))
         };
         triggers

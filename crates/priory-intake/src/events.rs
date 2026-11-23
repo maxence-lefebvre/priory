@@ -248,6 +248,13 @@ pub struct ReviewSubmitted {
     pub commit: Option<String>,
     /// The GitHub login who reviewed.
     pub actor: Option<String>,
+    /// True when a bot reviewed; absent otherwise. A trigger starts a task from a bot's review
+    /// only when its `commenter` filter names the bot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bot: Option<bool>,
+    /// The GitHub login who opened the pull request; absent when GitHub does not say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
     /// Whether the pull request was open when the intake read it; a done task reopens only
     /// for feedback on an open one.
     pub open: bool,
@@ -278,6 +285,9 @@ pub struct PullRequestComment {
     pub pull: PullRequest,
     /// The GitHub login who commented; null for a deleted user.
     pub actor: Option<String>,
+    /// The GitHub login who opened the pull request; absent when GitHub does not say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
     /// Whether the pull request was open when the intake read it; a done task reopens only
     /// for feedback on an open one.
     pub open: bool,
@@ -310,6 +320,9 @@ pub struct ReviewThreadComment {
     pub pull: PullRequest,
     /// The GitHub login who commented; null for a deleted user.
     pub actor: Option<String>,
+    /// The GitHub login who opened the pull request; absent when GitHub does not say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
     /// Whether the pull request was open when the intake read it; a done task reopens only
     /// for feedback on an open one.
     pub open: bool,
