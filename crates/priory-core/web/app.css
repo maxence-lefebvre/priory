@@ -446,7 +446,7 @@ textarea { font: 400 16px/22px var(--font-ui); color: var(--text); background: v
 @container (max-width: 600px) { .drawer .opts { flex-direction: column; } }
 @media (max-width: 599px) { .views { gap: 6px; } .views a { padding: 0 8px; } }
 
-/* A command option armed by its first tap (DESIGN.md, Ask detail): the second tap runs it. */
+/* An option armed by its first tap (DESIGN.md, Ask detail): the second tap sends it. */
 @property --left { syntax: "<angle>"; inherits: false; initial-value: 360deg; }
 .opt.armed, .abar .btn.primary.armed, .btn.act.armed { background: var(--emph); color: var(--on-emph); box-shadow: 0 0 0 3px var(--action); }
 .abar .btn.primary.armed { flex-direction: row; align-items: center; justify-content: space-between; height: auto; min-height: 48px; padding-block: 4px; white-space: normal; text-align: left; }

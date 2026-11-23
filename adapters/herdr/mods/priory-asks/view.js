@@ -123,6 +123,8 @@ function command(ask) {
 }
 
 export const ARM_MS = 4000;
+/** How soon after the arm a second press counts, so a double-click does not send by accident. */
+export const SETTLE_MS = 250;
 
 /** @typedef {{ id: string | number, revision: number, option: number, at: number }} Armed */
 
@@ -131,12 +133,14 @@ const holds = (armed, ask, now) => armed !== null && armed.id === ask.id && arme
 
 /**
  * What a press on option `index` does: the first press arms it, and a second press on it within
- * ARM_MS answers at once, running the command for an option that runs one (R6.8).
+ * ARM_MS answers at once, running the command for an option that runs one (R6.8). A second press
+ * sooner than SETTLE_MS after the arm does nothing.
  * @param {any} ask @param {number} index @param {Armed | null} armed @param {number} now
+ * @returns {{ answer: { text: string, run: boolean } } | { arm: Armed } | {}}
  */
 export function press(ask, index, armed, now) {
   const text = ask.options[index];
-  if (holds(armed, ask, now) && armed.option === index) return { answer: { text, run: runsCommand(ask, text) } };
+  if (holds(armed, ask, now) && armed.option === index) return now - armed.at < SETTLE_MS ? {} : { answer: { text, run: runsCommand(ask, text) } };
   return { arm: { id: ask.id, revision: ask.revision, option: index, at: now } };
 }
 

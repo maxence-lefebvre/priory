@@ -234,6 +234,7 @@ export default class PrioryAsks extends View {
       cx.notify();
       return;
     }
+    if (!("answer" in outcome)) return;
     this.armed = null;
     this.popover = null;
     this.send(ask, outcome.answer.text, outcome.answer.run, cx);

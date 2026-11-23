@@ -177,6 +177,8 @@ test("every option arms on the first press and answers on a second press within 
   const [command, outside] = [asks[0], asks[4]];
   const plain = press(command, 1, null, now);
   assert.deepEqual(plain, { arm: { id: 1, revision: 2, option: 1, at: now } }, "the first press arms and answers nothing");
+  assert.deepEqual(press(command, 1, plain.arm, now + 249), {}, "a second press within SETTLE_MS does nothing");
+  assert.deepEqual(press(command, 1, plain.arm, now + 250), { answer: { text: "Wait for a second review", run: false } }, "a second press after it answers at once");
   assert.deepEqual(press(command, 1, plain.arm, now + 3_999), { answer: { text: "Wait for a second review", run: false } }, "a second press answers at once");
   assert.deepEqual(press(command, 1, plain.arm, now + 4_000), { arm: { id: 1, revision: 2, option: 1, at: now + 4_000 } }, "a press after ARM_MS arms again");
   assert.deepEqual(press(command, 2, plain.arm, now + 1_000), { arm: { id: 1, revision: 2, option: 2, at: now + 1_000 } }, "a press on another option moves the arm");
@@ -188,7 +190,7 @@ test("every option arms on the first press and answers on a second press within 
   assert.deepEqual(press(command, 0, first.arm, now + 3_999), { answer: { text: "Merge", run: true } });
   // An outside ask's command is a string that never runs.
   const ship = press(outside, 0, null, now);
-  assert.deepEqual(press(outside, 0, ship.arm, now + 1), { answer: { text: "Ship", run: false } });
+  assert.deepEqual(press(outside, 0, ship.arm, now + 300), { answer: { text: "Ship", run: false } });
 
   const armed = askDetail(command, { now, armed: first.arm }).options;
   assert.deepEqual(armed.map((option) => [option.armed, option.dimmed]), [[true, false], [false, true], [false, true]]);
@@ -393,7 +395,12 @@ test("the panel answers an option on its second press or key, with no Undo wait"
   assert.match(text(find(armed, "option-1-1")), /Press 2 again or click to send Confirm: Wait for a second review Cancels in 4 s/, "the armed option reads Confirm");
   assert.equal(herdr.timers.length > 0, true);
 
+  // A double-click's second press does nothing; the arm stays.
   click(armed, "option-1-1");
+  assert.deepEqual(answers(), []);
+  assert.notEqual(panel.armed, null);
+  /** @type {any} */ (panel.armed).at -= 300;
+  click(draw(panel, cx), "option-1-1");
   await settle();
   assert.equal(answers().length, 1, "the second press sends at once, with no timer to wait out");
   assert.deepEqual(answers()[0].slice(-4), ["2", "--", "1", "Wait for a second review"]);
@@ -403,6 +410,9 @@ test("the panel answers an option on its second press or key, with no Undo wait"
   herdr.argv = [];
   panel.key({ key: "1" }, cx);
   assert.deepEqual(answers(), []);
+  panel.key({ key: "1", is_held: true }, cx);
+  assert.deepEqual(answers(), [], "a held key does not repeat into a send");
+  /** @type {any} */ (panel.armed).at -= 300;
   panel.key({ key: "1" }, cx);
   await settle();
   assert.deepEqual(answers()[0].slice(-2), ["review-7", "Ship"]);

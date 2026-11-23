@@ -745,7 +745,8 @@ otherwise.
 - **Every option arms first.** The first tap arms an option: it turns solid `--emph` with a 3 px
   `--action` ring, reads "Tap again to send" over "Confirm: Merge" and "Cancels in 4 s", and a
   ring counts the 4 s down. The other options dim. A second tap on it within the 4 s sends at
-  once, with no undo bar. A tap on another option moves the arm there. After the 4 s the option
+  once, with no undo bar. A second tap within 250 ms of the first does nothing, so an accidental
+  double tap cannot send. A held key does not repeat into a send. A tap on another option moves the arm there. After the 4 s the option
   disarms, and the next tap arms it again. A new revision of the ask disarms it, so a second tap
   never answers an older question. In the drawer, the option's key pressed twice does the same.
 - "Send" under the text field sends at once: pressing it is already a second, deliberate step.

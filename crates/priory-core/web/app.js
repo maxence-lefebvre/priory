@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, press, submitted, takesText, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
@@ -1222,7 +1222,7 @@ function askDetail(id, wide) {
   const barArmed = armed !== null && armed === recommended;
   const bar = !wide && !pending && ask.state === "open" && options.length
     ? html`<div class="abar" hidden>${barArmed && runsCommand(ask, recommended) ? commandBlock(ask, bound) : ""}<button class="btn secondary" data-action="options">${icon("chevron-up", "s15")}${plural(options.length, "option")}</button>
-      <button class="btn primary ${barArmed ? "armed" : ""}" data-answer="${options.indexOf(recommended)}" aria-disabled="${locked ? "true" : "false"}">${barArmed
+      <button id="bar-answer" class="btn primary ${barArmed ? "armed" : ""}" data-answer="${options.indexOf(recommended)}" aria-disabled="${locked ? "true" : "false"}">${barArmed
         ? armedLabel(recommended, runsCommand(ask, recommended))
         : html`<span>${recommended}</span><small>${[recommended === ask.recommendation ? "Recommended" : "First option", runsCommand(ask, recommended) && "Runs a command"].filter(Boolean).join(". ")}</small>`}</button>
       ${locked === "offline" ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : ""}</div>`
@@ -1841,8 +1841,6 @@ function prStackList(stack, latest) {
     <span class="${pull.next ? "t-live" : ""}">${pull.next ? `${pull.state}, next to merge` : pull.state}</span></li>`)}</ol>`;
 }
 
-// An agent's command runs on the options in its `runs`; an outside ask's string command never runs.
-const runsCommand = (ask, option) => Array.isArray(ask.command?.runs) && ask.command.runs.includes(option);
 
 // The argv word by word, each in its own box, so a space, a quote or an empty word shows as it is.
 function commandBlock(ask, note) {
@@ -1976,7 +1974,9 @@ function act(target) {
   if (target.dataset.answer !== undefined) {
     if (state.pending) return;
     const pressed = press(state.armed, ask, ask.options[Number(target.dataset.answer)], Date.now());
-    return pressed.send ? answer(ask, pressed.send.text, false, pressed.send.run) : arm(pressed.arm);
+    if (pressed.send) return answer(ask, pressed.send.text, false, pressed.send.run);
+    if (pressed.arm) arm(pressed.arm);
+    return;
   }
   const action = target.dataset.action;
   if (state.pending) return;
@@ -2951,7 +2951,10 @@ function render() {
   // Likewise a Cancel armed on another runner's task at a generation the list no longer shows.
   if (typeof state.taskArmed?.task === "string" && remoteGeneration(state.taskArmed.task) !== state.taskArmed.generation) disarmTask();
   if (state.memoryArmed && current() !== "memories") disarmMemory();
+  // The answer bar shows once the options scroll away; a redraw keeps it shown, so focus on it stays.
+  const barShown = app.querySelector(".abar:not([hidden])") !== null;
   app.innerHTML = page().text;
+  if (barShown) app.querySelector(".abar")?.removeAttribute("hidden");
   document.title = state.token && state.data ? pageTitle(location.pathname, { tasks: [...state.data.tasks, state.task?.body].filter(Boolean) }) : "Priory";
   paintTerminal(app, true);
   observeTerminal(app);
@@ -3308,7 +3311,8 @@ document.addEventListener("keydown", (event) => {
     const body = askOnScreen() && !state.failed && !state.pending && snoozeShortcut(askOnScreen(), Date.now());
     if (body) snooze(askOnScreen(), { dataset: { for: body.for } });
   } else if (selectedAsk() && /^[1-9]$/.test(event.key)) {
-    document.querySelector(`.opt[data-answer="${Number(event.key) - 1}"]`)?.click();
+    const index = optionKey(event);
+    if (index !== null) document.querySelector(`.opt[data-answer="${index}"]`)?.click();
   } else if (event.key === "j" || event.key === "k") {
     const next = rows[Math.min(rows.length - 1, Math.max(0, at + (event.key === "j" ? 1 : -1)))];
     if (next) go(hrefOf(next));
