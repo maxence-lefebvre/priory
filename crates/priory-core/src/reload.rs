@@ -48,8 +48,6 @@ const CONFIG_FOLDERS: &[&str] = &[
     "benchmarks",
     "runners",
 ];
-/// The folders `factory::load` reads whole: an agent's, a skill's and a memory's files.
-const TREES: &[&str] = &["agents", "skills", "memories"];
 
 /// Watches one factory's folder for edits.
 pub struct Watch {
@@ -146,6 +144,11 @@ impl Watch {
         }
     }
 
+    /// Whether an edit changed the files since the last poll and has not yet held for a poll.
+    pub fn settling(&self) -> bool {
+        self.pending.is_some()
+    }
+
     /// Whether the factory's git `HEAD` moved since the last call, as a commit or a checkout does.
     pub fn committed(&mut self) -> bool {
         std::mem::take(&mut self.committed)
@@ -220,17 +223,32 @@ fn fingerprint(dir: &Path, writing: Option<&Path>) -> Fingerprint {
             }
         }
     }
-    let mut folders: Vec<PathBuf> = TREES.iter().map(|tree| dir.join(tree)).collect();
-    while let Some(folder) = folders.pop() {
+    for agent in std::fs::read_dir(dir.join("agents"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        note(agent.path().join("agent.md"));
+    }
+    // A skill's folder is read whole, hidden files and all, as `read_tree` reads it.
+    let skills = std::fs::read_dir(dir.join("skills"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| (entry.path(), false))
+        .filter(|(path, _)| path.is_dir());
+    let mut folders: Vec<(PathBuf, bool)> = skills.collect();
+    folders.push((dir.join("memories"), true));
+    while let Some((folder, skips)) = folders.pop() {
         let Ok(entries) = std::fs::read_dir(&folder) else {
             continue;
         };
         for entry in entries.flatten() {
-            if skipped(&entry.file_name().to_string_lossy()) {
+            if skips && skipped(&entry.file_name().to_string_lossy()) {
                 continue;
             }
             match entry.file_type() {
-                Ok(kind) if kind.is_dir() => folders.push(entry.path()),
+                Ok(kind) if kind.is_dir() => folders.push((entry.path(), skips)),
                 Ok(_) => note(entry.path()),
                 Err(_) => {}
             }
@@ -471,9 +489,13 @@ mod tests {
             "workflows/#a.toml#",
             "workflows/a.md",
             "agents/x/agent.md",
+            "agents/x/notes.txt",
             "agents/x/__pycache__/y.pyc",
             "skills/s/node_modules/m.js",
+            "skills/s/.env",
             "skills/s/SKILL.md",
+            "memories/.gitkeep",
+            "memories/m.md",
             "guide.md",
         ];
         for file in files {
@@ -491,13 +513,36 @@ mod tests {
             "agents/x/agent.md",
             "factory.toml",
             "guide.md",
+            "memories/m.md",
+            "skills/s/.env",
             "skills/s/SKILL.md",
+            "skills/s/node_modules/m.js",
             "workflows/a.toml",
         ]
         .iter()
         .map(PathBuf::from)
         .collect();
         assert_eq!(watched, expected);
+    }
+
+    #[test]
+    fn an_agent_file_the_loader_does_not_read_never_reloads() {
+        let dir = Scratch::new("agent-notes");
+        std::fs::create_dir_all(dir.path().join("agents/x")).unwrap();
+        let mut watch = Watch::new(&factory(dir.path()));
+        std::fs::write(dir.path().join("agents/x/notes.txt"), "x").unwrap();
+        assert!(matches!(poll(&mut watch), Polled::Same));
+        assert!(matches!(poll(&mut watch), Polled::Same));
+    }
+
+    #[test]
+    fn a_hidden_file_in_a_skill_reloads() {
+        let dir = Scratch::new("skill-dotfile");
+        std::fs::create_dir_all(dir.path().join("skills/s")).unwrap();
+        let mut watch = Watch::new(&factory(dir.path()));
+        std::fs::write(dir.path().join("skills/s/.env"), "x").unwrap();
+        assert!(matches!(poll(&mut watch), Polled::Same));
+        assert!(!matches!(poll(&mut watch), Polled::Same));
     }
 
     #[test]
