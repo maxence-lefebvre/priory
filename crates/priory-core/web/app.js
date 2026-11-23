@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askGroups, confidenceNote, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, stillArmed, submitted, takesText, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, stillArmed, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
@@ -399,7 +399,7 @@ function askRow(ask, current) {
   return html`<a class="row ${ask.state !== "open" ? "past" : ""}" href="/asks/${ask.id}" aria-current="${current ? "true" : "false"}">
     ${tile(ask.state === "open" ? "ask" : ask.state)}
     <span class="l1"><span class="mono">${taskLabel(ask.key)}</span><span>${ask.step}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${runnerTag(ask, false)}${routedTag(ask)}<span class="age">${when}</span></span>
-    <span class="l2">${ask.title || ask.question}</span>
+    <span class="l2">${askHeading(ask)}</span>
     <span class="l3">${ask.state === "open" && !sentNote(ask) && seenAgo(ask, Date.now(), age) ? html`<span class="t-warn">${runnerOf(ask)} ${seenAgo(ask, Date.now(), age)}</span>` : ""}${line3}</span>
     <span class="chev">${icon("chevron-right", "s15")}</span></a>`;
 }
@@ -651,7 +651,7 @@ function nextCard(model) {
   if (!item) return "";
   const ask = item.kind === "ask" ? state.data.asks.find((each) => String(each.id) === String(item.id)) : null;
   const task = state.data.tasks.find((each) => each.id === item.task);
-  const text = ask ? ask.title || ask.question : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : item.what;
+  const text = ask ? askHeading(ask) : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : item.what;
   const kind = ["prompt", "command"].includes(item.kind) ? "prompt" : item.kind === "report" ? "lost" : item.kind;
   const href = nextLink(item);
   const verb = ask ? "Answer…" : href?.startsWith("#") ? "See the banner" : "Open task";
@@ -889,7 +889,7 @@ function askTableRow(ask, selected) {
   const status = answered ? ask.answer + byLine(ask) : ask.state === "withdrawn" ? ask.withdrawn_why || "" : snoozed(ask, Date.now()) ? snoozedUntil(ask) : sentNote(ask) ? sentLine(ask) : null;
   const folded = status ?? (ask.recommendation ? html`Recommends <b>${ask.recommendation}</b>` : "");
   return html`<tr data-href="/asks/${ask.id}" aria-current="${String(ask.id) === selected ? "true" : "false"}">
-    <td>${stateWord(ask.state === "open" ? "ask" : ask.state)}</td><td class="mono">${taskLabel(ask.key)}</td><td>${ask.step}</td><td class="q"><span>${ask.title || ask.question}</span>${runnerTag(ask)}${routedTag(ask)}${fold(folded)}</td>
+    <td>${stateWord(ask.state === "open" ? "ask" : ask.state)}</td><td class="mono">${taskLabel(ask.key)}</td><td>${ask.step}</td><td class="q"><span>${askHeading(ask)}</span>${runnerTag(ask)}${routedTag(ask)}${fold(folded)}</td>
     <td class="recw">${status ?? ask.recommendation ?? ""}</td><td class="r">${when}</td></tr>`;
 }
 
@@ -1173,7 +1173,9 @@ function askDetail(id, wide) {
     : html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}${sentShown}${routedNote(ask) ? html`<p class="routednote">${icon("corner-down-right", "s15")}${routedNote(ask)}</p>` : ""}${ask.recommendation ? html`<div class="rec"><span><b>Recommended: ${ask.recommendation}.</b></span>
         ${ask.next_action ? html`<span class="then">${icon("corner-down-right", "s15")}<span>${ask.next_action}</span></span>` : ""}</div>` : ""}
       <div class="opts" role="group" aria-label="Options">${optionButtons}</div>${lockedNote}${more}${elsewhere}`;
-  const question = autolinked(ask.question || ask.title, ask.repo);
+  // A long untitled question heads the detail with a short title and reads whole at the top of Why.
+  const question = autolinked(askHeading(ask), ask.repo);
+  const body = askBody(ask);
   const top = html`<div class="ask">
     <a class="ctx" href="${ask.task && !owner ? `/tasks/${ask.task}` : "/asks"}" title="${ask.task && !owner ? `task ${ask.task}` : ""}">${wide ? "" : tile("ask", "sm")}<span class="mono">${taskLabel(ask.key)}</span><span>${ask.step}</span><span>${ask.lane || ""}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${runnerTag(ask)}${wide ? "" : html`<span>${timeTag(ask.since)}</span><span>revision ${ask.revision}</span>`}</a>
     ${ask.risk_estimate ? html`<p class="note">${icon("lock", "s15")}<span>${ask.risk_estimate.line}</span></p>` : ""}
@@ -1188,7 +1190,8 @@ function askDetail(id, wide) {
   const sections = [...planned.map(([key, label]) => [key, label]), ["why", "Why"], ...read.map(([key, label]) => [key, label]), ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
   const jump = html`<nav class="jump" aria-label="Sections">${sections.map(([key, label], i) => html`<a href="#${key}" aria-current="${i === 0 ? "true" : "false"}">${label}</a>`)}</nav>`;
   const why = html`<section class="sect" id="why"><div class="sh">${icon("message-text", "s15")}What the agent asks<span class="meta">${ask.run ? html`run <span class="mono">${ask.run}</span>` : ""}</span></div>
-    ${md(ask.text || ask.question, ask.repo)}
+    ${body ? html`<p class="asked">${autolinked(body, ask.repo)}</p>` : ""}
+    ${ask.text || !body ? md(ask.text || ask.question, ask.repo) : ""}
     ${ask.tradeoff ? html`<p class="fact">${icon("scale", "s15")}<span><b>Trade-off.</b> ${ask.tradeoff}</span></p>` : ""}
     ${ask.what_waits ? html`<p class="fact">${icon("hourglass", "s15")}<span><b>What waits.</b> ${ask.what_waits}</span></p>` : ""}</section>`;
   const command = !ask.command ? "" : typeof ask.command === "string"
@@ -1507,7 +1510,7 @@ function taskPage(id) {
 function taskAsks(task) {
   const asks = openAsksOf(state.data.asks, task.id);
   if (!asks.length) return "";
-  return html`<ul class="taskasks" aria-label="Open asks">${asks.map((ask) => html`<li>${tile("ask", "sm")}<span>${ask.title || ask.question}<span class="age">${timeTag(ask.since)}</span></span><a class="btn primary" href="/asks/${encodeURIComponent(ask.id)}">Answer…</a></li>`)}</ul>`;
+  return html`<ul class="taskasks" aria-label="Open asks">${asks.map((ask) => html`<li>${tile("ask", "sm")}<span>${askHeading(ask)}<span class="age">${timeTag(ask.since)}</span></span><a class="btn primary" href="/asks/${encodeURIComponent(ask.id)}">Answer…</a></li>`)}</ul>`;
 }
 
 // Who answered, as the answered row's icon and what a screen reader reads of it.

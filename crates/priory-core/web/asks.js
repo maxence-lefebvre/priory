@@ -105,9 +105,9 @@ export function writeNote(status, body, ago, ask) {
   return `Could not send: ${body?.error || `the server answered ${status}`}.`;
 }
 
-/** The ask detail's header once its options scroll away: the question, over the task key, step and revision. */
+/** The ask detail's header once its options scroll away: the heading, over the task key, step and revision. */
 export const shrunkHead = (ask) => ({
-  question: ask.question || ask.title,
+  question: askHeading(ask),
   place: [taskLabel(ask.key), ask.step, `revision ${ask.revision}`].filter(Boolean).join(", "),
 });
 
@@ -127,7 +127,7 @@ export const answeredAsks = (asks, task) => asks
   .sort((a, b) => (Date.parse(b.answered_at) || 0) - (Date.parse(a.answered_at) || 0))
   .map((ask) => ({
     id: ask.id,
-    title: ask.title || ask.question,
+    title: askHeading(ask),
     question: ask.question ?? null,
     answer: ask.answer,
     at: ask.answered_at ?? null,
@@ -142,3 +142,35 @@ export const answeredAsks = (asks, task) => asks
 
 /** What follows an auto answer's confidence word: whose it is, and the level its task answers at. @param {string | null} level */
 export const confidenceNote = (level) => `confidence, the agent's own.${level ? ` The task answers at ${level} and above.` : ""}`;
+
+/** The longest heading of an untitled ask, in characters, before its ellipsis. */
+export const HEADING_MAX = 80;
+
+/**
+ * An ask's heading, where its text is a heading or one line: its title; else its question when that
+ * is one line of at most 80 characters; else one derived from its task's key and step, or from the
+ * question's first sentence when it has no task, cut at a word to about 80 characters. The detail
+ * shows the full question in its body. @param {any} ask
+ */
+export function askHeading(ask) {
+  if (ask?.title) return ask.title;
+  const question = String(ask?.question ?? "").trim();
+  if (question.length <= HEADING_MAX && !question.includes("\n")) return question;
+  const key = String(ask?.key ?? "").replace(/^(linear|github|slack|cli):/, "");
+  if (key && ask?.step) return cutAt(`${key} asks at ${ask.step}`, HEADING_MAX);
+  const end = question.search(/[.?!](\s|$)|\n/);
+  const first = end < 0 ? question : question.slice(0, question[end] === "\n" ? end : end + 1).trim();
+  const step = ask?.step && !first.startsWith(ask.step) ? `${ask.step}: ` : "";
+  return cutAt(`${step}${first}`, HEADING_MAX);
+}
+
+/** `text` cut at the last word that ends within `max` characters, with an ellipsis. @param {string} text @param {number} max */
+export function cutAt(text, max) {
+  if (text.length <= max) return text;
+  const space = text.slice(0, max + 1).lastIndexOf(" ");
+  const kept = space > max / 2 ? text.slice(0, space) : text.slice(0, max);
+  return `${kept.replace(/[\s.,;:!?-]+$/, "")}…`;
+}
+
+/** The full question, for the detail's body when its heading does not show all of it, else null. @param {any} ask */
+export const askBody = (ask) => (ask?.question && askHeading(ask) !== ask.question ? ask.question : null);

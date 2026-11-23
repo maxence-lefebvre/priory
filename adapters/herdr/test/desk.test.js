@@ -398,3 +398,12 @@ test("the memories row lists each candidate with its full text, its tag and the 
     { id: "c-3", name: "search-staging", tag: "may replace a memory runs get", warn: true, description: "Which cluster.", text: "Use b.", current: null, by: "Written by ENG-224, candidate c-3" },
   ]);
 });
+
+test("an untitled ask with a 12-line question heads its row and the next thing with a short title", () => {
+  const LONG = Array.from({ length: 12 }, (_, line) => `approve-implementation: line ${line + 1} of the plan for FND-2434, which changes apps/admin-api/src/mcp/routes.ts.`).join("\n");
+  const asks = { ...data.asks, asks: data.asks.asks.map((ask) => (ask.id === 1 ? { ...ask, title: null, question: LONG } : ask)) };
+  const desk = { ...data.desk, next: data.desk.ranked[1] };
+  const model = deskModel({ ...data, asks, desk }, { now });
+  assert.equal(model.next?.question, "PRI-61 asks at approve");
+  assert.equal(model.sections("needs")[0].rows[0].text, "PRI-61 asks at approve");
+});
