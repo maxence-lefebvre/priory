@@ -1,14 +1,21 @@
 // The service worker: keeps the page's own files for offline starts, and shows Web Push notifications.
 // It never stores /api replies; the page keeps its last listings itself.
-const SHELL = "priory-shell";
+// A new name whenever the served files change shape, so an offline start never mixes generations:
+// the first shell's app.js imported modules the bundle now holds.
+const SHELL = "priory-shell-2";
 // The page loaded these before the worker controlled it, so it fetches them again for offline starts.
-const FILES = ["/", "/boot.js", "/app.js", "/asks.js", "/add.js", "/links.js", "/markdown.js", "/reports.js", "/stack.js", "/desk.js", "/costs.js", "/inbox.js", "/flows.js", "/batches.js", "/terminal.js", "/tasks.js", "/runs.js", "/queue.js", "/pages.js", "/app.css", "/tokens/structure.css", "/tokens/themes.css", "/favicon.svg", "/icon-192.png"];
+const FILES = ["/", "/boot.js", "/app.js", "/app.css", "/tokens/structure.css", "/tokens/themes.css", "/favicon.svg", "/icon-192.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(SHELL).then((cache) => cache.addAll(FILES)));
   self.skipWaiting();
 });
-self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
+// Drops the older shells, and never the kept token and notification ids.
+self.addEventListener("activate", (event) => event.waitUntil(
+  caches.keys()
+    .then((names) => Promise.all(names.filter((name) => name.startsWith("priory-shell") && name !== SHELL).map((name) => caches.delete(name))))
+    .then(() => self.clients.claim()),
+));
 
 // Network first, so a new build shows at once; the cached copy only when the network fails.
 self.addEventListener("fetch", (event) => {

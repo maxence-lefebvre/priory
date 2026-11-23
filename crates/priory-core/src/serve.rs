@@ -53,23 +53,8 @@ const WOFF2: &str = "font/woff2";
 /// The web view's files: the path each is served at, its type and its bytes.
 const WEB: &[(&str, &str, &[u8])] = &[
     asset!("/boot.js", JS, "crates/priory-core/web/boot.js"),
-    asset!("/app.js", JS, "crates/priory-core/web/app.js"),
-    asset!("/asks.js", JS, "crates/priory-core/web/asks.js"),
-    asset!("/add.js", JS, "crates/priory-core/web/add.js"),
-    asset!("/links.js", JS, "crates/priory-core/web/links.js"),
-    asset!("/markdown.js", JS, "crates/priory-core/web/markdown.js"),
-    asset!("/reports.js", JS, "crates/priory-core/web/reports.js"),
-    asset!("/stack.js", JS, "crates/priory-core/web/stack.js"),
-    asset!("/flows.js", JS, "crates/priory-core/web/flows.js"),
-    asset!("/desk.js", JS, "crates/priory-core/web/desk.js"),
-    asset!("/costs.js", JS, "crates/priory-core/web/costs.js"),
-    asset!("/inbox.js", JS, "crates/priory-core/web/inbox.js"),
-    asset!("/tasks.js", JS, "crates/priory-core/web/tasks.js"),
-    asset!("/runs.js", JS, "crates/priory-core/web/runs.js"),
-    asset!("/queue.js", JS, "crates/priory-core/web/queue.js"),
-    asset!("/pages.js", JS, "crates/priory-core/web/pages.js"),
-    asset!("/batches.js", JS, "crates/priory-core/web/batches.js"),
-    asset!("/terminal.js", JS, "crates/priory-core/web/terminal.js"),
+    // The bundle of app.js and its view models; corepack pnpm web:build writes it.
+    asset!("/app.js", JS, "crates/priory-core/web/dist/app.js"),
     asset!("/sw.js", JS, "crates/priory-core/web/sw.js"),
     asset!(
         "/manifest.webmanifest",
