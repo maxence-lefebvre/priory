@@ -9,6 +9,9 @@ change behaviour or name a concept, and use the terms of its Concepts table.
 
 Before you call a change done, run the checks in the [Verify section of
 AGENTS.md](AGENTS.md#verify) and fix every failure. CI runs the same checks on every pull request.
+To finish sooner, CI splits the tests into 4 jobs with
+[cargo-nextest](https://nexte.st/)'s `--partition`, using the `ci` profile in
+`.config/nextest.toml`. To run the tests as CI does, run `cargo nextest run --workspace --profile ci`.
 
 With Nix, `nix develop` opens a shell with the tools the checks need. With
 [direnv](https://direnv.net/), run `direnv allow` once and the repository's `.envrc` opens that
@@ -40,6 +43,10 @@ the one CI uses.
 ## UI
 
 - Start any web view work from a design reviewed by a person before you write code.
+- After you change the web view's JavaScript, run `corepack pnpm install` once, then
+  `corepack pnpm web:build`, and commit `crates/priory-core/web/dist/app.js` with your change. CI
+  fails on a stale bundle. [ADR 0004](docs/adr/0004-the-web-view-is-a-react-app-whose-built-bundle-is-committed.md)
+  says why the bundle is committed.
 - Follow [DESIGN.md](DESIGN.md) for tokens, components, states, touch and copy. Change it in the
   same pull request when the UI needs something it lacks.
 - Retake the README's screenshots from synthetic data. Run `scripts/demo/serve.sh DIR` with a new

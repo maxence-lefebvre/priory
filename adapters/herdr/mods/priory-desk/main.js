@@ -396,7 +396,7 @@ export default class PrioryDesk extends View {
         .child(div().text_color(t["text-2"]).child(next.step ?? ""))
         .child(div().flex_1())
         .child(div().text_color(t["text-3"]).child(`waits ${next.age}`)))
-      .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(copyable("next-why", `First because ${next.why}`)))
+      .child(div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(copyable("next-why", next.whySpans)))
       .when(Boolean(next.routed), (el) => el.child(routed(ui, next.routed)))
       .when(Boolean(next.runner), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(next.away ? t["warn-text"] : t["text-2"]).child([next.runner, next.away].filter(Boolean).join(", "))))
       .when(Boolean(next.sent), (el) => el.child(div().text_size(S["type-caption"][0]).text_color(next.sent?.refused ? t["warn-text"] : t["action-text"]).child(next.sent?.text ?? "")))
@@ -580,7 +580,7 @@ export default class PrioryDesk extends View {
       .children(model.since.rows.map((/** @type {Model["since"]["rows"][number]} */ event, /** @type {number} */ i) => h_flex().id(`since-${i}`).gap(S["space-2"]).py(S["space-1"]).items_start().text_size(S["type-caption"][0])
         .border_t(1).border_color(t.line)
         .child(div().flex_none().child(ui.mono(event.key ?? "")))
-        .child(div().flex_1().min_w_0().whitespace_normal().text_color(t["text-2"]).child(copyable(`since-what-${i}`, event.what)))
+        .child(div().flex_1().min_w_0().whitespace_normal().text_color(t["text-2"]).child(copyable(`since-what-${i}`, event.whatSpans)))
         .child(div().flex_none().font_family(ui.fonts.mono).text_color(t["text-3"]).child(event.time))));
   }
 }

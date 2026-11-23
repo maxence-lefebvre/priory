@@ -1,0 +1,5 @@
+# CI's profile; `cargo test --workspace` stays the local command.
+[profile.ci]
+fail-fast = false
+test-threads = 8
+slow-timeout = { period = "60s" }

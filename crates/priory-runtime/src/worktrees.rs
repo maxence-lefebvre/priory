@@ -1,4 +1,4 @@
-use crate::runtime::{OWN_GIT, clone_of, fed, git, run};
+use crate::runtime::{OWN_GIT, SCAN, at_risk, clone_of, git, run};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -94,53 +94,17 @@ fn judged(
     if merged || merged_head == Some(tip) {
         return Ok(Verdict::Remove);
     }
-    let unpushed = run(git(path).args(["rev-list", tip, "--not", "--remotes"]))?;
-    let pushed = unpushed.is_empty() || (done && rebased(path, tip, unpushed.lines().count())?);
+    // A patch-equivalent commit counts as pushed only for a done task, which loses its worktree.
+    let pushed = if done {
+        at_risk(path, None, SCAN)? == 0
+    } else {
+        run(git(path).args(["rev-list", "-n1", tip, "--not", "--remotes"]))?.is_empty()
+    };
     Ok(match (pushed, done) {
         (true, true) => Verdict::Retire,
         (true, false) => Verdict::Keep("not merged".to_owned()),
         (false, _) => Verdict::Keep("unpushed commits".to_owned()),
     })
-}
-
-/// Whether each of the `count` commits of `tip` on no remote has a patch-equivalent commit on one,
-/// as a rebase of the branch they were pushed to leaves. A merge or an empty commit has no patch id.
-fn rebased(path: &Path, tip: &str, count: usize) -> Result<bool, String> {
-    let local = [tip, "--not", "--remotes"];
-    if !run(git(path).args(["rev-list", "--merges"]).args(local))?.is_empty() {
-        return Ok(false);
-    }
-    let ours = patch_ids(path, &local)?;
-    if ours.len() != count {
-        return Ok(false);
-    }
-    let dates = run(git(path).args(["log", "--format=%at"]).args(local))?;
-    let Some(oldest) = dates
-        .lines()
-        .filter_map(|date| date.parse::<u64>().ok())
-        .min()
-    else {
-        return Ok(false);
-    };
-    // A rebase keeps the author date and sets a later commit date, so older commits cannot match.
-    let since = format!("--max-age={oldest}");
-    let theirs = patch_ids(path, &["--no-merges", "--remotes", "--not", tip, &since])?;
-    Ok(ours.iter().all(|id| theirs.contains(id)))
-}
-
-/// The stable patch id of each commit `git log` lists for `revs`.
-fn patch_ids(path: &Path, revs: &[&str]) -> Result<Vec<String>, String> {
-    let patches = run(git(path)
-        .args(["log", "-p", "--no-color", "--no-ext-diff"])
-        .args(revs))?;
-    let ids = fed(
-        git(path).args(["patch-id", "--stable"]),
-        Some(patches.into_bytes()),
-    )?;
-    Ok(ids
-        .lines()
-        .filter_map(|line| line.split_whitespace().next().map(str::to_owned))
-        .collect())
 }
 
 /// The disk the folder takes, in bytes, without following symbolic links.

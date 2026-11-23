@@ -25,7 +25,8 @@ A `done` task whose branch did not merge loses only its worktree when every comm
 is on a remote branch, any remote branch. A task that works on a person's pull request pushes to
 that person's branch, so its own branch never merges. The sweep keeps `priory/<id>`, and a reopen
 or revive adds the worktree back from it. A commit also counts as pushed when a remote branch holds
-a commit with the same patch (`git patch-id --stable`), as a rebase of that branch leaves. A merge
+a commit with the same patch (`git patch-id --verbatim`), as a rebase of that branch leaves. When
+more than 2000 remote commits could match, the sweep compares none and keeps the worktree. A merge
 commit or an empty commit has no patch, so it counts only when it is on a remote branch itself. A
 `failed` or `dropped` task keeps its worktree as `not merged`, since a person revives it in place.
 No later sweep deletes that branch once the pull request merges, since the sweep walks folders.
