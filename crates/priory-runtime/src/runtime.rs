@@ -634,6 +634,8 @@ pub struct Launch<'a> {
     pub jail: Option<&'a crate::jail::Jail>,
     /// The factory turns on `trust_worktrees`, so the harness reads the trust Priory records.
     pub trust: bool,
+    /// The direnv config folder that trusts the worktree, so the harness starts in its `.envrc`.
+    pub direnv: Option<&'a Path>,
 }
 
 /// A coding agent CLI that Priory runs in tmux, with hooks and tools that report to the daemon.
@@ -1112,9 +1114,13 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
             .arg("-e")
             .arg(format!("XDG_RUNTIME_DIR={}", run.to_string_lossy()));
     }
-    command
-        .args(launch.env.iter().flat_map(|variable| ["-e", variable]))
-        .arg("--");
+    command.args(launch.env.iter().flat_map(|variable| ["-e", variable]));
+    if let Some(folder) = launch.direnv {
+        command
+            .arg("-e")
+            .arg(format!("DIRENV_CONFIG={}", folder.display()));
+    }
+    command.arg("--");
     if let Some(prompt) = launch.prompt {
         // tmux refuses a command over about 16 KiB, so the prompt reaches the harness through a file.
         let file = launch.home.join("prompts").join(launch.session);
@@ -1142,9 +1148,11 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
         None => Vec::new(),
     };
     // A scope execs the agent in place, so the pane's process is still the agent's, or the jail's.
+    command.args(launch.scope).args(&jail);
+    if launch.direnv.is_some() {
+        command.args(["direnv", "exec"]).arg(launch.dir);
+    }
     command
-        .args(launch.scope)
-        .args(&jail)
         .arg("env")
         .args(NESTED.iter().flat_map(|name| ["-u", name]))
         .arg(harness.program())
@@ -2408,6 +2416,7 @@ mod tests {
             tools,
             jail: None,
             trust: false,
+            direnv: None,
         }
     }
 

@@ -228,6 +228,21 @@ a worktree or clone that a symlink leads elsewhere.
   it. It also refuses a profile that is not a regular file, such as a FIFO. When the daemon cannot
   read a config back after a dialog, it blocks the task without the restart. Codex still runs only the hooks a person trusted with
   `/hooks`, so that step stays manual.
+- **direnv** refuses a folder's `.envrc` until a person runs `direnv allow`, unless its
+  `direnv.toml` whitelists the folder. When `direnv` is on the daemon's PATH and the worktree has
+  an `.envrc`, the daemon writes a direnv config folder of its own for the run,
+  `direnv/<session>/` in Priory home. Its `direnv.toml` is the person's own (from
+  `DIRENV_CONFIG`, else `$XDG_CONFIG_HOME/direnv`, else `~/.config/direnv`) with the worktree
+  and the clone added to `[whitelist] exact`. Its `direnvrc` and `lib` link to the person's, so
+  libraries such as nix-direnv still load. The run's harness then starts as
+  `direnv exec <worktree> <harness>`, with `DIRENV_CONFIG` naming that folder, so every command
+  the agent runs gets the `.envrc` environment, such as a nix flake's toolchain. The daemon never
+  edits the person's `direnv.toml` or direnv's allow folder. It refuses the grant, and starts the
+  run without direnv, when the person's `direnv.toml` cannot be read or parsed. Without `direnv`
+  or without an `.envrc`, nothing changes. The harness starts only after the `.envrc` loads: a
+  `use flake` took 12s on a fresh worktree and under 1s after, and a load that passes 60s blocks
+  the run as one with no SessionStart. An agent that edits `.envrc` reloads it with
+  `direnv exec . <command>`.
 
 Each path gets a `factory.run.trusted` record in the trace, whose `outcome` is `granted`, `present`
 or `refused` (see [trace-schema.md](../trace-schema.md#factoryruntrusted)).

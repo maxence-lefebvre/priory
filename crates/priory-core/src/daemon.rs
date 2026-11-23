@@ -2504,6 +2504,7 @@ fn start(
         .chain(servers_env(&agent.value, &servers))
         .collect();
     let mut trust = false;
+    let mut direnv = None;
     if factory.trust_worktrees() {
         let grants = if factory.names_repo(repo) {
             priory_runtime::trust::grant(harness(&agent.value.harness), home, repo, &worktree)
@@ -2524,6 +2525,21 @@ fn start(
             use priory_runtime::trust::Outcome;
             matches!(grant.outcome, Outcome::Granted | Outcome::Present)
         });
+        if factory.names_repo(repo) {
+            let folder = priory_runtime::trust::direnv_folder(home, &session);
+            let grants = priory_runtime::trust::direnv(home, repo, &worktree, &folder);
+            let tx = db.transaction()?;
+            for grant in &grants {
+                crate::trace::trusted(&tx, trace, run, "direnv", grant, None)?;
+            }
+            tx.commit()?;
+            if grants
+                .iter()
+                .any(|grant| grant.outcome == priory_runtime::trust::Outcome::Granted)
+            {
+                direnv = Some(folder);
+            }
+        }
     }
     let started = Started {
         name,
@@ -2536,6 +2552,7 @@ fn start(
         servers: &servers,
         jail: jail.as_ref(),
         trust,
+        direnv: direnv.as_deref(),
     };
     Ok(launch(
         factory,
@@ -2619,6 +2636,8 @@ struct Started<'a> {
     jail: Option<&'a priory_runtime::jail::Jail>,
     /// Priory recorded the harness's trust in the run's folders, so a Codex run takes its profile.
     trust: bool,
+    /// The direnv config folder that trusts the run's folders, so the harness starts in `.envrc`.
+    direnv: Option<&'a Path>,
 }
 
 /// The MCP servers `agent` names, found in the person's own config of its harness when its run
@@ -2718,6 +2737,7 @@ fn launch(
             tools,
             jail: started.jail,
             trust: started.trust,
+            direnv: started.direnv,
         },
     )
     .map_err(|failed| {
@@ -2816,6 +2836,7 @@ fn compact_idle(
             servers: &servers,
             jail: None,
             trust: false,
+            direnv: None,
         };
         let env: Vec<String> = guard_env(trace.factory).into_iter().collect();
         if let Err(error) = launch(
