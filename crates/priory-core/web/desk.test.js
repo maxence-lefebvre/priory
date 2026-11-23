@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, countWords, memoryNote, memoryTag, capsuleWords, countHead, deskBanners, arrivalAsk, plural } from "./desk.js";
+import { nextLink, onRoom, sinceGroups, mergeSince, progressView, sectionInView, dueText, rowAction, actionNote, batchParts, countWords, memoryNote, memoryTag, capsuleWords, countHead, deskBanners, arrivalAsk, plural, taskRepo } from "./desk.js";
+import { linked } from "./links.js";
 
 const why = "work stopped and waits on a person";
 
@@ -211,4 +212,19 @@ test("a count names its noun in the singular for one, else in the plural", () =>
   assert.equal(plural(1, "task"), "1 task");
   assert.equal(plural(0, "task"), "0 tasks");
   assert.equal(plural(2, "entry", "entries"), "2 entries");
+});
+
+test("a stopped row's #n links in its task's repository, and a row with no task links no #n", () => {
+  const tasks = [{ id: 4, repo: "acme/shop" }, { id: 5, repo: null }];
+  const rule = [{ pattern: String.raw`\B#(\d+)\b`, url: "https://github.com/{repo}/issues/$1" }];
+
+  assert.equal(taskRepo(tasks, 4), "acme/shop");
+  assert.equal(taskRepo(tasks, 5), null);
+  assert.equal(taskRepo(tasks, null), null);
+  assert.equal(taskRepo(undefined, 4), null);
+  assert.equal(
+    linked("checks red on #12", rule, taskRepo(tasks, 4)),
+    `checks red on <a class="autolink" href="https://github.com/acme/shop/issues/12" rel="noopener noreferrer" target="_blank">#12</a>`,
+  );
+  assert.equal(linked("checks red on #12", rule, taskRepo(tasks, 5)), "checks red on #12");
 });

@@ -4935,70 +4935,6 @@ fn a_snoozed_ask_leaves_the_desk_and_asks_until_its_time_while_the_task_stays_as
     assert_eq!(setup.rows("asks").len(), 1);
 }
 
-/// Leaves task 1's worktree on a detached HEAD, one commit past `priory/1`, or one commit behind
-/// it with `behind`, then answers the ask the task sleeps on, which starts its next run.
-fn detached_then_woken(name: &str, behind: bool) -> (Setup, String) {
-    let setup = asleep_on_an_ask(name);
-    let worktree = setup.worktree(1);
-    assert!(
-        git(&worktree)
-            .args(["checkout", "-q", "--detach"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    let head = setup.commit(1, "rebased.txt");
-    if behind {
-        assert!(
-            git(&worktree)
-                .args(["branch", "-f", "priory/1", "HEAD"])
-                .status()
-                .unwrap()
-                .success()
-        );
-        assert!(
-            git(&worktree)
-                .args(["checkout", "-q", "--detach", "HEAD~1"])
-                .status()
-                .unwrap()
-                .success()
-        );
-    }
-    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
-    assert!(answered.status.success(), "{answered:?}");
-    (setup, head)
-}
-
-#[test]
-fn a_worktree_left_on_a_detached_head_ahead_of_its_branch_starts_the_next_run_on_the_branch() {
-    let (setup, head) = detached_then_woken("detached-ahead", false);
-
-    setup.until("runs", |rows| rows.len() == 2);
-
-    let tasks = setup.rows("tasks");
-    assert_eq!(tasks[0][4], "running", "{tasks:?}");
-    let worktree = setup.worktree(1);
-    let current = git(&worktree)
-        .args(["branch", "--show-current"])
-        .output()
-        .unwrap();
-    assert_eq!(String::from_utf8_lossy(&current.stdout), "priory/1\n");
-    let at = git(&worktree).args(["rev-parse", "HEAD"]).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&at.stdout).trim(), head);
-}
-
-#[test]
-fn a_worktree_left_on_a_detached_head_behind_its_branch_blocks_the_task() {
-    let (setup, _) = detached_then_woken("detached-behind", true);
-
-    let tasks = setup.until("tasks", |rows| rows[0][4] == "blocked");
-
-    assert!(
-        tasks[0][7].contains("exists but is not priory/1"),
-        "{tasks:?}"
-    );
-}
-
 /// The trace records of `kind`, oldest first.
 fn traced(setup: &Setup, kind: &str) -> Vec<serde_json::Value> {
     String::from_utf8(setup.priory(&["trace"]).stdout)
@@ -10140,6 +10076,35 @@ fn an_irreversible_model_step_asks_again_after_a_commit_instead_of_starting() {
             format!("{}\n", prompted("Polish the change.", "passed")),
             format!("{ship}\n")
         ]
+    );
+}
+
+#[test]
+fn a_run_that_finds_its_worktree_detached_puts_it_back_and_keeps_its_commit() {
+    let setup = asked_to_open("recover-detached", APPROVE_THEN_SHIP);
+    let worktree = setup.worktree(1);
+    setup.git(&worktree, &["checkout", "-q", "--detach"]);
+    let head = setup.commit(1, "loose.txt");
+    let short = setup.git(&worktree, &["rev-parse", "--short", "HEAD"]);
+    setup.calls(&[passed_with_evidence()]);
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let event = until_traced(&setup, "factory.worktree.recovered");
+    let kept = format!("priory/1-kept-{}", short.trim());
+    let data = &event["data"];
+    assert_eq!(data["task"], "1");
+    assert_eq!(data["worktree"], worktree.display().to_string());
+    assert_eq!(data["head"], head);
+    assert_eq!(data["branch"], "priory/1");
+    assert_eq!(data["kept_branch"], kept);
+    assert_eq!(data["kept_commits"], 1);
+    assert!(data.get("from_branch").is_none(), "{event}");
+    assert_eq!(setup.git(&worktree, &["rev-parse", &kept]).trim(), head);
+    assert_eq!(
+        setup.git(&worktree, &["branch", "--show-current"]).trim(),
+        "priory/1"
     );
 }
 
@@ -18164,13 +18129,45 @@ fn a_comment_on_a_row_stores_shows_as_a_thread_and_wakes_the_task_with_one_line(
 
 #[test]
 fn a_comment_on_a_rows_key_lands_on_that_row() {
-    let setup = asleep_on_a_report("report-comment-key", &bonjour(serde_json::Value::Null));
+    let setup = asleep_on_a_report("report-comment-key", &ask_rows(&["cache.ship"]));
 
-    let commented = setup.priory(&["report", "comment", "FND-2409", "--expected", "1", "Why?"]);
+    let commented = setup.priory(&["report", "comment", "cache.ship", "--expected", "1", "Why?"]);
 
     assert!(commented.status.success(), "{commented:?}");
     let comments = &shown(&setup)["sections"][0]["rows"][0]["comments"];
     assert_eq!(comments[0]["text"], "Why?", "{comments}");
+}
+
+#[test]
+fn a_comment_on_an_id_lands_on_that_row_before_a_newer_reports_key() {
+    let setup = asleep_on_a_report("report-comment-id-first", &ask_rows(&["cache.ship"]));
+    // Task 2's newer report has a row whose key is task 1's row id.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "CREATE TEMP TABLE copy AS SELECT * FROM tasks WHERE id = 1;
+         UPDATE copy SET id = 2, key = 'cli:other';
+         INSERT INTO tasks SELECT * FROM copy;
+         INSERT INTO reports SELECT 2, 1, json_set(report,
+             '$.sections[0].rows[0].id', 'other', '$.sections[0].rows[0].key', 'ask-cache.ship'),
+           '9999-01-01T00:00:00Z' FROM reports WHERE task = 1;",
+    )
+    .unwrap();
+    drop(db);
+
+    let commented = setup.priory(&[
+        "report",
+        "comment",
+        "ask-cache.ship",
+        "--expected",
+        "1",
+        "Why?",
+    ]);
+
+    assert!(commented.status.success(), "{commented:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&commented.stdout),
+        "comment 1 on row ask-cache.ship at revision 2\n"
+    );
 }
 
 /// A report with one row per outside ask, whose `Dismiss ask` and `Not today` act on it.
@@ -18243,6 +18240,40 @@ fn a_pick_on_an_ask_row_dismisses_or_snoozes_the_ask_and_wakes_no_agent() {
         setup.rows("outbox").len(),
         prompts,
         "no prompt for the agent"
+    );
+}
+
+#[test]
+fn a_snooze_pick_made_after_its_time_snoozes_until_the_next_six_utc() {
+    let mut report = ask_rows(&["cache.notes"]);
+    report["sections"][0]["rows"][0]["pick"]["asks"]["Not today"]["until"] =
+        json!("2020-01-01T06:00:00Z");
+    let setup = asleep_on_a_report("report-ask-snooze-late", &report);
+    setup.priory(&["ask", "cache.notes", &fleet_ask(&["ship", "wait"])]);
+
+    let snoozed = setup.priory(&[
+        "report",
+        "pick",
+        "2026-11-23_t1_ask_cache.notes",
+        "Not today",
+        "--expected",
+        "1",
+    ]);
+
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    let until = asks["asks"][0]["snoozed_until"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        until.ends_with("T06:00:00Z") && until.as_str() > "2026-11-23",
+        "{until}"
+    );
+    assert_eq!(
+        shown(&setup)["sections"][0]["rows"][0]["pick"]["applied"],
+        format!("snoozed until {until}")
     );
 }
 

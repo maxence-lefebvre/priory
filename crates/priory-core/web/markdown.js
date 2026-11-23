@@ -37,7 +37,8 @@ const span = ({ 0: source, groups: { code, bold, image, label, url } }, inline) 
     : `<a href="${escaped(url)}" rel="noopener noreferrer" target="_blank">${escaped(label)}</a>`;
   return `${shown} <span class="host">${escaped(host)}</span>`;
 };
-const escaped = (text) => linked(text, [], null);
+// Escapes only: a bare URL inside code or a link target stays text.
+const escaped = (text) => String(text).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const startsBlock = (line) => FENCE.test(line) || HEADING.test(line) || LISTS.some(({ item }) => item.test(line));
 
 /** `text` as HTML: the DESIGN.md Markdown subset, with the factory's autolinks. */

@@ -519,6 +519,14 @@ fn on_ask(
                 .map(|_| "dismissed".to_owned())
         }
         AskAct::Snooze { until, .. } => {
+            // A pick made after the report's time snoozes until the next 06:00 UTC instead.
+            let until: String = tx.query_row(
+                "SELECT CASE WHEN ?1 > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                   OR strftime('%Y-%m-%dT%H:%M:%SZ', ?1) IS NOT ?1 THEN ?1
+                   ELSE strftime('%Y-%m-%dT06:00:00Z', 'now', '-6 hours', '+1 day') END",
+                [until],
+                |row| row.get(0),
+            )?;
             let snooze = crate::snooze::Snooze {
                 snooze: crate::snooze::Item {
                     kind: "ask".to_owned(),
@@ -580,8 +588,8 @@ pub(crate) fn comment(
                    json_each(section.value, '$.rows') AS row
                  WHERE json_extract(row.value, '$.id') IS NOT NULL
                    AND ?1 IN (json_extract(row.value, '$.id'), json_extract(row.value, '$.key'))
-                 ORDER BY reports.put DESC, reports.task DESC,
-                   json_extract(row.value, '$.id') = ?1 DESC LIMIT 1",
+                 ORDER BY json_extract(row.value, '$.id') = ?1 DESC, reports.put DESC,
+                   reports.task DESC LIMIT 1",
                 [&comment.on],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
             )

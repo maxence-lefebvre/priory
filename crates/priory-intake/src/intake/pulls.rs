@@ -329,7 +329,7 @@ pub(super) fn merge_checks(
     unchecked: &mut HashSet<String>,
     cursor: impl Fn(&'static str) -> Option<u64>,
 ) -> Result<Vec<Observed>, String> {
-    let now = Timestamp::now().as_second();
+    let now = super::now()?.as_second();
     let mut checks = Vec::new();
     let unread: Vec<&Merge> = merges
         .iter()
@@ -356,7 +356,9 @@ pub(super) fn merge_checks(
             .filter(|run| run.status == "completed")
         {
             let later = match conclusion(run).as_str() {
-                "cancelled" => later_run(repo, merge, &run.name)?,
+                // A base branch deleted after the merge answers 404: count the run as it was.
+                "cancelled" => later_run(repo, merge, &run.name, merged + GRACE_SECONDS > now)
+                    .unwrap_or(Later::Not),
                 _ => Later::Not,
             };
             if !matches!(later, Later::Running) {
@@ -423,16 +425,18 @@ struct Compare {
 }
 
 /// The run named `name` on the tip of `merge`'s base branch, when the tip descends from the merge
-/// commit. A cancelled tip run waits too: a newer push cancelled it, and its own run follows.
-fn later_run(repo: &str, merge: &Merge, name: &str) -> Result<Later, String> {
+/// commit. A cancelled tip run waits too: a newer push cancelled it, and its own run follows. While
+/// `fresh`, a tip with no run of that name waits for one to start.
+fn later_run(repo: &str, merge: &Merge, name: &str, fresh: bool) -> Result<Later, String> {
     let path = format!(
         "repos/{repo}/commits/heads/{}/check-runs",
         merge.base_branch
     );
     let check_name = format!("check_name={name}");
     let found: CommitRuns = gh(&path, &["-X", "GET", "-f", &check_name])?;
+    // shortcut: a fresh empty tip waits without a compare, so a diverged tip delays red by the grace.
     let Some(tip) = found.check_runs.first() else {
-        return Ok(Later::Not);
+        return Ok(if fresh { Later::Running } else { Later::Not });
     };
     if tip.head_sha.is_empty() || tip.head_sha == merge.commit {
         return Ok(Later::Not);

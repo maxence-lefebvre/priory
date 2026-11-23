@@ -84,15 +84,37 @@ export function submitted(ask) {
 /** Who answered, as the views say it: a person, `agent:<lead>`, auto, or `session <name>` for a person's own session. Null when unrecorded. @param {string | null | undefined} by */
 export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : by === "auto" ? "auto" : by.startsWith("session:") ? `session ${by.slice(8)}` : "a person");
 
+/**
+ * The option index a key press picks on an ask, or null: `1` to `9`, never a key held down, whose
+ * repeats would arm and then send. @param {{ key: string, repeat?: boolean }} event
+ */
+export const optionKey = (event) => (!event.repeat && /^[1-9]$/.test(event.key) ? Number(event.key) - 1 : null);
+
 /** Whether an ask takes free text and a dismissal: a step's or a hold's ask takes only its options. */
 export const takesText = (ask) => ask?.free_text !== false;
 
-// How long a first tap on a command option stays armed for the second.
+// How long a first tap on an option stays armed for the second.
 export const ARM_MS = 4000;
+// How soon after the first tap a second one counts, so a double tap does not send by accident.
+export const SETTLE_MS = 250;
+
+/** An agent's command runs on the options in its `runs`; an outside ask's string command never runs. */
+export const runsCommand = (ask, option) => Array.isArray(ask.command?.runs) && ask.command.runs.includes(option);
 
 /** Whether `armed` still arms `option` of this revision of the ask, as the Herdr panel's `press` does. */
 export const stillArmed = (armed, ask, option, now) =>
   armed != null && armed.id === ask.id && armed.revision === ask.revision && armed.text === option && now - armed.at < ARM_MS;
+
+/**
+ * What a tap on `option` does: the first tap arms it, and a second tap on it within ARM_MS, at the
+ * same revision, sends it at once, with `run` set for an option that runs a command (R6.8). A
+ * second tap sooner than SETTLE_MS after the first does nothing.
+ * @param {any} armed @param {any} ask @param {string} option @param {number} now
+ */
+export function press(armed, ask, option, now) {
+  if (stillArmed(armed, ask, option, now)) return now - armed.at < SETTLE_MS ? {} : { send: { text: option, run: runsCommand(ask, option) } };
+  return { arm: { id: ask.id, revision: ask.revision, text: option, at: now } };
+}
 
 /**
  * Why an ask write did not apply, for the note on the ask. @param {number} status @param {any} body

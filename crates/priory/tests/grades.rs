@@ -369,7 +369,7 @@ const NOW: &str = "2026-11-21T12:00:00Z";
 impl Setup {
     /// Makes `owner/repo` polled and installs a `gh` that logs its calls to `gh.log`, answers the
     /// check runs of commit `sha` from `checks-<sha>.json` (`heads/main` from `checks-heads-main.json`),
-    /// a compare from `compare.json`, and reads `[]` elsewhere.
+    /// or a 404 when `404-<sha>` exists, a compare from `compare.json`, and reads `[]` elsewhere.
     fn polled_repo(&self) {
         let trigger = "source = \"github\"\nrepo = \"owner/repo\"\non = \"issues.labeled\"\n\
                        filter = { label = \"agent\" }\nworkflow = \"plan\"\nkey = \"issue.number\"\nband = \"today\"\n";
@@ -379,6 +379,7 @@ impl Setup {
         let script = format!(
             "#!/bin/sh\necho \"$*\" >> '{dir}/gh.log'\ncase \"$2\" in\n  repos/owner/repo/commits/*)\n    \
              sha=${{2#repos/owner/repo/commits/}}\n    sha=$(echo \"${{sha%%/check-runs*}}\" | tr / -)\n    \
+             [ -f \"{dir}/404-$sha\" ] && {{ echo 'gh: Not Found (HTTP 404)' >&2; exit 1; }}\n    \
              cat \"{dir}/checks-$sha.json\" 2>/dev/null || \
              echo '{{\"total_count\":0,\"check_runs\":[]}}' ;;\n  repos/owner/repo/compare/*)\n    \
              cat \"{dir}/compare.json\" 2>/dev/null || echo '{{\"status\":\"diverged\"}}' ;;\n  \
@@ -435,6 +436,11 @@ impl Setup {
 
     /// One intake poll at `NOW`, then the daemon reading what it published.
     fn poll(&self) {
+        self.poll_at(NOW);
+    }
+
+    /// One intake poll at `now`, then the daemon reading what it published.
+    fn poll_at(&self, now: &str) {
         let path = format!(
             "{}:{}",
             self.dir.join("bin").display(),
@@ -444,7 +450,7 @@ impl Setup {
             .command()
             .args(["intake", "--once", &self.factory()])
             .env("PATH", path)
-            .env("PRIORY_NOW", NOW)
+            .env("PRIORY_NOW", now)
             .output()
             .unwrap();
         succeeded(&output);
@@ -581,6 +587,35 @@ fn a_cancelled_run_waits_for_the_later_run_then_counts_as_it_did() {
             "priory: landed wrong: owner/repo#10 of task 1 is red on main: ci cancelled https://github.com/owner/repo/runs/1"
         ]
     );
+}
+
+#[test]
+fn a_cancelled_run_whose_base_branch_is_gone_is_red_and_the_poll_goes_on() {
+    let setup = cancelled_at_merge("cancelled-base-gone");
+    fs::write(setup.dir.join("404-heads-main"), "").unwrap();
+
+    setup.poll();
+
+    assert_eq!(setup.red_after_merge(), 1);
+    assert_eq!(setup.alarms().len(), 1);
+}
+
+#[test]
+fn a_cancelled_run_waits_out_the_grace_for_a_run_on_the_tip_then_is_red() {
+    let setup = Setup::new("cancelled-no-tip-run");
+    setup.polled_repo();
+    setup.task(1, "green");
+    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-21T11:58:00Z")]);
+    setup.checks_at("m10", &[(1, "completed", "cancelled")]);
+
+    setup.poll();
+    assert_eq!(setup.red_after_merge(), 0);
+    assert_eq!(setup.alarms(), Vec::<String>::new());
+
+    setup.poll_at("2026-11-21T12:04:00Z");
+
+    assert_eq!(setup.red_after_merge(), 1);
+    assert_eq!(setup.alarms().len(), 1);
 }
 
 #[test]

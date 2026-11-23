@@ -98,7 +98,10 @@ also raises a `landed wrong` alarm on the desk, once per merge commit (see
   and checks with `repos/{repo}/compare/{merge}...{tip}` that the tip descends from the merge
   commit. A success there publishes the cancelled run with `superseded_by` set to the tip, which
   counts as passing. A tip run that is still running or was cancelled too keeps the cancelled run
-  pending, so the commit is read again on the next poll. Any other answer publishes it as it is.
+  pending, so the commit is read again on the next poll. So does a tip with no run of that name,
+  for 5 minutes after the merge, while a newer push's run may not exist yet. Any other answer,
+  and any failed read, such as a 404 for a base branch deleted after the merge, publishes the
+  cancelled run as it is.
 
 ### Check run snapshots
 
