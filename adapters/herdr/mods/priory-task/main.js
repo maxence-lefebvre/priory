@@ -17,6 +17,8 @@ const TILES = {
   done: ["tile-ok", "check"], failed: ["tile-danger", "circle-x"], dropped: ["tile-muted", "minus"],
   moved: ["tile-muted", "arrow-right"], lost: ["tile-warn", "unplug"], ask: ["wait", "ask"],
   answered: ["tile-muted", "check"], withdrawn: ["tile-muted", "minus"],
+  // Who answered an ask: auto or a lead agent, a person's session, or a person.
+  auto: ["tile-hold", "cog"], agent: ["tile-hold", "cog"], session: ["tile-hold", "terminal"], person: ["tile-hold", "user"],
   // A scorer's verdict: an error means the scorer broke, not the run.
   pass: ["tile-ok", "check"], fail: ["tile-danger", "circle-x"], error: ["tile-warn", "circle-alert"],
   "not applicable": ["tile-muted", "minus"],
@@ -188,8 +190,9 @@ export default class PrioryTask extends View {
         .when(Boolean(task.reason), (el) => el.child(div().whitespace_normal().text_size(S["type-small"][0])
           .text_color(t[ROLE[task.state] ?? "text-2"]).child(selectable("task-reason", task.reason ?? "")))))
       .when(task.asks.length > 0, (el) => el.child(v_flex().gap(S["space-1"]).child(heading("Asks", task.asks.length))
-        .children(task.asks.map((ask) => line(`ask-${ask.id}`, ask.tile, ask.text, ask.note)
-          .when(ask.tile === "ask", (el) => el.child(this.answerButton(ask.id, t)))))))
+        .children(task.asks.map((ask) => line(`ask-${ask.id}`, ask.tile, ask.text, ask.note, ask.auto ? this.autoAnswer(ask, t) : [])
+          .when(ask.tile === "ask", (el) => el.child(this.answerButton(ask.id, t)))
+          .when(Boolean(ask.age), (el) => el.child(div().flex_none().text_size(S["type-caption"][0]).text_color(t["text-3"]).child(ask.age ?? "")))))))
       .when(Boolean(pr) || task.stack.length > 0, (el) => el.child(v_flex().gap(S["space-1"]).child(heading("Pull request", Math.max(1, task.stack.length)))
         .when(Boolean(pr), (el) => el.child(v_flex().gap(S["space-1"]).py(S["space-1"]).border_t(1).border_color(t.line)
           .child(div().whitespace_normal().text_size(S["type-small"][0]).font_weight(600)
@@ -202,6 +205,19 @@ export default class PrioryTask extends View {
         .children(task.inbox.map((event) => line(`event-${event.id}`, event.tile, event.text, event.note)))))
       .when(task.history.length > 0, (el) => el.child(v_flex().gap(S["space-1"]).child(heading("History", task.history.length))
         .children(task.history.map((run) => line(`run-${run.id}`, run.tile, run.text, run.when, run.scores.map((score, index) => scored(score, `${run.id}-${index}`)))))));
+  }
+
+  // An auto answer's confidence, rationale and how to change course: no person chose it.
+  /** @param {Task["asks"][number]} ask @param {Palette} t */
+  autoAnswer(ask, t) {
+    const bars = h_flex().gap(S["space-1"]).items_end().h(11).flex_none().accessibility_label(`Confidence ${ask.confidence}`)
+      .children([5, 8, 11].map((height, at) => div().w(3).h(height).rounded(1).bg(at < ask.bars ? t.text : t["control-line"]).opacity(at < ask.bars ? 1 : 0.4)));
+    return [
+      ...(ask.confidence ? [h_flex().gap(S["space-2"]).items_center().text_size(S["type-caption"][0]).text_color(t["text-2"]).child(bars).child(`${ask.confidence} confidence`)] : []),
+      ...(ask.rationale ? [div().whitespace_normal().px(S["space-2"]).py(S["space-1"]).rounded(S["radius-md"]).border(1).border_color(t.line).bg(t.surface)
+        .text_size(S["type-caption"][0]).text_color(t.text).child(selectable(`ask-${ask.id}-why`, ask.rationale))] : []),
+      div().whitespace_normal().text_size(S["type-caption"][0]).text_color(t["text-3"]).child("The first answer stands. Say to the agent to change course."),
+    ];
   }
 
   /** @param {string} state @param {Palette} t */

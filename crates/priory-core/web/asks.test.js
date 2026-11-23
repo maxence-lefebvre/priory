@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, takesText, openAsksOf, writeNote, shrunkHead } from "./asks.js";
+import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, takesText, openAsksOf, writeNote, shrunkHead, answeredAsks, confidenceNote } from "./asks.js";
 
 const now = Date.parse("2026-11-20T12:00:00Z");
 const ask = (id, fields) => ({ id, state: "open", snoozed_until: null, ...fields });
@@ -179,4 +179,48 @@ test("a task page leaves out another runner's ask on a task of the same id", () 
 test("the shrunk header names the question over the task key, step and revision", () => {
   assert.deepEqual(shrunkHead({ key: "linear:ENG-212", step: "approve-pr", revision: 2, title: "Open the pull request", question: "Open the pull request for ENG-212?" }), { question: "Open the pull request for ENG-212?", place: "ENG-212, approve-pr, revision 2" });
   assert.deepEqual(shrunkHead({ key: null, step: "deploy", revision: 1, title: "Deploy", question: null }), { question: "Deploy", place: "deploy, revision 1" });
+});
+
+// Three answered asks of task 4 as `/api/tasks/4` lists them, oldest first, and one of task 5.
+const answered = [
+  { id: 41, task: 4, state: "answered", title: "Keep the full response for clients without a cursor", question: "When a client sends no cursor, should GET /orders return every order, as today, or the first page?",
+    answer: "every order, as today", recommendation: "every order, as today", answered_by: "auto", answered_at: "2026-11-20T11:22:00Z", confidence: "high",
+    rationale: "The brief asks for it in so many words.", tradeoff: "Large merchants keep timing out." },
+  { id: 42, task: 4, state: "answered", title: "Name the cursor parameter", question: "after or cursor?", answer: "after", recommendation: "after",
+    answered_by: "session:7f3c2a", answered_at: "2026-11-20T11:00:00Z", confidence: "medium", rationale: "The invoices endpoint already uses after.", tradeoff: null },
+  { id: 43, task: 4, state: "answered", title: null, question: "Pick the default page size", answer: "40", recommendation: "50",
+    answered_by: "serve", answered_at: "2026-11-20T10:00:00Z", confidence: null, rationale: null, tradeoff: null },
+  { id: 44, task: 4, state: "open", question: "Choose the pagination cursor", since: "2026-11-20T11:20:00Z" },
+  { id: 45, task: 5, state: "answered", question: "Other task", answer: "yes", answered_by: "cli", answered_at: "2026-11-20T11:50:00Z" },
+];
+
+test("a task page lists its task's answered asks, newest answer first, and leaves out open ones and other tasks'", () => {
+  assert.deepEqual(answeredAsks([...answered].reverse(), 4).map((row) => row.id), [41, 42, 43]);
+  assert.deepEqual(answeredAsks(answered, 9), []);
+  assert.deepEqual(answeredAsks([{ ...answered[0], runner: "laptop", submissions: [] }], 4), []);
+});
+
+test("each answered ask says who answered: auto, a session by its name, an agent, or a person", () => {
+  const rows = answeredAsks([...answered, { ...answered[2], id: 46, answered_by: "agent:lead", answered_at: "2026-11-20T09:00:00Z" },
+    { ...answered[2], id: 47, answered_by: null, answered_at: "2026-11-20T08:00:00Z" }], 4);
+  assert.deepEqual(rows.map((row) => [row.id, row.answerer, row.by]), [
+    [41, "auto", "auto"], [42, "session", "session 7f3c2a"], [43, "person", "a person"], [46, "agent", "agent:lead"], [47, null, null],
+  ]);
+});
+
+test("an answered ask carries its answer, confidence as bars, rationale, trade-off, question, and the recommendation only when another option won", () => {
+  const [auto, session, person] = answeredAsks(answered, 4);
+  assert.deepEqual(auto, {
+    id: 41, title: "Keep the full response for clients without a cursor", question: answered[0].question, answer: "every order, as today",
+    at: "2026-11-20T11:22:00Z", answerer: "auto", by: "auto", confidence: "high", bars: 3,
+    rationale: "The brief asks for it in so many words.", tradeoff: "Large merchants keep timing out.", recommended: null,
+  });
+  assert.deepEqual([session.title, session.bars, session.rationale], ["Name the cursor parameter", 2, "The invoices endpoint already uses after."]);
+  assert.deepEqual([person.title, person.confidence, person.bars, person.recommended], ["Pick the default page size", null, 0, "50"]);
+});
+
+test("an auto answer's confidence says it is the agent's own, and the level the task answers at", () => {
+  assert.equal(confidenceNote("high"), "confidence, the agent's own. The task answers at high and above.");
+  assert.equal(confidenceNote("medium"), "confidence, the agent's own. The task answers at medium and above.");
+  assert.equal(confidenceNote(null), "confidence, the agent's own.");
 });

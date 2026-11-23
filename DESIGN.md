@@ -994,6 +994,19 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
 - **Open asks**, before the actions: one bordered row per open ask of the task, snoozed ones too,
   oldest first. Each shows the ask tile, its title, its age and a primary "Answer…" link to
   `/asks/<id>`, so a person who follows the Desk's "Open task" can still answer.
+- The context line ends with "Answers asks itself at **high**" when the task has an `auto_answer`
+  level.
+- **Answered asks**, after Say: a `--type-body` heading with the count, "3, newest first", then
+  one bordered card of rows split by hairlines, newest answer first. Each row has a 16 px icon for
+  who answered (`cog` for auto or a lead agent, `terminal` for a session, `user` for a person),
+  the ask's title, "Answered **40** by a person. Recommended 50." with the recommendation only when
+  another option won, and the age at the right. A session reads "by session `7f3c2a`" in mono.
+  When the agent stated a confidence, a `--text-3` caption shows it as three bars, filled in
+  `--text` up to its level (high 3, medium 2, low 1), then "medium: " and the rationale. An auto
+  answer's row opens wider: its title in 600, "**high** confidence, the agent's own. The task
+  answers at high and above.", then a `--raised` box of Why, Trade-off and The ask, then a caption
+  "The first answer stands. To change course, tell the agent." with underlined links to Say and to
+  the ask. There is no overturn control: the daemon refuses a second answer.
 - **Actions**, in `.btn secondary`: Resume and Cancel for a blocked task, Revive for a failed or
   dropped one, Cancel for any other active task. Cancel and Revive arm on the first tap, as a
   command option does: the button turns `--emph`, reads "Tap again to cancel" over its verb, and a
@@ -1607,6 +1620,11 @@ open it.
   color, and Attach as a secondary button at the right.
 - The title in `--type-pane-question`, then the workflow, step, lane and band in `--text-2`, then
   the reason in its role's text color.
+- Asks lists open asks first, then answered ones newest first. An answered ask's 18 px tile is
+  its answerer's icon in `--text-2`, as on the web's Answered asks, with the age at the right and
+  "Answered after by session 7f3c2a, medium" as its caption. An auto answer adds its three
+  confidence bars and the word, its rationale in a bordered `--surface` box, and "The first answer
+  stands. Say to the agent to change course."
 - Asks, Pull request, Inbox and History, each a caption heading with its count, then rows with an
   18 px tile and a `--type-small` line over a `--text-3` caption, split by hairlines. Inbox lists
   the latest 20 events routed to the task, newest first, with the web's tiles and wording and the
