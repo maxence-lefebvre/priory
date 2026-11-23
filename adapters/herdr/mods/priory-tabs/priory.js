@@ -145,10 +145,10 @@ export function autolink(text, links, repo) {
       return [];
     }
   });
-  // A bare URL ends at a space, `<`, `>` or `"`, and leaves out the punctuation, `…` and unbalanced
+  // A bare URL ends at a space, `<`, `>`, `"`, a backtick or `]`, and leaves out the punctuation, `…` and unbalanced
   // `)` that prose puts after it. Its link is its own text, when that parses as an `https:` URL.
   const bare = (/** @type {number} */ from) => {
-    const regex = /https:\/\/[^\s<>"]+/gu;
+    const regex = /https:\/\/[^\s<>"`\]]+/gu;
     regex.lastIndex = from;
     for (let match = regex.exec(text); match; match = regex.exec(text)) {
       let url = match[0];

@@ -293,6 +293,7 @@ test("autolink links a bare https URL to itself, without the prose around it, an
   assert.deepEqual(urls("See https://ci.example.com/runs/7#L12, then #4."), [self("https://ci.example.com/runs/7#L12"), { text: "#4", url: "https://github.com/acme/app/issues/4" }]);
   assert.deepEqual(urls("(https://en.example.org/wiki/F_(math)) and https://x.dev/a…"), [self("https://en.example.org/wiki/F_(math)"), self("https://x.dev/a")]);
   assert.deepEqual(urls("Done: https://x.dev/r?a=1&b=2.' \"https://x.dev/q\" <https://x.dev/z>"), [self("https://x.dev/r?a=1&b=2"), self("https://x.dev/q"), self("https://x.dev/z")]);
+  assert.deepEqual(urls("see `https://ci.example.com/x` and [https://ci.example.com/y]"), [self("https://ci.example.com/x"), self("https://ci.example.com/y")]);
   assert.deepEqual(urls("http://plain.dev and https:// alone and https://ENG-7.example.com/ENG-7"), [self("https://ENG-7.example.com/ENG-7")]);
   assert.deepEqual(autolink("ENG-7 https://x.dev", links, null), [
     { text: "ENG-7", url: "https://linear.app/acme/issue/ENG-7" }, { text: " " }, self("https://x.dev"),

@@ -190,4 +190,4 @@ INSERT INTO inbox (id,type,subject,time,data,links,outcome) VALUES
 ('d2','factory.intake.dropped','linear:ENG-241',strftime('%Y-%m-%dT%H:%M:%SZ','now','-70 minutes'),'{"trigger":"linear-view","script":"scripts/has-estimate","reason":"no estimate yet","failed":null,"key":"linear:ENG-241","source":"d1"}','[]','ignored');
 -- a report with a bare URL, as the daemon writes one when a landed change goes red
 INSERT INTO inbox (id,type,subject,time,data,links,outcome) VALUES
-('landed-1','priory.report','priory',strftime('%Y-%m-%dT%H:%M:%SZ','now','-12 minutes'),'{"line":"landed wrong: acme/shop#198 of task 20 is red on main: deploy cancelled https://github.com/acme/shop/actions/runs/4512519087"}','[]','stored');
+('landed-1','priory.report','priory',strftime('%Y-%m-%dT%H:%M:%SZ','now','-12 minutes'),'{"line":"landed wrong: acme/shop#198 of task 20 is red on main: deploy cancelled https://github.com/acme/shop/actions/runs/1001"}','[]','stored');

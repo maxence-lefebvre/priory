@@ -350,7 +350,7 @@ test("a press on a row's link opens the link and leaves the selection where it w
 });
 
 // The report Max could not open: a bare URL and an `owner/repo#N` the factory's rule links.
-const LANDED = "priory: landed wrong: acme/shop#20705 of task 163 is red on dev: deploy cancelled https://github.com/acme/shop/actions/runs/451251.";
+const LANDED = "priory: landed wrong: acme/shop#212 of task 7 is red on dev: deploy cancelled https://github.com/acme/shop/actions/runs/1001.";
 const REPO_RULE = [{ pattern: String.raw`\b([\w.-]+)/([\w.-]+)#(\d+)\b`, url: "https://github.com/$1/$2/issues/$3" }];
 const landedDesk = () => ({ ...data.desk, items: [...data.desk.items, { ...data.desk.items[0], id: 12, what: LANDED }] });
 
@@ -359,17 +359,17 @@ test("a report's bare URL and owner/repo#N draw as links, and a press on the row
   const row = deskModel({ ...data, desk: landedDesk() }, { now, links: REPO_RULE }).sections("needs").flatMap((section) => section.rows).find((each) => each.id === "report:12");
   assert.deepEqual(row.textSpans, [
     { text: "priory: landed wrong: " },
-    { text: "acme/shop#20705", url: "https://github.com/acme/shop/issues/20705" },
-    { text: " of task 163 is red on dev: deploy cancelled " },
-    { text: "https://github.com/acme/shop/actions/runs/451251", url: "https://github.com/acme/shop/actions/runs/451251" },
+    { text: "acme/shop#212", url: "https://github.com/acme/shop/issues/212" },
+    { text: " of task 7 is red on dev: deploy cancelled " },
+    { text: "https://github.com/acme/shop/actions/runs/1001", url: "https://github.com/acme/shop/actions/runs/1001" },
     { text: "." },
   ]);
 
   const { panel, cx } = await deskPanel(REPO_RULE, landedDesk());
   const tree = draw(panel, cx);
   const html = find(tree, "text-report:12")?.html ?? "";
-  assert.match(html, /<a href="https:\/\/github.com\/acme\/shop\/actions\/runs\/451251">/);
-  assert.match(html, /<a href="https:\/\/github.com\/acme\/shop\/issues\/20705">acme\/shop#20705<\/a>/);
+  assert.match(html, /<a href="https:\/\/github.com\/acme\/shop\/actions\/runs\/1001">/);
+  assert.match(html, /<a href="https:\/\/github.com\/acme\/shop\/issues\/212">acme\/shop#212<\/a>/);
   const before = panel.selected;
   press(tree, "text-report:12");
   assert.equal(panel.selected, before, "a press on the link leaves the selection");
