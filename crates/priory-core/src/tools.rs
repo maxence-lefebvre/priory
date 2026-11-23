@@ -2664,31 +2664,36 @@ impl Peeked {
     }
 }
 
-/// A run mid-turn, with its transcript, the bytes of it counted, and its task's step count.
-type Turning = (Run, String, i64, Option<String>, Option<String>);
+/// A run mid-turn, with its transcript, the bytes of it counted, its task's step count and model,
+/// and whether a person holds its keyboard.
+type Turning = (Run, String, i64, Option<String>, Option<String>, bool);
 
 /// Ends each run mid-turn whose step has a budget once its step's tokens, with those its
 /// transcript gained since its last count, pass the budget or cannot be priced, and fails its task
 /// as a turn end would. The read counts nothing: a later read may end inside the message this one
-/// ends in, so the turn end still counts the turn. A run that sent or holds its result is left to
-/// its turn end, where the result stands. Returns the tmux sessions to kill.
+/// ends in, so the turn end still counts the turn. A run that sent or holds its result, that
+/// `preempt::guarded` protects, or that a person may be watching in tmux, is left to its turn end,
+/// where the overrun stands. Returns the tmux sessions to kill.
 pub(crate) fn over_budget_in_turn(
     db: &mut Connection,
     trace: &Trace,
     peeked: &mut Peeked,
+    watched: &dyn Fn(&str) -> bool,
 ) -> rusqlite::Result<Vec<String>> {
     let factory = trace.factory;
     let turning: Vec<Turning> = db
-        .prepare(
+        .prepare(&format!(
             "SELECT runs.id, runs.task, runs.step, runs.agent, tasks.workflow, runs.tmux,
-             runs.session, runs.debate, runs.transcript, runs.read, tasks.tokens, tasks.model
+             runs.session, runs.debate, runs.transcript, runs.read, tasks.tokens, tasks.model,
+             {}
              FROM runs JOIN tasks ON tasks.id = runs.task
              WHERE runs.ended IS NULL AND runs.ready AND runs.idle = 0
              AND runs.transcript IS NOT NULL
              AND NOT EXISTS (SELECT 1 FROM results WHERE results.run = runs.id)
              AND NOT EXISTS (SELECT 1 FROM gates WHERE gates.run = runs.id AND gates.state = 'grading')
              ORDER BY runs.id",
-        )?
+            crate::preempt::KEYBOARD_HELD
+        ))?
         .query_map([], |row| {
             Ok((
                 Run {
@@ -2705,6 +2710,7 @@ pub(crate) fn over_budget_in_turn(
                 row.get(9)?,
                 row.get(10)?,
                 row.get(11)?,
+                row.get(12)?,
             ))
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -2713,7 +2719,7 @@ pub(crate) fn over_budget_in_turn(
         .retain(|id, _| turning.iter().any(|(run, ..)| run.id == *id));
     let now = std::time::Instant::now();
     let mut killed = Vec::new();
-    for (run, transcript, read, tokens, model) in turning {
+    for (run, transcript, read, tokens, model, keyboard_held) in turning {
         let Some(budget) =
             step(&factory.workflows, &run.workflow, &run.step).and_then(Step::budget)
         else {
@@ -2743,6 +2749,19 @@ pub(crate) fn over_budget_in_turn(
         else {
             continue;
         };
+        let agent = run.agent.as_deref().unwrap_or_default();
+        let guarded = crate::preempt::guarded(
+            factory,
+            run.task,
+            &run.workflow,
+            &run.step,
+            agent,
+            keyboard_held,
+        );
+        // Read last, since it runs tmux.
+        if guarded.is_some() || watched(&run.tmux) {
+            continue;
+        }
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         trace::account(&tx, trace, run.id, None)?;
         end(&tx, run.id, "budget")?;

@@ -55,8 +55,8 @@ fn band_of(db: &Connection, factory: &Factory, task: i64) -> rusqlite::Result<St
 
 /// Why no one may stop the live run of `task` at `step` between two turns, if a reason holds: an
 /// irreversible step, whose stop could leave a push without its pull request; a keyboard a
-/// person holds; or a shared session. Urgent wakes and spend caps both read it. A tmux client
-/// watching the run is the caller's test, since it runs tmux.
+/// person holds; or a shared session. Urgent wakes, spend caps and the budget check inside a turn
+/// all read it. A tmux client watching the run is the caller's test, since it runs tmux.
 pub(crate) fn guarded(
     factory: &Factory,
     task: i64,

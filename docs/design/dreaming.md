@@ -376,7 +376,9 @@ Tests, through the CLI, with the fake `claude`:
    daemon's tick runs every second, so it reads at the first tick after the transcript grows, then
    at most once a minute. The read counts nothing, since a later read may split a message Claude
    writes as several lines, so the turn end still counts the turn. A run that sent its result, or
-   whose gate holds it, is left to its turn end, where an overrun stands.
+   whose gate holds it, is left to its turn end, where an overrun stands. So is a run that no one
+   may stop, as for a spend cap: one at an irreversible step, one whose keyboard a person holds, one
+   in a shared session, or one a person watches in tmux.
 2. The kit takes over a name once it holds an accepted candidate's text, so a later edit in the
    kit reaches runs. [skills.md](../daemon/skills.md#limits) lists this as not built. Removing that
    one candidate is not enough: an older accepted candidate of the same name would show again. So

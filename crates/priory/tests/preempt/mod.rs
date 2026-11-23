@@ -825,3 +825,110 @@ fn a_spend_cap_ends_no_run_a_person_watches_in_tmux() {
     let runs = setup.rows("runs");
     assert!(runs.iter().all(|run| run[7] != "capped"), "{runs:?}");
 }
+
+/// One budgeted model step of the reviewer, whom no guard covers.
+fn probe() -> String {
+    budgeted("0.01").replace("agent = \"implementer\"", "agent = \"reviewer\"")
+}
+
+impl Setup {
+    /// Task 1, on `implement` with a budget of $0.01 in a factory `before` changed, mid-turn past
+    /// the budget under `guard`, and task 2, an unguarded probe whose run the check inside a turn
+    /// ends: the pass that ended it read task 1's run too. Task 1's turn then ends with its result.
+    fn guarded_over_budget(
+        name: &str,
+        implement: &str,
+        before: impl FnOnce(&Setup),
+        guard: impl FnOnce(&Setup),
+    ) -> Setup {
+        let mut setup = Setup::with_workflow(name, implement);
+        before(&setup);
+        setup.workflow("probe", &probe());
+        fs::write(setup.dir.join("factory/prices.toml"), DEAR).unwrap();
+        setup.calls(&[result("passed")]);
+        setup.hold("hold-submit");
+        setup.hold("hold-call");
+        setup.publish(&requested(42));
+        setup.go();
+        setup.written("fake/pending");
+        guard(&setup);
+        setup.release("hold-submit");
+        setup.until("runs", |_| {
+            setup.sql(
+                "SELECT count(*) FROM runs WHERE task = 1 AND ready AND idle = 0
+                 AND transcript IS NOT NULL",
+            ) == Some("1".to_owned())
+        });
+        setup.publish(&on("probe", requested(43)));
+        setup.until("tasks", |rows| {
+            task(rows, "2").is_some_and(|row| row[4] == "failed")
+        });
+        assert_eq!(task(&setup.rows("tasks"), "1").unwrap()[4], "running");
+        setup.release("hold-call");
+        setup.until("tasks", |rows| {
+            task(rows, "1").is_some_and(|row| row[4] == "done" || row[4] == "failed")
+        });
+        setup
+    }
+
+    /// Asserts task 1 ended `done` at its turn end, its overrun on its record.
+    fn overran(&self) {
+        assert_eq!(task(&self.rows("tasks"), "1").unwrap()[4], "done");
+        assert_ne!(run(&self.rows("runs"), "1").unwrap()[7], "budget");
+        let overrun = self
+            .trace()
+            .into_iter()
+            .find(|record| {
+                record["type"] == "factory.step.ended" && record["data"]["outcome"] == "passed"
+            })
+            .map(|record| record["data"]["overrun"]["budget_usd"].clone());
+        assert_eq!(overrun, Some(json!(0.01)));
+    }
+}
+
+#[test]
+fn the_budget_inside_a_turn_ends_no_run_at_an_irreversible_step() {
+    let ship = SHIP.replace(
+        "effect = \"irreversible\"",
+        "effect = \"irreversible\"\nbudget = \"0.01\"",
+    );
+    let setup = Setup::guarded_over_budget("budget-irreversible", &ship, |_| {}, |_| {});
+    setup.overran();
+}
+
+#[test]
+fn the_budget_inside_a_turn_ends_no_run_whose_keyboard_a_person_holds() {
+    let typed = |setup: &Setup| {
+        fs::write(setup.dir.join("factory/factory.toml"), URGENT_TYPE).unwrap();
+    };
+    let setup = Setup::guarded_over_budget("budget-keyboard", &budgeted("0.01"), typed, |setup| {
+        setup.hold_keyboard("1");
+    });
+    setup.overran();
+}
+
+#[test]
+fn the_budget_inside_a_turn_ends_no_run_in_a_shared_session() {
+    let lead = |setup: &Setup| {
+        fs::write(setup.dir.join("factory/agents/implementer/agent.md"), LEAD).unwrap();
+    };
+    let setup = Setup::guarded_over_budget("budget-shared", &budgeted("0.01"), lead, |_| {});
+    setup.overran();
+}
+
+#[test]
+fn the_budget_inside_a_turn_ends_no_run_a_person_watches_in_tmux() {
+    let mut client = None;
+    let setup = Setup::guarded_over_budget(
+        "budget-watched",
+        &budgeted("0.01"),
+        |_| {},
+        |setup| {
+            client = Some(setup.watch("1"));
+        },
+    );
+    let mut client = client.unwrap();
+    client.kill().unwrap();
+    client.wait().unwrap();
+    setup.overran();
+}
