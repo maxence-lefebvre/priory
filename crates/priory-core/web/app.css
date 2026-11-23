@@ -60,6 +60,9 @@ kbd { font: 500 11.5px/1 var(--font-mono); min-width: 20px; height: 20px; paddin
 [aria-disabled="true"] { cursor: default; }
 .ghost[aria-disabled="true"] { color: var(--text-3); }
 input { font: 400 16px/20px var(--font-ui); color: var(--text); background: var(--surface); border: 1px solid var(--control-line); border-radius: var(--radius-md); height: var(--control); padding: 0 12px; width: 100%; }
+/* A native select's open list paints from its options. Without this, a select with no background
+   (.chip select) gets a white list under the theme's text colour, unreadable in dark mode. */
+option { background: var(--surface); color: var(--text); }
 .field-error { display: flex; gap: 6px; align-items: center; color: var(--danger-text); font: 400 var(--type-small) var(--font-ui); }
 
 /* Top bar and tab bar */

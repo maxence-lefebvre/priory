@@ -30,6 +30,9 @@ export function backTo(from) {
   return panel ? [from, PANELS[panel][0]] : ["/tasks", "Tasks"];
 }
 
+/** The text fields a repaint gives back their focus, caret and selection, by id. */
+export const TYPED_FIELDS = ["draft", "say", "report-draft", "report-query", "term-line", "term-keys"];
+
 /**
  * The document title of the page at `path`: a task by its key, an ask by its number.
  * @param {string} path @param {{ tasks: any[] }} data
@@ -46,4 +49,16 @@ export function pageTitle(path, data) {
   else if (first === "settings") name = id === "notifications" ? "Notifications" : "Appearance";
   else if (Object.hasOwn(PANELS, first)) name = PANELS[first][0];
   return `${name} · Priory`;
+}
+
+/**
+ * The read of `/api/tasks/{id}` an ask's drawer or a task page draws from. A refresh marks the kept
+ * read stale: it keeps its body on screen while the task is read again, so no repaint draws the page
+ * without it. Another task starts empty. `read` says whether to start a new read.
+ * @param {{ id: any, body: any, stale?: boolean } | null} kept @param {any} id
+ */
+export function taskRead(kept, id) {
+  const same = kept?.id === id ? kept : null;
+  if (same && !same.stale) return { task: same, read: false };
+  return { task: { id, body: same?.body ?? null, error: null, stale: false }, read: true };
 }

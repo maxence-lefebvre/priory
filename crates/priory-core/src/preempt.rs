@@ -12,7 +12,10 @@ struct Candidate {
     run: i64,
     task: i64,
     band: String,
-    need: Need,
+    /// What the run reserves beyond its use, which its end takes off the promises.
+    unused: Need,
+    /// What the run uses now, which its end gives back to measured free memory.
+    used: u64,
     protected: Option<String>,
     tmux: String,
 }
@@ -104,7 +107,7 @@ pub(crate) fn plan(
     let mut statement = db.prepare(&format!(
         "SELECT runs.id, runs.task, runs.step, coalesce(runs.agent, ''), runs.tmux, tasks.band,
            tasks.workflow, tasks.trigger, tasks.preempted IS NOT NULL, {KEYBOARD_HELD},
-           tasks.position
+           tasks.position, runs.session
          FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL"
     ))?;
     let mut rows = statement.query([])?;
@@ -121,6 +124,7 @@ pub(crate) fn plan(
             (row.get(5)?, row.get(6)?, row.get(7)?);
         let (stopped, held, position): (bool, bool, Option<i64>) =
             (row.get(8)?, row.get(9)?, row.get(10)?);
+        let session: String = row.get(11)?;
         let defined = factory.agents.get(&agent).map(|agent| &agent.value);
         let own_rank = rank(&bands, own_band.as_deref());
         let own_band = own_band.unwrap_or_else(|| bands.last().copied().unwrap_or_default().into());
@@ -135,13 +139,15 @@ pub(crate) fn plan(
         } else {
             None
         };
+        let used = crate::usage::memory(run, &tmux, &session);
         candidates.push((
             (own_rank, position.is_none(), position, task),
             Candidate {
                 run,
                 task,
                 band: own_band,
-                need: room::need(defined),
+                unused: room::unused(room::need(defined), used),
+                used: used.unwrap_or(0),
                 protected,
                 tmux,
             },
@@ -157,12 +163,18 @@ pub(crate) fn plan(
         }
     }
     let mut freed = Need::default();
+    let mut returned = 0u64;
     let mut picked = Vec::new();
     let mut fits = false;
     for candidate in candidates.iter().filter(|c| c.protected.is_none()) {
         picked.push(candidate);
-        freed = freed.plus(candidate.need);
-        if room::wait(head.measured, share, head.promised.minus(freed), head.need).is_none() {
+        freed = freed.plus(candidate.unused);
+        returned = returned.saturating_add(candidate.used);
+        let measured = Room {
+            memory_free: head.measured.memory_free.saturating_add(returned),
+            ..*head.measured
+        };
+        if room::wait(&measured, share, head.promised.minus(freed), head.need).is_none() {
             fits = true;
             break;
         }

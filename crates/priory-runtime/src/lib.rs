@@ -1,3 +1,4 @@
+pub mod cgroup;
 pub mod eval;
 pub mod http;
 pub mod jail;
@@ -10,4 +11,5 @@ pub mod servers;
 pub mod slice;
 pub mod ticks;
 pub mod transcript;
+pub mod trust;
 pub mod worktrees;
