@@ -1389,7 +1389,7 @@ fn a_comment_trigger_filters_on_the_pull_request_s_author() {
 fn a_comment_trigger_needs_a_factory_of_one_runner() {
     let comments = "source = \"github\"\nrepo = \"owner/name\"\non = \"pull_request.comment\"\nfilter = { author = \"max\" }\nworkflow = \"implement\"\n";
     let mut files = with("triggers/agent-label.toml", comments);
-    files.push(("runners/one.toml", RUNNER));
+    // `valid()` already holds one runner.
     files.push(("runners/two.toml", RUNNER));
 
     let outcome = check(&factory("comment-runners", &files));
