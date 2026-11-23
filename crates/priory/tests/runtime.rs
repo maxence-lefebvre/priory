@@ -9651,6 +9651,33 @@ fn a_sweep_keeps_a_worktree_a_process_runs_in() {
 }
 
 #[test]
+fn a_sweep_keeps_a_worktree_a_process_runs_in_that_claims_to_be_priorys_git() {
+    let sleep = |setup: &Setup, marker: String| {
+        harness::command("sleep")
+            .arg("60")
+            .env("PRIORY_GIT", marker)
+            .current_dir(setup.worktree(2))
+            .spawn()
+            .unwrap()
+    };
+    let mut first = None;
+    // The marker Priory's git commands carried before it named their Priory process.
+    let (setup, reason) = kept_by("sweep-forged", |setup| {
+        first = Some(sleep(setup, "1".to_owned()));
+    });
+    assert_eq!(reason.as_deref(), Some("a process runs in it"));
+    // The daemon's pid, while the process is no child of the daemon.
+    let daemon = setup.daemon.as_ref().unwrap().id();
+    let mut second = sleep(&setup, daemon.to_string());
+    let mut first = first.unwrap();
+    first.kill().unwrap();
+    first.wait().unwrap();
+    assert_eq!(setup.stays(2).as_deref(), Some("a process runs in it"));
+    second.kill().unwrap();
+    second.wait().unwrap();
+}
+
+#[test]
 fn a_sweep_removes_a_merged_worktree_while_the_desk_checks_it() {
     let mut setup = Setup::ended("sweep-desk", 1);
     setup.work_on(1);

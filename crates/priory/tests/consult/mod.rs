@@ -637,6 +637,46 @@ fn a_report_holding_a_secret_is_refused_without_the_value_until_the_investigator
 }
 
 #[test]
+fn a_report_holding_a_secret_split_by_escape_codes_is_refused_without_the_value() {
+    const SECRET: &str = "s3cret-serve-token-41";
+    let split = "s3cret-se\u{1b}[0mrve-token-41";
+    let shaped = "ghp_abcdefghij\u{1b}]8;;https://x\u{7}klmnopqrstu\u{0}vwxyz";
+    let mut setup = consulting("consult-escapes", "");
+    setup.memory(60);
+    setup.calls(&[
+        consult("sentry"),
+        json!([
+            reported(&format!("The token is {split}.")),
+            reported(&format!("The key is {shaped}.")),
+        ]),
+        reported("Release 4.2."),
+        result("passed"),
+    ]);
+    setup.publish(&requested(42));
+
+    setup.start_with(
+        Path::new(env!("CARGO_BIN_EXE_priory")),
+        &[("PRIORY_TOKEN", SECRET)],
+    );
+
+    let replies = setup.replied(4);
+    for reply in &replies[1..3] {
+        let (text, failed) = super::reply(reply);
+        assert!(failed, "{text}");
+        assert_eq!(
+            text,
+            "the report holds the value of a secret Priory knows: answer again without it"
+        );
+    }
+    setup.until("tasks", |rows| with(rows, 4, "done") == 2);
+    let typed = setup.typed().join("");
+    for value in ["s3cret-se", "abcdefghij"] {
+        assert!(!typed.contains(value), "{typed}");
+    }
+    assert_eq!(typed_with(&setup, "consult 1 reported by sentry:").len(), 1);
+}
+
+#[test]
 fn cancelling_the_asking_task_drops_its_consults_queued_task() {
     let mut setup = consulting("consult-cancel", "");
     setup.calls(&[consult("sentry")]);

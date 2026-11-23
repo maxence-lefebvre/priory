@@ -537,7 +537,7 @@ or wait is refused as a second ask is.
 
 The investigator ends with `result`: `reported`, with the report as the whole `summary`, at most
 8000 characters, or `unknown`, with what it lacked. A report that holds the value of a secret Priory
-knows is refused with `the report holds the value of a secret Priory knows: answer again without
+knows, or a key by its shape, even split by escape sequences or control characters, is refused with `the report holds the value of a secret Priory knows: answer again without
 it`, and nothing wakes the asking task until the investigator answers again or the deadline passes.
 
 The asking task wakes with the report, quoted:
