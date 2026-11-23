@@ -4,6 +4,7 @@ use crate::link::Link;
 use crate::memory::{self, Gate};
 use crate::metrics;
 use crate::otlp;
+use crate::reload::{self, Polled};
 use crate::room::Share;
 use crate::route;
 use crate::runners;
@@ -96,6 +97,7 @@ pub fn view_only(factory: &Factory) -> Result<(), String> {
 }
 
 fn view(factory: &Factory) -> Result<(), Error> {
+    let watch = reload::Watch::new(factory);
     let machine = room::hostname();
     let viewer = runners::viewer(factory, machine.as_deref())?;
     let mut db = state::open()?;
@@ -112,11 +114,15 @@ fn view(factory: &Factory) -> Result<(), Error> {
     let consumer = runners::view_consumer(&viewer);
     // The socket's lock keeps a second daemon off this state file.
     let listening = runtime::listen(&runtime::home())?;
-    if let Some(config) = factory.serve() {
-        crate::serve::start(factory, config.listen)?;
-    }
+    let server = match factory.serve() {
+        Some(config) => Some(crate::serve::start(factory, config.listen)?),
+        None => None,
+    };
+    let mut live = Live::new(factory, watch, trace.revision.clone(), server);
     let mut link = Link::default();
     loop {
+        live.poll(&mut db, &trace, false)?;
+        let trace = live.trace(&trace);
         if link.due() {
             let drained = view_drain(&*bus, &consumer, &mut db, &viewer, &trace);
             metered(&*bus, drained.as_ref());
@@ -162,6 +168,8 @@ fn view_drain(
 }
 
 fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
+    // Taken first, so an edit made while the daemon starts still reloads.
+    let watch = reload::Watch::new(factory);
     runtime::bound_commands(factory.command_timeout());
     let mut db = state::open()?;
     tools::backfill_endings(&mut db, &factory.workflows)?;
@@ -214,9 +222,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let searching = search::answering(state::read_only()?, home.clone());
     let listening = runtime::listen(&home)?;
     let headers = otlp::header_file(factory, &home, "otlp-headers")?;
-    if let Some(config) = factory.serve() {
-        crate::serve::start(factory, config.listen)?;
-    }
+    let server = match factory.serve() {
+        Some(config) => Some(crate::serve::start(factory, config.listen)?),
+        None => None,
+    };
     if let Some(name) = embedder.clone() {
         let home = home.clone();
         std::thread::spawn(move || embed_all(&name, embed::Lazy::new(&home, true)));
@@ -230,15 +239,15 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         Vec::new()
     });
     // Checked once, as the slice is: a jailed task never starts unjailed where this fails.
-    let jailing = if factory.sandboxed() {
+    let probe = || {
         priory_runtime::jail::probe().inspect_err(|error| {
             eprintln!(
                 "priory daemon: this runner cannot start bubblewrap, so jailed tasks block: {error}"
             );
         })
-    } else {
-        Ok(())
     };
+    let mut probed = factory.sandboxed();
+    let mut jailing = if probed { probe() } else { Ok(()) };
     state::uncertain(&db)?;
     crate::keyboard::adopt(&mut db, &trace)?;
     // No one watches a compaction a stopped daemon started, so it never types its `/compact`.
@@ -364,8 +373,22 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut link = Link::default();
     let mut redispatch: Option<Instant> = None;
     let mut entering = Entering::default();
+    let mut live = Live::new(factory, watch, trace.revision.clone(), server);
     loop {
         let tick = Instant::now();
+        if live.poll(&mut db, &trace, true)? {
+            let factory = live.factory();
+            state::bands(&mut db, &factory.bands(), factory.age())?;
+            state::fairness(&db, factory.fair())?;
+            state::irreversible_asks(&mut db, &factory.workflows)?;
+            // A reload that jails a workflow probes as a start would.
+            if !probed && factory.sandboxed() {
+                probed = true;
+                jailing = probe();
+            }
+        }
+        let trace = live.trace(&trace);
+        let factory = trace.factory;
         // A runner back from away reads the log, and so drops the tasks that moved, before any run
         // and before it publishes what it queued meanwhile.
         let drained = link.due().then(|| {
@@ -478,6 +501,101 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
+    }
+}
+
+/// The factory the daemon's loop reads: the one it started with, until an edit reloads it.
+struct Live<'a> {
+    start: &'a Factory,
+    reloaded: Option<Factory>,
+    /// A valid edit the guard refused, and the digest of its files: it applies once no task is at
+    /// a workflow or step it removes.
+    held: Option<(Box<Factory>, reload::Digest)>,
+    watch: reload::Watch,
+    revision: Option<String>,
+    server: Option<crate::serve::Server>,
+}
+
+impl<'a> Live<'a> {
+    fn new(
+        start: &'a Factory,
+        watch: reload::Watch,
+        revision: Option<String>,
+        server: Option<crate::serve::Server>,
+    ) -> Self {
+        Live {
+            start,
+            reloaded: None,
+            held: None,
+            watch,
+            revision,
+            server,
+        }
+    }
+
+    fn factory(&self) -> &Factory {
+        self.reloaded.as_ref().unwrap_or(self.start)
+    }
+
+    /// `base` with the live factory and its revision.
+    fn trace(&self, base: &Trace) -> Trace<'_> {
+        Trace {
+            factory: self.factory(),
+            revision: self.revision.clone(),
+            runner: base.runner.clone(),
+            machine: base.machine.clone(),
+            usage: base.usage,
+        }
+    }
+
+    /// Loads an edit of the factory's files once it passes every rule, and with `guard`, once it
+    /// strands no task. An edit the guard refused stays held and applies once its tasks leave.
+    /// Returns whether a new factory is live; a refused edit keeps the last good one. Each
+    /// refusal is reported once, to stderr and to the trace, and so is each reload.
+    fn poll(&mut self, db: &mut Connection, base: &Trace, guard: bool) -> Result<bool, Error> {
+        let polled = self.watch.poll();
+        if self.watch.committed() {
+            self.revision = runtime::revision(&self.factory().dir);
+        }
+        let (new, files, fresh) = match polled {
+            Polled::Same => match self.held.take() {
+                Some((new, files)) => (new, files, false),
+                None => return Ok(false),
+            },
+            Polled::Current => {
+                self.held = None;
+                return Ok(false);
+            }
+            Polled::Refused(problems) => {
+                self.held = None;
+                reload::report("daemon", Err(&problems));
+                reload::record(db, &self.trace(base), Err(&problems))?;
+                return Ok(false);
+            }
+            Polled::Loaded(new, files) => (new, files, true),
+        };
+        let stranded = match guard {
+            true => reload::stranded(db, &new)?,
+            false => Vec::new(),
+        };
+        if !stranded.is_empty() {
+            if fresh {
+                reload::report("daemon", Err(&stranded));
+                reload::record(db, &self.trace(base), Err(&stranded))?;
+            }
+            self.held = Some((new, files));
+            return Ok(false);
+        }
+        let restart = reload::restart_only(self.factory(), &new);
+        if let Some(server) = &self.server {
+            server.update(&new);
+        }
+        self.watch.applied(&new, files);
+        self.revision = runtime::revision(&new.dir);
+        self.reloaded = Some(*new);
+        reload::report("daemon", Ok(&restart));
+        reload::record(db, &self.trace(base), Ok(&restart))?;
+        Ok(true)
     }
 }
 

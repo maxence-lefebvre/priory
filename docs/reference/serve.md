@@ -505,7 +505,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | ----- | ---- | ------- |
 | `id` | integer or string | The ask: its number, or the id an outside ask was given |
 | `task`, `key`, `step`, `lane`, `band`, `repo` | | The task, its key, the ask's step, and the task's lane, band and repository. An outside ask has no task, so its `lane`, `band` and `repo` are null, and its `key` is the one it sent |
-| `risk` | array of strings | What answering risks, empty for none: `irreversible` when the answer lets an irreversible step run before a person decides again, the rule `priory check --explain` uses, or when it is an agent's or a step's ask whose answer runs a [command](tools.md#commands-an-answer-runs); then the task's [merge risk](tools.md#merge-risk) verdict, `low`, `medium` or `high`; then the task's grooming grade, `red`, `yellow` or `green`. An outside ask has none. The daemon records its factory's irreversible approvals when it starts |
+| `risk` | array of strings | What answering risks, empty for none: `irreversible` when the answer lets an irreversible step run before a person decides again, the rule `priory check --explain` uses, or when it is an agent's or a step's ask whose answer runs a [command](tools.md#commands-an-answer-runs); then the task's [merge risk](tools.md#merge-risk) verdict, `low`, `medium` or `high`; then the task's grooming grade, `red`, `yellow` or `green`. An outside ask has none. The daemon records its factory's irreversible approvals when it starts and on each [reload](../daemon/reload.md) |
 | `risk_estimate` | object or null | Null when the trace cannot be read. Only on a step's ask whose answer lets an irreversible step run: that step's own row in [`priory report risk`](../daemon/trace.md#risk), over its default window. `workflow`, `step`, `trials`, `shown` (false under 20 trials), `judged_wrong` and `landed_wrong` (each `k`, `p05`, `median` and `p95`), and `line`, the History line the ask shows, such as `History: 17 of 53 tasks through this step were judged wrong within 30 days, 3 after the merge. 95 % posterior upper bounds: 43.4 % and 13.7 %.` A non-breaking space joins each number to its `%`. Under 20 trials, `line` ends `Too few to estimate.` It changes no value of `risk`. `/api/desk` items of kind `ask` carry it too |
 | `merge_risk` | object or null | The task's latest [merge risk](tools.md#merge-risk): `verdict`, then the lines `ask`, `blast_radius`, `verification`, `rollback` and `detection`. Null before a risk step ends |
 | `run` | integer or null | The run that asked |
@@ -764,7 +764,7 @@ A held task lists each condition of its hold, in the order it was given, under `
 
 ## Costs
 
-`/api/costs` prices from the `prices.toml` of the factory `serve` runs, read when it starts. Both
+`/api/costs` prices from the `prices.toml` of the factory `serve` runs, as of its last [reload](../daemon/reload.md). Both
 parameters are optional: `since` takes an RFC 3339 instant or a duration such as `30 days`, and `by`
 one of `workflow` (the default), `agent`, `model`, `machine`, `repo` and `lane`. See
 [trace.md](../daemon/trace.md#costs) for the windows and what each dimension reads.
@@ -836,7 +836,7 @@ a wait and away time. Minutes are numbers, not rounded.
 | `factory` | string | The factory's name |
 | `views` | object | Each view by name: the views Priory ships, each replaced by the factory's view of the same name, then the factory's other views. Each is the file's tree as JSON, such as `{ "layout": { "tabs": [{ "panel": "desk" }] } }`. See [views.md](views.md) |
 
-The server reads the views when it starts. `priory views [DIR] --json` prints the same object from
+The server reads the views when it starts and on each [reload](../daemon/reload.md). `priory views [DIR] --json` prints the same object from
 the factory's files, with no server running.
 
 ## Links
@@ -849,14 +849,16 @@ the factory's files, with no server running.
 { "links": [{ "pattern": "\\B#(\\d+)\\b", "url": "https://github.com/{repo}/issues/$1" }] }
 ```
 
-The server reads the links when it starts. `priory links [DIR]` without `--json` prints them as
+The server reads the links when it starts and on each [reload](../daemon/reload.md), so an edit of
+`[links]` shows within a few seconds. `priory links [DIR]` without `--json` prints them as
 `pattern` and `url` columns.
 
 ## Flows
 
 The same object as `priory check --explain --json` (see
 [workflows.md](workflows.md#irreversible-steps-and-their-gates)), with `workflows` added for the
-web view's Flows panel. The server reads the factory when it starts, and the state on each request.
+web view's Flows panel. The server reads the factory when it starts and on each
+[reload](../daemon/reload.md), and the state on each request.
 `priory flows [DIR] --json` prints the same object, for the Herdr adapter's Flows panel.
 
 | Field | Type | Meaning |

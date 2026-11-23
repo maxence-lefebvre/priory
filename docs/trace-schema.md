@@ -979,6 +979,34 @@ dismissed. Its `data` also holds `factory`, `factory_revision` and `machine`.
 | `tasks`     | yes      | How many tasks the pattern held when it was closed   |
 | `dismissed` | yes      | `true` for `dismiss`, `false` for `close`            |
 
+## `factory.config.reloaded` and `factory.config.refused`
+
+The daemon loaded an edit of the factory's files, or refused one and kept the last good factory
+(see [reload.md](daemon/reload.md)). Its `data` holds `factory`, `factory_revision` and `machine`:
+after a reload, the new revision; after a refusal, the revision still live.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d7-0000-7000-8000-00000000000c",
+  "source": "factory://example/desktop",
+  "type": "factory.config.refused",
+  "time": "2026-11-23T09:12:40.512Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "machine": "desktop",
+    "problems": ["/home/me/factory/factory.toml:14: `[links]` `(unclosed` is not a regex: ..."]
+  }
+}
+```
+
+| Field          | Required | Meaning                                                            |
+| -------------- | -------- | ------------------------------------------------------------------ |
+| `restart_only` | reloaded | The keys the edit changed that wait for a restart, such as `[serve]`; empty for none |
+| `problems`     | refused  | Each problem, as `priory check` prints it, or each task the edit would strand |
+
 ## Spans
 
 A factory that exports OpenTelemetry spans (Priory does: see
@@ -990,6 +1018,8 @@ per generation, and `factory.step.ended` records to spans below it:
 - A span per run, child of the root: from a `factory.step.ended` record's `run`, or, for a run that
   ended with no step, from the run itself.
 - A span per step, child of its run span, or of the root when it has no run.
+- A span per `factory.config.reloaded` or `factory.config.refused` record, alone in a trace of its
+  own, starting and ending at the record's time.
 
 ## Rules
 

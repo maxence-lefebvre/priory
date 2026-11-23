@@ -13,6 +13,20 @@ use std::path::{Path, PathBuf};
 
 const ENDS: [&str; 2] = ["done", "stop"];
 
+/// The factory in `dir` once it loads and passes every rule, or its problems.
+pub fn validated(dir: &Path) -> Result<Factory, Vec<Problem>> {
+    let (factory, mut problems) = crate::factory::load(dir);
+    // Rules on a partly loaded factory would report references to the files that failed to parse.
+    if problems.is_empty() {
+        problems = check(&factory);
+    }
+    if problems.is_empty() {
+        Ok(factory)
+    } else {
+        Err(problems)
+    }
+}
+
 pub fn check(factory: &Factory) -> Vec<Problem> {
     let mut problems = Vec::new();
     let bands = factory.bands();
