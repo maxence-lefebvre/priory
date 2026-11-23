@@ -41,6 +41,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 corepack pnpm install --frozen-lockfile && corepack pnpm web:check
 node --test adapters/herdr/test/*.test.js adapters/github/test/*.test.js adapters/claude-plugin/test/*.test.js crates/priory-core/web/*.test.js
+corepack pnpm install --frozen-lockfile && corepack pnpm web:check
 ```
 
 CI runs the same five commands on every push to `main` and every pull request.
