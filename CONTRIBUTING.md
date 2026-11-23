@@ -9,6 +9,9 @@ change behaviour or name a concept, and use the terms of its Concepts table.
 
 Before you call a change done, run the checks in the [Verify section of
 AGENTS.md](AGENTS.md#verify) and fix every failure. CI runs the same checks on every pull request.
+To finish sooner, CI splits the tests into 4 jobs with
+[cargo-nextest](https://nexte.st/)'s `--partition`, using the `ci` profile in
+`.config/nextest.toml`. To run the tests as CI does, run `cargo nextest run --workspace --profile ci`.
 
 With Nix, `nix develop` opens a shell with the tools the checks need. With
 [direnv](https://direnv.net/), run `direnv allow` once and the repository's `.envrc` opens that
