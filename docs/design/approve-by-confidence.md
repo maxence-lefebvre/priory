@@ -13,6 +13,11 @@ batch's entries take their planning task's level, as they take its `intervention
 drops the push its insert of an auto-answered ask queued, in the same transaction. The later slices
 are not built.
 
+The task page display is built too, from a reviewed design: the web view's task page lists every
+answered ask with who answered it, and an auto answer's confidence, rationale and trade-off. The
+Herdr Task panel shows the answerer and an auto answer's confidence and rationale.
+[waits.md](../daemon/waits.md#answered-by-auto) describes both.
+
 The name is the scout report's. The feature answers a question. It never grants an approval.
 
 The idea comes from a read of other agent factories on 2026-11-22. GitHub Copilot rates each issue

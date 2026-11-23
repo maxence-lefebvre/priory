@@ -110,3 +110,35 @@ export const shrunkHead = (ask) => ({
   question: ask.question || ask.title,
   place: [taskLabel(ask.key), ask.step, `revision ${ask.revision}`].filter(Boolean).join(", "),
 });
+
+/** Who answered, as the answered row's icon: auto, session, agent or person; null when unrecorded. @param {string | null | undefined} by */
+export const answererOf = (by) => (!by ? null : by === "auto" ? "auto" : by.startsWith("session:") ? "session" : by.startsWith("agent:") ? "agent" : "person");
+
+/** A confidence's bars, of three. */
+export const CONFIDENCE_BARS = { high: 3, medium: 2, low: 1 };
+
+/**
+ * The answered asks of this runner's task `task`, newest answer first, as its page shows them: who
+ * answered, the confidence and rationale the agent stated, and the recommendation when another option won.
+ * @param {any[]} asks @param {number} task
+ */
+export const answeredAsks = (asks, task) => asks
+  .filter((ask) => ask.task === task && !runnerOf(ask) && ask.state === "answered")
+  .sort((a, b) => (Date.parse(b.answered_at) || 0) - (Date.parse(a.answered_at) || 0))
+  .map((ask) => ({
+    id: ask.id,
+    title: ask.title || ask.question,
+    question: ask.question ?? null,
+    answer: ask.answer,
+    at: ask.answered_at ?? null,
+    answerer: answererOf(ask.answered_by),
+    by: answeredBy(ask.answered_by),
+    confidence: ask.confidence ?? null,
+    bars: CONFIDENCE_BARS[ask.confidence] ?? 0,
+    rationale: ask.rationale ?? null,
+    tradeoff: ask.tradeoff ?? null,
+    recommended: ask.recommendation != null && ask.recommendation !== ask.answer ? ask.recommendation : null,
+  }));
+
+/** What follows an auto answer's confidence word: whose it is, and the level its task answers at. @param {string | null} level */
+export const confidenceNote = (level) => `confidence, the agent's own.${level ? ` The task answers at ${level} and above.` : ""}`;

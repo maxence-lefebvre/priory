@@ -23,6 +23,23 @@ function handled(event, task) {
   return text;
 }
 
+// A confidence's bars, of three, as the web's task page draws them.
+const BARS = /** @type {Record<string, number>} */ ({ high: 3, medium: 2, low: 1 });
+
+/** Who answered, as the web's answeredBy words it; a test keeps the two the same. @param {string | null | undefined} by */
+const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : by === "auto" ? "auto" : by.startsWith("session:") ? `session ${by.slice(8)}` : "a person");
+
+/** Who answered, as the row's tile: auto, session, agent or person, else null. @param {string | null | undefined} by */
+const answererOf = (by) => (!by ? null : by === "auto" ? "auto" : by.startsWith("session:") ? "session" : by.startsWith("agent:") ? "agent" : "person");
+
+/** @param {any} ask */
+function askNote(ask) {
+  if (ask.state === "withdrawn") return "Withdrawn";
+  const by = answeredBy(ask.answered_by);
+  const note = `Answered ${ask.answer}${by ? ` by ${by}` : ""}`;
+  return ask.confidence && ask.answered_by !== "auto" ? `${note}, ${ask.confidence}` : note;
+}
+
 /** @param {{ conclusion: string | null }[]} checks */
 function checksLine(checks) {
   if (!checks.length) return null;
@@ -52,13 +69,26 @@ export function taskView(task, { now, links = [] }) {
     title,
     titleSpans: autolink(title, links, task.repo ?? null),
     reason: task.reason ?? null,
-    // Open asks first, each group in the order priory lists it.
-    asks: [...asks.filter((ask) => ask.state === "open"), ...asks.filter((ask) => ask.state !== "open")].map((ask) => ({
-      id: ask.id,
-      tile: ask.state === "open" ? "ask" : ask.state,
-      text: ask.title || ask.question,
-      note: ask.state === "open" ? `Asked ${ago(ask.since, now)}` : ask.state === "answered" ? `Answered ${ask.answer}` : "Withdrawn",
-    })),
+    // Open asks in the order priory lists them, then answered ones newest first, then withdrawn ones.
+    asks: [
+      ...asks.filter((ask) => ask.state === "open"),
+      ...asks.filter((ask) => ask.state === "answered").sort((a, b) => (Date.parse(b.answered_at) || 0) - (Date.parse(a.answered_at) || 0)),
+      ...asks.filter((ask) => ask.state !== "open" && ask.state !== "answered"),
+    ].map((ask) => {
+      const auto = ask.state === "answered" && ask.answered_by === "auto";
+      return {
+        id: ask.id,
+        tile: ask.state === "open" ? "ask" : ask.state === "answered" ? answererOf(ask.answered_by) ?? "answered" : ask.state,
+        text: ask.title || ask.question,
+        note: ask.state === "open" ? `Asked ${ago(ask.since, now)}` : askNote(ask),
+        age: ask.state === "answered" && ask.answered_at ? age(ask.answered_at, now) : null,
+        // Only an auto answer opens to its confidence and rationale: nobody chose it.
+        confidence: auto ? ask.confidence ?? null : null,
+        bars: auto ? BARS[ask.confidence] ?? 0 : 0,
+        rationale: auto ? ask.rationale ?? null : null,
+        auto,
+      };
+    }),
     pr: pr ? {
       title: `#${pr.number} ${pr.title ?? ""}`.trim(),
       url: pr.url,

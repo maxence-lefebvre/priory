@@ -470,7 +470,11 @@ Priory bar opens it as a tab in the center stack when another panel sets `priory
   its age.
 - **What it shows.** The header holds the task's state tile, key and state, then Watch and Attach. Then the
   title with its [links](#links), the workflow, step, lane and band, and the task's reason. Asks
-  lists the task's asks, open ones first, each open one with when it was asked. Pull request shows the latest pull request's title as a
+  lists the task's asks: open ones first, each with when it was asked, then answered ones, newest
+  answer first. An answered ask's tile says who answered: a cog for `auto` or a lead agent, a
+  terminal for a session, a person otherwise. Its caption reads "Answered after by session 7f3c2a,
+  medium", with the confidence the agent stated. An auto answer opens to its confidence as three
+  bars, its rationale, and "The first answer stands. Say to the agent to change course." Pull request shows the latest pull request's title as a
   link, its branches and state, its checks, and the task's stack (see [Stacks](#stacks)). A check
   with no conclusion yet counts as running. History
   lists the last 10 runs, newest first, each with its step, outcome and how long ago it started, and under it
