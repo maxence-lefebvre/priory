@@ -7,6 +7,7 @@ use crate::factory::{
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
 use crate::labels;
 use crate::lanes::{self, Lanes};
+use priory_runtime::servers;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -54,6 +55,16 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             let at = settings.lines.field("kit");
             for message in kit_problems(kit) {
                 problems.push(problem(settings, at, message));
+            }
+        }
+        let secrets = factory.secret_envs();
+        for (name, sandbox) in &settings.value.sandboxes {
+            for message in sandbox_problems(name, sandbox, &secrets) {
+                problems.push(problem(
+                    settings,
+                    settings.lines.field("sandboxes"),
+                    message,
+                ));
             }
         }
         if let Some(memories) = &settings.value.memories {
@@ -416,6 +427,21 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         check_auto_answer(trigger, &mut problems);
         check_pre(factory, trigger, &mut problems);
         check_intent(trigger, &mut problems);
+        // A runner's claim of a key cannot see the pull requests another runner's tasks own.
+        if trigger.value.source == "github"
+            && FEEDBACK.contains(&trigger.value.on.as_str())
+            && factory.runners.len() > 1
+        {
+            problems.push(problem(
+                trigger,
+                trigger.lines.field("on"),
+                format!(
+                    "a `{}` trigger needs one runner; this factory has {}",
+                    trigger.value.on,
+                    factory.runners.len()
+                ),
+            ));
+        }
         match trigger.value.source.as_str() {
             "github" => check_github(trigger, &mut problems),
             "linear" | "linear.view" => check_linear(trigger, &mut problems),
@@ -531,6 +557,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         check_codex(factory, agent, &mut problems);
         check_shared(agent, &mut problems);
         check_skills(factory, agent, &mut problems);
+        check_connectors(agent, &mut problems);
     }
     for workflow in factory.workflows.values() {
         check_band(
@@ -1163,6 +1190,41 @@ fn check_skills(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Pro
     }
 }
 
+/// Refuses a connector name that is empty, repeated, written with Claude Code's `claude.ai `
+/// prefix, or whose tools Claude Code would name as another's, and any connector on a Codex agent.
+/// Whether the person's account has the connector only the runner can tell, when the run starts.
+fn check_connectors(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
+    let connectors = &agent.value.connectors;
+    let line = agent.lines.field("connectors");
+    if !connectors.is_empty() && matches!(agent.value.harness, Harness::Codex) {
+        let message =
+            "a codex agent cannot take `connectors`: claude.ai connectors reach Claude Code alone";
+        problems.push(problem(agent, line, message.into()));
+    }
+    let mut seen: Vec<(&String, String)> = Vec::new();
+    for name in connectors {
+        let tools = servers::tool_server(&servers::connector_server(name));
+        let message = if name.trim().is_empty() {
+            "`connectors` holds an empty name".to_owned()
+        } else if let Some(bare) = name.strip_prefix(servers::CONNECTOR) {
+            format!(
+                "`connectors` names `{name}`: write the connector's name as claude.ai shows it, `{bare}`, since Claude Code adds `{}` itself",
+                servers::CONNECTOR
+            )
+        } else if seen.iter().any(|(other, _)| *other == name) {
+            format!("`connectors` names `{name}` twice")
+        } else if let Some((other, _)) = seen.iter().find(|(_, other)| *other == tools) {
+            format!(
+                "`connectors` names `{other}` and `{name}`, whose tools Claude Code names alike, mcp__{tools}__<tool>: keep one"
+            )
+        } else {
+            seen.push((name, tools));
+            continue;
+        };
+        problems.push(problem(agent, line, message));
+    }
+}
+
 /// Refuses the keys that only a shared session reads.
 fn check_shared(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
     let value = &agent.value;
@@ -1345,6 +1407,31 @@ fn check_investigator(
             ),
         );
     }
+    // A connector loads with every other one of the account, so only its exact tools may be allowed.
+    for connector in &value.connectors {
+        let server = servers::connector_server(connector);
+        let tools = format!("mcp__{}__", servers::tool_server(&server));
+        if !stated(&server) {
+            refuse(
+                "connectors",
+                format!(
+                    "names connector `{connector}`, which needs a `read_only` sentence under [mcp.\"{server}\"] in factory.toml: where the service enforces that it only reads"
+                ),
+            );
+        } else if !value
+            .permissions
+            .allow
+            .iter()
+            .any(|rule| rule.starts_with(&tools))
+        {
+            refuse(
+                "connectors",
+                format!(
+                    "names connector `{connector}`, but its `allow` names none of the connector's tools: write each as {tools}<tool>"
+                ),
+            );
+        }
+    }
     if matches!(value.session, Session::Shared) {
         refuse(
             "session",
@@ -1516,6 +1603,13 @@ fn check_schedule(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
 
 const REVIEW_REQUESTED: &str = "pull_request.review_requested";
 
+/// The comments and reviews on a pull request a GitHub trigger can start a task from.
+pub const FEEDBACK: [&str; 3] = [
+    "pull_request.comment",
+    "pull_request_review_comment",
+    "pull_request_review.submitted",
+];
+
 /// A review request trigger polls one person's requests in every repository, so it names that
 /// person and no repository, filter or key.
 fn check_review_request(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
@@ -1625,12 +1719,14 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
         "pull_request.labeled",
         "pull_request.opened",
     ];
-    if !ON.contains(&value.on.as_str()) {
+    let feedback = FEEDBACK.contains(&value.on.as_str());
+    if !ON.contains(&value.on.as_str()) && !feedback {
         problems.push(problem(
             trigger,
             trigger.lines.field("on").or(trigger.lines.field("source")),
             format!(
-                "a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled`, `pull_request.opened` or `{REVIEW_REQUESTED}`, not `{}`",
+                "a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled`, `pull_request.opened`, `{}` or `{REVIEW_REQUESTED}`, not `{}`",
+                FEEDBACK.join("`, `"),
                 value.on
             ),
         ));
@@ -1638,14 +1734,30 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     let label_only = |filter: &BTreeMap<String, String>| {
         value.on.ends_with(".labeled") && filter.keys().all(|key| key == "label")
     };
-    if !value.filter.as_ref().is_none_or(label_only) {
+    let by_people = |filter: &BTreeMap<String, String>| {
+        filter.contains_key("author")
+            && filter
+                .keys()
+                .all(|key| ["author", "commenter"].contains(&key.as_str()))
+    };
+    if feedback && !value.filter.as_ref().is_some_and(by_people) {
+        problems.push(problem(
+            trigger,
+            trigger.lines.field("filter").or(trigger.lines.field("on")),
+            format!(
+                "a `{}` trigger needs `filter = {{ author = \"<GitHub login>\" }}`, and takes `commenter` too",
+                value.on
+            ),
+        ));
+    }
+    if !feedback && !value.filter.as_ref().is_none_or(label_only) {
         problems.push(problem(
             trigger,
             trigger.lines.field("filter"),
             "`filter` works only with `on = \"*.labeled\"`, on `label`".into(),
         ));
     }
-    let number = if value.on.starts_with("pull_request.") {
+    let number = if value.on.starts_with("pull_request") {
         "pull_request.number"
     } else {
         "issue.number"
@@ -1997,6 +2109,19 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
             workflow.lines.field("guard"),
             format!("`guard.allow` names `{allowed}`, {why}"),
         ));
+    }
+    if let Some(sandbox) = &workflow.value.sandbox {
+        let declared = factory
+            .settings
+            .as_ref()
+            .is_some_and(|settings| settings.value.sandboxes.contains_key(sandbox));
+        if !declared {
+            problems.push(problem(
+                workflow,
+                workflow.lines.field("sandbox"),
+                format!("`sandbox` names `{sandbox}`, which `[sandboxes]` in factory.toml does not declare"),
+            ));
+        }
     }
     let start = workflow.value.start.as_str();
     if !steps.contains_key(start) {
@@ -2393,6 +2518,75 @@ fn built_in(factory: &Factory, workflow: &Loaded<Workflow>) -> bool {
         .workflows
         .iter()
         .any(|(name, other)| name.starts_with("priory/") && std::ptr::eq(other, workflow))
+}
+
+/// A problem for each workflow that turns a sandbox on, when this machine has no `bwrap`.
+pub fn missing_bwrap(factory: &Factory, installed: bool) -> Vec<Problem> {
+    if installed {
+        return Vec::new();
+    }
+    factory
+        .workflows
+        .values()
+        .filter_map(|workflow| {
+            let sandbox = workflow.value.sandbox.as_ref()?;
+            Some(problem(
+                workflow,
+                workflow.lines.field("sandbox"),
+                format!(
+                    "`sandbox` turns on sandbox `{sandbox}`, and `bwrap` is not on PATH: install bubblewrap, or remove `sandbox`"
+                ),
+            ))
+        })
+        .collect()
+}
+
+/// What is wrong with `[sandboxes.<name>]`: a path that is not absolute or under `~/`, or is the
+/// home itself, and a variable that is no name, which the run's shell could not keep, or that
+/// holds one of the factory's secrets.
+fn sandbox_problems(
+    name: &str,
+    sandbox: &crate::factory::Sandbox,
+    secrets: &[String],
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (field, paths) in [("read", &sandbox.read), ("write", &sandbox.write)] {
+        for path in paths {
+            let rooted = path.starts_with('/') || path.starts_with("~/");
+            let trimmed = path.trim_end_matches('/');
+            let why = if trimmed == "~" {
+                "the home itself, which would undo the jail"
+            } else if rooted && trimmed.is_empty() {
+                "the whole file system, which would undo the jail"
+            } else if !rooted {
+                "not absolute or under `~/`"
+            } else {
+                continue;
+            };
+            problems.push(format!(
+                "sandbox `{name}` has `{field}` path `{path}`, which is {why}"
+            ));
+        }
+    }
+    for variable in &sandbox.env {
+        let named = variable
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+            && variable
+                .chars()
+                .all(|char| char.is_ascii_alphanumeric() || char == '_');
+        if !named {
+            problems.push(format!(
+                "sandbox `{name}` keeps `{variable}` in `env`, which is not a variable name"
+            ));
+        } else if secrets.contains(variable) {
+            problems.push(format!(
+                "sandbox `{name}` keeps `{variable}` in `env`, which holds a secret of the factory"
+            ));
+        }
+    }
+    problems
 }
 
 fn problem<T>(loaded: &Loaded<T>, line: Option<usize>, message: String) -> Problem {

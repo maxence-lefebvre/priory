@@ -23,6 +23,8 @@ pub(super) struct Pull {
     #[serde(default)]
     pub(super) body: String,
     state: String,
+    #[serde(default)]
+    author: Option<Login>,
     updated_at: String,
     reviews: Nodes<Review>,
     #[serde(default)]
@@ -67,7 +69,7 @@ struct Comment {
 #[derive(Deserialize)]
 struct Author {
     login: String,
-    #[serde(rename = "__typename")]
+    #[serde(rename = "__typename", default)]
     kind: String,
 }
 
@@ -82,7 +84,7 @@ struct Review {
     url: String,
     #[serde(default)]
     commit: Option<Oid>,
-    author: Option<Login>,
+    author: Option<Author>,
     #[serde(default)]
     author_association: Option<String>,
 }
@@ -175,8 +177,16 @@ pub(super) fn reviews_and_checks<'a>(
             observed.data["body"] = json!(review.body);
             observed.data["commit"] = json!(review.commit.as_ref().map(|commit| &commit.oid));
             observed.data["actor"] = json!(review.author.as_ref().map(|author| &author.login));
+            if review
+                .author
+                .as_ref()
+                .is_some_and(|author| author.kind == "Bot")
+            {
+                observed.data["bot"] = json!(true);
+            }
             associate(&mut observed.data, &json!(review.author_association));
             observed.data["open"] = json!(pull.state == "OPEN");
+            pull.author(&mut observed.data);
             reviews.push(observed);
         }
         let people = pull.comments.nodes.iter().filter(|comment| {
@@ -380,8 +390,8 @@ pub(super) fn merge_checks(
     Ok(checks)
 }
 
-const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName headRefOid baseRefName headRepository { nameWithOwner } merged mergeCommit { oid } body state \
-    reviews(last: 50) { nodes { databaseId state body submittedAt url commit { oid } author { login } authorAssociation } } \
+const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName headRefOid baseRefName headRepository { nameWithOwner } merged mergeCommit { oid } body state author { login } \
+    reviews(last: 50) { nodes { databaseId state body submittedAt url commit { oid } author { login __typename } authorAssociation } } \
     comments(last: 50) { nodes { databaseId body url createdAt author { login __typename } authorAssociation } } \
     updatedAt commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { totalCount nodes { \
     __typename ... on CheckRun { databaseId name status conclusion completedAt url checkSuite { app { slug } } } \
@@ -487,7 +497,15 @@ impl Pull {
             "open": self.state == "OPEN",
         });
         self.head_repo(&mut branches);
+        self.author(&mut branches);
         branches
+    }
+
+    /// Sets `author` on `data` to the login that opened the pull request, when GitHub names one.
+    fn author(&self, data: &mut Value) {
+        if let Some(author) = &self.author {
+            data["author"] = json!(author.login);
+        }
     }
 
     /// Sets `head_repo` on `data` when GitHub still names the head's repository.
@@ -514,8 +532,10 @@ pub(super) fn comment(
     for field in ["head_branch", "head_sha", "base_branch", "open"] {
         data[field] = branches[field].clone();
     }
-    if let Some(head) = branches.get("head_repo") {
-        data["head_repo"] = head.clone();
+    for field in ["head_repo", "author"] {
+        if let Some(value) = branches.get(field) {
+            data[field] = value.clone();
+        }
     }
     Observed {
         kind,

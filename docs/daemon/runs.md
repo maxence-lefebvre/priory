@@ -47,7 +47,11 @@ Codex). Each step starts its own agent's harness, so one workflow can mix both.
   Claude Code's syntax; a `PreToolUse` hook that denies `AskUserQuestion` and tells the agent to
   call `ask` instead; and the permission hooks under Health.
 - `--strict-mcp-config`, so the run loads no MCP server of the person's own Claude config but the
-  ones `--mcp-config` holds.
+  ones `--mcp-config` holds. Claude Code loads no claude.ai connector under it, so a run whose agent
+  names `connectors` starts without it. That run's `--settings` deny every other server of the
+  person's config, and its tool guard denies a tool of any server or connector it does not name.
+  Before it starts, the daemon checks that the person's account has each connector. See
+  [agents.md](../reference/agents.md#connectors).
 - `--mcp-config`: a file, `$PRIORY_HOME/prompts/<session>.mcp.json`, that only its owner may read.
   It holds the `priory` MCP server, `priory mcp --session <id>` (see Tools), and the servers the
   agent's `mcpServers` names, copied from the user scope of the person's Claude config as the run

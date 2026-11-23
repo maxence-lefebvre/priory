@@ -93,9 +93,9 @@ fn main() -> ExitCode {
         Some("serve") => serve_http(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("runs") => match (args.next(), args.next()) {
             (None, _) => list(
-                "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend\tkit\tcommit\tmemories",
+                "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend\tkit\tcommit\tmemories\tsandbox",
                 "SELECT id, task, step, tmux, coalesce(thread, session), started, ended, ended_as, kit_hash,
-                   kit_commit, memories_commit
+                   kit_commit, memories_commit, sandbox
                  FROM runs ORDER BY id",
             ),
             (Some(flag), None) if flag == "--json" => runs_json(),
@@ -224,13 +224,7 @@ fn main() -> ExitCode {
                         _ => return usage(),
                     }
                 }
-                let session = session.to_string_lossy();
-                let local = |tool: &str, arguments: &serde_json::Value| {
-                    sections::tool(&session, tool, arguments)
-                        .or_else(|| search::tool(&session, tool, arguments, &runtime::home()))
-                        .or_else(|| relate::tool(&session, tool, arguments))
-                };
-                exit("mcp", mcp::serve(&session, set, &local, debate))
+                exit("mcp", mcp::serve(&session.to_string_lossy(), set, debate))
             }
             (Some(flag), Some(log), describe) if flag == "--eval" => {
                 let rest: Vec<String> = describe
@@ -2691,9 +2685,8 @@ fn project_gate() -> ExitCode {
     };
     // The gate tests what is checked out, so a record for the branch head needs the two to match.
     let checked_out = || {
-        Command::new("git")
+        priory_runtime::runtime::git(Path::new(&started.worktree))
             .args(["rev-parse", "HEAD"])
-            .current_dir(&started.worktree)
             .output()
             .ok()
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
@@ -3814,6 +3807,14 @@ fn check(args: Vec<OsString>) -> ExitCode {
             factory::WRITING_LIMIT
         );
     }
+    // Only here: a runner without bubblewrap blocks each jailed task, and runs the others.
+    let missing = rules::missing_bwrap(&factory, priory_runtime::jail::on_path("bwrap"));
+    if !missing.is_empty() {
+        for problem in &missing {
+            eprintln!("{problem}");
+        }
+        return ExitCode::FAILURE;
+    }
     warn_of_stale_herdr_layout(&factory, &dir);
     for warning in priory_factory::rules::warnings(&factory) {
         eprintln!("warning: {warning}");
@@ -4105,6 +4106,36 @@ fn print_explanation(factory: &factory::Factory, json: bool) {
             ));
         }
     }
+    let sandboxes = factory
+        .settings
+        .as_ref()
+        .map(|settings| &settings.value.sandboxes)
+        .filter(|sandboxes| !sandboxes.is_empty());
+    if sandboxes.is_some() {
+        state::emit("");
+        state::emit("workflow\tsandbox\tkind\tread\twrite\tenv");
+        let listed = |items: &[String]| match items {
+            [] => "-".to_owned(),
+            items => cell(&items.join(", ")),
+        };
+        for name in factory
+            .workflows
+            .keys()
+            .filter(|name| !name.starts_with("priory/"))
+        {
+            match factory.sandbox_of(name) {
+                Some((sandbox, value)) => state::emit(&format!(
+                    "{}\t{}\tbwrap\t{}\t{}\t{}",
+                    cell(name),
+                    cell(sandbox),
+                    listed(&value.read),
+                    listed(&value.write),
+                    listed(&value.env)
+                )),
+                None => state::emit(&format!("{}\t-\t-\t-\t-\t-", cell(name))),
+            }
+        }
+    }
     let debates: Vec<_> = factory
         .workflows
         .iter()
@@ -4160,6 +4191,10 @@ fn guard(input: &Value) -> Option<String> {
         _ => Default::default(),
     };
     let tool = input["tool_name"].as_str().unwrap_or_default();
+    if let Some(reason) = unnamed_server(tool, std::env::var("PRIORY_MCP_SERVERS").ok().as_deref())
+    {
+        return deny(&reason);
+    }
     let command = shell_command(input);
     let cwd = input["cwd"].as_str().map(PathBuf::from);
     let git = |dir: Option<&str>, args: &[&str]| {
@@ -4212,6 +4247,26 @@ fn guard(input: &Value) -> Option<String> {
     }
     report_connector_use(tool);
     None
+}
+
+/// The denial of an MCP tool whose server is none of `servers`, the comma-separated servers a run
+/// with claude.ai connectors gets, as its tools name them. Such a run starts without
+/// `--strict-mcp-config`, so every connector of the person's account and every plugin's server
+/// load too, and no permission rule can name the ones Priory cannot list.
+fn unnamed_server(tool: &str, servers: Option<&str>) -> Option<String> {
+    let servers = servers.filter(|servers| !servers.is_empty())?;
+    let name = tool.strip_prefix("mcp__")?;
+    if servers
+        .split(',')
+        .any(|server| name.starts_with(&format!("{server}__")))
+    {
+        return None;
+    }
+    let server = name.rsplit_once("__").map_or(name, |(server, _)| server);
+    Some(format!(
+        "Priory denied `{tool}`: this run gets only the MCP servers and claude.ai connectors its agent names ({}), and `{server}` is none of them. Do not try it another way: carry on with your other sources.",
+        servers.split(',').collect::<Vec<_>>().join(", ")
+    ))
 }
 
 /// A shell tool's command in a hook's input: Claude's string, or Codex's words quoted for a shell.

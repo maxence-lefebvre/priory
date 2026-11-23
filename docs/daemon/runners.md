@@ -14,7 +14,8 @@ waiting tasks and the return. The sections below explain each part.
 Each runner has its own Priory home, so Claude's folder trust does not carry between machines. On
 each runner, a person trusts the worktrees folder before its first run and each clone once Priory
 made it, as [Trusting the worktrees and the clone](sessions.md#trusting-the-worktrees-and-the-clone)
-says. A task that moves to another runner can stop on that runner's trust dialog.
+says. A task that moves to another runner can stop on that runner's trust dialog. With
+`trust_worktrees`, each runner records that trust itself before each run.
 
 ## When ownership applies
 

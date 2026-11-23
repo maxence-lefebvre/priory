@@ -141,6 +141,11 @@ pub struct IssueComment {
     /// during the agent's turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub own: Option<bool>,
+    /// Whether an agent wrote it: `own`, and its body holds `<!-- agent-comment -->`; absent while
+    /// `gh` cannot say. An agent's comment starts no task. The person's unmarked one wakes its task
+    /// even when it was written during the agent's turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<bool>,
     #[serde(flatten)]
     pub source: Source,
 }
@@ -248,6 +253,13 @@ pub struct ReviewSubmitted {
     pub commit: Option<String>,
     /// The GitHub login who reviewed.
     pub actor: Option<String>,
+    /// True when a bot reviewed; absent otherwise. A trigger starts a task from a bot's review
+    /// only when its `commenter` filter names the bot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bot: Option<bool>,
+    /// The GitHub login who opened the pull request; absent when GitHub does not say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
     /// Whether the pull request was open when the intake read it; a done task reopens only
     /// for feedback on an open one.
     pub open: bool,
@@ -262,6 +274,11 @@ pub struct ReviewSubmitted {
     /// during the agent's turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub own: Option<bool>,
+    /// Whether an agent wrote it: `own`, and its body holds `<!-- agent-comment -->`; absent while
+    /// `gh` cannot say. An agent's comment starts no task. The person's unmarked one wakes its task
+    /// even when it was written during the agent's turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<bool>,
     /// The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.
     /// GitHub does not sign it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -278,6 +295,9 @@ pub struct PullRequestComment {
     pub pull: PullRequest,
     /// The GitHub login who commented; null for a deleted user.
     pub actor: Option<String>,
+    /// The GitHub login who opened the pull request; absent when GitHub does not say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
     /// Whether the pull request was open when the intake read it; a done task reopens only
     /// for feedback on an open one.
     pub open: bool,
@@ -294,6 +314,11 @@ pub struct PullRequestComment {
     /// during the agent's turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub own: Option<bool>,
+    /// Whether an agent wrote it: `own`, and its body holds `<!-- agent-comment -->`; absent while
+    /// `gh` cannot say. An agent's comment starts no task. The person's unmarked one wakes its task
+    /// even when it was written during the agent's turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<bool>,
     /// The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.
     /// GitHub does not sign it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -310,6 +335,9 @@ pub struct ReviewThreadComment {
     pub pull: PullRequest,
     /// The GitHub login who commented; null for a deleted user.
     pub actor: Option<String>,
+    /// The GitHub login who opened the pull request; absent when GitHub does not say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
     /// Whether the pull request was open when the intake read it; a done task reopens only
     /// for feedback on an open one.
     pub open: bool,
@@ -332,6 +360,11 @@ pub struct ReviewThreadComment {
     /// during the agent's turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub own: Option<bool>,
+    /// Whether an agent wrote it: `own`, and its body holds `<!-- agent-comment -->`; absent while
+    /// `gh` cannot say. An agent's comment starts no task. The person's unmarked one wakes its task
+    /// even when it was written during the agent's turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<bool>,
     /// The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.
     /// GitHub does not sign it.
     #[serde(skip_serializing_if = "Option::is_none")]

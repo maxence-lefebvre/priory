@@ -74,6 +74,9 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [runners.md](runners.md): which runner owns each task in a factory of several, leases,
   `priory give`, and answering another runner's ask.
 - [agents-slice.md](agents-slice.md): the systemd slice that caps every agent's CPU and memory.
+- [sandboxes.md](sandboxes.md): the bubblewrap jail a workflow's `sandbox` starts its agents in,
+  what a jailed run sees and keeps, and the runner that cannot jail. To turn one on, follow
+  [How to jail a workflow's agents](../jailing-a-workflow.md).
 - [memory-gate.md](memory-gate.md): `priory memory acquire`, which queues heavy commands for memory.
 - [sessions.md](sessions.md): shared agent sessions, attaching to a run's terminal, and trusting the
   worktrees folder and each clone for Claude.

@@ -1,6 +1,7 @@
 use crate::runtime;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
+use std::time::Duration;
 
 // shortcut: hand-written JSON-RPC over stdio for initialize, ping, tools/list and tools/call; switch to rmcp if Priory needs more of MCP.
 const VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -57,10 +58,9 @@ impl Tools {
 }
 
 /// Serves Priory's agent tools in `set` over MCP on stdin and stdout, for the run whose harness
-/// session is `session`, with `position` for a debate turn. `local` answers the tools this process
-/// serves itself; every other call goes to the daemon, which applies it and replies. A tool outside
-/// the set is unknown.
-pub fn serve(session: &str, set: Tools, local: &Local, debate: bool) -> Result<(), String> {
+/// session is `session`, with `position` for a debate turn. Every call goes to the daemon, which
+/// applies it and replies; this process never opens the state. A tool outside the set is unknown.
+pub fn serve(session: &str, set: Tools, debate: bool) -> Result<(), String> {
     let mut served: Vec<Value> = tools()
         .as_array()
         .expect("the tools are a list")
@@ -76,7 +76,7 @@ pub fn serve(session: &str, set: Tools, local: &Local, debate: bool) -> Result<(
         if !set.serves(name) && !(debate && name == "position") {
             return Ok(content(Err(format!("unknown tool {name}"))));
         }
-        Ok(call(session, params, local))
+        Ok(call(session, params))
     })
 }
 
@@ -155,24 +155,23 @@ fn error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
-/// A tool this process answers without the daemon, by its name and arguments; `None` for another.
-pub type Local<'a> = dyn Fn(&str, &Value) -> Option<Result<String, String>> + 'a;
+/// How long the server waits for a tool's reply: past the embedder's 30 second timeout, so a
+/// search whose embedder hangs still gets the daemon's keyword fallback.
+const TOOL_WAIT: Duration = Duration::from_secs(40);
 
-/// Answers the call here or sends it to the daemon. A tool error, or no daemon, is a tool result
-/// with `isError`.
-fn call(session: &str, params: &Value, local: &Local) -> Value {
-    let name = params["name"].as_str().unwrap_or_default();
-    let reply = local(name, &params["arguments"]).unwrap_or_else(|| {
-        let line = json!({
-            "tool": params["name"],
-            "session": session,
-            "arguments": params["arguments"],
-        });
-        runtime::call(&runtime::home(), &line.to_string(), runtime::REPLY).and_then(|reply| {
+/// Sends the call to the daemon, waiting through a restart. A tool error, or no daemon, is a tool
+/// result with `isError`.
+fn call(session: &str, params: &Value) -> Value {
+    let line = json!({
+        "tool": params["name"],
+        "session": session,
+        "arguments": params["arguments"],
+    });
+    let reply = runtime::call_through_restart(&runtime::home(), &line.to_string(), TOOL_WAIT)
+        .and_then(|reply| {
             serde_json::from_str::<Result<String, String>>(&reply)
                 .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
-        })
-    });
+        });
     content(reply)
 }
 
@@ -202,10 +201,11 @@ pub fn serve_outside(session: Option<&str>) -> Result<(), String> {
             "arguments": params["arguments"],
         } });
         let reply =
-            runtime::call(&runtime::home(), &line.to_string(), runtime::REPLY).and_then(|reply| {
-                serde_json::from_str::<Result<String, String>>(&reply)
-                    .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
-            });
+            runtime::call_through_restart(&runtime::home(), &line.to_string(), runtime::REPLY)
+                .and_then(|reply| {
+                    serde_json::from_str::<Result<String, String>>(&reply)
+                        .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
+                });
         let reply = match reply {
             Ok(text) if READS.contains(&name) => Ok(format!("{DATA}\n{text}")),
             reply => reply,
@@ -416,7 +416,7 @@ pub(crate) fn tools() -> Value {
                     },
                     "feedback": {
                         "type": "object",
-                        "description": "When the prompt carried review feedback: each item's URL mapped to its class. trivial: one obvious answer inside this change's scope, fix it and reply. nothing-to-do: an approval or thanks. persons-call: a behaviour, design or scope change, a disagreement or anything unclear, ask the person.",
+                        "description": "When the prompt carried review feedback: each item's URL mapped to its class. trivial: one obvious answer inside this change's scope, fix it and reply, ending the reply with the line <!-- agent-comment -->. nothing-to-do: an approval or thanks. persons-call: a behaviour, design or scope change, a disagreement or anything unclear, ask the person.",
                         "additionalProperties": { "enum": ["trivial", "nothing-to-do", "persons-call"] },
                     },
                     "branches": {

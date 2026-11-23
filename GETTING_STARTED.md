@@ -12,7 +12,9 @@ You need:
 - Linux. Priory's test suite runs on Linux only. With a systemd user session, every agent runs
   in a slice that caps its CPU and memory; without one, agents still run (see
   [agents-slice.md](docs/daemon/agents-slice.md)).
-- On `PATH`: `git`, `tmux`, `openssl`, `gh` logged in to GitHub, and `claude`, logged in. The agent of this
+- On `PATH`: `git`, `tmux`, `openssl`, `gh` logged in to GitHub, and `claude`, logged in. A
+  factory that jails a workflow's agents also needs `bwrap` (see
+  [How to jail a workflow's agents](docs/jailing-a-workflow.md)); this tutorial's does not. The agent of this
   tutorial runs Claude Code, its harness. To run Codex instead, set `harness = "codex"` in step 2 and read
   [codex.md](docs/daemon/codex.md).
 - The Rust toolchain, to build from source. `rust-toolchain.toml` pins the version, and `rustup` installs it on the first
@@ -44,7 +46,7 @@ priory --version
 
 `cargo install` builds Priory and puts `priory` in `~/.cargo/bin`, which `rustup` added to your
 `PATH`, so every terminal you open finds it. The last command prints the version, such as
-`priory 1.1.0`.
+`priory 1.2.0`.
 
 ## 2. Write a factory
 

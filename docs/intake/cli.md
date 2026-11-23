@@ -23,7 +23,7 @@ priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane
 | -------- | ------- |
 | `DIR` | The factory folder; `.` by default |
 | `--workflow` | The workflow the task starts. Required |
-| `--key` | The task key, without its `cli:` prefix. Required |
+| `--key` | The task key, without its `cli:` prefix. A key that names a GitHub issue or pull request, `github:owner/name#42`, is the task key as given, and the task subscribes to that issue or pull request. Required |
 | `--band`, `--lane` | The task's band and lane |
 | `--repo` | The repository the task works in, `owner/name` |
 | `--tldr` | The task's TL;DR, so the summarizer skips it (see [search.md](../daemon/search.md)) |
@@ -163,9 +163,9 @@ repository fact, so it names the person and text, not a GitHub id.
 
 | What | Value |
 | ---- | ----- |
-| Task key and subject | `cli:<key>` |
+| Task key and subject | `cli:<key>`, or `<key>` as given for `github:owner/name#42` |
 | Event `time` | when the command ran, equal to `data.time` |
-| Event id | the UUIDv5 of `priory.task.requested.cli:{len}:{key}:{text}`, with the `cli:` key and `len` its byte length, so a `:` in the key or text cannot make two requests collide |
+| Event id | the UUIDv5 of `priory.task.requested.cli:{len}:{key}:{text}`, with the task key and `len` its byte length, so a `:` in the key or text cannot make two requests collide |
 | Task request id | the UUIDv5 of `factory.task.requested:cli:{source}` |
 | Event id from `priory add`, generated key | the UUIDv5 of `priory.task.requested.cli:add:{key}` |
 | Event id from `priory add`, issue key | as `priory request`'s, with the issue key in place of `cli:<key>` |

@@ -59,6 +59,8 @@ such as a revert, arrives as a second record that points at the first. Each reco
 | `kit_hash`         | no       | For `model` steps: a hash of the factory's skills, instructions and memories the run got; absent when it got none of them. See [skills.md](daemon/skills.md) |
 | `kit_commit`       | no       | For `model` steps: the commit of the factory's `[kit]` repository the run got; absent without one. See [skills.md](daemon/skills.md#a-kit-repository) |
 | `memories_commit`  | no       | For `model` steps: the commit of the factory's `[memories]` repository the run got; absent without one. See [skills.md](daemon/skills.md#a-memories-repository) |
+| `sandbox`          | no       | For `model` steps: the sandbox the run's agent started in; absent without one. See [sandboxes.md](daemon/sandboxes.md) |
+| `session_start_ms` | no       | For `model` steps: the time from the run's launch to its harness's `SessionStart`, jailed or not; absent when it never started |
 | `machine`          | yes      | Where the step ran                                                    |
 | `started`          | yes      | When the step started                                                 |
 | `duration_ms`      | yes      | Wall time from start to end                                           |
@@ -94,6 +96,44 @@ model. Its `data` holds `factory`, `factory_revision`, `workflow`, `task`, `key`
 
 A turn that a nudge follows appends one record per harness turn. `priory costs` and spend caps
 count these records, and not the debate step's own.
+
+## `factory.run.trusted`
+
+What the daemon did about a harness's folder trust in one path of a run, when the factory sets
+`trust_worktrees`. A run gets one record for each path before it starts, and one more when its
+harness asks anyway. See [sessions.md](daemon/sessions.md#with-trust_worktrees).
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d4-0000-7000-8000-000000000006",
+  "source": "factory://example/desktop",
+  "type": "factory.run.trusted",
+  "time": "2026-11-23T10:04:12Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "task": "0196f1b0-0000-7000-8000-000000000001",
+    "key": "github:example/app#42",
+    "run": "0196f1b0-0000-7000-8000-000000000002",
+    "machine": "desktop",
+    "harness": "claude-code",
+    "path": "/home/a/.local/state/priory/worktrees/example/app/42",
+    "file": "/home/a/.claude.json",
+    "outcome": "granted"
+  }
+}
+```
+
+| Field     | Required | Meaning |
+| --------- | -------- | ------- |
+| `harness` | yes      | `claude-code` or `codex` |
+| `path`    | yes      | The worktree or clone the trust covers |
+| `file`    | no       | The config the daemon wrote or read: Claude's `.claude.json`, or `$CODEX_HOME/priory-trust.config.toml` |
+| `outcome` | yes      | `granted` when the daemon wrote it, `present` when it was already there, `refused` when it wrote nothing, `missed` when the harness asked anyway |
+| `why`     | no       | For `refused`: why, such as a path outside Priory home or a repository the factory does not name. For `missed`: `the grant was gone from the config` when the harness overwrote it |
+| `version` | no       | For `missed`: the first line of the harness's `--version` |
 
 ## `factory.task.repaired`
 

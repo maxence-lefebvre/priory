@@ -6,7 +6,9 @@ An agent inside a model step can still do something irreversible itself, such as
 `git push origin main` or a Slack post. Claude's permission deny rules do not stop it reliably: a
 rule on `gh pr merge` misses `gh -R owner/repo pr merge` and `bash -c 'gh pr merge 12'`. The tool
 guard closes that gap with a `PreToolUse` hook, which Claude runs before every matching call, in
-every permission mode, before any allow rule.
+every permission mode, before any allow rule. A repository's own `.claude/settings.json`, which a
+trusted folder loads, runs beside the guard, whether a person trusted the folder or
+`trust_worktrees` did. Name only repositories whose settings you trust.
 
 ## What the guard denies
 
@@ -100,6 +102,16 @@ Each denial also does two things:
 - It appends a `factory.tool.denied` record with the task, step and tool, as any denial does.
 - It adds a to-do, `Sign in to <connector>`, to the desk, unless one is open already. Two runs
   denied for one connector leave one item. See [desk.md](desk.md#sign-in-to-dos).
+
+## Servers a connector run does not name
+
+A run whose agent names claude.ai `connectors` starts without `--strict-mcp-config`, so it loads
+every server and connector of the person's (see [agents.md](../reference/agents.md#connectors)).
+Its pane gets `PRIORY_MCP_SERVERS`, the servers its agent names as their tools name them, such as
+`priory,sentry,claude_ai_Linear`. The guard denies a call of any other MCP tool, without asking the
+daemon, and tells the agent to carry on with its other sources. It denies it before the sign-in
+guard, so a connector the agent does not name never adds a sign-in to-do. A run without connectors
+has no such variable, and `--strict-mcp-config` keeps other servers out.
 
 ## How a command is read
 

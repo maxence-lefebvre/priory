@@ -14,6 +14,13 @@
             "null"
           ]
         },
+        "agent": {
+          "description": "Whether an agent wrote it: `own`, and its body holds `<!-- agent-comment -->`; absent while\n`gh` cannot say. An agent's comment starts no task. The person's unmarked one wakes its task\neven when it was written during the agent's turn.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "association": {
           "description": "GitHub's `author_association` of the author, such as `OWNER`, `COLLABORATOR` or `NONE`.\nFeedback from anyone but the owner, a member or a collaborator reaches no task.",
           "type": [

@@ -30,12 +30,14 @@ A Codex run chooses its own session id, its thread. So when the stdin `session_i
 
 The daemon answers `ok` once it has committed the signal. The hook waits up to 10 seconds for that
 answer. If no daemon accepts the line, or the daemon closes the connection without an answer, the
-hook appends the line to `signals.spool` in Priory home.
+hook appends the line to `signals.spool` in Priory home. A jailed run sees only its own spool,
+`spools/<session>/signals.spool`, which `PRIORY_SPOOL` names (see [sandboxes.md](sandboxes.md)).
 
 The next daemon to start reads the spool before anything else:
 
 1. It marks every `attempted` prompt `uncertain` (see [outbox.md](outbox.md)).
-2. It applies each spooled signal, then removes the spool.
+2. It applies each spooled signal, then removes the spool. It reads `signals.spool` first, then
+   each jailed run's spool.
 
 So a spooled `UserPromptSubmit` no longer confirms the prompt it submitted. That prompt stays
 `uncertain` on the desk.
@@ -44,7 +46,7 @@ So a spooled `UserPromptSubmit` no longer confirms the prompt it submitted. That
 
 | Event | Meaning | Effect on the run |
 | ----- | ------- | ----------------- |
-| `SessionStart` | The harness is up and its input is ready | idle |
+| `SessionStart` | The harness is up. Its input may read keys a moment later | idle |
 | `UserPromptSubmit` | A prompt was submitted | busy; may confirm the attempted prompt |
 | `Stop` | The turn ended | idle; the task moves on by the run's result, ask or wait |
 | `PostCompact` | Codex finished a `/compact` | idle |
@@ -72,8 +74,8 @@ irreversible call and denies it unless a person approved it (see [guard.md](guar
 Here is one turn of a Claude run, from launch to the end of a step:
 
 1. The daemon starts `claude` in tmux. Claude fires `SessionStart`. The run is idle.
-2. The daemon pastes the step's prompt and presses Enter. Claude fires `UserPromptSubmit` with the
-   text. The words match the attempted prompt, so the prompt is confirmed and the run is busy.
+2. A second later, the daemon pastes the step's prompt, then presses Enter on its own (see
+   [Typing a prompt](outbox.md#typing-a-prompt)). Claude fires `UserPromptSubmit` with the text. The words match the attempted prompt, so the prompt is confirmed and the run is busy.
 3. The agent works, then calls the `result` tool.
 4. The turn ends. Claude fires `Stop`. The run is idle, and the task moves to the step that
    `next[outcome]` names (see Moving on in [tools.md](tools.md)).

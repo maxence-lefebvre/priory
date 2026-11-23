@@ -291,7 +291,7 @@
       "additionalProperties": {
         "type": "string"
       },
-      "description": "Values an event must have: `label` for GitHub; `team`, `project` (its name or id), `label`,\n`state` for Linear; `text` for Slack.",
+      "description": "Values an event must have: `label` for GitHub, or `author` and `commenter` for a comment or\nreview; `team`, `project` (its name or id), `label`, `state` for Linear; `text` for Slack.",
       "type": [
         "object",
         "null"

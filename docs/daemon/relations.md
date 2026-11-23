@@ -41,8 +41,8 @@ these errors, and records nothing:
 `task <id> has no <kind> relation to task <other>`.
 
 The tool takes `kind` and `task`, the other task's id, and refuses any other field. Its task is
-always the caller's, so an agent records relations of its own task only. `priory mcp` answers it
-from the state file, without the daemon. It does not end the turn.
+always the caller's, so an agent records relations of its own task only. The daemon answers it,
+like every other tool. It does not end the turn.
 
 A `--relates` value that is not `KIND:TASK` with a known kind is a usage error. `priory request` and
 `priory add` read the state file, which `PRIORY_DB` names, and refuse a `--relates` task it does not

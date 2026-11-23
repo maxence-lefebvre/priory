@@ -932,6 +932,8 @@ fn touch_with_real_claude(home: &Path, project: &Path, investigator: bool) -> bo
         debate: false,
         servers: &servers,
         tools: priory_runtime::mcp::Tools::Investigator,
+        jail: None,
+        trust: false,
     };
     let args = priory_runtime::runtime::Harness::args(
         &priory_runtime::runtime::ClaudeCode,
@@ -1003,4 +1005,61 @@ fn the_real_claude_denies_an_investigator_a_bash_rule_of_the_persons_or_the_repo
         );
         fs::remove_file(&file).unwrap();
     }
+}
+
+/// Turns the sandbox `jail` on for the implementer's workflow. The fake `claude` reads `FAKE_DIR`,
+/// so the sandbox keeps it.
+fn jail_the_worker(setup: &Setup) {
+    let factory = setup.dir.join("factory/factory.toml");
+    let toml = fs::read_to_string(&factory).unwrap();
+    fs::write(
+        &factory,
+        format!("{toml}\n[sandboxes.jail]\nkind = \"bwrap\"\nenv = [\"FAKE_DIR\"]\n"),
+    )
+    .unwrap();
+    fs::write(
+        setup.dir.join("factory/workflows/implement.toml"),
+        format!("sandbox = \"jail\"\n{WORKFLOW}"),
+    )
+    .unwrap();
+}
+
+/// Runs a worker that consults sentry once, to the end, and returns the investigator's run row.
+fn investigated(setup: &mut Setup) -> Vec<String> {
+    setup.memory(60);
+    setup.calls(&[
+        consult("sentry"),
+        reported("Release 4.2."),
+        result("passed"),
+    ]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| with(rows, 4, "done") == 2);
+    let runs = setup.rows("runs");
+    runs.into_iter()
+        .find(|run| run[1] == "2")
+        .expect("the investigator ran")
+}
+
+#[test]
+fn a_jailed_workers_investigator_starts_in_the_workers_jail() {
+    let mut setup = consulting("consult-jailed", "");
+    jail_the_worker(&setup);
+
+    let investigator = investigated(&mut setup);
+
+    assert_eq!(investigator[11], "jail", "{investigator:?}");
+    // The daemon's start check, then one launch per run, the investigator's among them.
+    let runs = setup.rows("runs").len();
+    assert_eq!(fake_log(&setup, "bwrap.log").len(), 1 + runs);
+}
+
+#[test]
+fn an_unjailed_workers_investigator_starts_as_before() {
+    let mut setup = consulting("consult-unjailed", "");
+
+    let investigator = investigated(&mut setup);
+
+    assert_eq!(investigator[11], "-", "{investigator:?}");
+    assert_eq!(fake_log(&setup, "bwrap.log"), Vec::<String>::new());
 }

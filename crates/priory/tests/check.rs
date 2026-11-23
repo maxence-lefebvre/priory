@@ -187,7 +187,7 @@ fn an_unknown_field_names_its_file_and_line() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, compactAt, idleCompactAt, onChange, memory, disk, mcpServers, skills, connectorSignIn, investigator, permissions\n"
+        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, compactAt, idleCompactAt, onChange, memory, disk, mcpServers, connectors, skills, connectorSignIn, investigator, permissions\n"
     );
 }
 
@@ -999,7 +999,7 @@ fn a_pull_request_trigger_rejects_other_events_and_keys() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "triggers/agent-label.toml:3: a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled`, `pull_request.opened` or `pull_request.review_requested`, not `pull_request.closed`\n\
+        "triggers/agent-label.toml:3: a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled`, `pull_request.opened`, `pull_request.comment`, `pull_request_review_comment`, `pull_request_review.submitted` or `pull_request.review_requested`, not `pull_request.closed`\n\
          triggers/keyed.toml:7: a GitHub trigger's `key` is `pull_request.number`\n"
     );
 }
@@ -1363,6 +1363,44 @@ fn a_slack_trigger_names_its_channel_and_filters_on_text_only() {
          triggers/wrong.toml:1: a Slack trigger needs `channel = \"<channel id>\"`\n\
          triggers/wrong.toml:3: a Slack trigger filters on `text` only\n\
          triggers/wrong.toml:5: a Slack trigger's `key` is `message.ts`\n"
+    );
+}
+
+#[test]
+fn a_comment_trigger_filters_on_the_pull_request_s_author() {
+    let good = "source = \"github\"\nrepo = \"owner/name\"\non = \"pull_request_review.submitted\"\nfilter = { author = \"max\", commenter = \"rayon-bot\" }\nworkflow = \"implement\"\n";
+    let bare = "source = \"github\"\nrepo = \"owner/name\"\non = \"pull_request.comment\"\nworkflow = \"implement\"\n";
+    let label = "source = \"github\"\nrepo = \"owner/name\"\non = \"pull_request_review_comment\"\nfilter = { author = \"max\", label = \"x\" }\nworkflow = \"implement\"\n";
+    let mut files = with("triggers/agent-label.toml", good);
+    files.push(("triggers/bare.toml", bare));
+    files.push(("triggers/label.toml", label));
+
+    let outcome = check(&factory("comment-triggers", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "triggers/bare.toml:3: a `pull_request.comment` trigger needs `filter = { author = \"<GitHub login>\" }`, and takes `commenter` too\n\
+         triggers/label.toml:4: a `pull_request_review_comment` trigger needs `filter = { author = \"<GitHub login>\" }`, and takes `commenter` too\n"
+    );
+}
+
+#[test]
+fn a_comment_trigger_needs_a_factory_of_one_runner() {
+    let comments = "source = \"github\"\nrepo = \"owner/name\"\non = \"pull_request.comment\"\nfilter = { author = \"max\" }\nworkflow = \"implement\"\n";
+    let mut files = with("triggers/agent-label.toml", comments);
+    // `valid()` already holds one runner.
+    files.push(("runners/two.toml", RUNNER));
+
+    let outcome = check(&factory("comment-runners", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.contains(
+            "triggers/agent-label.toml:3: a `pull_request.comment` trigger needs one runner; this factory has 2\n"
+        ),
+        "{}",
+        outcome.stderr
     );
 }
 
@@ -4234,6 +4272,132 @@ fn each_investigator_rule_fails_with_its_line() {
     }
 }
 
+/// The valid factory with `connectors` on its implementer, set to `list`.
+fn with_connectors(name: &str, harness: &str, list: &str) -> Outcome {
+    let agent = AGENT
+        .replace("claude-code", harness)
+        .replace(
+            "mcpServers = [\"github\"]\n",
+            &format!("mcpServers = [\"github\"]\nconnectors = {list}\n"),
+        )
+        .replace(
+            "permissions = { defaultMode = \"auto\", allow = [\"Bash(cargo test:*)\", \"Edit\"], deny = [\"Bash(git push:*)\"] }",
+            "permissions = { defaultMode = \"auto\" }",
+        );
+    check(&factory(name, &with("agents/implementer/agent.md", &agent)))
+}
+
+#[test]
+fn an_agent_that_names_claude_ai_connectors_passes() {
+    let outcome = with_connectors(
+        "connectors",
+        "claude-code",
+        "[\"Linear\", \"Google Drive\"]",
+    );
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn a_connector_name_that_is_empty_repeated_prefixed_or_ambiguous_fails_the_check() {
+    let cases = [
+        (
+            "connectors-empty",
+            "[\"\"]",
+            "agents/implementer/agent.md:6: `connectors` holds an empty name\n",
+        ),
+        (
+            "connectors-twice",
+            "[\"Linear\", \"Linear\"]",
+            "agents/implementer/agent.md:6: `connectors` names `Linear` twice\n",
+        ),
+        (
+            "connectors-prefixed",
+            "[\"claude.ai Linear\"]",
+            "agents/implementer/agent.md:6: `connectors` names `claude.ai Linear`: write the connector's name as claude.ai shows it, `Linear`, since Claude Code adds `claude.ai ` itself\n",
+        ),
+        (
+            "connectors-ambiguous",
+            "[\"Google Drive\", \"Google_Drive\"]",
+            "agents/implementer/agent.md:6: `connectors` names `Google Drive` and `Google_Drive`, whose tools Claude Code names alike, mcp__claude_ai_Google_Drive__<tool>: keep one\n",
+        ),
+    ];
+    for (name, list, stderr) in cases {
+        let outcome = with_connectors(name, "claude-code", list);
+
+        assert_eq!(
+            (outcome.code, outcome.stderr.as_str()),
+            (1, stderr),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_codex_agent_cannot_name_a_connector() {
+    let outcome = with_connectors("connectors-codex", "codex", "[\"Linear\"]");
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.lines().any(|line| line
+            == "agents/implementer/agent.md:6: a codex agent cannot take `connectors`: claude.ai connectors reach Claude Code alone"),
+        "{}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn an_investigator_names_a_connector_only_with_a_read_only_sentence_and_its_tools_allowed() {
+    let agent = INVESTIGATOR
+        .replace(
+            "mcpServers = [\"sentry\"]\n",
+            "mcpServers = [\"sentry\"]\nconnectors = [\"Linear\"]\n",
+        )
+        .replace(
+            "\"Read\"]",
+            "\"Read\", \"mcp__claude_ai_Linear__get_issue\"]",
+        );
+    let stated = format!(
+        "{CONSULTING}\n[mcp.\"claude.ai Linear\"]\nread_only = \"The connector's account has read access only.\"\n"
+    );
+    let no_tools = agent.replace(", \"mcp__claude_ai_Linear__get_issue\"", "");
+
+    let ok = consulting(
+        "investigator-connector",
+        &[
+            ("agents/sentry/agent.md", &agent),
+            ("factory.toml", &stated),
+        ],
+    );
+    let unstated = consulting(
+        "investigator-connector-unstated",
+        &[("agents/sentry/agent.md", &agent)],
+    );
+    let unused = consulting(
+        "investigator-connector-unused",
+        &[
+            ("agents/sentry/agent.md", &no_tools),
+            ("factory.toml", &stated),
+        ],
+    );
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (unstated.code, unstated.stderr.as_str()),
+        (
+            1,
+            "agents/sentry/agent.md:7: investigator `sentry` names connector `Linear`, which needs a `read_only` sentence under [mcp.\"claude.ai Linear\"] in factory.toml: where the service enforces that it only reads\n"
+        )
+    );
+    assert_eq!(
+        (unused.code, unused.stderr.as_str()),
+        (
+            1,
+            "agents/sentry/agent.md:7: investigator `sentry` names connector `Linear`, but its `allow` names none of the connector's tools: write each as mcp__claude_ai_Linear__<tool>\n"
+        )
+    );
+}
+
 #[test]
 fn a_lead_cannot_be_an_investigator() {
     let trigger = format!("{TRIGGER}intervention = \"hands-off\"\nlead = \"sentry\"\n");
@@ -4401,5 +4565,154 @@ fn a_factory_folder_that_does_not_exist_is_named() {
     assert_eq!(
         outcome.stderr,
         format!("{}: missing: no such folder\n", dir.display())
+    );
+}
+
+const SANDBOXED_FACTORY: &str = r#"name = "demo"
+
+[sandboxes.jail]
+kind = "bwrap"
+read = ["~/.cargo", "/opt/toolchain"]
+write = ["~/.cache/sccache"]
+env = ["RUSTC_WRAPPER"]
+"#;
+
+/// The tests' fake programs, a `bwrap` among them, first on `PATH`.
+fn with_fake_bwrap() -> std::ffi::OsString {
+    let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake");
+    std::env::join_paths(std::iter::once(fake).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap()
+}
+
+fn check_on(dir: &Path, path: &std::ffi::OsStr, args: &[&str]) -> Outcome {
+    let output = harness::priory()
+        .arg("check")
+        .args(args)
+        .arg(dir)
+        .env("PATH", path)
+        .env(
+            "HERDR_APP_HOME",
+            Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-herdr"),
+        )
+        .output()
+        .unwrap();
+    Outcome {
+        code: output.status.code().unwrap(),
+        stdout: String::from_utf8(output.stdout).unwrap(),
+        stderr: String::from_utf8(output.stderr).unwrap(),
+    }
+}
+
+fn sandboxed(name: &str, factory_toml: &'static str) -> PathBuf {
+    let mut files = with("factory.toml", factory_toml);
+    files.retain(|(file, _)| *file != "workflows/implement.toml");
+    let workflow: &'static str =
+        Box::leak(format!("sandbox = \"jail\"\n{WORKFLOW}").into_boxed_str());
+    files.push(("workflows/implement.toml", workflow));
+    factory(name, &files)
+}
+
+#[test]
+fn a_sandboxed_workflow_passes_where_bwrap_is_installed_and_explain_lists_its_binds() {
+    let dir = sandboxed("sandbox-ok", SANDBOXED_FACTORY);
+
+    let checked = check_on(&dir, &with_fake_bwrap(), &[]);
+    let explained = check_on(&dir, &with_fake_bwrap(), &["--explain"]);
+
+    assert_eq!((checked.code, checked.stderr.as_str()), (0, ""));
+    assert_eq!(explained.code, 0, "{}", explained.stderr);
+    let table: Vec<&str> = explained
+        .stdout
+        .lines()
+        .skip_while(|line| *line != "workflow\tsandbox\tkind\tread\twrite\tenv")
+        .take_while(|line| !line.is_empty())
+        .collect();
+    assert_eq!(
+        table,
+        [
+            "workflow\tsandbox\tkind\tread\twrite\tenv",
+            "implement\tjail\tbwrap\t~/.cargo, /opt/toolchain\t~/.cache/sccache\tRUSTC_WRAPPER",
+        ]
+    );
+}
+
+#[test]
+fn a_sandboxed_workflow_is_refused_where_bwrap_is_not_installed() {
+    let dir = sandboxed("sandbox-no-bwrap", SANDBOXED_FACTORY);
+    let empty = Path::new(env!("CARGO_TARGET_TMPDIR")).join("check-empty-path");
+    fs::create_dir_all(&empty).unwrap();
+
+    let outcome = check_on(&dir, empty.as_os_str(), &[]);
+    let plain = check_on(
+        &factory("sandbox-none-no-bwrap", &valid()),
+        empty.as_os_str(),
+        &[],
+    );
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "workflows/implement.toml:1: `sandbox` turns on sandbox `jail`, and `bwrap` is not on PATH: install bubblewrap, or remove `sandbox`\n"
+    );
+    assert_eq!((plain.code, plain.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn each_sandbox_rule_fails_with_its_line() {
+    let factory_toml = r#"name = "demo"
+
+[serve]
+listen = "127.0.0.1:7391"
+
+[sandboxes.jail]
+kind = "bwrap"
+read = ["relative/path", "~"]
+write = ["~/"]
+env = ["PRIORY_TOKEN", "NOT-A-NAME", "FINE"]
+"#;
+    let dir = sandboxed("sandbox-rules", factory_toml);
+    let mut files = with("factory.toml", SANDBOXED_FACTORY);
+    files.retain(|(file, _)| *file != "workflows/implement.toml");
+    files.push(("workflows/implement.toml", "\nsandbox = \"cell\"\nstart = \"implement\"\n\n[[steps]]\nid = \"implement\"\ndecides = \"model\"\nagent = \"implementer\"\nprompt = \"Implement.\"\neffect = \"reversible\"\nnext = { passed = \"done\", failed = \"stop\" }\n"));
+    let undeclared = factory("sandbox-undeclared", &files);
+
+    let outcome = check_on(&dir, &with_fake_bwrap(), &[]);
+    let undeclared = check_on(&undeclared, &with_fake_bwrap(), &[]);
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "factory.toml:6: sandbox `jail` has `read` path `relative/path`, which is not absolute or under `~/`\n\
+         factory.toml:6: sandbox `jail` has `read` path `~`, which is the home itself, which would undo the jail\n\
+         factory.toml:6: sandbox `jail` has `write` path `~/`, which is the home itself, which would undo the jail\n\
+         factory.toml:6: sandbox `jail` keeps `PRIORY_TOKEN` in `env`, which holds a secret of the factory\n\
+         factory.toml:6: sandbox `jail` keeps `NOT-A-NAME` in `env`, which is not a variable name\n"
+    );
+    assert_eq!(undeclared.code, 1);
+    assert_eq!(
+        undeclared.stderr,
+        "workflows/implement.toml:2: `sandbox` names `cell`, which `[sandboxes]` in factory.toml does not declare\n"
+    );
+}
+
+#[test]
+fn a_sandbox_kind_other_than_bwrap_is_refused_with_its_line() {
+    let dir = sandboxed(
+        "sandbox-kind",
+        "name = \"demo\"\n\n[sandboxes.jail]\nkind = \"podman\"\n",
+    );
+
+    let outcome = check_on(&dir, &with_fake_bwrap(), &[]);
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.starts_with("factory.toml:4:")
+            && outcome
+                .stderr
+                .contains("unknown variant `podman`, expected `bwrap`"),
+        "{}",
+        outcome.stderr
     );
 }

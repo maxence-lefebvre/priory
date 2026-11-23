@@ -689,6 +689,53 @@
       ],
       "type": "string"
     },
+    "Sandbox": {
+      "additionalProperties": false,
+      "description": "`[sandboxes.<name>]`: a jail around a run's agent, which sees its worktree, its harness's own\nhome and what the sandbox names, each at the same path as outside.",
+      "properties": {
+        "env": {
+          "default": [],
+          "description": "The daemon's variables the run keeps, by name, beside the few every jailed run keeps.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/definitions/SandboxKind"
+        },
+        "read": {
+          "default": [],
+          "description": "Paths bound read-only, each absolute or under `~/`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "write": {
+          "default": [],
+          "description": "Paths bound read-write, each absolute or under `~/`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "SandboxKind": {
+      "description": "How a sandbox is built.",
+      "oneOf": [
+        {
+          "const": "bwrap",
+          "description": "A bubblewrap jail: Linux only, with the `bwrap` program on `PATH`.",
+          "type": "string"
+        }
+      ]
+    },
     "Script": {
       "additionalProperties": false,
       "properties": {
@@ -1223,6 +1270,13 @@
         }
       ]
     },
+    "sandboxes": {
+      "additionalProperties": {
+        "$ref": "#/definitions/Sandbox"
+      },
+      "description": "Each sandbox a workflow can turn on with `sandbox`, by its name.",
+      "type": "object"
+    },
     "search": {
       "$ref": "#/definitions/Search"
     },
@@ -1264,6 +1318,11 @@
           "type": "null"
         }
       ]
+    },
+    "trust_worktrees": {
+      "default": false,
+      "description": "Priory records Claude Code's and Codex's folder trust for the worktrees and clones it\ncreates for the repositories the factory names, so no run stops on a trust dialog.",
+      "type": "boolean"
     },
     "webhooks": {
       "anyOf": [

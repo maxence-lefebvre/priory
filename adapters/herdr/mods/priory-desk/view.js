@@ -1,6 +1,6 @@
 // The Desk panel's view model: Priory's listings in, the count, sections and rows out. No drawing, no IO.
 
-import { age, ago, autolink, plural, prStack, routedMark, runnerOf, seenAgo, sentNote, sinceWords } from "./priory.js";
+import { age, ago, askHeading, autolink, plural, prStack, routedMark, runnerOf, seenAgo, sentNote, sinceWords } from "./priory.js";
 
 const STOPPED = ["blocked", "failed", "prompt", "delivery"];
 const SNOOZABLE = ["ask", "blocked", "failed", "prompt"];
@@ -91,7 +91,7 @@ export function deskModel({ desk, asks: asksListing, tasks: tasksListing, queue,
     /** @type {any[] | null} */
     const candidates = item.kind === "memories" ? memories?.candidates ?? item.candidates ?? [] : null;
     if (candidates) item = { ...item, what: `${plural(candidates.length, "memory candidate")}: ${candidates.map((candidate) => candidate.name).join(", ")}` };
-    const text = ask ? ask.title || ask.question : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : itemText(item, now);
+    const text = ask ? askHeading(ask) : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : itemText(item, now);
     return {
       id: `${item.kind}:${item.id}`,
       kind: item.kind,
@@ -222,7 +222,7 @@ function nextThing(item, ask, task, now, links) {
   const progress = task?.progress;
   const isAsk = item.kind === "ask";
   // As in `itemRow`: only a blocked or failed task's reason replaces the desk's `what`.
-  const question = isAsk ? ask?.title || ask?.question || itemText(item, now) : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : itemText(item, now);
+  const question = isAsk ? (ask ? askHeading(ask) : null) || itemText(item, now) : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : itemText(item, now);
   return {
     ask: isAsk ? item.id : null,
     snooze: SNOOZABLE.includes(item.kind) && !runnerOf(ask) ? { kind: item.kind, id: item.id } : null,

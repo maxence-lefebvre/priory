@@ -216,7 +216,7 @@ const startsBlock = (/** @type {string} */ line) => FENCE.test(line) || HEADING.
  * "pre", and `lines` holds a paragraph's lines, a heading, a list's items or a code block's lines.
  * @param {string} text
  */
-function blocks(text) {
+function parse(text) {
   const lines = String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
   /** @type {{ tag: string, lines: string[] }[]} */
   const out = [];
@@ -254,6 +254,31 @@ function blocks(text) {
   return out;
 }
 
+// Herdr stops a render that runs too long, and a panel draws the same agent text on every render.
+const REMEMBERED = 2000;
+/** @type {WeakMap<object, Map<string, string>>} each links list's drawn Markdown, by repo and text */
+const drawnHtml = new WeakMap();
+/** @type {Map<string, string>} */
+const drawnText = new Map();
+/** @type {Map<string, ReturnType<typeof parse>>} */
+const parsed = new Map();
+
+/**
+ * `map`'s value for `key`, computed once; past `REMEMBERED` keys the oldest goes.
+ * @template T @param {Map<string, T>} map @param {string} key @param {() => T} compute
+ */
+function remembered(map, key, compute) {
+  const known = map.get(key);
+  if (known !== undefined) return known;
+  const value = compute();
+  if (map.size >= REMEMBERED) map.delete(/** @type {string} */ (map.keys().next().value));
+  map.set(key, value);
+  return value;
+}
+
+/** `parse` once per text, as a panel's HTML and its label both draw it. @param {string} text */
+const blocks = (text) => remembered(parsed, String(text ?? ""), () => parse(text));
+
 /**
  * Markdown as HTML for Herdr's `TextView.html`: DESIGN.md's subset, every other character escaped, with
  * the factory's autolinks. A link or image whose target is not `https:` shows as its source; an image
@@ -261,6 +286,13 @@ function blocks(text) {
  * @param {string} text @param {{ pattern: string, url: string }[]} links @param {string | null} repo
  */
 export function markdownHtml(text, links, repo) {
+  if (!drawnHtml.has(links)) drawnHtml.set(links, new Map());
+  const drawn = /** @type {Map<string, string>} */ (drawnHtml.get(links));
+  return remembered(drawn, `${repo ?? ""}\n${text ?? ""}`, () => parsedHtml(text, links, repo));
+}
+
+/** @param {string} text @param {{ pattern: string, url: string }[]} links @param {string | null} repo */
+function parsedHtml(text, links, repo) {
   const plain = (/** @type {string} */ part) => spansHtml(autolink(part, links, repo)).slice(3, -4);
   const inline = (/** @type {string} */ line) => {
     let html = "";
@@ -285,6 +317,11 @@ export function markdownHtml(text, links, repo) {
 
 /** The words Markdown shows, on one line, for a label that cannot hold its links. @param {string} text */
 export function markdownText(text) {
+  return remembered(drawnText, String(text ?? ""), () => parsedText(text));
+}
+
+/** @param {string} text */
+function parsedText(text) {
   const inline = (/** @type {string} */ line) => line.replace(INLINE, (_match, code, bold, _token, _image, label) => code ?? (bold ? inline(bold) : label));
   return blocks(text).flatMap(({ tag, lines }) => (tag === "pre" ? lines : lines.map(inline))).join(" ");
 }
@@ -377,6 +414,38 @@ export function sinceWords(what) {
   const [type] = what.split(" ", 1);
   return /^[a-z_]+(\.[a-z_]+)+$/.test(type) ? eventWords(type) + what.slice(type.length) : what;
 }
+
+/** The longest heading of an untitled ask, in characters, before its ellipsis. */
+export const HEADING_MAX = 80;
+
+/**
+ * An ask's heading, where its text is a heading or one line: its title; else its question when that
+ * is one line of at most 80 characters; else one derived from its task's key and step, or from the
+ * question's first sentence when it has no task, cut at a word to about 80 characters. The detail
+ * shows the full question in its body. @param {any} ask
+ */
+export function askHeading(ask) {
+  if (ask?.title) return ask.title;
+  const question = String(ask?.question ?? "").trim();
+  if (question.length <= HEADING_MAX && !question.includes("\n")) return question;
+  const key = String(ask?.key ?? "").replace(/^(linear|github|slack|cli):/, "");
+  if (key && ask?.step) return cutAt(`${key} asks at ${ask.step}`, HEADING_MAX);
+  const end = question.search(/[.?!](\s|$)|\n/);
+  const first = end < 0 ? question : question.slice(0, question[end] === "\n" ? end : end + 1).trim();
+  const step = ask?.step && !first.startsWith(ask.step) ? `${ask.step}: ` : "";
+  return cutAt(`${step}${first}`, HEADING_MAX);
+}
+
+/** `text` cut at the last word that ends within `max` characters, with an ellipsis. @param {string} text @param {number} max */
+export function cutAt(text, max) {
+  if (text.length <= max) return text;
+  const space = text.slice(0, max + 1).lastIndexOf(" ");
+  const kept = space > max / 2 ? text.slice(0, space) : text.slice(0, max);
+  return `${kept.replace(/[\s.,;:!?-]+$/, "")}…`;
+}
+
+/** The full question, for the detail's body when its heading does not show all of it, else null. @param {any} ask */
+export const askBody = (ask) => (ask?.question && askHeading(ask) !== ask.question ? ask.question : null);
 
 /** The tile a check draws by its conclusion: one with none has not finished (DESIGN.md, Pull request summary). @param {string | null} conclusion */
 export function checkState(conclusion) {

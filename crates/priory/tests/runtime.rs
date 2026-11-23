@@ -15,6 +15,7 @@ mod preempt;
 #[cfg(feature = "postgres")]
 mod proxy;
 mod review_limit;
+mod sandbox;
 mod tmux_dir;
 
 use herdr_bus::{Bus, Message, Output};
@@ -54,7 +55,7 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Undoes migrations 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes migrations 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
@@ -71,7 +72,7 @@ macro_rules! undo_pre {
   ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
-  ALTER TABLE runs DROP COLUMN resumes;
+  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox;
   "
     };
 }
@@ -600,13 +601,28 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
         kit,
         commit,
         memories,
+        sandbox,
     ] = &runs[0][..]
     else {
         panic!("runs: {runs:?}");
     };
     assert_eq!(
-        [id, task, step, tmux, ended, end, kit, commit, memories].map(String::as_str),
-        ["1", "1", "implement", "priory-1", "-", "-", "-", "-", "-"],
+        [
+            id, task, step, tmux, ended, end, kit, commit, memories, sandbox
+        ]
+        .map(String::as_str),
+        [
+            "1",
+            "1",
+            "implement",
+            "priory-1",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-"
+        ],
         "a factory without skills or instructions gives its runs none"
     );
     assert!(uuid::Uuid::parse_str(session).is_ok(), "session {session}");
@@ -1005,6 +1021,206 @@ fn a_claude_run_whose_agent_names_an_mcp_server_the_person_never_defined_is_bloc
     assert!(!setup.dir.join("fake/args.log").exists(), "claude started");
     assert!(setup.rows("runs").is_empty());
     assert_no_token(&setup, &["daemon.log"]);
+}
+
+/// Plants the person's Claude Code config with the user-scope `sentry` and `linear`, a local-scope
+/// `notion` of some project, and the claude.ai connectors Slack and Linear that once connected on
+/// this machine; and the connectors the fake `claude` finds on the person's claude.ai account.
+fn plant_connectors(setup: &Setup, account: &[&str]) {
+    plant_claude_servers(setup);
+    let path = setup.dir.join("claude/.claude.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    config["projects"] = json!({ "/elsewhere": { "mcpServers": { "notion": { "url": "https://mcp.notion.com/mcp" } } } });
+    config["claudeAiMcpEverConnected"] = json!(["claude.ai Slack", "claude.ai Linear"]);
+    fs::write(&path, config.to_string()).unwrap();
+    let names: String = account.iter().map(|name| format!("{name}\n")).collect();
+    fs::write(setup.dir.join("fake/connectors"), names).unwrap();
+}
+
+/// The implementer, with `mcpServers = ["sentry"]` and `connectors` set to `connectors`.
+fn with_connectors(connectors: &str) -> String {
+    with_servers(AGENT, "[\"sentry\"]").replacen(
+        "+++\n",
+        &format!("+++\nconnectors = {connectors}\n"),
+        1,
+    )
+}
+
+#[test]
+fn a_claude_run_whose_agent_names_a_connector_gets_it_and_no_other_server_or_connector() {
+    let mut setup = Setup::new("connector-named");
+    plant_connectors(&setup, &["claude.ai Linear", "claude.ai Slack"]);
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        with_connectors("[\"Linear\"]"),
+    )
+    .unwrap();
+    setup.calls(&[json!([
+        mcp("mcp__claude_ai_Linear__list_issues"),
+        mcp("mcp__sentry__get_issue"),
+        mcp("mcp__claude_ai_Notion__search"),
+        mcp("mcp__plugin_tools_db__query"),
+    ])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let replies = setup.replied(4);
+    let (args, _, config) = claude_mcp(&setup);
+    assert!(
+        !args.iter().any(|arg| arg == "--strict-mcp-config"),
+        "Claude Code loads no claude.ai connector under --strict-mcp-config: {args:?}"
+    );
+    let names: Vec<&String> = config["mcpServers"].as_object().unwrap().keys().collect();
+    assert_eq!(names, ["priory", "sentry"]);
+    let settings = &args[args.iter().position(|arg| arg == "--settings").unwrap() + 1];
+    let settings: serde_json::Value = serde_json::from_str(settings).unwrap();
+    assert_eq!(
+        settings["permissions"]["deny"],
+        json!([
+            "Bash(git push:*)",
+            "mcp__claude_ai_Slack",
+            "mcp__linear",
+            "mcp__notion"
+        ]),
+        "every other server of the person's config is denied"
+    );
+    assert_eq!(
+        replies[0],
+        json!({"passed": "mcp__claude_ai_Linear__list_issues"})
+    );
+    assert_eq!(replies[1], json!({"passed": "mcp__sentry__get_issue"}));
+    for (reply, server) in [
+        (&replies[2], "claude_ai_Notion"),
+        (&replies[3], "plugin_tools_db"),
+    ] {
+        let reason = guard_denied(reply).unwrap_or_else(|| panic!("{reply}"));
+        assert!(reason.contains(&format!("`{server}`")), "{reason}");
+        assert!(
+            reason.contains("priory, sentry, claude_ai_Linear"),
+            "{reason}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/mcp-get.log")).unwrap(),
+        "claude.ai Linear\nclaude.ai Linear (2)\n"
+    );
+    assert_no_token(&setup, &["fake/args.log", "daemon.log"]);
+}
+
+/// The MCP servers the real `claude -p` reports in its init message, with `flags` before the prompt.
+fn real_claude_servers(dir: &Path, flags: &[&str]) -> Vec<String> {
+    let output = harness::command("claude")
+        .current_dir(dir)
+        .env_remove("CLAUDECODE")
+        .args(["-p", "--output-format", "stream-json", "--verbose"])
+        .args(["--model", "haiku", "--max-turns", "1"])
+        .args(flags)
+        .args(["--", "Reply with OK."])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let init = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|event| event["type"] == "system" && event["subtype"] == "init")
+        .expect("an init message");
+    init["mcp_servers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|server| server["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+#[ignore = "runs the real claude, signed in to a claude.ai account with the connector PRIORY_REAL_CONNECTOR, and spends tokens: run it with --ignored"]
+fn the_real_claude_loads_a_connector_only_without_strict_mcp_config_and_mcp_get_finds_it() {
+    let name = std::env::var("PRIORY_REAL_CONNECTOR")
+        .expect("PRIORY_REAL_CONNECTOR names a connector of the signed-in account, such as Linear");
+    let server = format!("claude.ai {name}");
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("real-claude-connector");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let empty = dir.join("empty.mcp.json");
+    fs::write(&empty, r#"{"mcpServers": {}}"#).unwrap();
+    let empty = empty.to_str().unwrap();
+
+    let found = harness::command("claude")
+        .current_dir(&dir)
+        .env_remove("CLAUDECODE")
+        .args(["mcp", "get", &server])
+        .output()
+        .unwrap();
+    let absent = harness::command("claude")
+        .current_dir(&dir)
+        .env_remove("CLAUDECODE")
+        .args(["mcp", "get", &format!("{server} (no such connector)")])
+        .output()
+        .unwrap();
+    let strict = real_claude_servers(&dir, &["--strict-mcp-config", "--mcp-config", empty]);
+    let open = real_claude_servers(&dir, &["--mcp-config", empty]);
+
+    assert!(found.status.success(), "{found:?}");
+    assert!(!absent.status.success(), "{absent:?}");
+    assert!(
+        String::from_utf8_lossy(&absent.stderr).contains("No MCP server named"),
+        "{absent:?}"
+    );
+    assert!(
+        !strict.iter().any(|loaded| loaded.starts_with("claude.ai ")),
+        "{strict:?}"
+    );
+    assert!(open.contains(&server), "{open:?}");
+}
+
+#[test]
+fn a_claude_run_whose_connector_the_account_lacks_is_blocked_before_claude_starts() {
+    let mut setup = Setup::new("connector-missing");
+    plant_connectors(&setup, &["claude.ai Slack"]);
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        with_connectors("[\"Linear\"]"),
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    assert_eq!(
+        tasks[0][7],
+        "agent implementer names connector Linear, which the claude.ai account that claude signs in with on this runner does not have: connect it in claude.ai under Settings, Connectors, then resume the task"
+    );
+    assert!(!setup.dir.join("fake/args.log").exists(), "claude started");
+    assert!(setup.rows("runs").is_empty());
+}
+
+#[test]
+fn a_claude_run_whose_connector_the_account_holds_twice_is_blocked_as_ambiguous() {
+    let mut setup = Setup::new("connector-twice");
+    plant_connectors(&setup, &["claude.ai Linear", "claude.ai Linear (2)"]);
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        with_connectors("[\"Linear\"]"),
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    assert_eq!(
+        tasks[0][7],
+        "agent implementer names connector Linear, which the claude.ai account holds twice, as claude.ai Linear and claude.ai Linear (2): rename one in claude.ai, then resume the task"
+    );
+    assert!(!setup.dir.join("fake/args.log").exists(), "claude started");
 }
 
 #[test]
@@ -2030,6 +2246,81 @@ fn a_submitted_prompt_with_text_after_its_pasted_content_tag_is_not_confirmed() 
     setup.written("fake/typed.log");
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(setup.rows("outbox")[0][3], "attempted");
+}
+
+/// How many Enters the fake `claude` lost.
+fn dropped(setup: &Setup) -> usize {
+    fs::read_to_string(setup.dir.join("fake/dropped.log"))
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
+#[test]
+fn a_prompt_whose_first_enter_is_lost_is_submitted_by_one_more_enter_and_never_typed_again() {
+    let mut setup = Setup::new("enter-lost");
+    fs::write(setup.dir.join("fake/drop-enter"), "1").unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| {
+        rows.first().is_some_and(|row| row[3] == "confirmed")
+    });
+    assert_eq!(dropped(&setup), 1);
+    let typed = setup.typed();
+    assert!(typed[0].starts_with("Implement the issue.\n"), "{typed:?}");
+    assert_eq!(
+        typed
+            .iter()
+            .filter(|typed| typed.contains("Implement the issue."))
+            .count(),
+        1,
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_long_multi_line_prompt_typed_as_the_session_starts_is_submitted() {
+    let mut setup = Setup::new("enter-burst");
+    setup.hold("burst");
+    let text = "Say bonjour to the team and list what changed overnight. ".repeat(80);
+    let mut source = labeled(42);
+    source.data["body"] = json!(text);
+    let mut request = requested(42);
+    request.data["source"] = json!(source.id.to_string());
+    setup.publish(&source);
+    setup.publish(&request);
+
+    setup.start();
+
+    setup.until("outbox", |rows| {
+        rows.first().is_some_and(|row| row[3] == "confirmed")
+    });
+    let typed = setup.typed();
+    let lines: Vec<_> = typed[0].lines().collect();
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines[0], "Implement the issue.");
+    assert!(lines[1].starts_with("End this step by calling the result tool"));
+    assert!(lines[2].contains(text.trim_end()), "{lines:?}");
+}
+
+#[test]
+fn a_prompt_still_unconfirmed_after_one_more_enter_is_uncertain_on_the_desk() {
+    let mut setup = Setup::new("enter-lost-twice");
+    fs::write(setup.dir.join("fake/drop-enter"), "2").unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "uncertain") == 1);
+    assert_eq!(dropped(&setup), 2);
+    assert!(setup.typed().is_empty());
+    let items: Vec<_> = desk(&setup, &[])
+        .into_iter()
+        .map(|row| row[1].clone())
+        .collect();
+    assert_eq!(items, ["prompt"]);
 }
 
 #[test]
@@ -3495,6 +3786,279 @@ fn a_run_on_claudes_trust_dialog_blocks_at_once_and_names_the_folders_to_trust()
     let outbox = setup.rows("outbox");
     assert_eq!(outbox.len(), 1);
     assert_eq!(outbox[0][3], "queued");
+}
+
+/// A factory that turns on `trust_worktrees`, and a Claude config with a key of the person's own.
+fn trusting(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\ntrust_worktrees = true\n",
+    )
+    .unwrap();
+    fs::create_dir_all(setup.dir.join("claude")).unwrap();
+    fs::write(
+        setup.dir.join("claude/.claude.json"),
+        r#"{"oauthAccount":{"emailAddress":"a@b"}}"#,
+    )
+    .unwrap();
+    setup
+}
+
+/// Starts the daemon with a HOME of its own, so no harness config of the person's is in reach.
+fn start_trusting(setup: &mut Setup) {
+    let home = setup.dir.join("user");
+    fs::create_dir_all(&home).unwrap();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    setup.start_with(exe, &[("HOME", home.to_str().unwrap())]);
+}
+
+fn claude_json(setup: &Setup) -> serde_json::Value {
+    serde_json::from_str(&fs::read_to_string(setup.dir.join("claude/.claude.json")).unwrap())
+        .unwrap()
+}
+
+#[test]
+fn trust_worktrees_records_claudes_trust_in_the_worktree_and_the_clone_before_the_run() {
+    let mut setup = trusting("trust-claude");
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let worktree = fs::canonicalize(setup.dir.join("home/worktrees/owner/repo/1")).unwrap();
+    let clone = fs::canonicalize(setup.dir.join("home/repos/owner/repo")).unwrap();
+    let config = claude_json(&setup);
+    assert_eq!(config["oauthAccount"]["emailAddress"], "a@b");
+    let projects = config["projects"].as_object().unwrap();
+    let keys: Vec<&String> = projects.keys().collect();
+    let mut expected = [worktree.display().to_string(), clone.display().to_string()];
+    expected.sort();
+    assert_eq!(keys, expected.iter().collect::<Vec<_>>());
+    assert!(
+        projects
+            .values()
+            .all(|project| project == &json!({"hasTrustDialogAccepted": true}))
+    );
+    let records = traced(&setup, "factory.run.trusted");
+    let outcomes: Vec<(&str, &str)> = records
+        .iter()
+        .map(|record| {
+            (
+                record["data"]["path"].as_str().unwrap(),
+                record["data"]["outcome"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            (worktree.to_str().unwrap(), "granted"),
+            (clone.to_str().unwrap(), "granted")
+        ]
+    );
+    assert_eq!(records[0]["data"]["harness"], "claude-code");
+    assert_eq!(
+        records[0]["data"]["file"],
+        setup.dir.join("claude/.claude.json").display().to_string()
+    );
+}
+
+#[test]
+fn trust_worktrees_off_writes_no_claude_config() {
+    let mut setup = Setup::new("trust-off");
+    fs::create_dir_all(setup.dir.join("claude")).unwrap();
+    fs::write(setup.dir.join("claude/.claude.json"), "{}").unwrap();
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("claude/.claude.json")).unwrap(),
+        "{}"
+    );
+    assert!(traced(&setup, "factory.run.trusted").is_empty());
+    assert!(!codex_profile(&setup).exists());
+}
+
+#[test]
+fn a_trust_dialog_despite_trust_worktrees_blocks_with_its_own_reason_and_is_traced() {
+    let mut setup = trusting("trust-missed");
+    setup.publish(&requested(42));
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::write(
+        setup.dir.join("fake/silent"),
+        TRUST_DIALOG.replace("WORKTREE", &worktree.display().to_string()),
+    )
+    .unwrap();
+    start_trusting(&mut setup);
+
+    let tasks = setup.within(20, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+
+    assert_eq!(
+        tasks[0][7],
+        format!(
+            "claude asked whether to trust {} although Priory recorded its trust; this version of the harness keys trust differently. Trust the folder by hand, or turn trust_worktrees off",
+            worktree.display()
+        )
+    );
+    let missed: Vec<_> = traced(&setup, "factory.run.trusted")
+        .into_iter()
+        .filter(|record| record["data"]["outcome"] == "missed")
+        .collect();
+    assert_eq!(missed.len(), 1);
+    assert_eq!(missed[0]["data"]["path"], worktree.display().to_string());
+    assert_eq!(missed[0]["data"]["version"], "2.1.330 (Claude Code)");
+}
+
+#[test]
+fn a_refused_grant_keeps_the_manual_trust_reason_and_writes_no_missed_record() {
+    let mut setup = trusting("trust-refused");
+    fs::remove_file(setup.dir.join("claude/.claude.json")).unwrap();
+    setup.publish(&requested(42));
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::write(
+        setup.dir.join("fake/silent"),
+        TRUST_DIALOG.replace("WORKTREE", &worktree.display().to_string()),
+    )
+    .unwrap();
+    start_trusting(&mut setup);
+
+    let tasks = setup.within(20, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+
+    assert!(
+        tasks[0][7].contains("Priory never answers it"),
+        "{}",
+        tasks[0][7]
+    );
+    let outcomes: Vec<_> = traced(&setup, "factory.run.trusted")
+        .into_iter()
+        .map(|record| record["data"]["outcome"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(outcomes, ["refused", "refused"]);
+    assert!(!setup.dir.join("claude/.claude.json").exists());
+}
+
+#[test]
+fn a_codex_run_whose_grant_was_refused_starts_without_priorys_profile() {
+    let mut setup = trusting("trust-codex-refused");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::create_dir_all(setup.dir.join("codex")).unwrap();
+    fs::write(setup.dir.join("codex/config.toml"), "profile = \"work\"\n").unwrap();
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    assert!(!codex_args(&setup).contains(&"priory-trust".to_owned()));
+    assert_eq!(fs::read_to_string(codex_profile(&setup)).unwrap(), "");
+    let record = until_traced(&setup, "factory.run.trusted");
+    assert_eq!(record["data"]["outcome"], "refused");
+}
+
+#[test]
+fn a_repository_the_factory_does_not_name_gets_no_grant() {
+    let mut setup = trusting("trust-unnamed");
+    let origin = setup.dir.join("origin/owner");
+    assert!(
+        git(&origin)
+            .args(["clone", "-q", "--bare", "repo.git", "other.git"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut message = requested(42);
+    message.data["repo"] = json!("owner/other");
+    setup.publish(&message);
+    start_trusting(&mut setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let record = until_traced(&setup, "factory.run.trusted");
+    assert_eq!(record["data"]["outcome"], "refused");
+    assert_eq!(
+        record["data"]["why"],
+        "the factory does not name owner/other"
+    );
+    assert_eq!(
+        claude_json(&setup),
+        json!({"oauthAccount": {"emailAddress": "a@b"}})
+    );
+}
+
+#[test]
+fn a_grant_claude_overwrote_restarts_the_run_once_then_fails_the_task() {
+    let mut setup = trusting("trust-overwritten");
+    setup.publish(&requested(42));
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::write(
+        setup.dir.join("fake/silent"),
+        TRUST_DIALOG.replace("WORKTREE", &worktree.display().to_string()),
+    )
+    .unwrap();
+    // Claude rewrites its config from a copy without the grant, at every start.
+    fs::write(
+        setup.dir.join("fake/probe"),
+        r#"printf '{"oauthAccount":{}}' > "$CLAUDE_CONFIG_DIR/.claude.json""#,
+    )
+    .unwrap();
+    start_trusting(&mut setup);
+
+    let tasks = setup.within(40, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "failed")
+    });
+
+    let reason = &tasks[0][7];
+    assert!(
+        reason.starts_with(&format!(
+            "claude asked whether to trust {}: it overwrote the trust Priory recorded before it read it",
+            worktree.display()
+        )),
+        "{reason}"
+    );
+    assert!(reason.contains("failed again after its repair"), "{reason}");
+    assert_eq!(setup.rows("runs").len(), 2);
+    let repaired = traced(&setup, "factory.task.repaired");
+    assert_eq!(repaired.len(), 1);
+    assert_eq!(
+        repaired[0]["data"]["cause"],
+        "claude overwrote Priory's trust grant"
+    );
+    assert_eq!(repaired[0]["data"]["outcome"], "ready");
+}
+
+fn codex_profile(setup: &Setup) -> PathBuf {
+    setup.dir.join("codex/priory-trust.config.toml")
+}
+
+#[test]
+fn trust_worktrees_gives_a_codex_run_priorys_profile_that_trusts_the_clone() {
+    let mut setup = trusting("trust-codex");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::create_dir_all(setup.dir.join("codex")).unwrap();
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let clone = fs::canonicalize(setup.dir.join("home/repos/owner/repo")).unwrap();
+    let profile: toml::Table = fs::read_to_string(codex_profile(&setup))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let projects = profile["projects"].as_table().unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(
+        projects[clone.to_str().unwrap()]["trust_level"].as_str(),
+        Some("trusted")
+    );
+    assert_eq!(codex_args(&setup)[..2], ["-p", "priory-trust"]);
+    assert!(!setup.dir.join("codex/config.toml").exists());
 }
 
 const STEPS: &str = r#"
@@ -14808,6 +15372,150 @@ fn the_tldr_tool_refuses_a_tldr_over_the_limit_with_its_count_then_stores_one_th
     );
 }
 
+/// A `priory mcp --session` kept open, as Claude Code keeps one for its whole session.
+struct Kept {
+    child: Child,
+    out: std::io::BufReader<std::process::ChildStdout>,
+}
+
+impl Kept {
+    fn new(setup: &Setup, session: &str) -> Self {
+        let mut child = setup
+            .command(env!("CARGO_BIN_EXE_priory"))
+            .args(["mcp", "--session", session])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        Kept { child, out }
+    }
+
+    /// Calls the tool `name` and returns its text and whether it is an error.
+    fn call(&mut self, name: &str, arguments: serde_json::Value) -> (String, bool) {
+        let line = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                          "params": {"name": name, "arguments": arguments}});
+        let stdin = self.child.stdin.as_mut().unwrap();
+        std::io::Write::write_all(stdin, format!("{line}\n").as_bytes()).unwrap();
+        let mut reply = String::new();
+        std::io::BufRead::read_line(&mut self.out, &mut reply).unwrap();
+        self::reply(&serde_json::from_str(&reply).unwrap())
+    }
+}
+
+impl Drop for Kept {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The session of the run of task `task`, once its fake `claude` has its prompt.
+fn live_session(setup: &Setup, task: &str) -> String {
+    setup.written("fake/typed.log");
+    let runs = setup.until("runs", |rows| rows.iter().any(|row| row[1] == task));
+    runs.into_iter().find(|row| row[1] == task).unwrap()[4].clone()
+}
+
+#[test]
+fn a_kept_mcp_server_answers_its_four_state_tools_after_the_state_moves_to_a_newer_schema() {
+    let mut setup = Setup::new("mcp-newer-schema");
+    setup.calls(&[]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    let session = live_session(&setup, "1");
+    let mut kept = Kept::new(&setup, &session);
+    let (_, error) = kept.call("tldr", json!({ "text": "Before the upgrade." }));
+    assert!(!error);
+
+    // What a newer binary's first command does to the state under this server.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    db.pragma_update(None, "user_version", version + 1).unwrap();
+
+    for (name, arguments) in [
+        ("tldr", json!({ "text": "Rework the done gate." })),
+        ("search", json!({ "query": "done gate" })),
+        ("relate", json!({ "kind": "builds-on", "task": 2 })),
+        ("report", bonjour(serde_json::Value::Null)),
+    ] {
+        let (text, error) = kept.call(name, arguments);
+        assert!(!error, "{name}: {text}");
+    }
+}
+
+#[test]
+fn a_tool_call_made_while_the_daemon_restarts_succeeds_once_it_is_back() {
+    let mut setup = Setup::new("mcp-restart");
+    setup.calls(&[]);
+    setup.publish(&requested(42));
+    setup.start();
+    let session = live_session(&setup, "1");
+    let mut kept = Kept::new(&setup, &session);
+    setup.crash();
+
+    let call = std::thread::spawn(move || {
+        let reply = kept.call(
+            "progress",
+            json!({ "latestChange": "Through the restart." }),
+        );
+        (reply, kept)
+    });
+    std::thread::sleep(Duration::from_secs(2));
+    setup.start();
+
+    let ((text, error), _kept) = call.join().unwrap();
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default();
+    assert!(!error, "{text}\ndaemon: {log}");
+}
+
+#[test]
+fn a_tool_call_is_answered_while_a_search_waits_on_its_embedder() {
+    let mut setup = Setup::new("mcp-slow-search");
+    let fake = setup.dir.join("fake");
+    // Holds the query's embedding, and only it, until the test releases it.
+    let embedder = format!(
+        "#!/bin/sh\ntext=$(cat)\ncase \"$text\" in *zzquery*) echo > {0}/searching; \
+         while [ ! -e {0}/release ]; do sleep 0.1; done;; esac\necho '[1, 0]'\n",
+        fake.display()
+    );
+    fs::write(fake.join("embed"), embedder).unwrap();
+    fs::set_permissions(fake.join("embed"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        format!(
+            "name = \"demo\"\n[search]\nembeddings = true\ncommand = \"{}\"\n",
+            fake.join("embed").display()
+        ),
+    )
+    .unwrap();
+    setup.calls(&[]);
+    setup.publish(&requested(42));
+    setup.start();
+    let session = live_session(&setup, "1");
+    let mut searching = Kept::new(&setup, &session);
+    let search =
+        std::thread::spawn(move || searching.call("search", json!({ "query": "zzquery" })));
+    setup.written("fake/searching");
+
+    let asked = Instant::now();
+    let (text, error) = Kept::new(&setup, &session).call("tldr", json!({ "text": "Meanwhile." }));
+
+    assert!(!error, "{text}");
+    // Well under the embedder's 30 second timeout, which would free a search that blocked it.
+    assert!(
+        asked.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        asked.elapsed()
+    );
+    fs::write(fake.join("release"), "").unwrap();
+    let (text, error) = search.join().unwrap();
+    assert!(!error, "{text}");
+}
+
 #[test]
 fn the_progress_tool_stores_the_four_fields_on_the_agents_task() {
     let mut setup = Setup::new("progress-tool");
@@ -19365,10 +20073,11 @@ fn overlapping_after(name: &str, second: &str, factory: &str, first: impl Fn(&Se
     setup.until("runs", |rows| {
         rows.len() == 2 && rows[1][2] == "check" && rows[1][6] == "-"
     });
-    // Task 1's silent turn gets its nudge, which would take the next queued call.
+    // Task 1's silent turn gets its nudge, whose turn would take the next queued call.
     setup.until("outbox", |rows| {
-        rows.iter()
-            .any(|row| row[2] == "2" && row[4].starts_with("Your last turn ended"))
+        rows.iter().any(|row| {
+            row[2] == "2" && row[3] == "confirmed" && row[4].starts_with("Your last turn ended")
+        })
     });
     first(&setup);
     setup.publish(&requested(43));
@@ -19601,7 +20310,13 @@ fn woken_by_feedback(name: &str) -> Setup {
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     setup.publish(&thread_comment_at(803));
     setup.publish(&changes_requested());
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 4);
+    // A nudge can take a prompt between them, so count the items, not the prompts.
+    setup.until("outbox", |rows| {
+        [OTHER_URL, REVIEW_URL].iter().all(|url| {
+            rows.iter()
+                .any(|row| row[3] == "confirmed" && row[4].contains(url))
+        })
+    });
     setup
 }
 
@@ -20513,6 +21228,37 @@ fn the_agents_own_reply_written_during_its_run_is_not_recorded_as_feedback() {
 
     assert!(!error, "{text}");
     assert_eq!(task_json(&setup, "1")["triage"], json!([]));
+}
+
+#[test]
+fn the_persons_unmarked_comment_written_during_a_run_is_recorded_as_a_persons_call_with_no_ask() {
+    let mut setup = Setup::new("triage-person-during-run");
+    setup.calls(&[wait(json!({ "type": "time", "until": "3 seconds" }))]);
+    setup.publish(&requested(42));
+    setup.hold("hold-stop");
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    std::thread::sleep(Duration::from_millis(2100));
+    setup.release("hold-stop");
+    setup.until("runs", |rows| rows[0][7] == "asleep");
+    setup.hold("hold-stop");
+    // The person commented from their own gh account while the agent ran, with no agent marker.
+    let started: herdr_bus::Timestamp = setup.rows("runs")[0][5].parse().unwrap();
+    let during = herdr_bus::Timestamp::from_second(started.as_second() + 1).unwrap();
+    let mut comment = thread_comment_at(802).time(during);
+    comment.data["own"] = json!(true);
+    comment.data["agent"] = json!(false);
+    setup.publish(&comment);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+
+    let typed = setup.typed();
+    assert!(!typed[1].contains("sort each item"), "{typed:?}");
+    let (text, error) = result_sorting(&setup, serde_json::Value::Null);
+
+    assert!(!error, "{text}");
+    assert_eq!(task_json(&setup, "1")["triage"][0]["class"], "persons-call");
+    assert_eq!(task_json(&setup, "1")["triage"][0]["item"], THREAD_URL);
+    assert!(setup.rows("asks").is_empty());
 }
 
 const GUIDE: &str = "Open every ask with the question.";
@@ -30280,6 +31026,17 @@ fn a_result_held_on_a_judges_ask_ends_its_run_asleep_and_a_say_waits_for_the_ans
     assert_eq!(setup.rows("tasks")[0][4], "asleep");
     let said = setup.priory(&["say", "1", "Also add b.txt."]);
     assert!(said.status.success(), "{said:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&said.stdout).trim(),
+        "task 1 waits for the answer to ask gate-1-1: its next run reads it"
+    );
+    let outbox = setup.rows("outbox");
+    assert!(
+        outbox
+            .iter()
+            .any(|row| row[4].contains("Also add b.txt.") && row[3] == "queued"),
+        "the text waits for the next run: {outbox:?}"
+    );
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(
         setup.rows("tasks")[0][4],
@@ -30301,6 +31058,26 @@ fn a_result_held_on_a_judges_ask_ends_its_run_asleep_and_a_say_waits_for_the_ans
 }
 
 #[test]
+fn an_event_for_a_task_whose_result_waits_on_a_judges_ask_is_kept_not_woke() {
+    let (setup, _) = held_by_an_uncalibrated_judge("gate-judge-event", "name = \"demo\"\n");
+    setup.until("runs", |rows| rows[0][7] == "asleep");
+
+    setup.publish(&issue_commented(901));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(inbox[1][4], "kept", "{inbox:?}");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+    let listed = setup.priory(&["inbox"]);
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    let line = listed
+        .lines()
+        .find(|line| line.contains("github.issues.comment"))
+        .unwrap_or_else(|| panic!("{listed}"));
+    assert!(line.contains("kept") && !line.contains("woke"), "{listed}");
+}
+
+#[test]
 fn results_that_wait_on_one_uncalibrated_judge_share_one_ask_whose_answer_grades_each() {
     let (setup, _) = held_by_an_uncalibrated_judge("gate-judge-one-ask", "name = \"demo\"\n");
     setup.until("runs", |rows| rows[0][7] == "asleep");
@@ -30319,6 +31096,16 @@ fn results_that_wait_on_one_uncalibrated_judge_share_one_ask_whose_answer_grades
         std::thread::sleep(Duration::from_millis(50));
     }
     assert_eq!(asks_json(&setup)["asks"].as_array().unwrap().len(), 1);
+    for task in ["1", "2"] {
+        let asks = task_json(&setup, task)["asks"].clone();
+        assert_eq!(
+            asks.as_array().map(Vec::len),
+            Some(1),
+            "task {task}: {asks}"
+        );
+        assert_eq!(asks[0]["id"], "gate-1-1", "task {task}: {asks}");
+        assert_eq!(asks[0]["state"], "open", "task {task}: {asks}");
+    }
 
     let again = setup.priory(&["answer", "1", "grade again", "--revision", "1"]);
 

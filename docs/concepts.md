@@ -116,6 +116,10 @@ in its next prompt. An investigator is an agent that only reads, with MCP server
 as an error tracker's. The asking run never gets those servers. See
 [consulting an investigator](daemon/tools.md#consulting-an-investigator).
 
+**Connector.** An MCP server a person connects once in claude.ai, which follows their Claude login
+to every machine. An agent names the ones its runs get in `connectors`, and its runs get no other.
+See [connectors](reference/agents.md#connectors).
+
 **Repository readiness.** `priory check --repo PATH` scores what an unattended agent needs from a
 repository, such as one test command and CI on pull requests. See
 [docs/reference/readiness.md](reference/readiness.md).

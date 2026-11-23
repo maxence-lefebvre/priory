@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 106;
+const VERSION: i64 = 107;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1895,6 +1895,12 @@ ALTER TABLE runs ADD COLUMN resumes INTEGER;
 PRAGMA user_version = 106;
 ";
 
+// The sandbox a run's agent started in, for `priory runs` and its step's trace record.
+const SCHEMA_107: &str = "
+ALTER TABLE runs ADD COLUMN sandbox TEXT;
+PRAGMA user_version = 107;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1910,7 +1916,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106,
+    SCHEMA_106, SCHEMA_107,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2284,18 +2290,27 @@ pub(crate) fn route_in(
         )?;
     }
     // A review event goes to its review task first, even when an older task is keyed by its PR.
+    // A comment's task request joins the task its comment reached, or one that owns its pull request.
+    let feedback = route::feedback(message, factory);
     let (keyed, owners) = match (route::requests(message), route::review(message)) {
+        (true, _) if feedback => (
+            keyed(tx, resources.first())?,
+            joined(tx, message, &resources)?,
+        ),
         (true, _) => (keyed(tx, resources.first())?, Vec::new()),
         (false, Some(review)) => (keyed(tx, Some(&review))?, owners(tx, &resources)?),
         (false, None) => (None, owners(tx, &resources)?),
     };
     let owner = keyed.as_ref().or(owners.first());
+    // A failed or dropped task keeps its pull request: `priory revive` brings it back.
+    let ended = feedback && owner.is_none() && key_ended(tx, resources.first())?;
     let reopening = match owner {
         None => crate::tools::reopenable(tx, message)?,
         Some(_) => None,
     };
     let (task, outcome) = match route::route(message, owner, factory) {
         _ if reopening.is_some() => (reopening, "reopened"),
+        _ if ended => (None, "ignored"),
         _ if keyed.is_some() && route::withdraws(message) => {
             (keyed.as_ref().map(|task| task.id), "withdrew")
         }
@@ -2363,6 +2378,7 @@ pub(crate) fn route_in(
             }
             (Some(id), "created")
         }
+        Decision::Keep(id) if feedback => (Some(id), "coalesced"),
         Decision::Keep(id) if route::tick(message, factory) => (
             Some(id),
             if wakes(tx, id, factory)? {
@@ -2635,14 +2651,19 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
 }
 
 /// Whether `task` sleeps where an event can wake it: asleep at a model step, with no daemon's
-/// checks gate and no `plan` approval open, since a human step or a gate has no agent turn to wake.
+/// checks gate, no `plan` approval open and no result a gate holds, since a human step or a gate
+/// has no agent turn to wake.
 fn wakes(tx: &Transaction, task: i64, factory: &Factory) -> rusqlite::Result<bool> {
     let asleep_at: Option<(String, String)> = tx
         .query_row(
-            "SELECT workflow, step FROM tasks WHERE id = ?1 AND state = 'asleep'
-             AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND daemon)
-             AND NOT EXISTS (SELECT 1 FROM asks WHERE task = ?1 AND kind = 'step'
-               AND answer IS NULL AND withdrawn IS NULL)",
+            &format!(
+                "SELECT workflow, step FROM tasks WHERE id = ?1 AND state = 'asleep'
+                 AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND daemon)
+                 AND NOT EXISTS (SELECT 1 FROM asks WHERE task = ?1 AND kind = 'step'
+                   AND answer IS NULL AND withdrawn IS NULL)
+                 AND NOT EXISTS ({})",
+                crate::tools::HELD
+            ),
             [task],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -2685,10 +2706,10 @@ fn delivered(
     );
     // An event the task keeps that was written while it ran, such as the agent's own comment,
     // wakes nothing: its next wake carries it. To the second, as waits: the last second is after.
-    // A comment the intake knows another login wrote is a person's, whenever it was written.
+    // A comment the intake knows no agent wrote is a person's, whenever it was written.
     // An item a decision model settled wakes no one; the task's next prompt carries it.
     let fresh: bool = !crate::decision::settled(&message.data)
-        && (kept.is_none() || message.data["own"] == false
+        && (kept.is_none() || crate::tools::not_agents(&message.data)
         || tx.query_row(
             "SELECT NOT EXISTS (SELECT 1 FROM runs WHERE id = (SELECT max(id) FROM runs WHERE task = ?1)
                AND julianday(?2) >= (SELECT julianday(min(started)) FROM runs WHERE task = ?1)
@@ -3003,6 +3024,35 @@ pub(crate) fn keyed(tx: &Transaction, key: Option<&String>) -> rusqlite::Result<
     .optional()
 }
 
+/// The tasks a comment trigger's task request joins: the one its source event reached, kept or
+/// reopened, then every active task that owns its pull request.
+fn joined(
+    tx: &Transaction,
+    message: &Message,
+    resources: &[String],
+) -> rusqlite::Result<Vec<Task>> {
+    let reached = tx
+        .query_row(
+            "SELECT task FROM inbox WHERE id = ?1 AND task IS NOT NULL",
+            [message.data["source"].as_str()],
+            |row| Ok(Task { id: row.get(0)? }),
+        )
+        .optional()?;
+    Ok(reached.into_iter().chain(owners(tx, resources)?).collect())
+}
+
+/// Whether the newest task keyed `key` failed or was dropped.
+fn key_ended(tx: &Transaction, key: Option<&String>) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT 1 FROM tasks WHERE key = ?1 AND state IN ('failed', 'dropped')
+         AND id = (SELECT max(id) FROM tasks AS newest WHERE newest.key = ?1)",
+        [key],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|found| found.is_some())
+}
+
 /// The active task that owns any of `resources`: one whose own key is among them, else the oldest.
 pub(crate) fn owner(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Option<Task>> {
     Ok(owners(tx, resources)?.into_iter().next())
@@ -3240,6 +3290,7 @@ pub(crate) fn admissible<'r>(
     share: &Share,
     room: impl Fn() -> &'r Result<Room, String>,
     watched: &dyn Fn(&str) -> bool,
+    checking: &dyn Fn(i64) -> bool,
 ) -> rusqlite::Result<Option<Admission>> {
     let mut statement = db.prepare(&format!(
         "SELECT id, workflow, step, trigger, state = 'queued', repo, preempted, lane FROM tasks
@@ -3314,6 +3365,9 @@ pub(crate) fn admissible<'r>(
             Some(reason) => Some(reason),
             None => crate::spend::waits(db, &book, admission.task)?,
         };
+        // A check of its agent's claude.ai connectors runs in the background.
+        let busy = busy
+            .or_else(|| checking(admission.task).then(|| crate::connectors::CHECKING.to_owned()));
         // The review limit, as a pause, holds only a task's first run.
         let busy = match busy {
             Some(reason) => Some(reason),
@@ -3727,6 +3781,8 @@ pub(crate) struct NewRun<'a> {
     pub harness: &'a str,
     /// It resumes a session rather than starting one.
     pub resumes: bool,
+    /// The sandbox of the task's workflow its agent starts in, if any.
+    pub sandbox: Option<&'a str>,
 }
 
 /// The agent's shared session, once a run of it reached `SessionStart`, which every task resumes.
@@ -3787,8 +3843,8 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
         "INSERT INTO runs (task, step, agent, tmux, session, kit_hash, kit_commit, memories_commit,
-           debate, harness, resumes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+           debate, harness, resumes, sandbox)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             run.task,
             run.step,
@@ -3800,7 +3856,8 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
             run.memories_commit,
             run.debate,
             run.harness,
-            run.resumes
+            run.resumes,
+            run.sandbox
         ],
     )?;
     let id = tx.last_insert_rowid();
@@ -4316,18 +4373,33 @@ fn pasted(prompt: &str) -> &str {
         .unwrap_or(prompt)
 }
 
+/// A prompt marked `attempted`, to type into its run's tmux session.
+pub(crate) struct Attempt {
+    pub outbox: i64,
+    pub tmux: String,
+    pub session: String,
+    pub text: String,
+    pub compact: bool,
+}
+
+/// How long after its `SessionStart` a run first gets a prompt. Claude fires the hook before its
+/// input reads keys, and takes keys that wait for it, an Enter among them, as one paste.
+const SETTLE: &str = "1 seconds";
+
 /// Marks the oldest queued prompt of an idle live run `attempted` and the run busy, in one
 /// transaction, before anything is typed. A task with an attempted or uncertain prompt gets none
 /// while the process it went to may still hold its text: its run is live, as a run carried into the
 /// next step takes over the prompts of the run it continues. A run whose keyboard a person holds
-/// gets none until the grant ends.
-pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, String, String)>> {
+/// gets none until the grant ends, and a run gets none within `SETTLE` of its `SessionStart`.
+pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<Attempt>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let next = tx
         .query_row(
-            "SELECT outbox.id, runs.id, runs.tmux, runs.session, outbox.text FROM runs
+            &format!("SELECT outbox.id, runs.id, runs.tmux, runs.session, outbox.text, outbox.compact FROM runs
              JOIN outbox ON outbox.task = runs.task AND outbox.state = 'queued'
              WHERE runs.ended IS NULL AND runs.idle = 1
+             AND (runs.session_started IS NULL
+               OR julianday(runs.session_started) <= julianday('now', '-{SETTLE}'))
              AND NOT EXISTS (SELECT 1 FROM gates WHERE gates.run = runs.id AND gates.state = 'grading')
              AND NOT EXISTS (
                SELECT 1 FROM outbox AS open JOIN runs AS typed ON typed.id = open.run
@@ -4335,22 +4407,26 @@ pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, S
                AND typed.ended IS NULL)
              AND NOT EXISTS (SELECT 1 FROM keyboard_grants AS held WHERE held.run = runs.id
                AND held.ended IS NULL AND julianday(held.ends) > julianday('now'))
-             ORDER BY outbox.id LIMIT 1",
+             ORDER BY outbox.id LIMIT 1"),
             [],
             |row| {
                 Ok((
-                    row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
+                    Attempt {
+                        outbox: row.get(0)?,
+                        tmux: row.get(2)?,
+                        session: row.get(3)?,
+                        text: row.get(4)?,
+                        compact: row.get(5)?,
+                    },
                 ))
             },
         )
         .optional()?;
-    let Some((outbox, run, tmux, session, text)) = next else {
+    let Some((run, attempt)) = next else {
         return Ok(None);
     };
+    let outbox = attempt.outbox;
     tx.execute(
         &format!(
             "UPDATE outbox SET state = 'attempted', run = ?2, attempted = {NOW} WHERE id = ?1"
@@ -4367,7 +4443,33 @@ pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, S
         [run, outbox],
     )?;
     tx.commit()?;
-    Ok(Some((tmux, session, text)))
+    Ok(Some(attempt))
+}
+
+/// Whether the attempted prompt `outbox` still waits for its `UserPromptSubmit`: it is still
+/// `attempted`, its run is live, and no prompt started that run's turn since. A `/compact` stamps
+/// its turn when attempted and never fires one, so it never waits.
+pub(crate) fn unsubmitted(db: &Connection, outbox: i64) -> rusqlite::Result<bool> {
+    Ok(db
+        .query_row(
+            "SELECT outbox.state = 'attempted' AND runs.ended IS NULL AND runs.turn IS NULL
+               AND NOT outbox.compact
+             FROM outbox JOIN runs ON runs.id = outbox.run WHERE outbox.id = ?1",
+            [outbox],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(false))
+}
+
+/// Marks the attempted prompt `outbox` `uncertain`: Enter was pressed twice and no
+/// `UserPromptSubmit` came, so its text may still sit in the agent's input.
+pub(crate) fn unconfirmed(db: &Connection, outbox: i64) -> rusqlite::Result<()> {
+    db.execute(
+        "UPDATE outbox SET state = 'uncertain' WHERE id = ?1 AND state = 'attempted'",
+        [outbox],
+    )?;
+    Ok(())
 }
 
 /// Marks the task's oldest queued prompt `attempted` by `run`, which takes it as its first prompt

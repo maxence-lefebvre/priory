@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredBy, askGroups, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, stillArmed, submitted, takesText, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, stillArmed, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
@@ -52,6 +52,8 @@ const ICONS = {
   reports: '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>',
   queue: '<path d="M16 5H3"/><path d="M16 12H3"/><path d="M9 19H3"/><path d="m16 16-3 3 3 3"/><path d="M21 5v12a2 2 0 0 1-2 2h-6"/>',
   terminal: '<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>',
+  cog: '<path d="M12 20a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z"/><path d="M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"/><path d="M12 2v2"/><path d="M12 22v-2"/><path d="m17 20.66-1-1.73"/><path d="M11 10.27 7 3.34"/><path d="m20.66 17-1.73-1"/><path d="m3.34 7 1.73 1"/><path d="M14 12h8"/><path d="M2 12h2"/><path d="m20.66 7-1.73 1"/><path d="m3.34 17 1.73-1"/><path d="m17 3.34-1 1.73"/><path d="m11 13.73-4 6.93"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   workflow: '<rect width="8" height="8" x="3" y="3" rx="2"/><path d="M7 11v4a2 2 0 0 0 2 2h4"/><rect width="8" height="8" x="13" y="13" rx="2"/>',
   more: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
   settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
@@ -397,7 +399,7 @@ function askRow(ask, current) {
   return html`<a class="row ${ask.state !== "open" ? "past" : ""}" href="/asks/${ask.id}" aria-current="${current ? "true" : "false"}">
     ${tile(ask.state === "open" ? "ask" : ask.state)}
     <span class="l1"><span class="mono">${taskLabel(ask.key)}</span><span>${ask.step}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${runnerTag(ask, false)}${routedTag(ask)}<span class="age">${when}</span></span>
-    <span class="l2">${ask.title || ask.question}</span>
+    <span class="l2">${askHeading(ask)}</span>
     <span class="l3">${ask.state === "open" && !sentNote(ask) && seenAgo(ask, Date.now(), age) ? html`<span class="t-warn">${runnerOf(ask)} ${seenAgo(ask, Date.now(), age)}</span>` : ""}${line3}</span>
     <span class="chev">${icon("chevron-right", "s15")}</span></a>`;
 }
@@ -649,7 +651,7 @@ function nextCard(model) {
   if (!item) return "";
   const ask = item.kind === "ask" ? state.data.asks.find((each) => String(each.id) === String(item.id)) : null;
   const task = state.data.tasks.find((each) => each.id === item.task);
-  const text = ask ? ask.title || ask.question : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : item.what;
+  const text = ask ? askHeading(ask) : ["blocked", "failed"].includes(item.kind) && task?.reason ? task.reason : item.what;
   const kind = ["prompt", "command"].includes(item.kind) ? "prompt" : item.kind === "report" ? "lost" : item.kind;
   const href = nextLink(item);
   const verb = ask ? "Answer…" : href?.startsWith("#") ? "See the banner" : "Open task";
@@ -887,7 +889,7 @@ function askTableRow(ask, selected) {
   const status = answered ? ask.answer + byLine(ask) : ask.state === "withdrawn" ? ask.withdrawn_why || "" : snoozed(ask, Date.now()) ? snoozedUntil(ask) : sentNote(ask) ? sentLine(ask) : null;
   const folded = status ?? (ask.recommendation ? html`Recommends <b>${ask.recommendation}</b>` : "");
   return html`<tr data-href="/asks/${ask.id}" aria-current="${String(ask.id) === selected ? "true" : "false"}">
-    <td>${stateWord(ask.state === "open" ? "ask" : ask.state)}</td><td class="mono">${taskLabel(ask.key)}</td><td>${ask.step}</td><td class="q"><span>${ask.title || ask.question}</span>${runnerTag(ask)}${routedTag(ask)}${fold(folded)}</td>
+    <td>${stateWord(ask.state === "open" ? "ask" : ask.state)}</td><td class="mono">${taskLabel(ask.key)}</td><td>${ask.step}</td><td class="q"><span>${askHeading(ask)}</span>${runnerTag(ask)}${routedTag(ask)}${fold(folded)}</td>
     <td class="recw">${status ?? ask.recommendation ?? ""}</td><td class="r">${when}</td></tr>`;
 }
 
@@ -1171,7 +1173,9 @@ function askDetail(id, wide) {
     : html`${notice ? html`<p class="warnline" role="status">${notice}</p>` : ""}${sentShown}${routedNote(ask) ? html`<p class="routednote">${icon("corner-down-right", "s15")}${routedNote(ask)}</p>` : ""}${ask.recommendation ? html`<div class="rec"><span><b>Recommended: ${ask.recommendation}.</b></span>
         ${ask.next_action ? html`<span class="then">${icon("corner-down-right", "s15")}<span>${ask.next_action}</span></span>` : ""}</div>` : ""}
       <div class="opts" role="group" aria-label="Options">${optionButtons}</div>${lockedNote}${more}${elsewhere}`;
-  const question = autolinked(ask.question || ask.title, ask.repo);
+  // A long untitled question heads the detail with a short title and reads whole at the top of Why.
+  const question = autolinked(askHeading(ask), ask.repo);
+  const body = askBody(ask);
   const top = html`<div class="ask">
     <a class="ctx" href="${ask.task && !owner ? `/tasks/${ask.task}` : "/asks"}" title="${ask.task && !owner ? `task ${ask.task}` : ""}">${wide ? "" : tile("ask", "sm")}<span class="mono">${taskLabel(ask.key)}</span><span>${ask.step}</span><span>${ask.lane || ""}</span>${ask.command ? html`<span class="tag">Command</span>` : ""}${runnerTag(ask)}${wide ? "" : html`<span>${timeTag(ask.since)}</span><span>revision ${ask.revision}</span>`}</a>
     ${ask.risk_estimate ? html`<p class="note">${icon("lock", "s15")}<span>${ask.risk_estimate.line}</span></p>` : ""}
@@ -1186,7 +1190,8 @@ function askDetail(id, wide) {
   const sections = [...planned.map(([key, label]) => [key, label]), ["why", "Why"], ...read.map(([key, label]) => [key, label]), ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
   const jump = html`<nav class="jump" aria-label="Sections">${sections.map(([key, label], i) => html`<a href="#${key}" aria-current="${i === 0 ? "true" : "false"}">${label}</a>`)}</nav>`;
   const why = html`<section class="sect" id="why"><div class="sh">${icon("message-text", "s15")}What the agent asks<span class="meta">${ask.run ? html`run <span class="mono">${ask.run}</span>` : ""}</span></div>
-    ${md(ask.text || ask.question, ask.repo)}
+    ${body ? html`<p class="asked">${autolinked(body, ask.repo)}</p>` : ""}
+    ${ask.text || !body ? md(ask.text || ask.question, ask.repo) : ""}
     ${ask.tradeoff ? html`<p class="fact">${icon("scale", "s15")}<span><b>Trade-off.</b> ${ask.tradeoff}</span></p>` : ""}
     ${ask.what_waits ? html`<p class="fact">${icon("hourglass", "s15")}<span><b>What waits.</b> ${ask.what_waits}</span></p>` : ""}</section>`;
   const command = !ask.command ? "" : typeof ask.command === "string"
@@ -1495,17 +1500,48 @@ function taskPage(id) {
     <textarea id="say" name="text" rows="2" placeholder="Say to the agent">${state.sayDrafts.get(task.id) || ""}</textarea><button class="btn primary" ${said}>Say</button></form>`;
   const sections = taskSections(task).map(([, , section]) => section);
   return html`${back}<div class="scroll"><div class="ask task">
-    <p class="ctx">${tile(task.state, "sm")}<span class="mono">${taskLabel(task.key)}</span><span>${task.state}</span><span>${workStep(task)}</span><span>${task.lane || ""}</span><span>${task.band || ""}</span>${task.batch == null ? "" : html`<a href="/batches/${task.batch}">batch ${task.batch}</a>`}</p>
+    <p class="ctx">${tile(task.state, "sm")}<span class="mono">${taskLabel(task.key)}</span><span>${task.state}</span><span>${workStep(task)}</span><span>${task.lane || ""}</span><span>${task.band || ""}</span>${task.batch == null ? "" : html`<a href="/batches/${task.batch}">batch ${task.batch}</a>`}${task.auto_answer ? html`<span>Answers asks itself at <b>${task.auto_answer}</b></span>` : ""}</p>
     <h1 class="question">${autolinked(task.tldr || task.brief?.title || task.brief?.request?.split("\n")[0] || taskLabel(task.key), task.repo)}</h1>
     ${task.reason ? html`<p class="text t-${role(task.state)}">${autolinked(task.reason, task.repo)}</p>` : ""}
-    ${taskAsks(task)}${taskActs(task.id, task.state)}${say}</div>${sections}${terminalSection(task)}</div>`;
+    ${taskAsks(task)}${taskActs(task.id, task.state)}${say}${taskAnswered(task)}</div>${sections}${terminalSection(task)}</div>`;
 }
 
 // The task's open asks, each with a way to answer it (DESIGN.md, Task detail).
 function taskAsks(task) {
-  const asks = openAsksOf(state.data.asks, task.id);
+  const asks = openAsksOf(state.data.asks, task);
   if (!asks.length) return "";
-  return html`<ul class="taskasks" aria-label="Open asks">${asks.map((ask) => html`<li>${tile("ask", "sm")}<span>${ask.title || ask.question}<span class="age">${timeTag(ask.since)}</span></span><a class="btn primary" href="/asks/${encodeURIComponent(ask.id)}">Answer…</a></li>`)}</ul>`;
+  return html`<ul class="taskasks" aria-label="Open asks">${asks.map((ask) => html`<li>${tile("ask", "sm")}<span>${askHeading(ask)}<span class="age">${timeTag(ask.since)}</span></span><a class="btn primary" href="/asks/${encodeURIComponent(ask.id)}">Answer…</a></li>`)}</ul>`;
+}
+
+// Who answered, as the answered row's icon and what a screen reader reads of it.
+const ANSWERERS = { auto: ["cog", "Answered by auto"], agent: ["cog", "Answered by an agent"], session: ["terminal", "Answered from a session"], person: ["user", "Answered by a person"] };
+
+const confidenceBars = (row) => html`<span class="bars" role="img" aria-label="Confidence ${row.confidence}">${[1, 2, 3].map((n) => raw(n <= row.bars ? '<i class="on"></i>' : "<i></i>"))}</span>`;
+
+// The task's answered asks, newest first, each with who answered. An auto answer opens to its
+// confidence, rationale and trade-off, and says how to change course (DESIGN.md, Task detail).
+function taskAnswered(task) {
+  const rows = answeredAsks(task.asks || [], task.id);
+  if (!rows.length) return "";
+  const live = !ENDED.includes(task.state);
+  const row = (ask) => {
+    const [name, label] = ANSWERERS[ask.answerer] || ["check", "Answered"];
+    const by = !ask.by ? "" : ask.answerer === "session" ? html` by session <span class="mono">${ask.by.slice(8)}</span>`
+      : ask.answerer === "person" ? ` by ${ask.by}` : html` by <b>${ask.by}</b>`;
+    const answered = html`<p class="said">Answered <b>${ask.answer}</b>${by}${ask.recommended == null ? "" : `. Recommended ${ask.recommended}.`}</p>`;
+    const head = raw(`<svg class="ico who" viewBox="0 0 24 24" role="img" aria-label="${label}">${ICONS[name]}</svg>`);
+    if (ask.answerer !== "auto") {
+      const sure = ask.confidence ? html`<p class="sure dim">${confidenceBars(ask)}${ask.confidence}${ask.rationale ? `: ${ask.rationale}` : ""}</p>` : "";
+      return html`<li>${head}<div><p class="aq">${ask.title}</p>${answered}${sure}</div>${timeTag(ask.at)}</li>`;
+    }
+    const sure = ask.confidence ? html`<p class="sure">${confidenceBars(ask)}<span><b>${ask.confidence}</b> ${confidenceNote(task.auto_answer)}</span></p>` : "";
+    const why = [["Why", ask.rationale], ["Trade-off", ask.tradeoff], ["The ask", ask.question !== ask.title ? ask.question : null]].filter(([, text]) => text);
+    const reasons = why.length ? html`<dl class="why">${why.map(([term, text]) => html`<dt>${term}</dt><dd>${text}</dd>`)}</dl>` : "";
+    return html`<li class="auto">${head}<div><p class="aq">${ask.title}</p>${answered}${sure}${reasons}
+      <p class="course"><span>The first answer stands. To change course, tell the agent.</span>${live ? html`<a href="#say">Say to the agent</a>` : ""}<a href="/asks/${encodeURIComponent(ask.id)}">Open ask ${ask.id}</a></p></div>${timeTag(ask.at)}</li>`;
+  };
+  return html`<section class="answered" aria-labelledby="answered-head"><div class="ah"><h2 id="answered-head">Answered asks</h2><span class="meta">${rows.length}${rows.length > 1 ? ", newest first" : ""}</span></div>
+    <ol class="arows">${rows.map(row)}</ol></section>`;
 }
 
 // Brief, Plan, PR and Trace, each left out when the task lacks it. Agent text shows with its autolinks.

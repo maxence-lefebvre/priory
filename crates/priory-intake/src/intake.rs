@@ -626,8 +626,7 @@ fn publish_all(
     } in polled
     {
         for event in events {
-            let mut source = event.message(triggers)?;
-            mark_own(&mut source);
+            let source = event.message(triggers, gh::viewer)?;
             // Reviews and checks are read again on every poll; herdr-bus would drop them too.
             if !published.insert(source.id) {
                 continue;
@@ -823,17 +822,26 @@ pub fn request_for(name: &str, trigger: &Trigger, source: &Message) -> Message {
     task_requested(name, trigger, source, key)
 }
 
-/// Marks a GitHub comment or review `own` when the login `gh` runs as wrote it, the login a
-/// worker's `gh` posts as. Unmarked while `gh` cannot say who it is.
-fn mark_own(message: &mut Message) {
+/// Marks a GitHub comment or review `own` when `viewer`, the login a worker's `gh` posts as, wrote
+/// it, and `agent` when it is also marked `AGENT_COMMENT`: the person shares that login, so their
+/// unmarked comment is theirs. Unmarked while `gh` cannot say who it is.
+fn mark_own(message: &mut Message, viewer: Viewer) {
     let feedback = [COMMENTED, THREAD_COMMENTED, REVIEWED, ISSUE_COMMENTED];
     if !feedback.contains(&message.kind.as_str()) {
         return;
     }
-    if let Some(viewer) = gh::viewer() {
-        message.data["own"] = json!(message.data["actor"] == viewer);
+    if let Some(viewer) = viewer() {
+        let own = message.data["actor"] == viewer;
+        let marked = message.data["body"]
+            .as_str()
+            .is_some_and(|body| body.contains(priory_runtime::runtime::AGENT_COMMENT));
+        message.data["own"] = json!(own);
+        message.data["agent"] = json!(own && marked);
     }
 }
+
+/// Who `gh` runs as: `gh::viewer`, or none where a test must not run `gh`.
+type Viewer = fn() -> Option<&'static str>;
 
 fn publish(bus: &dyn Log, message: &Message) -> Result<(), String> {
     bus.publish(OUTPUT, message)
@@ -856,36 +864,50 @@ struct Observed {
 }
 
 impl Observed {
-    fn message(&self, triggers: &[(&str, &Trigger)]) -> Result<Message, String> {
+    fn message(&self, triggers: &[(&str, &Trigger)], viewer: Viewer) -> Result<Message, String> {
         let raw = self.data["time"].as_str().unwrap_or_default();
         let time: Timestamp = raw
             .parse()
             .map_err(|error| format!("GitHub time `{raw}`: {error}"))?;
         let mut data = self.data.clone();
         data["baseline"] = json!(self.baseline);
-        data["triggers"] = json!(self.matching(triggers));
         let url = self.data["url"].as_str().unwrap_or_default().to_string();
         let link = if self.kind.starts_with("github.issues.") {
             "issue"
         } else {
             "pull_request"
         };
-        Ok(Message::new(self.kind, data)
+        let mut message = Message::new(self.kind, data)
             .id(id(&self.name))
             .subject(format!("{}#{}", self.repo, self.number))
             .time(time)
-            .link(link, &url))
+            .link(link, &url);
+        mark_own(&mut message, viewer);
+        // An agent's comment must not start a task, or its task could restart itself.
+        let agent = message.data["agent"] == true;
+        message.data["triggers"] = json!(self.matching(triggers, agent));
+        Ok(message)
     }
 
-    fn matching<'a>(&self, triggers: &[(&'a str, &Trigger)]) -> Vec<&'a str> {
+    fn matching<'a>(&self, triggers: &[(&'a str, &Trigger)], agent: bool) -> Vec<&'a str> {
+        let field = |name: &str| self.data[name].as_str();
+        let outsider = field("association")
+            .is_some_and(|association| !["OWNER", "MEMBER", "COLLABORATOR"].contains(&association));
         let matches = |trigger: &Trigger| {
-            let label = trigger
-                .filter
-                .as_ref()
-                .and_then(|filter| filter.get("label"));
+            let filter = |key: &str| trigger.filter.as_ref().and_then(|filter| filter.get(key));
+            // A bot's review starts a task only for a trigger that names the bot.
+            let commenter = match filter("commenter") {
+                Some(commenter) => field("actor") == Some(commenter.as_str()),
+                None => self.data["bot"] != true,
+            };
             trigger.repo.as_deref() == Some(self.repo.as_str())
                 && format!("github.{}", trigger.on) == self.kind
-                && label.is_none_or(|label| self.label.as_ref() == Some(label))
+                && filter("label").is_none_or(|label| self.label.as_ref() == Some(label))
+                && filter("author").is_none_or(|author| field("author") == Some(author.as_str()))
+                && commenter
+                && !outsider
+                && !agent
+                && self.data["open"] != false
                 && (!self.baseline || trigger.backfill == Some(true))
         };
         triggers

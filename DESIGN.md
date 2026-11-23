@@ -663,7 +663,12 @@ for a decision. Every ask has its own URL, such as `/asks/42`.
    An ask whose answer lets an irreversible step run, and that has a `risk_estimate`, adds a
    **History line** under it: the `lock` icon and the server's `line` in `--type-caption` and
    `--text-2`. It takes no color, tile or level, so it never reads as a verdict on this change.
-3. **Question** in `--type-question`, or `--type-question-wide` in the drawer.
+3. **Heading** in `--type-question`, or `--type-question-wide` in the drawer: the ask's title.
+   An untitled ask uses its question when that is one line of at most 80 characters. Otherwise
+   the heading is "ENG-212 asks at approve-pr", or the question's first sentence for an ask with
+   no task, cut at a word to about 80 characters with an ellipsis. A long agent question never
+   fills the heading, so the options stay in view. Rows, the Desk's next thing, a task's open
+   asks and the Herdr panels use the same heading.
 4. **Recommendation**, with no box: "Recommended: Merge." in `--text` at 600, the agent's reason
    in `--text-2`, then a `corner-down-right` line with what the agent does next after that
    answer.
@@ -685,7 +690,8 @@ Trace, History, and Command in the drawer) jumps to each part and marks the one 
 chips read as tabs: words in `--text-2`, and the one in view in `--text` over a 2 px `--text`
 underline, with no fill.
 
-1. **Why**: what the agent says, as Markdown, with the run that asked; then "Trade-off." and
+1. **Why**: the full question in `--type-read`, with its line breaks and links, when the heading
+   does not show all of it; then what the agent says, as Markdown, with the run that asked; then "Trade-off." and
    "What waits." as two facts with the `scale` and `hourglass` icons.
 2. **Brief**: the task's brief file as Markdown, with its file name and an open link.
 3. **Plan**: the task's plan as Markdown; a checklist shows done items with `check` in
@@ -715,7 +721,7 @@ did not show. Until then the options are disabled under a `layers` note, "Readin
 
 **Answer while reading.** On a phone, once the options scroll out of view:
 
-- The header shrinks to one line: the question, clamped, over the task key, step and revision,
+- The header shrinks to one line: the heading, clamped, over the task key, step and revision,
   such as "ENG-212, approve-pr, revision 1", once the options scroll above the view. Options still
   below the fold leave the header whole. The back link keeps its chevron and drops its word, at
   `--control` width, and the position leaves. Scrolling the options back restores the header.
@@ -994,6 +1000,19 @@ What starts next and why. Saved views: Waiting, Held and Last day, each with a c
 - **Open asks**, before the actions: one bordered row per open ask of the task, snoozed ones too,
   oldest first. Each shows the ask tile, its title, its age and a primary "Answer…" link to
   `/asks/<id>`, so a person who follows the Desk's "Open task" can still answer.
+- The context line ends with "Answers asks itself at **high**" when the task has an `auto_answer`
+  level.
+- **Answered asks**, after Say: a `--type-body` heading with the count, "3, newest first", then
+  one bordered card of rows split by hairlines, newest answer first. Each row has a 16 px icon for
+  who answered (`cog` for auto or a lead agent, `terminal` for a session, `user` for a person),
+  the ask's title, "Answered **40** by a person. Recommended 50." with the recommendation only when
+  another option won, and the age at the right. A session reads "by session `7f3c2a`" in mono.
+  When the agent stated a confidence, a `--text-3` caption shows it as three bars, filled in
+  `--text` up to its level (high 3, medium 2, low 1), then "medium: " and the rationale. An auto
+  answer's row opens wider: its title in 600, "**high** confidence, the agent's own. The task
+  answers at high and above.", then a `--raised` box of Why, Trade-off and The ask, then a caption
+  "The first answer stands. To change course, tell the agent." with underlined links to Say and to
+  the ask. There is no overturn control: the daemon refuses a second answer.
 - **Actions**, in `.btn secondary`: Resume and Cancel for a blocked task, Revive for a failed or
   dropped one, Cancel for any other active task. Cancel and Revive arm on the first tap, as a
   command option does: the button turns `--emph`, reads "Tap again to cancel" over its verb, and a
@@ -1505,7 +1524,7 @@ Every ask, with the web's ask detail fitted to the pane.
   shows the same tag and lines, and offers no snooze on it.
 - A routed ask shows the [routed mark](#routed-ask) as a tag in its row and as a line under the
   question in its detail. An answered row and the history say who answered.
-- The detail keeps the web's order: context line, History line, question, recommendation with what happens next,
+- The detail keeps the web's order: context line, History line, heading, recommendation with what happens next,
   options with keys `1` to `9`, write an answer, then the section chips Why, Brief, Plan, PR,
   Trace and History.
 - Once the options scroll out of view, the sticky answer bar shows "3 options", the recommended
@@ -1535,6 +1554,9 @@ The morning dossier.
 - The greeting in the display role, then the report's sections **in the order the factory gives
   them**. The panel knows no section by name. Each section has a title, an optional count and
   rows; a row may carry a pick.
+- In Herdr a section draws its first 15 rows, then a secondary "Show 140 more rows" button that
+  draws the rest. Past the 15, the selected row, a row being picked, a row with a notice and a row
+  with threads still show. A search with text and the Picks view draw every row.
 - A pick is a segmented control of its options. A `check` marks the chosen option only; the
   note says "Recommends Take". An agreed pick folds to one line with Change.
 - From 1024 px a 200 px list of the sections, with counts and "Picks", sits on the left. Below,
@@ -1607,6 +1629,11 @@ open it.
   color, and Attach as a secondary button at the right.
 - The title in `--type-pane-question`, then the workflow, step, lane and band in `--text-2`, then
   the reason in its role's text color.
+- Asks lists open asks first, then answered ones newest first. An answered ask's 18 px tile is
+  its answerer's icon in `--text-2`, as on the web's Answered asks, with the age at the right and
+  "Answered after by session 7f3c2a, medium" as its caption. An auto answer adds its three
+  confidence bars and the word, its rationale in a bordered `--surface` box, and "The first answer
+  stands. Say to the agent to change course."
 - Asks, Pull request, Inbox and History, each a caption heading with its count, then rows with an
   18 px tile and a `--type-small` line over a `--text-3` caption, split by hairlines. Inbox lists
   the latest 20 events routed to the task, newest first, with the web's tiles and wording and the

@@ -2619,6 +2619,7 @@ fn issue_pull_request_and_review_deliveries_publish_their_poll_types() {
             "body": "Looks good.",
             "commit": "fff000",
             "actor": "ana",
+            "author": "max",
             "open": false,
             "time": "2026-11-17T10:30:00Z",
             "github_id": 2561579718u64,

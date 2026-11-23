@@ -190,12 +190,20 @@ fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> 
 /// process that keeps the worktree.
 pub(crate) const OWN_GIT: &str = "PRIORY_GIT";
 
-pub(crate) fn git(dir: &Path) -> Command {
+/// Git in `dir`, as Priory runs it on a clone or a worktree. It runs no hook and no file system
+/// monitor, since a jailed agent can write both into the clone it shares with the host.
+pub fn git(dir: &Path) -> Command {
     let mut command = Command::new("git");
     command
         .env(OWN_GIT, std::process::id().to_string())
         .arg("-C")
-        .arg(dir);
+        .arg(dir)
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+        ]);
     command
 }
 
@@ -491,12 +499,17 @@ pub fn pull_request_state(repo: &str, number: u64) -> Result<String, String> {
     .map(|state| state.trim().to_owned())
 }
 
-/// Writes `body` as a new comment on pull request `number` of `repo`, and returns its URL.
+/// The line that marks a comment an agent wrote, since agents post as the person's `gh` login.
+pub const AGENT_COMMENT: &str = "<!-- agent-comment -->";
+
+/// Writes `body` as a new comment on pull request `number` of `repo`, marked as an agent's, and
+/// returns its URL.
 pub fn comment_on_pull_request(repo: &str, number: u64, body: &str) -> Result<String, String> {
     let number = number.to_string();
+    let body = format!("{body}\n\n{AGENT_COMMENT}\n");
     fed(
         Command::new("gh").args(["pr", "comment", &number, "-R", repo, "--body-file", "-"]),
-        Some(body.as_bytes().to_vec()),
+        Some(body.into_bytes()),
     )
     .map(|url| url.trim().to_owned())
 }
@@ -617,6 +630,10 @@ pub struct Launch<'a> {
     pub servers: &'a Servers,
     /// Which of Priory's own tools its MCP server serves the run.
     pub tools: crate::mcp::Tools,
+    /// The sandbox the run's harness starts in, or none for the person's whole user.
+    pub jail: Option<&'a crate::jail::Jail>,
+    /// The factory turns on `trust_worktrees`, so the harness reads the trust Priory records.
+    pub trust: bool,
 }
 
 /// A coding agent CLI that Priory runs in tmux, with hooks and tools that report to the daemon.
@@ -632,6 +649,10 @@ pub trait Harness {
     fn asks_trust(&self, _screen: &str) -> bool {
         false
     }
+    /// Records the harness's trust in `worktree` and its `clone`, each a real path Priory owns.
+    fn grant_trust(&self, worktree: &Path, clone: &Path) -> Vec<crate::trust::Grant>;
+    /// Whether the harness's config still holds the trust `grant_trust` recorded.
+    fn holds_trust(&self, worktree: &Path, clone: &Path) -> Result<bool, String>;
     /// A file the harness reads at start, and its text, which `launch` writes first.
     fn file(&self, _launch: &Launch) -> Option<(PathBuf, String)> {
         None
@@ -640,6 +661,32 @@ pub trait Harness {
     fn private_file(&self, _exe: &Path, _launch: &Launch) -> Option<(PathBuf, String)> {
         None
     }
+    /// The harness's own home under the person's `home`: its login, sessions, transcripts and
+    /// trusted folders, which a jailed run keeps, each with how the jail binds it.
+    fn own_home(&self, home: Option<&Path>) -> Vec<(PathBuf, Own)>;
+    /// The variables that move the harness's own home, which a jailed run keeps.
+    fn home_env(&self) -> &'static [&'static str];
+}
+
+/// How a jailed run gets a path of its harness's own home. Each folder is made when missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Own {
+    /// A folder the run reads only.
+    Read,
+    /// A folder the run writes.
+    Write,
+    /// A folder the run writes in an empty copy of its own, gone when the run ends.
+    Scratch,
+    /// A file the run reads only, when it exists.
+    File,
+}
+
+/// The folder a variable names, else `fallback` under `home`.
+fn named_or(variable: &str, home: Option<&Path>, fallback: &str) -> Option<PathBuf> {
+    std::env::var_os(variable)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| home.map(|home| home.join(fallback)))
 }
 
 /// The factory's instructions, then the agent's own prompt.
@@ -668,6 +715,34 @@ pub struct ClaudeCode;
 impl Harness for ClaudeCode {
     fn program(&self) -> &'static str {
         "claude"
+    }
+
+    /// Claude Code runs hooks, plugins, MCP servers and scripts that its settings, plugins and
+    /// `.claude.json` name, so those stay read-only. It writes its transcripts in `projects`, and
+    /// the scripts its shell sources in `session-env` and `shell-snapshots`, which stay in the jail.
+    fn own_home(&self, home: Option<&Path>) -> Vec<(PathBuf, Own)> {
+        let named = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|dir| !dir.is_empty());
+        let Some(dir) = named
+            .clone()
+            .map(PathBuf::from)
+            .or_else(|| Some(home?.join(".claude")))
+        else {
+            return Vec::new();
+        };
+        let mut own = vec![
+            (dir.join("projects"), Own::Write),
+            (dir.join("session-env"), Own::Scratch),
+            (dir.join("shell-snapshots"), Own::Scratch),
+            (dir.clone(), Own::Read),
+        ];
+        if named.is_none() {
+            own.extend(home.map(|home| (home.join(".claude.json"), Own::File)));
+        }
+        own
+    }
+
+    fn home_env(&self) -> &'static [&'static str] {
+        &["CLAUDE_CONFIG_DIR"]
     }
 
     fn args(&self, exe: &Path, launch: &Launch) -> Result<Vec<String>, String> {
@@ -710,9 +785,26 @@ impl Harness for ClaudeCode {
                 INVESTIGATOR_DENIED.join(","),
             ]);
         }
-        args.extend(["--settings".to_owned(), settings(exe, &launch.permissions)]);
+        let mut permissions = launch.permissions.clone();
+        if !launch.servers.denied.is_empty() {
+            let deny = permissions["deny"]
+                .as_array_mut()
+                .expect("deny is an array");
+            deny.extend(
+                launch
+                    .servers
+                    .denied
+                    .iter()
+                    .map(|rule| rule.as_str().into()),
+            );
+        }
+        args.extend(["--settings".to_owned(), settings(exe, &permissions)]);
         // Without the flag, every server of the person's own Claude config would reach the run too.
-        args.push("--strict-mcp-config".to_owned());
+        // Under it Claude Code loads no claude.ai connector, so a run with connectors goes without
+        // it and denies the other servers by rule and in the tool guard instead.
+        if launch.servers.connectors.is_empty() {
+            args.push("--strict-mcp-config".to_owned());
+        }
         let (file, _) = self
             .private_file(exe, launch)
             .expect("Claude Code reads its MCP servers from a file");
@@ -726,6 +818,18 @@ impl Harness for ClaudeCode {
         format!(
             "trust the worktrees folder and the clone once: cd {worktrees} && claude, accept, exit, then cd {clone} && claude, accept, exit"
         )
+    }
+
+    /// Claude 2.1.330 reads the trust of the exact folder before it walks up, and keys a
+    /// worktree's project by its clone, so the two keys cover the versions in the table.
+    fn grant_trust(&self, worktree: &Path, clone: &Path) -> Vec<crate::trust::Grant> {
+        crate::trust::claude(&crate::servers::claude_config(), &[worktree, clone])
+    }
+
+    fn holds_trust(&self, worktree: &Path, clone: &Path) -> Result<bool, String> {
+        let config = crate::servers::claude_config();
+        let config = fs::canonicalize(&config).unwrap_or(config);
+        crate::trust::claude_holds(&config, &[worktree, clone])
     }
 
     fn asks_trust(&self, screen: &str) -> bool {
@@ -758,6 +862,21 @@ impl Harness for ClaudeCode {
 pub struct Codex;
 
 impl Harness for Codex {
+    fn own_home(&self, home: Option<&Path>) -> Vec<(PathBuf, Own)> {
+        // Priory's trust profile stays read-only, so a run cannot turn it into a link the daemon
+        // would write through.
+        named_or("CODEX_HOME", home, ".codex")
+            .map(|dir| {
+                let profile = dir.join(format!("{}.config.toml", crate::trust::CODEX_PROFILE));
+                vec![(dir, Own::Write), (profile, Own::File)]
+            })
+            .unwrap_or_default()
+    }
+
+    fn home_env(&self) -> &'static [&'static str] {
+        &["CODEX_HOME"]
+    }
+
     fn program(&self) -> &'static str {
         "codex"
     }
@@ -808,7 +927,32 @@ impl Harness for Codex {
         }
         // A shared server would lend the run another session's environment and hook trust.
         args.push("--no-daemon".to_owned());
+        if launch.trust {
+            // Codex 0.170 ignores a `-c projects.<path>.trust_level` override, but reads a profile.
+            args.splice(
+                0..0,
+                ["-p".to_owned(), crate::trust::CODEX_PROFILE.to_owned()],
+            );
+        }
         Ok(args)
+    }
+
+    /// Codex keys trust on the repository root, which is the clone for every worktree.
+    fn grant_trust(&self, _worktree: &Path, clone: &Path) -> Vec<crate::trust::Grant> {
+        match named_or("CODEX_HOME", Some(&crate::servers::home()), ".codex") {
+            Some(codex_home) => crate::trust::codex(&codex_home, clone),
+            None => Vec::new(),
+        }
+    }
+
+    fn holds_trust(&self, _worktree: &Path, clone: &Path) -> Result<bool, String> {
+        let codex_home = named_or("CODEX_HOME", Some(&crate::servers::home()), ".codex")
+            .ok_or("no CODEX_HOME and no HOME")?;
+        crate::trust::codex_holds(&codex_home, clone)
+    }
+
+    fn asks_trust(&self, screen: &str) -> bool {
+        screen.contains("Trust this folder?") && screen.contains("Trust and continue")
     }
 
     /// Codex runs only hooks a person trusted in its `/hooks` review, by their hash, so Priory's
@@ -860,6 +1004,19 @@ fn codex_hooks(exe: &Path) -> Vec<(&'static str, serde_json::Value)> {
     ]
 }
 
+/// The first line `program --version` prints, when it runs within the command timeout.
+pub fn version(program: &str) -> Option<String> {
+    let output = fed_within(
+        Command::new(program).arg("--version"),
+        None,
+        command_timeout(),
+    )
+    .ok()??;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().next()?.trim();
+    (!line.is_empty()).then(|| line.to_owned())
+}
+
 /// Why a run did not start: one line, the cause first, and the tmux command when it ran one.
 #[derive(Debug)]
 pub struct NotStarted {
@@ -909,7 +1066,7 @@ fn tmux_socket_fits(socket: &Path) -> Result<(), String> {
 }
 
 /// `stderr` as one line.
-fn one_line(stderr: &str) -> String {
+pub(crate) fn one_line(stderr: &str) -> String {
     let lines: Vec<_> = stderr
         .lines()
         .map(str::trim)
@@ -972,9 +1129,22 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
             ])
             .arg(&file);
     }
-    // A scope execs the agent in place, so the pane's process is still the agent's.
+    let jail = match launch.jail {
+        Some(jail) => {
+            let files: Vec<PathBuf> = harness
+                .file(launch)
+                .into_iter()
+                .chain(harness.private_file(&exe, launch))
+                .map(|(file, _)| file)
+                .collect();
+            jail.command(harness, &exe, launch, &files)?
+        }
+        None => Vec::new(),
+    };
+    // A scope execs the agent in place, so the pane's process is still the agent's, or the jail's.
     command
         .args(launch.scope)
+        .args(&jail)
         .arg("env")
         .args(NESTED.iter().flat_map(|name| ["-u", name]))
         .arg(harness.program())
@@ -1549,6 +1719,45 @@ pub fn ask_claude(
     crate::script::spawn(&run, dir, &file("log"), timeout)
 }
 
+/// Whether the person's `claude`, run in `dir`, finds the MCP server `server`, as
+/// `claude mcp get <server>` does: `Ok(false)` when it says it has no server of that name. Its
+/// output is never kept, since for a server of the person's config it prints headers and env
+/// values. Past `timeout`, it is killed with its children.
+pub fn claude_finds(dir: &Path, server: &str, timeout: Duration) -> Result<bool, String> {
+    let mut command = Command::new("claude");
+    for name in NESTED {
+        command.env_remove(name);
+    }
+    let child = command
+        .current_dir(dir)
+        .args(["mcp", "get", server])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .map_err(|error| format!("cannot start: {error}"))?;
+    let pid = child.id();
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || sender.send(child.wait_with_output()));
+    match receiver.recv_timeout(timeout) {
+        Ok(Ok(output)) if output.status.success() => Ok(true),
+        Ok(Ok(output)) => {
+            let said = |text: &[u8]| String::from_utf8_lossy(text).contains("No MCP server named");
+            if said(&output.stderr) || said(&output.stdout) {
+                Ok(false)
+            } else {
+                Err(format!("ended with {}", output.status))
+            }
+        }
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(_) => {
+            crate::script::kill(pid);
+            Err(format!("did not answer within {}s", timeout.as_secs()))
+        }
+    }
+}
+
 /// The JSON answer of handler call `id` in `dir`, if it wrote one.
 pub fn answer(dir: &Path, id: i64) -> Option<String> {
     fs::read_to_string(dir.join(format!("{id}.json"))).ok()
@@ -1911,17 +2120,21 @@ pub fn listen(home: &Path) -> Result<Listening, String> {
     let (sender, lines) = mpsc::channel();
     std::thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {
-            // One connection at a time: a client that sends no line must not hold every other one.
-            let Some(text) = line_within(&stream, Duration::from_secs(2)) else {
-                continue;
-            };
-            let (applied, done) = mpsc::channel();
-            if sender.send(Line { text, applied }).is_err() {
-                return;
-            }
-            if let Ok(reply) = done.recv() {
-                let _ = stream.write_all(format!("{reply}\n").as_bytes());
-            }
+            // A thread each, so a line the daemon answers late holds no other connection.
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                let Some(text) = line_within(&stream, Duration::from_secs(2)) else {
+                    return;
+                };
+                let (applied, done) = mpsc::channel();
+                if sender.send(Line { text, applied }).is_err() {
+                    return;
+                }
+                if let Ok(reply) = done.recv() {
+                    let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+                    let _ = stream.write_all(format!("{reply}\n").as_bytes());
+                }
+            });
         }
     });
     Ok(Listening { _lock: lock, lines })
@@ -1953,11 +2166,28 @@ pub fn replay(
     home: &Path,
     mut apply: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<(), String> {
-    let taken = home.join("signals.spool.taken");
+    drain(home, &mut apply)?;
+    // Each jailed run's own spool, by its session.
+    let mut runs: Vec<PathBuf> = fs::read_dir(home.join("spools"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    runs.sort();
+    for dir in runs {
+        drain(&dir, &mut apply)?;
+    }
+    Ok(())
+}
+
+/// Applies and removes the spool in `dir`.
+fn drain(dir: &Path, apply: &mut impl FnMut(&str) -> Result<(), String>) -> Result<(), String> {
+    let taken = dir.join("signals.spool.taken");
     let at = |error: std::io::Error| format!("{}: {error}", taken.display());
     loop {
         // shortcut: a hook that opened the spool before this rename and writes after the read is lost; move the spool into SQLite if that shows up.
-        if !taken.exists() && fs::rename(spool(home), &taken).is_err() {
+        if !taken.exists() && fs::rename(spool(dir), &taken).is_err() {
             return Ok(());
         }
         for line in fs::read_to_string(&taken).map_err(at)?.lines() {
@@ -1973,13 +2203,38 @@ pub const REPLY: Duration = Duration::from_secs(10);
 /// How `call`'s error starts when no daemon took the line, so it was never sent.
 pub const NO_DAEMON: &str = "no priory daemon listens on";
 
+/// How long `call_through_restart` tries again while the daemon's socket refuses it.
+pub const RESTART: Duration = Duration::from_secs(30);
+
 /// Sends one line to the daemon and returns its reply within about `wait`. Nothing is spooled:
-/// with no daemon, it fails.
+/// with no daemon, it fails at once.
 pub fn call(home: &Path, line: &str, wait: Duration) -> Result<String, String> {
+    call_at(&socket_path(home), line, wait, Duration::ZERO)
+}
+
+/// `call` for an MCP server, which a run keeps across a daemon restart: while the socket refuses
+/// it, as a restarting daemon's does, it tries again for up to `RESTART`, then waits `wait`.
+pub fn call_through_restart(home: &Path, line: &str, wait: Duration) -> Result<String, String> {
+    call_at(&socket_path(home), line, wait, RESTART)
+}
+
+/// Sends `line` on the socket at `path`, trying a refused connection again for up to `retry`. Once
+/// connected, the reply has the whole of `wait`, so a late connect never cuts a call short.
+fn call_at(path: &Path, line: &str, wait: Duration, retry: Duration) -> Result<String, String> {
+    let deadline = Instant::now() + retry;
+    let mut stream = loop {
+        match UnixStream::connect(path) {
+            Ok(stream) => break stream,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ConnectionRefused
+                    && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(error) => return Err(format!("{NO_DAEMON} {}: {error}", path.display())),
+        }
+    };
     let wait = Some(wait);
-    let path = socket_path(home);
-    let mut stream = UnixStream::connect(&path)
-        .map_err(|error| format!("{NO_DAEMON} {}: {error}", path.display()))?;
     let mut reply = String::new();
     stream
         .set_write_timeout(wait)
@@ -2017,19 +2272,81 @@ pub fn send(home: &Path, line: &str) -> Result<(), String> {
             }
         }
     }
-    fs::create_dir_all(home).map_err(|error| error.to_string())?;
+    // A jailed run sees only its own spool, which the daemon names.
+    let spool = std::env::var_os("PRIORY_SPOOL")
+        .filter(|spool| !spool.is_empty())
+        .map_or_else(|| spool(home), PathBuf::from);
+    fs::create_dir_all(spool.parent().unwrap_or(home)).map_err(|error| error.to_string())?;
     OpenOptions::new()
         .create(true)
         .append(true)
-        .open(spool(home))
+        .open(&spool)
         .and_then(|mut file| file.write_all(line.as_bytes()))
-        .map_err(|error| format!("{}: {error}", spool(home).display()))
+        .map_err(|error| format!("{}: {error}", spool.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// A socket file that refuses every connection, as a stopped daemon's does, in a fresh folder.
+    fn refusing(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("priory-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("d.sock");
+        drop(UnixListener::bind(&path).unwrap());
+        path
+    }
+
+    #[test]
+    fn a_call_through_a_restart_has_its_whole_wait_after_a_late_connect() {
+        let path = refusing("late");
+        let daemon = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(1500));
+                // Bound beside, then renamed over, as `listen` does, so every connect finds the file.
+                let bound = path.with_extension("new");
+                let listener = UnixListener::bind(&bound).unwrap();
+                fs::rename(&bound, &path).unwrap();
+                let (mut stream, _) = listener.accept().unwrap();
+                let line = line_within(&stream, Duration::from_secs(5));
+                // Longer than what a 2 second budget would leave after the late connect.
+                std::thread::sleep(Duration::from_millis(1500));
+                stream.write_all(b"done\n").unwrap();
+                line
+            })
+        };
+
+        let reply = call_at(&path, "hello", Duration::from_secs(2), RESTART);
+
+        assert_eq!(reply, Ok("done".to_owned()));
+        assert_eq!(daemon.join().unwrap().as_deref(), Some("hello\n"));
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_call_without_a_retry_fails_at_once_on_a_refusing_socket() {
+        let path = refusing("refused");
+        let started = Instant::now();
+
+        let reply = call_at(&path, "hello", Duration::from_secs(2), Duration::ZERO);
+
+        assert!(
+            reply
+                .as_ref()
+                .is_err_and(|error| error.starts_with(NO_DAEMON)),
+            "{reply:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
 
     #[test]
     fn claudes_trust_dialog_is_seen_in_each_version_tested_and_nothing_else_is() {
@@ -2068,6 +2385,8 @@ mod tests {
             debate: false,
             servers,
             tools,
+            jail: None,
+            trust: false,
         }
     }
 

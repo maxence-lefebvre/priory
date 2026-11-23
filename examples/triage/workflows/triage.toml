@@ -23,7 +23,7 @@ next = { post = "post-comment", skip = "done" }
 id = "post-comment"
 decides = "model"
 agent = "triager"
-prompt = "Post the comment you drafted, as approved, with gh issue comment."
+prompt = "Post the comment you drafted, as approved, with gh issue comment. End its body with the line <!-- agent-comment -->, which marks it as an agent's."
 effect = "irreversible"
 guard = { allow = ["gh-issue-comment"] }
 next = { posted = "done", failed = "stop" }

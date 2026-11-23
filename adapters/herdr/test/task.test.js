@@ -16,7 +16,7 @@ const now = Date.parse("2026-11-20T12:00:00Z");
 test("a task shows its state, step, asks, pull request and its runs newest first", () => {
   const view = taskView(task, { now });
   assert.deepEqual([view.key, view.state, view.context, view.title], ["cli:PRI-61", "asleep", ["implement", "merge", "none/misc"], "Export the board as CSV."]);
-  assert.deepEqual(view.asks, [{ id: 1, tile: "answered", text: "Merge #212 into main? Checks are green.", note: "Answered Merge" }]);
+  assert.deepEqual(view.asks, [{ id: 1, tile: "answered", text: "Merge #212 into main? Checks are green.", note: "Answered Merge", age: "1 h", confidence: null, bars: 0, rationale: null, auto: false }]);
   assert.deepEqual(view.pr, {
     title: "#212 Export the board as CSV",
     url: "https://github.com/acme/board/pull/212",
@@ -177,4 +177,53 @@ test("the Priory bar opens the Task tab for a new request, and not for one left 
   draw(bar, cx);
   await settle();
   assert.deepEqual(herdr.runs, [["tab.new", { space: "space-1", name: "Task", mod: "priory-task" }]]);
+});
+
+// Three answered asks as `priory task 4 --json` lists them, oldest first, and an open one.
+test("an untitled ask with a 12-line question lists under its task with a short title", () => {
+  const question = Array.from({ length: 12 }, (_, line) => `Line ${line + 1} of the plan, which changes apps/admin-api/src/mcp/routes.ts.`).join("\n");
+  const asks = [{ id: 4, state: "open", key: "linear:FND-2434", step: "approve-implementation", title: null, question, since: "2026-11-20T11:30:00Z" }];
+  assert.equal(taskView({ ...task, asks }, { now }).asks[0].text, "FND-2434 asks at approve-implementation");
+});
+
+const answered = [
+  { id: 41, state: "answered", title: "Keep the full response", question: "Every order or the first page?", answer: "every order, as today", recommendation: "every order, as today",
+    answered_by: "auto", answered_at: "2026-11-20T11:22:00Z", confidence: "high", rationale: "The brief asks for it in so many words.", since: "2026-11-20T11:20:00Z" },
+  { id: 42, state: "answered", title: "Name the cursor parameter", answer: "after", answered_by: "session:7f3c2a", answered_at: "2026-11-20T11:00:00Z",
+    confidence: "medium", rationale: "The invoices endpoint already uses after.", since: "2026-11-20T10:50:00Z" },
+  { id: 43, state: "answered", title: "Pick the default page size", answer: "40", answered_by: "serve", answered_at: "2026-11-20T10:00:00Z", confidence: "medium", since: "2026-11-20T09:50:00Z" },
+  { id: 44, state: "open", title: "Choose the pagination cursor", since: "2026-11-20T11:20:00Z" },
+];
+
+test("each answered ask says who answered, newest answer first, with its confidence, and an auto answer its rationale", async () => {
+  const view = taskView({ ...task, asks: answered }, { now });
+  assert.deepEqual(view.asks.map((ask) => [ask.id, ask.tile, ask.note]), [
+    [44, "ask", "Asked 40 min ago"],
+    [41, "auto", "Answered every order, as today by auto"],
+    [42, "session", "Answered after by session 7f3c2a, medium"],
+    [43, "person", "Answered 40 by a person, medium"],
+  ]);
+  const auto = view.asks[1];
+  assert.deepEqual([auto.confidence, auto.bars, auto.rationale, auto.age], ["high", 3, "The brief asks for it in so many words.", "38 min"]);
+  assert.equal(view.asks[2].rationale, null, "only an auto answer opens its rationale");
+  const { answeredBy } = await import("../../../crates/priory-core/web/asks.js");
+  for (const ask of answered.slice(0, 3)) assert.ok(view.asks.find((row) => row.id === ask.id).note.includes(`by ${answeredBy(ask.answered_by)}`));
+});
+
+test("the Task panel draws an auto answer with its answerer's icon, confidence, rationale and how to change course", async () => {
+  herdr.reset();
+  herdr.replies = { task: { ...task, asks: answered }, links: { links: [] } };
+  const panel = new TaskPanel();
+  const cx = context();
+  panel.init({}, cx);
+  herdr.shared.set("priory.task.open", { task: 1, at: Date.now() });
+  draw(panel, cx);
+  await settle();
+  const tree = draw(panel, cx);
+  assert.match(text(find(tree, "ask-41")), /Keep the full response.*Answered every order, as today by auto.*high confidence.*The brief asks for it in so many words\..*The first answer stands\. Say to the agent to change course\./s);
+  assert.doesNotMatch(text(find(tree, "ask-42")), /first answer stands/);
+  const icons = ["ask-41", "ask-42", "ask-43"].flatMap((id) => all(find(tree, id), "svg").map((icon) => icon.path));
+  assert.deepEqual(icons, ["mods/priory-task/icons/cog.svg", "mods/priory-task/icons/terminal.svg", "mods/priory-task/icons/user.svg"]);
+  for (const icon of icons) assert.ok(existsSync(new URL(`../${icon}`, import.meta.url)), `${icon} is missing`);
+  assert.equal(find(tree, "answer-ask:41"), null, "an answered ask has no Answer");
 });

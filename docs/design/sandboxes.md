@@ -1,9 +1,13 @@
 # Sandboxes
 
 This page explains how a run could start its agent inside a sandbox, so the agent sees the task's
-worktree and the few files it needs, and not the rest of the person's machine. It builds nothing.
-It compares five ways to build the sandbox, then holds the model, the first code slice with its
-tests, the slices after it, and the open questions with a recommendation for each.
+worktree and the few files it needs, and not the rest of the person's machine. It compares five
+ways to build the sandbox, then holds the model, the first code slice with its tests, the slices
+after it, and the open questions with a recommendation for each.
+
+The first slice is built: see [sandboxes.md](../daemon/sandboxes.md). Max approved bubblewrap
+(LGPL-2.1) as a runtime requirement on 2026-11-23, for factories that turn a sandbox on only.
+Leads and investigators of a jailed task start in its jail too. The later slices are not built.
 
 The idea is Max's, from 2026-11-22: run a task's agent in a sandbox instead of a git worktree on
 the host. This note keeps the worktree and puts the sandbox around it. The comparison below shows
@@ -281,7 +285,7 @@ mean the same file on both sides.
 | `$HOME` | a new tmpfs, with only the binds below |
 | the task's worktree | read-write |
 | the clone's git folder under `repos/` | read-write, since a commit writes there |
-| `~/.claude` and `~/.claude.json`, or the harness's own home for Codex | read-write: the login, sessions, transcripts and trusted folders |
+| `~/.claude` and `~/.claude.json`, or the harness's own home for Codex | read-write: the login, sessions, transcripts and trusted folders. A later change made the clone's config and hooks and Claude's home read-only: see [sandboxes.md](../daemon/sandboxes.md#what-a-jailed-run-sees) |
 | the run's MCP configuration file and Priory's binary | read-only |
 | the daemon's socket folder and `signals.spool` | read-write |
 | the sandbox's `read` and `write` paths | as declared |
@@ -325,11 +329,24 @@ home and the paths the factory names, and holds only the variables it names. It 
 - **The socket.** The daemon's socket is bound in, and a line written to it with `nc` is still a
   call no guard reads, as [guard.md](../daemon/guard.md#how-a-command-is-read) says. Later slice 2
   closes this.
-- **The clone.** The run can write other tasks' refs in the shared clone. Open question 3.
+- **The clone.** The run can write other tasks' refs in the shared clone. Open question 3. Its
+  config, hooks and worktree links are read-only, so the daemon's git on the host runs nothing
+  the run wrote.
 - **The Claude login.** The run can read its own harness's credentials, which every option but a
   proxy that injects them shares.
 
 ## The first slice: a bubblewrap jail per workflow
+
+This slice is built. It differs from the plan below in four ways:
+
+- A jailed run's hooks spool to their own `spools/<session>/signals.spool`, which `PRIORY_SPOOL`
+  names, since a bound `signals.spool` would lose its lines once a daemon renamed it away.
+- The variables are cleared by a shell inside the jail, so the variables a run keeps take the
+  pane's values.
+- `priory check` refuses a jailed workflow on a machine without `bwrap`, at Max's request. The
+  daemon still blocks each jailed task instead, so a runner without bubblewrap runs the others.
+- CI does not install bubblewrap. The tests that need it are ignored by default and fail, not
+  skip, when it is missing; the other tests use a fake `bwrap`.
 
 1. `[sandboxes.<name>]` in `factory.toml` and `sandbox` on a workflow, in the schema and the JSON
    Schemas, and the check rules above.
@@ -404,7 +421,9 @@ hooks, the screen and the sweep. A factory that wants a run elsewhere has
    slice, and approve it as a dependency.
 2. **Do user namespaces work where runners run?** Some distributions restrict unprivileged user
    namespaces. Recommendation: the slice's first commit runs `bwrap --ro-bind / / true` on the
-   author's runners and on CI, and writes the answer here. Where it fails, the block reason names
+   author's runners and on CI, and writes the answer here. Answer: it passed in the container
+   that built the slice, bubblewrap 0.9.0 on Ubuntu, run as root. It was not run on Max's runners
+   or on CI, which does not install bubblewrap. Where it fails, the block reason names
    the distribution's setting, and the how-to guide says how to allow bubblewrap.
 3. **Should a jailed run get its own clone?** The shared clone lets a run write other tasks' refs.
    A clone per task costs disk and a fetch. Recommendation: not in the first slice. Measure whether

@@ -2,7 +2,8 @@ use crate::embed::{Counter, Lazy};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Sender};
 
 /// The most words a TL;DR holds when no tokenizer counts it.
 pub const WORDS: usize = 180;
@@ -63,7 +64,7 @@ pub fn fit(text: &str, counter: Option<&Counter>) -> String {
     words.join(" ")
 }
 
-/// The factory's token counter for a process that never downloads: the CLI and an agent's tools.
+/// The factory's token counter for a process that never downloads, such as the CLI.
 /// A model whose tokenizer is not downloaded yet counts words.
 pub fn counter(db: &Connection, home: &Path) -> Option<Counter> {
     let (name, _) = embedder(db).ok()??;
@@ -335,69 +336,83 @@ fn vector_ranking(
     Ok(similar.into_iter().map(|(task, _)| task).collect())
 }
 
-/// Answers the `tldr` and `search` tools in the agent's own `priory mcp` process, as the CLI does,
-/// so a slow embedder never holds up the daemon. Any other tool is the daemon's: `None`.
-pub fn tool(
+/// The task of the live run with harness session `session`.
+fn live(db: &Connection, session: &str) -> Result<i64, String> {
+    db.query_row(
+        "SELECT task FROM runs WHERE ended IS NULL AND session = ?1",
+        [session],
+        |row| row.get::<_, i64>(0),
+    )
+    .optional()
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| format!("no live run has session {session}"))
+}
+
+fn text(arguments: &Value, name: &str) -> Result<String, String> {
+    arguments[name]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| format!("{name} must be a string"))
+}
+
+/// The `tldr` tool: sets the TL;DR of the task of the live run with harness session `session`.
+pub(crate) fn tldr(
+    db: &mut Connection,
     session: &str,
-    tool: &str,
     arguments: &Value,
-    home: &Path,
-) -> Option<Result<String, String>> {
-    if !matches!(tool, "tldr" | "search") {
-        return None;
-    }
-    let text = |name: &str| {
-        arguments[name]
-            .as_str()
-            .map(str::to_owned)
-            .ok_or_else(|| format!("{name} must be a string"))
-    };
-    let live = |db: &Connection| {
-        db.query_row(
-            "SELECT task FROM runs WHERE ended IS NULL AND session = ?1",
-            [session],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("no live run has session {session}"))
-    };
+    counter: Option<&Counter>,
+) -> Result<String, String> {
     let at = |error: rusqlite::Error| error.to_string();
-    Some(crate::state::open().and_then(|mut db| {
-        if tool == "tldr" {
-            let text = text("text")?;
-            // Count before the write lock; the run must still be live when the TL;DR lands.
-            let text = checked(&text, counter(&db, home).as_ref())?;
-            let tx = db
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .map_err(at)?;
-            let done = write_tldr(&tx, live(&tx)?, text)?;
-            tx.commit().map_err(at)?;
-            return Ok(done);
+    let text = text(arguments, "text")?;
+    let text = checked(&text, counter)?;
+    let tx = db
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(at)?;
+    let done = write_tldr(&tx, live(&tx, session)?, text)?;
+    tx.commit().map_err(at)?;
+    Ok(done)
+}
+
+/// A `search` call, and where its reply goes.
+pub(crate) type Asked = (crate::tools::Call, Sender<String>);
+
+/// Starts the thread that answers `search` calls on its own connection `db`, so a slow embedder
+/// holds up no other line. It never downloads a model: the embedding thread does.
+pub(crate) fn answering(db: Connection, home: PathBuf) -> Sender<Asked> {
+    let (sender, asked) = mpsc::channel::<Asked>();
+    std::thread::spawn(move || {
+        let mut embedder = Lazy::new(&home, false);
+        for (call, reply) in asked {
+            let found = tool(&db, &call.session, &call.arguments, &mut embedder);
+            let _ = reply.send(serde_json::to_string(&found).expect("a result serializes"));
         }
-        live(&db)?;
-        let limit = arguments["limit"].as_u64().map_or(LIMIT, |n| n as usize);
-        let states: Vec<String> = arguments["states"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|state| state.as_str().map(str::to_owned))
-            .collect();
-        let found = search(
-            &db,
-            &text("query")?,
-            &states,
-            limit,
-            &mut Lazy::new(home, false),
-        )?;
-        Ok(match found.unavailable {
-            Some(why) => format!(
-                "embeddings are unavailable, so this matched keywords only: {why}\n{}",
-                found.table
-            ),
-            None => found.table,
-        })
-    }))
+    });
+    sender
+}
+
+/// The `search` tool, for the live run with harness session `session`.
+fn tool(
+    db: &Connection,
+    session: &str,
+    arguments: &Value,
+    embedder: &mut Lazy,
+) -> Result<String, String> {
+    live(db, session)?;
+    let limit = arguments["limit"].as_u64().map_or(LIMIT, |n| n as usize);
+    let states: Vec<String> = arguments["states"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|state| state.as_str().map(str::to_owned))
+        .collect();
+    let found = search(db, &text(arguments, "query")?, &states, limit, embedder)?;
+    Ok(match found.unavailable {
+        Some(why) => format!(
+            "embeddings are unavailable, so this matched keywords only: {why}\n{}",
+            found.table
+        ),
+        None => found.table,
+    })
 }
 
 /// The cosine similarity of two vectors of one length, if neither is zero.

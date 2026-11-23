@@ -672,7 +672,7 @@ and these arrays, oldest first unless the table says otherwise:
 | ----- | ---------- |
 | `runs` | `id`, `step`, `agent`, `tmux`, `session`, `started`, `ended`, `end`, `outcome` (its result's, or null), `tokens` (the tokens its step used, as the `factory.step.ended` trace record holds them, or null) |
 | `steps` | A code step's action: `id`, `step`, `action`, `status`, `pull_request`, `commit_sha`, `error`, `created` |
-| `asks` | An ask, as in [Asks](#asks) |
+| `asks` | An ask, as in [Asks](#asks): the task's own, and the open ask of another task that a gate holds this task's result on |
 | `waits` | `id`, `run`, `kind`, `resource`, `until`, `target`, `created`, `fired`, `withdrawn` (1 once withdrawn, else null), `withdrawn_reason` (see [withdrawal reasons](../daemon/waits.md#why-an-ask-or-wait-was-withdrawn)), `withdrawn_at` (when, in UTC; null for a wait withdrawn before Priory kept the time) |
 | `results` | `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha`, `reason`, `merge_risk` (a risk step's verdict and lines, else null), `created`, `attachments` and `record`. `attachments` lists the run's [evidence items](#evidence), oldest first. `record` is null when the step has no `record` command, else its run: `state` (`queued`, `recorded`, `refused` or `failed`), `reason` (why nothing was recorded, or which files were left out and why, else null), `commit_sha`, `created` and `ended` |
 | `subscriptions` | `resource`, `created`: what the task subscribes to now. Empty once it fails or is dropped |

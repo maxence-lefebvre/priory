@@ -45,7 +45,8 @@ impl std::str::FromStr for Relation {
 pub struct Request {
     /// The workflow the task starts.
     workflow: String,
-    /// The task's key, which Priory prefixes with `cli:`.
+    /// The task's key, which Priory prefixes with `cli:` unless it names a GitHub issue or pull
+    /// request, `github:owner/name#42`.
     key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     band: Option<String>,
@@ -612,6 +613,22 @@ impl Request {
         &self.key
     }
 
+    /// The new task's key: the given key when it names a GitHub issue or pull request, so the task
+    /// subscribes to it, else `cli:` and the given key.
+    pub fn task_key(&self) -> String {
+        let github = self
+            .key
+            .strip_prefix("github:")
+            .and_then(|issue| issue.split_once('#'))
+            .is_some_and(|(repo, number)| {
+                priory_runtime::runtime::check_repo(repo).is_ok() && number.parse::<u64>().is_ok()
+            });
+        match github {
+            true => self.key.clone(),
+            false => format!("cli:{}", self.key),
+        }
+    }
+
     /// What the request starts, as a person reads it before they trust it: its key, workflow,
     /// repository, who answers its asks, its hold and its text.
     pub fn summary(&self) -> String {
@@ -632,8 +649,10 @@ impl Request {
             format!(", auto-answer {}", level.as_str())
         });
         format!(
-            "task cli:{} in workflow {} on {repo}, {intervention} intervention{auto_answer}{hold}: {}",
-            self.key, self.workflow, self.text
+            "task {} in workflow {} on {repo}, {intervention} intervention{auto_answer}{hold}: {}",
+            self.task_key(),
+            self.workflow,
+            self.text
         )
     }
 }
@@ -678,7 +697,7 @@ pub fn check(factory: &Factory, request: &Request) -> Result<(), String> {
 /// the same request without it or with another nonce.
 pub fn run(factory: &Factory, request: &Request, nonce: Option<&str>) -> Result<(), String> {
     check(factory, request)?;
-    let key = format!("cli:{}", request.key);
+    let key = request.task_key();
     let name = match nonce {
         None => format!("{REQUESTED}:{}:{key}:{}", key.len(), request.text),
         Some(nonce) => format!(

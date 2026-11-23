@@ -177,6 +177,16 @@ pub(crate) fn tick(message: &Message, factory: &Factory) -> bool {
     message.kind == TASK_REQUESTED && (data.get("scheduled").is_some() || review())
 }
 
+/// Whether `message` is a task request that a comment or review on a pull request made, which
+/// starts a task only when no active task owns that pull request.
+pub(crate) fn feedback(message: &Message, factory: &Factory) -> bool {
+    let trigger = message.data["trigger"].as_str().unwrap_or_default();
+    message.kind == TASK_REQUESTED
+        && factory.triggers.get(trigger).is_some_and(|trigger| {
+            priory_factory::rules::FEEDBACK.contains(&trigger.value.on.as_str())
+        })
+}
+
 /// Routes `message`, given the active task that owns its key, if any. A task request for a
 /// workflow the factory lacks creates its task with no step, which waits until the workflow is back.
 /// A request with no lane gets the one `lanes.toml` derives; no branch exists yet to match.

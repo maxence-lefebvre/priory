@@ -59,9 +59,10 @@ prints `task`, `key`, `state`, `step` and the TL;DR, best match first, 10 rows u
 says otherwise. `--state` keeps tasks in the states it names. The `search(query, states?, limit?)`
 tool returns the same table.
 
-The agent's own `priory mcp` process answers the `tldr` and `search` tools from the state file, as
-the CLI does, instead of sending them to the daemon. A slow embedder command or a model loading
-then holds up that agent's call alone, never the daemon.
+The daemon answers the `search` tool on a thread of its own, with its own connection to the state
+file and its own embedder, which never downloads a model. A slow embedder command or a model
+loading then holds up searches alone, never another tool call or a hook. The `tldr` tool goes to
+the daemon like any other tool.
 
 ## Embeddings
 

@@ -32,8 +32,22 @@
             "null"
           ]
         },
+        "agent": {
+          "description": "Whether an agent wrote it: `own`, and its body holds `<!-- agent-comment -->`; absent while\n`gh` cannot say. An agent's comment starts no task. The person's unmarked one wakes its task\neven when it was written during the agent's turn.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "association": {
           "description": "GitHub's `author_association` of the author, such as `OWNER`, `COLLABORATOR` or `NONE`.\nFeedback from anyone but the owner, a member or a collaborator reaches no task.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "author": {
+          "description": "The GitHub login who opened the pull request; absent when GitHub does not say.",
           "type": [
             "string",
             "null"
@@ -53,6 +67,13 @@
         "body": {
           "description": "The review's summary Markdown, as written; empty when the reviewer wrote none.",
           "type": "string"
+        },
+        "bot": {
+          "description": "True when a bot reviewed; absent otherwise. A trigger starts a task from a bot's review\nonly when its `commenter` filter names the bot.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "commit": {
           "description": "The commit the review was written on, which `head_sha` passes once a commit is pushed after it.",

@@ -235,7 +235,7 @@
           "description": "Who answers the task's asks; `triggers/cli.toml`'s when unset."
         },
         "key": {
-          "description": "The task's key, which Priory prefixes with `cli:`.",
+          "description": "The task's key, which Priory prefixes with `cli:` unless it names a GitHub issue or pull\nrequest, `github:owner/name#42`.",
           "type": "string"
         },
         "lane": {

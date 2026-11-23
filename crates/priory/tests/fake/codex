@@ -11,6 +11,10 @@ printf '%s\n' "$@" > "$FAKE_DIR/codex-args.log"
 thread=''
 overrides=()
 prompt=''
+# Priory's trust profile comes first, before a resume, as Codex takes a top-level option.
+if [ "${1-}" = -p ]; then
+  shift 2
+fi
 if [ "${1-}" = resume ]; then
   thread=$2
   shift 2

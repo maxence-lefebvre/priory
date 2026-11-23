@@ -15,9 +15,17 @@ serve with `unknown tool <name>`, and the daemon refuses such a call from an inv
 too. See [Consulting an investigator](#consulting-an-investigator).
 
 The server sends each tool call to the daemon over its socket as
-`{"tool": ..., "session": ..., "arguments": ...}`. The daemon applies the call in one transaction
-and replies with the tool's text or error. With no daemon listening, the call fails and stores
-nothing.
+`{"tool": ..., "session": ..., "arguments": ...}`, and never opens the state file itself. So a server
+that a run keeps across an upgrade still works after a newer daemon migrates the state. The daemon
+applies the call in one transaction and replies with the tool's text or error. It answers `search`
+on a thread of its own, so a slow embedder holds up only other searches, and it serves each
+connection on its socket at once.
+
+When the socket refuses the connection, as it does while the daemon restarts, the server tries
+again every 200 ms for up to 30 seconds. With no daemon listening by then, the call fails and
+stores nothing. Once connected, it waits up to 40 seconds for the reply, past the embedder's 30
+second timeout. A call whose connection breaks after it was sent fails, and may or may not have
+been applied. Hooks and verbs do not retry: with no daemon listening, they fail at once.
 
 ## The outside server
 
@@ -37,8 +45,9 @@ serves seven tools, and none that ends a step or acts on a task:
 
 A call to any other tool, such as `result` or `cancel`, is a JSON-RPC error, `unknown tool
 result`, and stores nothing. The server sends each call to the daemon as `{"outside": {"tool": ..., "session": ...,
-"arguments": ...}}`. With no daemon listening, the call fails with `no priory daemon listens on
-...` and stores nothing.
+"arguments": ...}}`. Like a run's server, it tries a refused connection again for up to 30
+seconds. With no daemon listening by then, the call fails with `no priory daemon listens on ...`
+and stores nothing.
 
 It exits 2 when `PRIORY_SESSION` is set, since a run has its own server and must not gain `ask`
 under another identity. It also exits 2 when `PRIORY_HOME` or `PRIORY_DB` is unset: they name the
@@ -153,13 +162,14 @@ second its last run ended, wakes nothing and fires no gate: it is most likely th
 comment or state change. Its next wake carries it. An event another task keeps is not held back,
 since no later wake would carry it.
 
-A GitHub comment or review whose `own` is `false` is exempt: the intake knows another login wrote
-it, so it wakes the task and fires the gate whenever it was written. `own` compares the author with
-the login that `gh api user` names, which a worker's `gh` posts as too. The poll and the webhook
-each ask `gh` once per process, and `own` is absent when that ask failed, until the process
-restarts. When agents post with
-the person's own GitHub account, every comment of that account is `own`, and the time rule above
-still applies to it. Linear and Slack events have no `own`.
+A GitHub comment or review whose `own` or `agent` is `false` is exempt: the intake knows no agent
+wrote it, so it wakes the task and fires the gate whenever it was written. `own` compares the
+author with the login that `gh api user` names, which a worker's `gh` posts as too. `agent` is
+`true` only when the comment is also `own` and its body holds `<!-- agent-comment -->` (see
+[An agent's own comments](routing.md#an-agents-own-comments)). So the person's unmarked comment is
+exempt even when agents post with the person's own account. The poll and the webhook each ask `gh`
+once per process, and both fields are absent when that ask failed, until the process restarts.
+Linear and Slack events have neither.
 
 A task subscribes to its own key when it is created, when the key names an issue, a pull request,
 a Linear issue or a Slack thread. So a reply in the Slack thread that started a task wakes it, and a
@@ -291,8 +301,8 @@ tool guard denies every guarded call. Its outcomes `reported` and `unknown` both
 The asking agent ends its turn, as after `ask`, and its task sleeps with no process. The
 investigator's run starts a fresh session in its own worktree and passes the room check like any
 run. Its first prompt says the question comes from another agent and asks for facts, then gives
-the question in a `priory.consult.asked` event. It gets its own `mcpServers` and none of the asking
-agent's, and its `priory` server serves `result`, `memory` and `search` alone, so it cannot consult
+the question in a `priory.consult.asked` event. It gets its own `mcpServers` and `connectors` and none
+of the asking agent's, and its `priory` server serves `result`, `memory` and `search` alone, so it cannot consult
 in turn: a consult is one hop.
 
 Claude Code merges `permissions.allow` across the person's settings, the repository's settings and
