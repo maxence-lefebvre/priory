@@ -60,6 +60,16 @@ pub(crate) fn need(agent: Option<&Agent>) -> Need {
     }
 }
 
+/// What a live run that declared `need` still reserves once it uses `used` bytes of memory: the
+/// memory it declared and does not use yet, and all its disk. A run whose use is unknown keeps all
+/// of `need`.
+pub(crate) fn unused(need: Need, used: Option<u64>) -> Need {
+    Need {
+        memory: need.memory.saturating_sub(used.unwrap_or(0)),
+        disk: need.disk,
+    }
+}
+
 /// Whether a run needing `need` fits in this machine's share of memory and its disk above the floor
 /// once nothing else runs.
 pub(crate) fn fits_ever(room: &Room, share: &Share, need: Need) -> bool {
