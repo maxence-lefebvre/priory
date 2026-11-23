@@ -70,6 +70,7 @@ pub mod state;
 pub mod subscribe;
 mod summary;
 pub mod sweep;
+mod talk;
 pub mod todo;
 pub mod tools;
 pub mod trace;

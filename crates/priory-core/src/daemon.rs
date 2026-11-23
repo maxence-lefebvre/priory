@@ -1241,6 +1241,15 @@ fn take(
             replied(sections::tool(db, &call.session, &call.arguments)),
             None,
         )),
+        Ok(Input::Call(call)) if call.tool == "message" => Ok((
+            replied(crate::talk::message(
+                db,
+                &call.session,
+                &call.arguments,
+                trace.factory,
+            )?),
+            None,
+        )),
         Ok(Input::Call(call)) if call.tool == "relate" => Ok((
             replied(crate::relate::tool(db, &call.session, &call.arguments)),
             None,

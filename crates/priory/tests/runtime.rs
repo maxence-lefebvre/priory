@@ -7985,6 +7985,8 @@ fn the_mcp_server_lists_its_tools() {
             "subscribe",
             "unsubscribe",
             "relate",
+            "message",
+            "hand_over",
             "finding",
             "remember",
             "forget",
@@ -19360,6 +19362,133 @@ fn a_cancel_wakes_a_task_asleep_at_its_checks_gate() {
             "wait 2 fired: Ana moved ENG-7 to Duplicate (canceled), as a duplicate of ENG-9."
         ),
         "{typed:?}"
+    );
+}
+
+/// Task 1 on ENG-7 asleep for an hour, and task 2 on ENG-9 in a turn that stays live. Returns
+/// task 2's harness session.
+fn two_tasks(name: &str) -> (Setup, String) {
+    let mut setup = Setup::new(name);
+    let hour = wait(json!({ "type": "time", "until": "1 hour" }));
+    setup.calls(&[hour, serde_json::Value::Null]);
+    setup.publish(&linear_requested("ENG-7", "first"));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.hold("hold-stop");
+    setup.publish(&linear_requested("ENG-9", "second"));
+    let runs = setup.until("runs", |rows| rows.len() == 2);
+    (setup, runs[1][4].clone())
+}
+
+fn tool_call(name: &str, arguments: serde_json::Value) -> serde_json::Value {
+    json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": name, "arguments": arguments } })
+}
+
+#[test]
+fn a_message_from_another_task_wakes_the_task_with_who_sent_it() {
+    let (setup, session) = two_tasks("talk-message");
+
+    let replies = setup.mcp(
+        &session,
+        &[tool_call(
+            "message",
+            json!({ "task": 1, "text": "I continue on ENG-9. Hand over to me." }),
+        )],
+    );
+
+    let (text, error) = reply(&replies[0]);
+    assert!(!error, "{text}");
+    assert_eq!(text, "task 1 has your message");
+    setup.until("outbox", |rows| {
+        rows.iter().any(|row| {
+            row[1] == "1"
+                && row[3] == "confirmed"
+                && row[4].starts_with(
+                    "Task 2 (linear:ENG-9) says: I continue on ENG-9. Hand over to me.",
+                )
+        })
+    });
+}
+
+#[test]
+fn a_message_to_a_missing_task_or_itself_is_refused() {
+    let (setup, session) = two_tasks("talk-refused");
+
+    let replies = setup.mcp(
+        &session,
+        &[
+            tool_call("message", json!({ "task": 2, "text": "hi" })),
+            tool_call("message", json!({ "task": 9, "text": "hi" })),
+        ],
+    );
+
+    assert_eq!(
+        reply(&replies[0]),
+        ("a task does not message itself".to_owned(), true)
+    );
+    assert_eq!(reply(&replies[1]), ("no task 9".to_owned(), true));
+}
+
+#[test]
+fn a_hand_over_drops_the_caller_with_a_link_and_gives_the_other_its_summary() {
+    let (setup, session) = two_tasks("talk-hand-over");
+
+    let replies = setup.mcp(
+        &session,
+        &[tool_call(
+            "hand_over",
+            json!({ "task": 1, "summary": "branch priory/2 holds commit abc1234 and the failing test." }),
+        )],
+    );
+
+    let (text, error) = reply(&replies[0]);
+    assert!(!error, "{text}");
+    assert_eq!(text, "task 2 dropped: task 1 continues it");
+    let tasks = setup.rows("tasks");
+    assert_eq!(tasks[1][4], "dropped", "{tasks:?}");
+    let shown = String::from_utf8(setup.priory(&["tasks"]).stdout).unwrap();
+    assert!(
+        shown.contains("handed over to task 1 (linear:ENG-7)"),
+        "{shown}"
+    );
+    setup.until("outbox", |rows| {
+        rows.iter().any(|row| {
+            row[1] == "1"
+                && row[4].starts_with(
+                    "Task 2 (linear:ENG-9) stopped and handed its work over to you: branch priory/2",
+                )
+        })
+    });
+    let graph = String::from_utf8(setup.priory(&["tasks", "--graph"]).stdout).unwrap();
+    assert!(graph.contains("1 takes-up 2"), "{graph}");
+}
+
+#[test]
+fn a_duplicate_of_an_issue_another_task_works_on_names_that_task() {
+    let mut setup = Setup::new("talk-duplicate");
+    let hour = wait(json!({ "type": "time", "until": "1 hour" }));
+    setup.calls(&[hour, json!([bash("gh pr create --title T --body B")])]);
+    setup.publish(&linear_requested("ENG-9", "first"));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.hold("hold-call");
+    setup.publish(&linear_requested("ENG-7", "second"));
+    setup.until("runs", |rows| rows.len() == 2);
+    setup.written("fake/submitted");
+    setup.publish(&moved_to("Duplicate", "canceled"));
+    setup.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "linear.issue.state_changed")
+    });
+
+    setup.release("hold-call");
+
+    let replies = setup.replied(2);
+    let reason = guard_denied(&replies[1]).unwrap_or_else(|| panic!("{replies:?}"));
+    assert!(
+        reason.contains("as a duplicate of ENG-9. https://linear.app/acme/issue/ENG-7 Task 1 (linear:ENG-9) works on ENG-9. Agree with the other task which one continues"),
+        "{reason}"
     );
 }
 

@@ -503,6 +503,32 @@ pub(crate) fn tools() -> Value {
             },
         },
         {
+            "name": "message",
+            "description": "Send a message to another active task's agent, such as the task whose issue yours duplicates, to agree which task continues. It reaches that agent during its turn, or wakes it. Its answer reaches you the same way. It does not end your turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": { "type": "integer", "description": "The other task's id." },
+                    "text": text("What you tell it, such as your branch, commits and findings."),
+                },
+                "required": ["task", "text"],
+                "additionalProperties": false,
+            },
+        },
+        {
+            "name": "hand_over",
+            "description": "Stop your task and hand its work to another active task that continues it, once you two agreed. The other agent gets your summary, it takes up your task, and your task is dropped with a link to it. Push your branch first. It ends your turn and your run.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": { "type": "integer", "description": "The task that continues." },
+                    "summary": text("What it takes over: your branch, commits, findings and what is left."),
+                },
+                "required": ["task", "summary"],
+                "additionalProperties": false,
+            },
+        },
+        {
             "name": "finding",
             "description": "Hand one problem you found to a fix task. The same key in a later run opens no second task: use one stable key per problem, such as disk-full. A key you skipped for a run and report again opens a new task. A finding reported several runs in a row moves its fix task up a band. Your next prompt lists your earlier findings. Call it once per problem. It does not end your turn.",
             "inputSchema": {

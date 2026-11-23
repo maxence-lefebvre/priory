@@ -415,8 +415,8 @@ Ana moved ENG-7 to Duplicate (canceled), as a duplicate of ENG-9. https://linear
 The hook adds that line to the next call the agent makes, once. The news stays unread until a call
 that opens a pull request, pushes, or ends or sleeps the run: the hook refuses that call once with
 the news as its reason, and only then is the news read. So a push after a few reads is still held.
-The `result`, `ask`, `wait` and `consult` tools refuse once the same way, for a harness whose hook
-does not reach them. The queued prompt still carries the event after the turn.
+The `result`, `ask`, `wait`, `consult` and `hand_over` tools refuse once the same way, for a harness
+whose hook does not reach them. The queued prompt still carries the event after the turn.
 
 News counts whoever closed the pull request or issue, so an agent that closes its own gets its next
 push or result held once too.
@@ -428,6 +428,28 @@ refused call. A task asleep at its checks gate wakes on a `canceled` state chang
 moves the issue to Done.
 
 The outcome stays `kept`. A waiting [`linear_state` wait](waits.md) still fires on its named state.
+
+## Two tasks on the same work
+
+A Linear issue marked a duplicate of another can leave two active tasks that build the same change.
+When the other issue has an active task, the duplicate's news names it and says how the two agree:
+
+```text
+Ana moved ENG-7 to Duplicate (canceled), as a duplicate of ENG-9. https://linear.app/acme/issue/ENG-7 Task 4 (linear:ENG-9) works on ENG-9. Agree with the other task which one continues: send it a message with the message tool. The task that stops gives its branch, commits and findings to the other with the hand_over tool. If you disagree, ask the person with the ask tool.
+```
+
+The other task's run reads a line that names the duplicate's task, when it runs. A task asleep at
+its checks gate wakes with the same text.
+
+The agents talk with the [`message`](../reference/tools.md#messagetask-text) tool, which reaches the
+other agent during its turn, or wakes it. The task that stops calls
+[`hand_over`](../reference/tools.md#hand_overtask-summary): the other agent gets its summary, Priory
+records that the other task takes it up, and drops it with the reason `handed over to task 4
+(linear:ENG-9)`. `priory tasks` shows that reason, and `priory tasks --graph` shows `4 takes-up 7`.
+When the agents disagree, either one asks the person with `ask`. Priory picks no task itself.
+
+A task asleep at a model step wakes on the duplicate's state change with the event alone, without
+the line that names the other task.
 
 ## Schedule firings
 

@@ -74,6 +74,58 @@ pub(crate) fn keep(
     let Some(text) = line(kind, data) else {
         return Ok(());
     };
+    let text = match agree(tx, task, data)? {
+        Some(agree) => format!("{text} {agree}"),
+        None => text,
+    };
+    tell(tx, task, Some(seq), &text)
+}
+
+/// When `data` marks the issue of `task` a duplicate of an issue another active task works on: how
+/// the two agree which continues. It also tells the other task, if it runs.
+pub(crate) fn agree(tx: &Transaction, task: i64, data: &Value) -> rusqlite::Result<Option<String>> {
+    let Some(of) = data["duplicate_of"].as_str() else {
+        return Ok(None);
+    };
+    let other: Option<(i64, String)> = tx
+        .query_row(
+            "SELECT id, key FROM tasks WHERE key = ?1 AND id != ?2
+             AND state NOT IN ('done', 'failed', 'dropped') ORDER BY id DESC LIMIT 1",
+            params![format!("linear:{of}"), task],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((other, other_key)) = other else {
+        return Ok(None);
+    };
+    let key: String = tx.query_row("SELECT key FROM tasks WHERE id = ?1", [task], |row| {
+        row.get(0)
+    })?;
+    let issue = data["issue"].as_str().unwrap_or("-");
+    tell(
+        tx,
+        other,
+        None,
+        &format!(
+            "Task {task} ({key}) works on {issue}, now a duplicate of {of}, your issue. It may message you to agree which task continues. {AGREE}"
+        ),
+    )?;
+    Ok(Some(format!(
+        "Task {other} ({other_key}) works on {of}. {AGREE}"
+    )))
+}
+
+/// How two tasks on the same work agree which continues.
+const AGREE: &str = "Agree with the other task which one continues: send it a message with the message tool. The task that stops gives its branch, commits and findings to the other with the hand_over tool. If you disagree, ask the person with the ask tool.";
+
+/// Records `text` for the live run of `task`, if it runs, and marks it for the hook. `seq` is the
+/// inbox entry it came from, if any.
+pub(crate) fn tell(
+    tx: &Transaction,
+    task: i64,
+    seq: Option<i64>,
+    text: &str,
+) -> rusqlite::Result<()> {
     let session: Option<String> = tx
         .query_row(
             "SELECT runs.session FROM runs JOIN tasks ON tasks.id = runs.task

@@ -223,8 +223,10 @@ pub(crate) fn call(
         ));
     }
     // News refuses the call once and is then read, so this refusal commits.
-    if matches!(call.tool.as_str(), "result" | "ask" | "wait" | "consult")
-        && run.debate.is_none()
+    if matches!(
+        call.tool.as_str(),
+        "result" | "ask" | "wait" | "consult" | "hand_over"
+    ) && run.debate.is_none()
         && let Some(held) = crate::news::refusal(&tx, &run.session)?
     {
         tx.commit()?;
@@ -297,6 +299,11 @@ pub(crate) fn call(
         }
         "wait" => {
             let (stored, ended) = wait(&tx, &run, &call.arguments, factory)?;
+            kill = ended;
+            stored
+        }
+        "hand_over" => {
+            let (stored, ended) = crate::talk::hand_over(&tx, run.task, &call.arguments, factory)?;
             kill = ended;
             stored
         }
@@ -1616,7 +1623,10 @@ pub(crate) fn gate_feedback(
         return Ok(false);
     };
     let said = match (news, resource) {
-        (Some(news), _) => news,
+        (Some(news), _) => match crate::news::agree(tx, task, &message.data)? {
+            Some(agree) => format!("{news} {agree}"),
+            None => news,
+        },
         (None, Some(resource)) => reopened_by(&resource, None, &message.kind, &message.data),
         (None, None) => return Ok(false),
     };

@@ -98,8 +98,8 @@ The hook refuses the call once, with the news as its reason, when the call:
 
 - runs `gh pr create`, or `git push` that is neither `--dry-run` nor `-n`, as the guard reads a
   command;
-- is an MCP tool named `create_pull_request`, or the `priory` server's `result`, `ask`, `wait` or
-  `consult`;
+- is an MCP tool named `create_pull_request`, or the `priory` server's `result`, `ask`, `wait`,
+  `consult` or `hand_over`;
 - matches a guard, and the guard let it through.
 
 After such a refusal, the hook tells the daemon which news it showed, and the daemon marks that
