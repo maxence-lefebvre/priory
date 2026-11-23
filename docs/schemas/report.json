@@ -61,6 +61,10 @@
           ],
           "description": "Pull requests, `owner/name#42` or `42` in the task's repository: until each merges. One\nvalue or a list."
         },
+        "parked": {
+          "description": "Parks a task keyed by a pull request: a comment or review trigger's request for that pull\nrequest releases it, and the pull request's merge or close ends it.",
+          "type": "boolean"
+        },
         "reason": {
           "description": "Why the task waits, shown to a person.",
           "type": "string"

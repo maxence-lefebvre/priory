@@ -37,6 +37,7 @@ A task gets its resources at these moments:
 
 | When | Resource | Example |
 | ---- | -------- | ------- |
+| `priory adopt` parks it on a pull request | that pull request as its key, subscribed, as the first row does | `github:owner/name#57` |
 | The task is created | its trigger key, and a subscription to it when the key names an issue, a pull request, a Linear issue or a Slack thread | `github:owner/name#42`, `linear:ENG-7`, `cli:docs-1` |
 | A request whose `pre` script printed another `key` creates the task or joins it | a subscription to the issue, pull request or thread the trigger named before the script | `github:owner/name#43` |
 | Its first run starts | its branch | `github:owner/name@priory/3` |
@@ -154,6 +155,37 @@ That task's key is the pull request, `github:owner/name#42`, and it subscribes t
 A `priory request --key github:owner/name#42` keys its task the same way, so that task subscribes
 to the pull request too (see [cli.md](../intake/cli.md)).
 
+### Parked pull requests
+
+A pull request opened by hand has no task, so its events reach none. `priory adopt` parks a task
+on it (see [adopting-pull-requests.md](../adopting-pull-requests.md)). The task is keyed by the
+pull request, so it owns and subscribes to it as a comment trigger's task does. Its source is a
+CLI request, and the pull request still counts as its own, so after its first run the checks gate
+and the merge apply to it as they do to a pull request that `open-pr` opened (see
+[waits.md](waits.md#done-and-checks)).
+
+The task is `held` with one condition, `parked`. A held task has no run, no worktree and no
+process, so it costs nothing while it waits. Every event of the pull request, a comment, a review,
+a check or a push, is `kept` on it with no prompt, and its Inbox lists them.
+
+1. Ana comments on pull request 42. Task 5 is parked on it, so it keeps the event.
+2. The comment trigger's request for pull request 42 finds task 5 parked. Its outcome is
+   `released`, and task 5 is `queued`.
+3. Task 5's first run reads the step's prompt, the adopt request, then every event it kept, the
+   comment among them.
+
+So the agent starts exactly when the trigger would have started a task. A comment the trigger does
+not match stays kept, and the next run reads it. `priory release` starts the task by hand.
+
+While the task is parked, the pull request's `github.pull_request.closed` ends it: `done` with
+the reason `<key> merged while parked` when it merged, else `dropped` with `<key> closed while
+parked`. A close older than the adopt request does not count. The desk lists no row for a parked
+task. `priory tasks` shows it held, with the reason
+`held: adopted for trigger <name>, until a comment or review trigger fires on <key>`.
+
+Events of the pull request from before the adopt stay unrouted: the daemon routes only new
+messages.
+
 ### An agent's own comments
 
 Agents post with the person's own `gh` login, so the login alone cannot tell an agent's comment from
@@ -183,6 +215,7 @@ Each inbox entry gets one of these outcomes:
 | ----------------------------------------- | --------- | -------------------------------------------- |
 | A schedule's or review request's `factory.task.requested`, with a task asleep at a model step owning its key | `woke` | that task, now `ready` |
 | A schedule's or review request's `factory.task.requested`, with a task in another active state owning its key | `coalesced` | that task, unchanged |
+| A comment or review trigger's `factory.task.requested`, with a parked task owning its pull request | `released` | that task, now `queued` (see [Parked pull requests](#parked-pull-requests)) |
 | A comment or review trigger's `factory.task.requested`, with a task its comment reached or an active task owning its pull request | `coalesced` | that task, unchanged |
 | A comment or review trigger's `factory.task.requested`, with no such task and the pull request's newest task failed or dropped | `ignored` | none |
 | A review, comment or review thread comment, with no active task owning a resource it names, and a done task it reopens | `reopened` | that task, now `ready` at its reopen step |
@@ -227,6 +260,7 @@ task's wait it fired. Together they say what the event did:
 | `woke` | `confirmed` | It woke the asleep task, and its prompt was delivered |
 | `reopened` | `confirmed` | It reopened the done task, and its prompt was delivered |
 | `coalesced` | null | A schedule firing or review request that the task already covered |
+| `released` | null | A comment or review trigger's request that released the parked task: its first run reads the events it kept |
 | `said` | `queued` or `confirmed` | A repeated `priory request` for the task's key: its text is queued, then delivered |
 | `ignored` | `confirmed` | The task's source event, which its first prompt carried |
 | `kept` | `queued` | Its prompt is still queued: for after the current turn, or for the next run |

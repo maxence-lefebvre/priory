@@ -31788,3 +31788,197 @@ fn uncalibrated_pre_review(name: &str, workflow: &str) -> (Setup, Vec<Vec<String
     let asks = setup.until("asks", |rows| rows.len() == 1);
     (setup, asks)
 }
+
+/// A comment trigger on max's pull requests, which `priory adopt` names.
+const MY_PRS: &str = r#"
+source = "github"
+repo = "owner/repo"
+on = "pull_request.comment"
+filter = { author = "max" }
+workflow = "implement"
+"#;
+
+/// A running daemon whose factory has the `my-prs` trigger, and a fake GitHub where max has
+/// `open` pull requests open.
+fn adopting(name: &str, open: &[u64]) -> Setup {
+    let mut setup = Setup::new(name);
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    let prs: Vec<_> = open
+        .iter()
+        .map(|number| {
+            json!({
+                "number": number,
+                "title": format!("Rename flag {number}"),
+                "url": format!("https://github.com/owner/repo/pull/{number}")
+            })
+        })
+        .collect();
+    fs::write(setup.dir.join("fake/prs"), json!(prs).to_string()).unwrap();
+    setup.start();
+    setup
+}
+
+/// What `priory adopt` prints for `args`, which must succeed.
+fn adopt(setup: &Setup, args: &[&str]) -> String {
+    let factory = setup.dir.join("factory");
+    person(
+        setup,
+        "adopt",
+        &[&[factory.to_str().unwrap()], args].concat(),
+    )
+}
+
+/// An event `kind` on max's pull request 7, from a branch no task made.
+fn on_max_pull(kind: &str, extra: serde_json::Value) -> Message {
+    let mut message = on_pull(kind, extra);
+    message.data["head_branch"] = json!("feature");
+    message.data["author"] = json!("max");
+    message
+}
+
+/// The task request the `my-prs` trigger publishes for `comment`.
+fn my_prs_requested(comment: &Message) -> Message {
+    Message::new(
+        "factory.task.requested",
+        json!({
+            "workflow": "implement",
+            "key": "github:owner/repo#7",
+            "band": null,
+            "lane": null,
+            "trigger": "my-prs",
+            "source": comment.id.to_string()
+        }),
+    )
+    .subject("github:owner/repo#7")
+}
+
+#[test]
+fn adopt_parks_a_task_on_each_open_pull_request_no_task_owns_and_leaves_the_desk_alone() {
+    let mut setup = Setup::new("adopt-parks");
+    setup.memory(0);
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    fs::write(
+        setup.dir.join("fake/prs"),
+        r#"[{"number":7,"title":"Rename the flag","url":"https://github.com/owner/repo/pull/7"},
+            {"number":8,"title":"Other","url":"https://github.com/owner/repo/pull/8"}]"#,
+    )
+    .unwrap();
+    setup.publish(&requested(8));
+    setup.start();
+    setup.until("tasks", |rows| rows.len() == 1);
+
+    let first = adopt(&setup, &["my-prs"]);
+
+    assert_eq!(
+        first,
+        "adopted github:owner/repo#7\ngithub:owner/repo#8: task 1 owns it\n"
+    );
+    setup.until("tasks", |rows| rows.len() == 2);
+    assert_eq!(
+        held_as(&setup, "2"),
+        [
+            "held".to_owned(),
+            "held: adopted for trigger my-prs, until a comment or review trigger fires on github:owner/repo#7"
+                .to_owned()
+        ]
+    );
+    assert_eq!(
+        adopt(&setup, &["my-prs"]),
+        "github:owner/repo#7: task 2 owns it\ngithub:owner/repo#8: task 1 owns it\n"
+    );
+    assert_eq!(setup.rows("tasks").len(), 2);
+    let desk = desk_json(&setup);
+    let parked: Vec<_> = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["task"] == 2)
+        .collect();
+    assert!(parked.is_empty(), "{desk}");
+}
+
+#[test]
+fn adopt_refuses_a_trigger_that_is_not_a_comment_trigger_and_a_pull_request_that_is_not_open() {
+    let setup = adopting("adopt-refuses", &[7]);
+    let factory = setup.dir.join("factory");
+    let factory = factory.to_str().unwrap();
+
+    let label = setup.priory(&["adopt", factory, "agent-label"]);
+    let closed = setup.priory(&["adopt", factory, "my-prs", "owner/repo#9"]);
+
+    assert!(!label.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&label.stderr),
+        "priory adopt: trigger agent-label is not a pull request comment or review trigger\n"
+    );
+    assert!(!closed.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&closed.stderr),
+        "priory adopt: owner/repo#9 is not an open pull request by max\n"
+    );
+    assert!(setup.rows("tasks").is_empty());
+}
+
+#[test]
+fn a_parked_task_keeps_checks_and_comments_and_wakes_on_its_trigger_s_request() {
+    let setup = adopting("adopt-wakes", &[7]);
+    adopt(&setup, &["my-prs", "https://github.com/owner/repo/pull/7"]);
+    setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "held");
+    let check = on_max_pull(
+        "github.check_run.completed",
+        json!({ "name": "test", "conclusion": "success", "github_id": 900 }),
+    );
+    let comment = on_max_pull(
+        "github.pull_request.comment",
+        json!({
+            "actor": "max", "body": "Why this name?", "github_id": 701, "open": true,
+            "url": "https://github.com/owner/repo/pull/7#issuecomment-701"
+        }),
+    );
+
+    setup.publish(&check);
+    setup.publish(&comment);
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 4);
+    assert_eq!([&inbox[2][3], &inbox[2][4]], ["1", "kept"]);
+    assert_eq!([&inbox[3][3], &inbox[3][4]], ["1", "kept"]);
+    std::thread::sleep(Duration::from_millis(1100));
+    assert_eq!(setup.rows("tasks")[0][4], "held");
+    assert!(setup.rows("runs").is_empty());
+    let task = person(&setup, "task", &["1"]);
+    assert!(task.contains("github.check_run.completed"), "{task}");
+    assert!(task.contains("github.pull_request.comment"), "{task}");
+
+    setup.publish(&my_prs_requested(&comment));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    let inbox = setup.rows("inbox");
+    assert_eq!([&inbox[4][3], &inbox[4][4]], ["1", "released"]);
+    let first = &setup.typed()[0];
+    assert!(
+        first.contains("Adopted owner/repo#7: Rename flag 7"),
+        "{first}"
+    );
+    assert!(first.contains("Why this name?"), "{first}");
+}
+
+#[test]
+fn a_parked_task_is_done_when_its_pull_request_merges_and_dropped_when_it_closes() {
+    for (merged, state, reason) in [
+        (true, "done", "github:owner/repo#7 merged while parked"),
+        (false, "dropped", "github:owner/repo#7 closed while parked"),
+    ] {
+        let setup = adopting(&format!("adopt-ends-{state}"), &[7]);
+        adopt(&setup, &["my-prs", "7"]);
+        setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "held");
+
+        setup.publish(&on_max_pull(
+            "github.pull_request.closed",
+            json!({ "merged": merged, "github_id": 400 }),
+        ));
+
+        setup.until("tasks", |rows| rows[0][4] == state);
+        assert_eq!(held_as(&setup, "1")[1], reason);
+        assert!(setup.rows("runs").is_empty());
+    }
+}

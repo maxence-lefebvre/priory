@@ -190,7 +190,7 @@ const DESK: &str = concat!(
                FROM holds JOIN tasks ON tasks.id = holds.task
                WHERE holds.released IS NULL AND tasks.state = 'held' AND holds.id = (
                  SELECT min(id) FROM holds AS hold WHERE hold.task = holds.task
-                 AND hold.released IS NULL)
+                 AND hold.released IS NULL) AND holds.kind != 'parked'
                  AND (tasks.batch_entry IS NULL OR EXISTS (SELECT 1 FROM holds AS hold
                    WHERE hold.task = holds.task AND hold.released IS NULL
                    AND (hold.kind NOT IN ('merged', 'waiting') OR EXISTS (SELECT 1 FROM asks WHERE asks.id = hold.ask
