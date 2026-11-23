@@ -88,13 +88,15 @@ feedback item https://github.com/owner/name/pull/57#discussion_r803 has no class
 feedback items https://github.com/owner/name/pull/57#discussion_r803, https://github.com/owner/name/pull/57#discussion_r804 have no class: feedback must be an object from each item's URL to trivial, nothing-to-do or persons-call
 ```
 
-An item with `own` true is an agent's: the login `gh api user` names wrote it and its body holds
-`<!-- agent-comment -->` (see [An agent's own comments](../daemon/routing.md#an-agents-own-comments)).
-The rule does not name it and the agent need not sort it. Written inside a run of the task, past
-its first second and before its last, it is the agent's reply and no class is recorded for it.
-Written outside a run, the next result records it as `persons-call` with no ask. The person's
-unmarked comment has `own` false, so the agent sorts it as anyone else's. A Linear or issue comment
-is never `own`. No factory key names another login.
+An item written by the login `gh api user` names, the account the intake runs as and so the
+factory's person, goes to the person: the rule does not name it, the agent need not sort it, and
+the next result records it as `persons-call` with no ask. Only an item with `own` true is the
+person's, so a Linear or issue comment never is. The agent's own replies post as the same account
+and carry `<!-- agent-comment -->`, so the intake marks them `agent` too (see
+[An agent's own comments](../daemon/routing.md#an-agents-own-comments)). An item with `agent` true
+is the agent's reply, and no class is recorded for it. An `own` item from before the marker, with
+no `agent` field, is the agent's when written inside a run of the task, past its first second and
+before its last. No factory key names another login.
 
 A factory with a calibrated triage decision model sorts some items itself: an item it marks
 `nothing-to-do` is not named by the rule, and the next result records its class with no word from

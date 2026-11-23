@@ -1,7 +1,0 @@
-#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
-source = "github"
-repo = "owner/name"
-on = "pull_request.comment"    # or pull_request_review_comment, pull_request_review.submitted
-filter = { author = "octocat" } # add commenter = "<login>" to take only that login's comments
-workflow = "implement"
-band = "today"

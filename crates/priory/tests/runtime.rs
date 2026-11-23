@@ -20807,6 +20807,37 @@ fn the_agents_own_reply_written_during_its_run_is_not_recorded_as_feedback() {
     assert_eq!(task_json(&setup, "1")["triage"], json!([]));
 }
 
+#[test]
+fn the_persons_unmarked_comment_written_during_a_run_is_recorded_as_a_persons_call_with_no_ask() {
+    let mut setup = Setup::new("triage-person-during-run");
+    setup.calls(&[wait(json!({ "type": "time", "until": "3 seconds" }))]);
+    setup.publish(&requested(42));
+    setup.hold("hold-stop");
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1);
+    std::thread::sleep(Duration::from_millis(2100));
+    setup.release("hold-stop");
+    setup.until("runs", |rows| rows[0][7] == "asleep");
+    setup.hold("hold-stop");
+    // The person commented from their own gh account while the agent ran, with no agent marker.
+    let started: herdr_bus::Timestamp = setup.rows("runs")[0][5].parse().unwrap();
+    let during = herdr_bus::Timestamp::from_second(started.as_second() + 1).unwrap();
+    let mut comment = thread_comment_at(802).time(during);
+    comment.data["own"] = json!(true);
+    comment.data["agent"] = json!(false);
+    setup.publish(&comment);
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+
+    let typed = setup.typed();
+    assert!(!typed[1].contains("sort each item"), "{typed:?}");
+    let (text, error) = result_sorting(&setup, serde_json::Value::Null);
+
+    assert!(!error, "{text}");
+    assert_eq!(task_json(&setup, "1")["triage"][0]["class"], "persons-call");
+    assert_eq!(task_json(&setup, "1")["triage"][0]["item"], THREAD_URL);
+    assert!(setup.rows("asks").is_empty());
+}
+
 const GUIDE: &str = "Open every ask with the question.";
 
 fn with_guide(name: &str) -> Setup {

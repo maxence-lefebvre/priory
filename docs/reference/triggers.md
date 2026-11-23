@@ -87,10 +87,10 @@ task: its comments go to that task (see
 [routing.md](../daemon/routing.md#comments-on-a-pull-request-no-task-owns)). A bot's review starts
 a task only when `commenter` names the bot. A comment from someone without write access starts no
 task. Neither does an agent's comment, one by the login `gh` runs as whose body holds
-`<!-- agent-comment -->` (see [routing.md](../daemon/routing.md#an-agents-own-comments)). Your own
-comments on your pull requests carry no marker, so they start a task like anyone else's. A pull
-request whose newest task failed or was dropped
-gets no new task either: `priory revive` brings that task back. `priory check` refuses these
+`<!-- agent-comment -->`, marked `agent` (see
+[routing.md](../daemon/routing.md#an-agents-own-comments)). Your own comments on your pull requests
+carry no marker, so they start a task like anyone else's. A pull request whose newest task failed
+or was dropped gets no new task either: `priory revive` brings that task back. `priory check` refuses these
 triggers in a factory of several runners.
 
 | Key | Type | Required | Default | Meaning | Example |
@@ -100,9 +100,9 @@ triggers in a factory of several runners.
 | `key` | string | no | the number | `pull_request.number`. The task key is `github:owner/name#42` | `"pull_request.number"` |
 
 One trigger takes one `on`, so comments, thread comments and reviews take a file each. This one
-starts a task for each conversation comment on a pull request that `octocat` opened:
+starts a task for each conversation comment on a pull request that `octocat` opened. Save it as
+`triggers/my-pull-request-comments.toml`:
 
-<!-- example: factory/triggers/my-pull-request-comments.toml -->
 ```toml
 #:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
 source = "github"

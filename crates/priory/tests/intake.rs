@@ -1564,13 +1564,21 @@ fn a_comment_trigger_requests_a_task_for_a_comment_on_its_author_s_pull_request(
         .find(|stored| stored.message.data["github_id"] == 705)
         .unwrap();
     assert_eq!(own.message.data["own"], true);
+    assert_eq!(own.message.data["agent"], true);
     assert_eq!(own.message.data["triggers"], json!([]));
     let person = setup
         .published()
         .into_iter()
         .find(|stored| stored.message.data["github_id"] == 706)
         .unwrap();
-    assert_eq!(person.message.data["own"], false);
+    assert_eq!(person.message.data["own"], true);
+    assert_eq!(person.message.data["agent"], false);
+    let ana = setup
+        .published()
+        .into_iter()
+        .find(|stored| stored.message.data["github_id"] == 701)
+        .unwrap();
+    assert_eq!(ana.message.data["agent"], false);
 }
 
 #[test]

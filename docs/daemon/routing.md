@@ -158,14 +158,22 @@ to the pull request too (see [cli.md](../intake/cli.md)).
 
 Agents post with the person's own `gh` login, so the login alone cannot tell an agent's comment from
 the person's. An agent marks its comment with the line `<!-- agent-comment -->` in its body, a fixed
-marker that GitHub does not render. The intake sets `own: true` on a comment, review or review
-thread comment only when the login `gh` runs as wrote it and its body holds the marker. Priory adds
-the marker to each comment it posts itself, and the starter factories tell agents to add it.
+marker that GitHub does not render. The intake sets two fields on a comment, review or review thread
+comment:
 
-An `own` comment starts no task, so an agent cannot restart its own task. How `own` decides whether
-a comment wakes a task is in [Subscriptions in tools.md](tools.md#subscriptions). The person's
-unmarked comment is `own: false`: it starts and reaches a task as anyone else's does. The marker in another login's comment proves
-nothing: that comment is not `own`.
+| Field | `true` when | What reads it |
+| ----- | ----------- | ------------- |
+| `own` | the login `gh` runs as wrote it | the person's handling: [triage](../reference/tools.md#review-feedback) does not put it to the agent |
+| `agent` | it is `own` and its body holds the marker | triggers, waking during a turn, and the agent's reply in triage |
+
+Priory adds the marker to each comment it posts itself, and the starter factories tell agents to add
+it. The marker in another login's comment proves nothing: that comment is neither `own` nor `agent`.
+
+An `agent` comment starts no task, so an agent cannot restart its own task. It is the agent's reply:
+it wakes nothing during the agent's turn (see [Subscriptions in tools.md](tools.md#subscriptions)),
+and triage records no class for it. An `own` comment without the marker is the person's direction.
+It can start a task, it wakes its task whenever it was written, the agent follows it, and the next
+result records it as `persons-call` with no ask.
 
 ## Outcomes
 

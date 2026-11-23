@@ -34,7 +34,7 @@ A comment or review matches a trigger when its pull request is open and the pull
 `author` is the filter's `author`.
 With `commenter`, the comment's `actor` must be that login too. Without it, a bot's review matches
 no trigger. A comment or review by someone without write access, whose `association` is not
-`OWNER`, `MEMBER` or `COLLABORATOR`, matches no trigger either, and neither does one marked `own`.
+`OWNER`, `MEMBER` or `COLLABORATOR`, matches no trigger either, and neither does one marked `agent`.
 Its task request starts a task only
 when no active task owns the pull request (see
 [routing.md](../daemon/routing.md#comments-on-a-pull-request-no-task-owns)).
@@ -59,10 +59,10 @@ Their fields and examples are in [events.md](../reference/events.md#github).
 A review, a comment and a review thread comment carry `author`, the login that opened the pull
 request, when GitHub names one. A review by a bot also carries `bot: true`.
 
-They carry `own: true` when an agent wrote them: the login `gh` runs as wrote them, and their body
-holds the line `<!-- agent-comment -->`. Agents post as the person's own login, so the marker tells
-the two apart. Without it, the person's comment is `own: false`. The marker alone, from another
-login, proves nothing. See [routing.md](../daemon/routing.md#an-agents-own-comments).
+They carry `own: true` when the login `gh` runs as wrote them, and `agent: true` when their body
+also holds the line `<!-- agent-comment -->`. Agents post as the person's own login, so the marker
+tells an agent's comment from the person's. The marker alone, from another login, proves nothing.
+See [routing.md](../daemon/routing.md#an-agents-own-comments).
 
 `merged` on a close is true only when the pull request is merged and this is its last `closed`
 event the poll read.

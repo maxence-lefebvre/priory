@@ -2706,10 +2706,10 @@ fn delivered(
     );
     // An event the task keeps that was written while it ran, such as the agent's own comment,
     // wakes nothing: its next wake carries it. To the second, as waits: the last second is after.
-    // A comment the intake knows another login wrote is a person's, whenever it was written.
+    // A comment the intake knows no agent wrote is a person's, whenever it was written.
     // An item a decision model settled wakes no one; the task's next prompt carries it.
     let fresh: bool = !crate::decision::settled(&message.data)
-        && (kept.is_none() || message.data["own"] == false
+        && (kept.is_none() || crate::tools::not_agents(&message.data)
         || tx.query_row(
             "SELECT NOT EXISTS (SELECT 1 FROM runs WHERE id = (SELECT max(id) FROM runs WHERE task = ?1)
                AND julianday(?2) >= (SELECT julianday(min(started)) FROM runs WHERE task = ?1)

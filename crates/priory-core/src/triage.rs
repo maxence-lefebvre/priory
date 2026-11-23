@@ -24,8 +24,8 @@ fn url<'a>(kind: &str, data: &'a Value) -> Option<&'a str> {
     data["url"].as_str().filter(|url| asks && !url.is_empty())
 }
 
-/// The URL of an item the agent must sort. An `own` item, which an agent marked as its own, is not
-/// one.
+/// The URL of an item the agent must sort. An item written by the login `gh api user` names, which
+/// the intake runs as, is the person's own or an agent's reply: it goes to the person, not the agent.
 /// An item a calibrated decision model sorted is no longer the agent's to sort.
 pub(crate) fn item<'a>(kind: &str, data: &'a Value) -> Option<&'a str> {
     url(kind, data).filter(|_| data["own"] != true && crate::decision::class(data).is_none())
@@ -73,9 +73,10 @@ pub(crate) fn sorted(
     };
     let (mut own, mut missing) = (Vec::new(), Vec::new());
     // Items typed before the task's last result were that result's to sort, or predate sorting.
-    // An own item written inside a run of the task is the agent's reply, as routing reads it. A
-    // comment in a run's first or last second may have woken or ended it, so it stays the person's.
-    // Runs keep whole seconds, so the comment's time is compared to the second.
+    // An own item marked `agent` is the agent's reply. One without `agent`, from before the marker,
+    // is the agent's when written inside a run of the task. A comment in a run's first or last
+    // second may have woken or ended it, so it stays the person's. Runs keep whole seconds, so the
+    // comment's time is compared to the second.
     let mut statement = tx.prepare(
         "SELECT inbox.type, inbox.data, EXISTS (SELECT 1 FROM runs WHERE runs.task = ?1
            AND unixepoch(inbox.time) > unixepoch(runs.started)
@@ -97,7 +98,9 @@ pub(crate) fn sorted(
                 }
                 continue;
             }
-            if !row.get::<_, bool>(2)? {
+            let during = row.get::<_, bool>(2)?;
+            let reply = data.get("agent").map_or(during, |agent| agent == true);
+            if !reply {
                 own.push((url.to_owned(), "persons-call".to_owned()));
             }
             continue;
