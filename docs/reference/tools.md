@@ -421,7 +421,7 @@ library's `subscribe` and `unsubscribe` run the commands ([serve.md](serve.md#wr
 ## `relate(kind, task)`
 
 `relate` records how the caller's task relates to task `task`: `builds-on`, `fixes`, `takes-up` or
-`relates`. It does not end the turn, and `priory mcp` answers it from the state file. Its task is
+`relates`. It does not end the turn. Its task is
 always the caller's own. `priory relate TASK KIND OTHER` does the same for any task. See
 [relations.md](../daemon/relations.md).
 
@@ -608,8 +608,8 @@ workflow keeps for that, such as `undecided`.
 ## `tldr(text)` and `search(query, states?, limit?)`
 
 `tldr` replaces the task's TL;DR, for when the work drifted from the request. `search` finds tasks.
-Neither ends the turn, and either can come after a result, an ask or a wait. `priory mcp` answers
-both itself from the state file, without the daemon. See [search.md](../daemon/search.md).
+Neither ends the turn, and either can come after a result, an ask or a wait. See
+[search.md](../daemon/search.md).
 
 ## `progress(goal?, acceptanceCriteria?, latestChange?, nextAction?)`
 
@@ -639,6 +639,6 @@ priory progress 7 '{"nextAction": "Wait for CI"}'
 ## `report(date, since, greeting, sections)`
 
 `report` stores the task's report: ordered sections of rows, some with a pick. It replaces the
-task's report and keeps the choices already made. It does not end the turn. `priory mcp` answers it
-itself from the state file, without the daemon. A pick or a comment on a row arrives as the next
-prompt; the agent answers a comment with `priory report reply`. See [reports.md](../daemon/reports.md).
+task's report and keeps the choices already made. It does not end the turn. A pick or a comment on
+a row arrives as the next prompt; the agent answers a comment with `priory report reply`. See
+[reports.md](../daemon/reports.md).

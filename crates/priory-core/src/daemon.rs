@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::{RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 // shortcut: polls the bus file; switch to herdr-bus-client's notify with the systemd service.
@@ -211,6 +211,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     if let Err(error) = push::keys(&home) {
         eprintln!("priory daemon: notifications are off: {error}");
     }
+    let searching = search::answering(state::read_only()?, home.clone());
     let listening = runtime::listen(&home)?;
     let headers = otlp::header_file(factory, &home, "otlp-headers")?;
     if let Some(config) = factory.serve() {
@@ -389,7 +390,14 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             }
         }
         while let Ok(line) = listening.lines.try_recv() {
-            apply(&mut db, line, &trace, counting.get(&home), kit.current())?;
+            apply(
+                &mut db,
+                line,
+                &trace,
+                counting.get(&home),
+                kit.current(),
+                &searching,
+            )?;
         }
         start_answers(&mut db, &trace, &home, &mut commands)?;
         commands = run_commands(&mut db, &trace, &home, commands)?;
@@ -459,7 +467,14 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         // A pasted prompt's Enter is due before the next whole tick.
         let wait = entering.due().map_or(EVERY, |due| due.min(EVERY));
         match listening.lines.recv_timeout(wait) {
-            Ok(line) => apply(&mut db, line, &trace, counting.get(&home), kit.current())?,
+            Ok(line) => apply(
+                &mut db,
+                line,
+                &trace,
+                counting.get(&home),
+                kit.current(),
+                &searching,
+            )?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
@@ -799,7 +814,14 @@ fn apply(
     trace: &Trace,
     counter: Option<&embed::Counter>,
     kit: crate::kit::Current<'_>,
+    searching: &Sender<search::Asked>,
 ) -> Result<(), Error> {
+    if let Ok(call) = serde_json::from_str::<Call>(&line.text)
+        && call.tool == "search"
+    {
+        let _ = searching.send((call, line.applied));
+        return Ok(());
+    }
     let (reply, kill) = take(db, &line.text, trace, counter, kit)?;
     let _ = line.applied.send(reply);
     kill.inspect(|tmux| runtime::kill(tmux));
@@ -1084,6 +1106,18 @@ fn take(
         {
             Ok((replied(Err(refused)), None))
         }
+        Ok(Input::Call(call)) if call.tool == "report" => Ok((
+            replied(sections::tool(db, &call.session, &call.arguments)),
+            None,
+        )),
+        Ok(Input::Call(call)) if call.tool == "relate" => Ok((
+            replied(crate::relate::tool(db, &call.session, &call.arguments)),
+            None,
+        )),
+        Ok(Input::Call(call)) if call.tool == "tldr" => Ok((
+            replied(search::tldr(db, &call.session, &call.arguments, counter)),
+            None,
+        )),
         Ok(Input::Call(call)) if call.tool == "progress" => {
             Ok((replied(progress::tool(db, &call, trace)?), None))
         }

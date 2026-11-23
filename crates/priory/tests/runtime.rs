@@ -15099,6 +15099,150 @@ fn the_tldr_tool_refuses_a_tldr_over_the_limit_with_its_count_then_stores_one_th
     );
 }
 
+/// A `priory mcp --session` kept open, as Claude Code keeps one for its whole session.
+struct Kept {
+    child: Child,
+    out: std::io::BufReader<std::process::ChildStdout>,
+}
+
+impl Kept {
+    fn new(setup: &Setup, session: &str) -> Self {
+        let mut child = setup
+            .command(env!("CARGO_BIN_EXE_priory"))
+            .args(["mcp", "--session", session])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let out = std::io::BufReader::new(child.stdout.take().unwrap());
+        Kept { child, out }
+    }
+
+    /// Calls the tool `name` and returns its text and whether it is an error.
+    fn call(&mut self, name: &str, arguments: serde_json::Value) -> (String, bool) {
+        let line = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                          "params": {"name": name, "arguments": arguments}});
+        let stdin = self.child.stdin.as_mut().unwrap();
+        std::io::Write::write_all(stdin, format!("{line}\n").as_bytes()).unwrap();
+        let mut reply = String::new();
+        std::io::BufRead::read_line(&mut self.out, &mut reply).unwrap();
+        self::reply(&serde_json::from_str(&reply).unwrap())
+    }
+}
+
+impl Drop for Kept {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The session of the run of task `task`, once its fake `claude` has its prompt.
+fn live_session(setup: &Setup, task: &str) -> String {
+    setup.written("fake/typed.log");
+    let runs = setup.until("runs", |rows| rows.iter().any(|row| row[1] == task));
+    runs.into_iter().find(|row| row[1] == task).unwrap()[4].clone()
+}
+
+#[test]
+fn a_kept_mcp_server_answers_its_four_state_tools_after_the_state_moves_to_a_newer_schema() {
+    let mut setup = Setup::new("mcp-newer-schema");
+    setup.calls(&[]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+    setup.start();
+    let session = live_session(&setup, "1");
+    let mut kept = Kept::new(&setup, &session);
+    let (_, error) = kept.call("tldr", json!({ "text": "Before the upgrade." }));
+    assert!(!error);
+
+    // What a newer binary's first command does to the state under this server.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let version: i64 = db
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    db.pragma_update(None, "user_version", version + 1).unwrap();
+
+    for (name, arguments) in [
+        ("tldr", json!({ "text": "Rework the done gate." })),
+        ("search", json!({ "query": "done gate" })),
+        ("relate", json!({ "kind": "builds-on", "task": 2 })),
+        ("report", bonjour(serde_json::Value::Null)),
+    ] {
+        let (text, error) = kept.call(name, arguments);
+        assert!(!error, "{name}: {text}");
+    }
+}
+
+#[test]
+fn a_tool_call_made_while_the_daemon_restarts_succeeds_once_it_is_back() {
+    let mut setup = Setup::new("mcp-restart");
+    setup.calls(&[]);
+    setup.publish(&requested(42));
+    setup.start();
+    let session = live_session(&setup, "1");
+    let mut kept = Kept::new(&setup, &session);
+    setup.crash();
+
+    let call = std::thread::spawn(move || {
+        let reply = kept.call(
+            "progress",
+            json!({ "latestChange": "Through the restart." }),
+        );
+        (reply, kept)
+    });
+    std::thread::sleep(Duration::from_secs(2));
+    setup.start();
+
+    let ((text, error), _kept) = call.join().unwrap();
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default();
+    assert!(!error, "{text}\ndaemon: {log}");
+}
+
+#[test]
+fn a_tool_call_is_answered_while_a_search_waits_on_its_embedder() {
+    let mut setup = Setup::new("mcp-slow-search");
+    let fake = setup.dir.join("fake");
+    // Holds the query's embedding, and only it, until the test releases it.
+    let embedder = format!(
+        "#!/bin/sh\ntext=$(cat)\ncase \"$text\" in *zzquery*) echo > {0}/searching; \
+         while [ ! -e {0}/release ]; do sleep 0.1; done;; esac\necho '[1, 0]'\n",
+        fake.display()
+    );
+    fs::write(fake.join("embed"), embedder).unwrap();
+    fs::set_permissions(fake.join("embed"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        format!(
+            "name = \"demo\"\n[search]\nembeddings = true\ncommand = \"{}\"\n",
+            fake.join("embed").display()
+        ),
+    )
+    .unwrap();
+    setup.calls(&[]);
+    setup.publish(&requested(42));
+    setup.start();
+    let session = live_session(&setup, "1");
+    let mut searching = Kept::new(&setup, &session);
+    let search =
+        std::thread::spawn(move || searching.call("search", json!({ "query": "zzquery" })));
+    setup.written("fake/searching");
+
+    let asked = Instant::now();
+    let (text, error) = Kept::new(&setup, &session).call("tldr", json!({ "text": "Meanwhile." }));
+
+    assert!(!error, "{text}");
+    // Well under the embedder's 30 second timeout, which would free a search that blocked it.
+    assert!(
+        asked.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        asked.elapsed()
+    );
+    fs::write(fake.join("release"), "").unwrap();
+    let (text, error) = search.join().unwrap();
+    assert!(!error, "{text}");
+}
+
 #[test]
 fn the_progress_tool_stores_the_four_fields_on_the_agents_task() {
     let mut setup = Setup::new("progress-tool");
