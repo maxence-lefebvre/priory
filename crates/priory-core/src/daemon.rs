@@ -393,7 +393,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             fetched,
         )?;
         // Committed first, so a crash before the kill leaves an ended run, not a lost one.
-        for tmux in tools::over_budget_in_turn(&mut db, &trace, &mut peeked)? {
+        for tmux in tools::over_budget_in_turn(&mut db, &trace, &mut peeked, &watched)? {
             runtime::kill(&tmux);
         }
         compact_idle(&db, &trace, &home, &scope, fetched)?;

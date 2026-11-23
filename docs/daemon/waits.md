@@ -71,13 +71,14 @@ record to the trace (see [trace-schema.md](../trace-schema.md#factoryaskauto_ans
 answer stands, so a person's later `priory answer` is refused.
 
 An auto-answered ask sends no notification. It shows in `priory asks --all --json` and
-`/api/asks` with `answered_by` `auto`, on the task page with its rationale, and in the desk's
+`/api/asks` with `answered_by` `auto`, with its `confidence` and `rationale`, and in the desk's
 [Since you looked](desk.md#since-you-looked) as `ask 14 answered "document --format" by auto
 (high): the flag duplicates --format`. An ask below the level, or without a confidence, goes to the
 desk as usual, and its desk item carries `confidence` and `rationale`.
 
-The irreversible step still waits for a person, who can read the auto-answered asks before
-approving it. `priory check --explain` lists the same irreversible steps and paths with no human
+The irreversible step still waits for a person, who can read the auto-answered asks with
+`priory asks --all --json` before approving it. The web view and the Herdr task panel show such an
+ask as answered by `auto`, without its confidence or rationale. `priory check --explain` lists the same irreversible steps and paths with no human
 decision whatever the level.
 
 ## Waits
