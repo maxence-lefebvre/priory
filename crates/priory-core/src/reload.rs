@@ -134,13 +134,21 @@ impl Watch {
         }
     }
 
-    /// Records that `factory`, whose files hash to `files`, is now live.
+    /// Records that `factory`, whose files hash to `files`, is now live. A new `writing` guide
+    /// swaps only its own entry in what the watch saw, so an edit still settling elsewhere loads.
     pub fn applied(&mut self, factory: &Factory, files: Digest) {
         self.live = files;
         let writing = writing(factory);
         if writing != self.writing {
+            if let Some(old) = &self.writing {
+                self.seen.remove(old);
+            }
+            if let Some(new) = &writing
+                && let Some(stat) = stat(new)
+            {
+                self.seen.insert(new.clone(), stat);
+            }
             self.writing = writing;
-            self.seen = fingerprint(&self.dir, self.writing.as_deref());
         }
     }
 
@@ -191,15 +199,8 @@ fn skipped(name: &str) -> bool {
 fn fingerprint(dir: &Path, writing: Option<&Path>) -> Fingerprint {
     let mut files = Fingerprint::new();
     let mut note = |path: PathBuf| {
-        if let Ok(metadata) = std::fs::metadata(&path)
-            && metadata.is_file()
-        {
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|at| at.duration_since(UNIX_EPOCH).ok())
-                .map_or(0, |at| at.as_nanos());
-            files.insert(path, (metadata.len(), modified));
+        if let Some(stat) = stat(&path) {
+            files.insert(path, stat);
         }
     };
     for name in FILES {
@@ -255,6 +256,17 @@ fn fingerprint(dir: &Path, writing: Option<&Path>) -> Fingerprint {
         }
     }
     files
+}
+
+/// A file's size and modification time, or nothing when it is not a file.
+fn stat(path: &Path) -> Option<(u64, u128)> {
+    let metadata = std::fs::metadata(path).ok().filter(|meta| meta.is_file())?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|at| at.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |at| at.as_nanos());
+    Some((metadata.len(), modified))
 }
 
 /// A hash of each file's path and bytes, in path order. A file that cannot be read hashes as empty.

@@ -575,7 +575,11 @@ impl<'a> Live<'a> {
                 reload::record(db, &self.trace(base), Err(&problems))?;
                 return Ok(false);
             }
-            Polled::Loaded(new, files) => (new, files, true),
+            // The newer edit replaces the held one, and holds itself if it strands a task.
+            Polled::Loaded(new, files) => {
+                self.held = None;
+                (new, files, true)
+            }
         };
         let stranded = match guard {
             true => reload::stranded(db, &new)?,
@@ -3013,6 +3017,59 @@ mod tests {
         db.execute("UPDATE tasks SET state = 'done'", []).unwrap();
         let newer = || fs::write(dir.join("workflows/w.toml"), workflow(&["a", "c"])).unwrap();
         assert!(!edit_then_poll(&mut live, &mut db, &base, newer));
+        assert!(edit_then_poll(&mut live, &mut db, &base, || {}));
+        assert_eq!(steps(&live), ["a", "c"]);
+        // The held edit was dropped, so it never reverts the newer one.
+        assert!(!edit_then_poll(&mut live, &mut db, &base, || {}));
+        assert_eq!(steps(&live), ["a", "c"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_held_edit_applied_mid_edit_keeps_the_newer_edit() {
+        let dir = std::env::temp_dir().join(format!("priory-mid-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("workflows")).unwrap();
+        fs::write(dir.join("factory.toml"), "name = \"t\"\n").unwrap();
+        fs::write(dir.join("workflows/w.toml"), workflow(&["a", "b"])).unwrap();
+        let start = priory_factory::rules::validated(&dir).unwrap();
+        let base = Trace {
+            factory: &start,
+            revision: None,
+            machine: None,
+            runner: None,
+            usage: |_, _| None,
+        };
+        let mut db = state::memory();
+        db.execute(
+            "INSERT INTO tasks (key, workflow, step, state, trigger, source)
+             VALUES ('cli:a', 'w', 'b', 'running', 'cli', 'a')",
+            [],
+        )
+        .unwrap();
+        let mut live = Live::new(&start, reload::Watch::new(&start), None, None);
+
+        // The held edit removes step b and names a `writing` guide, which changes what is watched.
+        let held = || {
+            fs::write(dir.join("W.md"), "Write plainly.\n").unwrap();
+            fs::write(
+                dir.join("factory.toml"),
+                "name = \"t\"\nwriting = \"W.md\"\n",
+            )
+            .unwrap();
+            fs::write(dir.join("workflows/w.toml"), workflow(&["a"])).unwrap();
+        };
+        assert!(!edit_then_poll(&mut live, &mut db, &base, held));
+        assert!(!edit_then_poll(&mut live, &mut db, &base, || {}));
+
+        // The task leaves and a newer edit lands before the watch is due: the held edit applies.
+        db.execute("UPDATE tasks SET state = 'done'", []).unwrap();
+        fs::write(dir.join("workflows/w.toml"), workflow(&["a", "c"])).unwrap();
+        assert!(live.poll(&mut db, &base, true).unwrap());
+        assert_eq!(steps(&live), ["a"]);
+
+        // The newer edit still settles and loads.
+        assert!(!edit_then_poll(&mut live, &mut db, &base, || {}));
         assert!(edit_then_poll(&mut live, &mut db, &base, || {}));
         assert_eq!(steps(&live), ["a", "c"]);
         let _ = fs::remove_dir_all(&dir);
