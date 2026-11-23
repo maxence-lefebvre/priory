@@ -1,4 +1,4 @@
-use super::{BASELINE, OUTPUT, Watch, dispatch, id, publish};
+use super::{BASELINE, OUTPUT, Watch, dispatch, id, publish, publish_polled};
 use crate::log::{self, Log};
 use herdr_bus::{Message, Timestamp};
 use priory_factory::factory::Trigger;
@@ -146,7 +146,7 @@ impl<'a> Slack<'a> {
         }
         for (channel, events, top) in polled {
             for event in &events {
-                publish(bus, event)?;
+                publish_polled(bus, event, "slack", false)?;
                 dispatch(bus, &self.triggers, event)?;
             }
             let cursor = self.channels.get_mut(&channel).expect("a polled channel");
@@ -157,7 +157,7 @@ impl<'a> Slack<'a> {
             }
         }
         for reply in &replies {
-            publish(bus, reply)?;
+            publish_polled(bus, reply, "slack", false)?;
         }
         if failed.is_empty() {
             return Ok(());

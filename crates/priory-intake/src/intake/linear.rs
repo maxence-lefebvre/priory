@@ -1,4 +1,6 @@
-use super::{BASELINE, OUTPUT, Watch, claim, dispatch, id, publish, recent, same_change};
+use super::{
+    BASELINE, OUTPUT, Watch, claim, dispatch, id, publish, publish_polled, recent, same_change,
+};
 use crate::log::{self, Log};
 use herdr_bus::{Message, Timestamp};
 use priory_factory::factory::Trigger;
@@ -115,7 +117,14 @@ impl<'a> Linear<'a> {
         Ok(polled)
     }
 
-    pub(super) fn publish_all(&mut self, bus: &dyn Log, polled: Vec<Polled>) -> Result<(), String> {
+    /// Publishes what a poll found. With `hooked`, the factory takes Linear's webhook, so an event it
+    /// should have published first counts as missed.
+    pub(super) fn publish_all(
+        &mut self,
+        bus: &dyn Log,
+        polled: Vec<Polled>,
+        hooked: bool,
+    ) -> Result<(), String> {
         // Taken at the first state change a webhook may also report, and held so none publishes meanwhile.
         let mut delivered: Option<(std::fs::File, Vec<Message>)> = None;
         for Polled {
@@ -148,11 +157,13 @@ impl<'a> Linear<'a> {
                     if let Some(found) = found {
                         // One delivery stands for one history entry.
                         let other = delivered.remove(found);
+                        super::counted("linear", "poll", "duplicate");
                         dispatch(bus, &self.triggers, &other)?;
                         continue;
                     }
                 }
-                publish(bus, &event)?;
+                let missed = hooked && super::linear_webhook::reports(&event);
+                publish_polled(bus, &event, "linear", missed)?;
                 dispatch(bus, &self.triggers, &event)?;
             }
             if current {

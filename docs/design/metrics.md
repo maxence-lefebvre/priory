@@ -7,8 +7,8 @@ the slices after it, what stays out, and the open questions with a recommendatio
 
 The first slice is built: [metrics.md](../daemon/metrics.md) describes it. It covers the exporter,
 the keys, `PRIORY_METRICS`, the cap and the `process` group. The tests use a fake collector on
-127.0.0.1 rather than a fake `curl`. The first two later slices, the `log` and `runs` groups, are built too:
-[metrics.md](../daemon/metrics.md#the-log-group) describes them, and
+127.0.0.1 rather than a fake `curl`. The first three later slices, the `log`, `runs` and `intake`
+groups, are built too: [metrics.md](../daemon/metrics.md#the-log-group) describes them, and
 [the metrics reference](../reference/metrics.md) lists every metric. The other later slices are not
 built.
 
@@ -316,7 +316,13 @@ export's tests do, and a `PRIORY_PROC` folder for `/proc/self`:
    state file each interval, counting those that ended since it started, and `runtime::worktree`
    times clone, fetch and checkout. A start's duration begins at `started`, which the row keeps to
    the second.
-3. The `intake` group, with the duplicate and missed counts from the publish path.
+3. **Built.** The `intake` group, with the duplicate and missed counts from the publish path.
+   Tests run the intake with a fake `gh` after a baseline poll, a failing `gh`, and `priory serve`
+   taking a signed delivery, its redelivery and a forged one. As built, the counts live in the
+   process beside its timed durations, and each publish reads the newest message first to tell an
+   append from an id the log already held. A poll counts `duplicate` only when the held message is
+   a webhook's, so a schedule's slot or a Slack thread read again counts nothing. The webhook reply
+   is unchanged. It needs no migration: the poll age reads `intake_sources`.
 4. The `work` group.
 5. A section in [How to send traces to an OpenTelemetry backend](../sending-traces-to-opentelemetry.md)
    for metrics, with one alert per group a person would set first: the probe's `timeout` share, the

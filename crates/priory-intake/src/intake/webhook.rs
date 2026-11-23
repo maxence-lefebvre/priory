@@ -1,7 +1,7 @@
 use super::pulls::{comment, thread_comment};
 use super::{
     COMMENTED, LABELED, LOOKBACK_SECONDS, OPENED, Observed, PR_CLOSED, PR_LABELED, PR_OPENED,
-    REVIEWED, THREAD_COMMENTED, claim, dispatch, now, output, publish, reported,
+    REVIEWED, THREAD_COMMENTED, claim, dispatch, now, output, publish_delivered, reported,
 };
 use crate::log::{self, Log};
 use herdr_bus::Timestamp;
@@ -52,6 +52,7 @@ impl Github {
     /// gets 202, so GitHub does not retry it.
     pub fn receive(&self, bus: &mut Result<Box<dyn Log>, String>, request: &Request) -> Reply {
         if !self.signed(request) {
+            super::counted("github", "webhook", "refused");
             return Reply::error(
                 401,
                 "X-Hub-Signature-256 is missing or does not match the body",
@@ -92,9 +93,10 @@ impl Github {
             super::mark_own(&mut message);
             let _claim = claim()?;
             if reported(bus, &message)? {
+                super::counted("github", "webhook", "duplicate");
                 return Ok(false);
             }
-            publish(bus, &message)?;
+            publish_delivered(bus, &message, "github")?;
             dispatch(bus, &triggers, &message)?;
             Ok(true)
         });

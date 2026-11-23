@@ -42,6 +42,7 @@ impl SentryWebhook {
     /// route does no network call, and every delivery Priory takes or drops on purpose gets `202`.
     pub fn receive(&self, bus: &mut Result<Box<dyn Log>, String>, request: &Request) -> Reply {
         if !self.signed(request) {
+            super::counted("sentry", "webhook", "refused");
             return Reply::error(
                 401,
                 "Sentry-Hook-Signature is missing or does not match the body",
@@ -74,7 +75,7 @@ impl SentryWebhook {
             Ok(bus) => bus,
             Err(error) => return Reply::error(500, &error),
         };
-        match publish_new(bus, &triggers, &message) {
+        match publish_new(bus, &triggers, &message, "sentry") {
             Ok(true) => accepted("published"),
             Ok(false) => accepted("dropped"),
             Err(error) => Reply::error(500, &error),

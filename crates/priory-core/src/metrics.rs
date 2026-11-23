@@ -3,7 +3,7 @@
 
 use crate::otlp;
 use priory_factory::factory::{Backend, Factory, METRIC_GROUPS};
-use priory_intake::intake::OUTPUT;
+use priory_intake::intake::{EVENTS, FAILURES, MISSED, OUTPUT};
 use priory_intake::log::{self, Log};
 use priory_runtime::{room, runtime, ticks, worktrees};
 use rusqlite::{Connection, OptionalExtension};
@@ -71,11 +71,12 @@ fn groups_of(text: &str) -> Result<Vec<String>, String> {
     Ok(groups)
 }
 
-/// The groups `service` sends of `groups`: the daemon alone owns the log and the runs.
+/// The groups `service` sends of `groups`: the daemon alone owns the log and the runs, and each
+/// process sends its own intake events, the polls' from the intake, the webhooks' from the server.
 fn owned(service: &str, groups: Vec<String>) -> Vec<String> {
     groups
         .into_iter()
-        .filter(|group| group == "process" || service == "daemon")
+        .filter(|group| group == "process" || group == "intake" || service == "daemon")
         .collect()
 }
 
@@ -160,6 +161,7 @@ pub fn start(factory: &Factory, service: &str, groups: Vec<String>) -> Result<()
             .filter_map(|(key, value)| otlp::attribute(key, value))
             .collect(),
         groups,
+        polls: service == "intake",
         backend,
         cap: telemetry.metrics_cap.unwrap_or(CAP),
         started: nanos(started),
@@ -202,6 +204,8 @@ struct Exporter {
     body: PathBuf,
     resource: Vec<Value>,
     groups: Vec<String>,
+    /// Whether this process is the intake, whose polls `intake_sources` records.
+    polls: bool,
     /// The log's backend, `herdr-bus` or `postgres`.
     backend: &'static str,
     cap: u64,
@@ -369,6 +373,9 @@ impl Exporter {
         }
         if self.sends("runs") {
             self.runs(&timed, &mut points);
+        }
+        if self.sends("intake") {
+            self.intake(&mut points);
         }
         points
     }
@@ -609,6 +616,47 @@ impl Exporter {
         });
     }
 
+    /// The intake group: the events this process published, the polls that missed a webhook's or
+    /// failed, by source, and, from the intake, each polled source's age since its last good poll.
+    fn intake(&mut self, points: &mut Vec<Point>) {
+        for ((metric, attributes), count) in ticks::counts() {
+            let (name, unit) = match metric {
+                EVENTS => (EVENTS, "{event}"),
+                MISSED => (MISSED, "{event}"),
+                FAILURES => (FAILURES, "{poll}"),
+                _ => continue,
+            };
+            points.push(Point {
+                group: "intake",
+                kind: Kind::Counter,
+                name,
+                unit,
+                attributes: owned_attributes(&attributes),
+                value: Number::Int(count),
+            });
+        }
+        if !self.polls || std::env::var_os("PRIORY_DB").is_none() {
+            return;
+        }
+        let ages = crate::state::read_only()
+            .and_then(|db| poll_ages(&db).map_err(|error| error.to_string()));
+        match ages {
+            Ok(ages) => {
+                for (source, age) in ages {
+                    points.push(Point {
+                        group: "intake",
+                        kind: Kind::Gauge,
+                        name: "priory.intake.poll.age",
+                        unit: "s",
+                        attributes: vec![("priory.source", source)],
+                        value: Number::Int(age),
+                    });
+                }
+            }
+            Err(error) => self.once(format!("metrics: cannot read the intake's polls: {error}")),
+        }
+    }
+
     /// Counts one duration of histogram `metric` of `group` under `attributes`.
     fn observe(
         &mut self,
@@ -753,6 +801,22 @@ fn link_state(db: &Connection) -> rusqlite::Result<LinkState> {
             .map(|(runner, age)| (runner, whole(age)))
             .collect(),
     })
+}
+
+/// Each polled source and the seconds since its last poll with no error: since its last poll, or
+/// since it started failing while it fails.
+fn poll_ages(db: &Connection) -> rusqlite::Result<Vec<(String, u64)>> {
+    db.prepare(
+        "SELECT source, CAST((julianday('now') - julianday(coalesce(failing_since, polled))) * 86400
+           AS INTEGER) FROM intake_sources ORDER BY source",
+    )?
+    .query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            u64::try_from(row.get::<_, Option<i64>>(1)?.unwrap_or_default()).unwrap_or_default(),
+        ))
+    })?
+    .collect()
 }
 
 /// A timed duration's attributes as a point's.
@@ -1090,11 +1154,38 @@ mod tests {
     }
 
     #[test]
-    fn only_the_daemon_sends_the_log_and_runs_groups() {
-        let groups = || vec!["process".to_owned(), "log".to_owned(), "runs".to_owned()];
-        assert_eq!(owned("daemon", groups()), ["process", "log", "runs"]);
-        assert_eq!(owned("intake", groups()), ["process"]);
-        assert_eq!(owned("serve", groups()), ["process"]);
+    fn only_the_daemon_sends_the_log_and_runs_groups_and_every_process_its_intake_group() {
+        let groups = || {
+            ["process", "log", "runs", "intake"]
+                .map(str::to_owned)
+                .to_vec()
+        };
+        assert_eq!(
+            owned("daemon", groups()),
+            ["process", "log", "runs", "intake"]
+        );
+        assert_eq!(owned("intake", groups()), ["process", "intake"]);
+        assert_eq!(owned("serve", groups()), ["process", "intake"]);
+    }
+
+    #[test]
+    fn a_source_s_poll_age_runs_from_its_last_poll_or_from_when_it_started_failing() {
+        let db = crate::state::memory();
+        db.execute_batch(
+            "INSERT INTO intake_sources (source, polled, error, failing_since)
+             VALUES ('github', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-30 seconds'), NULL, NULL),
+               ('linear', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-5 seconds'), 'timed out after 300s',
+                 strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-3600 seconds'));",
+        )
+        .unwrap();
+
+        let ages = poll_ages(&db).unwrap();
+
+        assert_eq!(ages.len(), 2);
+        assert_eq!(ages[0].0, "github");
+        assert!((29..=31).contains(&ages[0].1), "{ages:?}");
+        assert_eq!(ages[1].0, "linear");
+        assert!((3599..=3601).contains(&ages[1].1), "{ages:?}");
     }
 
     #[test]
@@ -1118,7 +1209,7 @@ mod tests {
         assert_eq!(
             groups_of("process,nope").unwrap_err(),
             "PRIORY_METRICS names `nope`, which is not a metrics group: the groups are process, \
-             log, runs, or none"
+             log, runs, intake, or none"
         );
     }
 
