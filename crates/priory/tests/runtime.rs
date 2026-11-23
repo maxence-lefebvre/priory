@@ -4218,6 +4218,96 @@ fn a_human_step_asks_ends_the_run_and_sleeps_until_an_answer_resumes_the_session
     assert_eq!(setup.rows("tasks")[0][4], "running");
 }
 
+/// The data of each trace record of `kind`, oldest first.
+fn trace_records(setup: &Setup, kind: &str) -> Vec<serde_json::Value> {
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let mut statement = db
+        .prepare("SELECT event FROM trace WHERE type = ?1 ORDER BY seq")
+        .unwrap();
+    statement
+        .query_map([kind], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|event| {
+            serde_json::from_str::<serde_json::Value>(&event.unwrap()).unwrap()["data"].clone()
+        })
+        .collect()
+}
+
+/// Waits up to 20 seconds for a trace record of `kind`, and returns them all.
+fn until_record(setup: &Setup, kind: &str) -> Vec<serde_json::Value> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let records = trace_records(setup, kind);
+        if !records.is_empty() {
+            return records;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no {kind} record\ndaemon: {}",
+            fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn a_workflow_edit_while_a_task_waits_at_a_human_step_takes_effect_at_its_next_step() {
+    let mut setup = Setup::with_workflow("reload-next", STEPS);
+    setup.calls(&[result("unsure")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+
+    let edited = STEPS.replace(
+        "next = { approved = \"implement\", rejected = \"stop\" }",
+        "next = { approved = \"done\", rejected = \"stop\" }",
+    );
+    write_atomic(&setup.dir.join("factory/workflows/implement.toml"), &edited);
+    until_record(&setup, "factory.config.reloaded");
+    let answered = setup.priory(&["answer", "1", "approved", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    // The task ends from approve, as the edited `next` says, and no run starts for implement.
+    assert_eq!(tasks[0][3], "approve");
+    assert_eq!(setup.rows("runs").len(), 1);
+}
+
+#[test]
+fn an_edit_that_removes_the_step_a_task_is_at_keeps_the_last_good_factory() {
+    let mut setup = Setup::with_workflow("reload-stranded", STEPS);
+    setup.calls(&[result("unsure")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+
+    let start = STEPS.find("[[steps]]\nid = \"approve\"").unwrap();
+    let end = STEPS.find("[[steps]]\nid = \"implement\"").unwrap();
+    let edited = format!("{}{}", &STEPS[..start], &STEPS[end..])
+        .replace("unsure = \"approve\"", "unsure = \"stop\"");
+    write_atomic(&setup.dir.join("factory/workflows/implement.toml"), &edited);
+
+    let refused = until_record(&setup, "factory.config.refused");
+    assert_eq!(
+        refused[0]["problems"],
+        json!([
+            "workflows/implement.toml: task 1 is at step approve, which this edit removes: end or move task 1, or keep the step"
+        ])
+    );
+    assert!(trace_records(&setup, "factory.config.reloaded").is_empty());
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert!(log.contains("kept the last good factory"), "{log}");
+    let answered = setup.priory(&["answer", "1", "approved", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("runs", |rows| rows.iter().any(|row| row[2] == "implement"));
+}
+
 const TWO_AGENTS: &str = r#"
 start = "implement"
 
@@ -15628,6 +15718,48 @@ fn a_run_cancelled_before_any_step_sends_a_span_with_its_end_reason_under_the_ro
     assert_eq!(
         attribute(&run["attributes"], "priory.run.ended_as"),
         "cancelled"
+    );
+}
+
+#[test]
+fn each_reload_and_each_refused_reload_sends_a_span_of_its_own() {
+    let mut setup = Setup::with_workflow("otlp-reload", STEPS);
+    setup.telemetry("http://127.0.0.1:4318");
+    setup.calls(&[result("unsure")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let workflow = setup.dir.join("factory/workflows/implement.toml");
+    write_atomic(&workflow, &format!("{STEPS}\n# edited\n"));
+    until_record(&setup, "factory.config.reloaded");
+    write_atomic(&workflow, "start = \"nowhere\"\n");
+    until_record(&setup, "factory.config.refused");
+
+    let spans: Vec<_> = setup
+        .until_spans(4)
+        .into_iter()
+        .filter(|span| {
+            span["name"]
+                .as_str()
+                .unwrap()
+                .starts_with("factory.config.")
+        })
+        .collect();
+
+    assert_eq!(spans[0]["name"], "factory.config.reloaded", "{spans:?}");
+    assert_eq!(spans[1]["name"], "factory.config.refused", "{spans:?}");
+    assert_ne!(spans[0]["traceId"], spans[1]["traceId"]);
+    assert_eq!(spans[1]["startTimeUnixNano"], spans[1]["endTimeUnixNano"]);
+    let problems = attribute(&spans[1]["attributes"], "priory.reload.problems");
+    assert!(
+        problems.as_str().unwrap().contains("implement.toml"),
+        "{problems}"
+    );
+    assert_eq!(
+        attribute(&spans[0]["attributes"], "priory.reload.problems"),
+        serde_json::Value::Null
     );
 }
 

@@ -136,7 +136,8 @@ row = [
 | `a row, column or tabs needs at least one child` | An empty `row`, `column` or `tabs` |
 | `` `default` is also defined in views/default.toml `` | `default.toml` and `default.yaml` both exist |
 
-`priory serve` and the daemon read the views when they start. Restart them after a change.
+`priory serve` and the daemon read the views when they start, and again a few seconds after an edit
+(see [reload.md](../daemon/reload.md)).
 
 ## Printing the views
 

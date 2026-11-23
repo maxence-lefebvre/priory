@@ -45,6 +45,7 @@ mod push;
 pub mod recap;
 mod recipe;
 pub mod relate;
+pub mod reload;
 pub mod replay;
 pub mod report;
 pub mod review;

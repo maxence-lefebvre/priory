@@ -9,7 +9,8 @@ priory daemon [DIR] [--once]
 ```
 
 `DIR` is the factory folder, `.` by default. The daemon checks the factory first, as `priory check`
-does, and refuses to start while it has problems.
+does, and refuses to start while it has problems. It then follows edits of the factory's files
+without a restart (see [reload.md](reload.md)).
 
 It reads the output `factory.intake` of the event log, herdr-bus by default or Postgres with
 [`[log] backend = "postgres"`](../reference/factory.md#log), as the consumer `priory`, or `priory.<runner>` in a
@@ -136,6 +137,8 @@ The keys of `factory.toml`, workflows and agents are in [docs/reference/](../ref
 - [search.md](search.md): TL;DRs, the summarizer, `priory search`, and the optional embeddings.
 - [load.md](load.md): the load test, how to rerun it and the limits it measured.
 - [serve.md](serve.md): the HTTP server over the state, its token and its limits.
+- [reload.md](reload.md): how the daemon and the server follow edits of the factory's files, the
+  keys that wait for a restart, and what an edit does to a running task.
 - To run Priory as systemd user services, follow
   [How to run Priory as services](../running-as-services.md). The listing commands, such as
   `priory runs`, are in [the command reference](../reference/cli.md).
