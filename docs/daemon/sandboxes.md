@@ -142,7 +142,8 @@ the factory names, and holds only the variables it names. It does not stop:
 - **The clone.** The run can write other tasks' refs and objects in the shared clone.
 - **The harness's home.** The run can read its harness's login, and read and write every session's
   transcript in it.
-- **Codex's home.** A Codex run can write `config.toml`, which names the commands Codex runs.
+- **Codex's home.** A Codex run can write `config.toml`, and Priory's trust profile
+  `priory-trust.config.toml`, which name the commands Codex runs.
 - **The worktree.** Code steps, and a person who opens the worktree, run what the run wrote there,
   including its `.claude/settings.local.json`.
 

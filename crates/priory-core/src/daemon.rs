@@ -1240,7 +1240,22 @@ fn tend(
                 Some(diagnose(db, factory, share, home, &run.agent)?)
             };
             tools::fail(db, trace, run.task, run.id, &reason, repair.as_ref())?;
-        } else if let Some((ended_as, reason)) = verdict(&run, factory, home) {
+        } else if let Some((ended_as, reason, missed)) =
+            verdict(&run, factory, home, &|| crate::trace::granted(db, run.id))
+        {
+            if missed && let Some(agent) = factory.agents.get(&run.agent) {
+                let grant = priory_runtime::trust::Grant {
+                    path: run.worktree.as_deref().unwrap_or_default().into(),
+                    file: std::path::PathBuf::new(),
+                    outcome: priory_runtime::trust::Outcome::Missed,
+                    why: None,
+                };
+                let harness = agent.value.harness.name();
+                let version = runtime::version(harness_of(factory, &run.agent).program());
+                let tx = db.transaction()?;
+                crate::trace::trusted(&tx, trace, run.id, harness, &grant, version.as_deref())?;
+                tx.commit()?;
+            }
             // A debate turn past its timeout goes to the person, as a debate that did not converge.
             if ended_as == "timeout"
                 && let Some(tmux) = crate::debate::timed_out(db, trace, &run.session, &reason)?
@@ -1303,7 +1318,7 @@ fn tend(
         }
         if let Err(reason) = start(
             db,
-            factory,
+            trace,
             trace.runner.as_deref(),
             home,
             scope,
@@ -1386,8 +1401,14 @@ fn diagnose(
 }
 
 /// Why a live run must end: its harness's trust dialog, no `SessionStart`, a permission prompt, or
-/// a turn past its step's timeout.
-fn verdict(run: &state::LiveRun, factory: &Factory, home: &Path) -> Option<(&'static str, String)> {
+/// a turn past its step's timeout. The flag says the dialog asked for trust that `granted`, the
+/// run's own grant, had recorded.
+fn verdict(
+    run: &state::LiveRun,
+    factory: &Factory,
+    home: &Path,
+    granted: &dyn Fn() -> bool,
+) -> Option<(&'static str, String, bool)> {
     // Claude and Codex ask whether to trust a folder, and Codex its hooks, before any hook; Priory
     // never answers.
     let harness = harness_of(factory, &run.agent);
@@ -1405,6 +1426,16 @@ fn verdict(run: &state::LiveRun, factory: &Factory, home: &Path) -> Option<(&'st
     if let Some(rows) = &rows
         && harness.asks_trust(rows)
     {
+        if granted() {
+            let reason = format!(
+                "{} asked whether to trust {} although Priory recorded its trust; this version of \
+                 the harness keys trust differently. Trust the folder by hand, or turn \
+                 trust_worktrees off",
+                harness.program(),
+                run.worktree.as_deref().unwrap_or("its folder"),
+            );
+            return Some(("exited", reason, true));
+        }
         let trust = trust();
         let reason = format!(
             "{} asked whether to trust {}; Priory never answers it. {}{}",
@@ -1413,7 +1444,7 @@ fn verdict(run: &state::LiveRun, factory: &Factory, home: &Path) -> Option<(&'st
             trust[..1].to_uppercase(),
             &trust[1..]
         );
-        return Some(("exited", reason));
+        return Some(("exited", reason, false));
     }
     if run.late {
         let mut reason = format!(
@@ -1439,11 +1470,11 @@ fn verdict(run: &state::LiveRun, factory: &Factory, home: &Path) -> Option<(&'st
         if !tail.is_empty() {
             reason.push_str(&format!(". Its pane ended with: {}", tail.join(" | ")));
         }
-        return Some(("exited", reason));
+        return Some(("exited", reason, false));
     }
     if let Some(message) = &run.prompted {
         let reason = format!("run {} stopped on a permission prompt: {message}", run.id);
-        return Some(("permission", reason));
+        return Some(("permission", reason, false));
     }
     let limit = factory
         .workflows
@@ -1454,7 +1485,7 @@ fn verdict(run: &state::LiveRun, factory: &Factory, home: &Path) -> Option<(&'st
         .as_secs();
     run.turn.filter(|turn| *turn >= limit as i64).map(|_| {
         let reason = format!("run {} timed out: its turn ran past {limit}s", run.id);
-        ("timeout", reason)
+        ("timeout", reason, false)
     })
 }
 
@@ -2122,7 +2153,7 @@ fn jailing_workflow(db: &Connection, helper: i64) -> rusqlite::Result<Result<Str
 #[allow(clippy::too_many_arguments)]
 fn start(
     db: &mut Connection,
-    factory: &Factory,
+    trace: &crate::trace::Trace,
     runner: Option<&str>,
     home: &Path,
     scope: &[String],
@@ -2132,6 +2163,7 @@ fn start(
     probes: &mut crate::connectors::Probes,
     kit: crate::kit::Current<'_>,
 ) -> Result<Result<(), String>, Error> {
+    let factory = trace.factory;
     let step = factory.workflows[&admission.workflow]
         .value
         .step(&admission.step)
@@ -2324,6 +2356,28 @@ fn start(
         .chain(crate::todo::connectors_env(db)?)
         .chain(servers_env(&agent.value, &servers))
         .collect();
+    let mut trust = false;
+    if factory.trust_worktrees() {
+        let grants = if factory.names_repo(repo) {
+            priory_runtime::trust::grant(harness(&agent.value.harness), home, repo, &worktree)
+        } else {
+            vec![priory_runtime::trust::Grant {
+                path: worktree.clone(),
+                file: std::path::PathBuf::new(),
+                outcome: priory_runtime::trust::Outcome::Refused,
+                why: Some(format!("the factory does not name {repo}")),
+            }]
+        };
+        let tx = db.transaction()?;
+        for grant in &grants {
+            crate::trace::trusted(&tx, trace, run, agent.value.harness.name(), grant, None)?;
+        }
+        tx.commit()?;
+        trust = grants.iter().any(|grant| {
+            use priory_runtime::trust::Outcome;
+            matches!(grant.outcome, Outcome::Granted | Outcome::Present)
+        });
+    }
     let started = Started {
         name,
         tmux: &tmux,
@@ -2334,6 +2388,7 @@ fn start(
         debate: turn.is_some(),
         servers: &servers,
         jail: jail.as_ref(),
+        trust,
     };
     Ok(launch(
         factory,
@@ -2415,6 +2470,8 @@ struct Started<'a> {
     servers: &'a priory_runtime::servers::Servers,
     /// The sandbox its harness starts in, if its workflow turns one on.
     jail: Option<&'a priory_runtime::jail::Jail>,
+    /// Priory recorded the harness's trust in the run's folders, so a Codex run takes its profile.
+    trust: bool,
 }
 
 /// The MCP servers `agent` names, found in the person's own config of its harness when its run
@@ -2513,6 +2570,7 @@ fn launch(
             servers: started.servers,
             tools,
             jail: started.jail,
+            trust: started.trust,
         },
     )
     .map_err(|failed| {
@@ -2610,6 +2668,7 @@ fn compact_idle(
             debate: false,
             servers: &servers,
             jail: None,
+            trust: false,
         };
         let env: Vec<String> = guard_env(trace.factory).into_iter().collect();
         if let Err(error) = launch(
