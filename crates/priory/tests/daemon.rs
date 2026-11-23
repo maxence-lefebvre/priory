@@ -716,9 +716,14 @@ fn a_comment_on_a_pull_request_whose_task_was_dropped_starts_no_new_task() {
     succeeded(&setup.daemon());
 
     assert_eq!(setup.rows("tasks").len(), 1);
+    // The comment posts a report that names `priory revive 1`.
     assert_eq!(
         routes(&setup)[2..],
-        [route("-", "ignored"), route("-", "ignored")]
+        [
+            route("-", "ignored"),
+            route("-", "report"),
+            route("-", "ignored")
+        ]
     );
 }
 

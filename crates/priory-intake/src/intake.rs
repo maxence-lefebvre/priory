@@ -822,15 +822,19 @@ pub fn request_for(name: &str, trigger: &Trigger, source: &Message) -> Message {
     task_requested(name, trigger, source, key)
 }
 
-/// Marks a GitHub comment or review `own` when `viewer`, the login `gh` runs as, wrote it: the
-/// login a worker's `gh` posts as. Unmarked while `gh` cannot say who it is.
+/// Marks a GitHub comment or review `own` when an agent wrote it: `viewer`, the login a worker's
+/// `gh` posts as, wrote it and its body holds `AGENT_COMMENT`. The person shares that login, so
+/// their unmarked comment is theirs. Unmarked while `gh` cannot say who it is.
 fn mark_own(message: &mut Message, viewer: Viewer) {
     let feedback = [COMMENTED, THREAD_COMMENTED, REVIEWED, ISSUE_COMMENTED];
     if !feedback.contains(&message.kind.as_str()) {
         return;
     }
     if let Some(viewer) = viewer() {
-        message.data["own"] = json!(message.data["actor"] == viewer);
+        let marked = message.data["body"]
+            .as_str()
+            .is_some_and(|body| body.contains(priory_runtime::runtime::AGENT_COMMENT));
+        message.data["own"] = json!(message.data["actor"] == viewer && marked);
     }
 }
 
@@ -877,7 +881,7 @@ impl Observed {
             .time(time)
             .link(link, &url);
         mark_own(&mut message, viewer);
-        // An agent posts as the login `gh` runs as, so its own comment must not start a task.
+        // An agent's own comment must not start a task, or its task could restart itself.
         let own = message.data["own"] == true;
         message.data["triggers"] = json!(self.matching(triggers, own));
         Ok(message)

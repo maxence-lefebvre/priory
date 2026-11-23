@@ -153,13 +153,13 @@ second its last run ended, wakes nothing and fires no gate: it is most likely th
 comment or state change. Its next wake carries it. An event another task keeps is not held back,
 since no later wake would carry it.
 
-A GitHub comment or review whose `own` is `false` is exempt: the intake knows another login wrote
-it, so it wakes the task and fires the gate whenever it was written. `own` compares the author with
-the login that `gh api user` names, which a worker's `gh` posts as too. The poll and the webhook
-each ask `gh` once per process, and `own` is absent when that ask failed, until the process
-restarts. When agents post with
-the person's own GitHub account, every comment of that account is `own`, and the time rule above
-still applies to it. Linear and Slack events have no `own`.
+A GitHub comment or review whose `own` is `false` is exempt: the intake knows no agent wrote it, so
+it wakes the task and fires the gate whenever it was written. `own` is `true` only when the login
+that `gh api user` names, which a worker's `gh` posts as too, wrote it and its body holds
+`<!-- agent-comment -->` (see [An agent's own comments](routing.md#an-agents-own-comments)). So the
+person's unmarked comment is `false` even when agents post with the person's own account. The poll
+and the webhook each ask `gh` once per process, and `own` is absent when that ask failed, until the
+process restarts. Linear and Slack events have no `own`.
 
 A task subscribes to its own key when it is created, when the key names an issue, a pull request,
 a Linear issue or a Slack thread. So a reply in the Slack thread that started a task wakes it, and a

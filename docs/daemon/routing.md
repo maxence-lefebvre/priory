@@ -154,6 +154,19 @@ That task's key is the pull request, `github:owner/name#42`, and it subscribes t
 A `priory request --key github:owner/name#42` keys its task the same way, so that task subscribes
 to the pull request too (see [cli.md](../intake/cli.md)).
 
+### An agent's own comments
+
+Agents post with the person's own `gh` login, so the login alone cannot tell an agent's comment from
+the person's. An agent marks its comment with the line `<!-- agent-comment -->` in its body, a fixed
+marker that GitHub does not render. The intake sets `own: true` on a comment, review or review
+thread comment only when the login `gh` runs as wrote it and its body holds the marker. Priory adds
+the marker to each comment it posts itself, and the starter factories tell agents to add it.
+
+An `own` comment starts no task, so an agent cannot restart its own task. How `own` decides whether
+a comment wakes a task is in [Subscriptions in tools.md](tools.md#subscriptions). The person's
+unmarked comment is `own: false`: it starts and reaches a task as anyone else's does. The marker in another login's comment proves
+nothing: that comment is not `own`.
+
 ## Outcomes
 
 Each inbox entry gets one of these outcomes:

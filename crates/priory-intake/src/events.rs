@@ -136,9 +136,9 @@ pub struct IssueComment {
     /// Feedback from anyone but the owner, a member or a collaborator reaches no task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub association: Option<String>,
-    /// Whether the login `gh api user` names wrote it, the login a worker posts as; absent while
-    /// `gh` cannot say. A comment another login wrote wakes its task even when it was written
-    /// during the agent's turn.
+    /// Whether an agent wrote it: the login `gh api user` names, which a worker posts as, wrote it
+    /// and its body holds `<!-- agent-comment -->`; absent while `gh` cannot say. Any other
+    /// comment wakes its task even when it was written during the agent's turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub own: Option<bool>,
     #[serde(flatten)]
@@ -264,9 +264,9 @@ pub struct ReviewSubmitted {
     /// Feedback from anyone but the owner, a member or a collaborator reaches no task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub association: Option<String>,
-    /// Whether the login `gh api user` names wrote it, the login a worker posts as; absent while
-    /// `gh` cannot say. A comment another login wrote wakes its task even when it was written
-    /// during the agent's turn.
+    /// Whether an agent wrote it: the login `gh api user` names, which a worker posts as, wrote it
+    /// and its body holds `<!-- agent-comment -->`; absent while `gh` cannot say. Any other
+    /// comment wakes its task even when it was written during the agent's turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub own: Option<bool>,
     /// The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.
@@ -299,9 +299,9 @@ pub struct PullRequestComment {
     /// Feedback from anyone but the owner, a member or a collaborator reaches no task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub association: Option<String>,
-    /// Whether the login `gh api user` names wrote it, the login a worker posts as; absent while
-    /// `gh` cannot say. A comment another login wrote wakes its task even when it was written
-    /// during the agent's turn.
+    /// Whether an agent wrote it: the login `gh api user` names, which a worker posts as, wrote it
+    /// and its body holds `<!-- agent-comment -->`; absent while `gh` cannot say. Any other
+    /// comment wakes its task even when it was written during the agent's turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub own: Option<bool>,
     /// The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.
@@ -340,9 +340,9 @@ pub struct ReviewThreadComment {
     /// Feedback from anyone but the owner, a member or a collaborator reaches no task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub association: Option<String>,
-    /// Whether the login `gh api user` names wrote it, the login a worker posts as; absent while
-    /// `gh` cannot say. A comment another login wrote wakes its task even when it was written
-    /// during the agent's turn.
+    /// Whether an agent wrote it: the login `gh api user` names, which a worker posts as, wrote it
+    /// and its body holds `<!-- agent-comment -->`; absent while `gh` cannot say. Any other
+    /// comment wakes its task even when it was written during the agent's turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub own: Option<bool>,
     /// The `X-GitHub-Delivery` of the webhook delivery that reported it; absent when a poll did.

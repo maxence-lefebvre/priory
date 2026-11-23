@@ -1491,6 +1491,13 @@ fn pull_comment(id: u64, login: &str, kind: &str, association: &str) -> serde_js
     })
 }
 
+/// A comment by `max`, the login `gh` runs as, that holds the agent comment marker.
+fn agent_comment(id: u64) -> serde_json::Value {
+    let mut comment = pull_comment(id, "max", "User", "OWNER");
+    comment["body"] = json!("Fixed in abc123.\n\n<!-- agent-comment -->");
+    comment
+}
+
 #[test]
 fn a_comment_trigger_requests_a_task_for_a_comment_on_its_author_s_pull_request() {
     let setup = Setup::baseline("pr-comment-trigger");
@@ -1510,8 +1517,10 @@ fn a_comment_trigger_requests_a_task_for_a_comment_on_its_author_s_pull_request(
         pull_comment(701, "ana", "User", "MEMBER"),
         // Someone without write access starts nothing.
         pull_comment(703, "mallory", "User", "NONE"),
-        // The login `gh` runs as, which agents post as too, starts nothing.
-        pull_comment(705, "max", "User", "OWNER"),
+        // The login `gh` runs as, which agents post as too, starts nothing with the marker.
+        agent_comment(705),
+        // Without it, the comment is the person's.
+        pull_comment(706, "max", "User", "OWNER"),
     ] });
     let mut theirs = pull(44, false, json!([]), json!([]));
     theirs["author"] = json!({ "login": "dev" });
@@ -1539,6 +1548,7 @@ fn a_comment_trigger_requests_a_task_for_a_comment_on_its_author_s_pull_request(
         requests(&setup),
         [
             ("my-prs".to_owned(), "github:owner/repo#43".to_owned()),
+            ("my-prs".to_owned(), "github:owner/repo#43".to_owned()),
             ("my-threads".to_owned(), "github:owner/repo#43".to_owned()),
         ]
     );
@@ -1555,6 +1565,12 @@ fn a_comment_trigger_requests_a_task_for_a_comment_on_its_author_s_pull_request(
         .unwrap();
     assert_eq!(own.message.data["own"], true);
     assert_eq!(own.message.data["triggers"], json!([]));
+    let person = setup
+        .published()
+        .into_iter()
+        .find(|stored| stored.message.data["github_id"] == 706)
+        .unwrap();
+    assert_eq!(person.message.data["own"], false);
 }
 
 #[test]

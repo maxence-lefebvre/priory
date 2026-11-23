@@ -434,12 +434,18 @@ mod tests {
     }
 
     #[test]
-    fn a_feedback_trigger_skips_a_closed_pull_request_and_the_login_gh_runs_as() {
+    fn a_feedback_trigger_skips_a_closed_pull_request_and_a_marked_comment_by_the_login_gh_runs_as()
+    {
         let mine = feedback_trigger("pull_request.comment", &json!({ "author": "max" }));
         let threads = feedback_trigger("pull_request_review_comment", &json!({ "author": "max" }));
         let triggers = [("mine", &mine), ("threads", &threads)];
         let matched = |observed: &Observed, viewer: crate::intake::Viewer| {
             observed.message(&triggers, viewer).unwrap().data["triggers"].clone()
+        };
+        let marked = |login: &str| {
+            let mut comment = comment_by(login, "User");
+            comment["comment"]["body"] = json!("Fixed in abc.\n\n<!-- agent-comment -->");
+            on_pull("issue_comment", &comment)
         };
         let ana = on_pull("issue_comment", &comment_by("ana", "User"));
         let max = on_pull("issue_comment", &comment_by("max", "User"));
@@ -447,8 +453,10 @@ mod tests {
         closed.data["open"] = json!(false);
 
         assert_eq!(matched(&ana, || Some("max")), json!(["mine"]));
-        assert_eq!(matched(&max, || Some("max")), json!([]));
-        assert_eq!(matched(&max, || None), json!(["mine"]));
+        // The person shares the agents' login: only the marker makes a comment an agent's.
+        assert_eq!(matched(&max, || Some("max")), json!(["mine"]));
+        assert_eq!(matched(&marked("max"), || Some("max")), json!([]));
+        assert_eq!(matched(&marked("ana"), || Some("max")), json!(["mine"]));
         assert_eq!(matched(&closed, || None), json!([]));
     }
 

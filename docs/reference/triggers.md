@@ -86,9 +86,10 @@ so later comments reach that task. A pull request that an active task already ow
 task: its comments go to that task (see
 [routing.md](../daemon/routing.md#comments-on-a-pull-request-no-task-owns)). A bot's review starts
 a task only when `commenter` names the bot. A comment from someone without write access starts no
-task. Neither does a comment by the login `gh` runs as, since agents post as that login: with
-`author` set to that login, your own comments on your pull requests start nothing, and they still
-reach a task that owns the pull request. A pull request whose newest task failed or was dropped
+task. Neither does an agent's comment, one by the login `gh` runs as whose body holds
+`<!-- agent-comment -->` (see [routing.md](../daemon/routing.md#an-agents-own-comments)). Your own
+comments on your pull requests carry no marker, so they start a task like anyone else's. A pull
+request whose newest task failed or was dropped
 gets no new task either: `priory revive` brings that task back. `priory check` refuses these
 triggers in a factory of several runners.
 

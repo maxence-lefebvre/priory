@@ -14,7 +14,7 @@ const FEEDBACK: [&str; 5] = [
     "linear.comment.created",
 ];
 
-pub(crate) const RULE: &str = "Before you act on the feedback above, sort each item by its URL as one of: trivial (one obvious answer inside this change's scope: fix it and reply), nothing-to-do (an approval or thanks) or persons-call (a behaviour, design or scope change, a disagreement or anything unclear: ask the person with the ask tool, naming the item's URL in the question, and change nothing for it). End the step with the result tool's feedback field: an object from each item's URL to its class.";
+pub(crate) const RULE: &str = "Before you act on the feedback above, sort each item by its URL as one of: trivial (one obvious answer inside this change's scope: fix it and reply, ending the reply with the line <!-- agent-comment -->), nothing-to-do (an approval or thanks) or persons-call (a behaviour, design or scope change, a disagreement or anything unclear: ask the person with the ask tool, naming the item's URL in the question, and change nothing for it). End the step with the result tool's feedback field: an object from each item's URL to its class.";
 
 /// The URL naming the feedback item that `data` is: a comment, or a review that is not an
 /// approval or a dismissal.
@@ -24,8 +24,8 @@ fn url<'a>(kind: &str, data: &'a Value) -> Option<&'a str> {
     data["url"].as_str().filter(|url| asks && !url.is_empty())
 }
 
-/// The URL of an item the agent must sort. An item written by the login `gh api user` names, which
-/// the intake runs as, is the factory's person's own: it goes to the person, not the agent.
+/// The URL of an item the agent must sort. An `own` item, which an agent marked as its own, is not
+/// one.
 /// An item a calibrated decision model sorted is no longer the agent's to sort.
 pub(crate) fn item<'a>(kind: &str, data: &'a Value) -> Option<&'a str> {
     url(kind, data).filter(|_| data["own"] != true && crate::decision::class(data).is_none())
