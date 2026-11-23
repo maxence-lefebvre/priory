@@ -438,6 +438,19 @@ impl Setup {
             .find(|(label, _)| label == "red-after-merge")
             .map_or(0, |(_, count)| count)
     }
+
+    /// The desk's `landed wrong` alarms.
+    fn landed_wrong(&self) -> Vec<String> {
+        let desk = self.desk();
+        desk["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["what"].as_str())
+            .filter(|what| what.starts_with("priory: landed wrong: "))
+            .map(str::to_owned)
+            .collect()
+    }
 }
 
 /// `merged`, at `time`.
@@ -459,6 +472,75 @@ fn a_failing_check_on_the_merge_commit_labels_the_task_red_after_merge() {
     setup.poll();
 
     assert_eq!(setup.red_after_merge(), 1);
+    assert_eq!(
+        setup.landed_wrong(),
+        [
+            "priory: landed wrong: owner/repo#10 of task 1 is red on main: ci failure https://github.com/owner/repo/runs/2"
+        ]
+    );
+}
+
+#[test]
+fn a_cancelled_check_then_a_green_rerun_on_the_merge_commit_is_not_red() {
+    let setup = Setup::new("cancelled-then-green");
+    setup.polled_repo();
+    setup.task(1, "green");
+    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z")]);
+    setup.checks_at(
+        "m10",
+        &[(1, "completed", "cancelled"), (2, "in_progress", "")],
+    );
+    setup.poll();
+    assert_eq!(setup.red_after_merge(), 0, "a cancelled run judges nothing");
+
+    setup.checks_at(
+        "m10",
+        &[(1, "completed", "cancelled"), (2, "completed", "success")],
+    );
+    setup.poll();
+
+    assert_eq!(setup.red_after_merge(), 0);
+    assert!(setup.landed_wrong().is_empty());
+}
+
+#[test]
+fn a_cancelled_check_then_a_failing_rerun_on_the_merge_commit_is_red() {
+    let setup = Setup::new("cancelled-then-red");
+    setup.polled_repo();
+    setup.task(1, "green");
+    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z")]);
+    setup.checks_at(
+        "m10",
+        &[(1, "completed", "cancelled"), (2, "in_progress", "")],
+    );
+    setup.poll();
+    setup.checks_at(
+        "m10",
+        &[(1, "completed", "cancelled"), (2, "completed", "failure")],
+    );
+    setup.poll();
+
+    assert_eq!(setup.red_after_merge(), 1);
+    assert_eq!(
+        setup.landed_wrong(),
+        [
+            "priory: landed wrong: owner/repo#10 of task 1 is red on main: ci failure https://github.com/owner/repo/runs/2"
+        ]
+    );
+}
+
+#[test]
+fn a_stale_check_on_the_merge_commit_is_not_red() {
+    let setup = Setup::new("stale-after-merge");
+    setup.polled_repo();
+    setup.task(1, "green");
+    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z")]);
+    setup.checks_at("m10", &[(1, "completed", "stale")]);
+
+    setup.poll();
+
+    assert_eq!(setup.red_after_merge(), 0);
+    assert!(setup.landed_wrong().is_empty());
 }
 
 #[test]

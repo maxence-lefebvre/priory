@@ -29,6 +29,10 @@ const LABELS: [&str; 6] = [
 /// an alarm.
 pub(crate) const LANDED: &str = "landed wrong: ";
 
+/// Conclusions of a check run that stopped before it judged the commit, such as one a newer push
+/// superseded, so a merge is not red for them.
+const NO_VERDICT: [&str; 2] = ["cancelled", "stale"];
+
 /// The share of green tasks with a final outcome that should be `approved-clean`.
 const TARGET: f64 = 0.9;
 
@@ -71,7 +75,7 @@ pub(crate) fn label(tx: &Transaction, trace: &Trace, message: &Message) -> rusql
             let conclusion = data["conclusion"].as_str().unwrap_or_default();
             let Some(head) = data["head_sha"]
                 .as_str()
-                .filter(|_| !PASSING.contains(&conclusion))
+                .filter(|_| !PASSING.contains(&conclusion) && !NO_VERDICT.contains(&conclusion))
             else {
                 return Ok(());
             };
