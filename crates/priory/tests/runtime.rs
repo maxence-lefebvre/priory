@@ -18520,7 +18520,9 @@ fn a_person_who_answers_a_routed_ask_first_drops_its_queued_lead_task() {
     setup.calls(&[ask()]);
     setup.publish(&requested(42));
     setup.start();
-    setup.until("tasks", |rows| rows.len() == 2 && rows[0][4] == "asleep");
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows.iter().any(|row| row[0] == "1" && row[4] == "asleep")
+    });
     assert_eq!(asks_json(&setup)["asks"][0]["routed_to"], json!("lead"));
     let desk: serde_json::Value =
         serde_json::from_slice(&setup.priory(&["desk", "--json"]).stdout).unwrap();
@@ -18562,7 +18564,9 @@ fn a_routed_step_ask_that_changes_while_it_waits_returns_to_the_person_and_drops
     setup.calls(&[result("passed")]);
     setup.publish(&requested(42));
     setup.start();
-    setup.until("tasks", |rows| rows.len() == 2 && rows[0][4] == "asleep");
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows.iter().any(|row| row[0] == "1" && row[4] == "asleep")
+    });
     assert_eq!(asks_json(&setup)["asks"][0]["routed_to"], json!("lead"));
 
     let said = setup.priory(&["say", "1", "Use the v2 API."]);
