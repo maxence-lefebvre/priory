@@ -311,3 +311,22 @@ fn a_real_jail_hides_the_home_keeps_the_worktree_and_reaches_the_daemon() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+#[test]
+fn a_jailed_tasks_lead_answers_its_ask_in_the_tasks_jail() {
+    let mut setup = hands_off("jail-lead", &format!("sandbox = \"jail\"\n{WORKFLOW}"));
+    fs::write(setup.dir.join("factory/factory.toml"), sandboxes(&setup)).unwrap();
+    setup.calls(&[ask(), answered("sqlite"), result("passed")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows.iter().all(|row| row[4] == "done")
+    });
+    let runs = setup.rows("runs");
+    let lead = runs.iter().find(|run| run[1] == "2").expect("the lead ran");
+    assert_eq!(lead[11], "jail", "{runs:?}");
+    // The daemon's start check, then one launch per run, the lead's among them.
+    assert_eq!(fake_log(&setup, "bwrap.log").len(), 1 + runs.len());
+}
