@@ -164,8 +164,13 @@ test("a task page lists its task's open asks, snoozed ones too, oldest first", (
     { id: 2, task: 7, state: "answered", since: "2026-11-20T08:00:00Z" },
     { id: 1, task: 8, state: "open", since: "2026-11-20T07:00:00Z" },
   ];
-  assert.deepEqual(openAsksOf(asks, 7).map((ask) => ask.id), [3, 4]);
-  assert.deepEqual(openAsksOf(asks, 9), []);
+  assert.deepEqual(openAsksOf(asks, { id: 7 }).map((ask) => ask.id), [3, 4]);
+  assert.deepEqual(openAsksOf(asks, { id: 9 }), []);
+});
+
+test("a task page lists the open ask its task's held result shares with another task", () => {
+  const asks = [{ id: "gate-1-1", task: 1, state: "open", since: "2026-11-20T09:00:00Z" }];
+  assert.deepEqual(openAsksOf(asks, { id: 2, asks: [{ id: "gate-1-1" }] }).map((ask) => ask.id), ["gate-1-1"]);
 });
 
 test("a task page leaves out another runner's ask on a task of the same id", () => {
@@ -173,7 +178,7 @@ test("a task page leaves out another runner's ask on a task of the same id", () 
     { id: 5, task: 4, runner: "desk", state: "open", since: "2026-11-20T10:00:00Z" },
     { id: "laptop:2", task: 4, runner: "laptop", state: "open", since: "2026-11-20T09:00:00Z", submissions: [] },
   ];
-  assert.deepEqual(openAsksOf(asks, 4).map((ask) => ask.id), [5]);
+  assert.deepEqual(openAsksOf(asks, { id: 4 }).map((ask) => ask.id), [5]);
 });
 
 test("the shrunk header names the heading, the title before the question, over the task key, step and revision", () => {
