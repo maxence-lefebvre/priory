@@ -1,6 +1,6 @@
 // The Asks panel's view model: `priory asks --all --json` in, rows and states out. No drawing, no IO.
 
-import { age, ago, answeredBy, autolink, checkState, plural, stateWords, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
+import { age, ago, answeredBy, askBody, askHeading, autolink, checkState, plural, stateWords, prStack, routedMark, routedNote, runnerOf, seenAgo, sentNote, submitted } from "./priory.js";
 
 /** @typedef {{ pattern: string, url: string }[]} Links the rules `priory links` lists */
 
@@ -23,7 +23,7 @@ function row(ask, now) {
     step: ask.step,
     age: ask.state === "answered" && ask.answered_at ? when(ask.answered_at, now) : age(ask.since, now),
     command: Boolean(ask.command),
-    text: ask.title || ask.question,
+    text: askHeading(ask),
     meta: ask.state === "answered" ? ["Answered", ask.answer]
       : ask.state === "withdrawn" ? ["Withdrawn", ask.withdrawn_why]
       : ask.recommendation ? ["Recommends", ask.recommendation] : null,
@@ -229,8 +229,10 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
   const planned = task ? plan(task) : null;
   const pr = pullRequest(task?.pull_request, task?.stack);
   const runs = trace(task?.runs ?? [], now);
-  const question = ask.title || ask.question;
-  const why = ask.text || ask.question;
+  // A long untitled question heads the detail with a short title and reads whole in Why.
+  const question = askHeading(ask);
+  const body = askBody(ask);
+  const why = ask.text || (body ? null : ask.question);
   const owner = runnerOf(ask);
   const away = seenAgo(ask, now, (iso) => age(iso, now));
   return {
@@ -256,7 +258,7 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
     plan: planned,
     pr,
     trace: runs,
-    why: { text: why, textSpans: autolink(why, links, ask.repo ?? null), run: ask.run, tradeoff: ask.tradeoff, whatWaits: ask.what_waits },
+    why: { question: body, questionSpans: body ? autolink(body, links, ask.repo ?? null) : [], text: why, textSpans: why ? autolink(why, links, ask.repo ?? null) : [], run: ask.run, tradeoff: ask.tradeoff, whatWaits: ask.what_waits },
     ...(routedNote(ask) && { routed: routedNote(ask) }),
     ...(owner && {
       // A closed ask still says why its runner refused an answer sent to it.

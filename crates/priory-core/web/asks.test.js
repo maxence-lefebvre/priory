@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, takesText, openAsksOf, writeNote, shrunkHead, answeredAsks, confidenceNote } from "./asks.js";
+import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, takesText, openAsksOf, writeNote, shrunkHead, answeredAsks, confidenceNote, askHeading, askBody, cutAt, HEADING_MAX } from "./asks.js";
 
 const now = Date.parse("2026-11-20T12:00:00Z");
 const ask = (id, fields) => ({ id, state: "open", snoozed_until: null, ...fields });
@@ -176,8 +176,8 @@ test("a task page leaves out another runner's ask on a task of the same id", () 
   assert.deepEqual(openAsksOf(asks, 4).map((ask) => ask.id), [5]);
 });
 
-test("the shrunk header names the question over the task key, step and revision", () => {
-  assert.deepEqual(shrunkHead({ key: "linear:ENG-212", step: "approve-pr", revision: 2, title: "Open the pull request", question: "Open the pull request for ENG-212?" }), { question: "Open the pull request for ENG-212?", place: "ENG-212, approve-pr, revision 2" });
+test("the shrunk header names the heading, the title before the question, over the task key, step and revision", () => {
+  assert.deepEqual(shrunkHead({ key: "linear:ENG-212", step: "approve-pr", revision: 2, title: "Open the pull request", question: "Open the pull request for ENG-212?" }), { question: "Open the pull request", place: "ENG-212, approve-pr, revision 2" });
   assert.deepEqual(shrunkHead({ key: null, step: "deploy", revision: 1, title: "Deploy", question: null }), { question: "Deploy", place: "deploy, revision 1" });
 });
 
@@ -223,4 +223,48 @@ test("an auto answer's confidence says it is the agent's own, and the level the 
   assert.equal(confidenceNote("high"), "confidence, the agent's own. The task answers at high and above.");
   assert.equal(confidenceNote("medium"), "confidence, the agent's own. The task answers at medium and above.");
   assert.equal(confidenceNote(null), "confidence, the agent's own.");
+});
+
+// An approval step's ask as Max's desk showed it on 2026-11-23: no title, and a 12-line question.
+const LONG = [
+  "approve-implementation: Plan: /home/max/factory/plans/FND-2434-plan.md. Only apps/admin-api/src/mcp/routes.ts changes.",
+  "The route table gains one entry for the export tool, behind the existing admin guard.",
+  "No migration: the export reads the tables the list tools already read.",
+  "Tests: apps/admin-api/test/mcp/routes.test.ts adds a case for the guard and one for the export.",
+  "The plan leaves the client untouched; the next step regenerates its types.",
+  "Risk: the guard is shared with the list tools, so a mistake there would expose them too.",
+  "I checked https://github.com/acme/app/pull/812, which added the guard, for its tests.",
+  "They cover an admin and a viewer; the export adds a third case for a revoked token.",
+  "The change is about 40 lines with tests.",
+  "Approve to start the implementation run, or revise to send the plan back.",
+  "Reject drops the task.",
+  "Nothing else waits on this answer.",
+].join("\n");
+const untitled = { id: 9, key: "linear:FND-2434", step: "approve-implementation", revision: 1, title: null, question: LONG };
+
+test("an untitled ask with a 12-line question takes a short heading, and its body keeps the whole question", () => {
+  assert.equal(LONG.split("\n").length, 12);
+  assert.equal(askHeading(untitled), "FND-2434 asks at approve-implementation");
+  assert.equal(askBody(untitled), LONG);
+  assert.equal(shrunkHead(untitled).question, "FND-2434 asks at approve-implementation");
+  const answered = { ...untitled, task: 4, state: "answered", answer: "Approve", answered_at: "2026-11-23T09:00:00Z" };
+  assert.equal(answeredAsks([answered], 4)[0].title, "FND-2434 asks at approve-implementation");
+});
+
+test("an ask without a task takes its question's first sentence, cut at a word to about 80 characters", () => {
+  const outside = { id: 10, key: null, step: null, title: null, question: LONG.replace(/^[^\n]*/, "The plan at /home/max/factory/plans/FND-2434-plan.md changes only apps/admin-api/src/mcp/routes.ts and its test.") };
+  const heading = askHeading(outside);
+  assert.equal(heading, "The plan at /home/max/factory/plans/FND-2434-plan.md changes only…");
+  assert.ok(heading.length <= HEADING_MAX + 1);
+  assert.equal(askHeading({ ...outside, step: "review" }).startsWith("review: The plan at "), true);
+  assert.equal(cutAt("one two three", 9), "one two…");
+  assert.equal(cutAt("short", 9), "short");
+});
+
+test("a title, or a question of one short line, is the heading itself, and the body adds no copy of it", () => {
+  assert.equal(askHeading({ ...untitled, title: "Approve the FND-2434 plan?" }), "Approve the FND-2434 plan?");
+  assert.equal(askBody({ ...untitled, title: "Approve the FND-2434 plan?" }), LONG);
+  const short = { ...untitled, question: "Merge #212 into main? Checks are green at a1f3c9e." };
+  assert.equal(askHeading(short), short.question);
+  assert.equal(askBody(short), null);
 });

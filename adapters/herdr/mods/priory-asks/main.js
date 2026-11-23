@@ -774,7 +774,8 @@ export default class PrioryAsks extends View {
     // Agent text is untrusted, so it draws as plain text, never as Markdown or HTML.
     return v_flex().gap(S["space-2"])
       .child(head("message-text", "What the agent says", detail.why.run ? `run ${detail.why.run}` : ""))
-      .child(div().whitespace_normal().text_size(TYPE.body[0]).line_height("22px").child(selectable(`why-${ask.id}`, detail.why.textSpans)))
+      .when(Boolean(detail.why.question), (el) => el.child(div().whitespace_normal().text_size(TYPE.body[0]).line_height("22px").child(selectable(`asked-${ask.id}`, detail.why.questionSpans))))
+      .when(Boolean(detail.why.text), (el) => el.child(div().whitespace_normal().text_size(TYPE.body[0]).line_height("22px").child(selectable(`why-${ask.id}`, detail.why.textSpans))))
       .when(Boolean(detail.why.tradeoff), (el) => el.child(fact("scale", "Trade-off.", detail.why.tradeoff)))
       .when(Boolean(detail.why.whatWaits), (el) => el.child(fact("hourglass", "What waits.", detail.why.whatWaits)));
   }
