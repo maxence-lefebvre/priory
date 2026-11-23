@@ -3,8 +3,8 @@
 Priory can send its own health as OpenTelemetry metrics, beside the spans of
 [the trace export](trace.md#opentelemetry-export). Spans say what a task did after its step ends.
 Metrics say how each Priory process is doing every interval: how long its loop takes, how much
-memory and CPU it uses, whether the daemon reaches its log, how long its runs take to start, and whether the intake
-keeps up. [The metrics reference](../reference/metrics.md) lists every metric. The design and the groups still to come
+memory and CPU it uses, whether the daemon reaches its log, how long its runs take to start, whether the intake
+keeps up, and what the factory's work looks like: asks waiting, tasks, tokens, cost and spend. [The metrics reference](../reference/metrics.md) lists every metric. The design and the groups still to come
 are in [the metrics design note](../design/metrics.md).
 
 ## Switching it on
@@ -15,13 +15,13 @@ off unless `factory.toml` names the groups to send:
 ```toml
 [telemetry]
 otlp = "http://127.0.0.1:4318"
-metrics = ["process", "log", "runs", "intake"]   # the groups, by name
-metrics_every = "60s"                            # how often each process sends
-metrics_cap = 1000                               # data points per minute, per process
+metrics = ["process", "log", "runs", "intake", "work"]   # the groups, by name
+metrics_every = "60s"                                    # how often each process sends
+metrics_cap = 1000                                       # data points per minute, per process
 ```
 
 [`[telemetry]`](../reference/factory.md#telemetry) lists the keys. The groups are `process`, `log`,
-`runs` and `intake`. `priory check` refuses an unknown group, a `metrics_every` under 10 seconds and a
+`runs`, `intake` and `work`. `priory check` refuses an unknown group, a `metrics_every` under 10 seconds and a
 `metrics_cap` of 0.
 
 `PRIORY_METRICS` replaces `metrics` for one process, as a comma-separated list such as `process,log`,
@@ -30,7 +30,7 @@ for one, without editing the factory every runner shares. A process refuses to s
 variable names an unknown group:
 
 ```text
-priory daemon: PRIORY_METRICS names `nope`, which is not a metrics group: the groups are process, log, runs, intake, or none
+priory daemon: PRIORY_METRICS names `nope`, which is not a metrics group: the groups are process, log, runs, intake, work, or none
 ```
 
 ## Which process sends what
@@ -41,7 +41,8 @@ metrics. `priory daemon --view-only` sends as `daemon`. A daemon with `[serve]` 
 inside itself, so its server requests count in the daemon's tick.
 
 Each process sends only the groups it owns. All three send `process`, about themselves. Only the
-daemon sends `log` and `runs`: the intake and `priory serve` skip them when `metrics` names them.
+daemon sends `log`, `runs` and `work`: the intake and `priory serve` skip them when `metrics` names
+them.
 Each process sends its own part of `intake`: the intake its polls, and the process whose server
 takes webhooks, the daemon or `priory serve`, its deliveries.
 
@@ -143,6 +144,31 @@ The intake group says whether the intake keeps up with its sources, and whether 
 The counters start at the process's start. To count its publishes, the process reads the newest
 message on `factory.intake` before each one, and the stored message when the log already held its
 id.
+
+## The work group
+
+The work group says what the factory does, not how its processes feel. The daemon reads it from the
+state file each interval, with the queries its desk and reports already use.
+
+- **The asks.** `priory.asks.open` counts the asks that wait on a person, by kind and lane, as the
+  desk lists them, less the snoozed ones. `priory.asks.oldest.age` gives, for each kind, the seconds
+  since the oldest of them was asked, in its current revision. A series that had asks sends 0 once
+  it has none.
+- **The tasks.** `priory.tasks` counts the tasks that have not ended, by state and workflow. Ended
+  tasks count in spans.
+- **The attention.** `priory.attention.per_merge` is the `per merge` column of
+  [`priory report attention`](trace.md#attention) over its default window, this week from Monday.
+  It costs a query over the week's acts and asks, so the daemon reads it at its first interval and
+  once every 10 intervals after, and sends the last value in between. A week with no merge yet
+  sends no point.
+- **The tokens and cost.** `priory.tokens` and `priory.cost` count the trace records the daemon
+  appended since it started: model steps, debate turns, handler and summarizer calls, as
+  [`priory costs`](trace.md#costs) reads them. The cost prices each record with `prices.toml`. A
+  model with no price adds tokens and no cost. A record from before the daemon started counts
+  nothing, so a restart starts both counters again.
+- **The spend headroom.** `priory.spend.headroom` gives each [spend cap](spend.md) its limit less
+  what it spent, as the caps table of `priory costs` reads it. A `task` cap uses the most an active
+  task under it spent. It goes below 0 past the cap.
 
 ## The cap
 

@@ -7,10 +7,10 @@ the slices after it, what stays out, and the open questions with a recommendatio
 
 The first slice is built: [metrics.md](../daemon/metrics.md) describes it. It covers the exporter,
 the keys, `PRIORY_METRICS`, the cap and the `process` group. The tests use a fake collector on
-127.0.0.1 rather than a fake `curl`. The first three later slices, the `log`, `runs` and `intake`
-groups, are built too: [metrics.md](../daemon/metrics.md#the-log-group) describes them, and
-[the metrics reference](../reference/metrics.md) lists every metric. The other later slices are not
-built.
+127.0.0.1 rather than a fake `curl`. The first four later slices, the `log`, `runs`, `intake` and
+`work` groups, are built too: [metrics.md](../daemon/metrics.md#the-log-group) describes them, and
+[the metrics reference](../reference/metrics.md) lists every metric. The last later slice, the
+how-to's section, is not built.
 
 Max proposed it on 2026-11-22, after Mastra Factory's
 [health metrics page](https://factory.mastra.ai/configure/metrics). This note takes the idea of
@@ -323,7 +323,12 @@ export's tests do, and a `PRIORY_PROC` folder for `/proc/self`:
    append from an id the log already held. A poll counts `duplicate` only when the held message is
    a webhook's, so a schedule's slot or a Slack thread read again counts nothing. The webhook reply
    is unchanged. It needs no migration: the poll age reads `intake_sources`.
-4. The `work` group.
+4. **Built.** The `work` group. Tests run a task that asks under a day cap, run tasks to done
+   before and after a daemon's restart to count only the second one's tokens, and seed a week's
+   answer and merge. As built, the open asks and the tasks keep each series they sent before and
+   send it at 0 once it empties, so a backend's last value is never stale. The tokens read the
+   trace past the newest record at the daemon's start. A week with no merge sends no attention
+   point. It needs no migration.
 5. A section in [How to send traces to an OpenTelemetry backend](../sending-traces-to-opentelemetry.md)
    for metrics, with one alert per group a person would set first: the probe's `timeout` share, the
    oldest start's age, the poll age, the oldest ask's age and the spend headroom.

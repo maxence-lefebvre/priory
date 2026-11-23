@@ -918,7 +918,8 @@
               "process",
               "log",
               "runs",
-              "intake"
+              "intake",
+              "work"
             ]
           },
           "type": "array"

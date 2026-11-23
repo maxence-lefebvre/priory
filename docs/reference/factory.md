@@ -189,7 +189,7 @@ See [trace.md](../daemon/trace.md) and, for backends, [How to send traces to an 
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `otlp` | string | yes | | The OTLP/HTTP base URL. Spans go to its `/v1/traces` | `"http://127.0.0.1:4318"` |
 | `headers_env` | string | no | no headers | The environment variable that holds the headers each request carries, as `key1=value1,key2=value2` with URL-encoded values. The daemon refuses to start when it is unset, empty or malformed. `priory check` refuses a value that is not a variable name | `"OTEL_EXPORTER_OTLP_HEADERS"` |
-| `metrics` | list of strings | no | `[]`: no metric is sent | The metric groups each process sends to `<otlp>/v1/metrics`. The groups are `process`, `log`, `runs` and `intake`, listed in [the metrics reference](metrics.md). `PRIORY_METRICS` replaces it for one process. See [metrics.md](../daemon/metrics.md) | `["process", "log", "runs", "intake"]` |
+| `metrics` | list of strings | no | `[]`: no metric is sent | The metric groups each process sends to `<otlp>/v1/metrics`. The groups are `process`, `log`, `runs`, `intake` and `work`, listed in [the metrics reference](metrics.md). `PRIORY_METRICS` replaces it for one process. See [metrics.md](../daemon/metrics.md) | `["process", "log", "runs", "intake", "work"]` |
 | `metrics_every` | duration | no | `"60s"` | How often a process samples its groups and sends one request. At least `"10s"` | `"30s"` |
 | `metrics_cap` | integer | no | `1000` | The data points a process sends per minute at most, over a rolling minute. At least 1 | `500` |
 

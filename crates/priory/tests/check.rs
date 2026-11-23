@@ -2046,7 +2046,7 @@ fn check_refuses_an_unknown_metrics_group_a_short_interval_and_a_zero_cap_naming
     assert_eq!(
         refused.stderr,
         "factory.toml:3: `metrics` names `nope`, which is not a metrics group: the groups are \
-         process, log, runs, intake\n\
+         process, log, runs, intake, work\n\
          factory.toml:3: `metrics_every` is 9s: it needs to be 10s or more\n\
          factory.toml:3: `metrics_cap` is 0: it needs to be 1 or more\n"
     );

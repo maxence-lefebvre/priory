@@ -2,13 +2,13 @@
 //! per-minute cap (docs/daemon/metrics.md).
 
 use crate::otlp;
-use priory_factory::factory::{Backend, Factory, METRIC_GROUPS};
+use priory_factory::factory::{Backend, Factory, METRIC_GROUPS, Price};
 use priory_intake::intake::{EVENTS, FAILURES, MISSED, OUTPUT};
 use priory_intake::log::{self, Log};
 use priory_runtime::{room, runtime, ticks, worktrees};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,6 +29,13 @@ const START: &str = "priory.run.start.duration";
 /// How far back each sample looks again for a start or recipe that ended, so one whose row was
 /// written late is still counted once.
 const OVERLAP: f64 = 5.0;
+
+/// How many intervals the work group sends its last attention per merge before it reads it again.
+const ATTENTION_EVERY: u32 = 10;
+/// The kinds of ask, each with its oldest's age.
+const ASK_KINDS: [&str; 3] = ["step", "agent", "outside"];
+/// The kinds of token a step record counts, in the order `report::dollars` prices them.
+const TOKEN_TYPES: [&str; 4] = ["input", "output", "cache_read", "cache_write"];
 
 /// Whether the exporter wants the log's backlog, which only the daemon's own thread may ask for.
 static WANT_BACKLOG: AtomicBool = AtomicBool::new(false);
@@ -71,8 +78,9 @@ fn groups_of(text: &str) -> Result<Vec<String>, String> {
     Ok(groups)
 }
 
-/// The groups `service` sends of `groups`: the daemon alone owns the log and the runs, and each
-/// process sends its own intake events, the polls' from the intake, the webhooks' from the server.
+/// The groups `service` sends of `groups`: the daemon alone owns the log, the runs and the work,
+/// and each process sends its own intake events, the polls' from the intake, the webhooks' from
+/// the server.
 fn owned(service: &str, groups: Vec<String>) -> Vec<String> {
     groups
         .into_iter()
@@ -177,7 +185,20 @@ pub fn start(factory: &Factory, service: &str, groups: Vec<String>) -> Result<()
         histograms: BTreeMap::new(),
         logged: HashSet::new(),
         prefix: format!("priory {service}"),
+        book: crate::spend::Book::new(factory),
+        prices: factory.prices.clone(),
+        traced: None,
+        tokens: BTreeMap::new(),
+        cost: BTreeMap::new(),
+        series: BTreeSet::new(),
+        attention: None,
+        attention_in: 0,
     };
+    if exporter.sends("work") {
+        exporter.traced = crate::state::read_only()
+            .and_then(|db| last_trace(&db).map_err(|error| error.to_string()))
+            .ok();
+    }
     let every = telemetry.metrics_every.unwrap_or(EVERY);
     ticks::keep();
     std::thread::Builder::new()
@@ -229,6 +250,19 @@ struct Exporter {
     /// The error texts already logged.
     logged: HashSet<String>,
     prefix: String,
+    /// The spend caps and what prices them, as `priory costs` reads them.
+    book: crate::spend::Book,
+    prices: BTreeMap<String, Price>,
+    /// The last trace record whose tokens the work group counted; none until it read the trace.
+    traced: Option<i64>,
+    /// `priory.tokens` and `priory.cost` since the process started, by their attributes.
+    tokens: BTreeMap<Attributes, u64>,
+    cost: BTreeMap<Attributes, f64>,
+    /// The gauge series of open asks and tasks sent before, sent at 0 once they have none.
+    series: BTreeSet<(&'static str, Attributes)>,
+    /// The last person-minutes per merge, and the intervals left before it is read again.
+    attention: Option<f64>,
+    attention_in: u32,
 }
 
 /// The kind of a point, in the order the cap drops them.
@@ -376,6 +410,9 @@ impl Exporter {
         }
         if self.sends("intake") {
             self.intake(&mut points);
+        }
+        if self.sends("work") {
+            self.work(&mut points);
         }
         points
     }
@@ -657,6 +694,169 @@ impl Exporter {
         }
     }
 
+    /// The work group: the open asks and the oldest's age, the tasks by state, the tokens and cost
+    /// of the trace records appended since the process started, each cap's headroom, and the
+    /// person-minutes per merge, read once every `ATTENTION_EVERY` intervals.
+    fn work(&mut self, points: &mut Vec<Point>) {
+        let read = crate::state::read_only().and_then(|db| {
+            let now = priory_intake::intake::now()?.to_string();
+            let error = |error: rusqlite::Error| error.to_string();
+            let traced = match self.traced {
+                Some(traced) => traced,
+                None => last_trace(&db).map_err(error)?,
+            };
+            let state = work_state(&db, traced).map_err(error)?;
+            let caps = crate::spend::report(&db, &self.book, &now).map_err(error)?;
+            let attention = if self.attention_in == 0 {
+                let window = crate::report::window(&db, None, &now)?;
+                let attention = crate::report::attention::attention(&db, &window, "workflow")?;
+                Some(attention.json()["person_minutes_per_merge"].as_f64())
+            } else {
+                None
+            };
+            Ok((traced, state, caps, attention))
+        });
+        let (traced, state, caps, attention) = match read {
+            Ok(read) => read,
+            Err(error) => {
+                self.once(format!("metrics: cannot read the factory's work: {error}"));
+                return;
+            }
+        };
+        let point = |kind, name, unit, attributes, value| Point {
+            group: "work",
+            kind,
+            name,
+            unit,
+            attributes,
+            value,
+        };
+        let mut gauges: Vec<(&'static str, Attributes, u64)> = Vec::new();
+        for (kind, lane, count) in state.asks {
+            let mut attributes = vec![("priory.ask.kind", kind)];
+            attributes.extend(lane.map(|lane| ("priory.lane", lane)));
+            gauges.push(("priory.asks.open", attributes, count));
+        }
+        for (state, workflow, count) in state.tasks {
+            let attributes = vec![("priory.state", state), ("priory.workflow", workflow)];
+            gauges.push(("priory.tasks", attributes, count));
+        }
+        for (name, attributes) in &self.series {
+            if !gauges
+                .iter()
+                .any(|(sent, now, _)| sent == name && now == attributes)
+            {
+                gauges.push((name, attributes.clone(), 0));
+            }
+        }
+        gauges.sort();
+        for (name, attributes, count) in gauges {
+            self.series.insert((name, attributes.clone()));
+            let unit = if name == "priory.tasks" {
+                "{task}"
+            } else {
+                "{ask}"
+            };
+            points.push(point(
+                Kind::Gauge,
+                name,
+                unit,
+                attributes,
+                Number::Int(count),
+            ));
+        }
+        for kind in ASK_KINDS {
+            let age = state.oldest.get(kind).copied().unwrap_or_default();
+            points.push(point(
+                Kind::Gauge,
+                "priory.asks.oldest.age",
+                "s",
+                vec![("priory.ask.kind", kind.to_owned())],
+                Number::Int(age),
+            ));
+        }
+        if self.attention_in == 0 {
+            self.attention = attention.flatten();
+            self.attention_in = ATTENTION_EVERY;
+        }
+        self.attention_in -= 1;
+        if let Some(per_merge) = self.attention {
+            points.push(point(
+                Kind::Gauge,
+                "priory.attention.per_merge",
+                "min",
+                Vec::new(),
+                Number::Double(per_merge),
+            ));
+        }
+        for cap in caps {
+            let scope = cap["scope"].as_str().unwrap_or_default();
+            let (scope, name) = match scope.split_once(' ') {
+                Some((scope, name)) => (scope, Some(name)),
+                None => (scope, None),
+            };
+            let mut attributes = vec![("priory.cap.scope", scope.to_owned())];
+            attributes.extend(name.map(|name| ("priory.cap.name", name.to_owned())));
+            attributes.push((
+                "priory.cap.window",
+                cap["period"].as_str().unwrap_or_default().to_owned(),
+            ));
+            let headroom = cap["cap_usd"].as_f64().unwrap_or_default()
+                - cap["spent_usd"].as_f64().unwrap_or_default();
+            points.push(point(
+                Kind::Gauge,
+                "priory.spend.headroom",
+                "USD",
+                attributes,
+                Number::Double(headroom),
+            ));
+        }
+        self.traced = Some(state.traced.unwrap_or(traced));
+        for record in state.records {
+            let mut attributes = Vec::new();
+            attributes.extend(
+                record
+                    .workflow
+                    .map(|workflow| ("priory.workflow", workflow)),
+            );
+            attributes.extend(record.agent.map(|agent| ("gen_ai.agent.name", agent)));
+            attributes.extend(
+                record
+                    .model
+                    .clone()
+                    .map(|model| ("gen_ai.request.model", model)),
+            );
+            for (kind, tokens) in TOKEN_TYPES.into_iter().zip(record.tokens) {
+                let mut attributes = attributes.clone();
+                attributes.push(("gen_ai.token.type", kind.to_owned()));
+                *self.tokens.entry(attributes).or_default() +=
+                    u64::try_from(tokens).unwrap_or_default();
+            }
+            if let Some(price) = record.model.and_then(|model| self.prices.get(&model)) {
+                *self.cost.entry(attributes).or_default() +=
+                    crate::report::dollars(&record.tokens, price);
+            }
+        }
+        for (attributes, tokens) in &self.tokens {
+            points.push(point(
+                Kind::Counter,
+                "priory.tokens",
+                "{token}",
+                attributes.clone(),
+                Number::Int(*tokens),
+            ));
+        }
+        for (attributes, dollars) in &self.cost {
+            points.push(point(
+                Kind::Counter,
+                "priory.cost",
+                "USD",
+                attributes.clone(),
+                Number::Double(*dollars),
+            ));
+        }
+    }
+
     /// Counts one duration of histogram `metric` of `group` under `attributes`.
     fn observe(
         &mut self,
@@ -800,6 +1000,120 @@ fn link_state(db: &Connection) -> rusqlite::Result<LinkState> {
             .into_iter()
             .map(|(runner, age)| (runner, whole(age)))
             .collect(),
+    })
+}
+
+/// The newest trace record's sequence number, 0 in an empty trace.
+fn last_trace(db: &Connection) -> rusqlite::Result<i64> {
+    db.query_row("SELECT coalesce(max(seq), 0) FROM trace", [], |row| {
+        row.get(0)
+    })
+}
+
+/// A priced trace record: a model step, a debate turn, a handler or a summarizer call.
+struct Record {
+    workflow: Option<String>,
+    agent: Option<String>,
+    model: Option<String>,
+    tokens: [i64; 4],
+}
+
+/// What the state file says of the factory's work.
+struct WorkState {
+    /// The open asks no one snoozed, by kind and lane.
+    asks: Vec<(String, Option<String>, u64)>,
+    /// The seconds since the oldest of those was asked, in its current revision, by kind.
+    oldest: BTreeMap<String, u64>,
+    /// The tasks not ended, by state and workflow.
+    tasks: Vec<(String, String, u64)>,
+    /// The priced records with tokens appended after the one asked, and the newest one read.
+    records: Vec<Record>,
+    traced: Option<i64>,
+}
+
+fn work_state(db: &Connection, after: i64) -> rusqlite::Result<WorkState> {
+    let mut asks = Vec::new();
+    let mut oldest: BTreeMap<String, u64> = BTreeMap::new();
+    let rows = db
+        .prepare(
+            "SELECT asks.kind, tasks.lane, count(*), max(CAST((julianday('now')
+               - julianday(coalesce(ask_revisions.created, asks.created))) * 86400 AS INTEGER))
+             FROM asks LEFT JOIN tasks ON tasks.id = asks.task
+             LEFT JOIN ask_revisions ON ask_revisions.ask = asks.id
+               AND ask_revisions.revision = asks.revision
+             LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id
+             WHERE asks.answer IS NULL AND asks.withdrawn IS NULL
+               AND coalesce(tasks.state, '') NOT IN ('done', 'failed', 'dropped')
+               AND NOT coalesce(snoozes.back IS NULL
+                 AND snoozes.until > strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), 0)
+             GROUP BY 1, 2 ORDER BY 1, 2",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let whole = |value: i64| u64::try_from(value).unwrap_or_default();
+    for (kind, lane, count, age) in rows {
+        let age = whole(age.unwrap_or_default());
+        let top = oldest.entry(kind.clone()).or_default();
+        *top = (*top).max(age);
+        asks.push((kind, lane, whole(count)));
+    }
+    let tasks = db
+        .prepare(
+            "SELECT state, workflow, count(*) FROM tasks
+             WHERE state NOT IN ('done', 'failed', 'dropped') GROUP BY 1, 2 ORDER BY 1, 2",
+        )?
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, whole(row.get::<_, i64>(2)?)))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut traced = None;
+    let mut records = Vec::new();
+    let mut statement = db.prepare(
+        "SELECT trace.seq, json_extract(trace.event, '$.data.workflow'),
+           CASE trace.type WHEN 'factory.handler.called' THEN 'handler'
+             WHEN 'factory.summarizer.called' THEN 'summarizer' ELSE runs.agent END,
+           json_extract(trace.event, '$.data.model'),
+           json_extract(trace.event, '$.data.tokens') IS NOT NULL,
+           coalesce(json_extract(trace.event, '$.data.tokens.input'), 0),
+           coalesce(json_extract(trace.event, '$.data.tokens.output'), 0),
+           coalesce(json_extract(trace.event, '$.data.tokens.cache_read'), 0),
+           coalesce(json_extract(trace.event, '$.data.tokens.cache_write'), 0),
+           trace.type IN ('factory.handler.called', 'factory.summarizer.called',
+               'factory.debate.turn_ended')
+             OR (trace.type = 'factory.step.ended'
+             AND json_extract(trace.event, '$.data.decider') = 'model'
+             AND json_extract(trace.event, '$.data.debate') IS NULL)
+         FROM trace
+         LEFT JOIN runs ON runs.id = CAST(json_extract(trace.event, '$.data.run') AS INTEGER)
+         WHERE trace.seq > ?1 ORDER BY trace.seq",
+    )?;
+    let mut rows = statement.query([after])?;
+    while let Some(row) = rows.next()? {
+        traced = Some(row.get::<_, i64>(0)?);
+        let (has_tokens, priced): (bool, bool) = (row.get(4)?, row.get(9)?);
+        if !has_tokens || !priced {
+            continue;
+        }
+        records.push(Record {
+            workflow: row.get(1)?,
+            agent: row.get(2)?,
+            model: row.get(3)?,
+            tokens: [row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?],
+        });
+    }
+    Ok(WorkState {
+        asks,
+        oldest,
+        tasks,
+        records,
+        traced,
     })
 }
 
@@ -1154,15 +1468,15 @@ mod tests {
     }
 
     #[test]
-    fn only_the_daemon_sends_the_log_and_runs_groups_and_every_process_its_intake_group() {
+    fn only_the_daemon_sends_the_log_runs_and_work_groups_and_every_process_its_intake_group() {
         let groups = || {
-            ["process", "log", "runs", "intake"]
+            ["process", "log", "runs", "intake", "work"]
                 .map(str::to_owned)
                 .to_vec()
         };
         assert_eq!(
             owned("daemon", groups()),
-            ["process", "log", "runs", "intake"]
+            ["process", "log", "runs", "intake", "work"]
         );
         assert_eq!(owned("intake", groups()), ["process", "intake"]);
         assert_eq!(owned("serve", groups()), ["process", "intake"]);
@@ -1209,7 +1523,7 @@ mod tests {
         assert_eq!(
             groups_of("process,nope").unwrap_err(),
             "PRIORY_METRICS names `nope`, which is not a metrics group: the groups are process, \
-             log, runs, intake, or none"
+             log, runs, intake, work, or none"
         );
     }
 
