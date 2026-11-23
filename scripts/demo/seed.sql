@@ -171,6 +171,11 @@ INSERT INTO tasks (id,key,workflow,step,state,band,lane,trigger,source,repo,tldr
 INSERT OR IGNORE INTO owns (task, resource) VALUES (12,'linear:ENG-250');
 INSERT INTO asks (id,task,step,kind,revision,question,options,recommendation,title,text,command,created) VALUES
 (40,12,'deploy','step',1,'Deploy ENG-250 to staging?','["deploy","wait"]','deploy','Deploy to staging','The merge commit passed every check.','{"argv":["./deploy","staging","--service","mailer"],"target":"shell","dir":"/home/max/acme/shop","runs":["deploy"],"timeout":null}',strftime('%Y-%m-%dT%H:%M:%SZ','now','-8 minutes'));
+-- an approval step's untitled ask with a 12-line question: the detail heads it with a short title
+INSERT INTO tasks (id,key,workflow,step,state,band,lane,trigger,source,repo,tldr,created,changed,entered,model,branch) VALUES
+(13,'ENG-252','implement','approve-implementation','asleep','today','payments','linear','seed-13','acme/shop',NULL,strftime('%Y-%m-%dT%H:%M:%SZ','now','-90 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-25 minutes'),strftime('%Y-%m-%dT%H:%M:%SZ','now','-25 minutes'),'claude-opus-5-5','eng-252');
+INSERT INTO asks (id,task,step,kind,revision,question,options,recommendation,created) VALUES
+(90,13,'approve-implementation','step',1,'approve-implementation: Plan: /home/max/acme/shop/.priory/plans/ENG-252-plan.md. Only apps/admin-api/src/mcp/routes.ts changes.'||char(10)||'The route table gains one entry for the export tool, behind the existing admin guard.'||char(10)||'No migration: the export reads the tables the list tools already read.'||char(10)||'Tests: apps/admin-api/test/mcp/routes.test.ts adds a case for the guard and one for the export.'||char(10)||'The plan leaves the client untouched; the next step regenerates its types.'||char(10)||'Risk: the guard is shared with the list tools, so a mistake there would expose them too.'||char(10)||'I checked acme/shop#198, which added the guard, for its tests.'||char(10)||'They cover an admin and a viewer; the export adds a third case for a revoked token.'||char(10)||'The change is about 40 lines with tests.'||char(10)||'Approve to start the implementation run, or revise to send the plan back.'||char(10)||'Reject drops the task.'||char(10)||'Nothing else waits on this answer.','["approve","revise","reject"]','approve',strftime('%Y-%m-%dT%H:%M:%SZ','now','-25 minutes'));
 -- ask 2 snoozed until tomorrow 09:00
 INSERT INTO snoozes (kind,item,task,snoozed,until) VALUES ('ask',2,2,strftime('%Y-%m-%dT%H:%M:%SZ','now','-30 minutes'),strftime('%Y-%m-%dT09:00:00Z','now','+1 day'));
 -- a stalled queue's banner, and a skipped check on task 1's pull request
@@ -178,7 +183,7 @@ INSERT INTO stalls (resource,missing,task,since) VALUES ('disk','2 GB',4,strftim
 INSERT INTO inbox (id,type,subject,time,data,links,outcome,task) VALUES
 ('p6','github.check_run.completed','acme/shop#212',strftime('%Y-%m-%dT%H:%M:%SZ','now','-140 minutes'),'{"repo":"acme/shop","pull_request":212,"head_sha":"a1f3c9e5b2d4","head_branch":"eng-212-retry-invoice-emails","base_branch":"main","name":"e2e","conclusion":"skipped","title":"Retry failed invoice emails with backoff","state":"open"}','[]','routed',1);
 -- each open ask's revision was asked when the ask was
-UPDATE ask_revisions SET created = (SELECT created FROM asks WHERE asks.id = ask_revisions.ask) WHERE ask IN (1,2,3,4,40);
+UPDATE ask_revisions SET created = (SELECT created FROM asks WHERE asks.id = ask_revisions.ask) WHERE ask IN (1,2,3,4,40,90);
 -- a request a trigger's pre script dropped: the Inbox's Dropped section and the Desk's row
 INSERT INTO inbox (id,type,subject,time,data,links,outcome) VALUES
 ('d1','linear.issue.entered','ENG-241',strftime('%Y-%m-%dT%H:%M:%SZ','now','-70 minutes'),'{"identifier":"ENG-241","title":"Speed up the CSV export","url":"https://linear.app/acme/issue/ENG-241"}','[]','ignored'),

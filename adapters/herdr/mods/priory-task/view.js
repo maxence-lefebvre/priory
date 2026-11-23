@@ -1,6 +1,6 @@
 // The Task panel's view model: `priory task ID --json` in, what the panel draws out. No drawing, no IO.
 
-import { age, ago, autolink, eventWords, plural, prStack } from "./priory.js";
+import { age, ago, askHeading, autolink, eventWords, plural, prStack } from "./priory.js";
 
 // The runs History shows, newest first.
 const HISTORY = 10;
@@ -79,7 +79,7 @@ export function taskView(task, { now, links = [] }) {
       return {
         id: ask.id,
         tile: ask.state === "open" ? "ask" : ask.state === "answered" ? answererOf(ask.answered_by) ?? "answered" : ask.state,
-        text: ask.title || ask.question,
+        text: askHeading(ask),
         note: ask.state === "open" ? `Asked ${ago(ask.since, now)}` : askNote(ask),
         age: ask.state === "answered" && ask.answered_at ? age(ask.answered_at, now) : null,
         // Only an auto answer opens to its confidence and rationale: nobody chose it.

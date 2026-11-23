@@ -126,7 +126,12 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   order from the listing's `bands`, and puts an ask with no band, such as an outside ask, under
   `none`. Risk lists `irreversible`, `red`, `yellow`, `green`, then `none` for an ask whose `risk`
   is empty, and counts an ask under each risk it carries. A row shows its tile, task key, step,
-  age, question, and what it recommends, its answer or why it was withdrawn. An ask whose answer
+  age, heading, and what it recommends, its answer or why it was withdrawn. An ask's heading is
+  its title. An untitled ask's heading is its question when that is one line of at most 80
+  characters, else "<key> asks at <step>", or the question's first sentence for an ask with no
+  task, cut at a word to about 80 characters with an ellipsis. The detail heads the ask with the
+  same heading and shows the full question at the top of Why. The Desk and Task panels use the
+  same heading for an ask. An ask whose answer
   lets an irreversible step run shows its History line under the context line in its detail.
 - **Width.** Below 720 px the selected row opens under itself: the decide part, the section chips
   and Why. A section chip opens that section with the answer bar under it, since gpui-kit has no
@@ -239,8 +244,8 @@ has one, else in its row. A row drawn as a button that truncates to one line kee
 
 | Panel | Linked text |
 | ----- | ----------- |
-| Desk | The next thing's question, and each row's text: an ask's question, a task's title or reason |
-| Asks | The opened ask's question, and its text under Why |
+| Desk | The next thing's heading, and each row's text: an ask's heading, a task's title or reason |
+| Asks | The opened ask's heading, and its full question and text under Why |
 | Queue | The opened row's title |
 | Bonjour | Each report row's text, and each pick card's text |
 

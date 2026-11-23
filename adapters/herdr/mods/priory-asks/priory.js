@@ -378,6 +378,38 @@ export function sinceWords(what) {
   return /^[a-z_]+(\.[a-z_]+)+$/.test(type) ? eventWords(type) + what.slice(type.length) : what;
 }
 
+/** The longest heading of an untitled ask, in characters, before its ellipsis. */
+export const HEADING_MAX = 80;
+
+/**
+ * An ask's heading, where its text is a heading or one line: its title; else its question when that
+ * is one line of at most 80 characters; else one derived from its task's key and step, or from the
+ * question's first sentence when it has no task, cut at a word to about 80 characters. The detail
+ * shows the full question in its body. @param {any} ask
+ */
+export function askHeading(ask) {
+  if (ask?.title) return ask.title;
+  const question = String(ask?.question ?? "").trim();
+  if (question.length <= HEADING_MAX && !question.includes("\n")) return question;
+  const key = String(ask?.key ?? "").replace(/^(linear|github|slack|cli):/, "");
+  if (key && ask?.step) return cutAt(`${key} asks at ${ask.step}`, HEADING_MAX);
+  const end = question.search(/[.?!](\s|$)|\n/);
+  const first = end < 0 ? question : question.slice(0, question[end] === "\n" ? end : end + 1).trim();
+  const step = ask?.step && !first.startsWith(ask.step) ? `${ask.step}: ` : "";
+  return cutAt(`${step}${first}`, HEADING_MAX);
+}
+
+/** `text` cut at the last word that ends within `max` characters, with an ellipsis. @param {string} text @param {number} max */
+export function cutAt(text, max) {
+  if (text.length <= max) return text;
+  const space = text.slice(0, max + 1).lastIndexOf(" ");
+  const kept = space > max / 2 ? text.slice(0, space) : text.slice(0, max);
+  return `${kept.replace(/[\s.,;:!?-]+$/, "")}…`;
+}
+
+/** The full question, for the detail's body when its heading does not show all of it, else null. @param {any} ask */
+export const askBody = (ask) => (ask?.question && askHeading(ask) !== ask.question ? ask.question : null);
+
 /** The tile a check draws by its conclusion: one with none has not finished (DESIGN.md, Pull request summary). @param {string | null} conclusion */
 export function checkState(conclusion) {
   if (!conclusion) return "running";

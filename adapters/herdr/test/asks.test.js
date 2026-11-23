@@ -123,6 +123,8 @@ test("an open command ask's detail puts the decision first, then Why, History an
   ]);
   assert.deepEqual(detail.chips, [["why", "Why"], ["history", "History"], ["command", "Command"]]);
   assert.deepEqual(detail.why, {
+    question: null,
+    questionSpans: [],
     text: "I read the diff of #212 and ran `gh pr checks 212`: fmt, clippy and test are green.\n<b>not html</b>",
     textSpans: [{ text: "I read the diff of #212 and ran `gh pr checks 212`: fmt, clippy and test are green.\n<b>not html</b>" }],
     run: null,
@@ -468,4 +470,43 @@ test("Copy puts an ask's command on the clipboard as one shell line, and its not
   press(tree, "copy-command-section");
   assert.equal(herdr.clipboard, "gh pr merge 212 --squash --match-head-commit a1f3c9e ''");
   assert.equal(find(draw(panel, cx), "copy-command-section")?.kids.join(""), "Copied");
+});
+
+// An approval step's ask as Max's desk showed it on 2026-11-23: no title, and a 12-line question.
+const LONG = [
+  "approve-implementation: Plan: /home/max/factory/plans/FND-2434-plan.md. Only apps/admin-api/src/mcp/routes.ts changes.",
+  "The route table gains one entry for the export tool, behind the existing admin guard.",
+  "No migration: the export reads the tables the list tools already read.",
+  "Tests: apps/admin-api/test/mcp/routes.test.ts adds a case for the guard and one for the export.",
+  "The plan leaves the client untouched; the next step regenerates its types.",
+  "Risk: the guard is shared with the list tools, so a mistake there would expose them too.",
+  "I checked https://github.com/acme/app/pull/812, which added the guard, for its tests.",
+  "They cover an admin and a viewer; the export adds a third case for a revoked token.",
+  "The change is about 40 lines with tests.",
+  "Approve to start the implementation run, or revise to send the plan back.",
+  "Reject drops the task.",
+  "Nothing else waits on this answer.",
+].join("\n");
+
+test("an untitled ask with a 12-line question heads its row and detail with a short title, and Why keeps the whole question", () => {
+  assert.equal(LONG.split("\n").length, 12);
+  const long = { ...asks[1], key: "linear:FND-2434", step: "approve-implementation", title: null, question: LONG, text: null };
+  const links = [{ pattern: "\\bpull/(\\d+)\\b", url: "https://github.com/acme/app/pull/$1" }];
+  const detail = askDetail(long, { now, armed: null, links });
+  assert.equal(detail.question, "FND-2434 asks at approve-implementation");
+  assert.deepEqual(detail.questionSpans, [{ text: "FND-2434 asks at approve-implementation" }]);
+  assert.equal(detail.why.question, LONG);
+  assert.equal(detail.why.questionSpans.map((span) => span.text).join(""), LONG);
+  assert.deepEqual(detail.why.questionSpans.find((span) => span.url), { text: "pull/812", url: "https://github.com/acme/app/pull/812" });
+  assert.equal(detail.why.text, null);
+  const row = asksList([long], { view: "all", now }).sections.flatMap((section) => section.rows)[0];
+  assert.equal(row.text, "FND-2434 asks at approve-implementation");
+});
+
+test("askHeading, askBody and cutAt are the web view's, word for word", () => {
+  const helpers = (/** @type {string} */ source) => source.slice(source.indexOf("/** The longest heading of an untitled ask"), source.indexOf("\n", source.indexOf("export const askBody")));
+  const web = readFileSync(new URL("../../../crates/priory-core/web/asks.js", import.meta.url), "utf8");
+  const herdr = readFileSync(new URL("../lib/priory.js", import.meta.url), "utf8");
+  assert.ok(helpers(herdr).includes("export function askHeading"));
+  assert.equal(helpers(herdr), helpers(web), "copy askHeading, askBody and cutAt from adapters/herdr/lib/priory.js to crates/priory-core/web/asks.js");
 });
