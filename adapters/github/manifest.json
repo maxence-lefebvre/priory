@@ -13,7 +13,7 @@
     { "matches": ["https://github.com/*"], "js": ["content.js"], "run_at": "document_idle" }
   ],
   "web_accessible_resources": [
-    { "resources": ["frame.html", "lib/pr.js"], "matches": ["https://github.com/*"] }
+    { "resources": ["frame.html", "lib/pr.js", "lib/page.js"], "matches": ["https://github.com/*"] }
   ],
   "side_panel": { "default_path": "command.html" },
   "content_security_policy": {

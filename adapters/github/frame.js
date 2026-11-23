@@ -3,7 +3,8 @@ import { ARM_MS, UNDO_MS, age, answerBody, answerPath, choose, due, leftUnsent, 
 import { grade, parseGuide, scoreKey } from "./lib/guide.js";
 import { live } from "./lib/live.js";
 import { parsePr } from "./lib/pr.js";
-import { address, call } from "./lib/request.js";
+import { blank, connectForm as sharedForm } from "./lib/connect.js";
+import { call } from "./lib/request.js";
 import { clear, get, put, remove } from "./lib/store.js";
 import { fixBranch, fixText, sayRoute } from "./lib/task.js";
 
@@ -30,7 +31,7 @@ const S = {
   say: "",
   sayNotice: null,
   sayBusy: false,
-  connect: { address: "", token: "", error: null, busy: false },
+  connect: blank(),
   guide: { state: "loading" },
   quiz: { answers: {}, result: null, key: null },
 };
@@ -270,53 +271,7 @@ function panel() {
 }
 
 function connectForm() {
-  const c = S.connect;
-  const submit = (event) => {
-    event.preventDefault();
-    const checked = address(c.address);
-    if (checked.error) {
-      c.error = checked.error;
-      return render();
-    }
-    // Asked inside the click, which the permission prompt needs.
-    chrome.permissions.request({ origins: [`${checked.origin}/*`] }).then((granted) => connect(checked.origin, granted));
-  };
-  return [
-    h("div", { class: "q" }, "Connect to your factory"),
-    h("div", { class: "read" }, "The extension reads and answers through your daemon's serve address. Your browser asks once to let it reach that address."),
-    h("form", { class: "sect", onsubmit: submit },
-      h("div", { class: "field" }, h("label", { for: "address" }, "Address"),
-        h("input", { id: "address", class: "input", autocomplete: "off", placeholder: "https://desktop.tailnet.ts.net", value: c.address, oninput: (event) => { c.address = event.target.value; } })),
-      h("div", { class: "field" }, h("label", { for: "token" }, "Token"),
-        h("input", { id: "token", class: "input secret", type: "password", autocomplete: "off", value: c.token, oninput: (event) => { c.token = event.target.value; } }),
-        h("div", { class: "note" }, icon("key", "s14"), h("span", {}, "The value of PRIORY_TOKEN on the daemon's machine."))),
-      h("div", { class: "box" }, h("div", { class: "fact" }, icon("lock", "s14"), h("span", {}, h("b", {}, "Kept by the extension alone. "), "GitHub's pages, their scripts and other extensions cannot read it. It is sent only to this address, in a header."))),
-      c.error ? h("div", { class: "notice", role: "alert" }, c.error) : null,
-      h("div", { class: "end" }, h("button", { class: "btn primary", type: "submit", disabled: c.busy }, "Connect"))),
-    h("div", { class: "hr" }),
-    h("div", { class: "note" }, icon("book", "s14"), h("span", {}, "The Guide tab works without signing in: it reads the pull request's description from GitHub.")),
-  ];
-}
-
-async function connect(origin, granted) {
-  const c = S.connect;
-  if (!granted) {
-    c.error = `The browser did not let the extension reach ${origin}.`;
-    return render();
-  }
-  c.busy = true;
-  render();
-  const checked = await call(fetch, origin, c.token.trim(), "/api/views");
-  c.busy = false;
-  if (checked.status !== 200) {
-    c.error = checked.status === 401 ? "The daemon refused this token. Paste the current one." : `Could not reach priory serve at ${origin}. Check the address and that it runs.`;
-    return render();
-  }
-  S.config = { origin, token: c.token.trim() };
-  await put("config", S.config);
-  S.connect = { address: "", token: "", error: null, busy: false };
-  channel.postMessage({ signedIn: true });
-  await read();
+  return sharedForm(S.connect, { h, icon, render, permissions: chrome.permissions, channel, guide: true, done: (config) => { S.config = config; read(); } });
 }
 
 function askTab(asks) {
@@ -519,9 +474,13 @@ async function commandView() {
   const revision = Number(params.get("revision"));
   const option = params.get("option");
   const shell = (...kids) => h("div", { class: "panel" }, h("div", { class: "head" }, mark(), h("span", { class: "name" }, "Run a command")), h("div", { class: "body" }, kids));
-  if (!S.config) return shell(h("div", { class: "read" }, "Sign in from the panel on the pull request first."));
-  const detail = await api(`/api/tasks/${Number(params.get("task"))}`);
-  const ask = detail.body?.asks?.find((candidate) => String(candidate.id) === id);
+  // Signed out, the side panel signs in itself: the strip may not draw on every GitHub page.
+  if (!S.config) {
+    const redraw = async () => document.body.replaceChildren(await commandView());
+    return shell(sharedForm(S.connect, { h, icon, render: redraw, permissions: chrome.permissions, channel, done: (config) => { S.config = config; redraw(); } }));
+  }
+  const detail = id && option ? await api(`/api/tasks/${Number(params.get("task"))}`) : null;
+  const ask = detail?.body?.asks?.find((candidate) => String(candidate.id) === id);
   if (!ask || !option) return shell(h("div", { class: "read" }, "Tap a command option in the panel on the pull request. Its command shows here to run."));
   if (ask.ran) return shell(h("div", { class: "q" }, ask.question), outcome(ask.ran));
   if (ask.state !== "open" || ask.revision !== revision || !runsCommand(ask, option)) {
@@ -582,8 +541,8 @@ async function boot() {
   S.config = (await get("config")) ?? null;
   if (VIEW === "command") {
     channel.addEventListener("message", async (event) => {
-      if (!event.data.signedOut) return;
-      S.config = null;
+      if (!event.data.signedOut && !event.data.signedIn) return;
+      S.config = event.data.signedIn ? (await get("config")) ?? null : null;
       document.body.replaceChildren(await commandView());
     });
     document.body.replaceChildren(await commandView());
