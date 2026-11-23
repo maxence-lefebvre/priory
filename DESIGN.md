@@ -1554,6 +1554,9 @@ The morning dossier.
 - The greeting in the display role, then the report's sections **in the order the factory gives
   them**. The panel knows no section by name. Each section has a title, an optional count and
   rows; a row may carry a pick.
+- In Herdr a section draws its first 15 rows, then a secondary "Show 140 more rows" button that
+  draws the rest. Past the 15, the selected row, a row being picked, a row with a notice and a row
+  with threads still show. A search with text and the Picks view draw every row.
 - A pick is a segmented control of its options. A `check` marks the chosen option only; the
   note says "Recommends Take". An agreed pick folds to one line with Change.
 - From 1024 px a 200 px list of the sections, with counts and "Picks", sits on the left. Below,
