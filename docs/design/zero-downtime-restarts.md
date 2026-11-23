@@ -205,8 +205,8 @@ Built. [tools.md](../daemon/tools.md#the-mcp-server) describes it.
 - The socket serves each connection on its own thread, and `search` runs off the daemon's loop, so
   a slow `search` holds up only other searches.
 - `priory mcp` sends these four to the socket, as every other tool, and opens no state.
-- `runtime::call` retries a refused connection within the caller's own wait, at most 30 seconds.
-  The MCP server waits the full 30 seconds; a hook or verb keeps its shorter budget.
+- The MCP servers retry a refused connection for up to 30 seconds, then give the reply its whole
+  wait. Hooks and verbs still fail at once with no daemon.
 - Tests: a kept MCP server answers all four tools after the state moved to a newer schema under it;
   a call made while no daemon listens succeeds once one starts within the window; a tool call is
   answered while a `search` waits on its embedder.

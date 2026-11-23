@@ -639,5 +639,6 @@ priory progress 7 '{"nextAction": "Wait for CI"}'
 ## `report(date, since, greeting, sections)`
 
 `report` stores the task's report: ordered sections of rows, some with a pick. It replaces the
-task's report and keeps the choices already made. It does not end the turn. A pick or a comment on a row arrives as the next
-prompt; the agent answers a comment with `priory report reply`. See [reports.md](../daemon/reports.md).
+task's report and keeps the choices already made. It does not end the turn. A pick or a comment on
+a row arrives as the next prompt; the agent answers a comment with `priory report reply`. See
+[reports.md](../daemon/reports.md).

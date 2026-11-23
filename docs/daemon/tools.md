@@ -23,8 +23,9 @@ connection on its socket at once.
 
 When the socket refuses the connection, as it does while the daemon restarts, the server tries
 again every 200 ms for up to 30 seconds. With no daemon listening by then, the call fails and
-stores nothing. A call whose connection breaks after it was sent fails, and may or may not have
-been applied.
+stores nothing. Once connected, it waits up to 40 seconds for the reply, past the embedder's 30
+second timeout. A call whose connection breaks after it was sent fails, and may or may not have
+been applied. Hooks and verbs do not retry: with no daemon listening, they fail at once.
 
 ## The outside server
 
@@ -44,8 +45,9 @@ serves seven tools, and none that ends a step or acts on a task:
 
 A call to any other tool, such as `result` or `cancel`, is a JSON-RPC error, `unknown tool
 result`, and stores nothing. The server sends each call to the daemon as `{"outside": {"tool": ..., "session": ...,
-"arguments": ...}}`. With no daemon listening, the call fails with `no priory daemon listens on
-...` and stores nothing.
+"arguments": ...}}`. Like a run's server, it tries a refused connection again for up to 30
+seconds. With no daemon listening by then, the call fails with `no priory daemon listens on ...`
+and stores nothing.
 
 It exits 2 when `PRIORY_SESSION` is set, since a run has its own server and must not gain `ask`
 under another identity. It also exits 2 when `PRIORY_HOME` or `PRIORY_DB` is unset: they name the

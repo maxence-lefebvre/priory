@@ -1,6 +1,7 @@
 use crate::runtime;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
+use std::time::Duration;
 
 // shortcut: hand-written JSON-RPC over stdio for initialize, ping, tools/list and tools/call; switch to rmcp if Priory needs more of MCP.
 const VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -154,16 +155,20 @@ fn error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
-/// Sends the call to the daemon, waiting up to `RESTART` for one that restarts or searches. A tool
-/// error, or no daemon, is a tool result with `isError`.
+/// How long the server waits for a tool's reply: past the embedder's 30 second timeout, so a
+/// search whose embedder hangs still gets the daemon's keyword fallback.
+const TOOL_WAIT: Duration = Duration::from_secs(40);
+
+/// Sends the call to the daemon, waiting through a restart. A tool error, or no daemon, is a tool
+/// result with `isError`.
 fn call(session: &str, params: &Value) -> Value {
     let line = json!({
         "tool": params["name"],
         "session": session,
         "arguments": params["arguments"],
     });
-    let reply =
-        runtime::call(&runtime::home(), &line.to_string(), runtime::RESTART).and_then(|reply| {
+    let reply = runtime::call_through_restart(&runtime::home(), &line.to_string(), TOOL_WAIT)
+        .and_then(|reply| {
             serde_json::from_str::<Result<String, String>>(&reply)
                 .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
         });
@@ -196,10 +201,11 @@ pub fn serve_outside(session: Option<&str>) -> Result<(), String> {
             "arguments": params["arguments"],
         } });
         let reply =
-            runtime::call(&runtime::home(), &line.to_string(), runtime::REPLY).and_then(|reply| {
-                serde_json::from_str::<Result<String, String>>(&reply)
-                    .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
-            });
+            runtime::call_through_restart(&runtime::home(), &line.to_string(), runtime::REPLY)
+                .and_then(|reply| {
+                    serde_json::from_str::<Result<String, String>>(&reply)
+                        .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
+                });
         let reply = match reply {
             Ok(text) if READS.contains(&name) => Ok(format!("{DATA}\n{text}")),
             reply => reply,

@@ -2105,18 +2105,27 @@ pub const REPLY: Duration = Duration::from_secs(10);
 /// How `call`'s error starts when no daemon took the line, so it was never sent.
 pub const NO_DAEMON: &str = "no priory daemon listens on";
 
-/// The longest `call` tries again while the daemon's socket refuses it, as during a restart.
+/// How long `call_through_restart` tries again while the daemon's socket refuses it.
 pub const RESTART: Duration = Duration::from_secs(30);
 
-/// Sends one line to the daemon and returns its reply within about `wait`, in all. A refused
-/// connection, which a restarting daemon's socket gives, is tried again within that, for at most
-/// `RESTART`. Nothing is spooled: with no daemon, it fails.
+/// Sends one line to the daemon and returns its reply within about `wait`. Nothing is spooled:
+/// with no daemon, it fails at once.
 pub fn call(home: &Path, line: &str, wait: Duration) -> Result<String, String> {
-    let started = Instant::now();
-    let deadline = started + wait.min(RESTART);
-    let path = socket_path(home);
+    call_at(&socket_path(home), line, wait, Duration::ZERO)
+}
+
+/// `call` for an MCP server, which a run keeps across a daemon restart: while the socket refuses
+/// it, as a restarting daemon's does, it tries again for up to `RESTART`, then waits `wait`.
+pub fn call_through_restart(home: &Path, line: &str, wait: Duration) -> Result<String, String> {
+    call_at(&socket_path(home), line, wait, RESTART)
+}
+
+/// Sends `line` on the socket at `path`, trying a refused connection again for up to `retry`. Once
+/// connected, the reply has the whole of `wait`, so a late connect never cuts a call short.
+fn call_at(path: &Path, line: &str, wait: Duration, retry: Duration) -> Result<String, String> {
+    let deadline = Instant::now() + retry;
     let mut stream = loop {
-        match UnixStream::connect(&path) {
+        match UnixStream::connect(path) {
             Ok(stream) => break stream,
             Err(error)
                 if error.kind() == std::io::ErrorKind::ConnectionRefused
@@ -2127,8 +2136,7 @@ pub fn call(home: &Path, line: &str, wait: Duration) -> Result<String, String> {
             Err(error) => return Err(format!("{NO_DAEMON} {}: {error}", path.display())),
         }
     };
-    let left = wait.saturating_sub(started.elapsed());
-    let wait = Some(left.max(Duration::from_millis(100)));
+    let wait = Some(wait);
     let mut reply = String::new();
     stream
         .set_write_timeout(wait)
@@ -2183,6 +2191,64 @@ pub fn send(home: &Path, line: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// A socket file that refuses every connection, as a stopped daemon's does, in a fresh folder.
+    fn refusing(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("priory-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("d.sock");
+        drop(UnixListener::bind(&path).unwrap());
+        path
+    }
+
+    #[test]
+    fn a_call_through_a_restart_has_its_whole_wait_after_a_late_connect() {
+        let path = refusing("late");
+        let daemon = {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(1500));
+                // Bound beside, then renamed over, as `listen` does, so every connect finds the file.
+                let bound = path.with_extension("new");
+                let listener = UnixListener::bind(&bound).unwrap();
+                fs::rename(&bound, &path).unwrap();
+                let (mut stream, _) = listener.accept().unwrap();
+                let line = line_within(&stream, Duration::from_secs(5));
+                // Longer than what a 2 second budget would leave after the late connect.
+                std::thread::sleep(Duration::from_millis(1500));
+                stream.write_all(b"done\n").unwrap();
+                line
+            })
+        };
+
+        let reply = call_at(&path, "hello", Duration::from_secs(2), RESTART);
+
+        assert_eq!(reply, Ok("done".to_owned()));
+        assert_eq!(daemon.join().unwrap().as_deref(), Some("hello\n"));
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_call_without_a_retry_fails_at_once_on_a_refusing_socket() {
+        let path = refusing("refused");
+        let started = Instant::now();
+
+        let reply = call_at(&path, "hello", Duration::from_secs(2), Duration::ZERO);
+
+        assert!(
+            reply
+                .as_ref()
+                .is_err_and(|error| error.starts_with(NO_DAEMON)),
+            "{reply:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
 
     #[test]
     fn claudes_trust_dialog_is_seen_in_each_version_tested_and_nothing_else_is() {
