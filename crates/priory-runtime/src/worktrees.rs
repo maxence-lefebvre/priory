@@ -1,4 +1,4 @@
-use crate::runtime::{OWN_GIT, SCAN, at_risk, clone_of, git, run};
+use crate::runtime::{OWN_GIT, SCAN, at_risk, clone_of, git, run, unseal};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -132,7 +132,11 @@ pub fn retire_blocker(home: &Path, found: &Found) -> Option<String> {
 }
 
 /// Removes the worktree and keeps its branch. Git refuses when anything is uncommitted or untracked.
+/// The branch stays even once pushed, since the sweep fetches remote refs without `--prune` and a
+/// reopen adds the worktree back from it.
 pub fn retire(home: &Path, found: &Found) -> Result<(), String> {
+    // A read-only folder under an ignored `target/` would stop git halfway, with the gitdir gone.
+    unseal(&found.path);
     run(git(&found.clone(home))
         .args(["worktree", "remove"])
         .arg(&found.path))

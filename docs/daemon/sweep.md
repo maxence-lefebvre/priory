@@ -13,7 +13,7 @@ It removes a folder and its branch `priory/<id>` only when all checks hold:
 - It is a worktree of Priory's clone `repos/<owner>/<name>`, on branch `priory/<id>`.
 - Nothing is uncommitted or untracked, whatever `status.showUntrackedFiles` says.
 - No process has its working directory inside it (read from `/proc`). Priory's own git commands,
-  such as the desk's checks, do not count. Each carries `PRIORY_GIT=<pid>` in its environment,
+  such as another sweep's checks, do not count. Each carries `PRIORY_GIT=<pid>` in its environment,
   the pid of the Priory process that runs it, and so do its children. A process counts as
   Priory's only when that pid runs Priory's program, is its ancestor, and that ancestor's child on
   the way carries the same value. Any process can set the variable, so the value alone hides none.
@@ -23,13 +23,20 @@ It removes a folder and its branch `priory/<id>` only when all checks hold:
 
 A `done` task whose branch did not merge loses only its worktree when every commit of the branch
 is on a remote branch, any remote branch. A task that works on a person's pull request pushes to
-that person's branch, so its own branch never merges. The sweep keeps `priory/<id>`, and a reopen
-or revive adds the worktree back from it. A commit also counts as pushed when a remote branch holds
-a commit with the same patch (`git patch-id --verbatim`), as a rebase of that branch leaves. When
-more than 2000 remote commits could match, the sweep compares none and keeps the worktree. A merge
-commit or an empty commit has no patch, so it counts only when it is on a remote branch itself. A
-`failed` or `dropped` task keeps its worktree as `not merged`, since a person revives it in place.
-No later sweep deletes that branch once the pull request merges, since the sweep walks folders.
+that person's branch, so its own branch never merges. A commit also counts as pushed when a remote
+branch holds a commit with the same patch (`git patch-id --verbatim`), as a rebase of that branch
+leaves. When more than 2000 remote commits could match, the sweep compares none and keeps the
+worktree. A merge commit or an empty commit has no patch, so it counts only when it is on a remote
+branch itself.
+
+The worktree goes at the next sweep, even while the task's pull request is open. The sweep keeps
+`priory/<id>`, since it fetches remote refs without `--prune`. A review round that reopens the task
+adds the worktree back from that branch at the same path and runs the repository's `resume` recipe,
+not its `setup` recipe (see [runs.md](runs.md#recipes)). The worktree's ignored files, such as
+`target/`, and the reflog of its `HEAD` go with it, so the first build after a reopen relies on a
+compiler cache, such as one the `resume` recipe points at, to stay cheap. No later sweep deletes
+that branch once the pull request merges, since the sweep walks folders. A `failed` or `dropped`
+task keeps its worktree as `not merged`, since a person revives it in place.
 
 When the task's repository has a [`teardown` recipe](runs.md#recipes), the sweep runs it in the
 worktree first, once all checks hold, and removes the worktree at the sweep after it succeeds. The
@@ -44,13 +51,21 @@ it. The worktree goes, the branch stays, and no sweep looks again. A failed work
 logged and retried at the next sweep. A git command that cannot run keeps the worktree as
 `cannot check: <error>`.
 
-`priory desk` runs the same checks without fetching or removing, and lists each kept folder with its
-reason: `no task <id>`, `kept while task <id> is <state>`, `not a worktree of <clone>`,
-`not recorded as the worktree of task <id>`, `not on branch priory/<id>`, `uncommitted changes`,
-`untracked files`, `a process runs in it`, `unpushed commits`, `not merged`, `teardown runs` or
-`teardown failed: ...`. It reads the refs of the last fetch. Each reason ends with the size of the
-folder, such as `not merged, 7.4 GB`, as the last sweep measured it. A folder the sweep has not
-measured yet shows its reason alone.
+Before `git worktree remove`, the sweep makes every folder under the worktree writable by its
+owner. A read-only folder, such as one a test run sealed under an ignored `target/`, would
+otherwise stop git after it deleted the tracked files and the worktree's entry in the clone. When
+a task's folder is left that way, with a `.git` file naming a gone entry of Priory's clone, the
+task's next run removes the folder and adds the worktree back from its branch.
+
+`priory desk` lists each kept folder with its reason: `no task <id>`, `kept while task <id> is <state>`,
+`not a worktree of <clone>`, `not recorded as the worktree of task <id>`, `not on branch priory/<id>`,
+`uncommitted changes`, `untracked files`, `a process runs in it`, `unpushed commits`, `not merged`,
+`teardown runs` or `teardown failed: ...`.
+It runs no git: it reads the reasons from `sweep/sizes.json`, which each sweep writes. Before the
+first sweep, it lists only the reasons it reads from the database. Each reason ends with the size of
+the folder in binary units, such as `not merged, 7.4 GiB`. After each periodic sweep, a thread of its
+own walks the kept folders and records their sizes, since that walk takes seconds. A folder the walk
+has not measured yet shows its reason alone.
 
 ## Retiring asleep tasks
 

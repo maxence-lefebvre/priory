@@ -2,14 +2,27 @@ use crate::recipe::{self, Teardown};
 use priory_factory::factory::Factory;
 use priory_runtime::worktrees::{self, Found, Verdict};
 use rusqlite::{Connection, OptionalExtension};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A task folder under `PRIORY_HOME/worktrees` and why it stays, or `None` when it can go.
-/// `retire` keeps the branch when the folder goes.
+/// `retire` keeps the branch when the folder goes. `judged` is the reason git gave, which the
+/// sweep records for the desk.
 struct Entry {
     found: Found,
     stays: Option<String>,
     retire: bool,
+    judged: Option<String>,
+}
+
+/// How `assess` learns why git keeps the worktree of an ended task.
+enum Judge<'a> {
+    /// It asks git, as the sweep does.
+    Git,
+    /// It reads what the last sweep recorded, as the desk does.
+    Recorded(&'a Record),
 }
 
 /// The task a worktree folder is named after: `<task>`, or `<runner>-<task>` with runners.
@@ -17,10 +30,11 @@ fn task_of(found: &Found) -> Option<i64> {
     found.name.rsplit('-').next().and_then(|id| id.parse().ok())
 }
 
-fn assess(db: &Connection, home: &Path) -> rusqlite::Result<Vec<Entry>> {
+fn assess(db: &Connection, home: &Path, judge: Judge) -> rusqlite::Result<Vec<Entry>> {
     let mut entries = Vec::new();
     for found in worktrees::found(home) {
         let mut retire = false;
+        let mut judged = None;
         let task = task_of(&found);
         let task = task
             .map(|id| {
@@ -47,30 +61,30 @@ fn assess(db: &Connection, home: &Path) -> rusqlite::Result<Vec<Entry>> {
                 Some(format!("kept while task {} is {state}", found.name))
             }
             Some(state) => {
-                let head: Option<String> = db
-                    .query_row(
-                        "SELECT json_extract(data, '$.head_sha') FROM inbox
-                         WHERE type = 'github.pull_request.closed' AND json_extract(data, '$.merged') = 1
-                         AND json_extract(data, '$.repo') = ?1 AND json_extract(data, '$.head_branch') = 'priory/' || ?2
-                         ORDER BY seq DESC LIMIT 1",
-                        [&found.repo, &found.name],
-                        |row| row.get(0),
-                    )
-                    .optional()?
-                    .flatten();
-                let verdict = worktrees::verdict(home, &found, head.as_deref(), state == "done");
-                retire = verdict == Verdict::Retire;
+                let verdict = match judge {
+                    Judge::Git => verdict(db, home, &found, state == "done")?,
+                    Judge::Recorded(record) => record
+                        .get(&found.path.display().to_string())
+                        .and_then(|kept| kept.reason.clone())
+                        .map_or(Verdict::Remove, Verdict::Keep),
+                };
+                let teardown = || match task_of(&found).map(|id| recipe::teardown_of(db, id)) {
+                    Some(found) => Ok(match found? {
+                        Some(Teardown::Runs) => Some("teardown runs".to_owned()),
+                        Some(Teardown::Failed(reason)) => Some(reason),
+                        Some(Teardown::Done) | None => None,
+                    }),
+                    None => Ok::<_, rusqlite::Error>(None),
+                };
                 match verdict {
-                    Verdict::Keep(stays) => Some(stays),
-                    Verdict::Remove | Verdict::Retire => {
-                        match task_of(&found).map(|id| recipe::teardown_of(db, id)) {
-                            Some(found) => match found? {
-                                Some(Teardown::Runs) => Some("teardown runs".to_owned()),
-                                Some(Teardown::Failed(reason)) => Some(reason),
-                                Some(Teardown::Done) | None => None,
-                            },
-                            None => None,
-                        }
+                    Verdict::Keep(stays) => {
+                        judged = Some(stays.clone());
+                        Some(stays)
+                    }
+                    Verdict::Remove => teardown()?,
+                    Verdict::Retire => {
+                        retire = true;
+                        teardown()?
                     }
                 }
             }
@@ -79,9 +93,27 @@ fn assess(db: &Connection, home: &Path) -> rusqlite::Result<Vec<Entry>> {
             found,
             stays,
             retire,
+            judged,
         });
     }
     Ok(entries)
+}
+
+/// What git says of the worktree of an ended task. A squash merge leaves the head of the task's
+/// merged pull request out of the default branch, so the inbox names it.
+fn verdict(db: &Connection, home: &Path, found: &Found, done: bool) -> rusqlite::Result<Verdict> {
+    let head: Option<String> = db
+        .query_row(
+            "SELECT json_extract(data, '$.head_sha') FROM inbox
+             WHERE type = 'github.pull_request.closed' AND json_extract(data, '$.merged') = 1
+             AND json_extract(data, '$.repo') = ?1 AND json_extract(data, '$.head_branch') = 'priory/' || ?2
+             ORDER BY seq DESC LIMIT 1",
+            [&found.repo, &found.name],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(worktrees::verdict(home, found, head.as_deref(), done))
 }
 
 /// Removes the worktree and branch of every ended task that nothing keeps, after fetching each
@@ -95,8 +127,8 @@ pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<
         .collect();
     repos.dedup();
     let unfetched = fetch(home, &repos, jiff::Timestamp::now());
-    let entries = assess(db, home)?;
-    measure(home, &entries);
+    let entries = assess(db, home, Judge::Git)?;
+    record(home, &entries);
     for entry in entries {
         if unfetched.contains(&entry.found.repo) {
             continue;
@@ -132,32 +164,98 @@ pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<
     Ok(())
 }
 
-fn sizes_file(home: &Path) -> PathBuf {
+/// What the sweep recorded of a folder that stays: why git keeps it, and its size in bytes.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Kept {
+    reason: Option<String>,
+    bytes: Option<u64>,
+}
+
+/// Each folder that stays, by path.
+type Record = BTreeMap<String, Kept>;
+
+/// Serializes the writers of `sizes.json`: the sweep and the walk that measures.
+static RECORDING: Mutex<()> = Mutex::new(());
+
+/// Whether a walk that measures the folders runs.
+static MEASURING: AtomicBool = AtomicBool::new(false);
+
+fn record_file(home: &Path) -> PathBuf {
     home.join("sweep").join("sizes.json")
 }
 
-/// Records the size of each folder that stays, in bytes, for the desk to read.
-fn measure(home: &Path, entries: &[Entry]) {
-    let sizes: std::collections::BTreeMap<String, u64> = entries
-        .iter()
-        .filter(|entry| entry.stays.is_some())
-        .map(|entry| {
-            let path = entry.found.path.display().to_string();
-            (path, worktrees::size(&entry.found.path))
-        })
-        .collect();
-    let file = sizes_file(home);
+fn recorded(home: &Path) -> Record {
+    std::fs::read(record_file(home))
+        .ok()
+        .and_then(|read| serde_json::from_slice(&read).ok())
+        .unwrap_or_default()
+}
+
+fn write_record(home: &Path, record: &Record) {
+    let file = record_file(home);
+    let staging = file.with_extension("json.partial");
     let written = std::fs::create_dir_all(file.parent().expect("a file has a folder"))
-        .and_then(|()| std::fs::write(&file, serde_json::to_vec(&sizes).expect("serializes")));
+        .and_then(|()| std::fs::write(&staging, serde_json::to_vec(record).expect("serializes")))
+        .and_then(|()| std::fs::rename(&staging, &file));
     if let Err(written) = written {
         eprintln!("priory daemon: recording {}: {written}", file.display());
     }
 }
 
-/// `bytes` in the largest unit that keeps it at 1 or more, such as `7.4 GB`.
+/// Records each folder that stays and why git keeps it, with the size the last walk measured.
+fn record(home: &Path, entries: &[Entry]) {
+    let _recording = RECORDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut before = recorded(home);
+    let record = entries
+        .iter()
+        .filter(|entry| entry.stays.is_some())
+        .map(|entry| {
+            let path = entry.found.path.display().to_string();
+            let bytes = before.remove(&path).and_then(|kept| kept.bytes);
+            let reason = entry.judged.clone();
+            (path, Kept { reason, bytes })
+        })
+        .collect();
+    write_record(home, &record);
+}
+
+/// Measures each folder the last sweep recorded, on a thread of its own, since walking every file
+/// of every kept worktree takes seconds. It starts no second walk while one runs.
+pub fn measure(home: &Path) {
+    if MEASURING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let home = home.to_path_buf();
+    std::thread::spawn(move || {
+        let sizes: Vec<(String, u64)> = recorded(&home)
+            .into_keys()
+            .map(|path| {
+                let bytes = worktrees::size(Path::new(&path));
+                (path, bytes)
+            })
+            .collect();
+        {
+            let _recording = RECORDING
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut record = recorded(&home);
+            for (path, bytes) in sizes {
+                if let Some(kept) = record.get_mut(&path) {
+                    kept.bytes = Some(bytes);
+                }
+            }
+            write_record(&home, &record);
+        }
+        MEASURING.store(false, Ordering::SeqCst);
+    });
+}
+
+/// `bytes` in the largest binary unit that keeps it at 1 or more, such as `7.4 GiB`.
 fn human(bytes: u64) -> String {
     let mut size = bytes as f64;
-    for unit in ["B", "KB", "MB", "GB"] {
+    for unit in ["B", "KiB", "MiB", "GiB"] {
         if size < 1024.0 {
             return if unit == "B" {
                 format!("{bytes} B")
@@ -167,7 +265,7 @@ fn human(bytes: u64) -> String {
         }
         size /= 1024.0;
     }
-    format!("{size:.1} TB")
+    format!("{size:.1} TiB")
 }
 
 /// How long the sweep waits before it fetches again a clone whose fetch failed.
@@ -367,20 +465,18 @@ pub(crate) fn retire(
 }
 
 /// Every worktree under `home` that stays: its path, its task when its name is one, and why, with
-/// the size the last sweep measured.
+/// the size the last walk measured. It reads why git keeps a folder from the last sweep's record,
+/// so it runs no git.
 pub fn stays(db: &Connection, home: &Path) -> rusqlite::Result<Vec<(String, Option<i64>, String)>> {
-    let sizes: std::collections::HashMap<String, u64> = std::fs::read(sizes_file(home))
-        .ok()
-        .and_then(|read| serde_json::from_slice(&read).ok())
-        .unwrap_or_default();
-    Ok(assess(db, home)?
+    let record = recorded(home);
+    Ok(assess(db, home, Judge::Recorded(&record))?
         .into_iter()
         .filter_map(|entry| {
             let reason = entry.stays?;
             let task = entry.found.name.parse().ok();
             let path = entry.found.path.display().to_string();
-            let reason = match sizes.get(&path) {
-                Some(&bytes) => format!("{reason}, {}", human(bytes)),
+            let reason = match record.get(&path).and_then(|kept| kept.bytes) {
+                Some(bytes) => format!("{reason}, {}", human(bytes)),
                 None => reason,
             };
             Some((path, task, reason))
