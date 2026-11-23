@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dossier, nextPick, refusal } from "../mods/priory-bonjour/view.js";
+import { find } from "./kit.js";
 
 process.env.TZ = "UTC";
 
@@ -299,4 +300,76 @@ test("a check marks the chosen option only; the recommendation is the note's wor
   press(view(), `pick-${row}-1`);
 
   assert.deepEqual([checks(1), checks(2)], [1, 0]);
+});
+
+// report-long.json has the shape and lengths of a live 169-row report, 124 rows in Sentry, with every
+// word replaced by a synthetic one and Sentry padded to 155 rows, so the report holds 200.
+const long = fixture("report-long.json");
+const longReplies = { report: (/** @type {string[]} */ args) => (args[1] === "list" ? { revision: 6, reports: [] } : long), links: { links: [] } };
+const sentry = () => dossier(long, { now }).sections.find((section) => section.id === "sentry").rows;
+/** A row as drawn: a line is a Button, a pick card holds its text. @param {any} tree @param {{ id: string }} row */
+const drawnRow = (tree, row) => find(tree, `row-${row.id}`) ?? find(tree, `text-${row.id}`);
+
+/** How many times `draw` splits Markdown into blocks, which only the Markdown parser does with this pattern. @param {() => unknown} draw */
+function parses(draw) {
+  const replace = String.prototype.replace;
+  let count = 0;
+  String.prototype.replace = function (pattern, ...rest) {
+    if (pattern instanceof RegExp && pattern.source === String.raw`\r\n?`) count += 1;
+    return replace.call(this, pattern, ...rest);
+  };
+  try {
+    draw();
+  } finally {
+    String.prototype.replace = replace;
+  }
+  return count;
+}
+
+test("a long report parses each row's Markdown once, not on every render", async () => {
+  const { panel, view } = await mounted(longReplies);
+  for (const shown of ["all", "picks"]) {
+    panel.view = shown;
+    parses(view);
+    assert.equal(parses(view), 0, `the ${shown} view parsed again`);
+  }
+});
+
+test("a long section folds past its first rows, and Show more draws the rest", async () => {
+  const { view, press, find, text } = await mounted(longReplies);
+  const rows = sentry();
+  assert.ok(drawnRow(view(), rows[0]));
+  assert.equal(drawnRow(view(), rows.at(-1)), null);
+  const more = find(view(), "more-sentry");
+  assert.match(text(more), /^Show 140 more rows$/);
+
+  press(view(), "more-sentry");
+
+  assert.ok(drawnRow(view(), rows.at(-1)));
+  assert.equal(find(view(), "more-sentry"), null);
+});
+
+test("a selected row or a row a search found shows past the fold", async () => {
+  const { panel, view, press } = await mounted(longReplies);
+  const last = sentry().at(-1);
+  panel.selected = last.id;
+  assert.ok(drawnRow(view(), last));
+  panel.selected = null;
+
+  press(view(), "report-search");
+  panel.query.set_value(last.key);
+  assert.ok(drawnRow(view(), last));
+  // The Picks view lists every pick to agree.
+  press(view(), "report-search");
+  panel.view = "picks";
+  assert.ok(drawnRow(view(), last));
+});
+
+test("a row with a comment thread shows past the fold", async () => {
+  const commented = structuredClone(long);
+  const rows = commented.report.sections.find((/** @type {any} */ section) => section.id === "sentry").rows;
+  rows.at(-1).comments = [{ id: 9, author: "max", created: "2026-11-20T08:00:00Z", text: "Why this one?", resolved: false, replies: [] }];
+  const { view, text } = await mounted({ ...longReplies, report: (/** @type {string[]} */ args) => (args[1] === "list" ? { revision: 6, reports: [] } : commented) });
+  assert.ok(drawnRow(view(), sentry().at(-1)));
+  assert.match(text(view()), /Why this one\?/);
 });

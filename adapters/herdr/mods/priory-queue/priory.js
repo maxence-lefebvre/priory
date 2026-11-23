@@ -254,6 +254,23 @@ function blocks(text) {
   return out;
 }
 
+// Herdr stops a render that runs too long, and a panel draws the same agent text on every render.
+const REMEMBERED = 2000;
+/** @type {WeakMap<object, Map<string, string>>} each links list's drawn Markdown, by repo and text */
+const drawnHtml = new WeakMap();
+/** @type {Map<string, string>} */
+const drawnText = new Map();
+
+/** `map`'s value for `key`, computed once; past `REMEMBERED` keys the oldest goes. @param {Map<string, string>} map @param {string} key @param {() => string} compute */
+function remembered(map, key, compute) {
+  const known = map.get(key);
+  if (known !== undefined) return known;
+  const value = compute();
+  if (map.size >= REMEMBERED) map.delete(/** @type {string} */ (map.keys().next().value));
+  map.set(key, value);
+  return value;
+}
+
 /**
  * Markdown as HTML for Herdr's `TextView.html`: DESIGN.md's subset, every other character escaped, with
  * the factory's autolinks. A link or image whose target is not `https:` shows as its source; an image
@@ -261,6 +278,13 @@ function blocks(text) {
  * @param {string} text @param {{ pattern: string, url: string }[]} links @param {string | null} repo
  */
 export function markdownHtml(text, links, repo) {
+  if (!drawnHtml.has(links)) drawnHtml.set(links, new Map());
+  const drawn = /** @type {Map<string, string>} */ (drawnHtml.get(links));
+  return remembered(drawn, `${repo ?? ""}\n${text ?? ""}`, () => parsedHtml(text, links, repo));
+}
+
+/** @param {string} text @param {{ pattern: string, url: string }[]} links @param {string | null} repo */
+function parsedHtml(text, links, repo) {
   const plain = (/** @type {string} */ part) => spansHtml(autolink(part, links, repo)).slice(3, -4);
   const inline = (/** @type {string} */ line) => {
     let html = "";
@@ -285,6 +309,11 @@ export function markdownHtml(text, links, repo) {
 
 /** The words Markdown shows, on one line, for a label that cannot hold its links. @param {string} text */
 export function markdownText(text) {
+  return remembered(drawnText, String(text ?? ""), () => parsedText(text));
+}
+
+/** @param {string} text */
+function parsedText(text) {
   const inline = (/** @type {string} */ line) => line.replace(INLINE, (_match, code, bold, _token, _image, label) => code ?? (bold ? inline(bold) : label));
   return blocks(text).flatMap(({ tag, lines }) => (tag === "pre" ? lines : lines.map(inline))).join(" ");
 }

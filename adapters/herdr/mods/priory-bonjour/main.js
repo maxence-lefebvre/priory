@@ -1,7 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex, Button, Input, InputState, ScrollHandle, TextView } from "gpui-base";
 import { appHome, exec, home as herdrHome, readTextFile } from "herdr";
-import { follow, markdownHtml, markdownText, priory } from "./priory.js";
+import { follow, markdownHtml, markdownText, plural, priory } from "./priory.js";
 import { selectable, selectableMarkdown, stateTile } from "./ui.js";
 import { FONTS, palette, STRUCTURE as S } from "./tokens.js";
 import { around, dossier, nextPick, refusal } from "./view.js";
@@ -13,6 +13,8 @@ const RAIL = { from: 1024, width: 200 };
 const DOCUMENT = 760;
 const UNDO_MS = 4000;
 const RETRY_MS = 3000;
+// A section draws this many rows until Show more; Herdr stops a render that draws every row of a long report.
+const FOLD = 15;
 const ICON = (/** @type {string} */ name) => `mods/priory-bonjour/icons/${name}.svg`;
 // A task state's tile: its role and its icon, as DESIGN.md's state tiles; null draws a dot.
 /** @type {Record<string, [string, string | null]>} */
@@ -33,7 +35,7 @@ const NO_REPORT = "no task has a report";
 /** @typedef {Dossier["sections"][number]} Section */
 /** @typedef {Section["rows"][number]} Row */
 /** @typedef {{ task: number, row: string, pick: string, option: string, from: string | null, revision: number, timer: import("gpui-kit").Task | null }} Pending */
-/** @typedef {["greeting"] | ["empty"] | ["section", Section] | ["row", Row]} Item */
+/** @typedef {["greeting"] | ["empty"] | ["section", Section] | ["row", Row] | ["more", Section, number]} Item */
 
 // settings.json's "priory" object: { binary, machine, factory, theme }, each optional. Mirrors priory-tabs.
 async function connect() {
@@ -71,18 +73,6 @@ function drawn(id, text, links) {
 
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
 
-/** The scroll region's direct children in order, so a row or a section can be scrolled to by its index. @param {Dossier} model */
-function items(model) {
-  /** @type {Item[]} */
-  const list = [["greeting"]];
-  if (!model.sections.length) list.push(["empty"]);
-  for (const section of model.sections) {
-    list.push(["section", section]);
-    for (const row of section.rows) list.push(["row", row]);
-  }
-  return list;
-}
-
 /** @param {Item} item */
 const itemId = (item) => (item[0] === "section" ? `section:${item[1].id}` : item[0] === "row" ? item[1].id : item[0]);
 
@@ -108,6 +98,8 @@ export default class PrioryBonjour extends View {
     this.list = [];
     /** @type {string | null} the selected row's id */
     this.selected = null;
+    /** @type {Set<string>} the sections Show more unfolded */
+    this.unfolded = new Set();
     /** A pick waiting out its Undo, then in flight; nothing else is picked until it ends. */
     /** @type {Pending | null} */
     this.pending = null;
@@ -191,6 +183,7 @@ export default class PrioryBonjour extends View {
     if (read?.report.task !== this.data?.report.task) {
       this.selectRow(null);
       this.notices.clear();
+      this.unfolded.clear();
     }
     this.data = read;
     this.empty = !read;
@@ -216,9 +209,34 @@ export default class PrioryBonjour extends View {
     return model.sections.flatMap((section) => section.rows);
   }
 
+  /** The scroll region's direct children in order, so a row or a section can be scrolled to by its index. @param {Dossier} model */
+  items(model) {
+    /** @type {Item[]} */
+    const list = [["greeting"]];
+    if (!model.sections.length) list.push(["empty"]);
+    for (const section of model.sections) {
+      list.push(["section", section]);
+      const rows = this.folded(model, section);
+      for (const row of rows) list.push(["row", row]);
+      if (rows.length < section.rows.length) list.push(["more", section, section.rows.length - rows.length]);
+    }
+    return list;
+  }
+
+  /**
+   * A section's first rows, and past them the rows a person is on: selected, picking, with a notice or
+   * a thread. A search, the Picks view and Show more draw every row.
+   * @param {Dossier} model @param {Section} section
+   */
+  folded(model, section) {
+    if (model.found != null || this.view === "picks" || this.unfolded.has(section.id)) return section.rows;
+    return section.rows.filter((row, at) => at < FOLD || row.id === this.selected || row.id === this.pending?.row
+      || this.notices.has(row.id) || row.threads.length > 0);
+  }
+
   /** @param {Dossier} model @param {string} id a row's id, or `section:` and a section's id */
   reveal(model, id) {
-    const index = items(model).findIndex((item) => itemId(item) === id);
+    const index = this.items(model).findIndex((item) => itemId(item) === id);
     if (index >= 0) this.scroll.scroll_to_item(index);
   }
 
@@ -534,7 +552,7 @@ export default class PrioryBonjour extends View {
       return v_flex().id("bonjour-document").flex_1().p(pad).text_color(t["text-2"]).child(text);
     }
     return v_flex().id("bonjour-document").flex_1().min_w_0().min_h_0().overflow_y_scrollbar().track_scroll(this.scroll).px(pad).pt(pad).pb(S["space-6"]).gap(S["space-2"])
-      .children(items(model).map((item) => {
+      .children(this.items(model).map((item) => {
         if (item[0] === "greeting") {
           return v_flex().gap(S["space-1"]).max_w(DOCUMENT).pb(S["space-3"])
             .child(div().font_family(this.font.display).font_weight(700).text_size(S["type-hero"][0]).line_height(LINE(S["type-hero"])).whitespace_normal().child(model.greeting))
@@ -546,6 +564,14 @@ export default class PrioryBonjour extends View {
         if (item[0] === "section") {
           return h_flex().max_w(DOCUMENT).pt(S["space-3"]).gap(S["space-2"]).items_center().text_size(S["type-small"][0]).font_weight(650)
             .child(item[1].title).child(div().font_weight(400).text_color(t["text-3"]).child(String(item[1].count)));
+        }
+        if (item[0] === "more") {
+          const section = item[1];
+          return div().max_w(DOCUMENT).child(this.secondary(`more-${section.id}`, `Show ${plural(item[2], "more row")}`, (cx) => {
+            this.unfolded.add(section.id);
+            this.focus.focus();
+            cx.notify();
+          }, t));
         }
         const row = item[1];
         return v_flex().max_w(DOCUMENT).child(row.pick ? this.pick(model, row, t) : this.line(model, row, t))
