@@ -47,6 +47,30 @@ fn the_ship_and_watch_example_watches_a_merged_change_and_announces_it_once_appr
 }
 
 #[test]
+fn a_factory_with_a_web_view_plays_without_it() {
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/groom");
+    let factory = Path::new(env!("CARGO_TARGET_TMPDIR")).join("served-groom");
+    let _ = fs::remove_dir_all(&factory);
+    let copied = harness::command("cp")
+        .arg("-R")
+        .arg(&examples)
+        .arg(&factory)
+        .status()
+        .unwrap();
+    assert!(copied.success(), "cp {}", examples.display());
+    // A port in use, as the user's own daemon holds it.
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen = taken.local_addr().unwrap();
+    let file = factory.join("factory.toml");
+    let text = fs::read_to_string(&file).unwrap();
+    write(&file, &format!("{text}\n[serve]\nlisten = \"{listen}\"\n"));
+
+    let played = Play::run("served", &factory, &examples.join("e2e/green.toml"));
+
+    played.check();
+}
+
+#[test]
 fn bench_capture_turns_a_played_task_into_the_case_folder_byte_for_byte() {
     let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/groom");
     let expected = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/capture/red-case");
@@ -202,8 +226,14 @@ impl Play {
     }
 
     /// Replaces the factory's runners with one for this host, which the daemon reads from
-    /// `PRIORY_PROC`, and makes room for every agent.
+    /// `PRIORY_PROC`, and makes room for every agent. It drops the web view, which would need the
+    /// user's token and secrets and could take their daemon's port.
     fn host(&self) {
+        let file = self.factory().join("factory.toml");
+        let mut factory: toml::Table = toml::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        if factory.remove("serve").is_some() {
+            write(&file, &toml::to_string(&factory).unwrap());
+        }
         let runners = self.factory().join("runners");
         let _ = fs::remove_dir_all(&runners);
         write(

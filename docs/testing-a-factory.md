@@ -6,7 +6,8 @@ state, before any real agent runs. It assumes a clone of this repository with it
 `priory check`.
 
 The test copies your factory into a scratch folder and replaces its runners with one for the test
-host. It then starts this build's daemon with the fake `claude`, `codex` and `gh` of
+host. It drops the copy's `[serve]` table, so a play needs neither your token nor your daemon's
+port. It then starts this build's daemon with the fake `claude`, `codex` and `gh` of
 `crates/priory/tests/fake/`, and a bare Git origin for each repository your triggers name. It
 asks for one task, plays your scenario, and checks where the task ended. `gh`, `claude`, `codex`
 and Git's GitHub remotes go to fakes, and every process starts with a cleared environment, a
