@@ -894,6 +894,7 @@ impl Observed {
                 && filter("author").is_none_or(|author| field("author") == Some(author.as_str()))
                 && commenter
                 && !outsider
+                && self.data["open"] != false
                 && (!self.baseline || trigger.backfill == Some(true))
         };
         triggers

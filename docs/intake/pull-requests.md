@@ -30,7 +30,8 @@ A `github` trigger can start a task from five pull request events. Its keys are 
 | `pull_request.opened` | none | `pull_request.number` |
 | `pull_request.comment`, `pull_request_review_comment`, `pull_request_review.submitted` | `author`, and `commenter`, optional | `pull_request.number` |
 
-A comment or review matches a trigger when the pull request's `author` is the filter's `author`.
+A comment or review matches a trigger when its pull request is open and the pull request's
+`author` is the filter's `author`.
 With `commenter`, the comment's `actor` must be that login too. Without it, a bot's review matches
 no trigger. A comment or review by someone without write access, whose `association` is not
 `OWNER`, `MEMBER` or `COLLABORATOR`, matches no trigger either. Its task request starts a task only

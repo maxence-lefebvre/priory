@@ -1516,8 +1516,14 @@ fn a_comment_trigger_requests_a_task_for_a_comment_on_its_author_s_pull_request(
     let mut other = pull_comment(702, "ana", "User", "MEMBER");
     other["url"] = json!("https://github.com/owner/repo/pull/44#issuecomment-702");
     theirs["comments"] = json!({ "nodes": [other] });
+    // A comment on a merged pull request starts nothing.
+    let mut merged = pull(45, true, json!([]), json!([]));
+    merged["author"] = json!({ "login": "max" });
+    let mut late = pull_comment(704, "ana", "User", "MEMBER");
+    late["url"] = json!("https://github.com/owner/repo/pull/45#issuecomment-704");
+    merged["comments"] = json!({ "nodes": [late] });
     setup.answer(&[
-        (OPEN_PULLS, open_pulls(&[mine, theirs])),
+        (OPEN_PULLS, open_pulls(&[mine, theirs, merged])),
         (
             REVIEW_COMMENTS,
             json!([review_comment(802, None, "ana", "User")]),
