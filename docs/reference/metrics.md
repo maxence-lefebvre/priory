@@ -12,6 +12,7 @@ on. [metrics.md](../daemon/metrics.md) explains how each process samples and sen
 | `log` | the daemon only. The intake and `priory serve` skip it when `metrics` or `PRIORY_METRICS` names it |
 | `runs` | the daemon only, as for `log` |
 | `intake` | the intake, for its polls, and the daemon or `priory serve`, for the webhook deliveries its server takes. Only the intake sends `priory.intake.poll.age` |
+| `work` | the daemon only, as for `log` |
 
 ## Resource
 
@@ -79,6 +80,18 @@ and as `<name>@<machine id>` when it reads on another.
 A counter has no point until it counts once, so a process that took no delivery sends no
 `priory.intake.events`.
 
+## work
+
+| Metric | Kind | Unit | Attributes | Value |
+| ------ | ---- | ---- | ---------- | ----- |
+| `priory.asks.open` | gauge | `{ask}` | `priory.ask.kind` = `step`, `agent`, `outside`; `priory.lane`, absent for an ask with no lane | the open asks of tasks that have not ended, and outside asks, less those snoozed now. A series sent before sends 0 once it has none |
+| `priory.asks.oldest.age` | gauge | `s` | `priory.ask.kind` | since the oldest of those asks was asked, in its current revision. Each kind has a point, 0 with none |
+| `priory.attention.per_merge` | gauge | `min` | | `person_minutes_per_merge` of `priory report attention` over its default window, this week from Monday. Read at the first interval and every 10th after, the last value sent in between. Absent while the window has no merge |
+| `priory.tasks` | gauge | `{task}` | `priory.state`; `priory.workflow` | the tasks in each state other than `done`, `failed` and `dropped`. A series sent before sends 0 once it has none |
+| `priory.tokens` | counter | `{token}` | `priory.workflow`; `gen_ai.agent.name`; `gen_ai.request.model`; `gen_ai.token.type` = `input`, `output`, `cache_read`, `cache_write` | the tokens of the trace records appended since the daemon started that `priory costs` prices: model steps, debate turns, handler calls and summarizer calls. The agent is `handler` or `summarizer` for those calls. An attribute the record lacks is absent |
+| `priory.cost` | counter | `USD` | `priory.workflow`; `gen_ai.agent.name`; `gen_ai.request.model` | the same records priced with `prices.toml`. A model with no price adds no cost |
+| `priory.spend.headroom` | gauge | `USD` | `priory.cap.scope` = `factory`, `trigger`, `lane`; `priory.cap.name`, the trigger or lane, absent for `factory`; `priory.cap.window` = `task`, `day`, `week` | each spend cap's limit less what it spent, as `priory costs` lists its caps. A `task` cap uses the most an active task under it spent. Below 0 past the cap |
+
 ## Dropped points
 
 | Metric | Kind | Unit | Attributes | Value |
@@ -89,10 +102,11 @@ A counter has no point until it counts once, so a process that took no delivery 
 
 | Message | Cause |
 | ------- | ----- |
-| `` priory <process>: PRIORY_METRICS names `<group>`, which is not a metrics group: the groups are process, log, runs, intake, or none `` | `PRIORY_METRICS` names an unknown group. The process does not start |
+| `` priory <process>: PRIORY_METRICS names `<group>`, which is not a metrics group: the groups are process, log, runs, intake, work, or none `` | `PRIORY_METRICS` names an unknown group. The process does not start |
 | `` priory <process>: metrics past metrics_cap = <n>: dropped <count> <kind> points `` | an interval had more points than the cap left room for |
 | `` priory <process>: sending metrics to <otlp> failed (<error>) `` | the endpoint refused a request or did not answer, logged once per error text |
 | `` priory <process>: metrics: cannot read the process's own use: <error> `` | the process could not read `/proc/self`, or `self` in `PRIORY_PROC`. The interval sends the rest |
 | `` priory daemon: metrics: cannot read the log's state: <error> `` | the daemon's metrics thread could not read the state file. The interval sends the rest |
 | `` priory daemon: metrics: cannot read the runs' state: <error> `` | the same, for the `runs` group. The interval sends the rest |
+| `` priory daemon: metrics: cannot read the factory's work: <error> `` | the daemon's metrics thread could not read the state file, or `PRIORY_NOW` does not parse. The interval sends no `work` point and the rest |
 | `` priory intake: metrics: cannot read the intake's polls: <error> `` | the intake's metrics thread could not read the state file named by `PRIORY_DB`. The interval sends the rest |

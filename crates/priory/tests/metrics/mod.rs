@@ -312,7 +312,7 @@ fn priory_metrics_naming_an_unknown_group_stops_the_daemon_with_its_name() {
     assert_eq!(
         stderr,
         "priory daemon: PRIORY_METRICS names `nope`, which is not a metrics group: the groups are \
-         process, log, runs, intake, or none\n"
+         process, log, runs, intake, work, or none\n"
     );
 }
 
@@ -932,4 +932,173 @@ fn the_server_counts_a_delivery_published_then_redelivered_and_one_whose_signatu
     assert_eq!(service(request), "serve");
     assert!(points(request, "priory.intake.poll.age").is_empty());
     assert!(points(request, "priory.intake.poll.missed").is_empty());
+}
+
+/// Dollars per million tokens of the fake `claude`'s model.
+const PRICES: &str =
+    "[claude-fake-5]\ninput = 3.0\noutput = 15.0\ncache_read = 0.3\ncache_write = 3.75\n";
+
+impl Setup {
+    /// `priory <args> --json`, which must succeed, as JSON.
+    fn json(&self, args: &[&str]) -> Value {
+        let output = self.priory(&[args, &["--json"]].concat());
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+}
+
+#[test]
+fn a_daemon_sends_the_open_asks_the_oldest_s_age_the_tasks_by_state_and_each_cap_s_headroom() {
+    let collector = Collector::start();
+    let mut setup = Setup::with_workflow("metrics-work", STEPS);
+    setup.metrics(
+        &collector,
+        "metrics = [\"work\"]\nmetrics_every = \"10s\"\n\n[caps]\nday = 1.0\n",
+    );
+    fs::write(setup.dir.join("factory/prices.toml"), PRICES).unwrap();
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    let agent = json!({ "priory.ask.kind": "agent", "priory.lane": "none/misc" });
+    let asleep = json!({ "priory.state": "asleep", "priory.workflow": "implement" });
+    let asking = |request: &Value| {
+        point(request, "priory.asks.open", &agent) == Some(1.0)
+            && point(request, "priory.tasks", &asleep) == Some(1.0)
+    };
+    let requests = collector.until(&setup, |requests| requests.iter().any(asking));
+
+    let request = requests.iter().find(|request| asking(request)).unwrap();
+    for kind in ["step", "agent", "outside"] {
+        let age = point(
+            request,
+            "priory.asks.oldest.age",
+            &json!({ "priory.ask.kind": kind }),
+        );
+        assert!(age.is_some_and(|age| age >= 0.0), "{kind}: {request}");
+    }
+    assert_eq!(points(request, "priory.asks.open").len(), 1, "{request}");
+    assert_eq!(points(request, "priory.tasks").len(), 1, "{request}");
+    let factory = setup.dir.join("factory");
+    let costs = setup.json(&["costs", factory.to_str().unwrap()]);
+    let cap = &costs["caps"][0];
+    let headroom = cap["cap_usd"].as_f64().unwrap() - cap["spent_usd"].as_f64().unwrap();
+    let day = json!({ "priory.cap.scope": "factory", "priory.cap.window": "day" });
+    let sent = point(request, "priory.spend.headroom", &day);
+    assert!(
+        sent.is_some_and(|sent| (sent - headroom).abs() < 1e-9 && sent <= 1.0),
+        "{sent:?} != {headroom}: {request}"
+    );
+    assert!(!names(request).contains(&"process.uptime".to_owned()));
+}
+
+#[test]
+fn a_daemon_counts_the_tokens_and_cost_of_the_steps_that_ended_since_it_started() {
+    let collector = Collector::start();
+    let mut setup = Setup::with_workflow("metrics-work-tokens", STEPS);
+    fs::write(setup.dir.join("factory/prices.toml"), PRICES).unwrap();
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(41));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    setup.crash();
+    setup.metrics(
+        &collector,
+        "metrics = [\"work\"]\nmetrics_every = \"10s\"\n",
+    );
+    setup.calls(&[result("ready"), result("passed")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows.iter().all(|row| row[4] == "done")
+    });
+    let step = |kind: &str| {
+        json!({ "priory.workflow": "implement", "gen_ai.agent.name": "implementer",
+                "gen_ai.request.model": "claude-fake-5", "gen_ai.token.type": kind })
+    };
+    let counted = |request: &Value| point(request, "priory.tokens", &step("input")).is_some();
+    let requests = collector.until(&setup, |requests| {
+        requests.iter().filter(|request| counted(request)).count() >= 2
+    });
+    let sent: Vec<&Value> = requests.iter().filter(|request| counted(request)).collect();
+    // Only the second task's two steps, the fake's turns 3 and 4, count: the first task's ended
+    // before the daemon started.
+    for request in &sent[sent.len() - 2..] {
+        for (kind, tokens) in [
+            ("input", 207.0),
+            ("output", 27.0),
+            ("cache_read", 2007.0),
+            ("cache_write", 107.0),
+        ] {
+            assert_eq!(
+                point(request, "priory.tokens", &step(kind)),
+                Some(tokens),
+                "{kind}: {request}"
+            );
+        }
+        let model = json!({ "priory.workflow": "implement", "gen_ai.agent.name": "implementer",
+                            "gen_ai.request.model": "claude-fake-5" });
+        let cost = point(request, "priory.cost", &model);
+        assert!(
+            cost.is_some_and(|cost| (cost - 0.002_029_35).abs() < 1e-9),
+            "{cost:?}: {request}"
+        );
+    }
+}
+
+#[test]
+fn a_daemon_sends_the_person_minutes_per_merge_that_report_attention_prints() {
+    let collector = Collector::start();
+    let mut setup = Setup::new("metrics-work-attention");
+    setup.metrics(
+        &collector,
+        "metrics = [\"work\"]\nmetrics_every = \"10s\"\n",
+    );
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    // One answer, 5 person-minutes, and one merged pull request the task owned, this week.
+    db.execute_batch(
+        "INSERT INTO tasks (id, key, workflow, step, state, lane, trigger, source)
+           VALUES (7, 'cli:seeded', 'implement', 'implement', 'done', 'none/misc', 'cli', 'seeded');
+         INSERT INTO asks (id, task, step, kind, question, options, created)
+           VALUES (7, 7, 'implement', 'agent', 'Which?', '[]', '2026-11-16T09:00:00Z');
+         UPDATE ask_revisions SET created = '2026-11-16T09:00:00Z' WHERE ask = 7;
+         UPDATE asks SET answer = 'yes', answered = '2026-11-16T10:00:00Z' WHERE id = 7;
+         INSERT INTO owns (task, resource) VALUES (7, 'github:o/r#1');
+         INSERT INTO inbox (id, type, subject, time, data, links, outcome) VALUES
+           ('m1', 'github.pull_request.closed', 'o/r#1', '2026-11-16T11:00:00Z',
+            '{\"merged\":true}', '[]', 'stored');",
+    )
+    .unwrap();
+    drop(db);
+    let now = [("PRIORY_NOW", "2026-11-17T11:00:00Z"), ("TZ", "UTC")];
+
+    setup.start_with(Path::new(env!("CARGO_BIN_EXE_priory")), &now);
+
+    let per_merge = |request: &Value| points(request, "priory.attention.per_merge");
+    let requests = collector.until(&setup, |requests| {
+        requests
+            .iter()
+            .any(|request| !per_merge(request).is_empty())
+    });
+    let request = requests
+        .iter()
+        .find(|request| !per_merge(request).is_empty())
+        .unwrap();
+    let report = setup
+        .command(env!("CARGO_BIN_EXE_priory"))
+        .envs(now)
+        .args(["report", "attention", "--json"])
+        .output()
+        .unwrap();
+    assert!(report.status.success(), "{report:?}");
+    let report: Value = serde_json::from_slice(&report.stdout).unwrap();
+    assert_eq!(report["person_minutes_per_merge"], 5.0);
+    assert_eq!(per_merge(request), vec![(json!({}), 5.0)]);
 }
