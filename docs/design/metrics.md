@@ -5,12 +5,11 @@ long its loops take, whether its log answers, how long a run takes to start, whe
 keeps up, and what waits on a person. It holds the model, the first code slice with its tests,
 the slices after it, what stays out, and the open questions with a recommendation for each.
 
-The first slice is built: [metrics.md](../daemon/metrics.md) describes it. It covers the exporter,
-the keys, `PRIORY_METRICS`, the cap and the `process` group. The tests use a fake collector on
-127.0.0.1 rather than a fake `curl`. The first four later slices, the `log`, `runs`, `intake` and
-`work` groups, are built too: [metrics.md](../daemon/metrics.md#the-log-group) describes them, and
-[the metrics reference](../reference/metrics.md) lists every metric. The last later slice, the
-how-to's section, is not built.
+Every slice is built. [metrics.md](../daemon/metrics.md) describes the first one: the exporter,
+the keys, `PRIORY_METRICS`, the cap and the `process` group. Its tests use a fake collector on
+127.0.0.1 rather than a fake `curl`. The `log`, `runs`, `intake` and `work` groups follow in
+[metrics.md](../daemon/metrics.md#the-log-group), and [the metrics reference](../reference/metrics.md)
+lists every metric. The how-to is [How to send metrics to an OpenTelemetry backend](../sending-metrics.md).
 
 Max proposed it on 2026-11-22, after Mastra Factory's
 [health metrics page](https://factory.mastra.ai/configure/metrics). This note takes the idea of
@@ -329,9 +328,14 @@ export's tests do, and a `PRIORY_PROC` folder for `/proc/self`:
    send it at 0 once it empties, so a backend's last value is never stale. The tokens read the
    trace past the newest record at the daemon's start. A week with no merge sends no attention
    point. It needs no migration.
-5. A section in [How to send traces to an OpenTelemetry backend](../sending-traces-to-opentelemetry.md)
-   for metrics, with one alert per group a person would set first: the probe's `timeout` share, the
-   oldest start's age, the poll age, the oldest ask's age and the spend headroom.
+5. **Built.** A how-to for metrics, with one alert per group a person would set first: the probe's
+   `timeout` share, the oldest start's age, the poll age, the oldest ask's age and the spend
+   headroom. As built, it is a page of its own,
+   [How to send metrics to an OpenTelemetry backend](../sending-metrics.md), rather than a section of
+   the traces how-to, since turning metrics on and setting alerts is a task of its own. Its local
+   recipe was run against `otelcol` 0.139.0. Its alerts add the lease age and the tick's p95, and
+   take each threshold from a limit Priory enforces. The oldest ask's age has no such limit, so the
+   page leaves its threshold to the person.
 
 ## What stays out
 

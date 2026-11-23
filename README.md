@@ -155,6 +155,7 @@ as a website, with search, built from `main`.
   [add a second machine](docs/adding-a-second-machine.md),
   [share build caches](docs/sharing-build-caches.md),
   [send traces to an OpenTelemetry backend](docs/sending-traces-to-opentelemetry.md),
+  [send metrics to an OpenTelemetry backend](docs/sending-metrics.md),
   [evaluate a prompt change](docs/evaluating-a-prompt.md),
   [set up a nightly dream](docs/setting-up-a-nightly-dream.md),
   [filter and enrich events with a script](docs/filtering-and-enriching-events.md) and
