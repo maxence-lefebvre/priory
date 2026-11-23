@@ -30,12 +30,14 @@ A Codex run chooses its own session id, its thread. So when the stdin `session_i
 
 The daemon answers `ok` once it has committed the signal. The hook waits up to 10 seconds for that
 answer. If no daemon accepts the line, or the daemon closes the connection without an answer, the
-hook appends the line to `signals.spool` in Priory home.
+hook appends the line to `signals.spool` in Priory home. A jailed run sees only its own spool,
+`spools/<session>/signals.spool`, which `PRIORY_SPOOL` names (see [sandboxes.md](sandboxes.md)).
 
 The next daemon to start reads the spool before anything else:
 
 1. It marks every `attempted` prompt `uncertain` (see [outbox.md](outbox.md)).
-2. It applies each spooled signal, then removes the spool.
+2. It applies each spooled signal, then removes the spool. It reads `signals.spool` first, then
+   each jailed run's spool.
 
 So a spooled `UserPromptSubmit` no longer confirms the prompt it submitted. That prompt stays
 `uncertain` on the desk.

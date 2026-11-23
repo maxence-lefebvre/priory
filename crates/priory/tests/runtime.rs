@@ -15,6 +15,7 @@ mod preempt;
 #[cfg(feature = "postgres")]
 mod proxy;
 mod review_limit;
+mod sandbox;
 mod tmux_dir;
 
 use herdr_bus::{Bus, Message, Output};
@@ -54,7 +55,7 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Undoes migrations 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes migrations 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
@@ -71,7 +72,7 @@ macro_rules! undo_pre {
   ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
-  ALTER TABLE runs DROP COLUMN resumes;
+  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox;
   "
     };
 }
@@ -600,13 +601,28 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
         kit,
         commit,
         memories,
+        sandbox,
     ] = &runs[0][..]
     else {
         panic!("runs: {runs:?}");
     };
     assert_eq!(
-        [id, task, step, tmux, ended, end, kit, commit, memories].map(String::as_str),
-        ["1", "1", "implement", "priory-1", "-", "-", "-", "-", "-"],
+        [
+            id, task, step, tmux, ended, end, kit, commit, memories, sandbox
+        ]
+        .map(String::as_str),
+        [
+            "1",
+            "1",
+            "implement",
+            "priory-1",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-"
+        ],
         "a factory without skills or instructions gives its runs none"
     );
     assert!(uuid::Uuid::parse_str(session).is_ok(), "session {session}");

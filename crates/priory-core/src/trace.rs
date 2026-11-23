@@ -188,20 +188,31 @@ pub(crate) fn ended_with(
     }
     if let Some(agent) = agent {
         if let Some(run) = run {
-            let (hash, commit, memories) = tx
+            let (hash, commit, memories, sandbox, start) = tx
                 .query_row(
-                    "SELECT kit_hash, kit_commit, memories_commit FROM runs WHERE id = ?1",
+                    "SELECT kit_hash, kit_commit, memories_commit, sandbox,
+                       CAST(round((julianday(session_started) - julianday(started)) * 86400000)
+                         AS INTEGER)
+                     FROM runs WHERE id = ?1",
                     [run],
                     |row| {
                         Ok((
                             row.get::<_, Option<String>>(0)?,
                             row.get::<_, Option<String>>(1)?,
                             row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, Option<i64>>(4)?,
                         ))
                     },
                 )
                 .optional()?
                 .unwrap_or_default();
+            if let Some(sandbox) = sandbox {
+                data["sandbox"] = Value::from(sandbox);
+            }
+            if let Some(start) = start {
+                data["session_start_ms"] = Value::from(start.max(0));
+            }
             data["kit_hash"] = hash.map_or(Value::Null, Value::from);
             if let Some(commit) = commit {
                 data["kit_commit"] = Value::from(commit);

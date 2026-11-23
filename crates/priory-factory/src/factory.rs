@@ -100,6 +100,34 @@ pub struct Settings {
     /// What a person states about each MCP server an investigator names, by the server's name.
     #[serde(default)]
     pub mcp: BTreeMap<String, McpServer>,
+    /// Each sandbox a workflow can turn on with `sandbox`, by its name.
+    #[serde(default)]
+    pub sandboxes: BTreeMap<String, Sandbox>,
+}
+
+/// `[sandboxes.<name>]`: a jail around a run's agent, which sees its worktree, its harness's own
+/// home and what the sandbox names, each at the same path as outside.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Sandbox {
+    pub kind: SandboxKind,
+    /// Paths bound read-only, each absolute or under `~/`.
+    #[serde(default)]
+    pub read: Vec<String>,
+    /// Paths bound read-write, each absolute or under `~/`.
+    #[serde(default)]
+    pub write: Vec<String>,
+    /// The daemon's variables the run keeps, by name, beside the few every jailed run keeps.
+    #[serde(default)]
+    pub env: Vec<String>,
+}
+
+/// How a sandbox is built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SandboxKind {
+    /// A bubblewrap jail: Linux only, with the `bwrap` program on `PATH`.
+    Bwrap,
 }
 
 /// `[consult]`: the bounds of one consult, and `[consult.allow]`, who may consult whom.
@@ -1882,6 +1910,9 @@ pub struct Workflow {
     /// The most pull requests a task's stack may hold: `open-pr` refuses a longer one. No cap
     /// when unset.
     pub max_prs: Option<std::num::NonZeroUsize>,
+    /// The sandbox of `factory.toml` that every model step of the workflow runs its agent in.
+    /// None runs agents with the person's whole user, as before.
+    pub sandbox: Option<String>,
     pub steps: Vec<Step>,
 }
 
@@ -2522,6 +2553,25 @@ impl Factory {
         self.settings
             .as_ref()
             .map_or(&BUILT_IN, |settings| &settings.value.search)
+    }
+
+    /// The sandbox the workflow `name` turns on, with its name, if any.
+    pub fn sandbox_of(&self, name: &str) -> Option<(&str, &Sandbox)> {
+        let wanted = self.workflows.get(name)?.value.sandbox.as_deref()?;
+        let (name, sandbox) = self
+            .settings
+            .as_ref()?
+            .value
+            .sandboxes
+            .get_key_value(wanted)?;
+        Some((name.as_str(), sandbox))
+    }
+
+    /// Whether any workflow turns a sandbox on.
+    pub fn sandboxed(&self) -> bool {
+        self.workflows
+            .values()
+            .any(|workflow| workflow.value.sandbox.is_some())
     }
 
     /// The factory's `[guard]` table, or none on top of the built-in guards.

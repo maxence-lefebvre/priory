@@ -29,6 +29,7 @@
 # FAKE_DIR/handler as its result, which it pops, or a leave answer when none is left. A line that
 # starts with a double quote is a JSON string, decoded, so a result can hold several lines. With
 # FAKE_DIR/handler-fail, it then exits 1.
+# FAKE_DIR/probe, a shell script, runs once at start in the run's folder, with its output in probe.log.
 # A call with an `output` key stands for a built-in tool that ran: it appends the tool_use and its
 # tool_result, with that output, to FAKE_DIR/transcript.jsonl as Claude writes them, and no hook hears it.
 set -u
@@ -56,6 +57,7 @@ echo $$ > "$FAKE_DIR/pid"
 env | cut -d= -f1 > "$FAKE_DIR/env.log"
 printf %s "$XDG_RUNTIME_DIR" > "$FAKE_DIR/xdg.log"
 env | grep '^OTEL_RESOURCE_ATTRIBUTES=' > "$FAKE_DIR/otel.log"
+[ -e "$FAKE_DIR/probe" ] && sh "$FAKE_DIR/probe" > "$FAKE_DIR/probe.log" 2>&1
 while [ $# -gt 0 ]; do
   case "$1" in
     --session-id|--resume) session=$2; shift 2 ;;

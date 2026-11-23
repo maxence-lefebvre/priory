@@ -24,7 +24,10 @@ does and the page that describes it.
   its file and line. `--explain` lists each irreversible step with what approves it, and the
   outcomes the daemon verifies. See [workflows.md](workflows.md#irreversible-steps-and-their-gates).
   A factory with a debate step gets a last table, each debate's worst case. See
-  [workflows.md](workflows.md#debate-steps).
+  [workflows.md](workflows.md#debate-steps). A factory with `[sandboxes]` gets a table of each
+  workflow with its sandbox, its kind and its `read`, `write` and `env`, or `-` for none. On a
+  machine without `bwrap`, it refuses each workflow that turns a sandbox on. See
+  [sandboxes.md](../daemon/sandboxes.md).
 - `priory check [DIR] --repo PATH [--json]`: scores what an unattended agent needs from the
   repository at `PATH`, and prints each criterion missing with its fix. It only reads. `DIR` adds the
   factory's `gate`. See [readiness.md](readiness.md).
@@ -265,8 +268,9 @@ several runners, three more follow: runner, hold and when that runner was last a
 
 `priory runs` prints each run: id, task, step, tmux session, harness session (a Codex run's
 thread), started, ended, how it ended, the hash and kit commit of the factory's skills,
-instructions and memories it got, and the commit of the memories repository it got (see
-[skills.md](../daemon/skills.md#what-a-run-records)).
+instructions and memories it got, the commit of the memories repository it got (see
+[skills.md](../daemon/skills.md#what-a-run-records)), and the sandbox its agent started in, or `-`
+(see [sandboxes.md](../daemon/sandboxes.md)).
 `priory runs --json` prints every run as `/api/runs?all=1` serves it, with its task, outcome, model
 and tokens.
 

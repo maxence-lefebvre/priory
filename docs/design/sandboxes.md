@@ -1,9 +1,13 @@
 # Sandboxes
 
 This page explains how a run could start its agent inside a sandbox, so the agent sees the task's
-worktree and the few files it needs, and not the rest of the person's machine. It builds nothing.
-It compares five ways to build the sandbox, then holds the model, the first code slice with its
-tests, the slices after it, and the open questions with a recommendation for each.
+worktree and the few files it needs, and not the rest of the person's machine. It compares five
+ways to build the sandbox, then holds the model, the first code slice with its tests, the slices
+after it, and the open questions with a recommendation for each.
+
+The first slice is built: see [sandboxes.md](../daemon/sandboxes.md). Max approved bubblewrap
+(LGPL-2.1) as a runtime requirement on 2026-11-23, for factories that turn a sandbox on only. The
+later slices are not built.
 
 The idea is Max's, from 2026-11-22: run a task's agent in a sandbox instead of a git worktree on
 the host. This note keeps the worktree and puts the sandbox around it. The comparison below shows
@@ -331,6 +335,17 @@ home and the paths the factory names, and holds only the variables it names. It 
 
 ## The first slice: a bubblewrap jail per workflow
 
+This slice is built. It differs from the plan below in four ways:
+
+- A jailed run's hooks spool to their own `spools/<session>/signals.spool`, which `PRIORY_SPOOL`
+  names, since a bound `signals.spool` would lose its lines once a daemon renamed it away.
+- The variables are cleared by a shell inside the jail, so the variables a run keeps take the
+  pane's values.
+- `priory check` refuses a jailed workflow on a machine without `bwrap`, at Max's request. The
+  daemon still blocks each jailed task instead, so a runner without bubblewrap runs the others.
+- CI does not install bubblewrap. The tests that need it are ignored by default and fail, not
+  skip, when it is missing; the other tests use a fake `bwrap`.
+
 1. `[sandboxes.<name>]` in `factory.toml` and `sandbox` on a workflow, in the schema and the JSON
    Schemas, and the check rules above.
 2. The jail's arguments, built in `priory-runtime` beside the slice's scope, and passed as part of
@@ -404,7 +419,9 @@ hooks, the screen and the sweep. A factory that wants a run elsewhere has
    slice, and approve it as a dependency.
 2. **Do user namespaces work where runners run?** Some distributions restrict unprivileged user
    namespaces. Recommendation: the slice's first commit runs `bwrap --ro-bind / / true` on the
-   author's runners and on CI, and writes the answer here. Where it fails, the block reason names
+   author's runners and on CI, and writes the answer here. Answer: it passed in the container
+   that built the slice, bubblewrap 0.9.0 on Ubuntu, run as root. It was not run on Max's runners
+   or on CI, which does not install bubblewrap. Where it fails, the block reason names
    the distribution's setting, and the how-to guide says how to allow bubblewrap.
 3. **Should a jailed run get its own clone?** The shared clone lets a run write other tasks' refs.
    A clone per task costs disk and a fetch. Recommendation: not in the first slice. Measure whether

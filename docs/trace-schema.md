@@ -59,6 +59,8 @@ such as a revert, arrives as a second record that points at the first. Each reco
 | `kit_hash`         | no       | For `model` steps: a hash of the factory's skills, instructions and memories the run got; absent when it got none of them. See [skills.md](daemon/skills.md) |
 | `kit_commit`       | no       | For `model` steps: the commit of the factory's `[kit]` repository the run got; absent without one. See [skills.md](daemon/skills.md#a-kit-repository) |
 | `memories_commit`  | no       | For `model` steps: the commit of the factory's `[memories]` repository the run got; absent without one. See [skills.md](daemon/skills.md#a-memories-repository) |
+| `sandbox`          | no       | For `model` steps: the sandbox the run's agent started in; absent without one. See [sandboxes.md](daemon/sandboxes.md) |
+| `session_start_ms` | no       | For `model` steps: the time from the run's launch to its harness's `SessionStart`, jailed or not; absent when it never started |
 | `machine`          | yes      | Where the step ran                                                    |
 | `started`          | yes      | When the step started                                                 |
 | `duration_ms`      | yes      | Wall time from start to end                                           |

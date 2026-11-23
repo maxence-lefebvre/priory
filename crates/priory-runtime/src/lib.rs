@@ -1,5 +1,6 @@
 pub mod eval;
 pub mod http;
+pub mod jail;
 pub mod mcp;
 pub mod protection;
 pub mod room;
