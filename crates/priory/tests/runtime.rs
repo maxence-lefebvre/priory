@@ -69,7 +69,7 @@ macro_rules! undo_pre {
       WHERE results.task = tasks.id), '') AS results
     FROM tasks LEFT JOIN inbox ON inbox.id = tasks.source; ALTER TABLE tasks DROP COLUMN pre_title; ALTER TABLE tasks DROP COLUMN pre_text;
   ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
-  ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons;
+  ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   "
     };
 }
