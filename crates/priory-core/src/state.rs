@@ -3246,6 +3246,7 @@ pub(crate) fn admissible<'r>(
     share: &Share,
     room: impl Fn() -> &'r Result<Room, String>,
     watched: &dyn Fn(&str) -> bool,
+    checking: &dyn Fn(i64) -> bool,
 ) -> rusqlite::Result<Option<Admission>> {
     let mut statement = db.prepare(&format!(
         "SELECT id, workflow, step, trigger, state = 'queued', repo, preempted, lane FROM tasks
@@ -3320,6 +3321,9 @@ pub(crate) fn admissible<'r>(
             Some(reason) => Some(reason),
             None => crate::spend::waits(db, &book, admission.task)?,
         };
+        // A check of its agent's claude.ai connectors runs in the background.
+        let busy = busy
+            .or_else(|| checking(admission.task).then(|| crate::connectors::CHECKING.to_owned()));
         // The review limit, as a pause, holds only a task's first run.
         let busy = match busy {
             Some(reason) => Some(reason),

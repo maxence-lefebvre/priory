@@ -1023,6 +1023,206 @@ fn a_claude_run_whose_agent_names_an_mcp_server_the_person_never_defined_is_bloc
     assert_no_token(&setup, &["daemon.log"]);
 }
 
+/// Plants the person's Claude Code config with the user-scope `sentry` and `linear`, a local-scope
+/// `notion` of some project, and the claude.ai connectors Slack and Linear that once connected on
+/// this machine; and the connectors the fake `claude` finds on the person's claude.ai account.
+fn plant_connectors(setup: &Setup, account: &[&str]) {
+    plant_claude_servers(setup);
+    let path = setup.dir.join("claude/.claude.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    config["projects"] = json!({ "/elsewhere": { "mcpServers": { "notion": { "url": "https://mcp.notion.com/mcp" } } } });
+    config["claudeAiMcpEverConnected"] = json!(["claude.ai Slack", "claude.ai Linear"]);
+    fs::write(&path, config.to_string()).unwrap();
+    let names: String = account.iter().map(|name| format!("{name}\n")).collect();
+    fs::write(setup.dir.join("fake/connectors"), names).unwrap();
+}
+
+/// The implementer, with `mcpServers = ["sentry"]` and `connectors` set to `connectors`.
+fn with_connectors(connectors: &str) -> String {
+    with_servers(AGENT, "[\"sentry\"]").replacen(
+        "+++\n",
+        &format!("+++\nconnectors = {connectors}\n"),
+        1,
+    )
+}
+
+#[test]
+fn a_claude_run_whose_agent_names_a_connector_gets_it_and_no_other_server_or_connector() {
+    let mut setup = Setup::new("connector-named");
+    plant_connectors(&setup, &["claude.ai Linear", "claude.ai Slack"]);
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        with_connectors("[\"Linear\"]"),
+    )
+    .unwrap();
+    setup.calls(&[json!([
+        mcp("mcp__claude_ai_Linear__list_issues"),
+        mcp("mcp__sentry__get_issue"),
+        mcp("mcp__claude_ai_Notion__search"),
+        mcp("mcp__plugin_tools_db__query"),
+    ])]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let replies = setup.replied(4);
+    let (args, _, config) = claude_mcp(&setup);
+    assert!(
+        !args.iter().any(|arg| arg == "--strict-mcp-config"),
+        "Claude Code loads no claude.ai connector under --strict-mcp-config: {args:?}"
+    );
+    let names: Vec<&String> = config["mcpServers"].as_object().unwrap().keys().collect();
+    assert_eq!(names, ["priory", "sentry"]);
+    let settings = &args[args.iter().position(|arg| arg == "--settings").unwrap() + 1];
+    let settings: serde_json::Value = serde_json::from_str(settings).unwrap();
+    assert_eq!(
+        settings["permissions"]["deny"],
+        json!([
+            "Bash(git push:*)",
+            "mcp__claude_ai_Slack",
+            "mcp__linear",
+            "mcp__notion"
+        ]),
+        "every other server of the person's config is denied"
+    );
+    assert_eq!(
+        replies[0],
+        json!({"passed": "mcp__claude_ai_Linear__list_issues"})
+    );
+    assert_eq!(replies[1], json!({"passed": "mcp__sentry__get_issue"}));
+    for (reply, server) in [
+        (&replies[2], "claude_ai_Notion"),
+        (&replies[3], "plugin_tools_db"),
+    ] {
+        let reason = guard_denied(reply).unwrap_or_else(|| panic!("{reply}"));
+        assert!(reason.contains(&format!("`{server}`")), "{reason}");
+        assert!(
+            reason.contains("priory, sentry, claude_ai_Linear"),
+            "{reason}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/mcp-get.log")).unwrap(),
+        "claude.ai Linear\nclaude.ai Linear (2)\n"
+    );
+    assert_no_token(&setup, &["fake/args.log", "daemon.log"]);
+}
+
+/// The MCP servers the real `claude -p` reports in its init message, with `flags` before the prompt.
+fn real_claude_servers(dir: &Path, flags: &[&str]) -> Vec<String> {
+    let output = harness::command("claude")
+        .current_dir(dir)
+        .env_remove("CLAUDECODE")
+        .args(["-p", "--output-format", "stream-json", "--verbose"])
+        .args(["--model", "haiku", "--max-turns", "1"])
+        .args(flags)
+        .args(["--", "Reply with OK."])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let init = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|event| event["type"] == "system" && event["subtype"] == "init")
+        .expect("an init message");
+    init["mcp_servers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|server| server["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+#[ignore = "runs the real claude, signed in to a claude.ai account with the connector PRIORY_REAL_CONNECTOR, and spends tokens: run it with --ignored"]
+fn the_real_claude_loads_a_connector_only_without_strict_mcp_config_and_mcp_get_finds_it() {
+    let name = std::env::var("PRIORY_REAL_CONNECTOR")
+        .expect("PRIORY_REAL_CONNECTOR names a connector of the signed-in account, such as Linear");
+    let server = format!("claude.ai {name}");
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("real-claude-connector");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let empty = dir.join("empty.mcp.json");
+    fs::write(&empty, r#"{"mcpServers": {}}"#).unwrap();
+    let empty = empty.to_str().unwrap();
+
+    let found = harness::command("claude")
+        .current_dir(&dir)
+        .env_remove("CLAUDECODE")
+        .args(["mcp", "get", &server])
+        .output()
+        .unwrap();
+    let absent = harness::command("claude")
+        .current_dir(&dir)
+        .env_remove("CLAUDECODE")
+        .args(["mcp", "get", &format!("{server} (no such connector)")])
+        .output()
+        .unwrap();
+    let strict = real_claude_servers(&dir, &["--strict-mcp-config", "--mcp-config", empty]);
+    let open = real_claude_servers(&dir, &["--mcp-config", empty]);
+
+    assert!(found.status.success(), "{found:?}");
+    assert!(!absent.status.success(), "{absent:?}");
+    assert!(
+        String::from_utf8_lossy(&absent.stderr).contains("No MCP server named"),
+        "{absent:?}"
+    );
+    assert!(
+        !strict.iter().any(|loaded| loaded.starts_with("claude.ai ")),
+        "{strict:?}"
+    );
+    assert!(open.contains(&server), "{open:?}");
+}
+
+#[test]
+fn a_claude_run_whose_connector_the_account_lacks_is_blocked_before_claude_starts() {
+    let mut setup = Setup::new("connector-missing");
+    plant_connectors(&setup, &["claude.ai Slack"]);
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        with_connectors("[\"Linear\"]"),
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    assert_eq!(
+        tasks[0][7],
+        "agent implementer names connector Linear, which the claude.ai account that claude signs in with on this runner does not have: connect it in claude.ai under Settings, Connectors, then resume the task"
+    );
+    assert!(!setup.dir.join("fake/args.log").exists(), "claude started");
+    assert!(setup.rows("runs").is_empty());
+}
+
+#[test]
+fn a_claude_run_whose_connector_the_account_holds_twice_is_blocked_as_ambiguous() {
+    let mut setup = Setup::new("connector-twice");
+    plant_connectors(&setup, &["claude.ai Linear", "claude.ai Linear (2)"]);
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        with_connectors("[\"Linear\"]"),
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+    assert_eq!(
+        tasks[0][7],
+        "agent implementer names connector Linear, which the claude.ai account holds twice, as claude.ai Linear and claude.ai Linear (2): rename one in claude.ai, then resume the task"
+    );
+    assert!(!setup.dir.join("fake/args.log").exists(), "claude started");
+}
+
 #[test]
 fn a_codex_run_turns_off_every_mcp_server_of_the_persons_codex_config_its_agent_does_not_name() {
     let mut setup = Setup::new("mcp-codex-none");

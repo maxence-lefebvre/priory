@@ -34,7 +34,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `caps` | table | no | no cap | Spend caps in dollars for every task and each lane. See [`[caps]`](#caps) | |
 | `decisions` | table | no | no decision model | A decision model for each decision point. See [`[decisions.triage]`](#decisionstriage) | |
 | `consult` | table | no | no agent consults | Who may consult which investigator, and the bounds of one consult. See [`[consult]`](#consult) | |
-| `mcp` | table of tables | no | | A person's statement about each MCP server an investigator names. See [`[mcp.<name>]`](#mcpname) | |
+| `mcp` | table of tables | no | | A person's statement about each MCP server or connector an investigator names. See [`[mcp.<name>]`](#mcpname) | |
 | `guard` | table | no | the built-in guards alone | Irreversible commands and MCP tools the tool guard denies on top of the built-in ones. See [`[guard]`](#guard) | |
 | `sandboxes` | table of tables | no | no sandbox | The jails a workflow can start its agents in, by name. See [`[sandboxes.<name>]`](#sandboxesname) | |
 | `repos` | table of tables | no | no recipe runs | The setup, resume and teardown recipes of each repository. See [`[repos]`](#repos) | |
@@ -474,7 +474,9 @@ triage = ["sentry"]
 ## `[mcp.<name>]`
 
 A person's statement about one MCP server of their own harness config, by the name agents give it
-in `mcpServers`. An investigator may name a server only with a `read_only` sentence.
+in `mcpServers`, or about one claude.ai connector, by Claude Code's server name for it, such as
+`[mcp."claude.ai Linear"]` for `connectors = ["Linear"]`. An investigator may name a server or a
+connector only with a `read_only` sentence.
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |

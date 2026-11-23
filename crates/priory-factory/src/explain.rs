@@ -125,7 +125,18 @@ pub fn investigators(factory: &Factory) -> Vec<Investigator> {
                 .value
                 .mcp_servers
                 .iter()
-                .map(|server| (server.clone(), stated(server)))
+                .cloned()
+                .chain(
+                    agent
+                        .value
+                        .connectors
+                        .iter()
+                        .map(|name| priory_runtime::servers::connector_server(name)),
+                )
+                .map(|server| {
+                    let sentence = stated(&server);
+                    (server, sentence)
+                })
                 .collect(),
         })
         .collect()

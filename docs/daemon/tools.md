@@ -291,8 +291,8 @@ tool guard denies every guarded call. Its outcomes `reported` and `unknown` both
 The asking agent ends its turn, as after `ask`, and its task sleeps with no process. The
 investigator's run starts a fresh session in its own worktree and passes the room check like any
 run. Its first prompt says the question comes from another agent and asks for facts, then gives
-the question in a `priory.consult.asked` event. It gets its own `mcpServers` and none of the asking
-agent's, and its `priory` server serves `result`, `memory` and `search` alone, so it cannot consult
+the question in a `priory.consult.asked` event. It gets its own `mcpServers` and `connectors` and none
+of the asking agent's, and its `priory` server serves `result`, `memory` and `search` alone, so it cannot consult
 in turn: a consult is one hop.
 
 Claude Code merges `permissions.allow` across the person's settings, the repository's settings and

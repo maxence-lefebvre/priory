@@ -742,9 +742,26 @@ impl Harness for ClaudeCode {
                 INVESTIGATOR_DENIED.join(","),
             ]);
         }
-        args.extend(["--settings".to_owned(), settings(exe, &launch.permissions)]);
+        let mut permissions = launch.permissions.clone();
+        if !launch.servers.denied.is_empty() {
+            let deny = permissions["deny"]
+                .as_array_mut()
+                .expect("deny is an array");
+            deny.extend(
+                launch
+                    .servers
+                    .denied
+                    .iter()
+                    .map(|rule| rule.as_str().into()),
+            );
+        }
+        args.extend(["--settings".to_owned(), settings(exe, &permissions)]);
         // Without the flag, every server of the person's own Claude config would reach the run too.
-        args.push("--strict-mcp-config".to_owned());
+        // Under it Claude Code loads no claude.ai connector, so a run with connectors goes without
+        // it and denies the other servers by rule and in the tool guard instead.
+        if launch.servers.connectors.is_empty() {
+            args.push("--strict-mcp-config".to_owned());
+        }
         let (file, _) = self
             .private_file(exe, launch)
             .expect("Claude Code reads its MCP servers from a file");
@@ -1602,6 +1619,45 @@ pub fn ask_claude(
         quote(&file("json"))
     );
     crate::script::spawn(&run, dir, &file("log"), timeout)
+}
+
+/// Whether the person's `claude`, run in `dir`, finds the MCP server `server`, as
+/// `claude mcp get <server>` does: `Ok(false)` when it says it has no server of that name. Its
+/// output is never kept, since for a server of the person's config it prints headers and env
+/// values. Past `timeout`, it is killed with its children.
+pub fn claude_finds(dir: &Path, server: &str, timeout: Duration) -> Result<bool, String> {
+    let mut command = Command::new("claude");
+    for name in NESTED {
+        command.env_remove(name);
+    }
+    let child = command
+        .current_dir(dir)
+        .args(["mcp", "get", server])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .map_err(|error| format!("cannot start: {error}"))?;
+    let pid = child.id();
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || sender.send(child.wait_with_output()));
+    match receiver.recv_timeout(timeout) {
+        Ok(Ok(output)) if output.status.success() => Ok(true),
+        Ok(Ok(output)) => {
+            let said = |text: &[u8]| String::from_utf8_lossy(text).contains("No MCP server named");
+            if said(&output.stderr) || said(&output.stdout) {
+                Ok(false)
+            } else {
+                Err(format!("ended with {}", output.status))
+            }
+        }
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(_) => {
+            crate::script::kill(pid);
+            Err(format!("did not answer within {}s", timeout.as_secs()))
+        }
+    }
 }
 
 /// The JSON answer of handler call `id` in `dir`, if it wrote one.

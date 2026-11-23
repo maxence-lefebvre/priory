@@ -345,6 +345,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut scripts = Vec::new();
     let mut commands = Vec::new();
     let mut recipes = crate::recipe::Running::default();
+    let mut probes = crate::connectors::Probes::default();
     let mut records = crate::evidence::Records::default();
     let mut deliveries = deliver::adopt(&db)?;
     let mut pushing = push::Sending::default();
@@ -408,6 +409,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             &jailing,
             &mut commands,
             &mut recipes,
+            &mut probes,
             fetched,
             &mut entering,
         )?;
@@ -1175,6 +1177,7 @@ fn tend(
     jailing: &Result<(), String>,
     commands: &mut Vec<(i64, Script)>,
     recipes: &mut crate::recipe::Running,
+    probes: &mut crate::connectors::Probes,
     kit: crate::kit::Current<'_>,
     entering: &mut Entering,
 ) -> Result<(), Error> {
@@ -1243,8 +1246,16 @@ fn tend(
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
         let room = || measured.get_or_init(|| room::measure(home));
-        let Some(admission) =
-            state::admissible(db, factory, trace.runner.as_deref(), share, room, &watched)?
+        let checking = |task| probes.checking(task);
+        let Some(admission) = state::admissible(
+            db,
+            factory,
+            trace.runner.as_deref(),
+            share,
+            room,
+            &watched,
+            &checking,
+        )?
         else {
             break;
         };
@@ -1265,6 +1276,7 @@ fn tend(
             jailing,
             &admission,
             recipes,
+            probes,
             kit,
         )? {
             state::block(db, trace, admission.task, "failed", &reason)?;
@@ -2044,6 +2056,7 @@ fn start(
     jailing: &Result<(), String>,
     admission: &Admission,
     recipes: &mut crate::recipe::Running,
+    probes: &mut crate::connectors::Probes,
     kit: crate::kit::Current<'_>,
 ) -> Result<Result<(), String>, Error> {
     let step = factory.workflows[&admission.workflow]
@@ -2137,6 +2150,20 @@ fn start(
         Ok(servers) => servers,
         Err(reason) => return Ok(Err(reason)),
     };
+    if !servers.connectors.is_empty() {
+        let connectors = &agent.value.connectors;
+        match probes.before_run(admission.task, name, connectors, &worktree) {
+            crate::connectors::Before::Go => {}
+            crate::connectors::Before::Waits => {
+                db.execute(
+                    "UPDATE tasks SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
+                    rusqlite::params![admission.task, crate::connectors::CHECKING],
+                )?;
+                return Ok(Ok(()));
+            }
+            crate::connectors::Before::Blocked(reason) => return Ok(Err(reason)),
+        }
+    }
     let shared = matches!(agent.value.session, Session::Shared);
     let resumed = match &turn {
         Some(turn) => turn.resume.clone(),
@@ -2212,6 +2239,7 @@ fn start(
         .into_iter()
         .chain(guard_env(factory))
         .chain(crate::todo::connectors_env(db)?)
+        .chain(servers_env(&agent.value, &servers))
         .collect();
     let started = Started {
         name,
@@ -2254,12 +2282,23 @@ fn definition(
             None => digest(serde_json::json!(factory.prompt(agent))),
             Some(kit) => digest(serde_json::json!([factory.prompt(agent), kit])),
         },
-        "tools": digest(serde_json::json!([
-            agent.mcp_servers,
-            permissions.allow,
-            permissions.deny,
-            agent.connector_sign_in
-        ])),
+        // Without connectors, the digest is the one sessions stored before them.
+        "tools": if agent.connectors.is_empty() {
+            digest(serde_json::json!([
+                agent.mcp_servers,
+                permissions.allow,
+                permissions.deny,
+                agent.connector_sign_in
+            ]))
+        } else {
+            digest(serde_json::json!([
+                agent.mcp_servers,
+                permissions.allow,
+                permissions.deny,
+                agent.connector_sign_in,
+                agent.connectors
+            ]))
+        },
         "model": digest(serde_json::json!([agent.model, agent.effort])),
         "flags": digest(serde_json::json!(permissions.default_mode.map(PermissionMode::as_str))),
     })
@@ -2303,10 +2342,30 @@ fn servers(
     dir: &Path,
 ) -> Result<priory_runtime::servers::Servers, String> {
     match agent.harness {
-        Harness::ClaudeCode => priory_runtime::servers::claude(&agent.mcp_servers),
+        Harness::ClaudeCode => {
+            priory_runtime::servers::claude(&agent.mcp_servers, &agent.connectors, dir)
+        }
         Harness::Codex => priory_runtime::servers::codex(&agent.mcp_servers, dir),
     }
     .map_err(|reason| format!("agent {name} {reason}"))
+}
+
+/// `PRIORY_MCP_SERVERS` for a run with claude.ai connectors: the servers its tool guard lets
+/// through, as their tools name them. Such a run loads every server and connector of the person's,
+/// and the guard denies a tool of any other.
+fn servers_env(
+    agent: &factory::Agent,
+    servers: &priory_runtime::servers::Servers,
+) -> Option<String> {
+    use priory_runtime::servers::tool_server;
+    (!servers.connectors.is_empty()).then(|| {
+        let names: Vec<String> = std::iter::once("priory")
+            .chain(agent.mcp_servers.iter().map(String::as_str))
+            .chain(servers.connectors.iter().map(String::as_str))
+            .map(tool_server)
+            .collect();
+        format!("PRIORY_MCP_SERVERS={}", names.join(","))
+    })
 }
 
 /// Starts `agent`'s harness with the flags every run of it gets, so a resumed session keeps them.

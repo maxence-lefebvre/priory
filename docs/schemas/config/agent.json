@@ -98,6 +98,14 @@
       "description": "Lets the run call an MCP server's `authenticate` tools. Off by default: an unattended run\nthat signs in clears the stored token every later run needs.",
       "type": "boolean"
     },
+    "connectors": {
+      "default": [],
+      "description": "The claude.ai connectors the run gets, by the name claude.ai shows, such as `Linear`. A\nClaude Code run that names one loads no other connector's or server's tools.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "description": {
       "description": "One line on what the agent does.",
       "type": "string"

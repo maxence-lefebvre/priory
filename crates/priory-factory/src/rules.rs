@@ -7,6 +7,7 @@ use crate::factory::{
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
 use crate::labels;
 use crate::lanes::{self, Lanes};
+use priory_runtime::servers;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -541,6 +542,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         check_codex(factory, agent, &mut problems);
         check_shared(agent, &mut problems);
         check_skills(factory, agent, &mut problems);
+        check_connectors(agent, &mut problems);
     }
     for workflow in factory.workflows.values() {
         check_band(
@@ -1173,6 +1175,41 @@ fn check_skills(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Pro
     }
 }
 
+/// Refuses a connector name that is empty, repeated, written with Claude Code's `claude.ai `
+/// prefix, or whose tools Claude Code would name as another's, and any connector on a Codex agent.
+/// Whether the person's account has the connector only the runner can tell, when the run starts.
+fn check_connectors(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
+    let connectors = &agent.value.connectors;
+    let line = agent.lines.field("connectors");
+    if !connectors.is_empty() && matches!(agent.value.harness, Harness::Codex) {
+        let message =
+            "a codex agent cannot take `connectors`: claude.ai connectors reach Claude Code alone";
+        problems.push(problem(agent, line, message.into()));
+    }
+    let mut seen: Vec<(&String, String)> = Vec::new();
+    for name in connectors {
+        let tools = servers::tool_server(&servers::connector_server(name));
+        let message = if name.trim().is_empty() {
+            "`connectors` holds an empty name".to_owned()
+        } else if let Some(bare) = name.strip_prefix(servers::CONNECTOR) {
+            format!(
+                "`connectors` names `{name}`: write the connector's name as claude.ai shows it, `{bare}`, since Claude Code adds `{}` itself",
+                servers::CONNECTOR
+            )
+        } else if seen.iter().any(|(other, _)| *other == name) {
+            format!("`connectors` names `{name}` twice")
+        } else if let Some((other, _)) = seen.iter().find(|(_, other)| *other == tools) {
+            format!(
+                "`connectors` names `{other}` and `{name}`, whose tools Claude Code names alike, mcp__{tools}__<tool>: keep one"
+            )
+        } else {
+            seen.push((name, tools));
+            continue;
+        };
+        problems.push(problem(agent, line, message));
+    }
+}
+
 /// Refuses the keys that only a shared session reads.
 fn check_shared(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
     let value = &agent.value;
@@ -1354,6 +1391,31 @@ fn check_investigator(
                 "names MCP server `{server}`, which needs a `read_only` sentence under [mcp.{server}] in factory.toml: where the service enforces that it only reads"
             ),
         );
+    }
+    // A connector loads with every other one of the account, so only its exact tools may be allowed.
+    for connector in &value.connectors {
+        let server = servers::connector_server(connector);
+        let tools = format!("mcp__{}__", servers::tool_server(&server));
+        if !stated(&server) {
+            refuse(
+                "connectors",
+                format!(
+                    "names connector `{connector}`, which needs a `read_only` sentence under [mcp.\"{server}\"] in factory.toml: where the service enforces that it only reads"
+                ),
+            );
+        } else if !value
+            .permissions
+            .allow
+            .iter()
+            .any(|rule| rule.starts_with(&tools))
+        {
+            refuse(
+                "connectors",
+                format!(
+                    "names connector `{connector}`, but its `allow` names none of the connector's tools: write each as {tools}<tool>"
+                ),
+            );
+        }
     }
     if matches!(value.session, Session::Shared) {
         refuse(
