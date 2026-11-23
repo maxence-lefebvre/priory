@@ -168,6 +168,11 @@ pub(crate) fn run(command: &mut Command) -> Result<String, String> {
 
 /// As `run`, with `input` on the command's stdin.
 fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> {
+    fed_raw(command, input).map(|out| String::from_utf8_lossy(&out).into_owned())
+}
+
+/// As `fed`, returning the command's stdout as it wrote it.
+fn fed_raw(command: &mut Command, input: Option<Vec<u8>>) -> Result<Vec<u8>, String> {
     let output = fed_within(command, input, command_timeout())
         .map_err(|error| format!("{command:?}: {error}"))?
         .ok_or_else(|| {
@@ -182,7 +187,7 @@ fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> 
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(output.stdout)
 }
 
 /// The variable each git command Priory runs carries, set to the pid of the Priory process that
@@ -265,7 +270,7 @@ pub struct Recovery {
 
 /// The files whose presence in a worktree's git folder says an operation is in progress, with the
 /// operation's name and the commands that finish it and drop it.
-const OPERATIONS: [(&str, &str, &str, &str); 6] = [
+const OPERATIONS: [(&str, &str, &str, &str); 7] = [
     (
         "rebase-merge",
         "a rebase",
@@ -292,6 +297,13 @@ const OPERATIONS: [(&str, &str, &str, &str); 6] = [
         "revert --abort",
     ),
     ("BISECT_LOG", "a bisect", "bisect reset", "bisect reset"),
+    // A sequence of picks or reverts leaves this folder between its commits, and after a crash.
+    (
+        "sequencer",
+        "a cherry-pick or revert sequence",
+        "cherry-pick --continue",
+        "cherry-pick --quit",
+    ),
 ];
 
 /// Puts the worktree at `path`, on `from` or detached, back on `branch` when no work can be lost:
@@ -341,7 +353,7 @@ fn recover(path: &Path, branch: &str, from: Option<String>) -> Result<Recovery, 
             "{shown} {place}, not on {branch}, and {branch} is gone"
         ));
     }
-    let at_risk = at_risk(path, branch)?;
+    let at_risk = at_risk(path, branch, SCAN)?;
     let kept_branch = match (&from, at_risk) {
         (None, 1..) => {
             let kept = format!("{branch}-kept-{short}");
@@ -405,9 +417,14 @@ fn changes(status: &str) -> String {
     }
 }
 
+/// The most remote commits a recovery compares by patch; past it, a detached HEAD's commits are
+/// kept on a branch unread.
+const SCAN: usize = 2000;
+
 /// How many commits on the HEAD of `path` are neither on `branch` nor on a remote-tracking ref,
 /// nor patch-equivalent to a commit there. A merge commit has no patch id, so it always counts.
-fn at_risk(path: &Path, branch: &str) -> Result<usize, String> {
+/// When more than `scan` remote commits could match, none is compared and every commit counts.
+fn at_risk(path: &Path, branch: &str, scan: usize) -> Result<usize, String> {
     let local = format!("refs/heads/{branch}");
     let listed = |merges: bool| -> Result<Vec<String>, String> {
         let mut command = git(path);
@@ -435,19 +452,26 @@ fn at_risk(path: &Path, branch: &str) -> Result<usize, String> {
         .filter_map(|date| date.trim().parse::<i64>().ok())
         .min()
         .unwrap_or(0);
-    let ours = patch_ids(path, &plain, &[])?;
     // A rebase keeps the author date, so a rebased copy was committed after it.
     let since = format!("--max-age={oldest}");
-    let theirs = patch_ids(
-        path,
-        &[
-            "--remotes".to_owned(),
-            local,
-            "--not".to_owned(),
-            "HEAD".to_owned(),
-        ],
-        &["--no-merges", &since],
-    )?;
+    let window = [
+        "--no-merges".to_owned(),
+        since,
+        "--remotes".to_owned(),
+        local,
+        "--not".to_owned(),
+        "HEAD".to_owned(),
+    ];
+    let count = run(git(path).args(["rev-list", "--count"]).args(&window))?;
+    if count
+        .trim()
+        .parse::<usize>()
+        .map_or(true, |count| count > scan)
+    {
+        return Ok(all.len());
+    }
+    let ours = patch_ids(path, &[], &plain)?;
+    let theirs = patch_ids(path, &window, &[])?;
     let held: std::collections::HashSet<_> = theirs.into_iter().map(|(id, _)| id).collect();
     let unmatched = plain
         .iter()
@@ -460,12 +484,13 @@ fn at_risk(path: &Path, branch: &str) -> Result<usize, String> {
     Ok(merges + unmatched)
 }
 
-/// The `(patch id, commit)` pairs of the commits `revs` names, as `git patch-id --stable` reads
-/// them from `git log -p`. A commit with an empty diff has none.
+/// The `(patch id, commit)` pairs of the commits that `walk` reaches, or of the `commits` alone,
+/// as `git patch-id --verbatim` reads them from `git log -p`. Whitespace counts, so a commit amended
+/// only in its indentation is a different patch. A commit with an empty diff has none.
 fn patch_ids(
     path: &Path,
-    revs: &[String],
-    options: &[&str],
+    walk: &[String],
+    commits: &[String],
 ) -> Result<Vec<(String, String)>, String> {
     let mut log = git(path);
     log.args([
@@ -475,14 +500,11 @@ fn patch_ids(
         "--no-ext-diff",
         "--format=commit %H",
     ]);
-    if options.is_empty() {
-        log.arg("--no-walk=unsorted");
+    if !commits.is_empty() {
+        log.arg("--no-walk=unsorted").args(commits);
     }
-    let patches = run(log.args(options).args(revs))?;
-    let ids = fed(
-        git(path).args(["patch-id", "--stable"]),
-        Some(patches.into_bytes()),
-    )?;
+    let patches = fed_raw(log.args(walk), None)?;
+    let ids = fed(git(path).args(["patch-id", "--verbatim"]), Some(patches))?;
     Ok(ids
         .lines()
         .filter_map(|line| line.split_once(' '))
@@ -2962,6 +2984,75 @@ mod tests {
         assert_eq!(recovery.kept_branch, None);
         assert_eq!(recovery.kept_commits, 0);
         assert_eq!(sh(&tree, &["branch", "--show-current"]), "priory/1");
+    }
+
+    #[test]
+    fn a_commit_amended_only_in_whitespace_after_its_push_is_kept() {
+        let home = Home::new("whitespace");
+        let tree = home.tree();
+        sh(&tree, &["checkout", "--quiet", "--detach"]);
+        commit(&tree, "a.txt", "a\n");
+        sh(
+            &tree,
+            &["push", "--quiet", "origin", "HEAD:refs/heads/feature"],
+        );
+        fs::write(tree.join("a.txt"), "    a\n").unwrap();
+        sh(
+            &tree,
+            &["commit", "--quiet", "--all", "--amend", "--no-edit"],
+        );
+        let head = sh(&tree, &["rev-parse", "HEAD"]);
+        let short = sh(&tree, &["rev-parse", "--short", "HEAD"]);
+
+        let added = home.again().unwrap();
+
+        let kept = format!("priory/1-kept-{short}");
+        let Added::Kept(Some(recovery)) = added else {
+            panic!("{added:?}")
+        };
+        assert_eq!(recovery.kept_branch.as_deref(), Some(kept.as_str()));
+        assert_eq!(recovery.kept_commits, 1);
+        assert_eq!(sh(&tree, &["rev-parse", &kept]), head);
+    }
+
+    #[test]
+    fn a_patch_scan_past_its_limit_counts_every_commit_at_risk() {
+        let home = Home::new("scan");
+        let tree = home.tree();
+        sh(&tree, &["checkout", "--quiet", "--detach"]);
+        let head = commit(&tree, "a.txt", "a\n");
+        sh(&tree, &["checkout", "--quiet", "--detach", "origin/main"]);
+        sh(&tree, &["cherry-pick", &head]);
+        sh(
+            &tree,
+            &["push", "--quiet", "origin", "HEAD:refs/heads/copy"],
+        );
+        sh(&tree, &["checkout", "--quiet", "--detach", &head]);
+
+        assert_eq!(at_risk(&tree, "priory/1", 1), Ok(0));
+        assert_eq!(at_risk(&tree, "priory/1", 0), Ok(1));
+    }
+
+    #[test]
+    fn a_leftover_sequencer_folder_blocks_as_an_operation_in_progress() {
+        let home = Home::new("sequencer");
+        let tree = home.tree();
+        sh(&tree, &["checkout", "--quiet", "--detach"]);
+        let folder = tree.join(sh(&tree, &["rev-parse", "--git-path", "sequencer"]));
+        fs::create_dir_all(&folder).unwrap();
+
+        let reason = home.again().unwrap_err();
+
+        let dir = quote(&tree);
+        assert!(
+            reason.contains(&format!(
+                "has a cherry-pick or revert sequence in progress at {}, not on priory/1. Finish \
+                 it with git -C {dir} cherry-pick --continue, or drop it with git -C {dir} \
+                 cherry-pick --quit",
+                sh(&tree, &["rev-parse", "--short", "HEAD"])
+            )),
+            "{reason}"
+        );
     }
 
     #[test]

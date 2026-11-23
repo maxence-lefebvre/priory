@@ -54,15 +54,18 @@ An agent can leave the worktree off its branch: on a detached HEAD after `git ch
 origin/<branch>`, or on a branch it made. The next start then puts the worktree back on the task's
 branch when no work can be lost, and blocks when some could:
 
-- An operation in progress (a rebase, merge, cherry-pick, revert or bisect) blocks the task. The
-  reason names the operation and the commands that finish it or drop it.
+- An operation in progress (a rebase, merge, cherry-pick, revert or bisect) blocks the task. So
+  does a `sequencer` folder a sequence of picks or reverts left behind. The reason names the
+  operation and the commands that finish it or drop it.
 - Uncommitted changes, staged, unstaged or untracked, block the task. Ignored files do not count.
   The reason counts the files and gives the commands that keep them on a branch or drop them.
 - Otherwise Priory switches the worktree back to its branch. Before that, it looks for commits on
   the old HEAD that are neither on the task's branch nor on a remote-tracking branch, and not on one
-  as a rebased copy either. Priory compares patches with `git patch-id`, as `git cherry` does, so a
-  commit that the agent rebased and pushed counts as pushed. A merge commit always counts as not
-  pushed.
+  as a rebased copy either. Priory compares patches with `git patch-id --verbatim`, so a commit that
+  the agent rebased and pushed counts as pushed, while one amended after its push, even only in
+  whitespace, does not. It compares only remote commits made since the oldest such commit was
+  written, at most 2,000 of them. Past that, every such commit counts as not pushed. A merge commit
+  always counts as not pushed.
 - When the HEAD was detached and holds such commits, Priory first keeps them on a new branch,
   `priory/<task id>-kept-<short sha>`. When the HEAD was on a branch, that branch keeps them, and
   Priory makes no new one.
