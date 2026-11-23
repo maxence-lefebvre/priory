@@ -211,7 +211,9 @@ A waiting agent holds no process. Once the run's turn has ended and the ask is o
 ends the run as `asleep` and kills its tmux session, and the task sleeps. The held result stays in
 the state database, so the run keeps no room, no `max_running` place, and nothing for an urgent wake
 or a spend cap to end. While the ask is open, no scorer runs, and a person's `say`, an event or a
-fired wait leaves the task asleep: its prompt waits for the verdict, as during grading.
+fired wait leaves the task asleep: its prompt waits for the verdict, as during grading. `say` replies
+that the task waits for the answer to the ask, and the event's inbox outcome is `kept`, not `woke`.
+The page of every task that waits on the ask, on the web view and in the Herdr Task panel, shows it.
 
 When the answer lets a result through, the daemon stores it and moves the task as the run's `Stop`
 would have. A next step of the same agent starts a new run, which resumes the session. When a scorer

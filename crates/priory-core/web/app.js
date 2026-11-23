@@ -1505,7 +1505,7 @@ function taskPage(id) {
 
 // The task's open asks, each with a way to answer it (DESIGN.md, Task detail).
 function taskAsks(task) {
-  const asks = openAsksOf(state.data.asks, task.id);
+  const asks = openAsksOf(state.data.asks, task);
   if (!asks.length) return "";
   return html`<ul class="taskasks" aria-label="Open asks">${asks.map((ask) => html`<li>${tile("ask", "sm")}<span>${ask.title || ask.question}<span class="age">${timeTag(ask.since)}</span></span><a class="btn primary" href="/asks/${encodeURIComponent(ask.id)}">Answer…</a></li>`)}</ul>`;
 }

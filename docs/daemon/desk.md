@@ -284,6 +284,10 @@ prompts.
   next agent run, after that step's prompt, and the task stays asleep. It replies `task <id> waits
   at step <step>: its ask shows it, and its next agent run reads it`.
 
+- A task whose result a gate holds on a person's ask ([score.md](score.md)) queues TEXT and stays
+  asleep until the answer. It replies `task <id> waits for the answer to ask <ask>: its next run
+  reads it`.
+
 - A task in a debate ([debates.md](debates.md)) holds TEXT for the step after the debate, so no
   debater reads it. It replies `task <id> is in a debate at step <step>: the step after the debate
   reads it`.

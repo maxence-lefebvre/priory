@@ -30572,6 +30572,17 @@ fn a_result_held_on_a_judges_ask_ends_its_run_asleep_and_a_say_waits_for_the_ans
     assert_eq!(setup.rows("tasks")[0][4], "asleep");
     let said = setup.priory(&["say", "1", "Also add b.txt."]);
     assert!(said.status.success(), "{said:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&said.stdout).trim(),
+        "task 1 waits for the answer to ask gate-1-1: its next run reads it"
+    );
+    let outbox = setup.rows("outbox");
+    assert!(
+        outbox
+            .iter()
+            .any(|row| row[4].contains("Also add b.txt.") && row[3] == "queued"),
+        "the text waits for the next run: {outbox:?}"
+    );
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(
         setup.rows("tasks")[0][4],
@@ -30593,6 +30604,26 @@ fn a_result_held_on_a_judges_ask_ends_its_run_asleep_and_a_say_waits_for_the_ans
 }
 
 #[test]
+fn an_event_for_a_task_whose_result_waits_on_a_judges_ask_is_kept_not_woke() {
+    let (setup, _) = held_by_an_uncalibrated_judge("gate-judge-event", "name = \"demo\"\n");
+    setup.until("runs", |rows| rows[0][7] == "asleep");
+
+    setup.publish(&issue_commented(901));
+
+    let inbox = setup.until("inbox", |rows| rows.len() == 2);
+    assert_eq!(inbox[1][4], "kept", "{inbox:?}");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+    let listed = setup.priory(&["inbox"]);
+    let listed = String::from_utf8_lossy(&listed.stdout);
+    let line = listed
+        .lines()
+        .find(|line| line.contains("github.issues.comment"))
+        .unwrap_or_else(|| panic!("{listed}"));
+    assert!(line.contains("kept") && !line.contains("woke"), "{listed}");
+}
+
+#[test]
 fn results_that_wait_on_one_uncalibrated_judge_share_one_ask_whose_answer_grades_each() {
     let (setup, _) = held_by_an_uncalibrated_judge("gate-judge-one-ask", "name = \"demo\"\n");
     setup.until("runs", |rows| rows[0][7] == "asleep");
@@ -30611,6 +30642,16 @@ fn results_that_wait_on_one_uncalibrated_judge_share_one_ask_whose_answer_grades
         std::thread::sleep(Duration::from_millis(50));
     }
     assert_eq!(asks_json(&setup)["asks"].as_array().unwrap().len(), 1);
+    for task in ["1", "2"] {
+        let asks = task_json(&setup, task)["asks"].clone();
+        assert_eq!(
+            asks.as_array().map(Vec::len),
+            Some(1),
+            "task {task}: {asks}"
+        );
+        assert_eq!(asks[0]["id"], "gate-1-1", "task {task}: {asks}");
+        assert_eq!(asks[0]["state"], "open", "task {task}: {asks}");
+    }
 
     let again = setup.priory(&["answer", "1", "grade again", "--revision", "1"]);
 
