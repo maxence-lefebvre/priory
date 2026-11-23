@@ -19440,10 +19440,11 @@ fn overlapping_after(name: &str, second: &str, factory: &str, first: impl Fn(&Se
     setup.until("runs", |rows| {
         rows.len() == 2 && rows[1][2] == "check" && rows[1][6] == "-"
     });
-    // Task 1's silent turn gets its nudge, which would take the next queued call.
+    // Task 1's silent turn gets its nudge, whose turn would take the next queued call.
     setup.until("outbox", |rows| {
-        rows.iter()
-            .any(|row| row[2] == "2" && row[4].starts_with("Your last turn ended"))
+        rows.iter().any(|row| {
+            row[2] == "2" && row[3] == "confirmed" && row[4].starts_with("Your last turn ended")
+        })
     });
     first(&setup);
     setup.publish(&requested(43));

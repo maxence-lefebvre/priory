@@ -1225,6 +1225,8 @@ fn tend(
     for tmux in crate::spend::tick(db, trace, &now, &watched)? {
         runtime::kill(&tmux);
     }
+    // Before admission, so a run's slow start never delays another run's Enter.
+    entering.tick(db)?;
     loop {
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
@@ -1261,7 +1263,6 @@ fn tend(
             runtime::kill(&tmux);
         }
     }
-    entering.tick(db)?;
     // Enter goes on a later tick, so the agent never reads it as part of the paste.
     while let Some(attempt) = state::attempt(db)? {
         let pasted = runtime::pane(&attempt.tmux, &attempt.session)
