@@ -4,7 +4,7 @@ Priory can send its own health as OpenTelemetry metrics, beside the spans of
 [the trace export](trace.md#opentelemetry-export). Spans say what a task did after its step ends.
 Metrics say how each Priory process is doing every interval: how long its loop takes, how much
 memory and CPU it uses, whether the daemon reaches its log, how long its runs take to start, whether the intake
-keeps up, and what the factory's work looks like: asks waiting, tasks, tokens, cost and spend. [The metrics reference](../reference/metrics.md) lists every metric. The design and the groups still to come
+keeps up, and what the factory's work looks like: asks waiting, tasks, tokens, cost and spend. [The metrics reference](../reference/metrics.md) lists every metric. To send them to a collector or a backend and set alerts, follow [How to send metrics to an OpenTelemetry backend](../sending-metrics.md). The design and the groups still to come
 are in [the metrics design note](../design/metrics.md).
 
 ## Switching it on

@@ -2,7 +2,8 @@
 
 This guide shows how to send the daemon's task traces to a local ClickStack, to Honeycomb or to
 Grafana Cloud. It assumes a factory that runs, and it uses the export that
-[trace.md](daemon/trace.md#opentelemetry-export) describes.
+[trace.md](daemon/trace.md#opentelemetry-export) describes. To send Priory's metrics too, follow
+[How to send metrics to an OpenTelemetry backend](sending-metrics.md).
 
 The local ClickStack recipe was run through a collector, before `headers_env` existed, and its
 trace read back. Sending straight to ClickStack, Honeycomb or Grafana Cloud with `headers_env` is
