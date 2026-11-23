@@ -60,6 +60,16 @@ pub fn grant(harness: &dyn Harness, home: &Path, repo: &str, worktree: &Path) ->
     }
 }
 
+/// Whether `harness`'s config still holds the trust recorded for `worktree` and its clone.
+pub fn holds(harness: &dyn Harness, worktree: &Path) -> bool {
+    let Ok(worktree) = fs::canonicalize(worktree) else {
+        return false;
+    };
+    clone_of(&worktree)
+        .and_then(|clone| fs::canonicalize(clone).ok())
+        .is_some_and(|clone| harness.holds_trust(&worktree, &clone))
+}
+
 /// The worktree and its clone, each resolved through symlinks and `..`, when both are Priory's own:
 /// a symlink below Priory home that leads out of `repos/<repo>` or `worktrees/<repo>` is refused.
 fn own(home: &Path, repo: &str, worktree: &Path) -> Result<(PathBuf, PathBuf), String> {
@@ -94,8 +104,14 @@ fn own(home: &Path, repo: &str, worktree: &Path) -> Result<(PathBuf, PathBuf), S
 }
 
 /// Sets `projects["<path>"].hasTrustDialogAccepted` for each of `paths` in Claude Code's `config`.
+/// A config that is a symlink, as a dotfiles checkout makes it, gets the grant in the file it leads
+/// to, so the link stays.
 pub fn claude(config: &Path, paths: &[&Path]) -> Vec<Grant> {
-    let result = edit(config, false, |text| {
+    let real = match fs::canonicalize(config) {
+        Ok(real) => real,
+        Err(error) => return grants(config, paths, Err(format!("{}: {error}", config.display()))),
+    };
+    let result = edit(&real, false, |text| {
         let mut value: serde_json::Value =
             serde_json::from_str(text).map_err(|error| format!("not JSON: {error}"))?;
         let projects = value
@@ -135,11 +151,11 @@ pub fn codex(codex_home: &Path, clone: &Path) -> Vec<Grant> {
         Ok(text) => match text.parse::<toml::Table>() {
             Ok(table) => table,
             Err(error) => {
-                // The parser's message quotes the line, which can hold a token, so only its number goes out.
-                let line = error
-                    .span()
-                    .map_or(0, |span| text[..span.start].lines().count().max(1));
-                let why = format!("{} is not TOML, at line {line}", own.display());
+                let why = format!(
+                    "{} is not TOML, at line {}",
+                    own.display(),
+                    line(&text, &error)
+                );
                 return grants(&profile, &[clone], Err(why));
             }
         },
@@ -169,7 +185,9 @@ pub fn codex(codex_home: &Path, clone: &Path) -> Vec<Grant> {
         return grants(&profile, &[clone], Err(why));
     }
     let result = edit(&profile, true, |text| {
-        let mut table: toml::Table = text.parse().map_err(|error| format!("not TOML: {error}"))?;
+        let mut table: toml::Table = text
+            .parse()
+            .map_err(|error| format!("not TOML, at line {}", line(text, &error)))?;
         let projects = table
             .entry("projects")
             .or_insert_with(|| toml::Table::new().into())
@@ -191,6 +209,48 @@ pub fn codex(codex_home: &Path, clone: &Path) -> Vec<Grant> {
     grants(&profile, &[clone], result)
 }
 
+/// The line a TOML error points at. The parser's own message quotes that line, which can hold a
+/// token, so only its number reaches the trace.
+fn line(text: &str, error: &toml::de::Error) -> usize {
+    let start = error.span().map_or(0, |span| span.start.min(text.len()));
+    text.as_bytes()[..start]
+        .iter()
+        .filter(|&&byte| byte == b'\n')
+        .count()
+        + 1
+}
+
+/// Whether `config` still holds Claude Code's trust for each of `paths`.
+pub fn claude_holds(config: &Path, paths: &[&Path]) -> bool {
+    let Ok(text) = fs::read_to_string(config) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    paths
+        .iter()
+        .all(|path| value["projects"][path.display().to_string()]["hasTrustDialogAccepted"] == true)
+}
+
+/// Whether Priory's Codex profile under `codex_home` still trusts `clone`.
+pub fn codex_holds(codex_home: &Path, clone: &Path) -> bool {
+    let profile = codex_home.join(format!("{CODEX_PROFILE}.config.toml"));
+    fs::read_to_string(profile)
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .is_some_and(|table| {
+            let level = (|| {
+                table
+                    .get("projects")?
+                    .get(clone.display().to_string())?
+                    .get("trust_level")?
+                    .as_str()
+            })();
+            level == Some("trusted")
+        })
+}
+
 fn grants(file: &Path, paths: &[&Path], result: Result<Outcome, String>) -> Vec<Grant> {
     paths
         .iter()
@@ -203,35 +263,59 @@ fn grants(file: &Path, paths: &[&Path], result: Result<Outcome, String>) -> Vec<
         .collect()
 }
 
-/// What tells one version of a file from another: its inode, size and modification time.
-fn stamp(file: &Path) -> Result<Option<(u64, u64, i64, i64)>, String> {
-    match fs::metadata(file) {
-        Ok(meta) => Ok(Some((
-            meta.ino(),
-            meta.size(),
-            meta.mtime(),
-            meta.mtime_nsec(),
-        ))),
+type Stamp = (u64, u64, i64, i64);
+
+fn stamp_of(meta: &fs::Metadata) -> Stamp {
+    (meta.ino(), meta.size(), meta.mtime(), meta.mtime_nsec())
+}
+
+/// What tells one version of `file` from another: its inode, size and modification time. A
+/// symlink is refused: a run in a jail can write the folder, and a link there would make the
+/// daemon rewrite a file outside the jail.
+fn stamp(file: &Path) -> Result<Option<Stamp>, String> {
+    match fs::symlink_metadata(file) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(format!(
+            "{} is a symlink, which Priory does not follow",
+            file.display()
+        )),
+        Ok(meta) => Ok(Some(stamp_of(&meta))),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("{}: {error}", file.display())),
     }
 }
 
+/// The text of `file` and its stamp, or `None` when the file it opened is not the one it stamped,
+/// as when another writer swapped it in between.
+fn load(file: &Path, missing: bool) -> Result<Option<(String, Option<Stamp>)>, String> {
+    let failed = |error: std::io::Error| format!("{}: {error}", file.display());
+    let Some(before) = stamp(file)? else {
+        return if missing {
+            Ok(Some((String::new(), None)))
+        } else {
+            Err(format!("{}: no such file", file.display()))
+        };
+    };
+    let mut opened = match fs::File::open(file) {
+        Ok(opened) => opened,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(failed(error)),
+    };
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut opened, &mut text).map_err(failed)?;
+    let meta = opened.metadata().map_err(failed)?;
+    Ok((stamp_of(&meta).0 == before.0).then_some((text, Some(before))))
+}
+
 /// Rewrites `file` with `change`, which gives `None` when the text already holds the grant. Another
 /// program, such as a running Claude Code, may write the file too, so Priory renames its copy only
 /// when the file is still the version it read, and reads it back after. It starts again when the
-/// file changed, up to `TRIES` times. A missing file is empty when `missing` allows it.
+/// file changed, up to `TRIES` times. A missing file is empty when `missing` allows it. It never
+/// follows a symlink at `file`.
 fn edit(
     file: &Path,
     missing: bool,
     change: impl Fn(&str) -> Result<Option<String>, String>,
 ) -> Result<Outcome, String> {
-    // A rename over a symlink would replace the link with a regular file, so edit its target.
-    let file = &match fs::canonicalize(file) {
-        Ok(real) => real,
-        Err(error) if error.kind() == ErrorKind::NotFound => file.to_path_buf(),
-        Err(error) => return Err(format!("{}: {error}", file.display())),
-    };
     let failed = |error: std::io::Error| format!("{}: {error}", file.display());
     let name = file.file_name().ok_or("the config has no file name")?;
     let copy = file.with_file_name(format!(
@@ -242,11 +326,8 @@ fn edit(
     let mut wrote = false;
     // One more read than writes, so the last write is read back too.
     for attempt in 0..=TRIES {
-        let read = stamp(file)?;
-        let text = match fs::read_to_string(file) {
-            Ok(text) => text,
-            Err(error) if error.kind() == ErrorKind::NotFound && missing => String::new(),
-            Err(error) => return Err(failed(error)),
+        let Some((text, read)) = load(file, missing)? else {
+            continue;
         };
         let Some(text) = change(&text).map_err(|why| format!("{}: {why}", file.display()))? else {
             return Ok(if wrote {
@@ -258,7 +339,8 @@ fn edit(
         if attempt == TRIES {
             break;
         }
-        let mode = fs::metadata(file).map_or(0o600, |meta| meta.permissions().mode() & 0o7777);
+        let mode =
+            fs::symlink_metadata(file).map_or(0o600, |meta| meta.permissions().mode() & 0o7777);
         let _ = fs::remove_file(&copy);
         fs::OpenOptions::new()
             .write(true)
@@ -478,6 +560,64 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&target).unwrap()).unwrap();
         assert_eq!(value["theme"], "dark");
         assert_eq!(value["projects"]["/w/1"]["hasTrustDialogAccepted"], true);
+    }
+
+    #[test]
+    fn a_symlinked_codex_profile_is_refused_and_its_target_is_left_alone() {
+        let dir = temp();
+        let target = dir.path().join("Cargo.toml");
+        fs::write(&target, "[package]\nname = \"x\"\n").unwrap();
+        let codex_home = dir.path().join("codex");
+        fs::create_dir_all(&codex_home).unwrap();
+        let profile = codex_home.join("priory-trust.config.toml");
+        std::os::unix::fs::symlink(&target, &profile).unwrap();
+
+        let grants = codex(&codex_home, Path::new("/home/a/repos/o/r"));
+
+        assert_eq!(grants[0].outcome, Outcome::Refused);
+        assert!(grants[0].why.as_deref().unwrap().contains("is a symlink"));
+        assert_eq!(
+            fs::read_to_string(&target).unwrap(),
+            "[package]\nname = \"x\"\n"
+        );
+        assert!(
+            fs::symlink_metadata(&profile)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn a_broken_profile_reports_its_line_and_not_its_text() {
+        let dir = temp();
+        fs::write(
+            dir.path().join("priory-trust.config.toml"),
+            "[projects]\ntoken = \"sk-secret-9\n",
+        )
+        .unwrap();
+        let grants = codex(dir.path(), Path::new("/home/a/repos/o/r"));
+        let why = grants[0].why.as_deref().unwrap();
+        assert!(why.ends_with("not TOML, at line 2"), "{why}");
+        assert!(!why.contains("sk-secret"));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn a_toml_error_line_lies_within_the_text(text in "(?s).{0,200}") {
+            if let Err(error) = text.parse::<toml::Table>() {
+                let n = line(&text, &error);
+                proptest::prop_assert!(n >= 1);
+                proptest::prop_assert!(n <= text.matches('\n').count() + 1);
+            }
+        }
+    }
+
+    #[test]
+    fn an_error_at_the_start_of_a_line_names_that_line() {
+        let text = "a = 1\n= 2\n";
+        let error = text.parse::<toml::Table>().unwrap_err();
+        assert_eq!(line(text, &error), 2);
     }
 
     #[test]

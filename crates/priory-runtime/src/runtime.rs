@@ -651,6 +651,8 @@ pub trait Harness {
     }
     /// Records the harness's trust in `worktree` and its `clone`, each a real path Priory owns.
     fn grant_trust(&self, worktree: &Path, clone: &Path) -> Vec<crate::trust::Grant>;
+    /// Whether the harness's config still holds the trust `grant_trust` recorded.
+    fn holds_trust(&self, worktree: &Path, clone: &Path) -> bool;
     /// A file the harness reads at start, and its text, which `launch` writes first.
     fn file(&self, _launch: &Launch) -> Option<(PathBuf, String)> {
         None
@@ -824,6 +826,12 @@ impl Harness for ClaudeCode {
         crate::trust::claude(&crate::servers::claude_config(), &[worktree, clone])
     }
 
+    fn holds_trust(&self, worktree: &Path, clone: &Path) -> bool {
+        let config = crate::servers::claude_config();
+        let config = fs::canonicalize(&config).unwrap_or(config);
+        crate::trust::claude_holds(&config, &[worktree, clone])
+    }
+
     fn asks_trust(&self, screen: &str) -> bool {
         screen.contains("Accessing workspace:")
             && (screen.contains("Yes, I trust this folder")
@@ -930,6 +938,11 @@ impl Harness for Codex {
             Some(codex_home) => crate::trust::codex(&codex_home, clone),
             None => Vec::new(),
         }
+    }
+
+    fn holds_trust(&self, _worktree: &Path, clone: &Path) -> bool {
+        named_or("CODEX_HOME", Some(&crate::servers::home()), ".codex")
+            .is_some_and(|codex_home| crate::trust::codex_holds(&codex_home, clone))
     }
 
     fn asks_trust(&self, screen: &str) -> bool {

@@ -1243,12 +1243,25 @@ fn tend(
         } else if let Some((ended_as, reason, missed)) =
             verdict(&run, factory, home, &|| crate::trace::granted(db, run.id))
         {
+            let worktree = run.worktree.as_deref().unwrap_or_default();
+            let harness = harness_of(factory, &run.agent);
+            // The harness may have rewritten its config from an older copy, dropping the grant.
+            let overwritten = missed && !priory_runtime::trust::holds(harness, Path::new(worktree));
+            let reason = if overwritten {
+                format!(
+                    "{} asked whether to trust {worktree}: it overwrote the trust Priory recorded \
+                     before it read it",
+                    harness.program()
+                )
+            } else {
+                reason
+            };
             if missed && let Some(agent) = factory.agents.get(&run.agent) {
                 let grant = priory_runtime::trust::Grant {
-                    path: run.worktree.as_deref().unwrap_or_default().into(),
+                    path: worktree.into(),
                     file: std::path::PathBuf::new(),
                     outcome: priory_runtime::trust::Outcome::Missed,
-                    why: None,
+                    why: overwritten.then(|| "the grant was gone from the config".to_owned()),
                 };
                 let harness = agent.value.harness.name();
                 let version = runtime::version(harness_of(factory, &run.agent).program());
@@ -1266,6 +1279,15 @@ fn tend(
             // Committed first, so a crash before the kill leaves an ended run, not a lost one.
             state::block(db, trace, run.task, ended_as, &reason)?;
             runtime::kill(&run.tmux);
+            if overwritten {
+                // The next start writes the grant again; a second loss fails the task.
+                let repair = (!tools::spent(db, run.id)?).then(|| Repair {
+                    cause: format!("{} overwrote Priory's trust grant", harness.program()),
+                    action: "restart",
+                    gone: true,
+                });
+                tools::fail(db, trace, run.task, run.id, &reason, repair.as_ref())?;
+            }
         }
     }
     state::due(db, factory, &|worktree, branch| {

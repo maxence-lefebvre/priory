@@ -3961,6 +3961,77 @@ fn a_codex_run_whose_grant_was_refused_starts_without_priorys_profile() {
     assert_eq!(record["data"]["outcome"], "refused");
 }
 
+#[test]
+fn a_repository_the_factory_does_not_name_gets_no_grant() {
+    let mut setup = trusting("trust-unnamed");
+    let origin = setup.dir.join("origin/owner");
+    assert!(
+        git(&origin)
+            .args(["clone", "-q", "--bare", "repo.git", "other.git"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut message = requested(42);
+    message.data["repo"] = json!("owner/other");
+    setup.publish(&message);
+    start_trusting(&mut setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let record = until_traced(&setup, "factory.run.trusted");
+    assert_eq!(record["data"]["outcome"], "refused");
+    assert_eq!(
+        record["data"]["why"],
+        "the factory does not name owner/other"
+    );
+    assert_eq!(
+        claude_json(&setup),
+        json!({"oauthAccount": {"emailAddress": "a@b"}})
+    );
+}
+
+#[test]
+fn a_grant_claude_overwrote_restarts_the_run_once_then_fails_the_task() {
+    let mut setup = trusting("trust-overwritten");
+    setup.publish(&requested(42));
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::write(
+        setup.dir.join("fake/silent"),
+        TRUST_DIALOG.replace("WORKTREE", &worktree.display().to_string()),
+    )
+    .unwrap();
+    // Claude rewrites its config from a copy without the grant, at every start.
+    fs::write(
+        setup.dir.join("fake/probe"),
+        r#"printf '{"oauthAccount":{}}' > "$CLAUDE_CONFIG_DIR/.claude.json""#,
+    )
+    .unwrap();
+    start_trusting(&mut setup);
+
+    let tasks = setup.within(40, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "failed")
+    });
+
+    let reason = &tasks[0][7];
+    assert!(
+        reason.starts_with(&format!(
+            "claude asked whether to trust {}: it overwrote the trust Priory recorded before it read it",
+            worktree.display()
+        )),
+        "{reason}"
+    );
+    assert!(reason.contains("failed again after its repair"), "{reason}");
+    assert_eq!(setup.rows("runs").len(), 2);
+    let repaired = traced(&setup, "factory.task.repaired");
+    assert_eq!(repaired.len(), 1);
+    assert_eq!(
+        repaired[0]["data"]["cause"],
+        "claude overwrote Priory's trust grant"
+    );
+    assert_eq!(repaired[0]["data"]["outcome"], "ready");
+}
+
 fn codex_profile(setup: &Setup) -> PathBuf {
     setup.dir.join("codex/priory-trust.config.toml")
 }

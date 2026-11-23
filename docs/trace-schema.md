@@ -132,7 +132,7 @@ harness asks anyway. See [sessions.md](daemon/sessions.md#with-trust_worktrees).
 | `path`    | yes      | The worktree or clone the trust covers |
 | `file`    | no       | The config the daemon wrote or read: Claude's `.claude.json`, or `$CODEX_HOME/priory-trust.config.toml` |
 | `outcome` | yes      | `granted` when the daemon wrote it, `present` when it was already there, `refused` when it wrote nothing, `missed` when the harness asked anyway |
-| `why`     | no       | For `refused`: why, such as a path outside Priory home or a repository the factory does not name |
+| `why`     | no       | For `refused`: why, such as a path outside Priory home or a repository the factory does not name. For `missed`: `the grant was gone from the config` when the harness overwrote it |
 | `version` | no       | For `missed`: the first line of the harness's `--version` |
 
 ## `factory.task.repaired`
