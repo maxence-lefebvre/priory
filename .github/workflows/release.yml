@@ -68,7 +68,7 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y musl-tools
           echo "CC_$(echo "$TARGET" | tr - _)=musl-gcc" >> "$GITHUB_ENV"
-      - run: cargo build --release --locked -p priory --target "$TARGET"
+      - run: cargo build --release --locked -p priory --features postgres --target "$TARGET"
       - name: Stage the binary and its checksum
         run: |
           mkdir dist
