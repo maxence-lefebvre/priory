@@ -40,6 +40,10 @@ the one CI uses.
 ## UI
 
 - Start any web view work from a design reviewed by a person before you write code.
+- After you change the web view's JavaScript, run `corepack pnpm install` once, then
+  `corepack pnpm web:build`, and commit `crates/priory-core/web/dist/app.js` with your change. CI
+  fails on a stale bundle. [ADR 0004](docs/adr/0004-the-web-view-is-a-react-app-whose-built-bundle-is-committed.md)
+  says why the bundle is committed.
 - Follow [DESIGN.md](DESIGN.md) for tokens, components, states, touch and copy. Change it in the
   same pull request when the UI needs something it lacks.
 - Retake the README's screenshots from synthetic data. Run `scripts/demo/serve.sh DIR` with a new

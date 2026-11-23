@@ -1,0 +1,9 @@
+{
+  "name": "priory",
+  "private": true,
+  "packageManager": "pnpm@12.21.0",
+  "scripts": {
+    "web:build": "node crates/priory-core/web/build.mjs",
+    "web:check": "node crates/priory-core/web/build.mjs --check"
+  }
+}

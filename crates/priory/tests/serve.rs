@@ -2131,25 +2131,23 @@ fn the_web_view_serves_every_file_with_its_type_and_a_strict_policy_without_the_
     let mut setup = Setup::new("web-files", SERVE);
     let address = setup.start(&["serve", &setup.factory()]);
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut files: Vec<String> = ["crates/priory-core/web", "design/fonts"]
-        .iter()
-        .flat_map(|dir| fs::read_dir(root.join(dir)).unwrap())
+    let mut files: Vec<String> = fs::read_dir(root.join("design/fonts"))
+        .unwrap()
         .map(|entry| entry.unwrap().path())
-        .filter(|path| {
-            let name = path.file_name().unwrap().to_str().unwrap();
-            // The web view's Node tests and their package.json are not served.
-            path.extension()
-                .is_some_and(|ext| ext != "txt" && ext != "md" && ext != "json")
-                && !name.ends_with(".test.js")
-        })
-        .map(|path| {
-            let name = path.file_name().unwrap().to_str().unwrap();
-            match path.extension().unwrap().to_str().unwrap() {
-                "woff2" => format!("/fonts/{name}"),
-                _ => format!("/{name}"),
-            }
-        })
+        .filter(|path| path.extension().is_some_and(|ext| ext == "woff2"))
+        .map(|path| format!("/fonts/{}", path.file_name().unwrap().to_str().unwrap()))
         .collect();
+    files.extend(
+        [
+            "/index.html",
+            "/boot.js",
+            "/app.js",
+            "/sw.js",
+            "/app.css",
+            "/manifest.webmanifest",
+        ]
+        .map(str::to_owned),
+    );
     files.extend(
         [
             "/tokens/structure.css",
@@ -2200,6 +2198,11 @@ fn the_web_view_serves_every_file_with_its_type_and_a_strict_policy_without_the_
     for path in files.split('"').filter(|part| part.starts_with('/')) {
         assert_eq!(fetch(&address, path).0, 200, "{path}");
     }
+
+    // app.js is the committed bundle; the view models it holds are not served on their own.
+    let bundle = fs::read(root.join("crates/priory-core/web/dist/app.js")).unwrap();
+    assert_eq!(fetch(&address, "/app.js").2, bundle);
+    assert_eq!(fetch(&address, "/asks.js").0, 404);
 
     let (status, head, index) = fetch(&address, "/asks/42");
     assert_eq!(status, 200);
