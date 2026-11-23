@@ -3788,6 +3788,279 @@ fn a_run_on_claudes_trust_dialog_blocks_at_once_and_names_the_folders_to_trust()
     assert_eq!(outbox[0][3], "queued");
 }
 
+/// A factory that turns on `trust_worktrees`, and a Claude config with a key of the person's own.
+fn trusting(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\ntrust_worktrees = true\n",
+    )
+    .unwrap();
+    fs::create_dir_all(setup.dir.join("claude")).unwrap();
+    fs::write(
+        setup.dir.join("claude/.claude.json"),
+        r#"{"oauthAccount":{"emailAddress":"a@b"}}"#,
+    )
+    .unwrap();
+    setup
+}
+
+/// Starts the daemon with a HOME of its own, so no harness config of the person's is in reach.
+fn start_trusting(setup: &mut Setup) {
+    let home = setup.dir.join("user");
+    fs::create_dir_all(&home).unwrap();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    setup.start_with(exe, &[("HOME", home.to_str().unwrap())]);
+}
+
+fn claude_json(setup: &Setup) -> serde_json::Value {
+    serde_json::from_str(&fs::read_to_string(setup.dir.join("claude/.claude.json")).unwrap())
+        .unwrap()
+}
+
+#[test]
+fn trust_worktrees_records_claudes_trust_in_the_worktree_and_the_clone_before_the_run() {
+    let mut setup = trusting("trust-claude");
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let worktree = fs::canonicalize(setup.dir.join("home/worktrees/owner/repo/1")).unwrap();
+    let clone = fs::canonicalize(setup.dir.join("home/repos/owner/repo")).unwrap();
+    let config = claude_json(&setup);
+    assert_eq!(config["oauthAccount"]["emailAddress"], "a@b");
+    let projects = config["projects"].as_object().unwrap();
+    let keys: Vec<&String> = projects.keys().collect();
+    let mut expected = [worktree.display().to_string(), clone.display().to_string()];
+    expected.sort();
+    assert_eq!(keys, expected.iter().collect::<Vec<_>>());
+    assert!(
+        projects
+            .values()
+            .all(|project| project == &json!({"hasTrustDialogAccepted": true}))
+    );
+    let records = traced(&setup, "factory.run.trusted");
+    let outcomes: Vec<(&str, &str)> = records
+        .iter()
+        .map(|record| {
+            (
+                record["data"]["path"].as_str().unwrap(),
+                record["data"]["outcome"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            (worktree.to_str().unwrap(), "granted"),
+            (clone.to_str().unwrap(), "granted")
+        ]
+    );
+    assert_eq!(records[0]["data"]["harness"], "claude-code");
+    assert_eq!(
+        records[0]["data"]["file"],
+        setup.dir.join("claude/.claude.json").display().to_string()
+    );
+}
+
+#[test]
+fn trust_worktrees_off_writes_no_claude_config() {
+    let mut setup = Setup::new("trust-off");
+    fs::create_dir_all(setup.dir.join("claude")).unwrap();
+    fs::write(setup.dir.join("claude/.claude.json"), "{}").unwrap();
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("claude/.claude.json")).unwrap(),
+        "{}"
+    );
+    assert!(traced(&setup, "factory.run.trusted").is_empty());
+    assert!(!codex_profile(&setup).exists());
+}
+
+#[test]
+fn a_trust_dialog_despite_trust_worktrees_blocks_with_its_own_reason_and_is_traced() {
+    let mut setup = trusting("trust-missed");
+    setup.publish(&requested(42));
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::write(
+        setup.dir.join("fake/silent"),
+        TRUST_DIALOG.replace("WORKTREE", &worktree.display().to_string()),
+    )
+    .unwrap();
+    start_trusting(&mut setup);
+
+    let tasks = setup.within(20, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+
+    assert_eq!(
+        tasks[0][7],
+        format!(
+            "claude asked whether to trust {} although Priory recorded its trust; this version of the harness keys trust differently. Trust the folder by hand, or turn trust_worktrees off",
+            worktree.display()
+        )
+    );
+    let missed: Vec<_> = traced(&setup, "factory.run.trusted")
+        .into_iter()
+        .filter(|record| record["data"]["outcome"] == "missed")
+        .collect();
+    assert_eq!(missed.len(), 1);
+    assert_eq!(missed[0]["data"]["path"], worktree.display().to_string());
+    assert_eq!(missed[0]["data"]["version"], "2.1.330 (Claude Code)");
+}
+
+#[test]
+fn a_refused_grant_keeps_the_manual_trust_reason_and_writes_no_missed_record() {
+    let mut setup = trusting("trust-refused");
+    fs::remove_file(setup.dir.join("claude/.claude.json")).unwrap();
+    setup.publish(&requested(42));
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::write(
+        setup.dir.join("fake/silent"),
+        TRUST_DIALOG.replace("WORKTREE", &worktree.display().to_string()),
+    )
+    .unwrap();
+    start_trusting(&mut setup);
+
+    let tasks = setup.within(20, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+
+    assert!(
+        tasks[0][7].contains("Priory never answers it"),
+        "{}",
+        tasks[0][7]
+    );
+    let outcomes: Vec<_> = traced(&setup, "factory.run.trusted")
+        .into_iter()
+        .map(|record| record["data"]["outcome"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(outcomes, ["refused", "refused"]);
+    assert!(!setup.dir.join("claude/.claude.json").exists());
+}
+
+#[test]
+fn a_codex_run_whose_grant_was_refused_starts_without_priorys_profile() {
+    let mut setup = trusting("trust-codex-refused");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::create_dir_all(setup.dir.join("codex")).unwrap();
+    fs::write(setup.dir.join("codex/config.toml"), "profile = \"work\"\n").unwrap();
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    assert!(!codex_args(&setup).contains(&"priory-trust".to_owned()));
+    assert_eq!(fs::read_to_string(codex_profile(&setup)).unwrap(), "");
+    let record = until_traced(&setup, "factory.run.trusted");
+    assert_eq!(record["data"]["outcome"], "refused");
+}
+
+#[test]
+fn a_repository_the_factory_does_not_name_gets_no_grant() {
+    let mut setup = trusting("trust-unnamed");
+    let origin = setup.dir.join("origin/owner");
+    assert!(
+        git(&origin)
+            .args(["clone", "-q", "--bare", "repo.git", "other.git"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut message = requested(42);
+    message.data["repo"] = json!("owner/other");
+    setup.publish(&message);
+    start_trusting(&mut setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let record = until_traced(&setup, "factory.run.trusted");
+    assert_eq!(record["data"]["outcome"], "refused");
+    assert_eq!(
+        record["data"]["why"],
+        "the factory does not name owner/other"
+    );
+    assert_eq!(
+        claude_json(&setup),
+        json!({"oauthAccount": {"emailAddress": "a@b"}})
+    );
+}
+
+#[test]
+fn a_grant_claude_overwrote_restarts_the_run_once_then_fails_the_task() {
+    let mut setup = trusting("trust-overwritten");
+    setup.publish(&requested(42));
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::write(
+        setup.dir.join("fake/silent"),
+        TRUST_DIALOG.replace("WORKTREE", &worktree.display().to_string()),
+    )
+    .unwrap();
+    // Claude rewrites its config from a copy without the grant, at every start.
+    fs::write(
+        setup.dir.join("fake/probe"),
+        r#"printf '{"oauthAccount":{}}' > "$CLAUDE_CONFIG_DIR/.claude.json""#,
+    )
+    .unwrap();
+    start_trusting(&mut setup);
+
+    let tasks = setup.within(40, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "failed")
+    });
+
+    let reason = &tasks[0][7];
+    assert!(
+        reason.starts_with(&format!(
+            "claude asked whether to trust {}: it overwrote the trust Priory recorded before it read it",
+            worktree.display()
+        )),
+        "{reason}"
+    );
+    assert!(reason.contains("failed again after its repair"), "{reason}");
+    assert_eq!(setup.rows("runs").len(), 2);
+    let repaired = traced(&setup, "factory.task.repaired");
+    assert_eq!(repaired.len(), 1);
+    assert_eq!(
+        repaired[0]["data"]["cause"],
+        "claude overwrote Priory's trust grant"
+    );
+    assert_eq!(repaired[0]["data"]["outcome"], "ready");
+}
+
+fn codex_profile(setup: &Setup) -> PathBuf {
+    setup.dir.join("codex/priory-trust.config.toml")
+}
+
+#[test]
+fn trust_worktrees_gives_a_codex_run_priorys_profile_that_trusts_the_clone() {
+    let mut setup = trusting("trust-codex");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::create_dir_all(setup.dir.join("codex")).unwrap();
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let clone = fs::canonicalize(setup.dir.join("home/repos/owner/repo")).unwrap();
+    let profile: toml::Table = fs::read_to_string(codex_profile(&setup))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let projects = profile["projects"].as_table().unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(
+        projects[clone.to_str().unwrap()]["trust_level"].as_str(),
+        Some("trusted")
+    );
+    assert_eq!(codex_args(&setup)[..2], ["-p", "priory-trust"]);
+    assert!(!setup.dir.join("codex/config.toml").exists());
+}
+
 const STEPS: &str = r#"
 start = "plan"
 

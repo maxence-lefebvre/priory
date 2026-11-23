@@ -933,6 +933,7 @@ fn touch_with_real_claude(home: &Path, project: &Path, investigator: bool) -> bo
         servers: &servers,
         tools: priory_runtime::mcp::Tools::Investigator,
         jail: None,
+        trust: false,
     };
     let args = priory_runtime::runtime::Harness::args(
         &priory_runtime::runtime::ClaudeCode,
