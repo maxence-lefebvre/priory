@@ -1,7 +1,7 @@
 use priory_core::memory::Gate;
 use priory_core::{
     daemon, deliver, embed, evidence, grades, label, listing, post, progress, proof, relate,
-    report, risk, runners, search, sections, serve, snooze, state, subscribe, todo, tools,
+    reload, report, risk, runners, search, sections, serve, snooze, state, subscribe, todo, tools,
 };
 use priory_factory::{explain, factory, plural, readiness, rules};
 use priory_intake::{intake, request};
@@ -262,15 +262,13 @@ fn usage() -> ExitCode {
 
 /// The factory, or `None` after printing its problems.
 fn load(dir: &Path) -> Option<factory::Factory> {
-    let (factory, mut problems) = factory::load(dir);
-    // Rules on a partly loaded factory would report references to the files that failed to parse.
-    if problems.is_empty() {
-        problems = rules::check(&factory);
-    }
-    for problem in &problems {
-        eprintln!("{problem}");
-    }
-    problems.is_empty().then_some(factory)
+    rules::validated(dir)
+        .inspect_err(|problems| {
+            for problem in problems {
+                eprintln!("{problem}");
+            }
+        })
+        .ok()
 }
 
 /// Runs `run` on the factory in `dir`, once it loads with no problems.
@@ -2226,15 +2224,27 @@ fn serve_http(args: Vec<String>) -> ExitCode {
     if let Err(error) = metrics(&factory, "serve", false) {
         return exit("serve", Err(error));
     }
-    match serve::start(&factory, listen.unwrap_or(config.listen)) {
-        Ok(workers) => {
-            for worker in workers {
-                let _ = worker.join();
+    let mut watch = reload::Watch::new(&factory);
+    let server = match serve::start(&factory, listen.unwrap_or(config.listen)) {
+        Ok(server) => server,
+        Err(error) => return exit("serve", Err(error)),
+    };
+    let mut live = factory;
+    while !server.workers.iter().all(|worker| worker.is_finished()) {
+        std::thread::sleep(reload::EVERY);
+        match watch.poll() {
+            reload::Polled::Same | reload::Polled::Current => {}
+            reload::Polled::Refused(problems) => reload::report("serve", Err(&problems)),
+            reload::Polled::Loaded(new, files) => {
+                let restart = reload::restart_only(&live, &new);
+                server.update(&new);
+                watch.applied(&new, files);
+                reload::report("serve", Ok(&restart));
+                live = *new;
             }
-            ExitCode::SUCCESS
         }
-        Err(error) => exit("serve", Err(error)),
     }
+    ExitCode::SUCCESS
 }
 
 fn list(header: &str, query: &str) -> ExitCode {

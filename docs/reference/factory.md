@@ -5,6 +5,9 @@ be `factory.yaml` or `factory.yml` instead, with the same keys.
 
 Schema: [`config/factory.json`](../schemas/config/factory.json).
 
+The daemon and `priory serve` follow an edit of this file without a restart. A few keys wait for
+one: [reload.md](../daemon/reload.md#what-a-reload-changes) lists them.
+
 ## Top-level keys
 
 | Key | Type | Required | Default | Meaning | Example |
@@ -37,6 +40,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `mcp` | table of tables | no | | A person's statement about each MCP server or connector an investigator names. See [`[mcp.<name>]`](#mcpname) | |
 | `guard` | table | no | the built-in guards alone | Irreversible commands and MCP tools the tool guard denies on top of the built-in ones. See [`[guard]`](#guard) | |
 | `sandboxes` | table of tables | no | no sandbox | The jails a workflow can start its agents in, by name. See [`[sandboxes.<name>]`](#sandboxesname) | |
+| `trust_worktrees` | bool | no | `false`: a person trusts each folder by hand | The daemon records Claude Code's and Codex's folder trust for each run's worktree and clone, for the repositories the factory names. See [sessions.md](../daemon/sessions.md#trusting-the-worktrees-and-the-clone) | `true` |
 | `repos` | table of tables | no | no recipe runs | The setup, resume and teardown recipes of each repository. See [`[repos]`](#repos) | |
 
 A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m"` or `"2h"`.
@@ -354,6 +358,7 @@ text Priory stores never changes.
 | Replacing a built-in link | An entry with the built-in link's exact regex replaces it |
 | Order | The factory's entries in file order, then each built-in link no entry replaced. Where two regexes match, the match that starts first wins, then the rule listed first |
 | Linear | No source names a Linear workspace, so Linear keys get no built-in link. Add the first line of the example above, with your workspace's name in place of `acme`. It links keys such as `ENG-123` |
+| Reload | The daemon and `priory serve` follow an edit of `[links]` within a few seconds, with no restart (see [reload.md](../daemon/reload.md)) |
 | Where links show | The web view's ask (its question and its text), its task page (its title, reason, brief and plan), its desk rows, reports included, its task rows, and the keys and text of its Reports panel's rows. The [Herdr adapter](../adapters/herdr.md)'s panels link the same text. `priory links --json` and `GET /api/links` list the rules. CLI text output stays plain |
 
 The web view runs each regex as a JavaScript regex with the `u` flag. A regex that JavaScript

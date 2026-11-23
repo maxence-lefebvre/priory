@@ -6,7 +6,9 @@ An agent inside a model step can still do something irreversible itself, such as
 `git push origin main` or a Slack post. Claude's permission deny rules do not stop it reliably: a
 rule on `gh pr merge` misses `gh -R owner/repo pr merge` and `bash -c 'gh pr merge 12'`. The tool
 guard closes that gap with a `PreToolUse` hook, which Claude runs before every matching call, in
-every permission mode, before any allow rule.
+every permission mode, before any allow rule. A repository's own `.claude/settings.json`, which a
+trusted folder loads, runs beside the guard, whether a person trusted the folder or
+`trust_worktrees` did. Name only repositories whose settings you trust.
 
 ## What the guard denies
 

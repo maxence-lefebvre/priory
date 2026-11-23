@@ -1319,6 +1319,11 @@
         }
       ]
     },
+    "trust_worktrees": {
+      "default": false,
+      "description": "Priory records Claude Code's and Codex's folder trust for the worktrees and clones it\ncreates for the repositories the factory names, so no run stops on a trust dialog.",
+      "type": "boolean"
+    },
     "webhooks": {
       "anyOf": [
         {

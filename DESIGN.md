@@ -172,7 +172,7 @@ The view sets two attributes on `<html>`:
 | Token                                       | Meaning                                                                |
 | ------------------------------------------- | ---------------------------------------------------------------------- |
 | `--bg`                                      | page ground                                                            |
-| `--surface`                                 | the drawer, sheets, option buttons, chips, inputs                      |
+| `--surface`                                 | the drawer, sheets, option buttons, chips, inputs, native select lists |
 | `--raised`                                  | pressed rows, the segmented control track, skeletons, code and commands |
 | `--line`                                    | hairlines between rows and around panels; never the only edge of a control |
 | `--control-line`                            | edges of inputs, option buttons and secondary buttons, at least 3:1    |

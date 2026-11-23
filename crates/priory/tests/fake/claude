@@ -31,10 +31,15 @@
 # FAKE_DIR/handler as its result, which it pops, or a leave answer when none is left. A line that
 # starts with a double quote is a JSON string, decoded, so a result can hold several lines. With
 # FAKE_DIR/handler-fail, it then exits 1.
+# --version prints Claude Code 2.1.330's version line.
 # FAKE_DIR/probe, a shell script, runs once at start in the run's folder, with its output in probe.log.
 # A call with an `output` key stands for a built-in tool that ran: it appends the tool_use and its
 # tool_result, with that output, to FAKE_DIR/transcript.jsonl as Claude writes them, and no hook hears it.
 set -u
+if [ "${1-}" = --version ]; then
+  echo '2.1.330 (Claude Code)'
+  exit 0
+fi
 # `claude mcp get NAME` logs NAME to mcp-get.log, then finds it as Claude Code 2.1.330 does when
 # FAKE_DIR/connectors lists it, one name a line, and otherwise exits 1 naming no such server.
 if [ "${1-}" = mcp ] && [ "${2-}" = get ]; then

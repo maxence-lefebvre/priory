@@ -63,10 +63,13 @@ pub(crate) fn pending(
         let row = row?;
         pending = true;
         cursor.seq = row.seq;
-        if row.event["type"] != "factory.step.ended" {
-            continue;
+        match row.event["type"].as_str() {
+            Some("factory.step.ended") => spans.extend(step_spans(&row)),
+            Some(crate::reload::RELOADED | crate::reload::REFUSED) => {
+                spans.extend(reload_span(&row))
+            }
+            _ => {}
         }
-        spans.extend(step_spans(&row));
     }
     let source = crate::trace::source(trace);
     let mut ends = db.prepare(
@@ -251,6 +254,38 @@ struct Row {
     run_started: Option<i64>,
     started: Option<i64>,
     time: Option<i64>,
+}
+
+/// A reload's span: an instant in a trace of its own, named after its record.
+fn reload_span(row: &Row) -> Option<Value> {
+    let data = &row.event["data"];
+    let source = row.event["source"].as_str().unwrap_or_default();
+    let time = row.time? * 1_000_000;
+    let id = derive(source, "reload", &row.event["id"]);
+    let lines = |key: &str| {
+        data[key]
+            .as_array()
+            .filter(|lines| !lines.is_empty())
+            .map(|lines| {
+                let lines: Vec<_> = lines.iter().filter_map(Value::as_str).collect();
+                json!(lines.join("\n"))
+            })
+            .unwrap_or(Value::Null)
+    };
+    let attributes = [
+        ("priory.factory.revision", &data["factory_revision"]),
+        ("priory.reload.restart_only", &lines("restart_only")),
+        ("priory.reload.problems", &lines("problems")),
+    ];
+    let name = row.event["type"].as_str().unwrap_or_default();
+    Some(span(
+        &id.simple().to_string(),
+        &id,
+        name,
+        time,
+        time,
+        &attributes,
+    ))
 }
 
 /// The step's span and, for a model step, its run's span, which is the step span's parent.

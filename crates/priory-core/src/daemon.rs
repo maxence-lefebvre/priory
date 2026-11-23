@@ -4,6 +4,7 @@ use crate::link::Link;
 use crate::memory::{self, Gate};
 use crate::metrics;
 use crate::otlp;
+use crate::reload::{self, Polled};
 use crate::room::Share;
 use crate::route;
 use crate::runners;
@@ -96,6 +97,7 @@ pub fn view_only(factory: &Factory) -> Result<(), String> {
 }
 
 fn view(factory: &Factory) -> Result<(), Error> {
+    let watch = reload::Watch::new(factory);
     let machine = room::hostname();
     let viewer = runners::viewer(factory, machine.as_deref())?;
     let mut db = state::open()?;
@@ -112,11 +114,15 @@ fn view(factory: &Factory) -> Result<(), Error> {
     let consumer = runners::view_consumer(&viewer);
     // The socket's lock keeps a second daemon off this state file.
     let listening = runtime::listen(&runtime::home())?;
-    if let Some(config) = factory.serve() {
-        crate::serve::start(factory, config.listen)?;
-    }
+    let server = match factory.serve() {
+        Some(config) => Some(crate::serve::start(factory, config.listen)?),
+        None => None,
+    };
+    let mut live = Live::new(factory, watch, trace.revision.clone(), server);
     let mut link = Link::default();
     loop {
+        live.poll(&mut db, &trace, false)?;
+        let trace = live.trace(&trace);
         if link.due() {
             let drained = view_drain(&*bus, &consumer, &mut db, &viewer, &trace);
             metered(&*bus, drained.as_ref());
@@ -162,6 +168,8 @@ fn view_drain(
 }
 
 fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
+    // Taken first, so an edit made while the daemon starts still reloads.
+    let watch = reload::Watch::new(factory);
     runtime::bound_commands(factory.command_timeout());
     let mut db = state::open()?;
     tools::backfill_endings(&mut db, &factory.workflows)?;
@@ -214,9 +222,10 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let searching = search::answering(state::read_only()?, home.clone());
     let listening = runtime::listen(&home)?;
     let headers = otlp::header_file(factory, &home, "otlp-headers")?;
-    if let Some(config) = factory.serve() {
-        crate::serve::start(factory, config.listen)?;
-    }
+    let server = match factory.serve() {
+        Some(config) => Some(crate::serve::start(factory, config.listen)?),
+        None => None,
+    };
     if let Some(name) = embedder.clone() {
         let home = home.clone();
         std::thread::spawn(move || embed_all(&name, embed::Lazy::new(&home, true)));
@@ -230,15 +239,15 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         Vec::new()
     });
     // Checked once, as the slice is: a jailed task never starts unjailed where this fails.
-    let jailing = if factory.sandboxed() {
+    let probe = || {
         priory_runtime::jail::probe().inspect_err(|error| {
             eprintln!(
                 "priory daemon: this runner cannot start bubblewrap, so jailed tasks block: {error}"
             );
         })
-    } else {
-        Ok(())
     };
+    let mut probed = factory.sandboxed();
+    let mut jailing = if probed { probe() } else { Ok(()) };
     state::uncertain(&db)?;
     crate::keyboard::adopt(&mut db, &trace)?;
     // No one watches a compaction a stopped daemon started, so it never types its `/compact`.
@@ -364,8 +373,22 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut link = Link::default();
     let mut redispatch: Option<Instant> = None;
     let mut entering = Entering::default();
+    let mut live = Live::new(factory, watch, trace.revision.clone(), server);
     loop {
         let tick = Instant::now();
+        if live.poll(&mut db, &trace, true)? {
+            let factory = live.factory();
+            state::bands(&mut db, &factory.bands(), factory.age())?;
+            state::fairness(&db, factory.fair())?;
+            state::irreversible_asks(&mut db, &factory.workflows)?;
+            // A reload that jails a workflow probes as a start would.
+            if !probed && factory.sandboxed() {
+                probed = true;
+                jailing = probe();
+            }
+        }
+        let trace = live.trace(&trace);
+        let factory = trace.factory;
         // A runner back from away reads the log, and so drops the tasks that moved, before any run
         // and before it publishes what it queued meanwhile.
         let drained = link.due().then(|| {
@@ -478,6 +501,101 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
+    }
+}
+
+/// The factory the daemon's loop reads: the one it started with, until an edit reloads it.
+struct Live<'a> {
+    start: &'a Factory,
+    reloaded: Option<Factory>,
+    /// A valid edit the guard refused, and the digest of its files: it applies once no task is at
+    /// a workflow or step it removes.
+    held: Option<(Box<Factory>, reload::Digest)>,
+    watch: reload::Watch,
+    revision: Option<String>,
+    server: Option<crate::serve::Server>,
+}
+
+impl<'a> Live<'a> {
+    fn new(
+        start: &'a Factory,
+        watch: reload::Watch,
+        revision: Option<String>,
+        server: Option<crate::serve::Server>,
+    ) -> Self {
+        Live {
+            start,
+            reloaded: None,
+            held: None,
+            watch,
+            revision,
+            server,
+        }
+    }
+
+    fn factory(&self) -> &Factory {
+        self.reloaded.as_ref().unwrap_or(self.start)
+    }
+
+    /// `base` with the live factory and its revision.
+    fn trace(&self, base: &Trace) -> Trace<'_> {
+        Trace {
+            factory: self.factory(),
+            revision: self.revision.clone(),
+            runner: base.runner.clone(),
+            machine: base.machine.clone(),
+            usage: base.usage,
+        }
+    }
+
+    /// Loads an edit of the factory's files once it passes every rule, and with `guard`, once it
+    /// strands no task. An edit the guard refused stays held and applies once its tasks leave.
+    /// Returns whether a new factory is live; a refused edit keeps the last good one. Each
+    /// refusal is reported once, to stderr and to the trace, and so is each reload.
+    fn poll(&mut self, db: &mut Connection, base: &Trace, guard: bool) -> Result<bool, Error> {
+        let polled = self.watch.poll();
+        if self.watch.committed() {
+            self.revision = runtime::revision(&self.factory().dir);
+        }
+        let (new, files, fresh) = match polled {
+            Polled::Same => match self.held.take() {
+                Some((new, files)) => (new, files, false),
+                None => return Ok(false),
+            },
+            Polled::Current => {
+                self.held = None;
+                return Ok(false);
+            }
+            Polled::Refused(problems) => {
+                self.held = None;
+                reload::report("daemon", Err(&problems));
+                reload::record(db, &self.trace(base), Err(&problems))?;
+                return Ok(false);
+            }
+            Polled::Loaded(new, files) => (new, files, true),
+        };
+        let stranded = match guard {
+            true => reload::stranded(db, &new)?,
+            false => Vec::new(),
+        };
+        if !stranded.is_empty() {
+            if fresh {
+                reload::report("daemon", Err(&stranded));
+                reload::record(db, &self.trace(base), Err(&stranded))?;
+            }
+            self.held = Some((new, files));
+            return Ok(false);
+        }
+        let restart = reload::restart_only(self.factory(), &new);
+        if let Some(server) = &self.server {
+            server.update(&new);
+        }
+        self.watch.applied(&new, files);
+        self.revision = runtime::revision(&new.dir);
+        self.reloaded = Some(*new);
+        reload::report("daemon", Ok(&restart));
+        reload::record(db, &self.trace(base), Ok(&restart))?;
+        Ok(true)
     }
 }
 
@@ -1238,7 +1356,42 @@ fn tend(
                 Some(diagnose(db, factory, share, home, &run.agent)?)
             };
             tools::fail(db, trace, run.task, run.id, &reason, repair.as_ref())?;
-        } else if let Some((ended_as, reason)) = verdict(&run, factory, home) {
+        } else if let Some((ended_as, reason, missed)) =
+            verdict(&run, factory, home, &|| crate::trace::granted(db, run.id))
+        {
+            let worktree = run.worktree.as_deref().unwrap_or_default();
+            let harness = harness_of(factory, &run.agent);
+            // The harness may have rewritten its config from an older copy, dropping the grant.
+            let held = missed.then(|| priory_runtime::trust::holds(harness, Path::new(worktree)));
+            let overwritten = matches!(held, Some(Ok(false)));
+            let reason = if overwritten {
+                format!(
+                    "{} asked whether to trust {worktree}: it overwrote the trust Priory recorded \
+                     before it read it",
+                    harness.program()
+                )
+            } else {
+                reason
+            };
+            if missed && let Some(agent) = factory.agents.get(&run.agent) {
+                let grant = priory_runtime::trust::Grant {
+                    path: worktree.into(),
+                    file: std::path::PathBuf::new(),
+                    outcome: priory_runtime::trust::Outcome::Missed,
+                    why: match &held {
+                        Some(Ok(false)) => Some("the grant was gone from the config".to_owned()),
+                        Some(Err(why)) => {
+                            Some(format!("Priory could not read the grant back: {why}"))
+                        }
+                        _ => None,
+                    },
+                };
+                let harness = agent.value.harness.name();
+                let version = runtime::version(harness_of(factory, &run.agent).program());
+                let tx = db.transaction()?;
+                crate::trace::trusted(&tx, trace, run.id, harness, &grant, version.as_deref())?;
+                tx.commit()?;
+            }
             // A debate turn past its timeout goes to the person, as a debate that did not converge.
             if ended_as == "timeout"
                 && let Some(tmux) = crate::debate::timed_out(db, trace, &run.session, &reason)?
@@ -1249,6 +1402,15 @@ fn tend(
             // Committed first, so a crash before the kill leaves an ended run, not a lost one.
             state::block(db, trace, run.task, ended_as, &reason)?;
             runtime::kill(&run.tmux);
+            if overwritten {
+                // The next start writes the grant again; a second loss fails the task.
+                let repair = (!tools::spent(db, run.id)?).then(|| Repair {
+                    cause: format!("{} overwrote Priory's trust grant", harness.program()),
+                    action: "restart",
+                    gone: true,
+                });
+                tools::fail(db, trace, run.task, run.id, &reason, repair.as_ref())?;
+            }
         }
     }
     state::due(db, factory, &|worktree, branch| {
@@ -1301,7 +1463,7 @@ fn tend(
         }
         if let Err(reason) = start(
             db,
-            factory,
+            trace,
             trace.runner.as_deref(),
             home,
             scope,
@@ -1384,8 +1546,14 @@ fn diagnose(
 }
 
 /// Why a live run must end: its harness's trust dialog, no `SessionStart`, a permission prompt, or
-/// a turn past its step's timeout.
-fn verdict(run: &state::LiveRun, factory: &Factory, home: &Path) -> Option<(&'static str, String)> {
+/// a turn past its step's timeout. The flag says the dialog asked for trust that `granted`, the
+/// run's own grant, had recorded.
+fn verdict(
+    run: &state::LiveRun,
+    factory: &Factory,
+    home: &Path,
+    granted: &dyn Fn() -> bool,
+) -> Option<(&'static str, String, bool)> {
     // Claude and Codex ask whether to trust a folder, and Codex its hooks, before any hook; Priory
     // never answers.
     let harness = harness_of(factory, &run.agent);
@@ -1403,6 +1571,16 @@ fn verdict(run: &state::LiveRun, factory: &Factory, home: &Path) -> Option<(&'st
     if let Some(rows) = &rows
         && harness.asks_trust(rows)
     {
+        if granted() {
+            let reason = format!(
+                "{} asked whether to trust {} although Priory recorded its trust; this version of \
+                 the harness keys trust differently. Trust the folder by hand, or turn \
+                 trust_worktrees off",
+                harness.program(),
+                run.worktree.as_deref().unwrap_or("its folder"),
+            );
+            return Some(("exited", reason, true));
+        }
         let trust = trust();
         let reason = format!(
             "{} asked whether to trust {}; Priory never answers it. {}{}",
@@ -1411,7 +1589,7 @@ fn verdict(run: &state::LiveRun, factory: &Factory, home: &Path) -> Option<(&'st
             trust[..1].to_uppercase(),
             &trust[1..]
         );
-        return Some(("exited", reason));
+        return Some(("exited", reason, false));
     }
     if run.late {
         let mut reason = format!(
@@ -1437,11 +1615,11 @@ fn verdict(run: &state::LiveRun, factory: &Factory, home: &Path) -> Option<(&'st
         if !tail.is_empty() {
             reason.push_str(&format!(". Its pane ended with: {}", tail.join(" | ")));
         }
-        return Some(("exited", reason));
+        return Some(("exited", reason, false));
     }
     if let Some(message) = &run.prompted {
         let reason = format!("run {} stopped on a permission prompt: {message}", run.id);
-        return Some(("permission", reason));
+        return Some(("permission", reason, false));
     }
     let limit = factory
         .workflows
@@ -1452,7 +1630,7 @@ fn verdict(run: &state::LiveRun, factory: &Factory, home: &Path) -> Option<(&'st
         .as_secs();
     run.turn.filter(|turn| *turn >= limit as i64).map(|_| {
         let reason = format!("run {} timed out: its turn ran past {limit}s", run.id);
-        ("timeout", reason)
+        ("timeout", reason, false)
     })
 }
 
@@ -2120,7 +2298,7 @@ fn jailing_workflow(db: &Connection, helper: i64) -> rusqlite::Result<Result<Str
 #[allow(clippy::too_many_arguments)]
 fn start(
     db: &mut Connection,
-    factory: &Factory,
+    trace: &crate::trace::Trace,
     runner: Option<&str>,
     home: &Path,
     scope: &[String],
@@ -2130,6 +2308,7 @@ fn start(
     probes: &mut crate::connectors::Probes,
     kit: crate::kit::Current<'_>,
 ) -> Result<Result<(), String>, Error> {
+    let factory = trace.factory;
     let step = factory.workflows[&admission.workflow]
         .value
         .step(&admission.step)
@@ -2322,6 +2501,28 @@ fn start(
         .chain(crate::todo::connectors_env(db)?)
         .chain(servers_env(&agent.value, &servers))
         .collect();
+    let mut trust = false;
+    if factory.trust_worktrees() {
+        let grants = if factory.names_repo(repo) {
+            priory_runtime::trust::grant(harness(&agent.value.harness), home, repo, &worktree)
+        } else {
+            vec![priory_runtime::trust::Grant {
+                path: worktree.clone(),
+                file: std::path::PathBuf::new(),
+                outcome: priory_runtime::trust::Outcome::Refused,
+                why: Some(format!("the factory does not name {repo}")),
+            }]
+        };
+        let tx = db.transaction()?;
+        for grant in &grants {
+            crate::trace::trusted(&tx, trace, run, agent.value.harness.name(), grant, None)?;
+        }
+        tx.commit()?;
+        trust = grants.iter().any(|grant| {
+            use priory_runtime::trust::Outcome;
+            matches!(grant.outcome, Outcome::Granted | Outcome::Present)
+        });
+    }
     let started = Started {
         name,
         tmux: &tmux,
@@ -2332,6 +2533,7 @@ fn start(
         debate: turn.is_some(),
         servers: &servers,
         jail: jail.as_ref(),
+        trust,
     };
     Ok(launch(
         factory,
@@ -2413,6 +2615,8 @@ struct Started<'a> {
     servers: &'a priory_runtime::servers::Servers,
     /// The sandbox its harness starts in, if its workflow turns one on.
     jail: Option<&'a priory_runtime::jail::Jail>,
+    /// Priory recorded the harness's trust in the run's folders, so a Codex run takes its profile.
+    trust: bool,
 }
 
 /// The MCP servers `agent` names, found in the person's own config of its harness when its run
@@ -2511,6 +2715,7 @@ fn launch(
             servers: started.servers,
             tools,
             jail: started.jail,
+            trust: started.trust,
         },
     )
     .map_err(|failed| {
@@ -2608,6 +2813,7 @@ fn compact_idle(
             debate: false,
             servers: &servers,
             jail: None,
+            trust: false,
         };
         let env: Vec<String> = guard_env(trace.factory).into_iter().collect();
         if let Err(error) = launch(

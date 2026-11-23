@@ -1468,6 +1468,55 @@ fn a_task_endpoint_shows_its_brief_plan_pull_request_and_each_runs_tokens() {
     assert_eq!(task["runs"][0]["tokens"], Value::Null);
 }
 
+/// The plan a task endpoint returns once task 1 has a passed result for each of `steps`, in order.
+fn plan_after(name: &str, steps: &[&str]) -> Value {
+    let mut setup = Setup::new(name, SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    for (run, step) in (1..).zip(steps) {
+        db.execute(
+            "INSERT INTO runs (id, task, step, tmux, session, started, ended, ended_as)
+             VALUES (?1, 1, ?2, 'tmux', 's', '2026-11-17T10:00:00Z', '2026-11-17T10:30:00Z', 'moved')",
+            rusqlite::params![run, step],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO results (run, task, step, outcome, summary) VALUES (?1, 1, ?2, 'passed', ?3)",
+            rusqlite::params![run, step, format!("Result of {step}.")],
+        )
+        .unwrap();
+    }
+    let address = setup.start(&["serve", &setup.factory()]);
+    api(&address, "/api/tasks/1")["plan"].clone()
+}
+
+#[test]
+fn a_plan_implementation_result_is_the_tasks_plan() {
+    let plan = plan_after(
+        "task-plan-prefix",
+        &["groom", "plan-implementation", "approve-implementation"],
+    );
+
+    assert_eq!(plan["step"], "plan-implementation");
+    assert_eq!(plan["summary"], "Result of plan-implementation.");
+    assert_eq!(plan["run"], 2);
+}
+
+#[test]
+fn a_plan_step_result_wins_over_a_later_plan_prefixed_one() {
+    let plan = plan_after("task-plan-exact", &["groom", "plan", "plan-review"]);
+
+    assert_eq!(plan["step"], "plan");
+    assert_eq!(plan["run"], 2);
+}
+
+#[test]
+fn a_step_whose_name_only_contains_plan_is_no_plan() {
+    let plan = plan_after("task-plan-none", &["groom", "planner", "replan"]);
+
+    assert_eq!(plan, Value::Null);
+}
+
 #[test]
 fn a_task_without_a_groom_or_plan_step_or_pull_request_shows_none() {
     let mut setup = Setup::new("task-detail-empty", SERVE);
@@ -4135,6 +4184,240 @@ fn the_links_endpoint_lists_the_factorys_links_in_file_order_then_the_built_in_o
     let cli = setup.priory(&["links", &setup.factory(), "--json"]);
     succeeded(&cli);
     assert_eq!(serde_json::from_slice::<Value>(&cli.stdout).unwrap(), links);
+}
+
+/// Polls `done` until it holds, for at most 20 seconds, which covers a reload's poll and settle.
+fn eventually(what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The `[links]` table of one rule, sending `pattern` to `url`.
+fn with_link(pattern: &str, url: &str) -> String {
+    format!("{SERVE}\n[links]\n'{pattern}' = \"{url}\"\n")
+}
+
+/// The data of each trace record of `kind`, oldest first.
+fn records(setup: &Setup, kind: &str) -> Vec<Value> {
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let mut statement = db
+        .prepare("SELECT event FROM trace WHERE type = ?1 ORDER BY seq")
+        .unwrap();
+    statement
+        .query_map([kind], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|event| serde_json::from_str::<Value>(&event.unwrap()).unwrap()["data"].clone())
+        .collect()
+}
+
+#[test]
+fn editing_links_in_a_running_daemons_factory_changes_the_links_endpoint_without_a_restart() {
+    let mut setup = Setup::new("reload-links", SERVE);
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let github = json!({ "pattern": r"\B#(\d+)\b", "url": "https://github.com/{repo}/issues/$1" });
+    assert_eq!(api(&address, "/api/links"), json!({ "links": [github] }));
+
+    let linear = r"\b([A-Z]{2,5}-\d+)\b";
+    let settings = with_link(linear, "https://linear.app/acme/issue/$1");
+    fs::write(setup.dir.join("factory/factory.toml"), settings).unwrap();
+
+    let edited = json!({ "links": [
+        { "pattern": linear, "url": "https://linear.app/acme/issue/$1" },
+        github,
+    ] });
+    eventually("the edited links", || api(&address, "/api/links") == edited);
+    let cli = setup.priory(&["links", &setup.factory(), "--json"]);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&cli.stdout).unwrap(),
+        edited
+    );
+    let reloaded = records(&setup, "factory.config.reloaded");
+    assert_eq!(reloaded.len(), 1, "{reloaded:?}");
+    assert_eq!(reloaded[0]["factory"], "demo");
+    assert_eq!(reloaded[0]["restart_only"], json!([]));
+    assert!(
+        setup
+            .server_log()
+            .contains("priory daemon: reloaded the factory")
+    );
+}
+
+#[test]
+fn an_invalid_edit_keeps_the_last_good_factory_and_reports_its_problem_once() {
+    let linear = r"\b([A-Z]{2,5}-\d+)\b";
+    let good = with_link(linear, "https://linear.app/acme/issue/$1");
+    let mut setup = Setup::new("reload-refused", &good);
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let before = api(&address, "/api/links");
+
+    let factory_toml = setup.dir.join("factory/factory.toml");
+    fs::write(
+        &factory_toml,
+        with_link("(unclosed", "https://example.com/$1"),
+    )
+    .unwrap();
+
+    eventually("a refused reload", || {
+        !records(&setup, "factory.config.refused").is_empty()
+    });
+    assert_eq!(api(&address, "/api/links"), before);
+    let refused = records(&setup, "factory.config.refused");
+    let problems = refused[0]["problems"].as_array().unwrap();
+    assert!(
+        problems.iter().any(|problem| {
+            let problem = problem.as_str().unwrap();
+            problem.contains("factory.toml:") && problem.contains("(unclosed")
+        }),
+        "{problems:?}"
+    );
+    // A second poll of the same broken file reports nothing again.
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(records(&setup, "factory.config.refused").len(), 1);
+
+    let fixed = with_link(r"\bGH-(\d+)\b", "https://github.com/acme/app/issues/$1");
+    fs::write(&factory_toml, fixed).unwrap();
+    eventually("the fixed links", || {
+        api(&address, "/api/links")["links"][0]["pattern"] == r"\bGH-(\d+)\b"
+    });
+    let log = setup.server_log();
+    let problem = problems[0].as_str().unwrap();
+    assert_eq!(log.matches(problem).count(), 1, "{log}");
+    assert_eq!(
+        log.matches("kept the last good factory").count(),
+        1,
+        "{log}"
+    );
+}
+
+/// Runs git in `dir` as a person with no git config of their own, and returns its trimmed stdout.
+fn git(dir: &Path, args: &[&str]) -> String {
+    let output = harness::command("git")
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-C",
+        ])
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    succeeded(&output);
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+#[test]
+fn a_commit_after_a_reload_gives_the_next_records_its_revision() {
+    let mut setup = Setup::new("reload-commit", SERVE);
+    let factory = setup.dir.join("factory");
+    git(&factory, &["init", "-q"]);
+    git(&factory, &["add", "-A"]);
+    git(&factory, &["commit", "-qm", "First"]);
+    let first = git(&factory, &["rev-parse", "HEAD"]);
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+
+    let settings = with_link(r"\bGH-(\d+)\b", "https://github.com/acme/app/issues/$1");
+    fs::write(factory.join("factory.toml"), &settings).unwrap();
+    eventually("a reload", || {
+        !records(&setup, "factory.config.reloaded").is_empty()
+    });
+    assert_eq!(
+        records(&setup, "factory.config.reloaded")[0]["factory_revision"],
+        first
+    );
+    git(&factory, &["commit", "-qam", "Link GH keys"]);
+    let second = git(&factory, &["rev-parse", "HEAD"]);
+    fs::write(
+        factory.join("factory.toml"),
+        with_link("(unclosed", "https://example.com/$1"),
+    )
+    .unwrap();
+
+    eventually("a refused reload", || {
+        !records(&setup, "factory.config.refused").is_empty()
+    });
+    assert_eq!(
+        records(&setup, "factory.config.refused")[0]["factory_revision"],
+        second
+    );
+    assert_eq!(records(&setup, "factory.config.reloaded").len(), 1);
+    assert_eq!(
+        api(&address, "/api/links")["links"][0]["pattern"],
+        r"\bGH-(\d+)\b"
+    );
+}
+
+#[test]
+fn a_file_the_factory_never_reads_reloads_nothing() {
+    let mut setup = Setup::new("reload-unread", SERVE);
+    succeeded(&setup.priory(&["pause"]));
+    setup.start(&["daemon", &setup.factory()]);
+    let factory = setup.dir.join("factory");
+
+    fs::create_dir_all(factory.join("agents/implementer/__pycache__")).unwrap();
+    fs::write(factory.join("agents/implementer/__pycache__/x.pyc"), "x").unwrap();
+    fs::write(factory.join("workflows/implement.toml~"), "backup").unwrap();
+    fs::write(factory.join("answers.log"), "written by a deliver command").unwrap();
+    let same = fs::read_to_string(factory.join("factory.toml")).unwrap();
+    fs::write(factory.join("factory.toml"), &same).unwrap();
+    std::thread::sleep(Duration::from_secs(4));
+
+    assert!(records(&setup, "factory.config.reloaded").is_empty());
+    assert!(records(&setup, "factory.config.refused").is_empty());
+    assert!(!setup.server_log().contains("reloaded the factory"));
+}
+
+#[test]
+fn a_standalone_server_follows_an_edit_of_its_factory() {
+    let mut setup = Setup::new("reload-serve", SERVE);
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let settings = with_link(r"\bGH-(\d+)\b", "https://github.com/acme/app/issues/$1");
+    fs::write(setup.dir.join("factory/factory.toml"), settings).unwrap();
+
+    eventually("the edited links", || {
+        api(&address, "/api/links")["links"][0]["pattern"] == r"\bGH-(\d+)\b"
+    });
+    assert!(
+        setup
+            .server_log()
+            .contains("priory serve: reloaded the factory")
+    );
+}
+
+#[test]
+fn an_edit_of_a_restart_only_key_says_so() {
+    let mut setup = Setup::new("reload-restart-only", SERVE);
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+
+    let settings = format!("{SERVE}\n[notify]\ndesktop = true\n");
+    fs::write(setup.dir.join("factory/factory.toml"), settings).unwrap();
+
+    eventually("a reload", || {
+        !records(&setup, "factory.config.reloaded").is_empty()
+    });
+    let reloaded = records(&setup, "factory.config.reloaded");
+    assert_eq!(reloaded[0]["restart_only"], json!(["[notify]"]));
+    assert_eq!(
+        api(&address, "/api/links")["links"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let log = setup.server_log();
+    assert!(
+        log.contains("priory daemon: [notify] changed: restart priory daemon to apply it"),
+        "{log}"
+    );
 }
 
 const DEFAULTS: &str = "name = \"demo\"\n\n[serve]\nlisten = \"127.0.0.1:0\"\ntoken_env = \"TEST_TOKEN\"\n\n[request]\nworkflow = \"implement\"\nband = \"today\"\n";

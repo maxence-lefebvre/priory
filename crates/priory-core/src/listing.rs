@@ -1741,7 +1741,21 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
             .cloned()
             .unwrap_or(Value::Null)
     };
-    let (brief, plan) = (latest(BRIEF_STEP), latest(PLAN_STEP));
+    let brief = latest(BRIEF_STEP);
+    let plan = match latest(PLAN_STEP) {
+        Value::Null => task["results"]
+            .as_array()
+            .and_then(|results| {
+                results.iter().rev().find(|result| {
+                    result["step"]
+                        .as_str()
+                        .is_some_and(|step| step.starts_with(PLAN_PREFIX))
+                })
+            })
+            .cloned()
+            .unwrap_or(Value::Null),
+        plan => plan,
+    };
     let noop = task
         .as_object_mut()
         .and_then(|fields| fields.remove("noop"))
@@ -1764,9 +1778,13 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
     Ok(Some(task))
 }
 
-/// The step whose result is a task's brief, and the one whose result is its plan.
+/// The step whose result is a task's brief, and the one whose result is its plan. A factory may
+/// name its plan step `plan-<something>`, such as `plan-implementation`: with no `plan` result,
+/// the latest result of a step starting with `PLAN_PREFIX` is the plan. The workflow marks no
+/// step as the plan, and this reads only the database, so the rule goes by the step's name.
 const BRIEF_STEP: &str = "groom";
 const PLAN_STEP: &str = "plan";
+const PLAN_PREFIX: &str = "plan-";
 
 /// The latest pull request task `id` owns, as its stored GitHub events tell it: its title, state,
 /// latest review and the latest conclusion of each check run on its latest head. The head comes
