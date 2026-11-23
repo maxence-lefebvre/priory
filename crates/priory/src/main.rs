@@ -3015,6 +3015,9 @@ fn held(
 ) -> Result<std::io::Result<std::process::ExitStatus>, String> {
     use std::io::Write;
     use std::os::fd::AsRawFd;
+    if !cfg!(target_os = "linux") {
+        return held_without_proc(program, rest, grant);
+    }
     let (reader, mut writer) = std::io::pipe().map_err(|error| error.to_string())?;
     // The shell opens the pipe's read end through /proc by this pid, not $PPID, which a dead holder turns into init, and which keeps the command's stdin as it was.
     let wait = format!(
@@ -3031,13 +3034,27 @@ fn held(
         Ok(child) => child,
         Err(error) => return Ok(Err(error)),
     };
+    let taken = take(&mut child, grant);
+    if let Err(error) =
+        taken.and_then(|_| writer.write_all(b"\n").map_err(|error| error.to_string()))
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    drop(writer);
+    Ok(child.wait())
+}
+
+/// Has the daemon take the pid of `child` for `grant`, through a restart of the daemon.
+fn take(child: &mut std::process::Child, grant: i64) -> Result<String, String> {
     let run = Gate::Run {
         grant,
         pid: child.id(),
     };
     // The daemon takes the same pid again, so a lost reply only delays the hand-over.
     let mut said = String::new();
-    let taken = loop {
+    loop {
         match call(&run, runtime::call_through_restart) {
             Err(error) if matches!(child.try_wait(), Ok(None)) => {
                 if said != error {
@@ -3048,16 +3065,44 @@ fn held(
             }
             taken => break taken.flatten(),
         }
-    };
-    if let Err(error) =
-        taken.and_then(|_| writer.write_all(b"\n").map_err(|error| error.to_string()))
+    }
+}
+
+/// `held` where no `/proc` reaches the holder's pipe, as on macOS: the shell waits for a go-ahead
+/// file instead, and gives up once this process, the holder, is gone.
+fn held_without_proc(
+    program: &OsString,
+    rest: &[OsString],
+    grant: i64,
+) -> Result<std::io::Result<std::process::ExitStatus>, String> {
+    let go = std::env::temp_dir().join(format!("priory-go-{}-{grant}", std::process::id()));
+    let _ = std::fs::remove_file(&go);
+    let wait = "while [ ! -e \"$1\" ]; do kill -0 \"$2\" 2>/dev/null || exit 125; sleep 0.05; done; \
+                rm -f \"$1\"; shift 2; exec \"$@\"";
+    let mut child = match Command::new("sh")
+        .args(["-c", wait, "sh"])
+        .arg(&go)
+        .arg(std::process::id().to_string())
+        .arg(program)
+        .args(rest)
+        .spawn()
     {
+        Ok(child) => child,
+        Err(error) => return Ok(Err(error)),
+    };
+    let taken = take(&mut child, grant);
+    if let Err(error) = taken.and_then(|_| {
+        std::fs::File::create_new(&go)
+            .map(drop)
+            .map_err(|error| format!("{}: {error}", go.display()))
+    }) {
         let _ = child.kill();
         let _ = child.wait();
         return Err(error);
     }
-    drop(writer);
-    Ok(child.wait())
+    let status = child.wait();
+    let _ = std::fs::remove_file(&go);
+    Ok(status)
 }
 
 /// Runs a leased command in the process group of a guard that stops the group once its pipe from

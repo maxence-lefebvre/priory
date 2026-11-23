@@ -17,6 +17,9 @@ It removes a folder and its branch `priory/<id>` only when all checks hold:
   the pid of the Priory process that runs it, and so do its children. A process counts as
   Priory's only when that pid runs Priory's program, is its ancestor, and that ancestor's child on
   the way carries the same value. Any process can set the variable, so the value alone hides none.
+  On macOS, `lsof` lists the working directories, and no process's environment can be read. A
+  process counts as Priory's there when a Priory process is its ancestor and that ancestor's child
+  on the way runs `git`.
 - Its task has no live run and no memory grant, waiting or held (see Memory gate).
 - No mount is at or under it, and it holds no repository of its own (see What a removal never takes).
 - The branch tip is in `origin/HEAD`, or is the head commit of a merged pull request for the

@@ -46,6 +46,11 @@ holder by pid and start time in `/proc/<pid>/stat`, so a zombie or reused pid co
 killed `acquire` that waits frees its place within a second. A killed `acquire` whose command still
 runs keeps its grant until that command ends.
 
+On macOS, which has no `/proc`, the shell of step 3 waits for a go-ahead file in the temporary
+folder instead of a pipe. It checks every 50 ms that `acquire` still runs, and exits without
+running the command once `acquire` is gone. The daemon identifies a holder there by pid and the
+start time `ps` prints, to the second.
+
 `acquire` exits 125 and never runs the command when no daemon listens to its first request, when
 the daemon cannot measure the room or refuses the grant, or when the grant still waits after
 `--timeout`, 1 hour by default. No daemon listens when its socket refuses the first request, and `acquire` does

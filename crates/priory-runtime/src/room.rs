@@ -1,4 +1,4 @@
-use crate::runtime::fed_within;
+use crate::runtime::{fed_within, run};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,20 +20,31 @@ pub struct Room {
 }
 
 /// Measures memory and load from `/proc`, or from `PRIORY_PROC` when set, and disk with `df` on
-/// `home`.
+/// `home`. On macOS, which has no `/proc`, memory and load come from `sysctl` and `vm_stat`.
 pub fn measure(home: &Path) -> Result<Room, String> {
-    let proc = proc();
-    let loadavg = read(&proc.join("loadavg"))?;
-    let load = loadavg
-        .split_whitespace()
-        .next()
-        .and_then(|load| load.parse::<f64>().ok())
-        .filter(|load| load.is_finite() && *load >= 0.0)
-        .ok_or_else(|| format!("no load in {}", proc.join("loadavg").display()))?;
+    let (memory_free, memory_total, load) = if macos() {
+        let total = run(Command::new("sysctl").args(["-n", "hw.memsize"]))?;
+        let load = run(Command::new("sysctl").args(["-n", "vm.loadavg"]))?;
+        let pages = run(&mut Command::new("vm_stat"))?;
+        (
+            vm_stat_free(&pages).ok_or("vm_stat: no free pages")?,
+            total
+                .trim()
+                .parse()
+                .map_err(|_| format!("sysctl hw.memsize printed {total:?}"))?,
+            load_of(load.trim_start_matches(['{', ' ']))
+                .ok_or_else(|| format!("sysctl vm.loadavg printed {load:?}"))?,
+        )
+    } else {
+        let proc = proc();
+        let load = load_of(&read(&proc.join("loadavg"))?)
+            .ok_or_else(|| format!("no load in {}", proc.join("loadavg").display()))?;
+        (meminfo("MemAvailable")?, meminfo("MemTotal")?, load)
+    };
     let (disk_total, disk_free) = disk(home)?;
     Ok(Room {
-        memory_free: meminfo("MemAvailable")?,
-        memory_total: meminfo("MemTotal")?,
+        memory_free,
+        memory_total,
         disk_free,
         disk_total,
         load,
@@ -70,9 +81,34 @@ pub fn cpus_of(stat: &str) -> usize {
         .count()
 }
 
+/// The 1-minute load average, the first number of `text`.
+fn load_of(text: &str) -> Option<f64> {
+    let load = text.split_whitespace().next()?.parse::<f64>().ok()?;
+    (load.is_finite() && load >= 0.0).then_some(load)
+}
+
+/// The bytes macOS can hand out without swapping, from the text of `vm_stat`: its free,
+/// speculative and inactive pages.
+pub fn vm_stat_free(text: &str) -> Option<u64> {
+    let (_, size) = text.lines().next()?.split_once("page size of ")?;
+    let size: u64 = size.split_whitespace().next()?.parse().ok()?;
+    let pages = |key: &str| {
+        let value = text.lines().find_map(|line| line.strip_prefix(key))?;
+        value.trim().trim_end_matches('.').parse::<u64>().ok()
+    };
+    pages("Pages free:")?
+        .checked_add(pages("Pages speculative:")?)?
+        .checked_add(pages("Pages inactive:")?)?
+        .checked_mul(size)
+}
+
 /// The machine's host name, which names its runner file.
 pub fn hostname() -> Option<String> {
-    let name = std::fs::read_to_string(proc().join("sys/kernel/hostname")).ok()?;
+    let name = if macos() {
+        run(Command::new("hostname").arg("-s")).ok()?
+    } else {
+        std::fs::read_to_string(proc().join("sys/kernel/hostname")).ok()?
+    };
     Some(name.trim().to_owned()).filter(|name| !name.is_empty())
 }
 
@@ -87,8 +123,14 @@ pub struct Own {
     pub system: f64,
 }
 
-/// Measures this process from `/proc/self`, or `PRIORY_PROC`'s `self` when set.
+/// Measures this process from `/proc/self`, or `PRIORY_PROC`'s `self` when set. On macOS, `ps`
+/// measures it.
 pub fn own() -> Result<Own, String> {
+    if macos() {
+        let pid = std::process::id().to_string();
+        let line = run(Command::new("ps").args(["-o", "rss=,utime=,time=", "-p", &pid]))?;
+        return own_of_ps(&line).ok_or_else(|| format!("ps printed {line:?}"));
+    }
     let dir = proc().join("self");
     let status = read(&dir.join("status"))?;
     let stat = read(&dir.join("stat"))?;
@@ -151,6 +193,38 @@ fn tree_in(proc: &Path, pid: u32, seen: &mut BTreeSet<u32>) -> u64 {
         }
     }
     bytes
+}
+
+/// Reads resident kilobytes, user CPU time and total CPU time from a line of macOS `ps`.
+pub fn own_of_ps(line: &str) -> Option<Own> {
+    // A CPU time reads `[days-][hours:]minutes:seconds`.
+    let seconds = |time: &str| {
+        let (days, clock) = time.split_once('-').unwrap_or(("0", time));
+        let parts: Vec<&str> = clock.rsplit(':').collect();
+        (parts.len() <= 3).then_some(())?;
+        let mut total = days.parse::<u32>().ok()? as f64 * 86400.0;
+        for (part, unit) in parts.iter().zip([1.0, 60.0, 3600.0]) {
+            let part = part.parse::<f64>().ok()?;
+            (part.is_finite() && part >= 0.0).then_some(())?;
+            total += part * unit;
+        }
+        Some(total)
+    };
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let [memory, user, total] = fields[..] else {
+        return None;
+    };
+    let user = seconds(user)?;
+    Some(Own {
+        memory: memory.parse::<u64>().ok()?.checked_mul(1024)?,
+        user,
+        system: (seconds(total)? - user).max(0.0),
+    })
+}
+
+/// Whether to measure with macOS's tools: on macOS, unless `PRIORY_PROC` names a stand-in `/proc`.
+fn macos() -> bool {
+    cfg!(target_os = "macos") && std::env::var_os("PRIORY_PROC").is_none_or(|proc| proc.is_empty())
 }
 
 pub(crate) fn proc() -> PathBuf {
@@ -281,6 +355,39 @@ mod tests {
         assert!(bytes >= 64 << 20, "{bytes}");
     }
 
+    #[test]
+    fn this_machine_is_measured_with_its_own_tools() {
+        let room = measure(Path::new(".")).unwrap();
+        assert!(0 < room.memory_free && room.memory_free <= room.memory_total);
+        assert!(0 < room.disk_free && room.disk_free <= room.disk_total);
+        assert!(hostname().is_some());
+        assert!(own().unwrap().memory > 0);
+    }
+
+    #[test]
+    fn vm_stat_free_adds_the_free_speculative_and_inactive_pages() {
+        let text = "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n\
+                    Pages free:                                8172.\n\
+                    Pages active:                            266998.\n\
+                    Pages inactive:                          265148.\n\
+                    Pages speculative:                         1268.\n";
+        assert_eq!(vm_stat_free(text), Some((8172 + 265148 + 1268) * 16384));
+        assert_eq!(vm_stat_free("Pages free: 1.\n"), None);
+    }
+
+    #[test]
+    fn own_of_ps_reads_resident_memory_and_splits_cpu_time() {
+        assert_eq!(
+            own_of_ps("  4048   1:02.50   1-00:01:03.00\n"),
+            Some(Own {
+                memory: 4048 * 1024,
+                user: 62.5,
+                system: 86400.0 + 63.0 - 62.5,
+            })
+        );
+        assert_eq!(own_of_ps("4048 0:00.01"), None);
+    }
+
     proptest! {
         #[test]
         fn status_bytes_of_any_text_returns_or_refuses_without_panicking(
@@ -292,6 +399,15 @@ mod tests {
                 status_bytes(&format!("RssAnon:\t{kb} kB\n"), "RssAnon"),
                 kb.checked_mul(1024)
             );
+        }
+
+        #[test]
+        fn the_macos_parsers_return_or_refuse_any_text_without_panicking(
+            text in "[0-9 .:\\-\\na-zP()]{0,200}",
+        ) {
+            let _ = vm_stat_free(&text);
+            let _ = vm_stat_free(&format!("(page size of {text}\nPages free: {text}"));
+            let _ = own_of_ps(&text);
         }
 
         #[test]

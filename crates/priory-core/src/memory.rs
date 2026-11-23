@@ -278,13 +278,47 @@ pub(crate) fn reclaim(db: &Connection) -> rusqlite::Result<()> {
 }
 
 /// When the live, unreaped process `pid` started, in clock ticks since boot, from `/proc/<pid>/stat`.
+/// On macOS, which has no `/proc`, the time is the one `ps` prints, to the second.
 pub(crate) fn started(pid: u32) -> Option<i64> {
+    if cfg!(target_os = "macos") {
+        // UTC and the C locale keep the text the same across time zone and language changes.
+        let output = std::process::Command::new("ps")
+            .envs([("TZ", "UTC"), ("LC_ALL", "C")])
+            .args(["-o", "stat=,lstart=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        return started_of_ps(&String::from_utf8_lossy(&output.stdout));
+    }
     let stat =
         std::fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("stat")).ok()?;
     // The command name, in parentheses, may hold spaces; the fields after it are state, ppid, ...
     let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
     (fields.first() != Some(&"Z")).then_some(())?;
     fields.get(19)?.parse().ok()
+}
+
+/// Reads a line of `ps -o stat=,lstart=`, such as `Ss Mon Nov 23 07:07:41 2026`, as the number
+/// `20261123070741`, or nothing for a zombie.
+fn started_of_ps(line: &str) -> Option<i64> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let fields: Vec<&str> = line.split_whitespace().collect();
+    let [state, _, month, day, time, year] = fields[..] else {
+        return None;
+    };
+    (!state.starts_with('Z')).then_some(())?;
+    let month = MONTHS.iter().position(|name| *name == month)? as i64 + 1;
+    let clock: Vec<&str> = time.split(':').collect();
+    let [hour, minute, second] = clock[..] else {
+        return None;
+    };
+    [day, hour, minute, second].iter().try_fold(
+        i64::from(year.parse::<u16>().ok()?) * 100 + month,
+        |sum, part| {
+            Some(sum * 100 + i64::from(part.parse::<u8>().ok().filter(|part| *part < 100)?))
+        },
+    )
 }
 
 /// How long a waiting grant that does not fit holds back the grants behind it. A build it waits for ends
@@ -451,6 +485,7 @@ fn released(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::cell::Cell;
 
     const GB: u64 = 1 << 30;
@@ -1244,5 +1279,26 @@ mod tests {
         send(&mut db, Gate::Release { grant });
         refused(&mut db, "DELETE ON main.lapses", acquire(4, "make"));
         assert_eq!((states(&db).len(), lapses(&db)), (1, 1));
+    }
+
+    #[test]
+    fn started_of_ps_reads_the_start_time_of_a_process_that_is_not_a_zombie() {
+        let started = started_of_ps("Ss   Mon Nov 23 07:07:41 2026    \n");
+        assert_eq!(started, Some(20261123070741));
+        assert_eq!(started_of_ps("Z    Mon Nov 23 07:07:41 2026\n"), None);
+        assert_eq!(started_of_ps(""), None);
+    }
+
+    #[test]
+    fn started_reads_this_process_and_no_process_that_is_gone() {
+        assert!(started(std::process::id()).is_some());
+        assert_eq!(started(u32::MAX), None);
+    }
+
+    proptest! {
+        #[test]
+        fn started_of_ps_reads_any_text_without_panicking(line in "[SZa-zJN0-9: ]{0,80}") {
+            let _ = started_of_ps(&line);
+        }
     }
 }
