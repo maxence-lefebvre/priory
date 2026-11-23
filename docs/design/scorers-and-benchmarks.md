@@ -444,6 +444,9 @@ Tests:
    one refusal then a pass, two refusals, a scorer error, an event held while the gate grades, an
    uncalibrated judge's ask and both its answers, a calibrated judge within its per-call budget, the critic on a green plan,
    and no critic under `plan` or before a human step.
+   Since then, a result held on that ask ends its run asleep, so it holds no process, room or
+   `max_running` place, and the gates that wait on the same judges share one ask, whose answer
+   settles each of them (migration 105 adds `ask` and `judges` to the `gates` table).
 
 8. Built. Held scorers, graded on what happened after the merge
    ([score.md](../daemon/score.md#held-scorers), [scorers.md](../reference/scorers.md#kinds)). A

@@ -170,20 +170,7 @@ pub(crate) fn tick(
     grading: &mut Grading,
     head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<Vec<String>> {
-    db.execute(
-        "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'moved-on'
-         WHERE answer IS NULL AND withdrawn IS NULL AND EXISTS (
-           SELECT 1 FROM gates JOIN runs ON runs.id = gates.run
-           WHERE gates.state = 'grading' AND runs.ended IS NOT NULL
-           AND asks.name LIKE 'gate-' || gates.id || '-%')",
-        [],
-    )?;
-    db.execute(
-        "UPDATE gates SET state = 'dropped', reason = 'its run ended before the gate graded it',
-         ended = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-         WHERE state = 'grading' AND run IN (SELECT id FROM runs WHERE ended IS NOT NULL)",
-        [],
-    )?;
+    drop_ended(db)?;
     let mut kills = Vec::new();
     let waiting: Vec<(i64, i64, String, String, Option<String>)> = {
         let mut statement = db.prepare(
@@ -207,7 +194,21 @@ pub(crate) fn tick(
             continue;
         }
         match asked(db, id)? {
-            Asked::Open => continue,
+            Asked::Open => {
+                let awake: bool = db.query_row(
+                    "SELECT EXISTS (SELECT 1 FROM gates JOIN runs ON runs.id = gates.run
+                       WHERE gates.id = ?1 AND gates.stopped AND runs.ended IS NULL)",
+                    [id],
+                    |row| row.get(0),
+                )?;
+                if !awake {
+                    continue;
+                }
+                let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+                kills.extend(park(&tx, id)?);
+                tx.commit()?;
+                continue;
+            }
             Asked::Through => {
                 kills.extend(apply(db, trace, id, &Vec::new(), true, head)?);
                 continue;
@@ -240,6 +241,69 @@ pub(crate) fn tick(
         kills.extend(apply(db, trace, id, &graded, false, head)?);
     }
     Ok(kills)
+}
+
+/// A gate that waits on a person's ask keeps its result while its run sleeps and its task stays
+/// asleep at the gate's step with no later run. Any other gate whose run ended drops its result.
+const PARKED: &str = "gates.ask IS NOT NULL AND runs.ended_as = 'asleep' AND EXISTS (
+  SELECT 1 FROM tasks WHERE tasks.id = gates.task AND tasks.state = 'asleep'
+  AND tasks.step = gates.step)
+  AND NOT EXISTS (SELECT 1 FROM runs AS later WHERE later.task = gates.task AND later.id > gates.run)";
+
+/// Drops the gates whose run ended, except those that sleep on an ask. An ask no gate waits on any
+/// more is withdrawn, and one whose task dropped its gate moves to a task that still waits on it.
+fn drop_ended(db: &mut Connection) -> rusqlite::Result<()> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let dropped: Vec<(i64, Option<i64>)> = {
+        let mut statement = tx.prepare(&format!(
+            "SELECT gates.id, gates.ask FROM gates JOIN runs ON runs.id = gates.run
+             WHERE gates.state = 'grading' AND runs.ended IS NOT NULL AND NOT ({PARKED})"
+        ))?;
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for (id, ask) in &dropped {
+        end(
+            &tx,
+            *id,
+            "dropped",
+            Some("its run ended before the gate graded it"),
+        )?;
+        let Some(ask) = ask else {
+            continue;
+        };
+        tx.execute(
+            "UPDATE asks SET withdrawn = 1, withdrawn_reason = 'moved-on'
+             WHERE id = ?1 AND answer IS NULL AND withdrawn IS NULL
+             AND NOT EXISTS (SELECT 1 FROM gates WHERE ask = ?1 AND state = 'grading')",
+            [ask],
+        )?;
+        tx.execute(
+            "UPDATE asks SET task = (SELECT task FROM gates WHERE ask = ?1 AND state = 'grading'
+               ORDER BY id LIMIT 1),
+               step = (SELECT step FROM gates WHERE ask = ?1 AND state = 'grading' ORDER BY id LIMIT 1)
+             WHERE id = ?1 AND answer IS NULL AND withdrawn IS NULL
+             AND task NOT IN (SELECT task FROM gates WHERE ask = ?1 AND state = 'grading')",
+            [ask],
+        )?;
+        waiting(&tx, *ask)?;
+    }
+    tx.commit()
+}
+
+/// Ends the live run of gate `id` as asleep once its turn ended, since the result waits on a
+/// person's ask and a waiting agent holds no process. Returns the tmux session to kill.
+fn park(tx: &Transaction, id: i64) -> rusqlite::Result<Option<String>> {
+    let (run, stopped): (i64, bool) = tx.query_row(
+        "SELECT run, stopped FROM gates WHERE id = ?1",
+        [id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if !stopped {
+        return Ok(None);
+    }
+    crate::tools::sleep(tx, run)
 }
 
 /// The scores of a finished grading thread. A thread that panicked graded nothing, so one error
@@ -437,9 +501,17 @@ fn apply(
         })
         .collect();
     if refusals.is_empty() && !uncalibrated.is_empty() && !through {
-        ask(&tx, id, task, &outcome, &uncalibrated)?;
+        let mut judges: Vec<&str> = graded
+            .iter()
+            .filter(|(score, counts)| !counts && reviewer != Some(score.scorer.as_str()))
+            .map(|(score, _)| score.scorer.as_str())
+            .collect();
+        judges.sort_unstable();
+        judges.dedup();
+        ask(&tx, id, task, &judges, &uncalibrated)?;
+        let kill = park(&tx, id)?;
         tx.commit()?;
-        return Ok(None);
+        return Ok(kill);
     }
     if refusals.is_empty() {
         let arguments: Value = serde_json::from_str(&arguments).unwrap_or_default();
@@ -478,7 +550,7 @@ fn apply(
             .map(|lesson| format!("\n- {lesson}"))
             .collect();
         end(&tx, id, "refused", Some(&reason))?;
-        crate::tools::refused(
+        wake(
             &tx,
             task,
             &format!(
@@ -495,7 +567,7 @@ fn apply(
     )?;
     end(&tx, id, "refused", Some(&reason))?;
     if earlier == 0 {
-        crate::tools::refused(
+        wake(
             &tx,
             task,
             &format!(
@@ -537,8 +609,8 @@ enum Asked {
 fn asked(db: &Connection, id: i64) -> rusqlite::Result<Asked> {
     let latest: Option<(Option<String>, bool)> = db
         .query_row(
-            "SELECT answer, withdrawn IS NOT NULL FROM asks WHERE name LIKE 'gate-' || ?1 || '-%'
-             ORDER BY id DESC LIMIT 1",
+            "SELECT asks.answer, asks.withdrawn IS NOT NULL FROM gates
+             JOIN asks ON asks.id = gates.ask WHERE gates.id = ?1",
             [id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -551,41 +623,95 @@ fn asked(db: &Connection, id: i64) -> rusqlite::Result<Asked> {
     })
 }
 
-/// Asks a person about gate `id`, whose only objection is a judge that is not calibrated, since
-/// such a judge can neither pass nor refuse a plan no person reads. The result stays held.
+/// Puts gate `id`, whose only objection is a judge that is not calibrated, on the open ask of the
+/// gates that wait on the same `judges`, or asks a person anew, since such a judge can neither pass
+/// nor refuse a plan no person reads. The result stays held, and one answer settles each gate.
 fn ask(
     tx: &Transaction,
     id: i64,
     task: i64,
-    outcome: &str,
+    judges: &[&str],
     uncalibrated: &[String],
 ) -> rusqlite::Result<()> {
-    let step: String = tx.query_row("SELECT step FROM gates WHERE id = ?1", [id], |row| {
-        row.get(0)
-    })?;
-    let asked: i64 = tx.query_row(
-        "SELECT count(*) FROM asks WHERE name LIKE 'gate-' || ?1 || '-%'",
-        [id],
-        |row| row.get(0),
-    )?;
-    let question = format!(
-        "The gate of step {step} holds outcome {outcome} of task {task}: {}. Calibrate it with priory score --calibrate, then answer {GRADE_AGAIN}, or answer {LET_THROUGH} to store the result this once.",
-        uncalibrated.join("; ")
-    );
-    let title = format!("gate held: {}", uncalibrated.join("; "));
+    let judges = serde_json::to_string(judges).expect("names serialize");
+    let open: Option<i64> = tx
+        .query_row(
+            "SELECT asks.id FROM gates JOIN asks ON asks.id = gates.ask
+             WHERE gates.judges = ?1 AND gates.state = 'grading' AND gates.id != ?2
+             AND asks.answer IS NULL AND asks.withdrawn IS NULL
+             ORDER BY asks.id DESC LIMIT 1",
+            params![judges, id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let ask = match open {
+        Some(ask) => ask,
+        None => {
+            let step: String =
+                tx.query_row("SELECT step FROM gates WHERE id = ?1", [id], |row| {
+                    row.get(0)
+                })?;
+            let asked: i64 = tx.query_row(
+                "SELECT count(*) FROM asks WHERE name LIKE 'gate-' || ?1 || '-%'",
+                [id],
+                |row| row.get(0),
+            )?;
+            let question = format!(
+                "Gates hold results while {}. Calibrate it with priory score --calibrate, then answer {GRADE_AGAIN} to grade each result that waits on this ask again, or answer {LET_THROUGH} to store each of them this once.",
+                uncalibrated.join("; ")
+            );
+            let title = format!("gate held: {}", uncalibrated.join("; "));
+            tx.execute(
+                "INSERT INTO asks (task, step, kind, name, question, options, title)
+                 VALUES (?1, ?2, 'agent', ?3, ?4, ?5, ?6)",
+                params![
+                    task,
+                    step,
+                    format!("gate-{id}-{}", asked + 1),
+                    question,
+                    serde_json::json!([GRADE_AGAIN, LET_THROUGH]).to_string(),
+                    title
+                ],
+            )?;
+            tx.last_insert_rowid()
+        }
+    };
     tx.execute(
-        "INSERT INTO asks (task, step, kind, name, question, options, title)
-         VALUES (?1, ?2, 'agent', ?3, ?4, ?5, ?6)",
+        "UPDATE gates SET ask = ?2, judges = ?3 WHERE id = ?1",
+        params![id, ask, judges],
+    )?;
+    waiting(tx, ask)
+}
+
+/// Lists, on ask `ask`, the tasks whose held results wait on it.
+fn waiting(tx: &Transaction, ask: i64) -> rusqlite::Result<()> {
+    let tasks: Vec<String> = {
+        let mut statement = tx.prepare(
+            "SELECT DISTINCT task FROM gates WHERE ask = ?1 AND state = 'grading' ORDER BY task",
+        )?;
+        statement
+            .query_map([ask], |row| row.get::<_, i64>(0))?
+            .map(|task| task.map(|task| task.to_string()))
+            .collect::<rusqlite::Result<_>>()?
+    };
+    if tasks.is_empty() {
+        return Ok(());
+    }
+    let label = if tasks.len() == 1 { "task" } else { "tasks" };
+    tx.execute(
+        "UPDATE asks SET what_waits = ?2 WHERE id = ?1",
         params![
-            task,
-            step,
-            format!("gate-{id}-{}", asked + 1),
-            question,
-            serde_json::json!([GRADE_AGAIN, LET_THROUGH]).to_string(),
-            title
+            ask,
+            format!("the held results of {label} {}", tasks.join(", "))
         ],
     )
     .map(drop)
+}
+
+/// Queues a refusal as the task's next prompt, and wakes the task when its run slept on an ask.
+fn wake(tx: &Transaction, task: i64, text: &str) -> rusqlite::Result<()> {
+    crate::tools::refused(tx, task, text)?;
+    crate::tools::set_ready(tx, task)
 }
 
 /// Records a person's answer to `ask`, when it is a gate's: the gate acts on it at its next tick.
