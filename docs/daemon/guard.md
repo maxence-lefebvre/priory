@@ -87,6 +87,26 @@ guarded. A factory adds its own guards with `[guard]` in
 same call as `gh-pr-merge` or `gh-pr-approve`, such as one on `gh pr` or `mcp__github__*`, does not
 rename it: the call keeps its built-in guard.
 
+## News before a pull request
+
+The hook also delivers news that may end the task's work, such as its Linear issue moved to
+Duplicate, during the turn (see [News during a turn](routing.md#news-during-a-turn)). This is no
+approval rule: it holds a call once, and the call passes when the agent makes it again.
+
+When the run's spool folder holds a `news` marker, the hook asks the daemon for the unread news,
+which the daemon then marks read. The hook refuses the call once, with the news as its reason, when
+the call:
+
+- runs `gh pr create`, or `git push` that is neither `--dry-run` nor `-n`, as the guard reads a
+  command;
+- is an MCP tool named `create_pull_request`, or the `priory` server's `result`, `ask`, `wait` or
+  `consult`;
+- matches a guard, and the guard let it through.
+
+Any other call runs, with the news added to its context. Without the marker the hook asks nothing.
+When the daemon does not answer within one second, the call runs and the news waits for the next
+call: unlike an approval, news must not stop a run while the daemon restarts.
+
 ## Connector sign-in
 
 An MCP server that needs a sign-in offers an `authenticate` tool in place of its own. A run that

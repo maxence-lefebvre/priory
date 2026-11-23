@@ -32,6 +32,7 @@ pub mod memory;
 pub mod metrics;
 #[cfg(feature = "model")]
 mod model;
+pub mod news;
 mod notify;
 mod otlp;
 pub mod outside;

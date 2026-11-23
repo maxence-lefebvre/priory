@@ -367,6 +367,8 @@ What happens to a `kept` message depends on the task's state:
 - For a `running` task, the daemon also queues an outbox prompt with the message, so the agent reads
   it after its current turn. Until then, for feedback, the agent's `result`, `ask` and `wait` are
   refused (see [Ending a turn](tools.md#ending-a-turn)).
+- For a `running` task, news that may end its work also reaches the run during its turn (see
+  [News during a turn](#news-during-a-turn)).
 - If the message satisfies the task's open wait, the wait fires in any active state (see
   [waits.md](waits.md)). An asleep task wakes. A ready, blocked or held task keeps its state, and
   its next run gets the prompt.
@@ -388,6 +390,40 @@ What happens to a `kept` message depends on the task's state:
   neither grow the ask nor keep it unanswerable. The answer may lead to `done` with no agent run
   at all. If a run follows, it reads the message too.
 - Any other kept message waits for the task's next run, which reads it in its first prompt.
+
+## News during a turn
+
+A queued prompt waits for the end of the turn, and a run can open a pull request before then. So
+the daemon also hands news that may end the task's work to the run during its turn. News is one of
+these events, kept by the task itself or through a subscription:
+
+| Event | News when |
+| ----- | --------- |
+| `linear.issue.state_changed` | `to_type` is `canceled`, as Linear's Duplicate and Canceled states are, or `completed` |
+| `github.pull_request.closed` | `merged` is `false` |
+| `github.issues.closed` | always |
+
+The daemon records the news for the task's live run and writes a marker file, `news`, in the run's
+spool folder, `<home>/spools/<session>/`. The run's [tool guard hook](guard.md#news-before-a-pull-request)
+checks for that file on every call, and asks the daemon for the news only when it exists. The run
+reads each piece of news once, as a line such as:
+
+```text
+Ana moved ENG-7 to Duplicate (canceled), as a duplicate of ENG-9. https://linear.app/acme/issue/ENG-7
+```
+
+The hook adds that line to the next call the agent makes. When that call opens a pull request,
+pushes, or ends or sleeps the run, the hook refuses it once with the news as its reason instead. The
+`result`, `ask`, `wait` and `consult` tools refuse once the same way, for a harness whose hook does
+not reach them. The queued prompt still carries the event after the turn.
+
+`completed` counts whoever moved the issue: agents move Linear issues with the person's key, so the
+actor cannot tell the agent from the person. An agent that moved its own issue to Done gets one
+refused call. A task asleep at its checks gate wakes on a `canceled` state change (see
+[Subscriptions in tools.md](tools.md#subscriptions)). A `completed` one does not, since a merge
+moves the issue to Done.
+
+The outcome stays `kept`. A waiting [`linear_state` wait](waits.md) still fires on its named state.
 
 ## Schedule firings
 

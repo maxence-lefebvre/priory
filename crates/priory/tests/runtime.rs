@@ -72,7 +72,7 @@ macro_rules! undo_pre {
   ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
-  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv;
+  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv; DROP TABLE news;
   "
     };
 }
@@ -19210,6 +19210,173 @@ fn a_read_passes_the_tool_guard_with_no_daemon_to_ask() {
     let (printed, _) = guard_hook(&home, "gh pr view 12");
 
     assert_eq!(printed, "");
+}
+
+/// Ana moves ENG-7 to `to`, a state of type `to_type`, now.
+fn moved_to(to: &str, to_type: &str) -> Message {
+    let duplicate_of = (to == "Duplicate").then_some("ENG-9");
+    linear_event(
+        "linear.issue.state_changed",
+        "ENG-7",
+        json!({ "linear_id": format!("ENG-7-{to}"), "from": "In Progress", "to": to,
+                "to_type": to_type, "duplicate_of": duplicate_of, "actor": "Ana" }),
+    )
+    .time(herdr_bus::Timestamp::now())
+}
+
+/// Starts a task on ENG-7 whose turn makes `calls`, and publishes `moved` while the turn runs,
+/// before its calls. Returns once the fake logged a reply for each call.
+fn moved_during_turn(
+    name: &str,
+    moved: &Message,
+    calls: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    let mut setup = Setup::new(name);
+    setup.calls(&[json!(calls)]);
+    setup.hold("hold-call");
+    setup.publish(&linear_requested("ENG-7", "source"));
+    setup.start();
+    setup.written("fake/submitted");
+    setup.publish(moved);
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "kept");
+
+    setup.release("hold-call");
+
+    setup.replied(calls.len())
+}
+
+#[test]
+fn a_duplicate_during_the_turn_holds_the_first_pull_request_and_names_the_issue_it_duplicates() {
+    let create = bash("gh pr create --title T --body B");
+
+    let replies = moved_during_turn(
+        "news-duplicate",
+        &moved_to("Duplicate", "canceled"),
+        &[create.clone(), create],
+    );
+
+    let reason = guard_denied(&replies[0]).unwrap_or_else(|| panic!("{}", replies[0]));
+    assert!(
+        reason.contains("Ana moved ENG-7 to Duplicate (canceled), as a duplicate of ENG-9."),
+        "{reason}"
+    );
+    assert!(reason.starts_with("Priory held this call once"), "{reason}");
+    assert_eq!(guard_denied(&replies[1]), None, "{}", replies[1]);
+}
+
+#[test]
+fn a_move_to_in_review_during_the_turn_holds_nothing_and_adds_nothing() {
+    let replies = moved_during_turn(
+        "news-in-review",
+        &moved_to("In Review", "started"),
+        &[bash("ls"), bash("gh pr create --title T --body B")],
+    );
+
+    for reply in &replies {
+        assert_eq!(guard_denied(reply), None, "{reply}");
+        assert!(
+            reply["hookSpecificOutput"]["additionalContext"].is_null(),
+            "{reply}"
+        );
+    }
+}
+
+#[test]
+fn a_cancel_during_the_turn_reaches_the_next_call_and_then_lets_a_push_through() {
+    let replies = moved_during_turn(
+        "news-canceled",
+        &moved_to("Canceled", "canceled"),
+        &[bash("ls"), bash("git push origin priory/1")],
+    );
+
+    let context = replies[0]["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{}", replies[0]));
+    assert!(
+        context.contains("Ana moved ENG-7 to Canceled (canceled)."),
+        "{context}"
+    );
+    assert_eq!(guard_denied(&replies[0]), None);
+    assert_eq!(guard_denied(&replies[1]), None, "{}", replies[1]);
+    assert!(
+        replies[1]["hookSpecificOutput"]["additionalContext"].is_null(),
+        "{}",
+        replies[1]
+    );
+}
+
+#[test]
+fn a_cancel_during_the_turn_refuses_the_result_once_with_the_news() {
+    let mut setup = Setup::new("news-result");
+    setup.calls(&[result("passed"), result("passed")]);
+    setup.hold("hold-call");
+    setup.publish(&linear_requested("ENG-7", "source"));
+    setup.start();
+    setup.written("fake/submitted");
+    setup.publish(&moved_to("Canceled", "canceled"));
+    setup.until("inbox", |rows| rows.len() == 2 && rows[1][4] == "kept");
+
+    setup.release("hold-call");
+
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    let (text, error) = reply(&setup.replies()[0]);
+    assert!(error, "{text}");
+    assert!(
+        text.contains("Ana moved ENG-7 to Canceled (canceled)."),
+        "{text}"
+    );
+    let (text, error) = reply(&setup.replies()[1]);
+    assert!(!error, "{text}");
+}
+
+#[test]
+fn a_cancel_wakes_a_task_asleep_at_its_checks_gate() {
+    let mut setup = Setup::new("news-gate");
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
+    setup.publish(&linear_requested("ENG-7", "source"));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] != "-");
+    setup.gone("priory-1");
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    setup.publish(&moved_to("In Review", "started"));
+    setup.until("inbox", |rows| rows.len() == 3);
+
+    setup.publish(&moved_to("Duplicate", "canceled"));
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    let typed = setup.typed();
+    assert!(
+        typed[2].starts_with(
+            "wait 2 fired: Ana moved ENG-7 to Duplicate (canceled), as a duplicate of ENG-9."
+        ),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_daemon_that_does_not_answer_lets_a_call_through_although_news_waits() {
+    let home = Path::new(env!("CARGO_TARGET_TMPDIR")).join("news-silent");
+    priory_runtime::runtime::remove_sealed(&home);
+    let spool = home.join("spools/6f1c0b9e-0d2a-4f43-9a51-3c2e8e1b7d10");
+    fs::create_dir_all(&spool).unwrap();
+    fs::write(spool.join("news"), "").unwrap();
+    let socket = priory_runtime::runtime::socket_in(Some(&home), &home);
+    fs::create_dir_all(socket.parent().unwrap()).unwrap();
+    // A long home puts the socket under /tmp, where an earlier run's socket stays.
+    let _ = fs::remove_file(&socket);
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let silent = std::thread::spawn(move || listener.accept().map(|(stream, _)| stream));
+
+    let (printed, took) = guard_hook(&home, "gh pr create --title T --body B");
+
+    assert_eq!(printed, "");
+    assert!(took < Duration::from_secs(5), "{took:?}");
+    drop(silent.join());
 }
 
 #[test]

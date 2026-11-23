@@ -542,6 +542,12 @@ pub struct LinearStateChanged {
     pub from: Option<String>,
     /// The state it moved to.
     pub to: String,
+    /// The type of the state it moved to: `triage`, `backlog`, `unstarted`, `started`,
+    /// `completed` or `canceled`. Linear's Duplicate state is of type `canceled`.
+    pub to_type: Option<String>,
+    /// The identifier of the issue it duplicates, as its `duplicate` relation names it; null
+    /// without one and from a webhook.
+    pub duplicate_of: Option<String>,
     /// The Linear display name of who moved it.
     pub actor: Option<String>,
     /// The identifiers of the open issues that block it; null past 20 relations.

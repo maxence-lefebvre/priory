@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 110;
+const VERSION: i64 = 111;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1964,6 +1964,19 @@ ALTER TABLE runs ADD COLUMN direnv INTEGER;
 PRAGMA user_version = 110;
 ";
 
+// News that may end a task's work, kept for its live run until a held call takes it.
+const SCHEMA_111: &str = "
+CREATE TABLE news (
+  id   INTEGER PRIMARY KEY,
+  run  INTEGER NOT NULL REFERENCES runs (id),
+  seq  INTEGER,
+  text TEXT NOT NULL,
+  read TEXT,
+  UNIQUE (run, seq)
+);
+PRAGMA user_version = 111;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1980,6 +1993,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110,
+    SCHEMA_111,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2549,10 +2563,12 @@ pub(crate) fn route_in(
                  VALUES (?1, ?2, ?3, ?4)",
                 params![seq, other.id, outcome, prompt],
             )?;
+            crate::news::keep(tx, other.id, seq, &message.kind, &message.data)?;
         }
     }
     match (task, outcome) {
         (Some(task), "kept") => {
+            crate::news::keep(tx, task, seq, &message.kind, &message.data)?;
             let (fired, ended) = crate::tools::event(tx, task, seq, factory)?;
             kill.extend(ended);
             if !fired {

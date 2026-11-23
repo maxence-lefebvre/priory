@@ -4312,9 +4312,9 @@ const GUARD_DEADLINE: Duration = Duration::from_secs(8);
 
 /// The `PreToolUse` hook's reason to deny the call, if any: none for a call no guard matches, and
 /// the daemon's answer for one that matches. Anything but the daemon's yes denies, since a hook
-/// that fails lets the call through.
-fn guard(input: &Value) -> Option<String> {
-    let deny = |reason: &str| Some(reason.to_owned());
+/// that fails lets the call through. Also whether a guard matched it.
+fn guard(input: &Value) -> (Option<String>, bool) {
+    let deny = |reason: &str| (Some(reason.to_owned()), true);
     let guards: priory_factory::guard::Guards = match std::env::var("PRIORY_GUARD") {
         Ok(json) if !json.is_empty() => match serde_json::from_str(&json) {
             Ok(guards) => guards,
@@ -4349,6 +4349,7 @@ fn guard(input: &Value) -> Option<String> {
         Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
     };
     let hits = guards.hits(tool, command.as_deref(), &git);
+    let guarded = !hits.is_empty();
     let moves_head = command
         .as_deref()
         .is_some_and(priory_factory::guard::moves_head);
@@ -4382,7 +4383,7 @@ fn guard(input: &Value) -> Option<String> {
         }
     }
     report_connector_use(tool);
-    None
+    (None, guarded)
 }
 
 /// The denial of an MCP tool whose server is none of `servers`, the comma-separated servers a run
@@ -4472,6 +4473,34 @@ fn outside_mcp() -> ExitCode {
         return ExitCode::from(2);
     }
     exit("mcp", mcp::serve_outside(asking_session().as_deref()))
+}
+
+/// How long the hook waits for the daemon to hand over a run's unread news.
+const NEWS_WAIT: Duration = Duration::from_secs(1);
+
+/// The unread news of this run, now read: none without the marker the daemon writes, or when the
+/// daemon does not answer, since news is no approval and must not stop a run's calls.
+fn news(input: &Value) -> Option<String> {
+    let session = std::env::var("PRIORY_SESSION")
+        .ok()
+        .filter(|id| !id.is_empty())
+        .or_else(|| input["session_id"].as_str().map(str::to_owned))?;
+    let marker = priory_runtime::jail::spool_dir(&runtime::home(), &session).join("news");
+    if !marker.exists() {
+        return None;
+    }
+    let line = serde_json::json!({ "news": { "session": session } });
+    runtime::call(&runtime::home(), &line.to_string(), NEWS_WAIT)
+        .ok()
+        .and_then(|reply| serde_json::from_str::<Result<String, String>>(&reply).ok())
+        .and_then(Result::ok)
+        .filter(|news| !news.is_empty())
+}
+
+/// Whether the call opens a pull request, pushes, or ends or sleeps the run.
+fn holds_for_news(input: &Value) -> bool {
+    let tool = input["tool_name"].as_str().unwrap_or_default();
+    priory_factory::guard::holds_for_news(tool, shell_command(input).as_deref())
 }
 
 /// How long the hook waits for the daemon to say which matching files a run has not got yet.
@@ -4618,31 +4647,46 @@ fn hook(event: &str) -> ExitCode {
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let checked = match serde_json::from_reader::<_, Value>(std::io::stdin()) {
-                Ok(input) => (guard(&input), Some(input)),
+                Ok(input) => match guard(&input) {
+                    (None, guarded) => match news(&input) {
+                        Some(news) if guarded || holds_for_news(&input) => {
+                            (Some(priory_core::news::held(&news)), None, None)
+                        }
+                        news => (None, news, Some(input)),
+                    },
+                    (denied, _) => (denied, None, None),
+                },
                 Err(error) => (
                     Some(format!(
                         "Priory's tool guard could not read this call ({error}), so it denied it."
                     )),
                     None,
+                    None,
                 ),
             };
             sender.send(checked)
         });
-        let (denied, input) = receiver.recv_timeout(GUARD_DEADLINE).unwrap_or_else(|_| {
+        let (denied, news, input) = receiver.recv_timeout(GUARD_DEADLINE).unwrap_or_else(|_| {
             let reason = format!(
                 "Priory's tool guard failed or did not finish within {}s on this call, so it denied it.",
                 GUARD_DEADLINE.as_secs()
             );
-            (Some(reason), None)
+            (Some(reason), None, None)
         });
-        if let Some(reason) = denied {
-            print_deny(&reason);
-        } else if let Some(context) = input.and_then(|input| {
+        let scoped = input.and_then(|input| {
             // Best effort: a lookup that fails or hangs adds nothing and never holds the call.
             let (sender, receiver) = std::sync::mpsc::channel();
             std::thread::spawn(move || sender.send(scoped_context(&input)));
             receiver.recv_timeout(SCOPED_DEADLINE).ok().flatten()
-        }) {
+        });
+        let news = news.map(|news| {
+            format!("Priory news for this task, which may end its work:\n{news}\nDecide with it before you open a pull request, push or end the step.")
+        });
+        let context: Vec<String> = news.into_iter().chain(scoped).collect();
+        if let Some(reason) = denied {
+            print_deny(&reason);
+        } else if !context.is_empty() {
+            let context = context.join("\n\n");
             let output = serde_json::json!({ "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "additionalContext": context,

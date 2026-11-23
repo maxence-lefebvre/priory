@@ -511,6 +511,28 @@ pub fn moves_head(command: &str) -> bool {
     })
 }
 
+/// Whether a call opens a pull request, pushes, or ends or sleeps the run: the calls Priory holds
+/// once while news of the task is unread. A dry run or a help request is not held.
+pub fn holds_for_news(tool: &str, command: Option<&str>) -> bool {
+    if let Some(name) = tool.strip_prefix("mcp__") {
+        return name.rsplit_once("__").is_some_and(|(server, short)| {
+            if server == "priory" {
+                return matches!(short, "result" | "ask" | "wait" | "consult");
+            }
+            short == "create_pull_request"
+        });
+    }
+    let Some(command) = command else {
+        return false;
+    };
+    commands(command).iter().any(|words| {
+        let pushes = words[0] == "git"
+            && positional(words).first() == Some(&"push")
+            && !words.iter().any(|word| word == "--dry-run" || word == "-n");
+        !help(words) && (pushes || starts(words, &["gh", "pr", "create"], &[]))
+    })
+}
+
 /// `git push` that forces, deletes, or updates the default branch. A push of every branch or of
 /// a wildcard counts as one to the default branch.
 fn git_push(words: &[String], git: Git) -> Option<&'static str> {
@@ -1424,6 +1446,23 @@ fn assignment(word: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn news_holds_a_pull_request_a_push_and_a_step_end_and_not_a_read() {
+        let held = |command: &str| holds_for_news("Bash", Some(command));
+        assert!(held("gh pr create --title T --body B"));
+        assert!(held("bash -c 'gh -R o/r pr create -f'"));
+        assert!(held("git push -u origin priory/7"));
+        assert!(held("git -C repo push"));
+        assert!(!held("git push --dry-run origin priory/7"));
+        assert!(!held("gh pr create --help"));
+        assert!(!held("gh pr view 7"));
+        assert!(!held("git status"));
+        assert!(holds_for_news("mcp__priory__result", None));
+        assert!(holds_for_news("mcp__github__create_pull_request", None));
+        assert!(!holds_for_news("mcp__priory__progress", None));
+        assert!(!holds_for_news("Read", None));
+    }
 
     fn guards(command: &str) -> Vec<String> {
         let git = |_: Option<&str>, args: &[&str]| match args {
