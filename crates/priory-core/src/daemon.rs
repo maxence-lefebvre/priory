@@ -97,7 +97,7 @@ pub fn view_only(factory: &Factory) -> Result<(), String> {
 }
 
 fn view(factory: &Factory) -> Result<(), Error> {
-    let watch = reload::Watch::new(&factory.dir);
+    let watch = reload::Watch::new(factory);
     let machine = room::hostname();
     let viewer = runners::viewer(factory, machine.as_deref())?;
     let mut db = state::open()?;
@@ -169,7 +169,7 @@ fn view_drain(
 
 fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     // Taken first, so an edit made while the daemon starts still reloads.
-    let watch = reload::Watch::new(&factory.dir);
+    let watch = reload::Watch::new(factory);
     runtime::bound_commands(factory.command_timeout());
     let mut db = state::open()?;
     tools::backfill_endings(&mut db, &factory.workflows)?;
@@ -508,6 +508,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
 struct Live<'a> {
     start: &'a Factory,
     reloaded: Option<Factory>,
+    /// A valid edit the guard refused, and the digest of its files: it applies once no task is at
+    /// a workflow or step it removes.
+    held: Option<(Box<Factory>, reload::Digest)>,
     watch: reload::Watch,
     revision: Option<String>,
     server: Option<crate::serve::Server>,
@@ -523,6 +526,7 @@ impl<'a> Live<'a> {
         Live {
             start,
             reloaded: None,
+            held: None,
             watch,
             revision,
             server,
@@ -545,32 +549,48 @@ impl<'a> Live<'a> {
     }
 
     /// Loads an edit of the factory's files once it passes every rule, and with `guard`, once it
-    /// strands no task. Returns whether a new factory is live; a refused edit keeps the last good
-    /// one. Either way the outcome goes to stderr and to the trace.
+    /// strands no task. An edit the guard refused stays held and applies once its tasks leave.
+    /// Returns whether a new factory is live; a refused edit keeps the last good one. Each
+    /// refusal is reported once, to stderr and to the trace, and so is each reload.
     fn poll(&mut self, db: &mut Connection, base: &Trace, guard: bool) -> Result<bool, Error> {
-        let outcome = match self.watch.poll() {
-            Polled::Same => return Ok(false),
-            Polled::Refused(problems) => Err(problems),
-            Polled::Loaded(new) => match guard {
-                true => match reload::stranded(db, &new)? {
-                    stranded if stranded.is_empty() => Ok(new),
-                    stranded => Err(stranded),
-                },
-                false => Ok(new),
+        let polled = self.watch.poll();
+        if self.watch.committed() {
+            self.revision = runtime::revision(&self.factory().dir);
+        }
+        let (new, files, fresh) = match polled {
+            Polled::Same => match self.held.take() {
+                Some((new, files)) => (new, files, false),
+                None => return Ok(false),
             },
-        };
-        let new = match outcome {
-            Ok(new) => new,
-            Err(problems) => {
+            Polled::Current => {
+                self.held = None;
+                return Ok(false);
+            }
+            Polled::Refused(problems) => {
+                self.held = None;
                 reload::report("daemon", Err(&problems));
                 reload::record(db, &self.trace(base), Err(&problems))?;
                 return Ok(false);
             }
+            Polled::Loaded(new, files) => (new, files, true),
         };
+        let stranded = match guard {
+            true => reload::stranded(db, &new)?,
+            false => Vec::new(),
+        };
+        if !stranded.is_empty() {
+            if fresh {
+                reload::report("daemon", Err(&stranded));
+                reload::record(db, &self.trace(base), Err(&stranded))?;
+            }
+            self.held = Some((new, files));
+            return Ok(false);
+        }
         let restart = reload::restart_only(self.factory(), &new);
         if let Some(server) = &self.server {
             server.update(&new);
         }
+        self.watch.applied(&new, files);
         self.revision = runtime::revision(&new.dir);
         self.reloaded = Some(*new);
         reload::report("daemon", Ok(&restart));

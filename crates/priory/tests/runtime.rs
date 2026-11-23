@@ -4303,9 +4303,17 @@ fn an_edit_that_removes_the_step_a_task_is_at_keeps_the_last_good_factory() {
     assert!(trace_records(&setup, "factory.config.reloaded").is_empty());
     let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
     assert!(log.contains("kept the last good factory"), "{log}");
-    let answered = setup.priory(&["answer", "1", "approved", "--revision", "1"]);
-    assert!(answered.status.success(), "{answered:?}");
-    setup.until("runs", |rows| rows.iter().any(|row| row[2] == "implement"));
+    // The held edit is reported once, however many ticks it waits.
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(trace_records(&setup, "factory.config.refused").len(), 1);
+
+    let cancelled = setup.priory(&["cancel", "1"]);
+
+    assert!(cancelled.status.success(), "{cancelled:?}");
+    let reloaded = until_record(&setup, "factory.config.reloaded");
+    assert_eq!(reloaded.len(), 1, "{reloaded:?}");
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert_eq!(log.matches("which this edit removes").count(), 1, "{log}");
 }
 
 const TWO_AGENTS: &str = r#"
@@ -15737,28 +15745,33 @@ fn each_reload_and_each_refused_reload_sends_a_span_of_its_own() {
     write_atomic(&workflow, "start = \"nowhere\"\n");
     until_record(&setup, "factory.config.refused");
 
-    let spans: Vec<_> = setup
-        .until_spans(4)
-        .into_iter()
-        .filter(|span| {
-            span["name"]
-                .as_str()
-                .unwrap()
-                .starts_with("factory.config.")
-        })
-        .collect();
+    // Selected by name: the plan step's run and step spans may arrive before or between them.
+    let named = |name: &str| {
+        spans(&setup.complete_posts())
+            .into_iter()
+            .find(|span| span["name"] == name)
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while named("factory.config.reloaded").is_none() || named("factory.config.refused").is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "no reload spans: {:?}",
+            setup.posts()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let reloaded = named("factory.config.reloaded").unwrap();
+    let refused = named("factory.config.refused").unwrap();
 
-    assert_eq!(spans[0]["name"], "factory.config.reloaded", "{spans:?}");
-    assert_eq!(spans[1]["name"], "factory.config.refused", "{spans:?}");
-    assert_ne!(spans[0]["traceId"], spans[1]["traceId"]);
-    assert_eq!(spans[1]["startTimeUnixNano"], spans[1]["endTimeUnixNano"]);
-    let problems = attribute(&spans[1]["attributes"], "priory.reload.problems");
+    assert_ne!(reloaded["traceId"], refused["traceId"]);
+    assert_eq!(refused["startTimeUnixNano"], refused["endTimeUnixNano"]);
+    let problems = attribute(&refused["attributes"], "priory.reload.problems");
     assert!(
         problems.as_str().unwrap().contains("implement.toml"),
         "{problems}"
     );
     assert_eq!(
-        attribute(&spans[0]["attributes"], "priory.reload.problems"),
+        attribute(&reloaded["attributes"], "priory.reload.problems"),
         serde_json::Value::Null
     );
 }

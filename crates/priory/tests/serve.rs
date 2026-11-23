@@ -4245,6 +4245,86 @@ fn an_invalid_edit_keeps_the_last_good_factory_and_reports_its_problem_once() {
     );
 }
 
+/// Runs git in `dir` as a person with no git config of their own, and returns its trimmed stdout.
+fn git(dir: &Path, args: &[&str]) -> String {
+    let output = harness::command("git")
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-C",
+        ])
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    succeeded(&output);
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+#[test]
+fn a_commit_after_a_reload_gives_the_next_records_its_revision() {
+    let mut setup = Setup::new("reload-commit", SERVE);
+    let factory = setup.dir.join("factory");
+    git(&factory, &["init", "-q"]);
+    git(&factory, &["add", "-A"]);
+    git(&factory, &["commit", "-qm", "First"]);
+    let first = git(&factory, &["rev-parse", "HEAD"]);
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+
+    let settings = with_link(r"\bGH-(\d+)\b", "https://github.com/acme/app/issues/$1");
+    fs::write(factory.join("factory.toml"), &settings).unwrap();
+    eventually("a reload", || {
+        !records(&setup, "factory.config.reloaded").is_empty()
+    });
+    assert_eq!(
+        records(&setup, "factory.config.reloaded")[0]["factory_revision"],
+        first
+    );
+    git(&factory, &["commit", "-qam", "Link GH keys"]);
+    let second = git(&factory, &["rev-parse", "HEAD"]);
+    fs::write(
+        factory.join("factory.toml"),
+        with_link("(unclosed", "https://example.com/$1"),
+    )
+    .unwrap();
+
+    eventually("a refused reload", || {
+        !records(&setup, "factory.config.refused").is_empty()
+    });
+    assert_eq!(
+        records(&setup, "factory.config.refused")[0]["factory_revision"],
+        second
+    );
+    assert_eq!(records(&setup, "factory.config.reloaded").len(), 1);
+    assert_eq!(
+        api(&address, "/api/links")["links"][0]["pattern"],
+        r"\bGH-(\d+)\b"
+    );
+}
+
+#[test]
+fn a_file_the_factory_never_reads_reloads_nothing() {
+    let mut setup = Setup::new("reload-unread", SERVE);
+    succeeded(&setup.priory(&["pause"]));
+    setup.start(&["daemon", &setup.factory()]);
+    let factory = setup.dir.join("factory");
+
+    fs::create_dir_all(factory.join("agents/implementer/__pycache__")).unwrap();
+    fs::write(factory.join("agents/implementer/__pycache__/x.pyc"), "x").unwrap();
+    fs::write(factory.join("workflows/implement.toml~"), "backup").unwrap();
+    fs::write(factory.join("answers.log"), "written by a deliver command").unwrap();
+    let same = fs::read_to_string(factory.join("factory.toml")).unwrap();
+    fs::write(factory.join("factory.toml"), &same).unwrap();
+    std::thread::sleep(Duration::from_secs(4));
+
+    assert!(records(&setup, "factory.config.reloaded").is_empty());
+    assert!(records(&setup, "factory.config.refused").is_empty());
+    assert!(!setup.server_log().contains("reloaded the factory"));
+}
+
 #[test]
 fn a_standalone_server_follows_an_edit_of_its_factory() {
     let mut setup = Setup::new("reload-serve", SERVE);

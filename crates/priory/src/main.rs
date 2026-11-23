@@ -2217,7 +2217,7 @@ fn serve_http(args: Vec<String>) -> ExitCode {
     if let Err(error) = metrics(&factory, "serve", false) {
         return exit("serve", Err(error));
     }
-    let mut watch = reload::Watch::new(&factory.dir);
+    let mut watch = reload::Watch::new(&factory);
     let server = match serve::start(&factory, listen.unwrap_or(config.listen)) {
         Ok(server) => server,
         Err(error) => return exit("serve", Err(error)),
@@ -2226,11 +2226,12 @@ fn serve_http(args: Vec<String>) -> ExitCode {
     while !server.workers.iter().all(|worker| worker.is_finished()) {
         std::thread::sleep(reload::EVERY);
         match watch.poll() {
-            reload::Polled::Same => {}
+            reload::Polled::Same | reload::Polled::Current => {}
             reload::Polled::Refused(problems) => reload::report("serve", Err(&problems)),
-            reload::Polled::Loaded(new) => {
+            reload::Polled::Loaded(new, files) => {
                 let restart = reload::restart_only(&live, &new);
                 server.update(&new);
+                watch.applied(&new, files);
                 reload::report("serve", Ok(&restart));
                 live = *new;
             }

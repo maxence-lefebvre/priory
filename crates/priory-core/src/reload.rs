@@ -1,11 +1,13 @@
-//! Reloads the factory's files while the daemon or the server runs. A poll walks the factory's
-//! folder, and a change that held for one more poll loads and validates as `priory check` does.
+//! Reloads the factory's files while the daemon or the server runs. A poll walks the files
+//! `factory::load` reads, and a change that held for one more poll loads and validates as
+//! `priory check` does.
 
 use crate::trace::{self, Trace};
 use priory_factory::factory::Factory;
 use priory_factory::rules;
 use rusqlite::{Connection, TransactionBehavior};
 use serde_json::json;
+use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -21,44 +23,99 @@ pub const REFUSED: &str = "factory.config.refused";
 /// Each file's size and modification time, by its path under the factory's folder.
 type Fingerprint = BTreeMap<PathBuf, (u64, u128)>;
 
+/// A hash of the bytes of every file a fingerprint names.
+pub type Digest = [u8; 32];
+
+/// The factory's files and folders `factory::load` reads, besides the `writing` file.
+const FILES: &[&str] = &[
+    "factory.toml",
+    "factory.yaml",
+    "factory.yml",
+    "lanes.toml",
+    "lanes.yaml",
+    "lanes.yml",
+    "prices.toml",
+    "prices.yaml",
+    "prices.yml",
+    priory_factory::factory::INSTRUCTIONS,
+];
+/// The folders whose top-level TOML and YAML files `factory::load` reads.
+const CONFIG_FOLDERS: &[&str] = &[
+    "triggers",
+    "workflows",
+    "views",
+    "scorers",
+    "benchmarks",
+    "runners",
+];
+/// The folders `factory::load` reads whole: an agent's, a skill's and a memory's files.
+const TREES: &[&str] = &["agents", "skills", "memories"];
+
 /// Watches one factory's folder for edits.
 pub struct Watch {
     dir: PathBuf,
+    /// The guide `writing` names, read from the live factory.
+    writing: Option<PathBuf>,
     seen: Fingerprint,
     pending: Option<Fingerprint>,
+    /// The bytes of the files the live factory was loaded from.
+    live: Digest,
     polled: Instant,
+    /// The git reflog of the factory's `HEAD`, and when it last changed.
+    head: Option<(PathBuf, Option<u128>)>,
+    committed: bool,
 }
 
 /// What one poll found.
 pub enum Polled {
     /// No edit, or one that has not yet held for a poll.
     Same,
-    /// The edited factory, which passed every rule.
-    Loaded(Box<Factory>),
+    /// An edit that left the files as the live factory read them, such as a touch or an undo.
+    Current,
+    /// The edited factory, which passed every rule, and the digest of its files.
+    Loaded(Box<Factory>, Digest),
     /// The edited factory's problems, each as `file:line: message`.
     Refused(Vec<String>),
 }
 
 impl Watch {
-    /// A watch of `dir` as it is now, which the running factory was loaded from.
-    pub fn new(dir: &Path) -> Watch {
+    /// A watch of the files `factory` was loaded from, as they are now.
+    pub fn new(factory: &Factory) -> Watch {
+        let dir = factory.dir.clone();
+        let writing = writing(factory);
+        let seen = fingerprint(&dir, writing.as_deref());
+        let head = reflog(&dir).map(|path| {
+            let modified = modified(&path);
+            (path, modified)
+        });
         Watch {
-            dir: dir.to_path_buf(),
-            seen: fingerprint(dir),
+            live: digest(&seen),
+            dir,
+            writing,
+            seen,
             pending: None,
             polled: Instant::now(),
+            head,
+            committed: false,
         }
     }
 
-    /// Walks the folder once `EVERY` passed. An edit loads once it held for one poll, so a file an
-    /// editor is still writing does not load half written. A refused edit is reported once, and
-    /// again only after the next edit.
+    /// Walks the factory's files once `EVERY` passed. An edit loads once it held for one poll, so
+    /// a file an editor is still writing does not load half written. A refused edit is reported
+    /// once, and again only after the next edit.
     pub fn poll(&mut self) -> Polled {
         if self.polled.elapsed() < EVERY {
             return Polled::Same;
         }
         self.polled = Instant::now();
-        let now = fingerprint(&self.dir);
+        if let Some((path, seen)) = &mut self.head {
+            let now = modified(path);
+            if now != *seen {
+                *seen = now;
+                self.committed = true;
+            }
+        }
+        let now = fingerprint(&self.dir, self.writing.as_deref());
         if now == self.seen {
             self.pending = None;
             return Polled::Same;
@@ -68,38 +125,72 @@ impl Watch {
             return Polled::Same;
         }
         self.pending = None;
+        let files = digest(&now);
         self.seen = now;
+        if files == self.live {
+            return Polled::Current;
+        }
         match rules::validated(&self.dir) {
-            Ok(factory) => Polled::Loaded(Box::new(factory)),
+            Ok(factory) => Polled::Loaded(Box::new(factory), files),
             Err(problems) => Polled::Refused(problems.iter().map(ToString::to_string).collect()),
         }
     }
+
+    /// Records that `factory`, whose files hash to `files`, is now live.
+    pub fn applied(&mut self, factory: &Factory, files: Digest) {
+        self.live = files;
+        let writing = writing(factory);
+        if writing != self.writing {
+            self.writing = writing;
+            self.seen = fingerprint(&self.dir, self.writing.as_deref());
+        }
+    }
+
+    /// Whether the factory's git `HEAD` moved since the last call, as a commit or a checkout does.
+    pub fn committed(&mut self) -> bool {
+        std::mem::take(&mut self.committed)
+    }
 }
 
-/// Every file under `dir`, skipping hidden entries such as `.git` and not following a linked
-/// folder. A file that vanishes mid-walk is left out.
-fn fingerprint(dir: &Path) -> Fingerprint {
+/// The guide `writing` names, under the factory's folder.
+fn writing(factory: &Factory) -> Option<PathBuf> {
+    let settings = factory.settings.as_ref()?;
+    Some(factory.dir.join(settings.value.writing.as_ref()?))
+}
+
+/// The reflog git appends to each time the factory's `HEAD` moves; none outside a repository.
+fn reflog(dir: &Path) -> Option<PathBuf> {
+    let output = priory_runtime::runtime::git(dir)
+        .args(["rev-parse", "--git-path", "logs/HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    let path = String::from_utf8(output.stdout).ok()?;
+    Some(dir.join(path.trim()))
+}
+
+fn modified(path: &Path) -> Option<u128> {
+    let at = std::fs::metadata(path).ok()?.modified().ok()?;
+    Some(at.duration_since(UNIX_EPOCH).ok()?.as_nanos())
+}
+
+/// Whether a walk skips `name`: hidden entries such as `.git`, editor backups and the folders
+/// tools fill, which no factory file is.
+fn skipped(name: &str) -> bool {
+    name.starts_with('.')
+        || name.ends_with('~')
+        || (name.starts_with('#') && name.ends_with('#'))
+        || matches!(name, "__pycache__" | "node_modules")
+}
+
+/// The files `factory::load` reads under `dir`, with `writing`. It does not follow a linked folder,
+/// and leaves out a file that vanishes mid-walk.
+fn fingerprint(dir: &Path, writing: Option<&Path>) -> Fingerprint {
     let mut files = Fingerprint::new();
-    let mut folders = vec![dir.to_path_buf()];
-    while let Some(folder) = folders.pop() {
-        let Ok(entries) = std::fs::read_dir(&folder) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().starts_with('.') {
-                continue;
-            }
-            let path = entry.path();
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            if kind.is_dir() {
-                folders.push(path);
-                continue;
-            }
-            let Ok(metadata) = std::fs::metadata(&path) else {
-                continue;
-            };
+    let mut note = |path: PathBuf| {
+        if let Ok(metadata) = std::fs::metadata(&path)
+            && metadata.is_file()
+        {
             let modified = metadata
                 .modified()
                 .ok()
@@ -107,8 +198,58 @@ fn fingerprint(dir: &Path) -> Fingerprint {
                 .map_or(0, |at| at.as_nanos());
             files.insert(path, (metadata.len(), modified));
         }
+    };
+    for name in FILES {
+        note(dir.join(name));
+    }
+    if let Some(writing) = writing {
+        note(writing.to_path_buf());
+    }
+    for folder in CONFIG_FOLDERS {
+        let Ok(entries) = std::fs::read_dir(dir.join(folder)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let config = matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("toml" | "yaml" | "yml")
+            );
+            if config && !skipped(&entry.file_name().to_string_lossy()) {
+                note(path);
+            }
+        }
+    }
+    let mut folders: Vec<PathBuf> = TREES.iter().map(|tree| dir.join(tree)).collect();
+    while let Some(folder) = folders.pop() {
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if skipped(&entry.file_name().to_string_lossy()) {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => folders.push(entry.path()),
+                Ok(_) => note(entry.path()),
+                Err(_) => {}
+            }
+        }
     }
     files
+}
+
+/// A hash of each file's path and bytes, in path order. A file that cannot be read hashes as empty.
+fn digest(files: &Fingerprint) -> Digest {
+    let mut hash = Sha256::new();
+    for path in files.keys() {
+        hash.update(path.as_os_str().as_encoded_bytes());
+        hash.update([0]);
+        let bytes = std::fs::read(path).unwrap_or_default();
+        hash.update((bytes.len() as u64).to_le_bytes());
+        hash.update(&bytes);
+    }
+    hash.finalize().into()
 }
 
 /// The keys the daemon reads only when it starts, which `new` changes from `old`.
@@ -154,6 +295,9 @@ pub fn restart_only(old: &Factory, new: &Factory) -> Vec<&'static str> {
     .into_iter()
     .filter(|key| settings(old, key) != settings(new, key))
     .collect();
+    if old.name != new.name {
+        changed.insert(0, "name");
+    }
     if runners(old) != runners(new) {
         changed.push("runners/");
     }
@@ -271,27 +415,102 @@ mod tests {
         }
     }
 
+    fn factory(dir: &Path) -> Factory {
+        Factory {
+            dir: dir.to_path_buf(),
+            ..Factory::default()
+        }
+    }
+
+    /// Polls as if `EVERY` passed since the last poll.
+    fn poll(watch: &mut Watch) -> Polled {
+        watch.polled -= EVERY;
+        watch.poll()
+    }
+
     #[test]
     fn an_edit_loads_once_it_held_for_a_poll() {
         let dir = Scratch::new("held");
         std::fs::write(dir.path().join("factory.toml"), "name = \"a\"\n").unwrap();
-        let mut watch = Watch::new(dir.path());
+        let mut watch = Watch::new(&factory(dir.path()));
         std::fs::write(dir.path().join("factory.toml"), "name = \"bb\"\n").unwrap();
-        watch.polled -= EVERY;
-        assert!(matches!(watch.poll(), Polled::Same));
-        watch.polled -= EVERY;
-        assert!(!matches!(watch.poll(), Polled::Same));
-        watch.polled -= EVERY;
-        assert!(matches!(watch.poll(), Polled::Same));
+        assert!(matches!(poll(&mut watch), Polled::Same));
+        assert!(matches!(poll(&mut watch), Polled::Loaded(..)));
+        assert!(matches!(poll(&mut watch), Polled::Same));
     }
 
     #[test]
-    fn hidden_entries_are_not_watched() {
-        let dir = Scratch::new("hidden");
-        std::fs::create_dir(dir.path().join(".git")).unwrap();
-        std::fs::write(dir.path().join(".git/HEAD"), "x").unwrap();
-        std::fs::write(dir.path().join("factory.toml"), "").unwrap();
-        let files = fingerprint(dir.path());
-        assert_eq!(files.len(), 1);
+    fn a_rewrite_that_keeps_the_live_bytes_loads_nothing() {
+        let dir = Scratch::new("current");
+        let file = dir.path().join("factory.toml");
+        std::fs::write(&file, "name = \"a\"\n").unwrap();
+        let mut watch = Watch::new(&factory(dir.path()));
+        std::fs::write(&file, "name = \"b\"\n").unwrap();
+        std::fs::write(&file, "name = \"a\"\n").unwrap();
+        let later = std::time::SystemTime::now() + Duration::from_secs(5);
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert!(matches!(poll(&mut watch), Polled::Same));
+        assert!(matches!(poll(&mut watch), Polled::Current));
+    }
+
+    #[test]
+    fn only_the_files_the_loader_reads_are_watched() {
+        let dir = Scratch::new("read");
+        let files = [
+            "factory.toml",
+            "README.md",
+            ".git/HEAD",
+            "notes/plan.md",
+            "workflows/a.toml",
+            "workflows/a.toml~",
+            "workflows/#a.toml#",
+            "workflows/a.md",
+            "agents/x/agent.md",
+            "agents/x/__pycache__/y.pyc",
+            "skills/s/node_modules/m.js",
+            "skills/s/SKILL.md",
+            "guide.md",
+        ];
+        for file in files {
+            let path = dir.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "x").unwrap();
+        }
+        let watched = fingerprint(dir.path(), Some(&dir.path().join("guide.md")));
+        let mut watched: Vec<_> = watched
+            .keys()
+            .map(|path| path.strip_prefix(dir.path()).unwrap().to_owned())
+            .collect();
+        watched.sort();
+        let expected: Vec<PathBuf> = [
+            "agents/x/agent.md",
+            "factory.toml",
+            "guide.md",
+            "skills/s/SKILL.md",
+            "workflows/a.toml",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+        assert_eq!(watched, expected);
+    }
+
+    #[test]
+    fn a_new_name_waits_for_a_restart() {
+        let old = Factory {
+            name: "a".into(),
+            ..Factory::default()
+        };
+        let new = Factory {
+            name: "b".into(),
+            ..Factory::default()
+        };
+        assert_eq!(restart_only(&old, &new), ["name"]);
+        assert!(restart_only(&old, &old).is_empty());
     }
 }
