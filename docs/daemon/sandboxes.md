@@ -44,7 +44,12 @@ trusted and a path the sweep reads in `/proc` then mean the same file on both si
 | `/dev` and `/proc` | the host's devices, and the jail's own processes |
 | the task's worktree | read-write |
 | the clone's git folder under `repos/` | read-write, since a commit writes there |
-| `CLAUDE_CONFIG_DIR`, else `~/.claude` and `~/.claude.json`; for Codex, `CODEX_HOME`, else `~/.codex` | read-write: the login, sessions, transcripts and trusted folders |
+| the clone's `config`, `config.worktree`, `commondir` and `hooks`, its `worktrees` folder, and the links from the task's worktree to them | read-only, except the task's own folder in `worktrees` |
+| Claude Code's home: `CLAUDE_CONFIG_DIR`, else `~/.claude` and `~/.claude.json` | read-only: the login, settings, plugins and trusted folders |
+| its `projects` folder | read-write: the transcripts |
+| its `session-env` and `shell-snapshots` folders | a new empty folder in memory |
+| Codex's home: `CODEX_HOME`, else `~/.codex` | read-write: the login, sessions and trusted folders |
+| the folder of the state file `PRIORY_DB` names, and its link's target folder | a new empty folder in memory, with only the binds below it, even where a bind above names the same folder |
 | the run's MCP configuration and system prompt files, Priory's binary, the factory's skills and memories folders | read-only |
 | the harness's program, when it lives under a hidden folder such as `~/.local/bin` | its folder read-only, and its link |
 | the daemon's socket folder | read-write |
@@ -52,6 +57,15 @@ trusted and a path the sweep reads in `/proc` then mean the same file on both si
 | the sandbox's `read` and `write` paths | as declared, skipped when missing |
 
 A write anywhere else lands in the jail's own folders in memory, and is gone when the run ends.
+
+The read-only paths are the ones a process on the host runs code from. Git runs the hooks, the
+`core.sshCommand`, the filters and the credential helpers that the clone's `config` names. A
+worktree's `.git` file and any git folder's `commondir` lead git to that `config`, so the jail
+writes the clone's `commondir` as `.` and its `config.worktree` files empty before it binds them.
+Claude Code runs the hooks, plugins, MCP servers and scripts that its settings and
+`~/.claude.json` name. Its shell sources the scripts in `session-env` and `shell-snapshots`, so a
+run writes its own in memory. The daemon's git also runs with `core.hooksPath=/dev/null` and
+`core.fsmonitor=false` in the clones under `repos/` and their worktrees, jailed or not.
 
 The pane's command is the [agents slice's](agents-slice.md) scope, then `bwrap` with these binds
 and `--die-with-parent`, `--new-session` and `--unshare-pid`, then a shell that clears the
@@ -68,8 +82,10 @@ The shell in the jail runs `env -i` with only these variables, each when it is s
 - `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, which move the harness's own home;
 - the sandbox's `env`.
 
-So a jailed run holds none of the daemon's other variables: not `PRIORY_DB`, not a webhook secret
-and not a cloud key. `priory check` refuses an `env` that names a variable the factory reads a
+So a jailed run holds none of the daemon's other variables: not a webhook secret and not a cloud
+key. The run's MCP configuration sets `PRIORY_DB` for `priory mcp`, but the jail empties the state
+file's folder, so the file is not there. A state file directly in `/` blocks the jailed task, since
+the jail cannot hide it. `priory check` refuses an `env` that names a variable the factory reads a
 secret from, such as `PRIORY_TOKEN`.
 
 ## Hooks, tools and the spool
@@ -83,7 +99,7 @@ so `PRIORY_SPOOL` names its own spool, `spools/<session>/signals.spool` in Prior
 daemon applies `signals.spool`, then each run's spool (see [signals.md](signals.md)).
 
 The tools that read the state file, `search`, `relate` and the report sections, answer with an
-error in a jailed run, since `PRIORY_DB` is neither kept nor bound.
+error in a jailed run, since the jail empties the state file's folder.
 
 ## When the runner cannot jail
 
@@ -118,15 +134,20 @@ the factory names, and holds only the variables it names. It does not stop:
   what it can read: the worktree and the harness's login.
 - **The socket.** The daemon's socket is bound in, and a line written to it by hand is a call no
   guard reads, as [guard.md](guard.md#how-a-command-is-read) says.
-- **The clone.** The run can write other tasks' refs in the shared clone.
-- **The harness's home.** The run can read its harness's login, and every session's transcript in
-  it.
+- **The clone.** The run can write other tasks' refs and objects in the shared clone.
+- **The harness's home.** The run can read its harness's login, and read and write every session's
+  transcript in it.
+- **Codex's home.** A Codex run can write `config.toml`, which names the commands Codex runs.
+- **The worktree.** Code steps, and a person who opens the worktree, run what the run wrote there,
+  including its `.claude/settings.local.json`.
 
 Known limits:
 
 - `--new-session` detaches the agent from the pane's terminal, so a terminal signal such as a
   resize does not reach it. Attach and `priory screen` still show its pane.
 - Only Linux gets a jail.
-- The tests run the jail with a fake `claude`, not with Claude Code or Codex. The kernel refuses to
-  rename a file over a bound file, so a harness that saves `~/.claude.json` that way may fail to
-  save it inside the jail.
+- The tests run the jail with a fake `claude`, not with Claude Code or Codex.
+- Claude Code cannot save its settings, its plugin caches, `~/.claude.json` or a refreshed login
+  inside the jail. It runs on the login it started with.
+- The run's git cannot change the clone's config, so `git push -u`, `git remote add` and
+  `git branch --set-upstream-to` fail inside the jail.

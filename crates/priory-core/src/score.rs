@@ -4,6 +4,7 @@
 use crate::judge::{self, Calibration};
 use crate::trace::{self, Trace};
 use priory_factory::factory::{Factory, ScoreKind, Scorer};
+use priory_runtime::runtime::git;
 use priory_runtime::{eval, room, runtime, script, transcript};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{Value, json};
@@ -675,10 +676,4 @@ pub(crate) fn inside(dir: &Path, run: &Path) -> Result<std::path::PathBuf, Strin
         ));
     }
     Ok(program)
-}
-
-fn git(dir: &Path) -> Command {
-    let mut command = Command::new("git");
-    command.arg("-C").arg(dir);
-    command
 }

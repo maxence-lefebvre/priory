@@ -2691,9 +2691,8 @@ fn project_gate() -> ExitCode {
     };
     // The gate tests what is checked out, so a record for the branch head needs the two to match.
     let checked_out = || {
-        Command::new("git")
+        priory_runtime::runtime::git(Path::new(&started.worktree))
             .args(["rev-parse", "HEAD"])
-            .current_dir(&started.worktree)
             .output()
             .ok()
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
