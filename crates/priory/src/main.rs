@@ -2468,7 +2468,7 @@ fn memory(args: Vec<OsString>) -> ExitCode {
             "SELECT id, task, state, printf('%.1f', bytes / 1073741824.0),
              replace(command, char(10), '\\n'),
              (strftime('%s', 'now') - strftime('%s', coalesce(granted, created))) || 's', pid
-             FROM grants ORDER BY id",
+             FROM grants ORDER BY created, id",
         ),
         Some((verb, args)) if verb == "acquire" => acquire(args, false),
         Some((verb, args)) if verb == "lease" => acquire(args, true),
@@ -2524,48 +2524,77 @@ fn acquire(args: &[OsString], lease: bool) -> ExitCode {
         eprintln!("priory memory: {error}; the command did not run");
         ExitCode::from(GATE_FAILED)
     };
-    let acquired = gate(&Gate::Acquire {
+    let acquire = Gate::Acquire {
         bytes: (gb * f64::from(1u32 << 30)) as u64,
         pid: std::process::id(),
         session: std::env::var("PRIORY_SESSION").ok(),
         command: command.join(" ".as_ref()).to_string_lossy().into_owned(),
-    });
-    let mut reply = match acquired {
-        Ok(reply) => reply,
-        Err(error) => return failed(error),
     };
-    let (id, _) = reply.split_once(' ').unwrap_or_default();
-    let grant: i64 = id.parse().expect("the daemon replies with the grant id");
     let timeout = timeout.unwrap_or(GATE_TIMEOUT);
     let deadline = Instant::now() + timeout;
-    let mut said = String::new();
-    while !reply.ends_with(" held") {
+    let (mut grant, mut said, mut sent) = (None, String::new(), false);
+    // The daemon keeps a waiting grant while this process lives, so a lost reply or a daemon
+    // restart only delays the next poll of the same grant.
+    let grant = loop {
+        let asked = match grant {
+            Some(grant) => call(&Gate::Poll { grant }),
+            None => call(&acquire),
+        };
+        sent |= !matches!(&asked, Err(error) if error.starts_with(runtime::NO_DAEMON));
+        let reply = match asked {
+            Ok(Ok(reply)) => {
+                let (id, _) = reply.split_once(' ').unwrap_or_default();
+                grant = Some(id.parse().expect("the daemon replies with the grant id"));
+                reply
+            }
+            Ok(Err(error)) => return failed(error),
+            // Only an `Acquire` no daemon ever read is safe to give up: one that may have
+            // arrived has a grant that lives while this process does.
+            Err(error) if !sent && error.starts_with(runtime::NO_DAEMON) => {
+                return failed(error);
+            }
+            Err(error) => format!(
+                "{} waits: {error}",
+                grant.map_or("?".into(), |id| id.to_string())
+            ),
+        };
+        if let (Some(grant), true) = (grant, reply.ends_with(" held")) {
+            break grant;
+        }
         if said != reply {
             eprintln!("priory memory: grant {reply} for {gb} GB");
-            said = reply.clone();
+            said = reply;
         }
         if Instant::now() >= deadline {
-            let _ = gate(&Gate::Release { grant });
+            let Some(grant) = grant else {
+                return failed(format!("no grant after {timeout:?}"));
+            };
+            let _ = gate(&Gate::Release {
+                grant,
+                lapsed: true,
+            });
             return failed(format!("grant {grant} still waits after {timeout:?}"));
         }
         std::thread::sleep(Duration::from_millis(250));
-        reply = match gate(&Gate::Poll { grant }) {
-            Ok(reply) => reply,
-            Err(error) => return failed(error),
-        };
-    }
+    };
     let status = if lease {
         leased(program, rest)
     } else {
         match held(program, rest, grant) {
             Ok(status) => status,
             Err(error) => {
-                let _ = gate(&Gate::Release { grant });
+                let _ = gate(&Gate::Release {
+                    grant,
+                    lapsed: false,
+                });
                 return failed(error);
             }
         }
     };
-    if let Err(error) = gate(&Gate::Release { grant }) {
+    if let Err(error) = gate(&Gate::Release {
+        grant,
+        lapsed: false,
+    }) {
         eprintln!(
             "priory memory: grant {grant} stays until the daemon sees this process end: {error}"
         );
@@ -2655,11 +2684,14 @@ fn leased(program: &OsString, rest: &[OsString]) -> std::io::Result<std::process
 
 /// Sends `gate` to the daemon and returns its reply.
 fn gate(gate: &Gate) -> Result<String, String> {
+    call(gate)?
+}
+
+/// Sends `gate` to the daemon, through a restart, and returns its reply, or why none came.
+fn call(gate: &Gate) -> Result<Result<String, String>, String> {
     let line = serde_json::to_string(gate).expect("a gate message serializes");
-    runtime::call(&runtime::home(), &line, runtime::REPLY).and_then(|reply| {
-        serde_json::from_str::<Result<String, String>>(&reply)
-            .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
-    })
+    let reply = runtime::call_through_restart(&runtime::home(), &line, runtime::REPLY)?;
+    serde_json::from_str(&reply).map_err(|error| format!("unreadable reply {reply:?}: {error}"))
 }
 
 /// `priory gate`, from a run's pane: runs the factory's gate in the run's task worktree at its head,

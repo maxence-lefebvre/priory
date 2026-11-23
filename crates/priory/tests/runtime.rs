@@ -55,7 +55,7 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Undoes migrations 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes migrations 108, memory lapses, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
@@ -72,7 +72,7 @@ macro_rules! undo_pre {
   ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
-  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox;
+  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; DROP TABLE lapses;
   "
     };
 }
@@ -14614,6 +14614,88 @@ fn without_a_daemon_the_command_fails_fast_and_never_runs() {
         "{stderr}"
     );
     assert!(!setup.dir.join("fake/ran").exists());
+}
+
+#[test]
+fn a_waiting_acquire_polls_on_after_a_poll_the_daemon_drops_and_runs_its_command() {
+    use std::io::{BufRead, Write};
+    let setup = Setup::new("gate-dropped-poll");
+    fs::create_dir_all(setup.dir.join("home")).unwrap();
+    fs::create_dir_all(setup.socket().parent().unwrap()).unwrap();
+    let listener = std::os::unix::net::UnixListener::bind(setup.socket()).unwrap();
+    // A busy or dying daemon closes the second poll with no reply.
+    let daemon = std::thread::spawn(move || {
+        let replies = [
+            Some("7 waiting"),
+            None,
+            Some("7 held"),
+            Some("7 held"),
+            Some("7 released"),
+        ];
+        let mut lines = Vec::new();
+        for reply in replies {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .unwrap();
+            let line: serde_json::Value = serde_json::from_str(&line).unwrap();
+            lines.push([line["memory"].clone(), line["grant"].clone()]);
+            if let Some(reply) = reply {
+                writeln!(stream, "{}", json!({ "Ok": reply })).unwrap();
+            }
+        }
+        lines
+    });
+
+    let done = acquire(&setup, "8", "echo ran").wait_with_output().unwrap();
+
+    assert_eq!(
+        done.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&done.stdout), "ran\n");
+    assert_eq!(
+        daemon.join().unwrap(),
+        [
+            [json!("acquire"), json!(null)],
+            [json!("poll"), json!(7)],
+            [json!("poll"), json!(7)],
+            [json!("run"), json!(7)],
+            [json!("release"), json!(7)],
+        ]
+    );
+}
+
+#[test]
+fn a_daemon_restart_keeps_a_waiting_grant_with_its_id() {
+    let mut setup = Setup::new("gate-restart");
+    setup.start();
+    listening(&setup);
+    setup.hold("hold-a");
+    setup.hold("hold-b");
+    let a = acquire(&setup, "40", &held("a"));
+    setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    let b = acquire(&setup, "40", &held("b"));
+    let waiting = setup.until("memory", |rows| rows.len() == 2)[1][0].clone();
+
+    setup.crash();
+    setup.start();
+    once_listening(&setup, &["memory"]);
+    setup.release("hold-a");
+
+    assert!(a.wait_with_output().unwrap().status.success());
+    let rows = setup.until("memory", |rows| rows.len() == 1 && rows[0][2] == "held");
+    assert_eq!(rows[0][0], waiting);
+    setup.release("hold-b");
+    let b = b.wait_with_output().unwrap();
+    assert!(
+        b.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&b.stderr)
+    );
 }
 
 #[test]
