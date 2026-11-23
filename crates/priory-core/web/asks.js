@@ -87,12 +87,25 @@ export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : b
 /** Whether an ask takes free text and a dismissal: a step's or a hold's ask takes only its options. */
 export const takesText = (ask) => ask?.free_text !== false;
 
-// How long a first tap on a command option stays armed for the second.
+// How long a first tap on an option stays armed for the second.
 export const ARM_MS = 4000;
 
 /** Whether `armed` still arms `option` of this revision of the ask, as the Herdr panel's `press` does. */
 export const stillArmed = (armed, ask, option, now) =>
   armed != null && armed.id === ask.id && armed.revision === ask.revision && armed.text === option && now - armed.at < ARM_MS;
+
+/**
+ * What a tap on `option` does: the first tap arms it, and a second tap on it within ARM_MS, at the
+ * same revision, sends it at once, with `run` set for an option that runs a command (R6.8).
+ * @param {any} armed @param {any} ask @param {string} option @param {number} now
+ */
+export function press(armed, ask, option, now) {
+  if (stillArmed(armed, ask, option, now)) {
+    const run = Array.isArray(ask.command?.runs) && ask.command.runs.includes(option);
+    return { send: { text: option, run } };
+  }
+  return { arm: { id: ask.id, revision: ask.revision, text: option, at: now } };
+}
 
 /**
  * Why an ask write did not apply, for the note on the ask. @param {number} status @param {any} body

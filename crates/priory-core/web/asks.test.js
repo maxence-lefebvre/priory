@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, takesText, openAsksOf, writeNote, shrunkHead, answeredAsks, confidenceNote, askHeading, askBody, cutAt, HEADING_MAX } from "./asks.js";
+import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, press, takesText, openAsksOf, writeNote, shrunkHead, answeredAsks, confidenceNote, askHeading, askBody, cutAt, HEADING_MAX } from "./asks.js";
 
 const now = Date.parse("2026-11-20T12:00:00Z");
 const ask = (id, fields) => ({ id, state: "open", snoozed_until: null, ...fields });
@@ -65,6 +65,22 @@ test("an armed command option runs on the second tap only at the revision and wi
   assert.equal(stillArmed(armed, asked, "approve", now + 4000), false);
   assert.equal(stillArmed(armed, asked, "reject", now + 1000), false);
   assert.equal(stillArmed(null, asked, "approve", now), false);
+});
+
+test("every option arms on its first tap and sends on a second tap within ARM_MS, at the revision it was armed at", () => {
+  const asked = { id: 27, revision: 2, options: ["Merge", "End the task"], command: { argv: ["gh", "pr", "merge"], runs: ["Merge"] } };
+
+  const first = press(null, asked, "End the task", now);
+  assert.deepEqual(first, { arm: { id: 27, revision: 2, text: "End the task", at: now } }, "the first tap arms and sends nothing");
+  assert.deepEqual(press(first.arm, asked, "End the task", now + 3_999), { send: { text: "End the task", run: false } }, "the second tap sends at once");
+  assert.deepEqual(press(first.arm, asked, "End the task", now + 4_000), { arm: { id: 27, revision: 2, text: "End the task", at: now + 4_000 } }, "a tap after ARM_MS arms again");
+  assert.deepEqual(press(first.arm, asked, "Merge", now + 1_000), { arm: { id: 27, revision: 2, text: "Merge", at: now + 1_000 } }, "a tap on another option moves the arm");
+  assert.deepEqual(press(first.arm, { ...asked, revision: 3 }, "End the task", now + 10), { arm: { id: 27, revision: 3, text: "End the task", at: now + 10 } }, "a new revision drops the arm");
+
+  const merge = press(null, asked, "Merge", now);
+  assert.deepEqual(press(merge.arm, asked, "Merge", now + 500), { send: { text: "Merge", run: true } }, "a command option runs its command on the second tap");
+  const outside = { ...asked, command: "gh pr merge 7" };
+  assert.deepEqual(press(press(null, outside, "Merge", now).arm, outside, "Merge", now + 1), { send: { text: "Merge", run: false } }, "an outside ask's command never runs");
 });
 
 test("each saved view lists its own groups: Open leaves snoozed asks out and Snoozed lists only them", () => {

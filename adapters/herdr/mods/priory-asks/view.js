@@ -130,14 +130,13 @@ export const ARM_MS = 4000;
 const holds = (armed, ask, now) => armed !== null && armed.id === ask.id && armed.revision === ask.revision && now - armed.at < ARM_MS;
 
 /**
- * What a press on option `index` does: answer at once, or, for an option that runs a command, arm it
- * first and run it on a second press within ARM_MS (R6.8).
+ * What a press on option `index` does: the first press arms it, and a second press on it within
+ * ARM_MS answers at once, running the command for an option that runs one (R6.8).
  * @param {any} ask @param {number} index @param {Armed | null} armed @param {number} now
  */
 export function press(ask, index, armed, now) {
   const text = ask.options[index];
-  if (!runsCommand(ask, text)) return { answer: { text, run: false } };
-  if (holds(armed, ask, now) && armed.option === index) return { answer: { text, run: true } };
+  if (holds(armed, ask, now) && armed.option === index) return { answer: { text, run: runsCommand(ask, text) } };
   return { arm: { id: ask.id, revision: ask.revision, option: index, at: now } };
 }
 
@@ -247,6 +246,7 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
       key: index < 9 ? String(index + 1) : "",
       recommended: label === ask.recommendation,
       notes: [label === ask.recommendation && "Recommended", runsCommand(ask, label) && "Runs a command"].filter(Boolean).join(". "),
+      runs: runsCommand(ask, label),
       armed: arming === index,
       dimmed: arming !== null && arming !== index,
     })),

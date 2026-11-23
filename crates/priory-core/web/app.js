@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, stillArmed, submitted, takesText, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, press, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
@@ -150,9 +150,9 @@ const state = {
   rendered: 0,
   scrolls: new Map(),
   observers: [],
-  // The answer waiting out its Undo, then in flight: { id, text, timer, sending }.
+  // The answer in flight: { id, text }.
   pending: null,
-  // The command option the first tap armed, until the second tap or 4 s: { id, text, at, timer }.
+  // The option the first tap armed, until the second tap sends it or 4 s pass: { id, revision, text, at, timer }.
   armed: null,
   // A task's cancel or revive armed by its first tap, until the second tap or 4 s: { task, act, at, timer }.
   taskArmed: null,
@@ -1093,7 +1093,8 @@ const selectedAsk = () => {
   return first === "asks" && id ? decodeURIComponent(id) : null;
 };
 
-// One button per option, as the detail and the answer sheet draw them. A command option armed by its first tap shows its command.
+// One button per option, as the detail and the answer sheet draw them. The first tap arms an option;
+// an armed command option also shows its command.
 function optionList(ask, wide) {
   const pending = state.pending?.id === ask.id ? state.pending : null;
   const armed = state.armed?.id === ask.id && state.armed.revision === ask.revision ? state.armed.text : null;
@@ -1105,14 +1106,16 @@ function optionList(ask, wide) {
     const chosen = pending?.text === option;
     const off = locked || (pending && !chosen);
     const notes = [recommended && "Recommended", runs && "Runs a command"].filter(Boolean).join(". ");
-    const label = armed === option
-      ? html`<span><small>Tap again to run</small>${option}<small>Cancels in 4 s</small></span><span class="drain" aria-hidden="true"></span>`
-      : html`<span>${option}${notes ? html`<small>${notes}</small>` : ""}</span>`;
+    const label = armed === option ? armedLabel(option, runs) : html`<span>${option}${notes ? html`<small>${notes}</small>` : ""}</span>`;
     const button = html`<button class="opt ${recommended ? "rec-opt" : ""} ${chosen ? "chosen" : ""} ${armed === option ? "armed" : ""}" data-option="${i}" data-answer="${i}" aria-disabled="${off || pending ? "true" : "false"}" ${locked ? raw('aria-describedby="answer-locked"') : ""}>
       ${chosen ? icon("check", "s20") : ""}${label}${wide ? html`<kbd>${i + 1}</kbd>` : ""}</button>`;
-    return armed === option ? html`${button}${commandBlock(ask, bound)}` : button;
+    return armed === option && runs ? html`${button}${commandBlock(ask, bound)}` : button;
   });
 }
+
+// An armed option: what the second tap does, the option, and the ring that drains over ARM_MS.
+const armedLabel = (option, runs) =>
+  html`<span><small>Tap again to ${runs ? "run" : "send"}</small>Confirm: ${option}<small>Cancels in ${ARM_MS / 1000} s</small></span><span class="drain" aria-hidden="true"></span>`;
 
 function askDetail(id, wide) {
   const ask = state.data.asks.find((candidate) => String(candidate.id) === id);
@@ -1214,13 +1217,13 @@ function askDetail(id, wide) {
   const history = html`<section class="sect" id="history"><div class="sh">${icon("history", "s15")}Answer history</div><ol class="hist">${historyItems}</ol></section>`;
   const recommended = options.find((option) => option === ask.recommendation) || options[0];
   const sending = pending
-    ? html`<div class="sending" role="status"><span>Sending <b>"${pending.text}"</b></span>${pending.sending ? "" : html`<button class="btn secondary" data-action="undo">Undo</button>`}</div>`
+    ? html`<div class="sending" role="status"><span>Sending <b>"${pending.text}"</b></span></div>`
     : "";
   const barArmed = armed !== null && armed === recommended;
   const bar = !wide && !pending && ask.state === "open" && options.length
-    ? html`<div class="abar" hidden>${barArmed ? commandBlock(ask, bound) : ""}<button class="btn secondary" data-action="options">${icon("chevron-up", "s15")}${plural(options.length, "option")}</button>
+    ? html`<div class="abar" hidden>${barArmed && runsCommand(ask, recommended) ? commandBlock(ask, bound) : ""}<button class="btn secondary" data-action="options">${icon("chevron-up", "s15")}${plural(options.length, "option")}</button>
       <button class="btn primary ${barArmed ? "armed" : ""}" data-answer="${options.indexOf(recommended)}" aria-disabled="${locked ? "true" : "false"}">${barArmed
-        ? html`<span><small>Tap again to run</small>${recommended}<small>Cancels in 4 s</small></span><span class="drain" aria-hidden="true"></span>`
+        ? armedLabel(recommended, runsCommand(ask, recommended))
         : html`<span>${recommended}</span><small>${[recommended === ask.recommendation ? "Recommended" : "First option", runsCommand(ask, recommended) && "Runs a command"].filter(Boolean).join(". ")}</small>`}</button>
       ${locked === "offline" ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : ""}</div>`
     : "";
@@ -1862,7 +1865,6 @@ function ranLine(ran) {
 }
 
 // Writes: each is the twin of a CLI verb, sent with the revision the page showed.
-const UNDO_MS = 4000;
 const askOnScreen = () => state.data.asks.find((ask) => String(ask.id) === selectedAsk());
 
 async function post(path, body) {
@@ -1875,27 +1877,20 @@ async function post(path, body) {
   return { status: response.status, body: await response.json().catch(() => ({})) };
 }
 
-// Nothing leaves the page until the Undo time passes; then Undo goes, since the daemon may apply it.
-function answer(ask, text, written) {
+// An answer leaves at once: a tapped option was already confirmed by its second tap, and Send is a
+// deliberate press of its own. "Sending" shows only while the request is in flight.
+function answer(ask, text, written, run = false) {
+  disarm();
   if (state.pending) return;
   state.notices.delete(ask.id);
-  const pending = { id: ask.id, text, sending: false };
-  pending.timer = setTimeout(() => send(ask, pending, written), UNDO_MS);
-  state.pending = pending;
-  render();
+  state.pending = { id: ask.id, text };
+  send(ask, state.pending, written, run);
 }
 
-function undo() {
-  if (!state.pending || state.pending.sending) return;
-  clearTimeout(state.pending.timer);
-  state.pending = null;
-  render();
-}
-
-// The first tap on a command option arms it; the second, within 4 s, runs it with no Undo.
-function arm(ask, option) {
+// The first tap on an option arms it; the second, within ARM_MS, sends it.
+function arm(armed) {
   disarm();
-  state.armed = { id: ask.id, revision: ask.revision, text: option, at: Date.now(), timer: setTimeout(() => { state.armed = null; render(); }, ARM_MS) };
+  state.armed = { ...armed, timer: setTimeout(() => { state.armed = null; render(); }, ARM_MS) };
   render();
 }
 
@@ -1905,19 +1900,10 @@ function disarm() {
   state.armed = null;
 }
 
-function runCommand(ask, option) {
-  disarm();
-  if (state.pending) return;
-  state.notices.delete(ask.id);
-  state.pending = { id: ask.id, text: option, sending: false };
-  send(ask, state.pending, false, true);
-}
-
-async function send(ask, pending, written, confirmed = false) {
-  pending.sending = true;
+async function send(ask, pending, written, run) {
   render();
   const body = { [written ? "text" : "option"]: pending.text, revision: ask.revision };
-  if (confirmed) body.run = true;
+  if (run) body.run = true;
   const sent = await write(ask, `/api/asks/${encodeURIComponent(ask.id)}/answer`, body, pending.text);
   state.pending = null;
   if (sent) return next(ask);
@@ -1988,16 +1974,11 @@ function act(target) {
   const ask = askOnScreen();
   if (!ask || target.getAttribute("aria-disabled") === "true") return;
   if (target.dataset.answer !== undefined) {
-    const option = ask.options[Number(target.dataset.answer)];
-    if (!runsCommand(ask, option)) {
-      disarm();
-      return answer(ask, option, false);
-    }
-    if (stillArmed(state.armed, ask, option, Date.now())) return runCommand(ask, option);
-    return arm(ask, option);
+    if (state.pending) return;
+    const pressed = press(state.armed, ask, ask.options[Number(target.dataset.answer)], Date.now());
+    return pressed.send ? answer(ask, pressed.send.text, false, pressed.send.run) : arm(pressed.arm);
   }
   const action = target.dataset.action;
-  if (action === "undo") return undo();
   if (state.pending) return;
   if (action === "options") return openSheet();
   if (action === "write") {
@@ -2242,7 +2223,9 @@ function noteRow(id, text, task = state.data.report?.report.task) {
 
 const reportRowOf = (id) => (state.data.report ? reportRows(dossier(state.data.report, { now: Date.now() })).find((row) => row.id === id) : null);
 
-// Nothing leaves the page until the Undo time passes, as an answer waits: a pick wakes the report's agent.
+// Nothing leaves the page until the Undo time passes: a pick wakes the report's agent.
+const UNDO_MS = 4000;
+
 function pick(target) {
   const row = reportRowOf(target.dataset.row);
   const reopened = row?.pick?.state === "agreed" && state.reportChanging === row.id;
@@ -2950,11 +2933,6 @@ function focusKey(element) {
 
 function render() {
   const app = document.getElementById("app");
-  // Leaving the ask, or signing out, cancels an answer that has not left yet.
-  if (state.pending && !state.pending.sending && (!state.token || selectedAsk() !== String(state.pending.id))) {
-    clearTimeout(state.pending.timer);
-    state.pending = null;
-  }
   if (state.reportPending && !state.reportPending.sending && (!state.token || current() !== "reports")) {
     clearTimeout(state.reportPending.timer);
     state.reportPending = null;
@@ -3202,7 +3180,7 @@ document.addEventListener("click", (event) => {
     return;
   }
   if (["pick", "pick-undo", "pick-change", "pick-keep", "report-go", "report-next", "report-search", "compose", "compose-cancel", "reply", "resolve", "reopen"].includes(action)) return reportAct(target);
-  if (target.dataset.answer !== undefined || ["undo", "options", "write", "dismiss", "snooze", "unsnooze"].includes(action)) return act(target);
+  if (target.dataset.answer !== undefined || ["options", "write", "dismiss", "snooze", "unsnooze"].includes(action)) return act(target);
   if (action === "mode" || action === "theme") {
     const root = document.documentElement;
     if (action === "mode") root.dataset.mode = target.dataset.pickMode;
