@@ -463,3 +463,85 @@ fn a_jailed_run_keeps_the_clones_own_worktree_config() {
         kept
     );
 }
+
+#[test]
+fn a_jailed_tasks_lead_answers_its_ask_in_the_tasks_jail() {
+    let mut setup = hands_off("jail-lead", &format!("sandbox = \"jail\"\n{WORKFLOW}"));
+    fs::write(setup.dir.join("factory/factory.toml"), sandboxes(&setup)).unwrap();
+    setup.calls(&[ask(), answered("sqlite"), result("passed")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows.iter().all(|row| row[4] == "done")
+    });
+    let runs = setup.rows("runs");
+    let lead = runs.iter().find(|run| run[1] == "2").expect("the lead ran");
+    assert_eq!(lead[11], "jail", "{runs:?}");
+    // The daemon's start check, then one launch per run, the lead's among them.
+    assert_eq!(fake_log(&setup, "bwrap.log").len(), 1 + runs.len());
+}
+
+/// A jailed hands-off task whose lead stays queued for room, then the daemon stopped and `breaks`
+/// run on the state file, then the daemon started with room: returns the lead task's row.
+fn lead_after(name: &str, breaks: &str) -> (Setup, Vec<String>) {
+    let mut setup = hands_off(name, &format!("sandbox = \"jail\"\n{WORKFLOW}"));
+    fs::write(setup.dir.join("factory/factory.toml"), sandboxes(&setup)).unwrap();
+    let lead = LEAD.replace(
+        "session = \"shared\"\n",
+        "session = \"shared\"\nmemory = \"8GB\"\n",
+    );
+    fs::write(setup.dir.join("factory/agents/lead/agent.md"), lead).unwrap();
+    setup.memory(12);
+    setup.calls(&[ask()]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows.iter().any(|row| row[0] == "1" && row[4] == "asleep")
+    });
+    setup.crash();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(breaks).unwrap();
+    drop(db);
+    setup.memory(60);
+
+    setup.start();
+
+    // A lead that cannot start is dropped with its reason, and its ask goes back to the person.
+    let tasks = setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] == "dropped")
+    });
+    let lead = tasks.into_iter().find(|row| row[0] == "2").unwrap();
+    assert!(
+        !setup.rows("runs").iter().any(|run| run[1] == "2"),
+        "the lead ran"
+    );
+    // The two daemons' start checks and the worker's one launch: no jail for the lead.
+    assert_eq!(fake_log(&setup, "bwrap.log").len(), 3);
+    (setup, lead)
+}
+
+#[test]
+fn a_lead_whose_served_tasks_workflow_left_the_factory_is_dropped_and_never_starts() {
+    let (_setup, lead) = lead_after(
+        "jail-lead-gone",
+        "UPDATE tasks SET workflow = 'gone' WHERE id = 1;",
+    );
+    assert_eq!(
+        lead[7],
+        "task 2 serves a task of workflow gone, which the factory no longer has"
+    );
+}
+
+#[test]
+fn a_lead_whose_routed_ask_names_no_task_is_dropped_and_never_starts() {
+    let (_setup, lead) = lead_after(
+        "jail-lead-malformed",
+        "UPDATE inbox SET data = json_set(data, '$.task', 'one') WHERE type = 'priory.ask.routed';",
+    );
+    assert_eq!(
+        lead[7],
+        "task 2 serves a task its routed ask does not name, so its sandbox is unknown"
+    );
+}

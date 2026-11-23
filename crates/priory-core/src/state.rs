@@ -2641,14 +2641,19 @@ fn claim_pull_request(tx: &Transaction, message: &Message) -> rusqlite::Result<(
 }
 
 /// Whether `task` sleeps where an event can wake it: asleep at a model step, with no daemon's
-/// checks gate and no `plan` approval open, since a human step or a gate has no agent turn to wake.
+/// checks gate, no `plan` approval open and no result a gate holds, since a human step or a gate
+/// has no agent turn to wake.
 fn wakes(tx: &Transaction, task: i64, factory: &Factory) -> rusqlite::Result<bool> {
     let asleep_at: Option<(String, String)> = tx
         .query_row(
-            "SELECT workflow, step FROM tasks WHERE id = ?1 AND state = 'asleep'
-             AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND daemon)
-             AND NOT EXISTS (SELECT 1 FROM asks WHERE task = ?1 AND kind = 'step'
-               AND answer IS NULL AND withdrawn IS NULL)",
+            &format!(
+                "SELECT workflow, step FROM tasks WHERE id = ?1 AND state = 'asleep'
+                 AND NOT EXISTS (SELECT 1 FROM waits WHERE task = ?1 AND fired IS NULL AND withdrawn IS NULL AND daemon)
+                 AND NOT EXISTS (SELECT 1 FROM asks WHERE task = ?1 AND kind = 'step'
+                   AND answer IS NULL AND withdrawn IS NULL)
+                 AND NOT EXISTS ({})",
+                crate::tools::HELD
+            ),
             [task],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )

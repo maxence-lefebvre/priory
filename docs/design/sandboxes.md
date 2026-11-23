@@ -6,8 +6,8 @@ ways to build the sandbox, then holds the model, the first code slice with its t
 after it, and the open questions with a recommendation for each.
 
 The first slice is built: see [sandboxes.md](../daemon/sandboxes.md). Max approved bubblewrap
-(LGPL-2.1) as a runtime requirement on 2026-11-23, for factories that turn a sandbox on only. The
-later slices are not built.
+(LGPL-2.1) as a runtime requirement on 2026-11-23, for factories that turn a sandbox on only.
+Leads and investigators of a jailed task start in its jail too. The later slices are not built.
 
 The idea is Max's, from 2026-11-22: run a task's agent in a sandbox instead of a git worktree on
 the host. This note keeps the worktree and puts the sandbox around it. The comparison below shows

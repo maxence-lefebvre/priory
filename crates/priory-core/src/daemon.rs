@@ -2045,6 +2045,45 @@ fn open_issue(db: &Connection, factory: &Factory, due: &state::Due) -> Result<Do
     })
 }
 
+/// The workflow whose sandbox a run of `task` starts in: its own, or, for a lead or an investigator
+/// task, that of the task it serves, since its prompt holds that task's agent's words. The inner
+/// error blocks the task: a helper whose served task is unknown never starts unjailed.
+fn jailing_workflow(db: &Connection, helper: i64) -> rusqlite::Result<Result<String, String>> {
+    let mut task = helper;
+    loop {
+        let served: Option<Option<i64>> = db
+            .query_row(
+                "SELECT task FROM consults WHERE investigation = ?1
+                 UNION ALL
+                 SELECT CASE json_type(inbox.data, '$.task')
+                   WHEN 'integer' THEN json_extract(inbox.data, '$.task') END
+                 FROM tasks JOIN inbox ON inbox.id = tasks.source
+                 WHERE tasks.id = ?1 AND tasks.trigger = ?2 AND inbox.type = 'priory.ask.routed'",
+                rusqlite::params![task, tools::LEAD_TRIGGER],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match served {
+            None => break,
+            // A served task is inserted before its helper, so each step goes to a lower id and ends.
+            Some(Some(served)) if served < task => task = served,
+            Some(_) => {
+                return Ok(Err(format!(
+                    "task {helper} serves a task its routed ask does not name, so its sandbox is unknown"
+                )));
+            }
+        }
+    }
+    let workflow = db
+        .query_row("SELECT workflow FROM tasks WHERE id = ?1", [task], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    Ok(workflow.ok_or(format!(
+        "task {helper} serves task {task}, which is gone, so its sandbox is unknown"
+    )))
+}
+
 /// Starts a run for `admission`. The outer error stops the daemon; the inner one blocks the task.
 #[allow(clippy::too_many_arguments)]
 fn start(
@@ -2063,11 +2102,21 @@ fn start(
         .value
         .step(&admission.step)
         .expect("admissible checked the step");
-    let sandbox = factory.sandbox_of(&admission.workflow);
+    let jailed_by = match jailing_workflow(db, admission.task)? {
+        Ok(workflow) => workflow,
+        Err(reason) => return Ok(Err(reason)),
+    };
+    // A helper whose served workflow is gone cannot tell whether that workflow was jailed.
+    if !factory.workflows.contains_key(&jailed_by) {
+        return Ok(Err(format!(
+            "task {} serves a task of workflow {jailed_by}, which the factory no longer has",
+            admission.task
+        )));
+    }
+    let sandbox = factory.sandbox_of(&jailed_by);
     if let (Some((name, _)), Err(why)) = (sandbox, jailing) {
         return Ok(Err(format!(
-            "workflow {} needs sandbox {name}, and this runner cannot start bubblewrap: {why}",
-            admission.workflow
+            "workflow {jailed_by} needs sandbox {name}, and this runner cannot start bubblewrap: {why}"
         )));
     }
     let jail = sandbox.map(|(_, sandbox)| priory_runtime::jail::Jail {

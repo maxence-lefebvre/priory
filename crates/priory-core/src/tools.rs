@@ -2499,13 +2499,18 @@ pub(crate) fn wake_on(
     set_ready(tx, task)
 }
 
+/// The gates that hold the result of task `?1` after its run ended: its prompt waits for their verdict.
+pub(crate) const HELD: &str = "SELECT gates.ask FROM gates JOIN runs ON runs.id = gates.run
+  WHERE gates.task = ?1 AND gates.state = 'grading' AND runs.ended IS NOT NULL";
+
 /// Wakes the asleep `task`, unless a gate holds its result on a person's answer: the prompt then
 /// waits for the verdict, as it does while a gate grades.
 pub(crate) fn set_ready(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
     tx.execute(
-        "UPDATE tasks SET state = 'ready', reason = NULL WHERE id = ?1 AND state = 'asleep'
-         AND NOT EXISTS (SELECT 1 FROM gates JOIN runs ON runs.id = gates.run
-           WHERE gates.task = ?1 AND gates.state = 'grading' AND runs.ended IS NOT NULL)",
+        &format!(
+            "UPDATE tasks SET state = 'ready', reason = NULL WHERE id = ?1 AND state = 'asleep'
+             AND NOT EXISTS ({HELD})"
+        ),
         [task],
     )
     .map(drop)
@@ -4549,6 +4554,21 @@ pub(crate) fn say(
     }
     let prompt = wake(tx, task, text)?;
     tx.execute("UPDATE outbox SET wakes = 1 WHERE id = ?1", [prompt])?;
+    let parked: Option<String> = tx
+        .query_row(
+            &format!(
+                "SELECT {} FROM asks WHERE id IN ({HELD}) AND answer IS NULL AND withdrawn IS NULL",
+                crate::listing::ASK_ID
+            ),
+            [task],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(ask) = parked.filter(|_| state == "asleep") {
+        return Ok(Ok(format!(
+            "task {task} waits for the answer to ask {ask}: its next run reads it"
+        )));
+    }
     if state == "asleep" {
         set_ready(tx, task)?;
     }

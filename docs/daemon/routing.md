@@ -139,7 +139,7 @@ Each inbox entry gets one of these outcomes:
 | `priory.task.requested.cli`, with an active task owning its key, at a model step whose agent started or waiting on a step's ask | `said` | that task, which hears the text as `priory say` sends it |
 | `priory.task.requested.cli`, with an active task owning its key whose agent has not started | `kept` | that task, which reads the text in its first prompt |
 | `github.pull_request.review_request_removed` with `reviewed: false`, with an active task whose key is its review key | `withdrew` | that task, now `dropped`, its live run ended |
-| Any other, with an active task asleep at a model step subscribing to a resource it names, that fires no wait | `woke` | that task, now `ready` (see [Subscriptions in tools.md](tools.md#subscriptions)) |
+| Any other, with an active task asleep at a model step subscribing to a resource it names, that fires no wait, and whose result no gate holds | `woke` | that task, now `ready` (see [Subscriptions in tools.md](tools.md#subscriptions)) |
 | Any other, with an active task owning a resource it names | `kept` | that task                   |
 | `factory.task.requested`, no active task  | `created` | a new task, `queued` at its workflow's start |
 | `factory.task.requested`, malformed       | `ignored` | none                                         |
