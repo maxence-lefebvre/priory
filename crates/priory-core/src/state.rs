@@ -2290,21 +2290,27 @@ pub(crate) fn route_in(
         )?;
     }
     // A review event goes to its review task first, even when an older task is keyed by its PR.
-    // A comment's task request joins whichever active task owns its pull request.
+    // A comment's task request joins the task its comment reached, or one that owns its pull request.
     let feedback = route::feedback(message, factory);
     let (keyed, owners) = match (route::requests(message), route::review(message)) {
-        (true, _) if feedback => (keyed(tx, resources.first())?, owners(tx, &resources)?),
+        (true, _) if feedback => (
+            keyed(tx, resources.first())?,
+            joined(tx, message, &resources)?,
+        ),
         (true, _) => (keyed(tx, resources.first())?, Vec::new()),
         (false, Some(review)) => (keyed(tx, Some(&review))?, owners(tx, &resources)?),
         (false, None) => (None, owners(tx, &resources)?),
     };
     let owner = keyed.as_ref().or(owners.first());
+    // A failed or dropped task keeps its pull request: `priory revive` brings it back.
+    let ended = feedback && owner.is_none() && key_ended(tx, resources.first())?;
     let reopening = match owner {
         None => crate::tools::reopenable(tx, message)?,
         Some(_) => None,
     };
     let (task, outcome) = match route::route(message, owner, factory) {
         _ if reopening.is_some() => (reopening, "reopened"),
+        _ if ended => (None, "ignored"),
         _ if keyed.is_some() && route::withdraws(message) => {
             (keyed.as_ref().map(|task| task.id), "withdrew")
         }
@@ -3016,6 +3022,35 @@ pub(crate) fn keyed(tx: &Transaction, key: Option<&String>) -> rusqlite::Result<
         |row| Ok(Task { id: row.get(0)? }),
     )
     .optional()
+}
+
+/// The tasks a comment trigger's task request joins: the one its source event reached, kept or
+/// reopened, then every active task that owns its pull request.
+fn joined(
+    tx: &Transaction,
+    message: &Message,
+    resources: &[String],
+) -> rusqlite::Result<Vec<Task>> {
+    let reached = tx
+        .query_row(
+            "SELECT task FROM inbox WHERE id = ?1 AND task IS NOT NULL",
+            [message.data["source"].as_str()],
+            |row| Ok(Task { id: row.get(0)? }),
+        )
+        .optional()?;
+    Ok(reached.into_iter().chain(owners(tx, resources)?).collect())
+}
+
+/// Whether the newest task keyed `key` failed or was dropped.
+fn key_ended(tx: &Transaction, key: Option<&String>) -> rusqlite::Result<bool> {
+    tx.query_row(
+        "SELECT 1 FROM tasks WHERE key = ?1 AND state IN ('failed', 'dropped')
+         AND id = (SELECT max(id) FROM tasks AS newest WHERE newest.key = ?1)",
+        [key],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|found| found.is_some())
 }
 
 /// The active task that owns any of `resources`: one whose own key is among them, else the oldest.

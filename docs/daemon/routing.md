@@ -130,10 +130,17 @@ does not. In that case, the request creates its own task.
 ### Comments on a pull request no task owns
 
 A [comment or review trigger](../reference/triggers.md#comments-and-reviews) requests a task for
-each comment on a pull request it matches. Unlike other task requests, any active task that owns
-the pull request takes it, by key, wait, claim or subscription, and its
-outcome is `coalesced`. The comment's own event already reached that task, so the request adds
-nothing. Only when no active task owns the pull request does the request create a task.
+each comment on a pull request it matches. Unlike other task requests, it joins a task that
+already has the comment, and its outcome is `coalesced`:
+
+- the task the comment's own event reached, kept, woke or reopened, such as a task that owns the
+  pull request's head branch;
+- else any active task that owns the pull request, by key, wait, claim or subscription.
+
+The comment's event already reached that task, so the request adds nothing. When the pull
+request's newest task failed or was dropped, the request is `ignored`: `priory revive` brings that
+task back (see [Feedback on a failed or dropped task](#feedback-on-a-failed-or-dropped-task)).
+Otherwise the request creates a task.
 
 That task's key is the pull request, `github:owner/name#42`, and it subscribes to it on creation
 (see the first row of [Resources](#resources-what-a-task-owns)). So a second comment goes to it:
@@ -155,7 +162,8 @@ Each inbox entry gets one of these outcomes:
 | ----------------------------------------- | --------- | -------------------------------------------- |
 | A schedule's or review request's `factory.task.requested`, with a task asleep at a model step owning its key | `woke` | that task, now `ready` |
 | A schedule's or review request's `factory.task.requested`, with a task in another active state owning its key | `coalesced` | that task, unchanged |
-| A comment or review trigger's `factory.task.requested`, with an active task owning its pull request | `coalesced` | that task, unchanged |
+| A comment or review trigger's `factory.task.requested`, with a task its comment reached or an active task owning its pull request | `coalesced` | that task, unchanged |
+| A comment or review trigger's `factory.task.requested`, with no such task and the pull request's newest task failed or dropped | `ignored` | none |
 | A review, comment or review thread comment, with no active task owning a resource it names, and a done task it reopens | `reopened` | that task, now `ready` at its reopen step |
 | `priory.task.requested.cli`, with an active task owning its key, at a model step whose agent started or waiting on a step's ask | `said` | that task, which hears the text as `priory say` sends it |
 | `priory.task.requested.cli`, with an active task owning its key whose agent has not started | `kept` | that task, which reads the text in its first prompt |

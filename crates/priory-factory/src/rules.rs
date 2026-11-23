@@ -427,6 +427,21 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         check_auto_answer(trigger, &mut problems);
         check_pre(factory, trigger, &mut problems);
         check_intent(trigger, &mut problems);
+        // A runner's claim of a key cannot see the pull requests another runner's tasks own.
+        if trigger.value.source == "github"
+            && FEEDBACK.contains(&trigger.value.on.as_str())
+            && factory.runners.len() > 1
+        {
+            problems.push(problem(
+                trigger,
+                trigger.lines.field("on"),
+                format!(
+                    "a `{}` trigger needs one runner; this factory has {}",
+                    trigger.value.on,
+                    factory.runners.len()
+                ),
+            ));
+        }
         match trigger.value.source.as_str() {
             "github" => check_github(trigger, &mut problems),
             "linear" | "linear.view" => check_linear(trigger, &mut problems),

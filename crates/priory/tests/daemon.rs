@@ -696,3 +696,51 @@ fn a_comment_on_a_pull_request_another_task_owns_goes_to_that_task_and_starts_no
         [route("1", "kept"), route("1", "coalesced")]
     );
 }
+
+#[test]
+fn a_comment_on_a_pull_request_whose_task_was_dropped_starts_no_new_task() {
+    let setup = with_my_prs("comment-dropped");
+    let first = pull_comment(43, 701);
+    setup.publish(&first);
+    setup.publish(&comment_requested(&first, 43));
+    succeeded(&setup.daemon());
+    succeeded(&setup.priory(&["cancel", "1"]));
+    let second = pull_comment(43, 702);
+    setup.publish(&second);
+    setup.publish(&comment_requested(&second, 43));
+
+    succeeded(&setup.daemon());
+
+    assert_eq!(setup.rows("tasks").len(), 1);
+    assert_eq!(
+        routes(&setup)[2..],
+        [route("-", "ignored"), route("-", "ignored")]
+    );
+}
+
+#[test]
+fn a_comment_that_reopens_a_done_task_coalesces_its_request_into_it() {
+    let setup = with_my_prs("comment-reopens");
+    let first = pull_comment(43, 701);
+    setup.publish(&first);
+    setup.publish(&comment_requested(&first, 43));
+    succeeded(&setup.daemon());
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute("UPDATE tasks SET state = 'done' WHERE id = 1", [])
+        .unwrap();
+    // Written after the task was done.
+    let later: herdr_bus::Timestamp = "2099-01-01T00:00:00Z".parse().unwrap();
+    let mut second = pull_comment(43, 702).time(later);
+    second.data["time"] = json!("2099-01-01T00:00:00Z");
+    setup.publish(&second);
+    setup.publish(&comment_requested(&second, 43));
+
+    succeeded(&setup.daemon());
+
+    assert_eq!(setup.rows("tasks").len(), 1);
+    assert_eq!(
+        routes(&setup)[2..],
+        [route("1", "reopened"), route("1", "coalesced")]
+    );
+}

@@ -1510,6 +1510,8 @@ fn a_comment_trigger_requests_a_task_for_a_comment_on_its_author_s_pull_request(
         pull_comment(701, "ana", "User", "MEMBER"),
         // Someone without write access starts nothing.
         pull_comment(703, "mallory", "User", "NONE"),
+        // The login `gh` runs as, which agents post as too, starts nothing.
+        pull_comment(705, "max", "User", "OWNER"),
     ] });
     let mut theirs = pull(44, false, json!([]), json!([]));
     theirs["author"] = json!({ "login": "dev" });
@@ -1523,6 +1525,7 @@ fn a_comment_trigger_requests_a_task_for_a_comment_on_its_author_s_pull_request(
     late["url"] = json!("https://github.com/owner/repo/pull/45#issuecomment-704");
     merged["comments"] = json!({ "nodes": [late] });
     setup.answer(&[
+        ("user", json!({ "login": "max" })),
         (OPEN_PULLS, open_pulls(&[mine, theirs, merged])),
         (
             REVIEW_COMMENTS,
@@ -1545,6 +1548,13 @@ fn a_comment_trigger_requests_a_task_for_a_comment_on_its_author_s_pull_request(
         .find(|stored| stored.message.data["github_id"] == 701)
         .unwrap();
     assert_eq!(comment.message.data["author"], "max");
+    let own = setup
+        .published()
+        .into_iter()
+        .find(|stored| stored.message.data["github_id"] == 705)
+        .unwrap();
+    assert_eq!(own.message.data["own"], true);
+    assert_eq!(own.message.data["triggers"], json!([]));
 }
 
 #[test]

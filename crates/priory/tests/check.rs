@@ -1386,6 +1386,25 @@ fn a_comment_trigger_filters_on_the_pull_request_s_author() {
 }
 
 #[test]
+fn a_comment_trigger_needs_a_factory_of_one_runner() {
+    let comments = "source = \"github\"\nrepo = \"owner/name\"\non = \"pull_request.comment\"\nfilter = { author = \"max\" }\nworkflow = \"implement\"\n";
+    let mut files = with("triggers/agent-label.toml", comments);
+    files.push(("runners/one.toml", RUNNER));
+    files.push(("runners/two.toml", RUNNER));
+
+    let outcome = check(&factory("comment-runners", &files));
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.contains(
+            "triggers/agent-label.toml:3: a `pull_request.comment` trigger needs one runner; this factory has 2\n"
+        ),
+        "{}",
+        outcome.stderr
+    );
+}
+
+#[test]
 fn a_review_request_trigger_names_a_reviewer_and_no_repository() {
     let good = "source = \"github\"\non = \"pull_request.review_requested\"\nreviewer = \"octo-cat\"\nworkflow = \"implement\"\n";
     let wrong = "source = \"github\"\non = \"pull_request.review_requested\"\nreviewer = \"max:x\"\nrepo = \"owner/name\"\nworkflow = \"implement\"\nkey = \"pull_request.number\"\n";

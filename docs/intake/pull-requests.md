@@ -34,7 +34,8 @@ A comment or review matches a trigger when its pull request is open and the pull
 `author` is the filter's `author`.
 With `commenter`, the comment's `actor` must be that login too. Without it, a bot's review matches
 no trigger. A comment or review by someone without write access, whose `association` is not
-`OWNER`, `MEMBER` or `COLLABORATOR`, matches no trigger either. Its task request starts a task only
+`OWNER`, `MEMBER` or `COLLABORATOR`, matches no trigger either, and neither does one marked `own`,
+since agents post as the login `gh` runs as. Its task request starts a task only
 when no active task owns the pull request (see
 [routing.md](../daemon/routing.md#comments-on-a-pull-request-no-task-owns)).
 

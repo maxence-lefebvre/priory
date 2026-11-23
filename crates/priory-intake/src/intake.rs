@@ -626,8 +626,7 @@ fn publish_all(
     } in polled
     {
         for event in events {
-            let mut source = event.message(triggers)?;
-            mark_own(&mut source);
+            let source = event.message(triggers, gh::viewer)?;
             // Reviews and checks are read again on every poll; herdr-bus would drop them too.
             if !published.insert(source.id) {
                 continue;
@@ -823,17 +822,20 @@ pub fn request_for(name: &str, trigger: &Trigger, source: &Message) -> Message {
     task_requested(name, trigger, source, key)
 }
 
-/// Marks a GitHub comment or review `own` when the login `gh` runs as wrote it, the login a
-/// worker's `gh` posts as. Unmarked while `gh` cannot say who it is.
-fn mark_own(message: &mut Message) {
+/// Marks a GitHub comment or review `own` when `viewer`, the login `gh` runs as, wrote it: the
+/// login a worker's `gh` posts as. Unmarked while `gh` cannot say who it is.
+fn mark_own(message: &mut Message, viewer: Viewer) {
     let feedback = [COMMENTED, THREAD_COMMENTED, REVIEWED, ISSUE_COMMENTED];
     if !feedback.contains(&message.kind.as_str()) {
         return;
     }
-    if let Some(viewer) = gh::viewer() {
+    if let Some(viewer) = viewer() {
         message.data["own"] = json!(message.data["actor"] == viewer);
     }
 }
+
+/// Who `gh` runs as: `gh::viewer`, or none where a test must not run `gh`.
+type Viewer = fn() -> Option<&'static str>;
 
 fn publish(bus: &dyn Log, message: &Message) -> Result<(), String> {
     bus.publish(OUTPUT, message)
@@ -856,28 +858,32 @@ struct Observed {
 }
 
 impl Observed {
-    fn message(&self, triggers: &[(&str, &Trigger)]) -> Result<Message, String> {
+    fn message(&self, triggers: &[(&str, &Trigger)], viewer: Viewer) -> Result<Message, String> {
         let raw = self.data["time"].as_str().unwrap_or_default();
         let time: Timestamp = raw
             .parse()
             .map_err(|error| format!("GitHub time `{raw}`: {error}"))?;
         let mut data = self.data.clone();
         data["baseline"] = json!(self.baseline);
-        data["triggers"] = json!(self.matching(triggers));
         let url = self.data["url"].as_str().unwrap_or_default().to_string();
         let link = if self.kind.starts_with("github.issues.") {
             "issue"
         } else {
             "pull_request"
         };
-        Ok(Message::new(self.kind, data)
+        let mut message = Message::new(self.kind, data)
             .id(id(&self.name))
             .subject(format!("{}#{}", self.repo, self.number))
             .time(time)
-            .link(link, &url))
+            .link(link, &url);
+        mark_own(&mut message, viewer);
+        // An agent posts as the login `gh` runs as, so its own comment must not start a task.
+        let own = message.data["own"] == true;
+        message.data["triggers"] = json!(self.matching(triggers, own));
+        Ok(message)
     }
 
-    fn matching<'a>(&self, triggers: &[(&'a str, &Trigger)]) -> Vec<&'a str> {
+    fn matching<'a>(&self, triggers: &[(&'a str, &Trigger)], own: bool) -> Vec<&'a str> {
         let field = |name: &str| self.data[name].as_str();
         let outsider = field("association")
             .is_some_and(|association| !["OWNER", "MEMBER", "COLLABORATOR"].contains(&association));
@@ -894,6 +900,7 @@ impl Observed {
                 && filter("author").is_none_or(|author| field("author") == Some(author.as_str()))
                 && commenter
                 && !outsider
+                && !own
                 && self.data["open"] != false
                 && (!self.baseline || trigger.backfill == Some(true))
         };

@@ -86,7 +86,11 @@ so later comments reach that task. A pull request that an active task already ow
 task: its comments go to that task (see
 [routing.md](../daemon/routing.md#comments-on-a-pull-request-no-task-owns)). A bot's review starts
 a task only when `commenter` names the bot. A comment from someone without write access starts no
-task.
+task. Neither does a comment by the login `gh` runs as, since agents post as that login: with
+`author` set to that login, your own comments on your pull requests start nothing, and they still
+reach a task that owns the pull request. A pull request whose newest task failed or was dropped
+gets no new task either: `priory revive` brings that task back. `priory check` refuses these
+triggers in a factory of several runners.
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
@@ -542,6 +546,7 @@ noop = [
 | `` a GitHub trigger needs `repo = "owner/name"` `` | A `github` trigger without a valid `repo`. A `schedule` trigger gets the same with `schedule` |
 | `` a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled`, `pull_request.opened`, `pull_request.comment`, `pull_request_review_comment`, `pull_request_review.submitted` or `pull_request.review_requested`, not `<on>` `` | A bad `on` |
 | `` a `<on>` trigger needs `filter = { author = "<GitHub login>" }`, and takes `commenter` too `` | A comment or review trigger without `author` in its `filter`, or with another key there |
+| `` a `<on>` trigger needs one runner; this factory has <n> `` | A comment or review trigger in a factory of several runners |
 | `` a `pull_request.review_requested` trigger needs `reviewer = "<GitHub login>"` `` | No `reviewer`, or one that is not letters, digits and dashes |
 | `` a `pull_request.review_requested` trigger takes no `<key>`: ... `` | `repo`, `filter` or `key` on a review request trigger |
 | `` team `<team>` is not `org/team`, a GitHub organization and team slug `` | An entry of `teams` that is not an organization, a `/` and a team slug |
