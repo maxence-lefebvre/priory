@@ -190,21 +190,35 @@ first, and the task moves on as its `Stop` would have moved it.
 Editing a judge's prompt or cases, or changing its model, leaves it not calibrated. A gate does not
 pass a result that no calibrated judge read, and a judge that is not calibrated cannot refuse one.
 So when no scorer refuses the result and a judge did not count, the daemon keeps the result held
-and asks a person one question, on the Desk like any ask:
+and asks a person, on the Desk like any ask:
 
 ```text
-The gate of step implement holds outcome passed of task 1: does-what-was-asked is not calibrated: <why>. Calibrate it with priory score --calibrate, then answer grade again, or answer let it through to store the result this once.
+Gates hold results while does-what-was-asked is not calibrated: <why>. Calibrate it with priory score --calibrate, then answer grade again to grade each result that waits on this ask again, or answer let it through to store each of them this once.
 ```
 
-Its title is `gate held: <scorer> is not calibrated: <why>`, and its options are:
+One ask serves every held result that waits on the same uncalibrated judges, whatever its task. A
+second task's result that the same judge cannot grade joins the open ask instead of raising its
+own. The ask belongs to the first task that waits on it, and its `what_waits` lists every task,
+such as `the held results of tasks 1, 3`. Its title is `gate held: <scorer> is not calibrated:
+<why>`, and its options are:
 
-- `grade again`: the scorers grade the held result again. A judge calibrated since then counts.
-  One that is still not calibrated asks again.
-- `let it through`: the daemon stores the result as if the gate passed, this once. The next gated
-  result asks again until the judge is calibrated.
+- `grade again`: the scorers grade each held result again. A judge calibrated since then counts.
+  Results that the judge still cannot grade wait on one new ask.
+- `let it through`: the daemon stores each held result as if its gate passed, this once. The next
+  gated result asks again until the judge is calibrated.
 
-While the ask is open, the run stays live and idle as during grading, and no scorer runs. A run
-that ends while the ask is open drops the result, as for any gate, and withdraws the ask.
+A waiting agent holds no process. Once the run's turn has ended and the ask is open, the daemon
+ends the run as `asleep` and kills its tmux session, and the task sleeps. The held result stays in
+the state database, so the run keeps no room, no `max_running` place, and nothing for an urgent wake
+or a spend cap to end. While the ask is open, no scorer runs, and a person's `say`, an event or a
+fired wait leaves the task asleep: its prompt waits for the verdict, as during grading.
+
+When the answer lets a result through, the daemon stores it and moves the task as the run's `Stop`
+would have. A next step of the same agent starts a new run, which resumes the session. When a scorer
+refuses it, the task wakes, and a new run reads the refusal. A task that a person cancels or
+revives while its result waits drops that result. The ask then moves to another task that still
+waits on it, or is withdrawn when none does. When the cancel or revive withdrew it first, the other
+held results are graded again and wait on a new ask.
 
 When a scorer refuses, the result is never stored. The first refusal in a run reaches the agent as
 its next prompt, followed by how to end the step:
@@ -219,9 +233,9 @@ run as `refused`. The desk shows it, and a person resumes, revives or cancels th
 ([desk.md](desk.md)). A resumed task starts a new run, whose first refusal reaches the agent
 again.
 
-A run that ends while its gate grades, such as one cancelled, revived, stopped for an urgent wake or
-whose agent exited, drops the verdict: its scores are recorded, and nothing else changes. After a
-daemon restart, a gate still grading starts its scorers again.
+A live run that ends while its gate grades, such as one cancelled, revived, stopped for an urgent
+wake or whose agent exited, drops the verdict: its scores are recorded, and nothing else changes.
+After a daemon restart, a gate still grading starts its scorers again.
 
 Each score of a gate appends a `factory.run.scored` record with `gate` set to the outcome it graded
 ([Records](#records)).

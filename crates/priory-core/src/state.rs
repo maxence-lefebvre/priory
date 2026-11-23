@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 104;
+const VERSION: i64 = 105;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1876,6 +1876,16 @@ CREATE TABLE IF NOT EXISTS aging (
 PRAGMA user_version = 104;
 ";
 
+// The ask a gate's held result waits on while a judge it names is not calibrated, shared by every
+// gate whose uncalibrated judges are the same, and those judges' names as JSON.
+const SCHEMA_105: &str = "
+ALTER TABLE gates ADD COLUMN ask INTEGER REFERENCES asks (id);
+ALTER TABLE gates ADD COLUMN judges TEXT;
+UPDATE gates SET ask = (SELECT id FROM asks WHERE asks.name LIKE 'gate-' || gates.id || '-%'
+  ORDER BY id DESC LIMIT 1) WHERE state = 'grading';
+PRAGMA user_version = 105;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1890,7 +1900,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
-    SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104,
+    SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
