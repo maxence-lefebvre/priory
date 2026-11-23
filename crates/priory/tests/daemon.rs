@@ -704,7 +704,11 @@ fn a_comment_on_a_pull_request_whose_task_was_dropped_starts_no_new_task() {
     setup.publish(&first);
     setup.publish(&comment_requested(&first, 43));
     succeeded(&setup.daemon());
-    succeeded(&setup.priory(&["cancel", "1"]));
+    // `priory cancel` needs a running daemon.
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute("UPDATE tasks SET state = 'dropped' WHERE id = 1", [])
+        .unwrap();
     let second = pull_comment(43, 702);
     setup.publish(&second);
     setup.publish(&comment_requested(&second, 43));
