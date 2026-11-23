@@ -14,7 +14,7 @@ import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, scr
 import { actionNote, arrivalAsk, batchParts, capsuleWords, countHead, countWords, deskBanners, dueParts, plural, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
 import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskLabel, taskViews, triageWords, workStep } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
-import { PANELS, backTo, pageTitle } from "./pages.js";
+import { PANELS, TYPED_FIELDS, backTo, pageTitle, taskRead } from "./pages.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
 
 const ICONS = {
@@ -283,7 +283,7 @@ async function refresh() {
     // The Costs panel reads its own reports; a refresh keeps the last ones.
     state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, runs, older, report, reports, spend: state.data?.spend ?? null, flows: state.data?.flows ?? null };
     acceptReport();
-    state.task = null;
+    if (state.task) state.task.stale = true;
     if (state.batch) state.batch.stale = true;
     state.snapshot = snapshot;
     keep();
@@ -1231,20 +1231,23 @@ function askDetail(id, wide) {
 }
 
 // The ask's task as /api/tasks/{id} serves it, read once per ask and again after each refresh.
+let taskCalls = 0;
 function taskOf(ask) {
   if (!ask.task || runnerOf(ask)) return null;
-  if (state.task?.id === ask.task) return state.task.body;
-  state.task = { id: ask.task, body: null };
+  const { task, read } = taskRead(state.task, ask.task);
+  if (!read) return task.body;
+  const call = ++taskCalls;
+  state.task = { ...task, call };
   api(`/api/tasks/${ask.task}`).then((body) => {
-    if (state.task?.id !== ask.task) return;
+    if (state.task?.call !== call) return;
     state.task.body = body;
     render();
   }, (error) => {
-    if (state.task?.id !== ask.task) return;
+    if (state.task?.call !== call) return;
     state.task.error = error.message;
     render();
   });
-  return null;
+  return state.task.body;
 }
 
 // A batch as /api/batches/{id} serves it: by id on its page, by its planning task's key in a go ask.
@@ -2961,7 +2964,7 @@ function render() {
   if (state.renderedKey) state.scrolls.set(state.renderedKey, [...app.querySelectorAll(".scroll")].map((element) => element.scrollTop));
   const focused = focusKey(document.activeElement);
   const typed = app.querySelector("#token")?.value;
-  const field = ["draft", "report-draft", "report-query"].includes(document.activeElement?.id) ? document.activeElement : null;
+  const field = TYPED_FIELDS.includes(document.activeElement?.id) ? document.activeElement : null;
   const caret = field ? [field.id, field.selectionStart, field.selectionEnd, field.selectionDirection] : undefined;
   state.observers.forEach((observer) => observer.disconnect());
   state.observers = [];
