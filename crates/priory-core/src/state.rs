@@ -4325,18 +4325,33 @@ fn pasted(prompt: &str) -> &str {
         .unwrap_or(prompt)
 }
 
+/// A prompt marked `attempted`, to type into its run's tmux session.
+pub(crate) struct Attempt {
+    pub outbox: i64,
+    pub tmux: String,
+    pub session: String,
+    pub text: String,
+    pub compact: bool,
+}
+
+/// How long after its `SessionStart` a run first gets a prompt. Claude fires the hook before its
+/// input reads keys, and takes keys that wait for it, an Enter among them, as one paste.
+const SETTLE: &str = "1 seconds";
+
 /// Marks the oldest queued prompt of an idle live run `attempted` and the run busy, in one
 /// transaction, before anything is typed. A task with an attempted or uncertain prompt gets none
 /// while the process it went to may still hold its text: its run is live, as a run carried into the
 /// next step takes over the prompts of the run it continues. A run whose keyboard a person holds
-/// gets none until the grant ends.
-pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, String, String)>> {
+/// gets none until the grant ends, and a run gets none within `SETTLE` of its `SessionStart`.
+pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<Attempt>> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let next = tx
         .query_row(
-            "SELECT outbox.id, runs.id, runs.tmux, runs.session, outbox.text FROM runs
+            &format!("SELECT outbox.id, runs.id, runs.tmux, runs.session, outbox.text, outbox.compact FROM runs
              JOIN outbox ON outbox.task = runs.task AND outbox.state = 'queued'
              WHERE runs.ended IS NULL AND runs.idle = 1
+             AND (runs.session_started IS NULL
+               OR julianday(runs.session_started) <= julianday('now', '-{SETTLE}'))
              AND NOT EXISTS (SELECT 1 FROM gates WHERE gates.run = runs.id AND gates.state = 'grading')
              AND NOT EXISTS (
                SELECT 1 FROM outbox AS open JOIN runs AS typed ON typed.id = open.run
@@ -4344,22 +4359,26 @@ pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, S
                AND typed.ended IS NULL)
              AND NOT EXISTS (SELECT 1 FROM keyboard_grants AS held WHERE held.run = runs.id
                AND held.ended IS NULL AND julianday(held.ends) > julianday('now'))
-             ORDER BY outbox.id LIMIT 1",
+             ORDER BY outbox.id LIMIT 1"),
             [],
             |row| {
                 Ok((
-                    row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
+                    Attempt {
+                        outbox: row.get(0)?,
+                        tmux: row.get(2)?,
+                        session: row.get(3)?,
+                        text: row.get(4)?,
+                        compact: row.get(5)?,
+                    },
                 ))
             },
         )
         .optional()?;
-    let Some((outbox, run, tmux, session, text)) = next else {
+    let Some((run, attempt)) = next else {
         return Ok(None);
     };
+    let outbox = attempt.outbox;
     tx.execute(
         &format!(
             "UPDATE outbox SET state = 'attempted', run = ?2, attempted = {NOW} WHERE id = ?1"
@@ -4376,7 +4395,33 @@ pub(crate) fn attempt(db: &mut Connection) -> rusqlite::Result<Option<(String, S
         [run, outbox],
     )?;
     tx.commit()?;
-    Ok(Some((tmux, session, text)))
+    Ok(Some(attempt))
+}
+
+/// Whether the attempted prompt `outbox` still waits for its `UserPromptSubmit`: it is still
+/// `attempted`, its run is live, and no prompt started that run's turn since. A `/compact` stamps
+/// its turn when attempted and never fires one, so it never waits.
+pub(crate) fn unsubmitted(db: &Connection, outbox: i64) -> rusqlite::Result<bool> {
+    Ok(db
+        .query_row(
+            "SELECT outbox.state = 'attempted' AND runs.ended IS NULL AND runs.turn IS NULL
+               AND NOT outbox.compact
+             FROM outbox JOIN runs ON runs.id = outbox.run WHERE outbox.id = ?1",
+            [outbox],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(false))
+}
+
+/// Marks the attempted prompt `outbox` `uncertain`: Enter was pressed twice and no
+/// `UserPromptSubmit` came, so its text may still sit in the agent's input.
+pub(crate) fn unconfirmed(db: &Connection, outbox: i64) -> rusqlite::Result<()> {
+    db.execute(
+        "UPDATE outbox SET state = 'uncertain' WHERE id = ?1 AND state = 'attempted'",
+        [outbox],
+    )?;
+    Ok(())
 }
 
 /// Marks the task's oldest queued prompt `attempted` by `run`, which takes it as its first prompt

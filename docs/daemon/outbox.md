@@ -13,13 +13,14 @@ A prompt moves through these states:
 | `queued`    | Waits for the task's run to be idle                                              |
 | `attempted` | Recorded, with the run marked busy, in the transaction before typing             |
 | `confirmed` | Its `UserPromptSubmit` arrived                                                   |
-| `uncertain` | Attempted before a daemon stop, never confirmed. Priory never types it again     |
+| `uncertain` | Typed but never confirmed: the daemon stopped, or two Enters brought no submit   |
 | `held`      | A person's `say` during a debate. The step after the debate reads it             |
 | `withdrawn` | Queued or held when a person revived the task. Its new generation never gets it  |
 
 A prompt usually goes `queued`, then `attempted`, then `confirmed`. The `uncertain` state covers a
-daemon that stopped between typing and confirming. Priory cannot tell whether the agent received
-the text, so it shows the prompt on the desk for a person to judge, instead of typing it again.
+daemon that stopped between typing and confirming, and a prompt whose second Enter brought no
+`UserPromptSubmit`. Priory cannot tell whether the agent received the text, so it shows the prompt
+on the desk for a person to judge, instead of typing it again.
 `priory outbox` lists every prompt with its state.
 
 ## What a prompt holds
@@ -49,12 +50,26 @@ The prompt that moved or woke the task is already queued.
 
 ## Typing a prompt
 
-Once a task's run is idle, the daemon types its oldest queued prompt:
+Once a task's run is idle, and at least 1 second after the run's `SessionStart`, the daemon types
+its oldest queued prompt:
 
 1. It loads the text into a tmux buffer from stdin.
 2. It pastes the buffer as one bracketed paste. So newlines in the text do not submit it, and key
    names in the text stay literal.
-3. It presses Enter.
+3. 0.3 seconds later, it presses Enter as a key press of its own.
+4. If no `UserPromptSubmit` arrives within 5 seconds, it presses Enter once more. It never pastes
+   the text again.
+5. If none arrives within 10 seconds of the second Enter, the prompt becomes `uncertain` and shows
+   on the desk.
+
+Claude fires `SessionStart` before its input reads keys. Keys typed before then wait, and Claude
+reads them in one burst as a paste, Enter included, so the prompt sits in its input unsent. The
+wait after `SessionStart` and the separate Enter keep the Enter apart from the paste. The second
+Enter covers an Enter the agent still missed. An Enter on an empty input submits nothing, so it
+does no harm when the first one worked and the hook was slow.
+
+A `/compact` gets one Enter and no second one, since its end is a `SessionStart` that can take
+minutes.
 
 A task with an `attempted` or `uncertain` prompt gets no further prompt while that text may still
 sit in the agent's input. That rule holds while the run the prompt went to is live:

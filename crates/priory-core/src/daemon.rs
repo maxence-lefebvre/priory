@@ -1,3 +1,4 @@
+use crate::enter::Entering;
 use crate::idle;
 use crate::link::Link;
 use crate::memory::{self, Gate};
@@ -360,6 +361,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut aged = None;
     let mut link = Link::default();
     let mut redispatch: Option<Instant> = None;
+    let mut entering = Entering::default();
     loop {
         let tick = Instant::now();
         // A runner back from away reads the log, and so drops the tasks that moved, before any run
@@ -407,6 +409,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             &mut commands,
             &mut recipes,
             fetched,
+            &mut entering,
         )?;
         // Committed first, so a crash before the kill leaves an ended run, not a lost one.
         for tmux in tools::over_budget_in_turn(&mut db, &trace, &mut peeked, &watched)? {
@@ -451,7 +454,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             sweep::retire(&db, factory, &home, short)?;
         }
         priory_runtime::ticks::record(tick.elapsed());
-        match listening.lines.recv_timeout(EVERY) {
+        // A pasted prompt's Enter is due before the next whole tick.
+        let wait = entering.due().map_or(EVERY, |due| due.min(EVERY));
+        match listening.lines.recv_timeout(wait) {
             Ok(line) => apply(&mut db, line, &trace, counting.get(&home), kit.current())?,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
@@ -1171,6 +1176,7 @@ fn tend(
     commands: &mut Vec<(i64, Script)>,
     recipes: &mut crate::recipe::Running,
     kit: crate::kit::Current<'_>,
+    entering: &mut Entering,
 ) -> Result<(), Error> {
     let factory = trace.factory;
     for run in state::live(db)? {
@@ -1231,6 +1237,8 @@ fn tend(
     for tmux in crate::spend::tick(db, trace, &now, &watched)? {
         runtime::kill(&tmux);
     }
+    // Before admission, so a run's slow start never delays another run's Enter.
+    entering.tick(db)?;
     loop {
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
@@ -1268,12 +1276,14 @@ fn tend(
             runtime::kill(&tmux);
         }
     }
-    while let Some((tmux, session, text)) = state::attempt(db)? {
-        let typed = runtime::pane(&tmux, &session)
+    // Enter goes on a later tick, so the agent never reads it as part of the paste.
+    while let Some(attempt) = state::attempt(db)? {
+        let pasted = runtime::pane(&attempt.tmux, &attempt.session)
             .ok_or_else(|| "its pane is gone".to_owned())
-            .and_then(|pane| runtime::type_text(&pane, &text));
-        if let Err(error) = typed {
-            eprintln!("priory daemon: typing into {tmux}: {error}");
+            .and_then(|pane| runtime::paste(&pane, &attempt.text).map(|()| pane));
+        match pasted {
+            Ok(pane) => entering.pasted(attempt.outbox, pane, attempt.compact),
+            Err(error) => eprintln!("priory daemon: typing into {}: {error}", attempt.tmux),
         }
     }
     Ok(())

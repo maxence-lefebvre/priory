@@ -2048,6 +2048,81 @@ fn a_submitted_prompt_with_text_after_its_pasted_content_tag_is_not_confirmed() 
     assert_eq!(setup.rows("outbox")[0][3], "attempted");
 }
 
+/// How many Enters the fake `claude` lost.
+fn dropped(setup: &Setup) -> usize {
+    fs::read_to_string(setup.dir.join("fake/dropped.log"))
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
+#[test]
+fn a_prompt_whose_first_enter_is_lost_is_submitted_by_one_more_enter_and_never_typed_again() {
+    let mut setup = Setup::new("enter-lost");
+    fs::write(setup.dir.join("fake/drop-enter"), "1").unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| {
+        rows.first().is_some_and(|row| row[3] == "confirmed")
+    });
+    assert_eq!(dropped(&setup), 1);
+    let typed = setup.typed();
+    assert!(typed[0].starts_with("Implement the issue.\n"), "{typed:?}");
+    assert_eq!(
+        typed
+            .iter()
+            .filter(|typed| typed.contains("Implement the issue."))
+            .count(),
+        1,
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn a_long_multi_line_prompt_typed_as_the_session_starts_is_submitted() {
+    let mut setup = Setup::new("enter-burst");
+    setup.hold("burst");
+    let text = "Say bonjour to the team and list what changed overnight. ".repeat(80);
+    let mut source = labeled(42);
+    source.data["body"] = json!(text);
+    let mut request = requested(42);
+    request.data["source"] = json!(source.id.to_string());
+    setup.publish(&source);
+    setup.publish(&request);
+
+    setup.start();
+
+    setup.until("outbox", |rows| {
+        rows.first().is_some_and(|row| row[3] == "confirmed")
+    });
+    let typed = setup.typed();
+    let lines: Vec<_> = typed[0].lines().collect();
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines[0], "Implement the issue.");
+    assert!(lines[1].starts_with("End this step by calling the result tool"));
+    assert!(lines[2].contains(text.trim_end()), "{lines:?}");
+}
+
+#[test]
+fn a_prompt_still_unconfirmed_after_one_more_enter_is_uncertain_on_the_desk() {
+    let mut setup = Setup::new("enter-lost-twice");
+    fs::write(setup.dir.join("fake/drop-enter"), "2").unwrap();
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("outbox", |rows| with(rows, 3, "uncertain") == 1);
+    assert_eq!(dropped(&setup), 2);
+    assert!(setup.typed().is_empty());
+    let items: Vec<_> = desk(&setup, &[])
+        .into_iter()
+        .map(|row| row[1].clone())
+        .collect();
+    assert_eq!(items, ["prompt"]);
+}
+
 #[test]
 fn a_prompt_attempted_before_a_crash_becomes_uncertain_is_not_typed_again_and_its_late_submit_confirms_it()
  {
@@ -19381,10 +19456,11 @@ fn overlapping_after(name: &str, second: &str, factory: &str, first: impl Fn(&Se
     setup.until("runs", |rows| {
         rows.len() == 2 && rows[1][2] == "check" && rows[1][6] == "-"
     });
-    // Task 1's silent turn gets its nudge, which would take the next queued call.
+    // Task 1's silent turn gets its nudge, whose turn would take the next queued call.
     setup.until("outbox", |rows| {
-        rows.iter()
-            .any(|row| row[2] == "2" && row[4].starts_with("Your last turn ended"))
+        rows.iter().any(|row| {
+            row[2] == "2" && row[3] == "confirmed" && row[4].starts_with("Your last turn ended")
+        })
     });
     first(&setup);
     setup.publish(&requested(43));
