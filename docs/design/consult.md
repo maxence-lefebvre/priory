@@ -228,7 +228,11 @@ Three bounds, all the daemon's:
   the cost reaches the cap. A run can pass the cap by what one model call costs. `priory check`
   refuses an investigator whose model has no price, and a run whose transcript the daemon cannot
   read ends at once with that reason.
-- `per_task` stops a worker that keeps asking.
+- `per_task` stops a worker that keeps asking. It counts the task's current generation, as does
+  the refusal after a consult over its cap, so a revived task may consult again.
+- The investigator's task starts ahead of its band's other tasks, and passes the pause, the review
+  limit and `max_running`: it finishes the work of a task that already ran. A reached `day` or
+  `week` spend cap still holds it (see [runs.md](../daemon/runs.md#work-already-running)).
 
 A consult's cost belongs to the asking task and its lane. `priory costs --by agent` shows the
 investigator's own row, and `priory report` counts consults per step.

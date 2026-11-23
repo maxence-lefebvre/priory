@@ -109,7 +109,7 @@ fn server_names(config: &serde_json::Value) -> Vec<&str> {
 /// set, so it cannot take its call first.
 fn hold_investigator(setup: &Setup) {
     setup.until("tasks", |rows| {
-        rows.len() == 2 && rows[1][7].starts_with("waits for room")
+        rows.len() == 2 && task_row(rows, "2")[7].starts_with("waits for room")
     });
     setup.hold("hold-call");
     setup.memory(60);
@@ -157,9 +157,11 @@ fn a_consult_sleeps_the_worker_and_the_investigators_report_wakes_it_as_its_next
     setup.start();
 
     let tasks = setup.until("tasks", |rows| {
-        rows.len() == 2 && rows[0][4] == "asleep" && rows[1][7].starts_with("waits for room")
+        rows.len() == 2
+            && task_row(rows, "1")[4] == "asleep"
+            && task_row(rows, "2")[7].starts_with("waits for room")
     });
-    assert_eq!(tasks[1][1], "priory:consult:1", "{tasks:?}");
+    assert_eq!(task_row(&tasks, "2")[1], "priory:consult:1", "{tasks:?}");
     setup.gone("priory-1");
     let (text, failed) = reply(&setup.replies()[0]);
     assert!(!failed, "{text}");
@@ -285,7 +287,7 @@ fn an_investigators_claude_loads_no_user_or_project_settings_and_has_no_tool_tha
     setup.start();
 
     setup.until("tasks", |rows| {
-        rows.len() == 2 && rows[1][7].starts_with("waits for room")
+        rows.len() == 2 && task_row(rows, "2")[7].starts_with("waits for room")
     });
     let worker = setup.claude_args(0);
     setup.hold("hold-call");
@@ -478,8 +480,14 @@ fn a_consult_still_queued_at_its_deadline_never_starts_and_wakes_the_worker() {
 
     setup.start();
 
-    let tasks = setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "dropped");
-    assert_eq!(tasks[1][7], "consult 1 passed its deadline", "{tasks:?}");
+    let tasks = setup.until("tasks", |rows| {
+        rows.len() == 2 && task_row(rows, "2")[4] == "dropped"
+    });
+    assert_eq!(
+        task_row(&tasks, "2")[7],
+        "consult 1 passed its deadline",
+        "{tasks:?}"
+    );
     let woken = setup.until("outbox", |rows| rows.len() >= 2);
     let typed = loop {
         let typed = typed_with(&setup, "consult 1 got no report");
@@ -508,7 +516,9 @@ fn an_investigator_running_past_its_deadline_is_ended_and_its_late_result_refuse
     let runs = setup.until("runs", |rows| rows.len() == 2);
     let session = runs[1][4].clone();
 
-    setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "dropped");
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && task_row(rows, "2")[4] == "dropped"
+    });
     setup.gone("priory-2");
     let late = setup.mcp(
         &session,
@@ -533,7 +543,9 @@ fn an_investigator_whose_transcript_passes_the_cap_is_ended_and_no_more_consults
 
     setup.start();
     hold_investigator(&setup);
-    setup.until("tasks", |rows| rows.len() == 2 && rows[1][4] == "dropped");
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && task_row(rows, "2")[4] == "dropped"
+    });
     setup.gone("priory-2");
     fs::remove_file(setup.dir.join("fake/hold-call")).unwrap();
 
@@ -602,7 +614,9 @@ fn a_result_or_a_second_consult_while_a_consult_is_open_is_refused() {
         assert!(failed, "{text}");
         assert!(text.contains("already waits on consult 1"), "{text}");
     }
-    setup.until("tasks", |rows| rows.len() == 2 && rows[0][4] == "asleep");
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && task_row(rows, "1")[4] == "asleep"
+    });
 }
 
 #[test]
@@ -683,12 +697,15 @@ fn cancelling_the_asking_task_drops_its_consults_queued_task() {
     setup.publish(&requested(42));
 
     setup.start();
-    setup.until("tasks", |rows| rows.len() == 2 && rows[0][4] == "asleep");
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && task_row(rows, "1")[4] == "asleep"
+    });
     assert!(setup.priory(&["cancel", "1"]).status.success());
 
-    let tasks = setup.until("tasks", |rows| rows[1][4] == "dropped");
+    let tasks = setup.until("tasks", |rows| task_row(rows, "2")[4] == "dropped");
     assert_eq!(
-        tasks[1][7], "its consult was withdrawn: task 1 is dropped",
+        task_row(&tasks, "2")[7],
+        "its consult was withdrawn: task 1 is dropped",
         "{tasks:?}"
     );
     setup.memory(60);
@@ -714,7 +731,7 @@ fn a_revived_asking_task_hears_nothing_of_its_earlier_generations_consult() {
     hold_investigator(&setup);
     let runs = setup.until("runs", |rows| rows.len() == 2);
     assert!(setup.priory(&["cancel", "1"]).status.success());
-    setup.until("tasks", |rows| rows[1][4] == "dropped");
+    setup.until("tasks", |rows| task_row(rows, "2")[4] == "dropped");
     setup.gone("priory-2");
     assert!(setup.priory(&["revive", "1"]).status.success());
     setup.release("hold-call");
@@ -725,13 +742,136 @@ fn a_revived_asking_task_hears_nothing_of_its_earlier_generations_consult() {
     );
     assert!(reply(&late[0]).1, "{late:?}");
 
-    setup.until("tasks", |rows| rows[0][4] == "running" && rows[0][9] == "2");
+    setup.until("tasks", |rows| {
+        task_row(rows, "1")[4] == "running" && task_row(rows, "1")[9] == "2"
+    });
     std::thread::sleep(Duration::from_millis(1500));
     assert!(
         typed_with(&setup, "consult 1").is_empty(),
         "{:?}",
         setup.typed()
     );
+}
+
+/// The row of task `id` among the rows of `priory tasks`.
+fn task_row<'r>(rows: &'r [Vec<String>], id: &str) -> &'r [String] {
+    rows.iter().find(|row| row[0] == id).unwrap()
+}
+
+/// Adds `[queue] review_limit = 1` to the factory, and a pull request of task 1 that waits for a
+/// person once task 1 sleeps on its consult.
+fn at_review_limit(setup: &Setup) {
+    let file = setup.dir.join("factory/factory.toml");
+    let toml = fs::read_to_string(&file).unwrap() + "\n[queue]\nreview_limit = 1\n";
+    fs::write(file, toml).unwrap();
+}
+
+fn write_state(setup: &Setup, statement: &str) {
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.busy_timeout(Duration::from_secs(10)).unwrap();
+    db.execute_batch(statement).unwrap();
+}
+
+#[test]
+fn a_consult_starts_ahead_of_its_bands_backlog_and_past_a_full_review_limit() {
+    let mut setup = consulting("consult-backlog", "");
+    at_review_limit(&setup);
+    setup.calls(&[consult("sentry"), reported("Release 4.2.")]);
+    setup.publish(&requested(42));
+
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && task_row(rows, "2")[7].starts_with("waits for room")
+    });
+    // Task 1 sleeps on its consult with an open pull request, so its lane is at the limit.
+    write_state(
+        &setup,
+        "INSERT INTO pull_requests (task, resource, branch, base)
+         VALUES (1, 'github:owner/repo#7', 'priory/1', 'main')",
+    );
+    setup.publish(&requested(43));
+    setup.publish(&requested(44));
+    setup.until("tasks", |rows| rows.len() == 4);
+    // A person ordered the band's backlog: the consult still starts first.
+    assert!(setup.priory(&["move", "4", "--top"]).status.success());
+    let queue = setup.rows("queue");
+    assert_eq!(
+        queue
+            .iter()
+            .take(3)
+            .map(|row| row[2].as_str())
+            .collect::<Vec<_>>(),
+        ["2", "4", "3"],
+        "{queue:?}"
+    );
+
+    setup.memory(60);
+
+    setup.until("tasks", |rows| task_row(rows, "2")[4] == "done");
+    let runs = setup.rows("runs");
+    assert_eq!(runs[1][1], "2", "the consult ran second: {runs:?}");
+    let woken = loop {
+        let woken = typed_with(&setup, "consult 1 reported by sentry:");
+        if !woken.is_empty() {
+            break woken;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(woken[0].contains("> Release 4.2."), "{woken:?}");
+}
+
+#[test]
+fn a_consult_starts_while_priory_is_paused() {
+    let mut setup = consulting("consult-paused", "");
+    setup.calls(&[
+        consult("sentry"),
+        reported("Release 4.2."),
+        result("passed"),
+    ]);
+    setup.publish(&requested(42));
+
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && task_row(rows, "2")[7].starts_with("waits for room")
+    });
+    assert!(setup.priory(&["pause"]).status.success());
+    setup.publish(&requested(43));
+    setup.until("tasks", |rows| {
+        rows.len() == 3 && task_row(rows, "3")[7] == "waits: priory is paused"
+    });
+
+    setup.memory(60);
+
+    let tasks = setup.until("tasks", |rows| task_row(rows, "1")[4] == "done");
+    assert_eq!(task_row(&tasks, "2")[4], "done", "{tasks:?}");
+    assert_eq!(task_row(&tasks, "3")[4], "queued", "{tasks:?}");
+}
+
+#[test]
+fn a_revived_task_may_consult_again_up_to_per_task() {
+    let mut setup = consulting("consult-revive-count", "per_task = 1\n");
+    setup.memory(60);
+    setup.calls(&[
+        consult("sentry"),
+        reported("Release 4.2."),
+        serde_json::Value::Null,
+    ]);
+    setup.publish(&requested(42));
+
+    setup.start();
+    setup.calls_left(0);
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && task_row(rows, "2")[4] == "done"
+    });
+    assert!(setup.priory(&["cancel", "1"]).status.success());
+    setup.until("tasks", |rows| task_row(rows, "1")[4] == "dropped");
+    setup.calls(&[consult("sentry")]);
+    assert!(setup.priory(&["revive", "1"]).status.success());
+
+    let replies = setup.replied(3);
+    let (text, failed) = reply(&replies[2]);
+    assert!(!failed, "{text}");
+    assert!(text.starts_with("consult 2 stored"), "{text}");
 }
 
 #[test]

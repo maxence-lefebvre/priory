@@ -299,7 +299,8 @@ until `priory unpause`. Everything else goes on. Live runs keep working, and an 
 event, `say`, `resume` and `revive` still wake their tasks, whose new runs start as usual. A resume
 that makes a task `queued`, because no run ever took its step's prompt, leaves it waiting too. A
 queued task at a model step waits with the reason `waits: priory is paused: <reason>`, which
-`priory tasks` shows.
+`priory tasks` shows. A lead's or an investigator's task still starts: it answers a task that
+already ran (see [runs.md](runs.md#work-already-running)).
 
 The pause lives in the state file, so it survives a daemon restart, and `pause` and `unpause` work
 while the daemon is stopped. A second `pause` keeps the first one's start and takes the new reason.

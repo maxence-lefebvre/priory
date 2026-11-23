@@ -34,7 +34,7 @@ A `[lane."<team>/<theme>"]` table sets how the queue treats one lane.
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
-| `max_running` | integer | no | no cap | The most of the lane's tasks that may have a live run at once, 1 or more. New starts past it wait. See [runs.md](../daemon/runs.md#at-most-so-many-running) | `2` |
+| `max_running` | integer | no | no cap | The most of the lane's tasks that may have a live run at once, 1 or more. New starts past it wait, in every band: the cap is hard. See [runs.md](../daemon/runs.md#at-most-so-many-running) | `2` |
 
 ## When a lane is set
 
