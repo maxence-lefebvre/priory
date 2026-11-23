@@ -4,7 +4,7 @@ The daemon admits a run only when the machine has room for it, measured live:
 
 | Measure | Read from | Admits when |
 | ------- | --------- | ----------- |
-| Memory | `MemAvailable` and `MemTotal` in `/proc/meminfo` | free memory, minus the memory promised to live runs and held by memory grants, minus the agent's `memory`, stays at or above `(1 - memory share) × MemTotal` |
+| Memory | `MemAvailable` and `MemTotal` in `/proc/meminfo` | free memory, minus the memory live runs promised and do not use yet and the memory grants hold, minus the agent's `memory`, stays at or above `(1 - memory share) × MemTotal` |
 | Disk | `df -Pk` on `PRIORY_HOME`, which reads `statvfs` | free disk, minus the disk promised to live runs, minus the agent's `disk`, stays above 10 % of the disk, or above 20 GB on a disk over 200 GB |
 | CPU | the 1-minute load in `/proc/loadavg`, and the CPUs this process may use | the load stays below `cpu share × CPUs` |
 
@@ -23,10 +23,16 @@ An agent may also declare `disk`, a size reserved above the disk floor. An agent
 reserves none. A run that waits for disk it declared gets the reason `waits for room: 22.0 GB of
 disk free, needs 8.0 GB and keeps 20.0 GB free`.
 
-A live run promises its agent's `memory` and `disk` from start to end, since no run reports its own
-use yet. The room subtracts every promise and held memory grant (see Memory gate) from measured
-free memory and disk. So two runs admitted in turn cannot take the same free room, and no run
-starts into memory a build holds. The daemon measures again before each admission, since a start's
+A live run promises its agent's `memory` and `disk` from start to end. What a run already uses is
+already missing from measured free memory, so the room subtracts only the part of each memory
+promise the run does not use yet: `max(0, memory - use)`. A run's use is the `memory.current` of
+its systemd scope in the agents slice (below), read from cgroup v2 under `/sys/fs/cgroup`. The
+daemon finds the scope from the cgroup of the run's tmux pane process, and keeps that process in
+memory for the run's life. A run with no scope in the slice, as on a host without systemd, or whose
+use cannot be read, keeps its whole promise. Disk promises always count in full, since no run
+reports its disk use. Held memory grants (see Memory gate) also count in full, since a granted
+command may not have allocated yet. So two runs admitted in turn cannot take the same free room,
+and no run starts into memory a build holds. The daemon measures again before each admission, since a start's
 clone and worktree take disk.
 
 A task that does not fit stays `queued` or `ready`, with a reason such as
@@ -70,7 +76,8 @@ preempt = ["blocker"]
 On each tick, the daemon marks runs when all of these hold:
 
 1. The head of the queue waits for room, and its band is in `preempt`.
-2. It lacks memory or declared disk, and it would fit if some live runs' promises were gone. A head
+2. It lacks memory or declared disk, and it would fit if some live runs were gone. A stopped run
+   gives back the memory it uses and the part of its promise it does not use yet. A head
    that waits for load, for a shared agent, for a pause or for a measurement that failed marks
    nothing.
 3. Live runs of a lower band, which the next section does not protect, promise enough.
@@ -166,14 +173,15 @@ wait that long.
 
 ## Measurements
 
-`PRIORY_PROC` names a directory to read in place of `/proc`. The tests use it, with a fake `df` on
-`PATH`, to steer measurements.
+`PRIORY_PROC` names a directory to read in place of `/proc`, and `PRIORY_CGROUP` one to read in
+place of `/sys/fs/cgroup`. The tests use them, with a fake `df` on `PATH`, to steer measurements.
 
 Known limits:
 
-- A run's actual use already lowers measured free memory, and its promise counts again on top. So
-  the room errs toward starting fewer runs. A run that reports its own use would end the double
-  count.
+- A run without a scope still counts twice: its use lowers measured free memory, and its whole
+  promise counts again on top. So the room errs toward starting fewer runs there.
+- A build that holds a memory grant runs inside its run's scope, so its use also lowers the run's
+  unused promise, while the grant counts in full. That errs toward fewer starts too.
 - An agent that grows past its declared `memory` can still crowd the machine. The memory gate covers
   builds an agent wraps in it. The agents slice (below) slows the rest down.
 - Load is not declared per agent, so when load leaves no room, no task fits anyway.

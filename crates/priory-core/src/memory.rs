@@ -146,24 +146,36 @@ pub(crate) fn started(pid: u32) -> Option<i64> {
     fields.get(19)?.parse().ok()
 }
 
+/// How long the oldest waiting grant holds back the grants behind it. A build it waits for ends
+/// within minutes, so it is rarely overtaken, and a grant behind a head that cannot fit still has most
+/// of its 1-hour default timeout left to run.
+const PATIENCE: &str = "-300 seconds";
+
 /// Grants waiting grants oldest first while each fits beside the live runs and held grants. A grant
 /// does not count its own run's promise, which would make it wait for that run to end. The first that
-/// does not fit holds back the rest, so a large build is never starved.
+/// does not fit holds back the rest, so a large build is never starved. Once it has waited past
+/// `PATIENCE`, later grants that fit go first, and it stays first in line for the next room.
 fn admit(db: &Connection, factory: &Factory, share: &Share, room: &Room) -> rusqlite::Result<()> {
-    let mut statement =
-        db.prepare("SELECT id, bytes, task FROM grants WHERE state = 'waiting' ORDER BY id")?;
+    let mut statement = db.prepare(
+        "SELECT id, bytes, task, created <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?1)
+         FROM grants WHERE state = 'waiting' ORDER BY id",
+    )?;
     let waiting = statement
-        .query_map([], |row| {
+        .query_map([PATIENCE], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, i64>(1)? as u64,
                 row.get::<_, Option<i64>>(2)?,
+                row.get::<_, bool>(3)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (id, bytes, task) in waiting {
+    for (index, (id, bytes, task, overdue)) in waiting.into_iter().enumerate() {
         let promised = state::promised(db, factory, task)?.memory;
         if !room::fits(room, share, promised, bytes) {
+            if index == 0 && overdue {
+                continue;
+            }
             break;
         }
         db.execute(
@@ -173,4 +185,106 @@ fn admit(db: &Connection, factory: &Factory, share: &Share, room: &Room) -> rusq
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GB: u64 = 1 << 30;
+
+    /// 30 GB of memory with 19 GB free, and the default 90 % share, which keeps 3 GB free.
+    fn room() -> Room {
+        Room {
+            memory_free: 19 * GB,
+            memory_total: 30 * GB,
+            disk_free: 500 * GB,
+            disk_total: 1000 * GB,
+            load: 0.0,
+            cpus: 8,
+        }
+    }
+
+    fn share() -> Share {
+        Share {
+            memory: 0.9,
+            cpu: 0.9,
+        }
+    }
+
+    /// Queues a waiting grant of `gb` GB requested `ago` seconds ago.
+    fn waiting(db: &Connection, gb: u64, ago: u64) -> i64 {
+        db.execute(
+            "INSERT INTO grants (bytes, pid, started, command, created)
+             VALUES (?1, 1, 1, 'build', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?2))",
+            params![(gb * GB) as i64, format!("-{ago} seconds")],
+        )
+        .unwrap();
+        db.last_insert_rowid()
+    }
+
+    fn states(db: &Connection) -> Vec<(u64, String)> {
+        let mut statement = db
+            .prepare("SELECT bytes, state FROM grants ORDER BY id")
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)? as u64 / GB, row.get(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    fn held(gb: u64) -> (u64, String) {
+        (gb, "held".to_owned())
+    }
+
+    fn wait(gb: u64) -> (u64, String) {
+        (gb, "waiting".to_owned())
+    }
+
+    /// A held grant of `gb` GB, which leaves the room 19 - `gb` GB for the rest.
+    fn hold(db: &Connection, gb: u64) {
+        db.execute(
+            "INSERT INTO grants (bytes, pid, started, command, state)
+             VALUES (?1, 1, 1, 'build', 'held')",
+            [(gb * GB) as i64],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_head_that_cannot_fit_holds_back_a_smaller_grant_before_the_bound() {
+        let db = state::memory();
+        hold(&db, 8);
+        waiting(&db, 10, 299);
+        waiting(&db, 4, 10);
+
+        admit(&db, &Factory::default(), &share(), &room()).unwrap();
+
+        assert_eq!(states(&db), [held(8), wait(10), wait(4)]);
+    }
+
+    #[test]
+    fn a_head_that_cannot_fit_lets_a_smaller_grant_through_after_the_bound_and_keeps_its_place() {
+        let db = state::memory();
+        hold(&db, 8);
+        waiting(&db, 10, 301);
+        waiting(&db, 4, 10);
+        waiting(&db, 6, 5);
+
+        admit(&db, &Factory::default(), &share(), &room()).unwrap();
+
+        // 19 - 8 = 11 GB keeps 3 GB free: 4 GB fits, then 6 GB does not, and it holds back no one.
+        assert_eq!(states(&db), [held(8), wait(10), held(4), wait(6)]);
+        db.execute("DELETE FROM grants WHERE state = 'held'", [])
+            .unwrap();
+        hold(&db, 4);
+
+        admit(&db, &Factory::default(), &share(), &room()).unwrap();
+
+        // 15 GB is enough for either the head or the 6 GB behind it, and the head goes first.
+        assert_eq!(states(&db), [held(10), wait(6), held(4)]);
+    }
 }

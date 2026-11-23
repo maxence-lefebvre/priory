@@ -8,11 +8,14 @@ duration such as `90s`, `15m` or `2h`.
 1. The command asks the daemon over its socket for a grant of N GB. It sends its pid and, inside
    a run, the run's `PRIORY_SESSION`, which names the grant's task.
 2. Grants wait in one queue, oldest first. The daemon grants the oldest waiting grant when the
-   measured free memory, minus the memory promised to live runs and every held grant, minus N,
-   stays at or above `(1 - memory share) × MemTotal`, as the room check for runs does. A grant
-   leaves out the promise of its own task's run, which would otherwise wait for itself. A grant
-   that does not fit holds back every grant behind it, even a smaller one that fits, so a large
-   build is never starved.
+   measured free memory, minus the memory live runs promised and do not use yet and every held
+   grant, minus N, stays at or above `(1 - memory share) × MemTotal`, as the room check for runs
+   does (see [Room](room.md)). A grant leaves out the promise of its own task's run, which would
+   otherwise wait for itself. The oldest waiting grant that does not fit holds back every grant
+   behind it, even a smaller one that fits, so a large build is never starved. Once it has waited
+   5 minutes, later grants that fit go first, in order, and it stays first in line for the next
+   room. A build it waits for usually ends within 5 minutes, and a grant behind it still has most
+   of its 1-hour default timeout left.
 3. The command polls the daemon every 250 ms. Once its grant is held, it starts a shell that waits
    for a go-ahead, hands the grant to that shell's process, and only then lets the shell run the
    command with `acquire`'s own working directory, environment and terminal. The shell becomes the
@@ -56,6 +59,8 @@ The MCP server's instructions teach every agent the gate. They ask it to wrap ea
 
 Known limits:
 
+- Past its 5 minutes, a large grant can wait on while a stream of smaller grants keeps taking the
+  room it needs, until its `--timeout`.
 - Two runs' grants can each wait for the other run's promise. The default timeout ends that wait
   after an hour, and the agent sees the failure.
 - Runs and grants queue apart. A run that fits starts even while a grant waits, and can take the

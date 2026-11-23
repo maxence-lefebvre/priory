@@ -225,6 +225,8 @@ impl Setup {
             .env("PRIORY_HOME", self.dir.join("home"))
             .env("FAKE_DIR", self.dir.join("fake"))
             .env("PRIORY_PROC", self.dir.join("proc"))
+            .env("PRIORY_CGROUP", self.dir.join("cgroup"))
+            .env_remove("PRIORY_SLICE")
             // The person's own harness configs, which a run's MCP servers come from.
             .env("CLAUDE_CONFIG_DIR", self.dir.join("claude"))
             .env("CODEX_HOME", self.dir.join("codex"))
@@ -2738,6 +2740,58 @@ fn two_admissions_in_one_tick_count_each_others_declared_memory() {
     setup.until("tasks", |rows| {
         rows[0][4] == "done" && rows[1][4] == "running"
     });
+}
+
+/// Puts the live pane of tmux session `tmux` in a scope of `priory-agents.slice` that uses `gb` GB.
+fn scoped(setup: &Setup, tmux: &str, gb: u64) {
+    let listed = setup.tmux(&[
+        "list-panes",
+        "-s",
+        "-t",
+        &format!("={tmux}:"),
+        "-F",
+        "#{pane_pid}",
+    ]);
+    let pid = String::from_utf8(listed.stdout).unwrap();
+    let pid = pid
+        .lines()
+        .next()
+        .expect("the run has a pane")
+        .trim()
+        .to_owned();
+    let scope = "user.slice/user-1000.slice/user@1000.service/priory.slice/priory-agents.slice/run-r1.scope";
+    let dir = setup.dir.join("cgroup").join(scope);
+    fs::create_dir_all(&dir).unwrap();
+    write_atomic(&dir.join("memory.current"), &format!("{}\n", gb << 30));
+    fs::create_dir_all(setup.dir.join("proc").join(&pid)).unwrap();
+    write_atomic(
+        &setup.dir.join("proc").join(&pid).join("cgroup"),
+        &format!("0::/{scope}\n"),
+    );
+}
+
+#[test]
+fn a_run_that_uses_its_promised_memory_does_not_count_it_twice() {
+    let mut setup = Setup::new("promise-use");
+    setup.memory(12);
+    setup.hold("hold-stop");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+
+    setup.start();
+
+    // With no scope, the first run keeps its whole 4 GB promise, so the second waits.
+    let reason = "waits for room: 8.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free";
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][7] == reason);
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 1);
+    // Its scope now uses the 4 GB, which the 12 GB measured free already leaves out.
+    scoped(&setup, &runs[0][3], 4);
+
+    let tasks = setup.until("tasks", |rows| rows[1][4] == "running");
+    assert_eq!(tasks[0][4], "running");
+    setup.release("hold-stop");
 }
 
 #[test]

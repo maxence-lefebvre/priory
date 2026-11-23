@@ -1728,6 +1728,27 @@ pub fn pane(name: &str, session: &str) -> Option<String> {
     })
 }
 
+/// The process id of the live pane of the tmux session `name` that runs the harness session
+/// `session`. A scope execs the agent in place, so it is the scope's process.
+pub fn pane_pid(name: &str, session: &str) -> Option<u32> {
+    let panes = run(tmux().args([
+        "list-panes",
+        "-s",
+        "-t",
+        &format!("={name}:"),
+        "-F",
+        "#{pane_pid} #{pane_dead} #{@priory}",
+    ]))
+    .ok()?;
+    panes.lines().find_map(|line| {
+        let mut fields = line.splitn(3, ' ');
+        let (pid, dead, tag) = (fields.next()?, fields.next()?, fields.next()?);
+        (dead == "0" && tag == session)
+            .then(|| pid.parse().ok())
+            .flatten()
+    })
+}
+
 /// Every tmux session with a pane Priory tagged, and that pane's harness session id.
 pub fn tagged() -> Vec<(String, String)> {
     let panes = run(tmux().args(["list-panes", "-a", "-F", "#{session_name} #{@priory}"]))
