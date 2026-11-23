@@ -2274,7 +2274,7 @@ fn request(args: Vec<String>) -> ExitCode {
 }
 
 /// `priory adopt [DIR] TRIGGER [PR...]` parks a task on each open pull request of the comment or
-/// review trigger `TRIGGER`'s author that no active task owns, or on the ones `PR...` names.
+/// review trigger `TRIGGER`'s author that no task in any state owns, or on the ones `PR...` names.
 fn adopt(args: Vec<String>) -> ExitCode {
     let mut args = args.into_iter().peekable();
     let dir = match args.peek() {
@@ -2343,7 +2343,7 @@ fn adopt(args: Vec<String>) -> ExitCode {
             continue;
         }
         let key = format!("github:{repo}#{number}");
-        match state::active_owner(&db, &key) {
+        match state::owner(&db, &key) {
             Ok(Some(task)) => {
                 println!("{key}: task {task} owns it");
                 continue;

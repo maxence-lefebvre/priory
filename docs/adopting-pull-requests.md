@@ -9,7 +9,7 @@ task routes its events is in [routing.md](daemon/routing.md#parked-pull-requests
 ## 1. Adopt every open pull request of a trigger
 
 Name the trigger. Priory lists the trigger's repository's open pull requests by its `author` with
-`gh pr list`, and parks a task on each one that no active task owns:
+`gh pr list`, and parks a task on each one that no task owns:
 
 ```sh
 priory adopt my-prs
@@ -30,17 +30,20 @@ priory adopt my-prs 57 https://github.com/owner/name/pull/58
 A trigger that is not a comment or review trigger, or a pull request that is not open by the
 trigger's `author`, is refused, and nothing is adopted.
 
-Running it again adopts only pull requests that still have no task.
+Running it again adopts only pull requests that still have no task. A pull request whose task is
+done, failed or dropped keeps that task: a comment reopens a done task, and `priory revive ID`
+brings back a failed or dropped one.
 
 ## 2. Check the parked tasks
 
 ```sh
-priory tasks
+priory search Adopted --state held
 ```
 
 Each adopted task is `held`, with the reason
 `held: adopted for trigger my-prs, until a comment or review trigger fires on github:owner/name#57`.
-The desk lists none of them. `priory task ID` lists the events the task kept since the adopt.
+The desk, the Queue and `priory tasks` list none of them. `priory task ID` lists the events the
+task kept since the adopt.
 
 ## 3. Let a comment start the agent
 
@@ -49,6 +52,6 @@ its first run reads the step's prompt, the pull request, and every event the tas
 one now, run `priory release ID`.
 
 When the pull request merges first, the task is done with no run. When it closes unmerged, the
-task is dropped.
+task is dropped. A close that arrived before the adopt ends the task the same way.
 
 Events from before the adopt are not added to the task: they stay in `priory inbox --unrouted`.

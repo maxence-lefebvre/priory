@@ -148,6 +148,10 @@ fn desk_items() -> String {
     )
 }
 
+/// No open `parked` hold holds the task: adopted tasks stay out of the lists until released.
+const UNPARKED: &str = "NOT EXISTS (SELECT 1 FROM holds AS parked WHERE parked.task = tasks.id
+  AND parked.kind = 'parked' AND parked.released IS NULL)";
+
 const DESK: &str = concat!(
     "SELECT 0 AS part, asks.created AS since, 'ask' AS kind,
                  ",
@@ -750,6 +754,7 @@ fn tasks_since(
          FROM tasks LEFT JOIN queue USING (id)
          WHERE (?1 IS NULL OR lane = ?1) AND (?2 IS NULL OR grade = ?2)
            AND (?3 IS NULL OR state NOT IN ('done', 'failed', 'dropped') OR changed >= ?3)
+           AND {UNPARKED}
          ORDER BY {}",
         places(),
         state::START_ORDER
@@ -991,7 +996,7 @@ pub fn queue(
              tasks.reason,
              changed, {CONDITIONS}, '[]', '[]',
              (SELECT min(id) FROM holds WHERE holds.task = tasks.id AND holds.released IS NULL)
-           FROM tasks WHERE tasks.state = 'held'
+           FROM tasks WHERE tasks.state = 'held' AND {UNPARKED}
          ) ORDER BY part, sort",
         places(),
         aged = state::AGED_BAND

@@ -31789,16 +31789,16 @@ fn uncalibrated_pre_review(name: &str, workflow: &str) -> (Setup, Vec<Vec<String
     (setup, asks)
 }
 
-/// A comment trigger on max's pull requests, which `priory adopt` names.
+/// A comment trigger on alice's pull requests, which `priory adopt` names.
 const MY_PRS: &str = r#"
 source = "github"
 repo = "owner/repo"
 on = "pull_request.comment"
-filter = { author = "max" }
+filter = { author = "alice" }
 workflow = "implement"
 "#;
 
-/// A running daemon whose factory has the `my-prs` trigger, and a fake GitHub where max has
+/// A running daemon whose factory has the `my-prs` trigger, and a fake GitHub where alice has
 /// `open` pull requests open.
 fn adopting(name: &str, open: &[u64]) -> Setup {
     let mut setup = Setup::new(name);
@@ -31828,11 +31828,11 @@ fn adopt(setup: &Setup, args: &[&str]) -> String {
     )
 }
 
-/// An event `kind` on max's pull request 7, from a branch no task made.
-fn on_max_pull(kind: &str, extra: serde_json::Value) -> Message {
+/// An event `kind` on alice's pull request 7, from a branch no task made.
+fn on_alice_pull(kind: &str, extra: serde_json::Value) -> Message {
     let mut message = on_pull(kind, extra);
     message.data["head_branch"] = json!("feature");
-    message.data["author"] = json!("max");
+    message.data["author"] = json!("alice");
     message
 }
 
@@ -31914,7 +31914,7 @@ fn adopt_refuses_a_trigger_that_is_not_a_comment_trigger_and_a_pull_request_that
     assert!(!closed.status.success());
     assert_eq!(
         String::from_utf8_lossy(&closed.stderr),
-        "priory adopt: owner/repo#9 is not an open pull request by max\n"
+        "priory adopt: owner/repo#9 is not an open pull request by alice\n"
     );
     assert!(setup.rows("tasks").is_empty());
 }
@@ -31924,14 +31924,14 @@ fn a_parked_task_keeps_checks_and_comments_and_wakes_on_its_trigger_s_request() 
     let setup = adopting("adopt-wakes", &[7]);
     adopt(&setup, &["my-prs", "https://github.com/owner/repo/pull/7"]);
     setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "held");
-    let check = on_max_pull(
+    let check = on_alice_pull(
         "github.check_run.completed",
         json!({ "name": "test", "conclusion": "success", "github_id": 900 }),
     );
-    let comment = on_max_pull(
+    let comment = on_alice_pull(
         "github.pull_request.comment",
         json!({
-            "actor": "max", "body": "Why this name?", "github_id": 701, "open": true,
+            "actor": "alice", "body": "Why this name?", "github_id": 701, "open": true,
             "url": "https://github.com/owner/repo/pull/7#issuecomment-701"
         }),
     );
@@ -31972,7 +31972,7 @@ fn a_parked_task_is_done_when_its_pull_request_merges_and_dropped_when_it_closes
         adopt(&setup, &["my-prs", "7"]);
         setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "held");
 
-        setup.publish(&on_max_pull(
+        setup.publish(&on_alice_pull(
             "github.pull_request.closed",
             json!({ "merged": merged, "github_id": 400 }),
         ));
@@ -31981,4 +31981,83 @@ fn a_parked_task_is_done_when_its_pull_request_merges_and_dropped_when_it_closes
         assert_eq!(held_as(&setup, "1")[1], reason);
         assert!(setup.rows("runs").is_empty());
     }
+}
+
+#[test]
+fn adopt_skips_a_pull_request_a_done_task_owns_and_its_next_comment_reopens_that_task() {
+    let setup = gated("adopt-done-owner");
+    setup.publish(&check(1, 0));
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
+    fs::write(
+        setup.dir.join("fake/prs"),
+        r#"[{"number":7,"title":"Rename the flag","url":"https://github.com/owner/repo/pull/7"}]"#,
+    )
+    .unwrap();
+
+    let adopted = adopt(&setup, &["my-prs"]);
+
+    assert_eq!(adopted, "github:owner/repo#7: task 1 owns it\n");
+    assert_eq!(setup.rows("tasks").len(), 1);
+    std::thread::sleep(Duration::from_millis(1100));
+    setup.publish(&commented());
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 3);
+    assert!(
+        setup.typed()[2].starts_with("Feedback reopened this done task as generation 2"),
+        "{:?}",
+        setup.typed()
+    );
+    assert_eq!(setup.rows("tasks").len(), 1);
+}
+
+#[test]
+fn adopt_skips_a_pull_request_whose_newest_task_was_dropped() {
+    let setup = adopting("adopt-dropped-owner", &[7]);
+    adopt(&setup, &["my-prs", "7"]);
+    setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "held");
+    person(&setup, "cancel", &["1"]);
+    setup.until("tasks", |rows| rows[0][4] == "dropped");
+
+    let again = adopt(&setup, &["my-prs"]);
+
+    assert_eq!(again, "github:owner/repo#7: task 1 owns it\n");
+    assert_eq!(setup.rows("tasks").len(), 1);
+}
+
+#[test]
+fn a_parked_task_ends_on_a_close_that_arrived_before_its_adopt_request() {
+    for (merged, state) in [(true, "done"), (false, "dropped")] {
+        let setup = adopting(&format!("adopt-closed-before-{state}"), &[7]);
+        setup.publish(&on_alice_pull(
+            "github.pull_request.closed",
+            json!({ "merged": merged, "open": false, "github_id": 400 }),
+        ));
+        setup.until("inbox", |rows| rows.len() == 1);
+
+        adopt(&setup, &["my-prs", "7"]);
+
+        setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == state);
+        assert!(setup.rows("runs").is_empty());
+    }
+}
+
+#[test]
+fn a_parked_task_is_left_out_of_the_queue_and_the_task_list() {
+    let setup = adopting("adopt-hidden", &[7]);
+    adopt(&setup, &["my-prs", "7"]);
+    setup.until("tasks", |rows| rows.len() == 1 && rows[0][4] == "held");
+    let factory = setup.dir.join("factory");
+
+    let queue = setup.priory(&["queue", factory.to_str().unwrap(), "--json"]);
+    let tasks = setup.priory(&["tasks", "--json"]);
+
+    assert!(queue.status.success(), "{queue:?}");
+    let queue: serde_json::Value = serde_json::from_slice(&queue.stdout).unwrap();
+    assert_eq!(queue["waiting"], json!([]), "{queue}");
+    assert!(tasks.status.success(), "{tasks:?}");
+    let tasks: serde_json::Value = serde_json::from_slice(&tasks.stdout).unwrap();
+    assert_eq!(tasks["tasks"], json!([]), "{tasks}");
+    assert!(person(&setup, "task", &["1"]).contains("parked"));
+    let found = person(&setup, "search", &["Adopted", "--state", "held"]);
+    assert!(found.contains("owner/repo#7"), "{found}");
 }

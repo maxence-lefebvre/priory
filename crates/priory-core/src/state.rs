@@ -3154,11 +3154,10 @@ fn owners(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Vec<Task>>
     .collect()
 }
 
-/// The oldest active task that owns `resource`, by key, claim, wait or subscription.
-pub fn active_owner(db: &Connection, resource: &str) -> rusqlite::Result<Option<i64>> {
+/// The newest task in any state that owns `resource`, by key, claim, wait or subscription.
+pub fn owner(db: &Connection, resource: &str) -> rusqlite::Result<Option<i64>> {
     db.query_row(
-        "SELECT min(tasks.id) FROM tasks JOIN owned ON owned.task = tasks.id
-         WHERE owned.resource = ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')",
+        "SELECT max(task) FROM owned WHERE resource = ?1",
         [resource],
         |row| row.get(0),
     )

@@ -179,9 +179,14 @@ not match stays kept, and the next run reads it. `priory release` starts the tas
 
 While the task is parked, the pull request's `github.pull_request.closed` ends it: `done` with
 the reason `<key> merged while parked` when it merged, else `dropped` with `<key> closed while
-parked`. A close older than the adopt request does not count. The desk lists no row for a parked
-task. `priory tasks` shows it held, with the reason
+parked`. The newest event that says whether the pull request is open decides, even one older than
+the adopt request: a `github.pull_request.closed`, or any event with an `open` field. The desk,
+the Queue's waiting list and `priory tasks` list no row for a parked task. `priory task ID` shows
+it held, with the reason
 `held: adopted for trigger <name>, until a comment or review trigger fires on <key>`.
+
+`priory adopt` skips a pull request that a task in any state owns. A comment reopens a done task,
+and `priory revive` brings back a failed or dropped one.
 
 Events of the pull request from before the adopt stay unrouted: the daemon routes only new
 messages.
