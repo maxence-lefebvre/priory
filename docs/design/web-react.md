@@ -36,7 +36,9 @@ pnpm-lock.yaml
 .gitattributes             # crates/priory-core/web/dist/** linguist-generated -diff
 crates/priory-core/web/
   package.json             # @priory/web
-  build.mjs                # esbuild: app.js -> dist/app.js; --check compares instead of writing
+  build.mjs                # esbuild: main.jsx -> dist/app.js; --check compares instead of writing
+  main.jsx                 # the React shell (slice 2a): root, route, data, events, LegacyPage
+  router.js, queries.js, events.js, store.js   # the shell's plain modules, with node:test files
   dist/app.js              # the built bundle, committed
   *.js, *.test.js          # view models and their tests: unchanged, same place
   app.js                   # the legacy drawing: the bundle's entry, shrinking page by page
@@ -94,10 +96,10 @@ Approval of this plan approves exactly this list. Versions and dates come from t
 | pnpm | MIT | 12.21.0 | 2026-11-13 | tool, via corepack | slice 1 | The workspace and lockfile Max asked for |
 | react | MIT | 19.3.1 | 2026-10-14 | runtime | slice 2a | Components |
 | react-dom | MIT | 19.3.1 | 2026-10-14 | runtime | slice 2a | `createRoot`; `react-dom/server` renders component tests to markup. Brings `scheduler` (MIT). |
-| @tanstack/react-query | MIT | 5.108.4 | 2026-11-23 | runtime | slice 2a | The server data cache, approved by Max. Brings `@tanstack/query-core` (MIT). |
+| @tanstack/react-query | MIT | 5.107.1 | 2026-11-06 | runtime | slice 2a | The server data cache, approved by Max. Brings `@tanstack/query-core` (MIT). |
 
-`@tanstack/react-query` 5.108.4 came out the day of this plan. Slice 2a pins the newest 5.108 patch
-that is at least a week old when it starts.
+Slice 2a pins `@tanstack/react-query` at 5.107.1, the newest patch at least a week old on
+2026-11-23. The newest was then 5.108.4, released that day.
 
 Rejected:
 - Vite and `@vitejs/plugin-react` (MIT, 8.3.8 and 6.3.0, November 2026): `cargo` embeds the assets and
@@ -116,12 +118,20 @@ Rejected:
 1. **Slice 1, the bundle.** The pnpm workspace, esbuild, `dist/app.js` built from today's `app.js`,
    the CI step, `serve.rs` and `sw.js`, the serve test, the docs and this note. No change in drawing
    or behaviour.
-2. **Slice 2a, the shell and the query layer.** React renders the frame: the navigation, the page
-   title and the routes from `pages.js` with the History API. One `QueryClient` holds the server data.
-   Every page not yet ported renders inside a `LegacyPage` component, which owns a container and
-   calls the legacy drawing for that page into it. The `/api/events` long poll moves into one hook
-   that invalidates the queries an event touches: task, asks or runs.
-3. **Slice 2b, the task page**, stacked on 2a. Max's Say textarea bug lives there.
+2. **Slice 2a, the shell and the query layer.** Built. `main.jsx` is the bundle's entry. React owns
+   the root, the route, the server data and the events long poll:
+   - `router.js` holds the route. `go()` pushes it with the History API and draws the new page
+     before it returns, as `app.js` expects. Back moves it too.
+   - `queries.js` holds one `QueryClient`, with one query per listing. `refresh()` reads them all
+     through it, and the shell observes them with `useQueries` and `keepPreviousData`.
+   - `events.js` is the long poll, which `main.jsx` runs. `/api/events` answers only a revision, not
+     what changed, so a moved revision reads every listing again. Structural sharing keeps each
+     unchanged listing the same object, so a read with nothing new draws nothing.
+   - `LegacyPage` renders `#app` once and lets `app.js` draw inside it, frame included.
+   The frame (navigation, the top bar, the page title) moves to React with the first page port,
+   since the compact and wide layouts compose it around each page differently.
+3. **Slice 2b, the task page**, stacked on 2a. Max's Say textarea bug lives there. The frame moves
+   with it.
 4. Then one pull request per page: Asks with the answer sheet, Desk, Tasks, Runs, Queue, Inbox,
    Costs, Reports, Flows, Batch, Terminal, Settings and sign-in, the Add sheet. Each port deletes
    that page's legacy drawing.
@@ -154,8 +164,8 @@ Rules for every port:
   keeps the old worker.
 - The CSP. The bundle is a same-origin script.
 - `DESIGN.md` rules and tokens, `app.css`, the 390 px phone layout, the themes, `boot.js`'s first paint.
-- The four Verify commands. A fifth joins them:
-  `corepack pnpm install --frozen-lockfile && corepack pnpm web:check`.
+- The four Verify commands. A fifth joins them, and runs before the Node tests, which import
+  TanStack Query: `corepack pnpm install --frozen-lockfile && corepack pnpm web:check`.
 
 ## 6. In-flight web work
 
@@ -186,13 +196,15 @@ Rules, each with a test:
 3. **Keep scroll and open menus** across a refresh, for the same reason.
 
 Tests:
-- `node:test` on the query layer with a fake fetch: an event for task 3 invalidates task 3 and the
-  asks, and leaves the runs; a re-read returns the old data until the new data lands.
-- A browser check, `scripts/demo/refresh.mjs`, added in slice 2a. It forces a refresh by writing to
-  the demo state and samples the DOM every animation frame across it. It fails on the ask drawer
-  drawn without Brief, Inbox and Trace in any frame (`/asks/1`), on "Loading task" in any frame of a
-  task page, and on the Say textarea losing focus, value or caret. CI has no browser, so each port's
-  pull request runs it against the demo and pastes its output.
+- `queries.test.js`, with a fake server: the cache shows the last listings until a re-read lands; a
+  failed re-read keeps them; a read with nothing new keeps every listing the same object, and one
+  with a change replaces only that listing. `events.test.js` covers the long poll.
+- `scripts/demo/refresh.mjs`, a browser check. It changes the demo's data while a page is open and
+  samples the DOM every animation frame. It fails on the ask drawer losing a section it drew
+  (`/asks/1`: Brief, Inbox, Trace), and on a task page drawing "Loading task" or its Say field
+  losing focus, text or caret. It drives Chromium over the DevTools protocol with Node's own
+  WebSocket, so it needs no package. CI has no browser, so each port's pull request runs it against
+  the demo and pastes its output. Run against a build from before #418, it fails on both pages.
 
 ## 8. The GitHub extension
 
@@ -230,8 +242,7 @@ Max reviews it before slice 2a merges: https://claude.ai/artifact/DJzXheB2nzY27b
 
 ## Later slices
 
-1. Slice 2a: the shell and the query layer.
-2. Slice 2b: the task page.
-3. The page ports of section 4, one pull request each.
-4. The GitHub extension in the workspace.
-5. Deleting `LegacyPage` and the legacy drawing.
+1. Slice 2b: the task page, and the frame.
+2. The page ports of section 4, one pull request each.
+3. The GitHub extension in the workspace.
+4. Deleting `LegacyPage` and the legacy drawing.

@@ -16,6 +16,9 @@ import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remot
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
 import { PANELS, TYPED_FIELDS, backTo, pageTitle, taskRead } from "./pages.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
+import { client, params, readAll, sameListings, sameParams } from "./queries.js";
+import { go } from "./router.js";
+import { store } from "./store.js";
 
 const ICONS = {
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -146,7 +149,8 @@ const state = {
   drawn: null,
   // The last list the person opened; a task or batch page opened next keeps it in its history entry.
   from: null,
-  snapshot: null,
+  // The listings drawn last, as the query cache holds them.
+  listings: null,
   rendered: 0,
   scrolls: new Map(),
   observers: [],
@@ -239,7 +243,16 @@ async function api(path) {
   return response.json();
 }
 
-async function refresh() {
+// The server data lives in one QueryClient; main.jsx observes it, refresh() reads it again.
+export const cache = client();
+// What the next read asks for, and whether a token is set; main.jsx renders from both.
+export const wanted = store(params(), sameParams);
+export const signedIn = store(Boolean(state.token));
+export const revision = () => state.revision;
+export const revisionMoved = () => watch.revision();
+export { api, render };
+
+export async function refresh() {
   if (!state.token) return render();
   const failed = state.failed;
   const call = ++state.refreshes;
@@ -250,44 +263,15 @@ async function refresh() {
     runs: current() === "runs" && listView(RUN_VIEWS) === "recent",
   };
   for (const listing of ["asks", "tasks", "runs"]) state.all[listing] &&= history[listing];
+  const asked = params(state.all, state.reportShown);
+  wanted.set(asked);
   try {
-    // The server reads the views once, when it starts.
-    const views = (!state.cached && state.data?.views) || (await api("/api/views"));
-    const links = (!state.cached && state.data?.links) || (await api("/api/links")).links;
-    const full = (listing) => (state.all[listing] ? `/api/${listing}?all=1` : `/api/${listing}`);
     // Taken before the read, so an event between that read and the visit still shows next time.
     const read = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-    // `report` is null until the first `priory report put`; a report the arrows reached may be gone.
-    const shown = api(state.reportShown == null ? "/api/reports/latest" : `/api/reports/${state.reportShown}`)
-      .then((found) => (found.report ? found : null))
-      .catch((error) => (error.status === 404 ? null : Promise.reject(error)));
-    const listed = api("/api/reports").then((read) => read.reports);
-    const [desk, asksList, queue, tasksList, runsList, report, reports] = await Promise.all([...["/api/desk", full("asks"), "/api/queue", full("tasks"), full("runs")].map(api), shown, listed]);
+    const listings = await readAll(cache, api, asked);
     // A later call, such as the one that loads older rows, supersedes this one.
     if (call !== state.refreshes) return true;
-    const [asks, tasks, runs] = [asksList.asks, tasksList.tasks, runsList.runs];
-    const older = { asks: asksList.older, tasks: tasksList.older, runs: runsList.older };
-    if (!state.since.opened) Object.assign(state.since, { opened: read, from: desk.last_visit });
-    state.since.events = mergeSince(state.since.events, desk.since_you_looked);
-    // The listings are read one after another; the oldest revision makes the next wait catch what they missed.
-    state.revision = Math.min(desk.revision, asksList.revision, queue.revision, tasksList.revision, runsList.revision, report?.revision ?? Infinity);
-    const snapshot = JSON.stringify([desk, asks, queue, tasks, runs, older, report, reports]);
-    state.updated = Date.now();
-    state.failed = null;
-    state.cached = false;
-    if (current() === "costs") loadCosts();
-    if (current() === "inbox") loadUnrouted();
-    // Ages read in minutes, so an unchanged state needs a new paint once a minute at most.
-    if (state.data && snapshot === state.snapshot && !failed && Date.now() - state.rendered < 60000) return keep(), true;
-    const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
-    // The Costs panel reads its own reports; a refresh keeps the last ones.
-    state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, runs, older, report, reports, spend: state.data?.spend ?? null, flows: state.data?.flows ?? null };
-    acceptReport();
-    if (state.task) state.task.stale = true;
-    if (state.batch) state.batch.stale = true;
-    state.snapshot = snapshot;
-    keep();
-    announce(before);
+    accept(listings, { read, failed });
   } catch (error) {
     // A superseded call, such as one from before a sign-out, must not sign the new session out.
     if (call !== state.refreshes) return true;
@@ -296,8 +280,35 @@ async function refresh() {
     render();
     return false;
   }
-  render();
   return true;
+}
+
+// Takes a read's listings into state and draws them. A listing that did not change is the same
+// object, so a read with nothing new only repaints the ages, once a minute at most.
+export function accept(listings, { read = new Date().toISOString().replace(/\.\d+Z$/, "Z"), failed = state.failed } = {}) {
+  const { views, links, desk, asks: asksList, queue, tasks: tasksList, runs: runsList, report, reports } = listings;
+  if (!state.since.opened) Object.assign(state.since, { opened: read, from: desk.last_visit });
+  state.since.events = mergeSince(state.since.events, desk.since_you_looked);
+  // The listings are read one after another; the oldest revision makes the next wait catch what they missed.
+  state.revision = Math.min(desk.revision, asksList.revision, queue.revision, tasksList.revision, runsList.revision, report?.revision ?? Infinity);
+  state.updated = Date.now();
+  state.failed = null;
+  state.cached = false;
+  if (current() === "costs") loadCosts();
+  if (current() === "inbox") loadUnrouted();
+  if (state.data && sameListings(listings, state.listings) && !failed && Date.now() - state.rendered < 60000) return keep();
+  const before = state.data ? new Set(state.data.asks.filter((ask) => ask.state === "open").map((ask) => ask.id)) : null;
+  const [asks, tasks, runs] = [asksList.asks, tasksList.tasks, runsList.runs];
+  const older = { asks: asksList.older, tasks: tasksList.older, runs: runsList.older };
+  // The Costs panel reads its own reports; a refresh keeps the last ones.
+  state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, runs, older, report, reports, spend: state.data?.spend ?? null, flows: state.data?.flows ?? null };
+  acceptReport();
+  if (state.task) state.task.stale = true;
+  if (state.batch) state.batch.stale = true;
+  state.listings = listings;
+  keep();
+  announce(before);
+  render();
 }
 
 function announce(before) {
@@ -331,16 +342,16 @@ function signOut(reason) {
   watch.stop();
   // Before the token goes: giving the keyboard back needs it.
   keyboard.leave();
-  Object.assign(state, { token: null, data: null, snapshot: null, revision: undefined, signInError: reason, drawn: null, flowsError: null, all: { asks: false, tasks: false, runs: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
+  cache.clear();
+  Object.assign(state, { token: null, data: null, listings: null, revision: undefined, signInError: reason, drawn: null, flowsError: null, all: { asks: false, tasks: false, runs: false }, costs: { by: "workflow", loading: false, slow: false, error: null } });
+  wanted.set(params());
+  signedIn.set(false);
   render();
 }
 
 // Routes: /, /asks, /asks/42, /tasks, /more, /settings/appearance
+// go() moves the route main.jsx renders.
 const route = () => location.pathname.split("/").filter(Boolean);
-function go(path) {
-  history.pushState(null, "", path);
-  render();
-}
 
 const layout = () => (matchMedia("(min-width: 1024px)").matches ? "wide" : matchMedia("(min-width: 600px)").matches ? "medium" : "compact");
 
@@ -2950,6 +2961,7 @@ function focusKey(element) {
 
 function render() {
   const app = document.getElementById("app");
+  if (!app) return;
   // Leaving the ask, or signing out, cancels an answer that has not left yet.
   if (state.pending && !state.pending.sending && (!state.token || selectedAsk() !== String(state.pending.id))) {
     clearTimeout(state.pending.timer);
@@ -3300,6 +3312,7 @@ document.addEventListener("submit", (event) => {
   localStorage.setItem("priory.token", token);
   keepTokenForWorker(token);
   Object.assign(state, { token, signInError: null });
+  signedIn.set(true);
   refresh();
 });
 
@@ -3353,32 +3366,12 @@ addEventListener("pagehide", () => keyboard.leave());
 keyboardSheet().addEventListener("click", (event) => { if (event.target === keyboardSheet()) keyboardSheet().close(); });
 keyboardSheet().addEventListener("close", () => document.querySelector("#app [data-action='term-menu']")?.focus());
 addSheet().addEventListener("close", () => document.querySelector("#app [data-action='add-open']")?.focus());
-addEventListener("popstate", render);
 for (const query of ["(min-width: 600px)", "(min-width: 1024px)"]) matchMedia(query).addEventListener("change", render);
 addEventListener("resize", () => { if (terminal.fit) paintTerminal(document.getElementById("app")); });
 document.addEventListener("visibilitychange", () => {
   syncTerminal(document.getElementById("app"));
   if (!document.hidden && state.token) refresh();
 });
-// Waits on the state's revision; the server answers once it moves, or after 25 s.
-async function follow() {
-  for (;;) {
-    if (!state.token || state.revision === undefined || document.hidden) {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      continue;
-    }
-    let ok;
-    try {
-      const { revision } = await api(`/api/events?since=${state.revision}`);
-      if (revision !== state.revision) watch.revision();
-      ok = revision === state.revision || (await refresh());
-    } catch {
-      await refresh();
-      ok = false;
-    }
-    if (!ok) await new Promise((resolve) => setTimeout(resolve, 5000));
-  }
-}
 // Ages read in minutes, so repaint them once a minute even when nothing changes.
 setInterval(() => { if (!document.hidden && state.token) refresh(); }, 60000);
 // The browser offers to install only once the page handles this; the Notifications screen shows it.
@@ -3388,5 +3381,3 @@ addEventListener("beforeinstallprompt", (event) => {
   render();
 });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
-follow();
-refresh();

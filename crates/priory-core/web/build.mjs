@@ -1,4 +1,4 @@
-// Bundles app.js and the view models it imports into dist/app.js, the file serve.rs embeds.
+// Bundles main.jsx, the React shell, with app.js, the view models and React into dist/app.js, the file serve.rs embeds.
 // With --check, builds into memory and fails when dist/app.js differs or the bundle is too big.
 import { build } from "esbuild";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -10,7 +10,9 @@ const OUT = here("./dist/app.js");
 const BUDGET = 450 * 1024;
 
 const result = await build({
-  entryPoints: [here("./app.js")],
+  entryPoints: [here("./main.jsx")],
+  jsx: "automatic",
+  define: { "process.env.NODE_ENV": '"production"' },
   bundle: true,
   format: "esm",
   minify: true,
