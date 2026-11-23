@@ -12,19 +12,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
+  lint:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_USER: priory
-          POSTGRES_PASSWORD: priory
-          POSTGRES_DB: priory
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install the pinned toolchain
@@ -43,9 +32,50 @@ jobs:
         run: cargo clippy -p priory --features model -- -D warnings
       - name: Lint the Postgres event log adapter
         run: cargo clippy -p priory-intake -p priory --all-targets --features priory-intake/postgres,priory/postgres -- -D warnings
+
+  # Each shard runs a quarter of `cargo test --workspace`'s tests; the doc tests run in `postgres`.
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
+        with:
+          tool: cargo-nextest@0.9.152
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ matrix.shard == 1 }}
       - name: Install tmux for the runtime tests
         run: command -v tmux || (sudo apt-get update && sudo apt-get install -y tmux)
-      - run: cargo test --workspace
+      - run: cargo nextest run --workspace --profile ci --partition hash:${{ matrix.shard }}/4
+
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: priory
+          POSTGRES_PASSWORD: priory
+          POSTGRES_DB: priory
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install tmux for the runtime tests
+        run: command -v tmux || (sudo apt-get update && sudo apt-get install -y tmux)
+      - name: Run the doc tests
+        run: cargo test --workspace --doc
       - name: Run CLI tests in a shell that exports Priory's settings
         env:
           PRIORY_FACTORY: /nonexistent/factory
@@ -60,3 +90,11 @@ jobs:
           cargo test -p priory-intake --features postgres --test log
           cargo test -p priory --features postgres --test check
           cargo test -p priory --features postgres --test runtime partition::
+
+  # The required status check: it fails when any job above failed or was cancelled.
+  check:
+    if: always()
+    needs: [lint, test, postgres]
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = false
