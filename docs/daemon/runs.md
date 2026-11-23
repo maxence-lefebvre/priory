@@ -331,7 +331,7 @@ already started, so the queue treats it as such:
 
 - It starts ahead of every other task of its band, so a backlog does not take the room the asking
   task gave back. A consult's `[consult] deadline` counts the wait (see
-  [tools.md](tools.md#consultagent-question)).
+  [tools.md](tools.md#consulting-an-investigator)).
 - `priory pause` does not hold it, as it holds no woken task.
 - The review limit does not hold it. A lane at the limit is full of pull requests that wait for a
   person, and the person is not told about a routed ask.
