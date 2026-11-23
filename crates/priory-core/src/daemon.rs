@@ -1246,7 +1246,8 @@ fn tend(
             let worktree = run.worktree.as_deref().unwrap_or_default();
             let harness = harness_of(factory, &run.agent);
             // The harness may have rewritten its config from an older copy, dropping the grant.
-            let overwritten = missed && !priory_runtime::trust::holds(harness, Path::new(worktree));
+            let held = missed.then(|| priory_runtime::trust::holds(harness, Path::new(worktree)));
+            let overwritten = matches!(held, Some(Ok(false)));
             let reason = if overwritten {
                 format!(
                     "{} asked whether to trust {worktree}: it overwrote the trust Priory recorded \
@@ -1261,7 +1262,13 @@ fn tend(
                     path: worktree.into(),
                     file: std::path::PathBuf::new(),
                     outcome: priory_runtime::trust::Outcome::Missed,
-                    why: overwritten.then(|| "the grant was gone from the config".to_owned()),
+                    why: match &held {
+                        Some(Ok(false)) => Some("the grant was gone from the config".to_owned()),
+                        Some(Err(why)) => {
+                            Some(format!("Priory could not read the grant back: {why}"))
+                        }
+                        _ => None,
+                    },
                 };
                 let harness = agent.value.harness.name();
                 let version = runtime::version(harness_of(factory, &run.agent).program());

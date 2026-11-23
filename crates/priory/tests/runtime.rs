@@ -3956,7 +3956,7 @@ fn a_codex_run_whose_grant_was_refused_starts_without_priorys_profile() {
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
 
     assert!(!codex_args(&setup).contains(&"priory-trust".to_owned()));
-    assert!(!codex_profile(&setup).exists());
+    assert_eq!(fs::read_to_string(codex_profile(&setup)).unwrap(), "");
     let record = until_traced(&setup, "factory.run.trusted");
     assert_eq!(record["data"]["outcome"], "refused");
 }

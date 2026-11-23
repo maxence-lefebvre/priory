@@ -223,7 +223,10 @@ a worktree or clone that a symlink leads elsewhere.
   `profile` that `-p` would replace, or cannot be read or parsed. It refuses a profile that is a
   symlink: a jailed Codex run can write `CODEX_HOME`, and a link there would make the daemon
   rewrite a file outside the jail. A refusal names a TOML error by its line number only, since
-  the parser's message quotes the line, which can hold a token. Codex still runs only the hooks a person trusted with
+  the parser's message quotes the line, which can hold a token. The daemon creates the profile
+  empty before its first grant, so a jailed Codex run always gets it read-only and cannot replace
+  it. It also refuses a profile that is not a regular file, such as a FIFO. When the daemon cannot
+  read a config back after a dialog, it blocks the task without the restart. Codex still runs only the hooks a person trusted with
   `/hooks`, so that step stays manual.
 
 Each path gets a `factory.run.trusted` record in the trace, whose `outcome` is `granted`, `present`

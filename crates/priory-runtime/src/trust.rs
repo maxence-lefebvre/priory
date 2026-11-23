@@ -61,13 +61,15 @@ pub fn grant(harness: &dyn Harness, home: &Path, repo: &str, worktree: &Path) ->
 }
 
 /// Whether `harness`'s config still holds the trust recorded for `worktree` and its clone.
-pub fn holds(harness: &dyn Harness, worktree: &Path) -> bool {
-    let Ok(worktree) = fs::canonicalize(worktree) else {
-        return false;
+/// An error means Priory could not tell, as with a config it cannot read or parse.
+pub fn holds(harness: &dyn Harness, worktree: &Path) -> Result<bool, String> {
+    let real = |path: &Path| {
+        fs::canonicalize(path).map_err(|error| format!("{}: {error}", path.display()))
     };
-    clone_of(&worktree)
-        .and_then(|clone| fs::canonicalize(clone).ok())
-        .is_some_and(|clone| harness.holds_trust(&worktree, &clone))
+    let worktree = real(worktree)?;
+    let clone =
+        clone_of(&worktree).ok_or_else(|| format!("{} has no clone", worktree.display()))?;
+    harness.holds_trust(&worktree, &real(&clone)?)
 }
 
 /// The worktree and its clone, each resolved through symlinks and `..`, when both are Priory's own:
@@ -147,6 +149,20 @@ pub fn codex(codex_home: &Path, clone: &Path) -> Vec<Grant> {
     let key = clone.display().to_string();
     let profile = codex_home.join(format!("{CODEX_PROFILE}.config.toml"));
     let own = codex_home.join("config.toml");
+    // A jailed run binds the profile read-only only when it exists, so it always does.
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&profile)
+    {
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+        Err(error) => {
+            let why = format!("{}: {error}", profile.display());
+            return grants(&profile, &[clone], Err(why));
+        }
+    }
     let table = match fs::read_to_string(&own) {
         Ok(text) => match text.parse::<toml::Table>() {
             Ok(table) => table,
@@ -221,34 +237,40 @@ fn line(text: &str, error: &toml::de::Error) -> usize {
 }
 
 /// Whether `config` still holds Claude Code's trust for each of `paths`.
-pub fn claude_holds(config: &Path, paths: &[&Path]) -> bool {
-    let Ok(text) = fs::read_to_string(config) else {
-        return false;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return false;
-    };
-    paths
-        .iter()
-        .all(|path| value["projects"][path.display().to_string()]["hasTrustDialogAccepted"] == true)
+pub fn claude_holds(config: &Path, paths: &[&Path]) -> Result<bool, String> {
+    let text =
+        fs::read_to_string(config).map_err(|error| format!("{}: {error}", config.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| format!("{}: not JSON: {error}", config.display()))?;
+    Ok(paths.iter().all(|path| {
+        value["projects"][path.display().to_string()]["hasTrustDialogAccepted"] == true
+    }))
 }
 
 /// Whether Priory's Codex profile under `codex_home` still trusts `clone`.
-pub fn codex_holds(codex_home: &Path, clone: &Path) -> bool {
+pub fn codex_holds(codex_home: &Path, clone: &Path) -> Result<bool, String> {
     let profile = codex_home.join(format!("{CODEX_PROFILE}.config.toml"));
-    fs::read_to_string(profile)
-        .ok()
-        .and_then(|text| text.parse::<toml::Table>().ok())
-        .is_some_and(|table| {
-            let level = (|| {
-                table
-                    .get("projects")?
-                    .get(clone.display().to_string())?
-                    .get("trust_level")?
-                    .as_str()
-            })();
-            level == Some("trusted")
-        })
+    let Some((text, _)) = load(&profile, true)? else {
+        return Err(format!(
+            "{} changed while Priory read it",
+            profile.display()
+        ));
+    };
+    let table: toml::Table = text.parse().map_err(|error| {
+        format!(
+            "{}: not TOML, at line {}",
+            profile.display(),
+            line(&text, &error)
+        )
+    })?;
+    let level = (|| {
+        table
+            .get("projects")?
+            .get(clone.display().to_string())?
+            .get("trust_level")?
+            .as_str()
+    })();
+    Ok(level == Some("trusted"))
 }
 
 fn grants(file: &Path, paths: &[&Path], result: Result<Outcome, String>) -> Vec<Grant> {
@@ -278,6 +300,8 @@ fn stamp(file: &Path) -> Result<Option<Stamp>, String> {
             "{} is a symlink, which Priory does not follow",
             file.display()
         )),
+        // A FIFO or a device would block or never end the read.
+        Ok(meta) if !meta.is_file() => Err(format!("{} is not a regular file", file.display())),
         Ok(meta) => Ok(Some(stamp_of(&meta))),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("{}: {error}", file.display())),
@@ -621,6 +645,52 @@ mod tests {
     }
 
     #[test]
+    fn a_grant_check_tells_a_missing_key_from_a_config_it_cannot_read() {
+        let dir = temp();
+        let config = dir.path().join(".claude.json");
+        fs::write(
+            &config,
+            r#"{"projects":{"/w":{"hasTrustDialogAccepted":true}}}"#,
+        )
+        .unwrap();
+        assert_eq!(claude_holds(&config, &[Path::new("/w")]), Ok(true));
+        assert_eq!(
+            claude_holds(&config, &[Path::new("/w"), Path::new("/r")]),
+            Ok(false)
+        );
+        fs::write(&config, "{broken").unwrap();
+        assert!(claude_holds(&config, &[Path::new("/w")]).is_err());
+        assert!(claude_holds(&dir.path().join("gone.json"), &[Path::new("/w")]).is_err());
+
+        let clone = Path::new("/home/a/repos/o/r");
+        assert_eq!(codex(dir.path(), clone)[0].outcome, Outcome::Granted);
+        assert_eq!(codex_holds(dir.path(), clone), Ok(true));
+        assert_eq!(codex_holds(dir.path(), Path::new("/other")), Ok(false));
+        fs::write(dir.path().join("priory-trust.config.toml"), "[broken").unwrap();
+        assert!(codex_holds(dir.path(), clone).is_err());
+    }
+
+    #[test]
+    fn a_fifo_in_place_of_the_profile_is_refused_without_blocking() {
+        let dir = temp();
+        let profile = dir.path().join("priory-trust.config.toml");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&profile)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let grants = codex(dir.path(), Path::new("/home/a/repos/o/r"));
+        assert_eq!(grants[0].outcome, Outcome::Refused);
+        assert!(
+            grants[0]
+                .why
+                .as_deref()
+                .unwrap()
+                .contains("not a regular file")
+        );
+    }
+
+    #[test]
     fn codex_refuses_a_config_toml_it_cannot_parse() {
         let dir = temp();
         fs::write(
@@ -633,7 +703,10 @@ mod tests {
         let why = grants[0].why.as_deref().unwrap();
         assert!(why.ends_with("is not TOML, at line 2"), "{why}");
         assert!(!why.contains("sk-secret"));
-        assert!(!dir.path().join("priory-trust.config.toml").exists());
+        assert_eq!(
+            fs::read_to_string(dir.path().join("priory-trust.config.toml")).unwrap(),
+            ""
+        );
     }
 
     #[test]

@@ -652,7 +652,7 @@ pub trait Harness {
     /// Records the harness's trust in `worktree` and its `clone`, each a real path Priory owns.
     fn grant_trust(&self, worktree: &Path, clone: &Path) -> Vec<crate::trust::Grant>;
     /// Whether the harness's config still holds the trust `grant_trust` recorded.
-    fn holds_trust(&self, worktree: &Path, clone: &Path) -> bool;
+    fn holds_trust(&self, worktree: &Path, clone: &Path) -> Result<bool, String>;
     /// A file the harness reads at start, and its text, which `launch` writes first.
     fn file(&self, _launch: &Launch) -> Option<(PathBuf, String)> {
         None
@@ -826,7 +826,7 @@ impl Harness for ClaudeCode {
         crate::trust::claude(&crate::servers::claude_config(), &[worktree, clone])
     }
 
-    fn holds_trust(&self, worktree: &Path, clone: &Path) -> bool {
+    fn holds_trust(&self, worktree: &Path, clone: &Path) -> Result<bool, String> {
         let config = crate::servers::claude_config();
         let config = fs::canonicalize(&config).unwrap_or(config);
         crate::trust::claude_holds(&config, &[worktree, clone])
@@ -863,8 +863,13 @@ pub struct Codex;
 
 impl Harness for Codex {
     fn own_home(&self, home: Option<&Path>) -> Vec<(PathBuf, Own)> {
+        // Priory's trust profile stays read-only, so a run cannot turn it into a link the daemon
+        // would write through.
         named_or("CODEX_HOME", home, ".codex")
-            .map(|dir| vec![(dir, Own::Write)])
+            .map(|dir| {
+                let profile = dir.join(format!("{}.config.toml", crate::trust::CODEX_PROFILE));
+                vec![(dir, Own::Write), (profile, Own::File)]
+            })
             .unwrap_or_default()
     }
 
@@ -940,9 +945,10 @@ impl Harness for Codex {
         }
     }
 
-    fn holds_trust(&self, _worktree: &Path, clone: &Path) -> bool {
-        named_or("CODEX_HOME", Some(&crate::servers::home()), ".codex")
-            .is_some_and(|codex_home| crate::trust::codex_holds(&codex_home, clone))
+    fn holds_trust(&self, _worktree: &Path, clone: &Path) -> Result<bool, String> {
+        let codex_home = named_or("CODEX_HOME", Some(&crate::servers::home()), ".codex")
+            .ok_or("no CODEX_HOME and no HOME")?;
+        crate::trust::codex_holds(&codex_home, clone)
     }
 
     fn asks_trust(&self, screen: &str) -> bool {
