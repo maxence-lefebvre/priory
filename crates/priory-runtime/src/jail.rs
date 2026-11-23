@@ -2,7 +2,7 @@
 //! same path inside as outside, so a path a hook sends, a path a person trusted and a path the sweep
 //! reads in `/proc` mean the same file on both sides.
 
-use crate::runtime::{Harness, Launch, fed_within, one_line, run, socket_path};
+use crate::runtime::{Harness, Launch, Own, fed_within, git, one_line, run, socket_path};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -94,6 +94,8 @@ fn hidden(path: &Path, home: Option<&Path>) -> bool {
 enum Mode {
     Read,
     Write,
+    /// A new empty folder in memory, gone when the run ends.
+    Empty,
 }
 
 struct Binds(Vec<(PathBuf, Mode, bool)>);
@@ -108,23 +110,29 @@ impl Binds {
         self.0.push((path.to_owned(), mode, required));
     }
 
-    /// The arguments, parents first, so a folder's bind never hides one inside it.
+    /// The arguments, parents first, so a folder's bind never hides one inside it. An empty folder
+    /// goes after a bind of the same path, so nothing binds the state file's folder back.
     fn args(mut self) -> Vec<String> {
-        self.0.sort_by_key(|(path, _, _)| path.components().count());
+        self.0
+            .sort_by_key(|(path, mode, _)| (path.components().count(), *mode == Mode::Empty));
         let mut args = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
         for (path, mode, required) in self.0 {
-            if !seen.insert((path.clone(), mode == Mode::Write)) {
-                continue;
-            }
             let flag = match (mode, required) {
                 (Mode::Read, true) => "--ro-bind",
                 (Mode::Read, false) => "--ro-bind-try",
                 (Mode::Write, true) => "--bind",
                 (Mode::Write, false) => "--bind-try",
+                (Mode::Empty, _) => "--tmpfs",
             };
+            if !seen.insert((path.clone(), flag)) {
+                continue;
+            }
             let shown = path.display().to_string();
-            args.extend([flag.to_owned(), shown.clone(), shown]);
+            args.extend([flag.to_owned(), shown.clone()]);
+            if mode != Mode::Empty {
+                args.push(shown);
+            }
         }
         args
     }
@@ -175,18 +183,21 @@ impl Jail {
         }
         let mut binds = Binds(Vec::new());
         binds.add(launch.dir, Mode::Write, true);
-        let common = run(Command::new("git").arg("-C").arg(launch.dir).args([
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-common-dir",
-        ]))?;
-        binds.add(Path::new(common.trim()), Mode::Write, true);
-        for (path, folder) in harness.own_home(user) {
-            if folder {
+        git_folders(&mut binds, launch.dir)?;
+        for (path, own) in harness.own_home(user) {
+            if own != Own::File {
                 std::fs::create_dir_all(&path)
                     .map_err(|error| format!("{}: {error}", path.display()))?;
             }
-            binds.add(&path, Mode::Write, false);
+            let mode = match own {
+                Own::Read | Own::File => Mode::Read,
+                Own::Write => Mode::Write,
+                Own::Scratch => Mode::Empty,
+            };
+            binds.add(&path, mode, false);
+        }
+        if let Some(folder) = state_folder()? {
+            binds.add(&folder, Mode::Empty, true);
         }
         for file in files {
             binds.add(file, Mode::Read, true);
@@ -260,6 +271,80 @@ impl Jail {
             format!("PRIORY_SPOOL={}", spool.join("signals.spool").display()),
         ]);
         Ok(args)
+    }
+}
+
+/// Binds the git folders of the worktree `dir`. The run commits, so the clone's common folder is
+/// writable. Its config, its hooks, the other worktrees' folders and the links that lead git from
+/// the worktree to them are read-only, since the daemon's git on the host reads them.
+fn git_folders(binds: &mut Binds, dir: &Path) -> Result<(), String> {
+    let found = run(git(dir).args([
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+        "--absolute-git-dir",
+    ]))?;
+    let mut lines = found.lines().map(PathBuf::from);
+    let (Some(common), Some(own)) = (lines.next(), lines.next()) else {
+        return Err(format!(
+            "git rev-parse in {} printed {found:?}",
+            dir.display()
+        ));
+    };
+    let hooks = common.join("hooks");
+    std::fs::create_dir_all(&hooks).map_err(|error| format!("{}: {error}", hooks.display()))?;
+    // Git reads a `commondir` in any git folder as the folder that holds its config, so the run
+    // must not write one. A bind needs the file, and git refuses an empty one, so it names itself.
+    pin(&common.join("commondir"), ".\n")?;
+    pin(&common.join("config.worktree"), "")?;
+    binds.add(&common, Mode::Write, true);
+    for name in ["config", "hooks", "commondir", "config.worktree"] {
+        binds.add(&common.join(name), Mode::Read, true);
+    }
+    if own != common {
+        pin(&own.join("config.worktree"), "")?;
+        binds.add(&common.join("worktrees"), Mode::Read, true);
+        binds.add(&own, Mode::Write, true);
+        for name in ["commondir", "gitdir", "config.worktree"] {
+            binds.add(&own.join(name), Mode::Read, true);
+        }
+        binds.add(&dir.join(".git"), Mode::Read, true);
+    }
+    Ok(())
+}
+
+/// Writes `text` to `file` when it is missing, so the jail can bind it read-only. A file that
+/// exists keeps its content: the bind keeps every jail from writing it.
+fn pin(file: &Path, text: &str) -> Result<(), String> {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(file)
+    {
+        Ok(mut created) => std::io::Write::write_all(&mut created, text.as_bytes()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error),
+    }
+    .map_err(|error| format!("{}: {error}", file.display()))
+}
+
+/// The folder of the state file `PRIORY_DB` names, which the jail empties: the run's MCP
+/// configuration names the file, and its folder also holds its `-wal` file.
+fn state_folder() -> Result<Option<PathBuf>, String> {
+    let Some(db) = std::env::var_os("PRIORY_DB").filter(|db| {
+        let name = db.to_string_lossy();
+        !name.is_empty() && name != ":memory:" && !name.starts_with("file:")
+    }) else {
+        return Ok(None);
+    };
+    let db = std::path::absolute(&db).map_err(|error| format!("PRIORY_DB: {error}"))?;
+    let db = std::fs::canonicalize(&db).unwrap_or(db);
+    match db.parent() {
+        Some(folder) if folder.parent().is_some() => Ok(Some(folder.to_owned())),
+        _ => Err(format!(
+            "the state file {} sits in /, which a jail cannot hide: move it to a folder of its own",
+            db.display()
+        )),
     }
 }
 

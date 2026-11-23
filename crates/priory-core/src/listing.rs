@@ -301,7 +301,10 @@ fn asks_query() -> String {
        WHERE holds.ask = asks.id AND holds.released IS NULL) AS free_text, {}
    FROM asks LEFT JOIN tasks ON tasks.id = asks.task
    LEFT JOIN snoozes ON snoozes.kind = 'ask' AND snoozes.item = asks.id
-   WHERE (?1 IS NULL OR asks.task = ?1) AND (?2 IS NULL OR asks.id = ?2)
+   WHERE (?1 IS NULL OR asks.task = ?1
+       OR (asks.answer IS NULL AND asks.withdrawn IS NULL
+         AND asks.id IN (SELECT ask FROM gates WHERE gates.task = ?1 AND gates.state = 'grading')))
+     AND (?2 IS NULL OR asks.id = ?2)
      AND (?3 IS NULL OR (asks.answer IS NULL AND asks.withdrawn IS NULL)
        OR coalesce(asks.answered, asks.withdrawn_at, asks.created) >= ?3)
    ORDER BY asks.id",
