@@ -15,9 +15,16 @@ serve with `unknown tool <name>`, and the daemon refuses such a call from an inv
 too. See [Consulting an investigator](#consulting-an-investigator).
 
 The server sends each tool call to the daemon over its socket as
-`{"tool": ..., "session": ..., "arguments": ...}`. The daemon applies the call in one transaction
-and replies with the tool's text or error. With no daemon listening, the call fails and stores
-nothing.
+`{"tool": ..., "session": ..., "arguments": ...}`, and never opens the state file itself. So a server
+that a run keeps across an upgrade still works after a newer daemon migrates the state. The daemon
+applies the call in one transaction and replies with the tool's text or error. It answers `search`
+on a thread of its own, so a slow embedder holds up only other searches, and it serves each
+connection on its socket at once.
+
+When the socket refuses the connection, as it does while the daemon restarts, the server tries
+again every 200 ms for up to 30 seconds. With no daemon listening by then, the call fails and
+stores nothing. A call whose connection breaks after it was sent fails, and may or may not have
+been applied.
 
 ## The outside server
 

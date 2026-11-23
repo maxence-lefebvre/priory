@@ -224,13 +224,7 @@ fn main() -> ExitCode {
                         _ => return usage(),
                     }
                 }
-                let session = session.to_string_lossy();
-                let local = |tool: &str, arguments: &serde_json::Value| {
-                    sections::tool(&session, tool, arguments)
-                        .or_else(|| search::tool(&session, tool, arguments, &runtime::home()))
-                        .or_else(|| relate::tool(&session, tool, arguments))
-                };
-                exit("mcp", mcp::serve(&session, set, &local, debate))
+                exit("mcp", mcp::serve(&session.to_string_lossy(), set, debate))
             }
             (Some(flag), Some(log), describe) if flag == "--eval" => {
                 let rest: Vec<String> = describe

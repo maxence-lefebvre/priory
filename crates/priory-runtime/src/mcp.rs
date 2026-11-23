@@ -57,10 +57,9 @@ impl Tools {
 }
 
 /// Serves Priory's agent tools in `set` over MCP on stdin and stdout, for the run whose harness
-/// session is `session`, with `position` for a debate turn. `local` answers the tools this process
-/// serves itself; every other call goes to the daemon, which applies it and replies. A tool outside
-/// the set is unknown.
-pub fn serve(session: &str, set: Tools, local: &Local, debate: bool) -> Result<(), String> {
+/// session is `session`, with `position` for a debate turn. Every call goes to the daemon, which
+/// applies it and replies; this process never opens the state. A tool outside the set is unknown.
+pub fn serve(session: &str, set: Tools, debate: bool) -> Result<(), String> {
     let mut served: Vec<Value> = tools()
         .as_array()
         .expect("the tools are a list")
@@ -76,7 +75,7 @@ pub fn serve(session: &str, set: Tools, local: &Local, debate: bool) -> Result<(
         if !set.serves(name) && !(debate && name == "position") {
             return Ok(content(Err(format!("unknown tool {name}"))));
         }
-        Ok(call(session, params, local))
+        Ok(call(session, params))
     })
 }
 
@@ -155,24 +154,19 @@ fn error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
-/// A tool this process answers without the daemon, by its name and arguments; `None` for another.
-pub type Local<'a> = dyn Fn(&str, &Value) -> Option<Result<String, String>> + 'a;
-
-/// Answers the call here or sends it to the daemon. A tool error, or no daemon, is a tool result
-/// with `isError`.
-fn call(session: &str, params: &Value, local: &Local) -> Value {
-    let name = params["name"].as_str().unwrap_or_default();
-    let reply = local(name, &params["arguments"]).unwrap_or_else(|| {
-        let line = json!({
-            "tool": params["name"],
-            "session": session,
-            "arguments": params["arguments"],
-        });
-        runtime::call(&runtime::home(), &line.to_string(), runtime::REPLY).and_then(|reply| {
+/// Sends the call to the daemon, waiting up to `RESTART` for one that restarts or searches. A tool
+/// error, or no daemon, is a tool result with `isError`.
+fn call(session: &str, params: &Value) -> Value {
+    let line = json!({
+        "tool": params["name"],
+        "session": session,
+        "arguments": params["arguments"],
+    });
+    let reply =
+        runtime::call(&runtime::home(), &line.to_string(), runtime::RESTART).and_then(|reply| {
             serde_json::from_str::<Result<String, String>>(&reply)
                 .map_err(|error| format!("unreadable reply {reply:?}: {error}"))?
-        })
-    });
+        });
     content(reply)
 }
 

@@ -2022,17 +2022,21 @@ pub fn listen(home: &Path) -> Result<Listening, String> {
     let (sender, lines) = mpsc::channel();
     std::thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {
-            // One connection at a time: a client that sends no line must not hold every other one.
-            let Some(text) = line_within(&stream, Duration::from_secs(2)) else {
-                continue;
-            };
-            let (applied, done) = mpsc::channel();
-            if sender.send(Line { text, applied }).is_err() {
-                return;
-            }
-            if let Ok(reply) = done.recv() {
-                let _ = stream.write_all(format!("{reply}\n").as_bytes());
-            }
+            // A thread each, so a line the daemon answers late holds no other connection.
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                let Some(text) = line_within(&stream, Duration::from_secs(2)) else {
+                    return;
+                };
+                let (applied, done) = mpsc::channel();
+                if sender.send(Line { text, applied }).is_err() {
+                    return;
+                }
+                if let Ok(reply) = done.recv() {
+                    let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+                    let _ = stream.write_all(format!("{reply}\n").as_bytes());
+                }
+            });
         }
     });
     Ok(Listening { _lock: lock, lines })
@@ -2101,13 +2105,30 @@ pub const REPLY: Duration = Duration::from_secs(10);
 /// How `call`'s error starts when no daemon took the line, so it was never sent.
 pub const NO_DAEMON: &str = "no priory daemon listens on";
 
-/// Sends one line to the daemon and returns its reply within about `wait`. Nothing is spooled:
-/// with no daemon, it fails.
+/// The longest `call` tries again while the daemon's socket refuses it, as during a restart.
+pub const RESTART: Duration = Duration::from_secs(30);
+
+/// Sends one line to the daemon and returns its reply within about `wait`, in all. A refused
+/// connection, which a restarting daemon's socket gives, is tried again within that, for at most
+/// `RESTART`. Nothing is spooled: with no daemon, it fails.
 pub fn call(home: &Path, line: &str, wait: Duration) -> Result<String, String> {
-    let wait = Some(wait);
+    let started = Instant::now();
+    let deadline = started + wait.min(RESTART);
     let path = socket_path(home);
-    let mut stream = UnixStream::connect(&path)
-        .map_err(|error| format!("{NO_DAEMON} {}: {error}", path.display()))?;
+    let mut stream = loop {
+        match UnixStream::connect(&path) {
+            Ok(stream) => break stream,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ConnectionRefused
+                    && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(error) => return Err(format!("{NO_DAEMON} {}: {error}", path.display())),
+        }
+    };
+    let left = wait.saturating_sub(started.elapsed());
+    let wait = Some(left.max(Duration::from_millis(100)));
     let mut reply = String::new();
     stream
         .set_write_timeout(wait)

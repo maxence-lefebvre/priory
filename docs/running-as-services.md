@@ -183,6 +183,12 @@ cargo install --path crates/priory     # or install the release, as installing-a
 systemctl --user start priory-intake priory-daemon
 ```
 
+A live run keeps the `priory mcp` server its session started, on the old binary. That server only
+relays calls to the daemon's socket, so it keeps working on a migrated state. A tool call it makes
+while the daemon restarts waits up to 30 seconds for the new daemon. A call in flight when the
+daemon stops can still fail. A session started on 1.2.0 or earlier keeps a server that opens
+the state itself, so install over one only when `priory runs` shows no live run.
+
 Check: `priory --version` prints the new version and `systemctl --user status` shows both units
 running. To roll back, stop both units, install the older binary and copy each backup over its
 database.

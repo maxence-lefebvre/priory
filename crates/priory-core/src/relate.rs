@@ -288,12 +288,13 @@ fn visit(
     Ok(())
 }
 
-/// Answers the `relate` tool in the agent's own `priory mcp` process: it records how the caller's
-/// task relates to `task`. Any other tool is someone else's: `None`.
-pub fn tool(session: &str, tool: &str, arguments: &Value) -> Option<Result<String, String>> {
-    if tool != "relate" {
-        return None;
-    }
+/// The `relate` tool: records how the task of the live run with harness session `session` relates
+/// to `task`.
+pub(crate) fn tool(
+    db: &mut Connection,
+    session: &str,
+    arguments: &Value,
+) -> Result<String, String> {
     let read = || -> Result<(String, i64), String> {
         if let Some(name) = arguments.as_object().and_then(|fields| {
             fields
@@ -306,9 +307,8 @@ pub fn tool(session: &str, tool: &str, arguments: &Value) -> Option<Result<Strin
         let task = arguments["task"].as_i64().ok_or("task must be a task id")?;
         Ok((kind.to_owned(), task))
     };
-    Some(read().and_then(|(kind, other)| {
+    read().and_then(|(kind, other)| {
         let at = |error: rusqlite::Error| error.to_string();
-        let mut db = crate::state::open()?;
         let tx = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(at)?;
@@ -324,5 +324,5 @@ pub fn tool(session: &str, tool: &str, arguments: &Value) -> Option<Result<Strin
         let recorded = record(&tx, task, &kind, other, "agent").map_err(at)??;
         tx.commit().map_err(at)?;
         Ok(recorded)
-    }))
+    })
 }

@@ -89,9 +89,6 @@ A hook that finds no daemon appends its line to a spool. A jailed run cannot see
 so `PRIORY_SPOOL` names its own spool, `spools/<session>/signals.spool` in Priory home. The next
 daemon applies `signals.spool`, then each run's spool (see [signals.md](signals.md)).
 
-The tools that read the state file, `search`, `relate` and the report sections, answer with an
-error in a jailed run, since `PRIORY_DB` is neither kept nor bound.
-
 ## When the runner cannot jail
 
 When any workflow turns a sandbox on, the daemon checks once at start that

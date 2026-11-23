@@ -300,15 +300,14 @@ fn threads(db: &Connection, mut report: Value) -> rusqlite::Result<Value> {
     Ok(report)
 }
 
-/// The `report` tool, which `priory mcp` answers itself: stores the report in `arguments` as the
-/// task's of the live run with harness session `session`. `None` for another tool.
-pub fn tool(session: &str, tool: &str, arguments: &Value) -> Option<Result<String, String>> {
-    if tool != "report" {
-        return None;
-    }
-    let report = parse(&arguments.to_string());
-    Some(report.and_then(|report| {
-        let mut db = crate::state::open()?;
+/// The `report` tool: stores the report in `arguments` as the task's of the live run with harness
+/// session `session`.
+pub(crate) fn tool(
+    db: &mut Connection,
+    session: &str,
+    arguments: &Value,
+) -> Result<String, String> {
+    parse(&arguments.to_string()).and_then(|report| {
         let task = db
             .query_row(
                 "SELECT task FROM runs WHERE ended IS NULL AND session = ?1",
@@ -318,8 +317,8 @@ pub fn tool(session: &str, tool: &str, arguments: &Value) -> Option<Result<Strin
             .optional()
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("no live run has session {session}"))?;
-        put(&mut db, task, report)
-    }))
+        put(db, task, report)
+    })
 }
 
 /// A person's choice on a pick, as `priory report pick` sends it on the socket.
