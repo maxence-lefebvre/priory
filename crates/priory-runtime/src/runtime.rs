@@ -632,6 +632,8 @@ pub struct Launch<'a> {
     pub tools: crate::mcp::Tools,
     /// The sandbox the run's harness starts in, or none for the person's whole user.
     pub jail: Option<&'a crate::jail::Jail>,
+    /// The factory turns on `trust_worktrees`, so the harness reads the trust Priory records.
+    pub trust: bool,
 }
 
 /// A coding agent CLI that Priory runs in tmux, with hooks and tools that report to the daemon.
@@ -647,6 +649,10 @@ pub trait Harness {
     fn asks_trust(&self, _screen: &str) -> bool {
         false
     }
+    /// Records the harness's trust in `worktree` and its `clone`, each a real path Priory owns.
+    fn grant_trust(&self, worktree: &Path, clone: &Path) -> Vec<crate::trust::Grant>;
+    /// Whether the harness's config still holds the trust `grant_trust` recorded.
+    fn holds_trust(&self, worktree: &Path, clone: &Path) -> Result<bool, String>;
     /// A file the harness reads at start, and its text, which `launch` writes first.
     fn file(&self, _launch: &Launch) -> Option<(PathBuf, String)> {
         None
@@ -814,6 +820,18 @@ impl Harness for ClaudeCode {
         )
     }
 
+    /// Claude 2.1.330 reads the trust of the exact folder before it walks up, and keys a
+    /// worktree's project by its clone, so the two keys cover the versions in the table.
+    fn grant_trust(&self, worktree: &Path, clone: &Path) -> Vec<crate::trust::Grant> {
+        crate::trust::claude(&crate::servers::claude_config(), &[worktree, clone])
+    }
+
+    fn holds_trust(&self, worktree: &Path, clone: &Path) -> Result<bool, String> {
+        let config = crate::servers::claude_config();
+        let config = fs::canonicalize(&config).unwrap_or(config);
+        crate::trust::claude_holds(&config, &[worktree, clone])
+    }
+
     fn asks_trust(&self, screen: &str) -> bool {
         screen.contains("Accessing workspace:")
             && (screen.contains("Yes, I trust this folder")
@@ -845,8 +863,13 @@ pub struct Codex;
 
 impl Harness for Codex {
     fn own_home(&self, home: Option<&Path>) -> Vec<(PathBuf, Own)> {
+        // Priory's trust profile stays read-only, so a run cannot turn it into a link the daemon
+        // would write through.
         named_or("CODEX_HOME", home, ".codex")
-            .map(|dir| vec![(dir, Own::Write)])
+            .map(|dir| {
+                let profile = dir.join(format!("{}.config.toml", crate::trust::CODEX_PROFILE));
+                vec![(dir, Own::Write), (profile, Own::File)]
+            })
             .unwrap_or_default()
     }
 
@@ -904,7 +927,32 @@ impl Harness for Codex {
         }
         // A shared server would lend the run another session's environment and hook trust.
         args.push("--no-daemon".to_owned());
+        if launch.trust {
+            // Codex 0.170 ignores a `-c projects.<path>.trust_level` override, but reads a profile.
+            args.splice(
+                0..0,
+                ["-p".to_owned(), crate::trust::CODEX_PROFILE.to_owned()],
+            );
+        }
         Ok(args)
+    }
+
+    /// Codex keys trust on the repository root, which is the clone for every worktree.
+    fn grant_trust(&self, _worktree: &Path, clone: &Path) -> Vec<crate::trust::Grant> {
+        match named_or("CODEX_HOME", Some(&crate::servers::home()), ".codex") {
+            Some(codex_home) => crate::trust::codex(&codex_home, clone),
+            None => Vec::new(),
+        }
+    }
+
+    fn holds_trust(&self, _worktree: &Path, clone: &Path) -> Result<bool, String> {
+        let codex_home = named_or("CODEX_HOME", Some(&crate::servers::home()), ".codex")
+            .ok_or("no CODEX_HOME and no HOME")?;
+        crate::trust::codex_holds(&codex_home, clone)
+    }
+
+    fn asks_trust(&self, screen: &str) -> bool {
+        screen.contains("Trust this folder?") && screen.contains("Trust and continue")
     }
 
     /// Codex runs only hooks a person trusted in its `/hooks` review, by their hash, so Priory's
@@ -954,6 +1002,19 @@ fn codex_hooks(exe: &Path) -> Vec<(&'static str, serde_json::Value)> {
         ),
         ("hooks.PermissionRequest", hook(respond(DENY), None)),
     ]
+}
+
+/// The first line `program --version` prints, when it runs within the command timeout.
+pub fn version(program: &str) -> Option<String> {
+    let output = fed_within(
+        Command::new(program).arg("--version"),
+        None,
+        command_timeout(),
+    )
+    .ok()??;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().next()?.trim();
+    (!line.is_empty()).then(|| line.to_owned())
 }
 
 /// Why a run did not start: one line, the cause first, and the tmux command when it ran one.
@@ -2325,6 +2386,7 @@ mod tests {
             servers,
             tools,
             jail: None,
+            trust: false,
         }
     }
 

@@ -192,10 +192,72 @@ Known limits:
 
 ## Trusting the worktrees and the clone
 
-Claude asks whether to trust a folder on its first run there, before any hook fires. Priory never
-answers that dialog or writes Claude's settings. Which trusted folder covers a task's worktree
-depends on the Claude Code version. Tested with a worktree under `worktrees/` of a clone under
-`repos/`:
+Claude and Codex ask whether to trust a folder on their first run there, before any hook fires.
+Priory never answers that dialog.
+
+### With `trust_worktrees`
+
+When the factory sets `trust_worktrees = true` (see [factory.md](../reference/factory.md#top-level-keys)),
+the daemon records the trust itself before each run starts, so no run stops on the dialog. It
+records it only for the run's worktree, `worktrees/<owner>/<name>/<n>`, and that worktree's clone,
+`repos/<owner>/<name>`, both under Priory home. The repository must be one the factory names: a
+trigger's `repo`, the sweeper's `repo` or a `[repos]` key. The daemon resolves both paths through
+symlinks and `..` first. It writes nothing for a path that resolves outside those folders, such as
+a worktree or clone that a symlink leads elsewhere.
+
+- **Claude Code** has no flag or setting that skips the dialog. The daemon sets
+  `projects["<path>"].hasTrustDialogAccepted` to `true` for the worktree and the clone in Claude's
+  config, `$CLAUDE_CONFIG_DIR/.claude.json` or else `~/.claude.json`. It changes no other value,
+  but it writes the file back with its keys in sorted order.
+  Claude rewrites that file while sessions run, so the daemon writes a copy, and renames the copy
+  over the file only when the file's inode, size and modification time are still the ones it read.
+  When they changed, it reads the file again and redoes its change. After the rename, it reads the
+  file back. It gives up after 3 tries. It writes nothing when both keys are already `true`, and
+  refuses a config that is missing or is not a JSON object. When the config is a symlink, the
+  daemon edits the file it points to and keeps the link.
+- **Codex** ignores a `-c projects."<path>".trust_level` override, but reads a profile. The daemon
+  sets `projects."<clone>".trust_level = "trusted"` in its own profile,
+  `$CODEX_HOME/priory-trust.config.toml`, and starts the run with `-p priory-trust`. Codex keys
+  a worktree's trust on its clone. The daemon never edits `config.toml`. It refuses the grant, and
+  starts the run without `-p`, when `config.toml` marks the clone `untrusted`, sets a default
+  `profile` that `-p` would replace, or cannot be read or parsed. It refuses a profile that is a
+  symlink: a jailed Codex run can write `CODEX_HOME`, and a link there would make the daemon
+  rewrite a file outside the jail. A refusal names a TOML error by its line number only, since
+  the parser's message quotes the line, which can hold a token. The daemon creates the profile
+  empty before its first grant, so a jailed Codex run always gets it read-only and cannot replace
+  it. It also refuses a profile that is not a regular file, such as a FIFO. When the daemon cannot
+  read a config back after a dialog, it blocks the task without the restart. Codex still runs only the hooks a person trusted with
+  `/hooks`, so that step stays manual.
+
+Each path gets a `factory.run.trusted` record in the trace, whose `outcome` is `granted`, `present`
+or `refused` (see [trace-schema.md](../trace-schema.md#factoryruntrusted)).
+
+A trusted folder lets the repository's own settings run, as a person's trust does: Claude's
+`.claude/settings.json` hooks, `env` and `permissions.allow` rules, `CLAUDE.md` and skills, and
+Codex's `.codex/config.toml`. Those settings run beside Priory's guard, and a hostile one may
+weaken it, for example with Claude's `disableAllHooks`. So turning the key on vouches for every
+repository the factory names. A run without claude.ai connectors still gets `--strict-mcp-config`,
+which keeps `.mcp.json` servers out. A run with connectors goes without that flag, and its guard
+denies the tools of every server its agent does not name. Investigators load no project settings.
+
+When a harness shows its dialog although the run's grant was `granted` or `present`, the daemon
+reads the harness's config again. When the grant is gone, the harness rewrote its config from an
+older copy. The daemon then blocks the task with the reason `<harness> asked whether to trust
+<worktree>: it overwrote the trust Priory recorded before it read it`, and starts the run again
+once, with the grant written again. A second loss fails the task. When the grant is still there,
+the version most likely keys trust differently. The daemon then blocks the task at once with the reason
+`<harness> asked whether to trust <worktree> although Priory recorded its trust; this version of
+the harness keys trust differently. Trust the folder by hand, or turn trust_worktrees off`, and
+writes a `factory.run.trusted` record with `outcome = "missed"` and the harness's `--version`
+line. A run whose grant was refused gets the manual reason below instead. To check a new version
+by hand, start it in a temporary HOME holding a copy of the grant, in a worktree of a clone, and
+look for the dialog.
+
+### By hand
+
+Without `trust_worktrees`, Priory writes no harness config. Which trusted folder covers a task's
+worktree depends on the Claude Code version. Tested with a worktree under `worktrees/` of a clone
+under `repos/`:
 
 | Claude Code | Trusting `repos/<owner>/<name>` | Trusting `worktrees/` |
 | ----------- | ------------------------------- | --------------------- |

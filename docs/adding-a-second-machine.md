@@ -21,11 +21,11 @@ either machine.
 - A runner file named after its hostname, as `hostname` prints it, such as `runners/key-drum.toml`.
 - For real runs: the agents' harnesses signed in, such as `claude`, and `gh` signed in. The fake
   run below needs neither.
-- For real Claude runs: the second machine's worktrees folder trusted in Claude before its first
-  run, `cd ~/.local/state/priory-oss/worktrees && claude`, accept, then `/exit`. Create the folder
-  first if it is missing. Trust each clone under `repos/` once Priory made it, as
+- For real Claude and Codex runs: `trust_worktrees = true` in `factory.toml`, so the daemon
+  records the folder trust on each machine itself. Without it, trust the second machine's worktrees
+  folder and each clone by hand, as
   [Trusting the worktrees and the clone](daemon/sessions.md#trusting-the-worktrees-and-the-clone)
-  explains.
+  explains. A Codex run still needs Priory's hooks trusted once with `/hooks`.
 
 Copy no token, ssh key or `.env` to it. The only secret it holds is the log's connection string.
 

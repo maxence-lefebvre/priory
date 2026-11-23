@@ -55,7 +55,7 @@ trusted and a path the sweep reads in `/proc` then mean the same file on both si
 | Claude Code's home: `CLAUDE_CONFIG_DIR`, else `~/.claude` and `~/.claude.json` | read-only: the login, settings, plugins and trusted folders |
 | its `projects` folder | read-write: the transcripts |
 | its `session-env` and `shell-snapshots` folders | a new empty folder in memory |
-| Codex's home: `CODEX_HOME`, else `~/.codex` | read-write: the login, sessions and trusted folders |
+| Codex's home: `CODEX_HOME`, else `~/.codex` | read-write: the login, sessions and trusted folders. Priory's trust profile in it, `priory-trust.config.toml`, is read-only |
 | the folder of the state file `PRIORY_DB` names, and its link's target folder | a new empty folder in memory, with only the binds below it, even where a bind above names the same folder |
 | the run's MCP configuration and system prompt files, Priory's binary, the factory's skills and memories folders | read-only |
 | the harness's program, when it lives under a hidden folder such as `~/.local/bin` | its folder read-only, and its link |

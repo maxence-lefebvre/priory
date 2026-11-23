@@ -364,6 +364,38 @@ mod tests {
     }
 
     #[test]
+    fn a_codex_run_reads_priorys_trust_profile_but_cannot_replace_it() {
+        let mut binds = Binds(Vec::new());
+        // CODEX_HOME may move the folder, so the test reads it back from `own_home`.
+        let home = Path::new("/nonexistent/h");
+        let own = crate::runtime::Codex.own_home(Some(home));
+        let dir = own[0].0.clone();
+        assert_eq!(own[1], (dir.join("priory-trust.config.toml"), Own::File));
+        for (path, own) in own {
+            let mode = if own == Own::Write {
+                Mode::Write
+            } else {
+                Mode::Read
+            };
+            binds.add(&path, mode, false);
+        }
+        let shown = |path: &Path| path.display().to_string();
+        let profile = shown(&dir.join("priory-trust.config.toml"));
+        let dir = shown(&dir);
+        assert_eq!(
+            binds.args(),
+            [
+                "--bind-try",
+                &dir,
+                &dir,
+                "--ro-bind-try",
+                &profile,
+                &profile
+            ]
+        );
+    }
+
+    #[test]
     fn binds_go_parents_first_so_none_hides_another() {
         let mut binds = Binds(Vec::new());
         binds.add(Path::new("/nonexistent/a/b/worktree"), Mode::Write, true);

@@ -37,6 +37,7 @@ Schema: [`config/factory.json`](../schemas/config/factory.json).
 | `mcp` | table of tables | no | | A person's statement about each MCP server or connector an investigator names. See [`[mcp.<name>]`](#mcpname) | |
 | `guard` | table | no | the built-in guards alone | Irreversible commands and MCP tools the tool guard denies on top of the built-in ones. See [`[guard]`](#guard) | |
 | `sandboxes` | table of tables | no | no sandbox | The jails a workflow can start its agents in, by name. See [`[sandboxes.<name>]`](#sandboxesname) | |
+| `trust_worktrees` | bool | no | `false`: a person trusts each folder by hand | The daemon records Claude Code's and Codex's folder trust for each run's worktree and clone, for the repositories the factory names. See [sessions.md](../daemon/sessions.md#trusting-the-worktrees-and-the-clone) | `true` |
 | `repos` | table of tables | no | no recipe runs | The setup, resume and teardown recipes of each repository. See [`[repos]`](#repos) | |
 
 A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m"` or `"2h"`.
