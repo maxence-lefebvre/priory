@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { backTo, pageTitle } from "./pages.js";
+import { TYPED_FIELDS, backTo, pageTitle, taskRead } from "./pages.js";
 
 test("a detail page's back link names the list the person came from", () => {
   assert.deepEqual(backTo("/"), ["/", "Desk"]);
@@ -40,4 +40,33 @@ test("a title names the page the address renders", () => {
   assert.equal(pageTitle("/batches/nope", data), "Page not found · Priory");
   assert.equal(pageTitle("/settings", data), "Appearance · Priory");
   assert.equal(pageTitle("/settings/other", data), "Appearance · Priory");
+});
+
+test("a repaint gives the caret back to every text field the main view draws, the Say box too", () => {
+  for (const id of ["draft", "say", "report-draft", "report-query", "term-line", "term-keys"]) assert.ok(TYPED_FIELDS.includes(id), id);
+});
+
+test("a refresh keeps the open ask's task drawn while it is read again, and the new body replaces it", () => {
+  const first = taskRead(null, 16);
+  assert.deepEqual(first, { task: { id: 16, body: null, error: null, stale: false }, read: true });
+  const body = { id: 16, brief: "Brief", inbox: [], trace: [] };
+  const kept = { ...first.task, body };
+  assert.deepEqual(taskRead(kept, 16), { task: kept, read: false }, "an unchanged snapshot reads nothing");
+  // A refresh with a changed snapshot marks the read stale.
+  const again = taskRead({ ...kept, stale: true }, 16);
+  assert.equal(again.read, true);
+  assert.equal(again.task.body, body, "the drawer keeps its Brief, Inbox and Trace until the new body lands");
+  assert.equal(again.task.stale, false, "the next repaint reads nothing more");
+});
+
+test("a task page keeps its body, so its Say box stays drawn through a refresh", () => {
+  const body = { id: 2269, key: "FND-2269", state: "asleep" };
+  const { task } = taskRead({ id: 2269, body, stale: true, error: null }, 2269);
+  assert.ok(task.body, "the page never falls back to Loading task while it re-reads");
+});
+
+test("another ask or task page starts empty", () => {
+  const { task, read } = taskRead({ id: 16, body: { id: 16 }, stale: false }, 17);
+  assert.equal(read, true);
+  assert.equal(task.body, null);
 });
