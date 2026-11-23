@@ -98,6 +98,8 @@ export default class PrioryBonjour extends View {
     this.list = [];
     /** @type {string | null} the selected row's id */
     this.selected = null;
+    /** @type {Map<string, { key: unknown[], model: Dossier }>} each view's last view model */
+    this.models = new Map();
     /** @type {Set<string>} the sections Show more unfolded */
     this.unfolded = new Set();
     /** A pick waiting out its Undo, then in flight; nothing else is picked until it ends. */
@@ -200,8 +202,21 @@ export default class PrioryBonjour extends View {
 
   /** @param {number} [now] */
   model(now = Date.now()) {
-    const query = this.searching ? this.query.value() : "";
-    return this.data ? dossier(this.data, { now, view: this.view, links: this.links, query }) : null;
+    return this.data && this.dossier(this.data, this.view, this.searching ? this.query.value() : "", now);
+  }
+
+  /**
+   * The report's view model, rebuilt only when the read, the view, the search or the minute changes:
+   * Herdr stops a render that runs too long.
+   * @param {Read} data @param {string} view @param {string} query @param {number} now
+   */
+  dossier(data, view, query, now) {
+    const key = [data, query, this.links, Math.floor(now / 60_000)];
+    const known = this.models.get(view);
+    if (known?.key.every((part, at) => part === key[at])) return known.model;
+    const model = dossier(data, { now, view, links: this.links, query });
+    this.models.set(view, { key, model });
+    return model;
   }
 
   /** @param {Dossier} model */
@@ -526,7 +541,7 @@ export default class PrioryBonjour extends View {
 
   /** Every section, whichever view shows, so a jump can leave the Picks view. @param {Dossier} model */
   every(model) {
-    return this.view === "all" || !this.data ? model.sections : dossier(this.data, { now: Date.now() }).sections;
+    return this.view === "all" || !this.data ? model.sections : this.dossier(this.data, "all", "", Date.now()).sections;
   }
 
   /** @param {string} view @param {import("gpui-kit").Context} cx */

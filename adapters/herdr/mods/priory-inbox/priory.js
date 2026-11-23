@@ -216,7 +216,7 @@ const startsBlock = (/** @type {string} */ line) => FENCE.test(line) || HEADING.
  * "pre", and `lines` holds a paragraph's lines, a heading, a list's items or a code block's lines.
  * @param {string} text
  */
-function blocks(text) {
+function parse(text) {
   const lines = String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
   /** @type {{ tag: string, lines: string[] }[]} */
   const out = [];
@@ -260,8 +260,13 @@ const REMEMBERED = 2000;
 const drawnHtml = new WeakMap();
 /** @type {Map<string, string>} */
 const drawnText = new Map();
+/** @type {Map<string, ReturnType<typeof parse>>} */
+const parsed = new Map();
 
-/** `map`'s value for `key`, computed once; past `REMEMBERED` keys the oldest goes. @param {Map<string, string>} map @param {string} key @param {() => string} compute */
+/**
+ * `map`'s value for `key`, computed once; past `REMEMBERED` keys the oldest goes.
+ * @template T @param {Map<string, T>} map @param {string} key @param {() => T} compute
+ */
 function remembered(map, key, compute) {
   const known = map.get(key);
   if (known !== undefined) return known;
@@ -270,6 +275,9 @@ function remembered(map, key, compute) {
   map.set(key, value);
   return value;
 }
+
+/** `parse` once per text, as a panel's HTML and its label both draw it. @param {string} text */
+const blocks = (text) => remembered(parsed, String(text ?? ""), () => parse(text));
 
 /**
  * Markdown as HTML for Herdr's `TextView.html`: DESIGN.md's subset, every other character escaped, with

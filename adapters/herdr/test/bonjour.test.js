@@ -335,6 +335,15 @@ test("a long report parses each row's Markdown once, not on every render", async
   }
 });
 
+test("a row's text and meta parse once each, for its label and its drawn Markdown alike", async () => {
+  // Words no other test draws, so no earlier render remembers them.
+  const rows = [{ id: "r", text: "**Parse** me once, [linked](https://parse.test/1)", meta: "and `this` once" }];
+  const fresh = { ...read, report: { ...read.report, sections: [{ id: "s", title: "S", count: null, rows }] } };
+  const { view } = await mounted({ report: (/** @type {string[]} */ args) => (args[1] === "list" ? { revision: 6, reports: [] } : fresh), links: { links: [] } });
+  assert.equal(parses(view), 2);
+  assert.equal(parses(view), 0);
+});
+
 test("a long section folds past its first rows, and Show more draws the rest", async () => {
   const { view, press, find, text } = await mounted(longReplies);
   const rows = sentry();

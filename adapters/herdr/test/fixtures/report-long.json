@@ -3652,16 +3652,7 @@
                 "conseq",
                 "lor ipsum"
               ],
-              "recommended": "conseq",
-              "requests": {
-                "Rebase": {
-                  "band": "today",
-                  "key": "pr-17819-rebase",
-                  "repo": "rayonapp/rayon",
-                  "text": "Rebase PR 17819 (https://github.com/rayonapp/rayon/pull/17819), branch mlfbvr/fnd-1557-exhaustive-deps, head 81950a66fbe2c03a606e5a3a3dbe41ccdb82dbba",
-                  "workflow": "rebase"
-                }
-              }
+              "recommended": "conseq"
             },
             "state": null,
             "text": "[#02906 seddo: eiusmod tempo/incididunt-utla et dolor (mag-0882)](https://example.test/aliquaenimminimveniamqu)",
@@ -3681,16 +3672,7 @@
                 "ametco",
                 "adi elits"
               ],
-              "recommended": "ametco",
-              "requests": {
-                "Rebase": {
-                  "band": "today",
-                  "key": "pr-19072-rebase",
-                  "repo": "rayonapp/rayon",
-                  "text": "Rebase PR 19072 (https://github.com/rayonapp/rayon/pull/19072), branch mlfbvr/fnd-1933-model-too-large, head 1463800d5c6130fabac8dcbe053a9847cf3683f2",
-                  "workflow": "rebase"
-                }
-              }
+              "recommended": "ametco"
             },
             "state": null,
             "text": "[#06327 con: adip \"elits doe tempo in utla\" etdo mag aliqua enimmin v quisn (exe-0644)](https://example.test/ullamcolaborisnisialiqu)",
@@ -3710,16 +3692,7 @@
                 "adipis",
                 "eli seddo"
               ],
-              "recommended": "adipis",
-              "requests": {
-                "Rebase": {
-                  "band": "today",
-                  "key": "pr-20417-rebase",
-                  "repo": "rayonapp/rayon",
-                  "text": "Rebase PR 20417 (https://github.com/rayonapp/rayon/pull/20417), branch mlfbvr/fnd-ci-c7i-drop, head d4743c96136bd52cbd2bcf19a0b48cc48c437ff4",
-                  "workflow": "rebase"
-                }
-              }
+              "recommended": "adipis"
             },
             "state": null,
             "text": "[#73102 in(u7l): etdolo m9a enim minimve, q2n.1exerci ulla (lab-7448)](https://example.test/nisialiquipcommodoconse)",
@@ -3739,16 +3712,7 @@
                 "utlabo",
                 "etd magna"
               ],
-              "recommended": "utlabo",
-              "requests": {
-                "Rebase": {
-                  "band": "today",
-                  "key": "pr-20520-rebase",
-                  "repo": "rayonapp/rayon",
-                  "text": "Rebase PR 20520 (https://github.com/rayonapp/rayon/pull/20520), branch mlfbvr/fnd-2345, head 621e9add6c7b5b827fa411b6a49dcd9100b75e7e",
-                  "workflow": "rebase"
-                }
-              }
+              "recommended": "utlabo"
             },
             "state": null,
             "text": "[#73873 [inc] utla(etdo): mag aliquae minimve qu nost exe ulla (lab-7418)](https://example.test/nisialiquipcommodoconse)",
@@ -3768,16 +3732,7 @@
                 "tempor",
                 "inc utlab"
               ],
-              "recommended": "tempor",
-              "requests": {
-                "Rebase": {
-                  "band": "today",
-                  "key": "pr-20651-rebase",
-                  "repo": "rayonapp/rayon",
-                  "text": "Rebase PR 20651 (https://github.com/rayonapp/rayon/pull/20651), branch mlfbvr/fnd-2418, head 4c452090d87a63d821141c9b00641218fbe6b28c",
-                  "workflow": "rebase"
-                }
-              }
+              "recommended": "tempor"
             },
             "state": null,
             "text": "[#73580 min(veni): quisno e ullamco labor nisi al commodoc lorem (ips-7109)](https://example.test/dolorsitametconsectetur)",
@@ -3797,16 +3752,7 @@
                 "tempor",
                 "inc utlab"
               ],
-              "recommended": "tempor",
-              "requests": {
-                "Rebase": {
-                  "band": "today",
-                  "key": "pr-20660-rebase",
-                  "repo": "rayonapp/rayon",
-                  "text": "Rebase PR 20660 (https://github.com/rayonapp/rayon/pull/20660), branch mlfbvr/fnd-2409-production, head 0e4be53c72e2d33bf37f6e9e6cc1822ff1886652",
-                  "workflow": "rebase"
-                }
-              }
+              "recommended": "tempor"
             },
             "state": null,
             "text": "[#73553 aliqu(enim): minimv qui nost-ex ullam laboris ni aliquipcom (con-7136)](https://example.test/loremipsumdolorsitametc)",
@@ -3826,16 +3772,7 @@
                 "eiusmo",
                 "tem incid"
               ],
-              "recommended": "eiusmo",
-              "requests": {
-                "Rebase": {
-                  "band": "today",
-                  "key": "pr-20666-rebase",
-                  "repo": "rayonapp/rayon",
-                  "text": "Rebase PR 20666 (https://github.com/rayonapp/rayon/pull/20666), branch mlfbvr/rayeng-13546, head fe08b69ec08092083abe815033fb49aeaeae732f",
-                  "workflow": "rebase"
-                }
-              }
+              "recommended": "eiusmo"
             },
             "state": null,
             "text": "[#73555 ali(enimmi): ven qui n exerci ulla labori nisial (commod-04815)](https://example.test/consequatloremipsumdolo)",
@@ -3873,16 +3810,7 @@
                 "sitame",
                 "con adipi"
               ],
-              "recommended": "sitame",
-              "requests": {
-                "Review": {
-                  "band": "today",
-                  "key": "pr-19557-review",
-                  "repo": "rayonapp/rayon",
-                  "text": "Review PR #19557 in rayonapp/rayon: https://github.com/rayonapp/rayon/pull/19557",
-                  "workflow": "review"
-                }
-              }
+              "recommended": "sitame"
             },
             "state": null,
             "text": "[#06882 [con|lo] ipsu(dolorsit): ametc adip e seddoei tem inci ut (lab-0596)](https://example.test/etdoloremagnaaliquaenim)",
@@ -3902,16 +3830,7 @@
                 "utlabo",
                 "etd magna"
               ],
-              "recommended": "utlabo",
-              "requests": {
-                "Review": {
-                  "band": "today",
-                  "key": "pr-20141-review",
-                  "repo": "rayonapp/rayon",
-                  "text": "Review PR #20141 in rayonapp/rayon: https://github.com/rayonapp/rayon/pull/20141",
-                  "workflow": "review"
-                }
-              }
+              "recommended": "utlabo"
             },
             "state": null,
             "text": "[#73010 temp(incid): utlabo etdolorem aliqua enimm veniamq nostrudexe (ull-517)](https://example.test/laborisnisialiquipcommo)",
@@ -3931,16 +3850,7 @@
                 "veniam",
                 "qui nostr"
               ],
-              "recommended": "veniam",
-              "requests": {
-                "Review": {
-                  "band": "today",
-                  "key": "pr-19558-review",
-                  "repo": "rayonapp/rayon",
-                  "text": "Review PR #19558 in rayonapp/rayon: https://github.com/rayonapp/rayon/pull/19558",
-                  "workflow": "review"
-                }
-              }
+              "recommended": "veniam"
             },
             "state": null,
             "text": "[#06889 veni(quisnost): exer ull laborisnisi aliqui comm cons lore ipsu do (sit-0596)](https://example.test/ametconsecteturadipisci)",
@@ -3960,16 +3870,7 @@
                 "commod",
                 "con lorem"
               ],
-              "recommended": "commod",
-              "requests": {
-                "Review": {
-                  "band": "today",
-                  "key": "pr-20695-review",
-                  "repo": "rayonapp/rayon",
-                  "text": "Review PR #20695 in rayonapp/rayon: https://github.com/rayonapp/rayon/pull/20695",
-                  "workflow": "review"
-                }
-              }
+              "recommended": "commod"
             },
             "state": null,
             "text": "[#73568 ullamc l nisialiq commo cons lor ipsu-do sita co adi elit sedd](https://example.test/eiusmodtemporincididunt)",
@@ -3989,16 +3890,7 @@
                 "adipis",
                 "eli seddo"
               ],
-              "recommended": "adipis",
-              "requests": {
-                "Review": {
-                  "band": "today",
-                  "key": "pr-20505-review",
-                  "repo": "rayonapp/rayon",
-                  "text": "Review PR #20505 in rayonapp/rayon: https://github.com/rayonapp/rayon/pull/20505",
-                  "workflow": "review"
-                }
-              }
+              "recommended": "adipis"
             },
             "state": null,
             "text": "[#73838 sit(ametcon): adipisc eli seddoei tempo inc utlab etdo mag aliqu enim (min-217)](https://example.test/veniamquisnostrudexerci)",
@@ -4018,16 +3910,7 @@
                 "tempor",
                 "inc utlab"
               ],
-              "recommended": "tempor",
-              "requests": {
-                "Review": {
-                  "band": "today",
-                  "key": "pr-20696-review",
-                  "repo": "rayonapp/rayon",
-                  "text": "Review PR #20696 in rayonapp/rayon: https://github.com/rayonapp/rayon/pull/20696",
-                  "workflow": "review"
-                }
-              }
+              "recommended": "tempor"
             },
             "state": null,
             "text": "[#73565 temp in utlabore .et do .mag aliqu en mini ve qui nostr exer](https://example.test/ullamcolaborisnisialiqu)",
