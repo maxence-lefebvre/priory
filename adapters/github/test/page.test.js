@@ -10,7 +10,7 @@ const OLD = fixture("old-pr.html");
 const NEW = fixture("new-pr-overview.html");
 const NEW_FILES = fixture("new-pr-files.html");
 globalThis.DOMParser = DOMParser;
-const BARE = '<html><body><main><h1>Fix a bug</h1><div class="comment-body"><p>Fix a bug.</p></div></main></body></html>';
+const BARE = '<html><body><div class="application-main"><main><react-app><h1>Fix a bug</h1><div class="comment-body"><p>Fix a bug.</p></div></react-app></main></div></body></html>';
 
 test("on the old page, the strip's anchor is the pull request's tab row", () => {
   const found = anchor(parse(OLD));
@@ -86,7 +86,7 @@ async function until(check, what) {
   }
   assert.fail(`timed out waiting for ${what}`);
 }
-const strips = () => document.querySelectorAll("iframe").filter((frame) => frame.src.includes("view=strip"));
+const strips = () => [...document.querySelectorAll("iframe")].filter((frame) => frame.src.includes("view=strip"));
 
 test("content.js draws the strip above the old page's tab row, adds the Guide tab and redraws on soft navigation", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -97,7 +97,7 @@ test("content.js draws the strip above the old page's tab row, adds the Guide ta
   assert.equal(strips().length, 1);
   assert.equal(strips()[0].dataset.at, "old");
   const row = document.querySelector(".tabnav-pr");
-  assert.equal(row.parentElement.childNodes.indexOf(strips()[0]) + 1, row.parentElement.childNodes.indexOf(row));
+  assert.equal([...row.parentElement.childNodes].indexOf(strips()[0]) + 1, [...row.parentElement.childNodes].indexOf(row));
   const guideTab = nav().querySelector('a[href="#priory-guide"]');
   assert.equal(guideTab.textContent, "Guide 1");
   assert.equal(guideTab.getAttribute("aria-current"), null);
@@ -127,13 +127,13 @@ test("content.js draws the strip above the new page's React app, adds the Guide 
   const page = await load(NEW, "https://github.com/octo/demo/pull/1");
   t.after(page.restore);
   const list = () => document.querySelector("nav ul");
-  const guideItem = () => list().children.find((item) => item.querySelector('a[href="#priory-guide"]'));
+  const guideItem = () => [...list().children].find((item) => item.querySelector('a[href="#priory-guide"]'));
   await until(() => guideItem(), "the Guide tab");
   const app = document.querySelector("react-app");
   assert.equal(strips().length, 1);
   assert.equal(strips()[0].dataset.at, "new");
-  assert.equal(app.parentElement.childNodes.indexOf(strips()[0]) + 1, app.parentElement.childNodes.indexOf(app));
-  assert.equal(list().children.at(-1), guideItem());
+  assert.equal([...app.parentElement.childNodes].indexOf(strips()[0]) + 1, [...app.parentElement.childNodes].indexOf(app));
+  assert.equal([...list().children].at(-1), guideItem());
   const tab = guideItem().querySelector("a");
   assert.equal(tab.querySelector('[data-component="text"]').textContent, "Guide 1");
   for (const name of ["aria-current", "id", "data-dd-action-name", "tabindex"]) assert.equal(tab.getAttribute(name), null, name);
@@ -165,7 +165,8 @@ test("content.js puts the strip at the top of a page with no tab row, warns once
   const page = await load(BARE, "https://github.com/octo/demo/pull/1");
   t.after(page.restore);
   await until(() => strips().length === 1, "the fallback strip");
-  assert.equal(document.querySelector("main").childNodes[0], strips()[0]);
+  assert.equal(document.querySelector(".application-main").firstChild, strips()[0]);
+  assert.equal(strips()[0].closest("main, react-app"), null);
   assert.equal(strips()[0].dataset.at, "fallback");
 
   t.mock.timers.tick(3000);
@@ -183,6 +184,6 @@ test("content.js puts the strip at the top of a page with no tab row, warns once
   await flush();
   assert.equal(strips().length, 1);
   assert.equal(strips()[0].dataset.at, "old");
-  assert.equal(strips()[0].parentElement, document.querySelector("main"));
-  assert.equal(row.parentElement.childNodes.indexOf(strips()[0]) + 1, row.parentElement.childNodes.indexOf(row));
+  assert.equal(strips()[0].parentElement, document.querySelector("main"), "the strip moved above the row");
+  assert.equal([...row.parentElement.childNodes].indexOf(strips()[0]) + 1, [...row.parentElement.childNodes].indexOf(row));
 });

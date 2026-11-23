@@ -47,7 +47,7 @@ test("the side panel, signed out, shows the connect form, and a sign-in there re
   await until(() => body.querySelector("form"), "the connect form");
   assert.equal(body.querySelector(".name").textContent, "Run a command");
   assert.equal(body.querySelector(".q").textContent, "Connect to your factory");
-  assert.deepEqual(body.querySelectorAll("label").map((label) => label.textContent), ["Address", "Token"]);
+  assert.deepEqual([...body.querySelectorAll("label")].map((label) => label.textContent), ["Address", "Token"]);
   assert.equal(body.querySelector("button[type=submit]").textContent, "Connect");
   assert.doesNotMatch(body.textContent, /Sign in from the panel/);
 

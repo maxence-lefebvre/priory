@@ -21,8 +21,8 @@ export function anchor(doc) {
   return nav ? { nav, at: nav.closest("react-app") ?? nav, kind: "new" } : null;
 }
 
-/** Where the strip goes when no tab row is found. @param {Document} doc */
-export const fallback = (doc) => doc.querySelector("main") ?? doc.body;
+/** Where the strip goes when no tab row is found: above GitHub's main, outside any React tree. @param {Document} doc */
+export const fallback = (doc) => doc.querySelector(".application-main") ?? doc.body;
 
 /** A tab of the row to copy for the Guide tab, or null. @param {Element} nav */
 export const tabLike = (nav) => nav.querySelector(NEW_TAB) ?? nav.querySelector('[role="tab"]') ?? nav.querySelector("a");
@@ -31,7 +31,7 @@ export const tabLike = (nav) => nav.querySelector(NEW_TAB) ?? nav.querySelector(
 export function descriptionBody(doc) {
   const old = doc.querySelector(".js-comment-body, .comment-body");
   if (old) return old;
-  const first = doc.querySelectorAll('[data-testid="timeline-item"]').find((item) => item.querySelector('[data-testid="comment-header"]'));
+  const first = [...doc.querySelectorAll('[data-testid="timeline-item"]')].find((item) => item.querySelector('[data-testid="comment-header"]'));
   return first?.querySelector(".markdown-body") ?? null;
 }
 

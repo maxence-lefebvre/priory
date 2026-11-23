@@ -8,11 +8,42 @@ const decode = (text) =>
   text.replace(/&(#x[0-9a-f]+|#\d+|\w+);/gi, (whole, name) =>
     name[0] === "#" ? String.fromCodePoint(name[1].toLowerCase() === "x" ? parseInt(name.slice(2), 16) : Number(name.slice(1))) : ENTITIES[name] ?? whole);
 
+// Collections as a browser returns them: indexed and iterable, with no array methods, so code that
+// calls .find or .map on one fails here as it would in Chrome. NodeList adds forEach; HTMLCollection does not.
+class HTMLCollection {
+  #items;
+  constructor(items) {
+    this.#items = items;
+    items.forEach((item, index) => { this[index] = item; });
+  }
+  get length() {
+    return this.#items.length;
+  }
+  item(index) {
+    return this.#items[index] ?? null;
+  }
+  [Symbol.iterator]() {
+    return this.#items[Symbol.iterator]();
+  }
+}
+
+class NodeList extends HTMLCollection {
+  forEach(callback, self) {
+    [...this].forEach((node, index) => callback.call(self, node, index, this));
+  }
+}
+
 export class Node {
   constructor(document) {
     this.ownerDocument = document;
     this.parentNode = null;
-    this.childNodes = [];
+    this.nodes = [];
+  }
+  get childNodes() {
+    return new NodeList(this.nodes);
+  }
+  get firstChild() {
+    return this.nodes[0] ?? null;
   }
   get parentElement() {
     return this.parentNode instanceof Element ? this.parentNode : null;
@@ -23,7 +54,7 @@ export class Node {
     return node === this.ownerDocument;
   }
   get textContent() {
-    return this.childNodes.map((child) => child.textContent).join("");
+    return this.nodes.map((child) => child.textContent).join("");
   }
   set textContent(text) {
     this.replaceChildren(String(text));
@@ -37,49 +68,52 @@ export class Node {
     });
   }
   append(...kids) {
-    this.childNodes.push(...this.#adopt(kids));
+    this.nodes.push(...this.#adopt(kids));
   }
   prepend(...kids) {
-    this.childNodes.unshift(...this.#adopt(kids));
+    this.nodes.unshift(...this.#adopt(kids));
   }
   replaceChildren(...kids) {
-    for (const child of this.childNodes) child.parentNode = null;
-    this.childNodes = [];
+    for (const child of this.nodes) child.parentNode = null;
+    this.nodes = [];
     this.append(...kids);
   }
   before(...kids) {
     const parent = this.parentNode;
     if (!parent) return;
     const nodes = parent.#adopt(kids);
-    parent.childNodes.splice(parent.childNodes.indexOf(this), 0, ...nodes);
+    parent.nodes.splice(parent.nodes.indexOf(this), 0, ...nodes);
   }
   after(...kids) {
     const parent = this.parentNode;
     if (!parent) return;
     const nodes = parent.#adopt(kids);
-    parent.childNodes.splice(parent.childNodes.indexOf(this) + 1, 0, ...nodes);
+    parent.nodes.splice(parent.nodes.indexOf(this) + 1, 0, ...nodes);
   }
   remove() {
     if (!this.parentNode) return;
-    const siblings = this.parentNode.childNodes;
+    const siblings = this.parentNode.nodes;
     siblings.splice(siblings.indexOf(this), 1);
     this.parentNode = null;
   }
   get children() {
-    return this.childNodes.filter((child) => child instanceof Element);
+    return new HTMLCollection(this.nodes.filter((child) => child instanceof Element));
   }
   *descendants() {
-    for (const child of this.children) {
+    for (const child of this.nodes.filter((node) => node instanceof Element)) {
       yield child;
       yield* child.descendants();
     }
   }
-  querySelectorAll(selector) {
+  #all(selector) {
     const parsed = parseSelector(selector);
     return [...this.descendants()].filter((element) => parsed.some((chain) => matches(element, chain)));
   }
+  querySelectorAll(selector) {
+    return new NodeList(this.#all(selector));
+  }
   querySelector(selector) {
-    return this.querySelectorAll(selector)[0] ?? null;
+    return this.#all(selector)[0] ?? null;
   }
 }
 
@@ -166,7 +200,7 @@ export class Element extends Node {
   cloneNode(deep = false) {
     const copy = new Element(this.ownerDocument, this.localName);
     for (const [name, value] of this.attributes) copy.attributes.set(name, value);
-    if (deep) copy.append(...this.childNodes.map((child) => child.cloneNode(true)));
+    if (deep) copy.append(...this.nodes.map((child) => child.cloneNode(true)));
     return copy;
   }
   addEventListener(type, listener) {
@@ -260,7 +294,7 @@ export function parse(html) {
   if (!document.querySelector("html")) {
     const root = new Element(document, "html");
     const body = new Element(document, "body");
-    body.append(...[...document.childNodes]);
+    body.append(...[...document.nodes]);
     root.append(body);
     document.append(root);
   } else if (!document.querySelector("body")) {
