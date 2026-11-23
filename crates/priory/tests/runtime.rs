@@ -19893,7 +19893,13 @@ fn woken_by_feedback(name: &str) -> Setup {
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
     setup.publish(&thread_comment_at(803));
     setup.publish(&changes_requested());
-    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 4);
+    // A nudge can take a prompt between them, so count the items, not the prompts.
+    setup.until("outbox", |rows| {
+        [OTHER_URL, REVIEW_URL].iter().all(|url| {
+            rows.iter()
+                .any(|row| row[3] == "confirmed" && row[4].contains(url))
+        })
+    });
     setup
 }
 
