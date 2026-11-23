@@ -137,11 +137,14 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   and Why. A section chip opens that section with the answer bar under it, since gpui-kit has no
   sticky positioning. From 720 px the list and the detail sit side by side. The decide part stays
   pinned at the top, and the sections scroll under it.
-- **Answering.** An option answers after a 4 s Undo, with `priory answer --expected N`. An option
-  that runs the ask's command arms on the first press, shows the command word by word under it,
-  and runs on a second press within 4 s, with `--run`. "Write an answer…" sends free text the same
-  way. Dismiss runs `priory dismiss` at once. A step's ask and a hold's ask take only their
-  options, so they offer neither "Write an answer…", its `w` key, nor Dismiss.
+- **Answering.** Every option arms on the first press and reads "Confirm: <option>" with the
+  seconds left. A second press on it within 4 s answers at once, with `priory answer --expected N`.
+  A press on another option moves the arm, and a new revision of the ask drops it. An option that
+  runs the ask's command shows the command word by word under it while armed, and its answer adds
+  `--run`. A press within 250 ms of the arm does nothing, so a double-click cannot send by
+  accident. "Write an answer…" sends free text at once. Dismiss runs `priory dismiss` at once. A
+  step's ask and a hold's ask take only their options, so they offer neither "Write an answer…",
+  its `w` key, nor Dismiss.
 - **Refused answers.** When a verb fails, the panel reads the asks again and says why on the ask:
   the question changed to another revision, someone else answered, the ask was withdrawn, or the
   CLI's error. When the ask has left the view, the reason shows in a strip under the header
@@ -154,9 +157,9 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   "Open task" opens the task in the [Task panel](#the-task-panel), and "Attach to task" asks the
   Priory bar to attach, as [Attaching](../adapters/herdr.md#how-it-reads-and-acts) describes.
 - **Outside asks.** An ask from outside Priory lists and answers like the others, by its name. Its
-  command is a string that never runs, so its options answer after the Undo.
-- **Keys.** `J` and `K` move, `Enter` opens a section below 720 px, `1` to `9` press an option
-  (twice for a command), `W` writes an answer, `S` snoozes for 1 h, `[` and `]` move between
+  command is a string that never runs, so its options answer with no `--run`.
+- **Keys.** `J` and `K` move, `Enter` opens a section below 720 px, `1` to `9` arm an option
+  and send it on a second press, `W` writes an answer, `S` snoozes for 1 h, `[` and `]` move between
   sections and `Esc` closes. Single keys never fire while the text field has the keyboard.
 - **Agent text.** The options, trade-off and what waits draw as plain text. The question and text
   draw with their [links](#links).

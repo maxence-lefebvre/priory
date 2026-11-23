@@ -12,7 +12,6 @@ const RADIUS = { sm: S["radius-sm"], md: S["radius-md"], card: S["radius-card"] 
 // Size and line height; gpui-kit reads a bare line height as a multiplier, so heights are lengths.
 /** @type {Record<"question" | "body" | "small" | "caption", [number, `${number}px`]>} */
 const TYPE = { question: [18, "24px"], body: [14, "20px"], small: [13, "18px"], caption: [12, "16px"] };
-const UNDO_MS = 4000;
 const RETRY_MS = 3000;
 // A request to open an ask counts this long before the panel starts, as the Desk may show the panel to open one.
 const OPEN_FRESH_MS = 30_000;
@@ -46,6 +45,8 @@ async function connect() {
   return { theme: config.theme ?? "graphite", client, links };
 }
 
+/** What a second press on an armed option does. @param {{ key: string, runs: boolean }} option */
+const again = (option) => `${option.key ? `Press ${option.key} again or click` : "Click again"} to ${option.runs ? "run" : "send"}`;
 const message = (/** @type {unknown} */ error) => (error instanceof Error ? error.message : String(error));
 
 export default class PrioryAsks extends View {
@@ -76,8 +77,8 @@ export default class PrioryAsks extends View {
     this.reading = null;
     /** @type {import("./view.js").Armed | null} */
     this.armed = null;
-    /** An answer waiting out its Undo, then in flight. */
-    /** @type {{ id: string | number, text: string, timer: import("gpui-kit").Task | null } | null} */
+    /** The answer in flight. */
+    /** @type {{ id: string | number, text: string } | null} */
     this.pending = null;
     /** Whether a snooze, dismiss or answer is in flight; nothing else starts until it ends. */
     this.acting = false;
@@ -233,10 +234,10 @@ export default class PrioryAsks extends View {
       cx.notify();
       return;
     }
+    if (!("answer" in outcome)) return;
     this.armed = null;
     this.popover = null;
-    if (outcome.answer.run) return this.send(ask, outcome.answer.text, true, cx);
-    this.hold(ask, outcome.answer.text, cx);
+    this.send(ask, outcome.answer.text, outcome.answer.run, cx);
   }
 
   // Redraws the draining bar until the arming lapses, then shows the option unarmed.
@@ -250,30 +251,12 @@ export default class PrioryAsks extends View {
     });
   }
 
-  // Nothing leaves the panel until the Undo time passes, as DESIGN.md's sending state asks.
-  /** @param {any} ask @param {string} text @param {import("gpui-kit").Context} cx */
-  hold(ask, text, cx) {
-    this.notices.delete(ask.id);
-    const pending = { id: ask.id, text, timer: /** @type {import("gpui-kit").Task | null} */ (null) };
-    pending.timer = cx.timer.after(UNDO_MS, (cx) => {
-      pending.timer = null;
-      this.send(ask, text, false, cx);
-    });
-    this.pending = pending;
-    cx.notify();
-  }
-
-  /** @param {import("gpui-kit").Context} cx */
-  undo(cx) {
-    if (!this.pending?.timer) return;
-    this.pending.timer.cancel();
-    this.pending = null;
-    cx.notify();
-  }
-
+  // An answer leaves at once: a pressed option was confirmed by its second press, and Send is a
+  // deliberate press of its own. "Sending" shows only while the request is in flight.
   /** @param {any} ask @param {string} text @param {boolean} run @param {import("gpui-kit").Context} cx */
   send(ask, text, run, cx) {
-    this.pending = { id: ask.id, text, timer: null };
+    this.notices.delete(ask.id);
+    this.pending = { id: ask.id, text };
     cx.notify();
     this.act(ask, (client) => client.answer(ask.id, text, ask.revision, { run }), cx, {
       sent: () => {
@@ -328,7 +311,7 @@ export default class PrioryAsks extends View {
         }
       }
       this.acting = false;
-      if (this.pending?.id === ask.id && !this.pending.timer) this.pending = null;
+      if (this.pending?.id === ask.id) this.pending = null;
       cx.notify();
     });
   }
@@ -587,18 +570,18 @@ export default class PrioryAsks extends View {
         .when(option.armed, (el) => el.border(3).border_color(t.action))
         .opacity(option.dimmed || (busy && !chosen) ? 0.45 : 1)
         .focus((s) => s.border(2).border_color(t["action-text"]))
-        .accessibility_label(option.armed ? `Press ${option.key} again or click to run ${option.label}` : [option.label, option.notes].filter(Boolean).join(". "))
+        .accessibility_label(option.armed ? `${again(option)} ${option.label}` : [option.label, option.notes].filter(Boolean).join(". "))
         .on_click((_event, cx) => this.choose(ask, option.index, cx))
         .when(chosen, (el) => el.child(svg(ICON("check")).size(16).flex_none()))
         .child(v_flex().flex_1().min_w_0().gap(S["space-1"])
-          .when(option.armed, (el) => el.child(div().text_size(TYPE.caption[0]).font_weight(600).child(`Press ${option.key} again or click to run`)))
-          .child(div().whitespace_normal().text_size(TYPE.body[0]).font_weight(600).child(option.label))
+          .when(option.armed, (el) => el.child(div().text_size(TYPE.caption[0]).font_weight(600).child(again(option))))
+          .child(div().whitespace_normal().text_size(TYPE.body[0]).font_weight(600).child(option.armed ? `Confirm: ${option.label}` : option.label))
           .when(option.armed, (el) => el.child(div().text_size(TYPE.caption[0]).opacity(0.8).child(`Cancels in ${Math.ceil(left * ARM_MS / 1000)} s`))
             .child(div().h(3).w_full().rounded(2).bg(t["on-emph-2"]).child(div().h(3).w(`${Math.round(left * 100)}%`).rounded(2).bg(t.action))))
           .when(!option.armed && Boolean(option.notes), (el) => el.child(div().text_size(TYPE.caption[0]).opacity(0.85).child(option.notes))))
         .when(Boolean(option.key), (el) => el.child(div().px(S["space-1"]).rounded(RADIUS.sm).border(1).border_color(ink).opacity(0.7)
           .font_family(this.font.mono).text_size(TYPE.caption[0]).child(option.key)));
-      return option.armed && detail.command ? [button, this.commandBlock(detail.command, t, "option")] : [button];
+      return option.armed && option.runs && detail.command ? [button, this.commandBlock(detail.command, t, "option")] : [button];
     }));
   }
 
@@ -606,8 +589,7 @@ export default class PrioryAsks extends View {
   sending(t) {
     const pending = /** @type {NonNullable<typeof this.pending>} */ (this.pending);
     return h_flex().gap(S["space-2"]).p(S["space-3"]).items_center().rounded(RADIUS.card).bg(t.raised).text_size(TYPE.small[0])
-      .child(div().flex_1().min_w_0().whitespace_normal().child(`Sending "${pending.text}"`))
-      .when(Boolean(pending.timer), (el) => el.child(this.secondary("undo", "Undo", (cx) => this.undo(cx), t)));
+      .child(div().flex_1().min_w_0().whitespace_normal().child(`Sending "${pending.text}"`));
   }
 
   /** @param {string} id @param {string} label @param {(cx: import("gpui-kit").Context) => void} action @param {Palette} t */
@@ -686,7 +668,7 @@ export default class PrioryAsks extends View {
     const draft = this.draft(ask.id);
     const text = draft.value().trim();
     const send = (/** @type {import("gpui-kit").Context} */ cx) => {
-      if (text && !this.busy()) this.hold(ask, text, cx);
+      if (text && !this.busy()) this.send(ask, text, false, cx);
     };
     return v_flex().gap(S["space-2"])
       .child(div().id(`draft-${ask.id}`).p(S["space-2"]).rounded(RADIUS.md).border(1).border_color(t["control-line"]).bg(t.surface).cursor_text()
@@ -849,7 +831,7 @@ export default class PrioryAsks extends View {
       .border(1).border_color(t["control-line"]).bg(opened ? t.raised : t.surface).selected(opened).text_size(TYPE.small[0]).font_weight(600)
       .focus((s) => s.border(2).border_color(t["action-text"])).child(svg(ICON("chevron-up")).size(14)).child(bar.count);
     return v_flex().flex_none().gap(S["space-2"]).px(S["space-3"]).py(S["space-3"]).bg(t.bar).border_t(1).border_color(t.line)
-      .when(option.armed && Boolean(detail.command), (el) => el.child(this.commandBlock(/** @type {any} */ (detail.command), t, "bar")))
+      .when(option.armed && option.runs && Boolean(detail.command), (el) => el.child(this.commandBlock(/** @type {any} */ (detail.command), t, "bar")))
       .when(Boolean(this.pending && this.pending.id === ask.id), (el) => el.child(this.sending(t)))
       .child(h_flex().min_h(PANE.bar - 20).gap(S["space-2"]).items_center()
         .child(Popover.new(`options-menu-${ask.id}`).trigger(trigger).anchor("bottom_left").open(opened)
@@ -862,9 +844,9 @@ export default class PrioryAsks extends View {
           .when(option.armed, (el) => el.border(3).border_color(t.action)).disabled(this.busy() || Boolean(this.error))
           .focus((s) => s.border(2).border_color(t["action-text"])).on_click((_event, cx) => this.choose(ask, option.index, cx))
           .child(v_flex().min_w_0()
-            .child(div().truncate().font_weight(600).child(option.armed ? `Press ${option.key} again or click to run ${option.label}` : option.label))
+            .child(div().truncate().font_weight(600).child(option.armed ? `Confirm: ${option.label}` : option.label))
             .child(div().truncate().text_size(TYPE.caption[0]).opacity(0.85)
-              .child(option.armed ? `Cancels in ${Math.ceil(Math.max(0, ARM_MS - (now - (this.armed?.at ?? now))) / 1000)} s` : option.notes || "First option"))))
+              .child(option.armed ? `${again(option)}. Cancels in ${Math.ceil(Math.max(0, ARM_MS - (now - (this.armed?.at ?? now))) / 1000)} s` : option.notes || "First option"))))
         .child(this.more(ask, detail, t)));
   }
 }
