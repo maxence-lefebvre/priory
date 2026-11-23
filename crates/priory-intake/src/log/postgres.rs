@@ -2,13 +2,13 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use herdr_bus::{Message, Output, Seq, Stored, Timestamp};
 use postgres::{Client, Config, Row};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
-use super::{Delivery, Log, Result, Unreachable};
+use super::{Delivery, Log, NO_ANSWER, Result, Unreachable};
 
 /// The Postgres client, for the tests that set up the database a log lives in.
 pub use postgres as client;
@@ -84,13 +84,15 @@ impl Postgres {
         &self,
         operation: impl Fn(&mut Client) -> Result<T, Failure> + Send + 'static,
     ) -> Result<T> {
+        let waiting = Instant::now();
         let mut slot = self
             .client
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        priory_runtime::ticks::time("priory.log.connection.wait", waiting.elapsed());
         if self.busy.swap(true, Ordering::SeqCst) {
             return Err(Box::new(Unreachable(format!(
-                "a call got no answer within {}s and still waits",
+                "a call got {NO_ANSWER} {}s and still waits",
                 self.timeout.as_secs_f64()
             ))));
         }
@@ -103,7 +105,7 @@ impl Postgres {
         });
         let Ok((client, result)) = receiver.recv_timeout(self.timeout) else {
             return Err(Box::new(Unreachable(format!(
-                "no answer within {}s",
+                "{NO_ANSWER} {}s",
                 self.timeout.as_secs_f64()
             ))));
         };
@@ -297,5 +299,24 @@ impl Log for Postgres {
             )?;
             Ok(())
         })
+    }
+
+    fn backlog(&self, output: &str) -> Result<Vec<(String, u64)>> {
+        let output = output.to_owned();
+        let rows = self.run(move |client| {
+            Ok(client.query(
+                "SELECT c.consumer, (SELECT count(*) FROM priory_log_messages m
+                   WHERE m.output = c.output AND m.seq > c.seq) AS past
+                 FROM priory_log_cursors c WHERE c.output = $1 ORDER BY c.consumer",
+                &[&output],
+            )?)
+        })?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let past: i64 = row.get("past");
+                (row.get("consumer"), u64::try_from(past).unwrap_or_default())
+            })
+            .collect())
     }
 }

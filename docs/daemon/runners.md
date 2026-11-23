@@ -156,6 +156,10 @@ show it too. On that machine, `priory give` and `priory answer <runner>:<ask>` r
 owners and asks is as old as its last read. When their own publish gets no answer, they refuse with
 `the log is unreachable: <error>: try again when it is back`.
 
+The daemon's `log` metrics group draws the same cut over time: each probe's outcome, how long the
+log has been unreachable, the messages that wait, each consumer's backlog and each runner's lease
+age. See [metrics.md](metrics.md#the-log-group).
+
 A daemon that starts while its log is unreachable starts all the same, and connects on a later
 try. `priory add` on a cut-off runner publishes its request to the log, so it fails until the link
 is back.

@@ -133,6 +133,23 @@ impl Log for Memory {
         *cursor = (*cursor).max(delivery.seq);
         Ok(())
     }
+
+    fn backlog(&self, output: &str) -> Result<Vec<(String, u64)>> {
+        let logged = self.0.lock().unwrap();
+        Ok(logged
+            .cursors
+            .iter()
+            .filter(|((_, on), _)| on == output)
+            .map(|((consumer, _), cursor)| {
+                let past = logged
+                    .messages
+                    .iter()
+                    .filter(|stored| stored.output == output && stored.seq > *cursor)
+                    .count();
+                (consumer.clone(), past as u64)
+            })
+            .collect())
+    }
 }
 
 /// A schema of its own in the database `PRIORY_TEST_POSTGRES_URL` names, dropped when dropped.
@@ -316,6 +333,29 @@ fn outputs_keep_separate_cursors(store: &dyn Store) {
     assert_eq!(ours[0].message.data["n"], 2);
 }
 
+fn backlog_counts_each_consumer_past_its_cursor(store: &dyn Store) {
+    let log = declared(store);
+    log.declare(&Output::new("other.events")).unwrap();
+    for n in [1, 2, 3] {
+        log.publish(OUTPUT, &event(n)).unwrap();
+    }
+    let other = log.publish("other.events", &event(4)).unwrap();
+    let deliveries = log.read("daemon", OUTPUT, 100).unwrap();
+    log.ack("daemon", &deliveries[0]).unwrap();
+    log.ack("export", &deliveries[2]).unwrap();
+    let elsewhere = log.read("other", "other.events", 1).unwrap();
+    assert_eq!(elsewhere[0].seq, other);
+    log.ack("other", &elsewhere[0]).unwrap();
+
+    let mut backlog = log.backlog(OUTPUT).unwrap();
+    backlog.sort();
+    assert_eq!(
+        backlog,
+        [("daemon".to_owned(), 2), ("export".to_owned(), 0)]
+    );
+    assert!(store.open().backlog("none.yet").unwrap().is_empty());
+}
+
 /// A tap of the same consumer, made with herdr-bus's own CLI, delivers the output's messages too.
 #[test]
 fn herdr_acks_through_the_output_despite_a_tap() {
@@ -368,7 +408,8 @@ macro_rules! contract {
             consumers_keep_separate_cursors,
             crash_between_read_and_ack_redelivers_once,
             undeclared_output_holds_nothing,
-            outputs_keep_separate_cursors
+            outputs_keep_separate_cursors,
+            backlog_counts_each_consumer_past_its_cursor
         );
     };
     (@ $adapter:ident, $store:expr; $($case:ident),*) => {
