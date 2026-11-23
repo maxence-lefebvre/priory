@@ -3000,7 +3000,8 @@ pub fn merges(db: &Connection, since: &str) -> rusqlite::Result<Vec<priory_intak
            AND json_extract(data, '$.failing') <= (SELECT count(*) FROM inbox AS red
              WHERE red.type = ?3 AND json_extract(red.data, '$.repo') = json_extract(closed.data, '$.repo')
              AND json_extract(red.data, '$.head_sha') = json_extract(closed.data, '$.merge_commit')
-             AND json_extract(red.data, '$.conclusion') NOT IN ('success', 'neutral', 'skipped')))
+             AND json_extract(red.data, '$.conclusion') NOT IN ('success', 'neutral', 'skipped')
+             AND json_extract(red.data, '$.superseded_by') IS NULL))
          ORDER BY time",
     )?
     .query_map(params![CLOSED, since, CHECKED], |row| {

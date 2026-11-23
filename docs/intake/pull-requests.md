@@ -94,14 +94,14 @@ also raises a `landed wrong` alarm on the desk, once per merge commit (see
 - Past 100 runs on a commit, the first 100 are read and `pending` stays above 0, so the commit is read until the 7 days end.
 - A `cancelled` run, as a workflow's concurrency group leaves one when a newer push supersedes it,
   counts as red only when no later run of the same name succeeded. The intake reads that name's run
-  on the tip of the base branch, `repos/{repo}/commits/heads/{base}/check-runs?check_name={name}`,
-  and checks with `repos/{repo}/compare/{merge}...{tip}` that the tip descends from the merge
-  commit. A success there publishes the cancelled run with `superseded_by` set to the tip, which
-  counts as passing. A tip run that is still running or was cancelled too keeps the cancelled run
-  pending, so the commit is read again on the next poll. So does a tip with no run of that name,
-  for 5 minutes after the merge, while a newer push's run may not exist yet. Any other answer,
-  and any failed read, such as a 404 for a base branch deleted after the merge, publishes the
-  cancelled run as it is.
+  on the tip of the base branch, `repos/{repo}/commits/heads/{base}/check-runs?check_name={name}`
+  with `{base}` percent-encoded, and checks with `repos/{repo}/compare/{merge}...{tip}` that the
+  tip descends from the merge commit. A success there publishes the cancelled run with
+  `superseded_by` set to the tip. It then counts as passing and is left out of `failing`. A tip run
+  that is still running or was cancelled too keeps the cancelled run pending, so the commit is read
+  again on the next poll. So does a tip with no run of that name, for 5 minutes after the cancel,
+  while a newer push's run may not exist yet. Any other answer, and any failed read, such as a 404
+  for a base branch deleted after the merge, publishes the cancelled run as it is.
 
 ### Check run snapshots
 

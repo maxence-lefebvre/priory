@@ -357,8 +357,15 @@ pub(super) fn merge_checks(
         {
             let later = match conclusion(run).as_str() {
                 // A base branch deleted after the merge answers 404: count the run as it was.
-                "cancelled" => later_run(repo, merge, &run.name, merged + GRACE_SECONDS > now)
-                    .unwrap_or(Later::Not),
+                "cancelled" => {
+                    // The grace runs from the cancel: a newer merge's run starts about then.
+                    let fresh = run
+                        .completed_at
+                        .as_deref()
+                        .and_then(|time| time.parse::<Timestamp>().ok())
+                        .is_some_and(|time| time.as_second() + GRACE_SECONDS > now);
+                    later_run(repo, merge, &run.name, fresh).unwrap_or(Later::Not)
+                }
                 _ => Later::Not,
             };
             if !matches!(later, Later::Running) {
@@ -368,7 +375,10 @@ pub(super) fn merge_checks(
         let pending = found.total_count - done.len();
         let failing = done
             .iter()
-            .filter(|(run, _)| !super::PASSING.contains(&conclusion(run).as_str()))
+            .filter(|(run, later)| {
+                !super::PASSING.contains(&conclusion(run).as_str())
+                    && !matches!(later, Later::Succeeded(_))
+            })
             .count();
         for (run, later) in done {
             let Some(time) = run.completed_at.as_deref() else {
@@ -430,7 +440,7 @@ struct Compare {
 fn later_run(repo: &str, merge: &Merge, name: &str, fresh: bool) -> Result<Later, String> {
     let path = format!(
         "repos/{repo}/commits/heads/{}/check-runs",
-        merge.base_branch
+        encoded(&merge.base_branch)
     );
     let check_name = format!("check_name={name}");
     let found: CommitRuns = gh(&path, &["-X", "GET", "-f", &check_name])?;
@@ -453,6 +463,18 @@ fn later_run(repo: &str, merge: &Merge, name: &str, fresh: bool) -> Result<Later
         ("completed", _) => Later::Not,
         _ => Later::Running,
     })
+}
+
+/// `text` percent-encoded as one URL path segment, so a branch such as `release/x` stays one.
+fn encoded(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                char::from(byte).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
 }
 
 const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName headRefOid baseRefName headRepository { nameWithOwner } merged mergeCommit { oid } body state author { login } \
@@ -663,6 +685,13 @@ pub(super) fn issue_comments(repo: &str) -> Result<Vec<Value>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_branch_is_encoded_as_one_path_segment() {
+        assert_eq!(encoded("main"), "main");
+        assert_eq!(encoded("release/1.x"), "release%2F1.x");
+        assert_eq!(encoded("fix #2 é"), "fix%20%232%20%C3%A9");
+    }
 
     /// The most nodes a GraphQL selection can return: each `first:` or `last:` connection
     /// multiplies the nodes under it, as GitHub counts them against its limits.

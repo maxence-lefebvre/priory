@@ -1,9 +1,11 @@
 #[allow(dead_code)]
 mod harness;
 
+#[allow(dead_code)]
+mod conform;
 mod tmux_dir;
 
-use herdr_bus::{Bus, Message, Output as BusOutput};
+use herdr_bus::{Bus, Message, MessageQuery, Output as BusOutput};
 use serde_json::{Value, json};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -394,11 +396,16 @@ impl Setup {
 
     /// Makes the default branch's check runs at `sha` those of `runs`.
     fn checks_at(&self, sha: &str, runs: &[(u64, &str, &str)]) {
+        self.checks_completed_at(sha, runs, "2026-11-20T10:05:00Z");
+    }
+
+    /// Makes the check runs at `sha` those of `runs`, each completed at `completed`.
+    fn checks_completed_at(&self, sha: &str, runs: &[(u64, &str, &str)], completed: &str) {
         let runs: Vec<Value> = runs
             .iter()
             .map(|(id, status, conclusion)| {
                 json!({ "id": id, "name": "ci", "status": status, "conclusion": conclusion,
-                        "completed_at": "2026-11-20T10:05:00Z",
+                        "completed_at": completed,
                         "html_url": format!("https://github.com/owner/repo/runs/{id}"),
                         "app": { "slug": "github-actions" } })
             })
@@ -421,6 +428,25 @@ impl Setup {
         fs::write(self.dir.join("checks-heads-main.json"), answer.to_string()).unwrap();
         let compare = json!({ "status": compare });
         fs::write(self.dir.join("compare.json"), compare.to_string()).unwrap();
+    }
+
+    /// The data of every `github.check_run.completed` the intake published, each checked against
+    /// its schema.
+    fn completed_checks(&self) -> Vec<Value> {
+        let query = MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 1000,
+            ..MessageQuery::default()
+        };
+        self.bus()
+            .messages(&query)
+            .unwrap()
+            .into_iter()
+            .map(|stored| serde_json::to_value(&stored.message).unwrap())
+            .filter(|message| message["type"] == "github.check_run.completed")
+            .inspect(conform::conforms)
+            .map(|message| message["data"].clone())
+            .collect()
     }
 
     /// The `landed wrong` lines on the desk.
@@ -562,6 +588,41 @@ fn a_cancelled_run_that_a_later_run_on_a_descendant_passed_is_not_red() {
     assert_eq!(setup.red_after_merge(), 0);
     assert_eq!(setup.alarms(), Vec::<String>::new());
     assert_eq!(setup.reads_of("m10"), 1, "the merge commit is settled");
+    let checks = setup.completed_checks();
+    assert_eq!(checks.len(), 1);
+    assert_eq!(checks[0]["conclusion"], "cancelled");
+    assert_eq!(checks[0]["superseded_by"], "m11");
+    assert_eq!(checks[0]["failing"], 0);
+}
+
+#[test]
+fn a_cancelled_run_reads_the_tip_of_a_base_branch_with_a_slash() {
+    let setup = Setup::new("cancelled-release-branch");
+    setup.polled_repo();
+    setup.task(1, "green");
+    let merge = on_pull(
+        "github.pull_request.closed",
+        10,
+        1,
+        "aaa",
+        json!({ "merged": true, "merge_commit": "m10", "actor": "max", "title": "Fix 1",
+                "body": "", "github_id": 910, "base_branch": "release/x" }),
+    )
+    .time("2026-11-20T10:00:00Z".parse().unwrap());
+    setup.handle(&[merge]);
+    setup.checks_at("m10", &[(1, "completed", "cancelled")]);
+    setup.tip_run("ci", "m11", "completed", "success", "ahead");
+    // The stub turns each `/` of the path into `-`, so only the encoded branch finds the tip.
+    fs::rename(
+        setup.dir.join("checks-heads-main.json"),
+        setup.dir.join("checks-heads-release%2Fx.json"),
+    )
+    .unwrap();
+
+    setup.poll();
+
+    assert_eq!(setup.red_after_merge(), 0);
+    assert_eq!(setup.completed_checks()[0]["superseded_by"], "m11");
 }
 
 #[test]
@@ -601,12 +662,17 @@ fn a_cancelled_run_whose_base_branch_is_gone_is_red_and_the_poll_goes_on() {
 }
 
 #[test]
-fn a_cancelled_run_waits_out_the_grace_for_a_run_on_the_tip_then_is_red() {
+fn a_cancelled_run_waits_out_the_grace_from_its_cancel_for_a_run_on_the_tip_then_is_red() {
     let setup = Setup::new("cancelled-no-tip-run");
     setup.polled_repo();
     setup.task(1, "green");
-    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-21T11:58:00Z")]);
-    setup.checks_at("m10", &[(1, "completed", "cancelled")]);
+    // The deploy ran longer than the grace, then a newer merge cancelled it.
+    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-21T11:00:00Z")]);
+    setup.checks_completed_at(
+        "m10",
+        &[(1, "completed", "cancelled")],
+        "2026-11-21T11:58:00Z",
+    );
 
     setup.poll();
     assert_eq!(setup.red_after_merge(), 0);
