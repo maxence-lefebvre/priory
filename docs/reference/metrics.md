@@ -10,6 +10,7 @@ on. [metrics.md](../daemon/metrics.md) explains how each process samples and sen
 | ----- | ------- |
 | `process` | the daemon, the intake and `priory serve`, each about itself |
 | `log` | the daemon only. The intake and `priory serve` skip it when `metrics` or `PRIORY_METRICS` names it |
+| `runs` | the daemon only, as for `log` |
 
 ## Resource
 
@@ -55,6 +56,16 @@ Every request carries these attributes on its resource.
 A consumer on herdr-bus is named as it reads, such as `priory.a`, when it reads on this machine,
 and as `<name>@<machine id>` when it reads on another.
 
+## runs
+
+| Metric | Kind | Unit | Attributes | Value |
+| ------ | ---- | ---- | ---------- | ----- |
+| `priory.run.start.duration` | histogram | `s` | `priory.harness` = `claude-code`, `codex`; `priory.session` = `first`, `resume`; `outcome` = `ok`, `error` | from a run's `started`, to the second, to its `SessionStart`. `error` is a run that ended before one, up to its end: the trust dialog, 60 seconds with none, an exit. Counts the runs whose start ended since the daemon started |
+| `priory.run.starts.active` | gauge | `{run}` | `priory.harness` | the live runs with no `SessionStart` yet. Each harness the factory's agents use has a point, 0 with none |
+| `priory.run.start.oldest.age` | gauge | `s` | `priory.harness` | the oldest of those, since its `started`; 0 with none |
+| `priory.worktree.phase.duration` | histogram | `s` | `priory.phase` = `clone`, `fetch`, `checkout`, `setup`, `resume`, `teardown`; `outcome` = `ok`, `error`, `timeout` | `clone`, `fetch` and `checkout` timed around their `git` commands as a task's worktree is added. `setup`, `resume` and `teardown` from the recipe's start to its end, `ok` for `exit 0`. `timeout` is a command past `command_timeout`, or a recipe past its `timeout` |
+| `priory.worktrees.active` | gauge | `{worktree}` | | the task folders under `worktrees/` in Priory home, as the sweep lists them |
+
 ## Dropped points
 
 | Metric | Kind | Unit | Attributes | Value |
@@ -65,8 +76,9 @@ and as `<name>@<machine id>` when it reads on another.
 
 | Message | Cause |
 | ------- | ----- |
-| `` priory <process>: PRIORY_METRICS names `<group>`, which is not a metrics group: the groups are process, log, or none `` | `PRIORY_METRICS` names an unknown group. The process does not start |
+| `` priory <process>: PRIORY_METRICS names `<group>`, which is not a metrics group: the groups are process, log, runs, or none `` | `PRIORY_METRICS` names an unknown group. The process does not start |
 | `` priory <process>: metrics past metrics_cap = <n>: dropped <count> <kind> points `` | an interval had more points than the cap left room for |
 | `` priory <process>: sending metrics to <otlp> failed (<error>) `` | the endpoint refused a request or did not answer, logged once per error text |
 | `` priory <process>: metrics: cannot read the process's own use: <error> `` | the process could not read `/proc/self`, or `self` in `PRIORY_PROC`. The interval sends the rest |
 | `` priory daemon: metrics: cannot read the log's state: <error> `` | the daemon's metrics thread could not read the state file. The interval sends the rest |
+| `` priory daemon: metrics: cannot read the runs' state: <error> `` | the same, for the `runs` group. The interval sends the rest |

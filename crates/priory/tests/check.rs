@@ -2032,7 +2032,7 @@ fn telemetry_headers_env_names_a_variable_and_never_holds_the_headers() {
 fn check_refuses_an_unknown_metrics_group_a_short_interval_and_a_zero_cap_naming_each_value() {
     let telemetry = "name = \"demo\"\n\n[telemetry]\notlp = \"http://127.0.0.1:4318\"\n";
     let ok = format!(
-        "{telemetry}metrics = [\"process\", \"log\"]\nmetrics_every = \"10s\"\nmetrics_cap = 1\n"
+        "{telemetry}metrics = [\"process\", \"log\", \"runs\"]\nmetrics_every = \"10s\"\nmetrics_cap = 1\n"
     );
     let refused = format!(
         "{telemetry}metrics = [\"process\", \"nope\"]\nmetrics_every = \"9s\"\nmetrics_cap = 0\n"
@@ -2046,7 +2046,7 @@ fn check_refuses_an_unknown_metrics_group_a_short_interval_and_a_zero_cap_naming
     assert_eq!(
         refused.stderr,
         "factory.toml:3: `metrics` names `nope`, which is not a metrics group: the groups are \
-         process, log\n\
+         process, log, runs\n\
          factory.toml:3: `metrics_every` is 9s: it needs to be 10s or more\n\
          factory.toml:3: `metrics_cap` is 0: it needs to be 1 or more\n"
     );

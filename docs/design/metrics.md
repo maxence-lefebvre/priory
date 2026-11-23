@@ -7,8 +7,8 @@ the slices after it, what stays out, and the open questions with a recommendatio
 
 The first slice is built: [metrics.md](../daemon/metrics.md) describes it. It covers the exporter,
 the keys, `PRIORY_METRICS`, the cap and the `process` group. The tests use a fake collector on
-127.0.0.1 rather than a fake `curl`. The first later slice, the `log` group, is built too:
-[metrics.md](../daemon/metrics.md#the-log-group) describes it, and
+127.0.0.1 rather than a fake `curl`. The first two later slices, the `log` and `runs` groups, are built too:
+[metrics.md](../daemon/metrics.md#the-log-group) describes them, and
 [the metrics reference](../reference/metrics.md) lists every metric. The other later slices are not
 built.
 
@@ -309,8 +309,13 @@ export's tests do, and a `PRIORY_PROC` folder for `/proc/self`:
    `backlog`, which herdr-bus answers from each connection's `lag`. The lease age takes the newest
    alive time among the leases as the last log time read, so it needs no new column. The cap drops
    histograms after gauges and before counters, and the intake and `priory serve` skip the group.
-2. The `runs` group, with the `SessionStart` time on the run's row and its migration. Tests use the
-   fake `claude`, one that never sends `SessionStart`, and one that shows the trust dialog.
+2. **Built.** The `runs` group, with the `SessionStart` time on the run's row and its migration.
+   Tests use the fake `claude`, one that never sends `SessionStart`, and one that shows the trust
+   dialog. As built, migration 106 adds `session_started`, `harness` and `resumes` to `runs`, and
+   105 stays reserved for an open pull request. The daemon reads ended starts and recipes from the
+   state file each interval, counting those that ended since it started, and `runtime::worktree`
+   times clone, fetch and checkout. A start's duration begins at `started`, which the row keeps to
+   the second.
 3. The `intake` group, with the duplicate and missed counts from the publish path.
 4. The `work` group.
 5. A section in [How to send traces to an OpenTelemetry backend](../sending-traces-to-opentelemetry.md)

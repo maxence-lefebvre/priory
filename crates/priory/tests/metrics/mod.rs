@@ -312,7 +312,7 @@ fn priory_metrics_naming_an_unknown_group_stops_the_daemon_with_its_name() {
     assert_eq!(
         stderr,
         "priory daemon: PRIORY_METRICS names `nope`, which is not a metrics group: the groups are \
-         process, log, or none\n"
+         process, log, runs, or none\n"
     );
 }
 
@@ -541,5 +541,137 @@ fn the_intake_and_serve_send_no_log_group_which_only_the_daemon_owns() {
     assert!(
         names.iter().all(|name| !name.starts_with("priory.log.")),
         "{names:?}"
+    );
+}
+
+/// The value of the point of `name` with `attributes` in `request`, if any.
+fn point(request: &Value, name: &str, attributes: &Value) -> Option<f64> {
+    points(request, name)
+        .into_iter()
+        .find(|(found, _)| found == attributes)
+        .map(|(_, value)| value)
+}
+
+/// A start's attributes on `priory.run.start.duration`.
+fn start(session: &str, outcome: &str) -> Value {
+    json!({ "priory.harness": "claude-code", "priory.session": session, "outcome": outcome })
+}
+
+/// A phase's attributes on `priory.worktree.phase.duration`.
+fn phase(phase: &str) -> Value {
+    json!({ "priory.phase": phase, "outcome": "ok" })
+}
+
+#[test]
+fn a_daemon_sends_each_run_s_start_by_session_and_its_worktree_s_phases() {
+    let collector = Collector::start();
+    let mut setup = Setup::new("metrics-runs");
+    setup.metrics(
+        &collector,
+        "metrics = [\"runs\"]\nmetrics_every = \"10s\"\n\n[repos.\"owner/repo\"]\nsetup = { shell = \"true\" }\n",
+    );
+    setup.calls(&[ask(), result("passed")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "asleep")
+    });
+
+    answer_the_ask(&setup);
+    setup.until("tasks", |rows| rows[0][4] == "done");
+
+    let started = |request: &Value| {
+        point(request, "priory.run.start.duration", &start("first", "ok")).is_some_and(|n| n >= 1.0)
+            && point(request, "priory.run.start.duration", &start("resume", "ok"))
+                .is_some_and(|n| n >= 1.0)
+    };
+    let requests = collector.until(&setup, |requests| requests.iter().any(started));
+    let request = requests.iter().find(|request| started(request)).unwrap();
+    let histogram = histogram(request, "priory.run.start.duration");
+    assert_eq!(histogram["aggregationTemporality"], 2);
+    for name in ["clone", "fetch", "checkout", "setup"] {
+        let count = point(request, "priory.worktree.phase.duration", &phase(name));
+        assert!(count.is_some_and(|count| count >= 1.0), "{name}: {request}");
+    }
+    let harness = json!({ "priory.harness": "claude-code" });
+    assert_eq!(
+        point(request, "priory.run.starts.active", &harness),
+        Some(0.0)
+    );
+    assert_eq!(
+        point(request, "priory.run.start.oldest.age", &harness),
+        Some(0.0)
+    );
+    assert_eq!(
+        points(request, "priory.worktrees.active").len(),
+        1,
+        "{request}"
+    );
+    assert!(!names(request).contains(&"process.uptime".to_owned()));
+}
+
+#[test]
+fn a_run_with_no_session_start_shows_as_an_active_start_whose_age_climbs() {
+    let collector = Collector::start();
+    let mut setup = Setup::new("metrics-runs-silent");
+    setup.metrics(
+        &collector,
+        "metrics = [\"runs\"]\nmetrics_every = \"10s\"\n",
+    );
+    setup.hold("silent");
+    setup.publish(&requested(42));
+    setup.start();
+
+    let harness = json!({ "priory.harness": "claude-code" });
+    let hung = |request: &Value| {
+        point(request, "priory.run.starts.active", &harness) == Some(1.0)
+            && point(request, "priory.run.start.oldest.age", &harness).is_some_and(|age| age >= 1.0)
+    };
+    let requests = collector.until(&setup, |requests| requests.iter().any(hung));
+
+    let request = requests.iter().find(|request| hung(request)).unwrap();
+    assert!(
+        points(request, "priory.run.start.duration").is_empty(),
+        "a start still waiting has no duration yet: {request}"
+    );
+    assert_eq!(setup.rows("runs")[0][7], "-");
+}
+
+#[test]
+fn a_run_on_claudes_trust_dialog_counts_as_a_start_that_ended_in_error() {
+    let collector = Collector::start();
+    let mut setup = Setup::new("metrics-runs-trust");
+    setup.metrics(
+        &collector,
+        "metrics = [\"runs\"]\nmetrics_every = \"10s\"\n",
+    );
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::write(
+        setup.dir.join("fake/silent"),
+        TRUST_DIALOG.replace("WORKTREE", &worktree.display().to_string()),
+    )
+    .unwrap();
+    setup.publish(&requested(42));
+    setup.start();
+
+    let failed = |request: &Value| {
+        point(
+            request,
+            "priory.run.start.duration",
+            &start("first", "error"),
+        )
+        .is_some_and(|n| n >= 1.0)
+    };
+    let requests = collector.until(&setup, |requests| requests.iter().any(failed));
+
+    let request = requests.iter().find(|request| failed(request)).unwrap();
+    assert_eq!(
+        point(request, "priory.run.start.duration", &start("first", "ok")),
+        None
+    );
+    let harness = json!({ "priory.harness": "claude-code" });
+    assert_eq!(
+        point(request, "priory.run.starts.active", &harness),
+        Some(0.0)
     );
 }

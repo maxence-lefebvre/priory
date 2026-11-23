@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 104;
+const VERSION: i64 = 106;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1876,6 +1876,18 @@ CREATE TABLE IF NOT EXISTS aging (
 PRAGMA user_version = 104;
 ";
 
+// Reserved for the gate's ask and judges in an open pull request, which takes 105.
+const SCHEMA_105: &str = "PRAGMA user_version = 105;";
+
+// When a run's `SessionStart` arrived, to the millisecond, its harness, and whether it resumed a
+// session, for the `runs` metrics group.
+const SCHEMA_106: &str = "
+ALTER TABLE runs ADD COLUMN session_started TEXT;
+ALTER TABLE runs ADD COLUMN harness TEXT;
+ALTER TABLE runs ADD COLUMN resumes INTEGER;
+PRAGMA user_version = 106;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1890,7 +1902,8 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_74, SCHEMA_75, SCHEMA_76, SCHEMA_77, SCHEMA_78, SCHEMA_79, SCHEMA_80, SCHEMA_81,
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
-    SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104,
+    SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
+    SCHEMA_106,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -3688,6 +3701,10 @@ pub(crate) struct NewRun<'a> {
     pub debate: Option<i64>,
     /// The memories repository's commit the run gets, if any.
     pub memories_commit: Option<&'a str>,
+    /// The harness that runs it, as `harness` in the agent's file names it.
+    pub harness: &'a str,
+    /// It resumes a session rather than starting one.
+    pub resumes: bool,
 }
 
 /// The agent's shared session, once a run of it reached `SessionStart`, which every task resumes.
@@ -3748,8 +3765,8 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
         "INSERT INTO runs (task, step, agent, tmux, session, kit_hash, kit_commit, memories_commit,
-           debate)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+           debate, harness, resumes)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             run.task,
             run.step,
@@ -3759,7 +3776,9 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
             run.kit_hash,
             run.kit_commit,
             run.memories_commit,
-            run.debate
+            run.debate,
+            run.harness,
+            run.resumes
         ],
     )?;
     let id = tx.last_insert_rowid();
@@ -4188,7 +4207,8 @@ pub(crate) fn signal(
         }
         "SessionStart" => {
             tx.execute(
-                "UPDATE runs SET idle = 1, ready = 1, turn = NULL, nudgeable = 0, thread = coalesce(?2, thread)
+                "UPDATE runs SET idle = 1, ready = 1, turn = NULL, nudgeable = 0, thread = coalesce(?2, thread),
+                   session_started = coalesce(session_started, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                  WHERE id = ?1",
                 params![run, signal.thread],
             )?;

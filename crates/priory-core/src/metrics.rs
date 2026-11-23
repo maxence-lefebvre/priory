@@ -5,7 +5,7 @@ use crate::otlp;
 use priory_factory::factory::{Backend, Factory, METRIC_GROUPS};
 use priory_intake::intake::OUTPUT;
 use priory_intake::log::{self, Log};
-use priory_runtime::{room, runtime, ticks};
+use priory_runtime::{room, runtime, ticks, worktrees};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet, VecDeque};
@@ -25,6 +25,10 @@ const BOUNDS: [f64; 13] = [
 
 const PROBE: &str = "priory.log.probe.duration";
 const CONNECTION_WAIT: &str = "priory.log.connection.wait";
+const START: &str = "priory.run.start.duration";
+/// How far back each sample looks again for a start or recipe that ended, so one whose row was
+/// written late is still counted once.
+const OVERLAP: f64 = 5.0;
 
 /// Whether the exporter wants the log's backlog, which only the daemon's own thread may ask for.
 static WANT_BACKLOG: AtomicBool = AtomicBool::new(false);
@@ -67,7 +71,7 @@ fn groups_of(text: &str) -> Result<Vec<String>, String> {
     Ok(groups)
 }
 
-/// The groups `service` sends of `groups`: the daemon alone owns the log.
+/// The groups `service` sends of `groups`: the daemon alone owns the log and the runs.
 fn owned(service: &str, groups: Vec<String>) -> Vec<String> {
     groups
         .into_iter()
@@ -82,7 +86,7 @@ pub(crate) fn probed(elapsed: Duration, outcome: Result<(), &(dyn std::error::Er
         Err(error) if log::timed_out(error) => "timeout",
         Err(_) => "error",
     };
-    ticks::timed_as(PROBE, Some(outcome), elapsed);
+    ticks::timed_as(PROBE, &[("outcome", outcome)], elapsed);
 }
 
 /// Reads the log's backlog when the exporter wants it, on the daemon's thread once it reached its
@@ -136,6 +140,12 @@ pub fn start(factory: &Factory, service: &str, groups: Vec<String>) -> Result<()
         ),
     ];
     let endpoint = endpoint.trim_end_matches('/').to_owned();
+    let agents: BTreeMap<String, &'static str> = factory
+        .agents
+        .iter()
+        .map(|(name, agent)| (name.clone(), agent.value.harness.name()))
+        .collect();
+    let started = SystemTime::now();
     let backend = match factory.log().backend {
         Backend::HerdrBus => "herdr-bus",
         Backend::Postgres => "postgres",
@@ -152,7 +162,13 @@ pub fn start(factory: &Factory, service: &str, groups: Vec<String>) -> Result<()
         groups,
         backend,
         cap: telemetry.metrics_cap.unwrap_or(CAP),
-        started: nanos(SystemTime::now()),
+        started: nanos(started),
+        since: started
+            .duration_since(UNIX_EPOCH)
+            .map_or(0.0, |since| since.as_secs_f64()),
+        seen: HashSet::new(),
+        agents,
+        home: home.clone(),
         born: Instant::now(),
         sent: VecDeque::new(),
         dropped: BTreeMap::new(),
@@ -196,8 +212,16 @@ struct Exporter {
     sent: VecDeque<(Instant, u64)>,
     /// `priory.metrics.dropped`, by group, none for a send, and kind.
     dropped: BTreeMap<(Option<&'static str>, &'static str), u64>,
-    /// Each histogram series since the process started, by metric and attributes.
-    histograms: BTreeMap<(&'static str, Attributes), Histogram>,
+    /// Each histogram series since the process started, by group, metric and attributes.
+    histograms: BTreeMap<(&'static str, &'static str, Attributes), Histogram>,
+    /// Unix seconds from which the next sample looks for starts and recipes that ended.
+    since: f64,
+    /// The runs and recipes the last sample counted, which the next one looks at again.
+    seen: HashSet<(&'static str, i64)>,
+    /// Each agent's harness, for a run whose row does not name one.
+    agents: BTreeMap<String, &'static str>,
+    /// Priory home, whose `worktrees` folder holds the tasks' worktrees.
+    home: PathBuf,
     /// The error texts already logged.
     logged: HashSet<String>,
     prefix: String,
@@ -341,7 +365,10 @@ impl Exporter {
             self.process(ticks, &mut points);
         }
         if self.sends("log") {
-            self.log(timed, &mut points);
+            self.log(&timed, &mut points);
+        }
+        if self.sends("runs") {
+            self.runs(&timed, &mut points);
         }
         points
     }
@@ -406,7 +433,7 @@ impl Exporter {
 
     /// The log group: the probes and connection waits timed since the last request, the backlog
     /// the daemon read, and what the state file says of the link, the queue and the leases.
-    fn log(&mut self, timed: Vec<ticks::Timed>, points: &mut Vec<Point>) {
+    fn log(&mut self, timed: &[ticks::Timed], points: &mut Vec<Point>) {
         let point = |kind, name, unit, attributes, value| Point {
             group: "log",
             kind,
@@ -416,23 +443,15 @@ impl Exporter {
             value,
         };
         for timed in timed {
-            let attributes = match (timed.metric, timed.outcome) {
-                (PROBE, Some(outcome)) => vec![
-                    ("priory.log.backend", self.backend.to_owned()),
-                    ("outcome", outcome.to_owned()),
-                ],
-                (CONNECTION_WAIT, None) => Vec::new(),
+            let mut attributes = match timed.metric {
+                PROBE => vec![("priory.log.backend", self.backend.to_owned())],
+                CONNECTION_WAIT => Vec::new(),
                 _ => continue,
             };
-            self.histograms
-                .entry((timed.metric, attributes))
-                .or_default()
-                .observe(timed.seconds);
+            attributes.extend(owned_attributes(&timed.attributes));
+            self.observe("log", timed.metric, attributes, timed.seconds);
         }
-        for ((name, attributes), histogram) in &self.histograms {
-            let value = Number::Histogram(histogram.clone());
-            points.push(point(Kind::Histogram, name, "s", attributes.clone(), value));
-        }
+        self.histograms_of("log", points);
         let backlog = BACKLOG.lock().ok().and_then(|mut slot| slot.take());
         WANT_BACKLOG.store(true, Ordering::SeqCst);
         for (consumer, count) in backlog.into_iter().flatten() {
@@ -482,6 +501,141 @@ impl Exporter {
                 }
             }
             Err(error) => self.once(format!("metrics: cannot read the log's state: {error}")),
+        }
+    }
+
+    /// The runs group: each run's start and each phase of a worktree's start, as histograms, the
+    /// starts still waiting for `SessionStart`, and the worktrees under Priory home.
+    fn runs(&mut self, timed: &[ticks::Timed], points: &mut Vec<Point>) {
+        for timed in timed.iter().filter(|timed| timed.metric == runtime::PHASE) {
+            let attributes = owned_attributes(&timed.attributes);
+            self.observe("runs", runtime::PHASE, attributes, timed.seconds);
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0.0, |now| now.as_secs_f64());
+        let state = crate::state::read_only()
+            .and_then(|db| run_state(&db, self.since).map_err(|error| error.to_string()));
+        match state {
+            Ok(state) => {
+                let mut seen = HashSet::new();
+                for ended in state.ended {
+                    seen.insert(ended.key);
+                    if self.seen.contains(&ended.key) {
+                        continue;
+                    }
+                    let attributes = match ended.key.0 {
+                        "run" => {
+                            let Some(harness) = ended
+                                .harness
+                                .as_deref()
+                                .and_then(|harness| known_harness(harness, &self.agents))
+                            else {
+                                continue;
+                            };
+                            vec![
+                                ("priory.harness", harness.to_owned()),
+                                ("priory.session", ended.session.to_owned()),
+                                ("outcome", ended.outcome.to_owned()),
+                            ]
+                        }
+                        _ => vec![
+                            ("priory.phase", ended.session.to_owned()),
+                            ("outcome", ended.outcome.to_owned()),
+                        ],
+                    };
+                    let metric = if ended.key.0 == "run" {
+                        START
+                    } else {
+                        runtime::PHASE
+                    };
+                    self.observe("runs", metric, attributes, ended.seconds.max(0.0));
+                }
+                self.seen = seen;
+                self.since = self.since.max(now - OVERLAP);
+                let mut starting: BTreeMap<&'static str, (u64, u64)> = self
+                    .agents
+                    .values()
+                    .map(|harness| (*harness, (0, 0)))
+                    .collect();
+                for (harness, age) in state.starting {
+                    let Some(harness) = harness
+                        .as_deref()
+                        .and_then(|harness| known_harness(harness, &self.agents))
+                    else {
+                        continue;
+                    };
+                    let (count, oldest) = starting.entry(harness).or_default();
+                    *count += 1;
+                    *oldest = (*oldest).max(age);
+                }
+                let point = |kind, name, unit, attributes, value| Point {
+                    group: "runs",
+                    kind,
+                    name,
+                    unit,
+                    attributes,
+                    value,
+                };
+                for (harness, (count, oldest)) in starting {
+                    let attributes = vec![("priory.harness", harness.to_owned())];
+                    points.push(point(
+                        Kind::Gauge,
+                        "priory.run.starts.active",
+                        "{run}",
+                        attributes.clone(),
+                        Number::Int(count),
+                    ));
+                    points.push(point(
+                        Kind::Gauge,
+                        "priory.run.start.oldest.age",
+                        "s",
+                        attributes,
+                        Number::Int(oldest),
+                    ));
+                }
+            }
+            Err(error) => self.once(format!("metrics: cannot read the runs' state: {error}")),
+        }
+        self.histograms_of("runs", points);
+        let count = worktrees::found(&self.home).len() as u64;
+        points.push(Point {
+            group: "runs",
+            kind: Kind::Gauge,
+            name: "priory.worktrees.active",
+            unit: "{worktree}",
+            attributes: Vec::new(),
+            value: Number::Int(count),
+        });
+    }
+
+    /// Counts one duration of histogram `metric` of `group` under `attributes`.
+    fn observe(
+        &mut self,
+        group: &'static str,
+        metric: &'static str,
+        attributes: Attributes,
+        seconds: f64,
+    ) {
+        self.histograms
+            .entry((group, metric, attributes))
+            .or_default()
+            .observe(seconds);
+    }
+
+    /// Every histogram series of `group` since the process started.
+    fn histograms_of(&self, group: &'static str, points: &mut Vec<Point>) {
+        for ((of, name, attributes), histogram) in &self.histograms {
+            if *of == group {
+                points.push(Point {
+                    group,
+                    kind: Kind::Histogram,
+                    name,
+                    unit: "s",
+                    attributes: attributes.clone(),
+                    value: Number::Histogram(histogram.clone()),
+                });
+            }
         }
     }
 
@@ -599,6 +753,121 @@ fn link_state(db: &Connection) -> rusqlite::Result<LinkState> {
             .map(|(runner, age)| (runner, whole(age)))
             .collect(),
     })
+}
+
+/// A timed duration's attributes as a point's.
+fn owned_attributes(attributes: &[(&'static str, &'static str)]) -> Attributes {
+    attributes
+        .iter()
+        .map(|(key, value)| (*key, (*value).to_owned()))
+        .collect()
+}
+
+/// `harness` as a harness name, or the harness of the agent it names: a run from before the row
+/// kept its harness names its agent instead.
+fn known_harness(harness: &str, agents: &BTreeMap<String, &'static str>) -> Option<&'static str> {
+    match harness {
+        "claude-code" => Some("claude-code"),
+        "codex" => Some("codex"),
+        agent => agents.get(agent).copied(),
+    }
+}
+
+/// A run's start, or a recipe, that ended.
+struct Ended {
+    /// `run` or `recipe`, and its id.
+    key: (&'static str, i64),
+    /// A run's harness, or its agent when the row names no harness.
+    harness: Option<String>,
+    /// A run's `first` or `resume`, or a recipe's moment.
+    session: &'static str,
+    outcome: &'static str,
+    seconds: f64,
+}
+
+/// What the state file says of the runs' starts and the recipes.
+struct RunState {
+    /// The starts and recipes that ended at or after the time asked.
+    ended: Vec<Ended>,
+    /// Each live run with no `SessionStart` yet: its harness, or its agent, and its age in seconds.
+    starting: Vec<(Option<String>, u64)>,
+}
+
+/// A text time's Unix seconds, in SQL.
+macro_rules! unix {
+    ($column:literal) => {
+        concat!("(julianday(", $column, ") - 2440587.5) * 86400")
+    };
+}
+
+fn run_state(db: &Connection, since: f64) -> rusqlite::Result<RunState> {
+    let mut ended = Vec::new();
+    let starts = db
+        .prepare(concat!(
+            "SELECT id, coalesce(harness, agent), coalesce(resumes, 0), session_started IS NOT NULL,
+               (julianday(coalesce(session_started, ended)) - julianday(started)) * 86400
+             FROM runs WHERE (session_started IS NOT NULL AND ",
+            unix!("session_started"),
+            " >= ?1) OR (session_started IS NULL AND ready = 0 AND ended IS NOT NULL AND ",
+            unix!("ended"),
+            " >= ?1)"
+        ))?
+        .query_map([since], |row| {
+            let resumes: bool = row.get(2)?;
+            let ok: bool = row.get(3)?;
+            Ok(Ended {
+                key: ("run", row.get(0)?),
+                harness: row.get(1)?,
+                session: if resumes { "resume" } else { "first" },
+                outcome: if ok { "ok" } else { "error" },
+                seconds: row.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    ended.extend(starts);
+    let recipes = db
+        .prepare(concat!(
+            "SELECT id, moment, coalesce(status, ''), (julianday(ended) - julianday(started)) * 86400
+             FROM recipes WHERE started IS NOT NULL AND ended IS NOT NULL AND ",
+            unix!("ended"),
+            " >= ?1"
+        ))?
+        .query_map([since], |row| {
+            let moment: String = row.get(1)?;
+            let status: String = row.get(2)?;
+            Ok(Ended {
+                key: ("recipe", row.get(0)?),
+                harness: None,
+                session: match moment.as_str() {
+                    "setup" => "setup",
+                    "resume" => "resume",
+                    _ => "teardown",
+                },
+                outcome: if status == "exit 0" {
+                    "ok"
+                } else if status.starts_with("timed out") {
+                    "timeout"
+                } else {
+                    "error"
+                },
+                seconds: row.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    ended.extend(recipes);
+    let starting = db
+        .prepare(
+            "SELECT coalesce(harness, agent), CAST((julianday('now') - julianday(started)) * 86400 AS INTEGER)
+             FROM runs WHERE ended IS NULL AND ready = 0",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                u64::try_from(row.get::<_, i64>(1)?).unwrap_or_default(),
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(RunState { ended, starting })
 }
 
 /// The ticks' average, 95th percentile by nearest rank, and maximum; none without a tick.
@@ -759,9 +1028,71 @@ mod tests {
     }
 
     #[test]
-    fn only_the_daemon_sends_the_log_group() {
-        let groups = || vec!["process".to_owned(), "log".to_owned()];
-        assert_eq!(owned("daemon", groups()), ["process", "log"]);
+    fn the_run_state_reads_each_start_and_recipe_that_ended_since_a_time_by_outcome() {
+        let db = crate::state::memory();
+        db.execute_batch(
+            "INSERT INTO tasks (key, workflow, step, state, trigger, source)
+               VALUES ('cli:a', 'build', 'implement', 'running', 'cli', 'a');
+             INSERT INTO runs (task, step, agent, tmux, session, started, ended, ready, harness,
+               resumes, session_started)
+             VALUES (1, 'implement', 'implementer', 'p', 'a', '2026-11-23T10:00:00Z', NULL, 1,
+                 'claude-code', 1, '2026-11-23T10:00:02.500Z'),
+               (1, 'implement', 'implementer', 'p', 'b', '2026-11-23T10:00:00Z',
+                 '2026-11-23T10:01:00Z', 0, NULL, NULL, NULL),
+               (1, 'implement', 'implementer', 'p', 'c', '2026-11-23T09:00:00Z',
+                 '2026-11-23T09:01:00Z', 0, 'codex', 0, NULL);
+             INSERT INTO recipes (task, moment, worktree, argv, timeout, started, ended, status)
+             VALUES (1, 'setup', 'w', '[]', 60, '2026-11-23T10:00:00Z', '2026-11-23T10:00:30Z',
+                 'timed out after 30s');",
+        )
+        .unwrap();
+        let since = 1_795_428_000.0; // 2026-11-23T10:00:00Z
+
+        let state = run_state(&db, since).unwrap();
+
+        let ended: Vec<_> = state
+            .ended
+            .iter()
+            .map(|ended| {
+                (
+                    ended.key,
+                    ended.harness.clone(),
+                    ended.session,
+                    ended.outcome,
+                    ended.seconds.round(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            ended,
+            [
+                (
+                    ("run", 1),
+                    Some("claude-code".to_owned()),
+                    "resume",
+                    "ok",
+                    3.0
+                ),
+                (
+                    ("run", 2),
+                    Some("implementer".to_owned()),
+                    "first",
+                    "error",
+                    60.0
+                ),
+                (("recipe", 1), None, "setup", "timeout", 30.0),
+            ]
+        );
+        assert!(state.starting.is_empty());
+        let agents = BTreeMap::from([("implementer".to_owned(), "codex")]);
+        assert_eq!(known_harness("implementer", &agents), Some("codex"));
+        assert_eq!(known_harness("nobody", &agents), None);
+    }
+
+    #[test]
+    fn only_the_daemon_sends_the_log_and_runs_groups() {
+        let groups = || vec!["process".to_owned(), "log".to_owned(), "runs".to_owned()];
+        assert_eq!(owned("daemon", groups()), ["process", "log", "runs"]);
         assert_eq!(owned("intake", groups()), ["process"]);
         assert_eq!(owned("serve", groups()), ["process"]);
     }
@@ -787,7 +1118,7 @@ mod tests {
         assert_eq!(
             groups_of("process,nope").unwrap_err(),
             "PRIORY_METRICS names `nope`, which is not a metrics group: the groups are process, \
-             log, or none"
+             log, runs, or none"
         );
     }
 

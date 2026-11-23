@@ -3670,9 +3670,9 @@ fn step_in(
             end(tx, run.id, "moved")?;
             tx.execute(
                 "INSERT INTO runs (task, step, agent, tmux, session, idle, ready, transcript, read, thread,
-                   kit_hash, kit_commit, memories_commit)
+                   kit_hash, kit_commit, memories_commit, harness, resumes)
                  SELECT ?1, ?2, ?3, ?4, ?5, 1, 1, transcript, read, thread, kit_hash, kit_commit,
-                   memories_commit
+                   memories_commit, harness, resumes
                  FROM runs WHERE id = ?6",
                 params![task, target, run.agent, run.tmux, run.session, run.id],
             )?;

@@ -2153,6 +2153,8 @@ fn start(
             kit_commit: sources.commit,
             debate: turn.as_ref().map(|turn| turn.debate),
             memories_commit: sources.memories_commit,
+            harness: agent.value.harness.name(),
+            resumes: resume.is_some(),
         },
     )?;
     // The new run is the task's only live one, so a session of this name is an ended run's agent.
