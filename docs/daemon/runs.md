@@ -260,17 +260,37 @@ max_running = 2
 max_running = 3
 ```
 
-A run counts from its start to its end, so an asleep task counts for nothing. Once a lane's or a
-trigger's tasks have that many live runs, each of its other `queued` or `ready` tasks waits with a
-reason such as `waits: lane core/intake has 2 running tasks, its max_running`. The tasks behind it
-start if they fit: unlike a task that waits for room, a task at its cap holds no one back. It starts
-on the daemon's tick after one of those runs ends. A woken task waits too, since its run is a new
-start, and so does a task a person ordered. A running task carries on.
+A run counts from its start to its end, so an asleep task, with an ask or a wait open, counts for
+nothing. Once a lane's or a trigger's tasks have that many live runs, each of its other `queued` or
+`ready` tasks waits with the reason `waits for its lane: 2 of 2 running`, or `waits for its
+trigger: ...`. The tasks behind it start if they fit: unlike a task that waits for room, a task at
+its cap holds no one back. It starts on the daemon's tick after one of those runs ends. A woken
+task waits too, since its run is a new start, and so does a task a person ordered. A running task
+carries on: the cap never stops a run, it only holds new starts.
 
 The cap is hard: a task of the first band waits too, unlike under the [review limit](#review-limit).
 A lane or a trigger caps its runs for a service that limits its rate, such as an API that takes so
-many calls a minute, and an urgent task would hit that limit as any other. Only a lead's or an
-investigator's task passes the cap (see [Work already running](#work-already-running)).
+many calls a minute, and an urgent task would hit that limit as any other. A task at its cap waits
+for its lane, not for room, so it never stops a lower band's run under `[queue] preempt`. Only a
+lead's or an investigator's task passes the cap (see [Work already running](#work-already-running)).
+Under [`fair = "lane"`](#turns-between-lanes), the queue passes over a lane at its cap, and the
+other lanes keep their turns.
+
+A lane's cap can hold only in a window of the week, with `days` and `hours` in the runner's local
+time zone. Outside it, `max_running_outside` applies, or no cap without it:
+
+```toml
+# lanes.toml
+[lane."OSS/priory"]
+max_running = 2
+days = ["mon", "tue", "wed", "thu", "fri"]
+hours = "08:00-18:00"
+```
+
+The daemon reads its clock on each tick. When the window opens with more live runs than the cap,
+they carry on, and the lane's new starts wait until the count drops below the cap, such as with the
+reason `waits for its lane: 3 of 2 running`. `priory queue DIR` and the web Queue panel show each
+capped lane's live runs, the cap in force and its window.
 
 With several runners, each daemon counts only its own runs, so the count applies to each runner
 apart. See [`lanes.toml`](../reference/lanes.md) and [the trigger keys](../reference/triggers.md).

@@ -1438,6 +1438,10 @@ fn tend(
     }
     // Before admission, so a run's slow start never delays another run's Enter.
     entering.tick(db)?;
+    // A lane's window reads the runner's own clock and zone.
+    let local = priory_intake::intake::now()
+        .unwrap_or_else(|_| jiff::Timestamp::now())
+        .to_zoned(jiff::tz::TimeZone::system());
     loop {
         // Measured again after each start, since its clone and worktree take disk.
         let measured = OnceCell::new();
@@ -1451,6 +1455,7 @@ fn tend(
             room,
             &watched,
             &checking,
+            &local,
         )?
         else {
             break;

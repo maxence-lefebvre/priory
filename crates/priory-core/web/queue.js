@@ -10,6 +10,17 @@ export function queueBands(queue) {
 }
 
 /**
+ * A capped lane of `/api/queue`'s `lanes`: its live runs against the cap in force now, then the
+ * cap and its window, as `priory queue` prints it. @param {any} lane
+ */
+export function laneCap(lane) {
+  const now = lane.cap === null ? `${lane.running} running, no cap now` : `${lane.running} of ${lane.cap} running`;
+  const outside = lane.max_running_outside === null ? "no cap outside" : `${lane.max_running_outside} outside`;
+  const cap = lane.window === null ? `max_running ${lane.max_running}` : `max_running ${lane.max_running} ${lane.window}, ${outside}`;
+  return { lane: lane.lane, now, cap, full: lane.cap !== null && lane.running >= lane.cap };
+}
+
+/**
  * Why a waiting task has not started: the daemon's reason, room for a ready task, a band ahead
  * with tasks, or the task ahead in its band. @param {any} task @param {{ band: string, tasks: any[] }[]} bands
  */

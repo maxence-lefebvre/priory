@@ -1867,7 +1867,7 @@ fn time_of_day<'de, D: Deserializer<'de>>(input: D) -> Result<Option<jiff::civil
         .map_err(|_| D::Error::custom(format!("{text:?} is not a time of day such as \"09:00\"")))
 }
 
-fn weekdays<'de, D: Deserializer<'de>>(
+pub(crate) fn weekdays<'de, D: Deserializer<'de>>(
     input: D,
 ) -> Result<Option<Vec<jiff::civil::Weekday>>, D::Error> {
     use jiff::civil::Weekday::*;

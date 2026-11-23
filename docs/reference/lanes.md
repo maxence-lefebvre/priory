@@ -34,7 +34,10 @@ A `[lane."<team>/<theme>"]` table sets how the queue treats one lane.
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
-| `max_running` | integer | no | no cap | The most of the lane's tasks that may have a live run at once, 1 or more. New starts past it wait, in every band: the cap is hard. See [runs.md](../daemon/runs.md#at-most-so-many-running) | `2` |
+| `max_running` | integer | no | no cap | The most of the lane's tasks that may have a live run at once, 1 or more. New starts past it wait, in every band: the cap is hard. With `days` or `hours`, it holds only inside that window. See [runs.md](../daemon/runs.md#at-most-so-many-running) | `2` |
+| `days` | array of `mon` to `sun` | no | every day | The weekdays `max_running` holds on, in the runner's local time zone | `["mon", "tue", "wed", "thu", "fri"]` |
+| `hours` | string | no | all day | The hours `max_running` holds in, `HH:MM-HH:MM` in the runner's local time zone. It starts at the first time and ends before the second, the same day | `"08:00-18:00"` |
+| `max_running_outside` | integer | no | no cap | The cap outside `days` and `hours`, 1 or more | `6` |
 
 ## When a lane is set
 
@@ -68,6 +71,9 @@ lane = "core/desktop"
 
 [lane."core/intake"]
 max_running = 2                # at most two of the lane's tasks run at once; the others wait
+days = ["mon", "tue", "wed", "thu", "fri"]   # only on weekdays
+hours = "08:00-18:00"          # from 08:00 to 18:00, the runner's local time
+max_running_outside = 6        # six at other times; no cap when unset
 ```
 
 ## Errors from `priory check`
@@ -77,6 +83,10 @@ max_running = 2                # at most two of the lane's tasks run at once; th
 | `` lane `<lane>` is not `<team>/<theme>` `` | `fallback` or a rule's `lane` is not two parts around one `/`, or a part is empty or holds a space |
 | `` a rule needs `key`, `team`, `project` or `branch` `` | A rule that names only a `lane` |
 | `` `[lane]` `<name>` is not a lane such as `team/theme` `` | A `[lane]` table whose name is not `<team>/<theme>` |
-| `` `max_running` is 0: give at least 1, or hold the tasks instead `` | `max_running = 0` |
+| `` `max_running` is 0: give at least 1, or hold the tasks instead `` | `max_running = 0` or `max_running_outside = 0` |
+| `` `[lane]` `<lane>` sets `days`, `hours` or `max_running_outside` without `max_running` `` | A window or an outside cap with no cap to frame |
+| `` "<hours>" is not a window of hours such as "08:00-18:00" `` | `hours` is not two `HH:MM` times around one `-` |
+| `` "<hours>" ends before it starts: a window ends the day it starts `` | `hours` ends at or before its start, as an overnight window does |
+| `` "<day>" is not a day: use mon, tue, wed, thu, fri, sat or sun `` | `days` names something other than a weekday |
 | `` unknown field `<key>`, expected one of ... `` | A key the tables above do not list |
 | `` `lanes` is also defined in lanes.toml `` | Two of `lanes.toml`, `lanes.yaml` and `lanes.yml` exist |

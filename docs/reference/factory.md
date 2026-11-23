@@ -51,7 +51,8 @@ See [runs.md](../daemon/runs.md#overlapping-files) for how the overlap hold work
 [room.md](../daemon/room.md#urgent-wakes) for how `preempt` stops a run,
 [runs.md](../daemon/runs.md#aging) for how `age` moves a waiting task up,
 [runs.md](../daemon/runs.md#turns-between-lanes) for how `fair` orders a band, and
-[runs.md](../daemon/runs.md#review-limit) for how `review_limit` holds new starts.
+[runs.md](../daemon/runs.md#review-limit) for how `review_limit` holds new starts. A lane's cap on
+running tasks, and the hours it holds in, live in [`lanes.toml`](lanes.md#lane-keys).
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |

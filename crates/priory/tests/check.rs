@@ -1628,6 +1628,58 @@ fn fair_lanes_and_max_running_pass_and_a_bad_one_names_its_line() {
 }
 
 #[test]
+fn a_lane_window_passes_and_each_bad_one_is_refused() {
+    let good = "[lane.\"OSS/priory\"]\nmax_running = 2\ndays = [\"mon\", \"tue\", \"wed\", \"thu\", \"fri\"]\nhours = \"08:00-18:00\"\nmax_running_outside = 6\n";
+    let refused = |name: &str, lanes: &str| {
+        let outcome = check(&factory(name, &with("lanes.toml", lanes)));
+        assert_eq!(outcome.code, 1, "{name}: {}", outcome.stderr);
+        outcome.stderr
+    };
+
+    let ok = check(&factory("window-ok", &with("lanes.toml", good)));
+    let no_cap = refused("window-no-cap", &good.replace("max_running = 2\n", ""));
+    let malformed = refused("window-malformed", &good.replace("08:00-18:00", "8 to 6"));
+    let overnight = refused(
+        "window-overnight",
+        &good.replace("08:00-18:00", "22:00-06:00"),
+    );
+    let zero = refused(
+        "window-zero",
+        &good.replace("max_running_outside = 6", "max_running_outside = 0"),
+    );
+    let day = refused("window-day", &good.replace("\"fri\"", "\"friday\""));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        no_cap,
+        "lanes.toml:1: `[lane]` `OSS/priory` sets `days`, `hours` or `max_running_outside` without `max_running`\n"
+    );
+    for (stderr, message) in [
+        (
+            &malformed,
+            "\"8 to 6\" is not a window of hours such as \"08:00-18:00\"",
+        ),
+        (
+            &overnight,
+            "\"22:00-06:00\" ends before it starts: a window ends the day it starts",
+        ),
+        (
+            &zero,
+            "`max_running` is 0: give at least 1, or hold the tasks instead",
+        ),
+        (
+            &day,
+            "\"friday\" is not a day: use mon, tue, wed, thu, fri, sat or sun",
+        ),
+    ] {
+        assert!(
+            stderr.starts_with("lanes.toml:") && stderr.contains(message),
+            "{stderr}"
+        );
+    }
+}
+
+#[test]
 fn a_sweep_table_passes_and_a_bad_one_names_its_line() {
     let good = "name = \"demo\"\n\n[sweep]\nevery = \"5m\"\nafter = \"30m\"\nagent = \"implementer\"\nrepo = \"owner/priory\"\nscripts = [{ run = \"docker system prune -f\", when = \"disk\", timeout = \"2m\" }]\n";
     let ok = check(&factory("sweep-ok", &with("factory.toml", good)));

@@ -16,3 +16,6 @@ lane = "core/desktop"
 
 [lane."core/intake"]
 max_running = 2                # at most two of the lane's tasks run at once; the others wait
+days = ["mon", "tue", "wed", "thu", "fri"]   # only on weekdays
+hours = "08:00-18:00"          # from 08:00 to 18:00, the runner's local time
+max_running_outside = 6        # six at other times; no cap when unset
