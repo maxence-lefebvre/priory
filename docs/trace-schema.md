@@ -172,6 +172,48 @@ names the run that failed.
 | `action`  | yes      | What the factory did about the cause, such as `sweep` or `wait for room`  |
 | `outcome` | yes      | `ready` when the task waits to start its agent again, `failed` when it stays failed |
 
+## `factory.worktree.recovered`
+
+A start found the task's worktree off its branch, on a detached HEAD or on another branch, and put
+it back on the task's branch. It shares `factory`, `factory_revision`, `workflow`, `task`, `key`,
+`generation`, `step` and `machine` with `factory.step.ended`. See
+[home.md](daemon/home.md#worktrees) for when the daemon does this and when it blocks instead.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d4-0000-7000-8000-000000000009",
+  "source": "factory://example/desktop",
+  "type": "factory.worktree.recovered",
+  "time": "2026-11-23T09:12:40Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "234",
+    "key": "github:example/app#20",
+    "generation": 1,
+    "step": "implement",
+    "machine": "desktop",
+    "worktree": "/home/me/.local/share/priory/worktrees/example/app/234",
+    "head": "4b1c9e0d2f7a8e6b5c3d1f0a9e8b7c6d5e4f3a2b",
+    "branch": "priory/234",
+    "kept_branch": "priory/234-kept-4b1c9e0",
+    "kept_commits": 1
+  }
+}
+```
+
+| Field          | Required | Meaning                                                                  |
+| -------------- | -------- | ------------------------------------------------------------------------ |
+| `worktree`     | yes      | The worktree's folder                                                    |
+| `head`         | yes      | The commit the worktree had checked out                                  |
+| `from_branch`  | no       | The branch the worktree was on; absent when its HEAD was detached        |
+| `branch`       | yes      | The task's branch the worktree went back to                              |
+| `kept_branch`  | no       | The branch Priory made to keep the commits of a detached HEAD that no remote holds |
+| `kept_commits` | yes      | How many commits of the old HEAD no remote holds, as is or rebased. `kept_branch` keeps them, or `from_branch` when the HEAD was on a branch |
+
 ## `factory.run.preempted`
 
 A run ended at its turn end to make room for the head of the queue, in a band of `[queue]

@@ -9892,6 +9892,35 @@ fn an_irreversible_model_step_asks_again_after_a_commit_instead_of_starting() {
 }
 
 #[test]
+fn a_run_that_finds_its_worktree_detached_puts_it_back_and_keeps_its_commit() {
+    let setup = asked_to_open("recover-detached", APPROVE_THEN_SHIP);
+    let worktree = setup.worktree(1);
+    setup.git(&worktree, &["checkout", "-q", "--detach"]);
+    let head = setup.commit(1, "loose.txt");
+    let short = setup.git(&worktree, &["rev-parse", "--short", "HEAD"]);
+    setup.calls(&[passed_with_evidence()]);
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let event = until_traced(&setup, "factory.worktree.recovered");
+    let kept = format!("priory/1-kept-{}", short.trim());
+    let data = &event["data"];
+    assert_eq!(data["task"], "1");
+    assert_eq!(data["worktree"], worktree.display().to_string());
+    assert_eq!(data["head"], head);
+    assert_eq!(data["branch"], "priory/1");
+    assert_eq!(data["kept_branch"], kept);
+    assert_eq!(data["kept_commits"], 1);
+    assert!(data.get("from_branch").is_none(), "{event}");
+    assert_eq!(setup.git(&worktree, &["rev-parse", &kept]).trim(), head);
+    assert_eq!(
+        setup.git(&worktree, &["branch", "--show-current"]).trim(),
+        "priory/1"
+    );
+}
+
+#[test]
 fn a_reopened_approval_shows_the_verification_a_later_result_sent() {
     let setup = asked_to_open("ship-reopen-text", APPROVE_THEN_SHIP);
     setup.calls(&[json!({ "name": "result", "arguments": {

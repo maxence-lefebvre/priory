@@ -2252,6 +2252,11 @@ fn start(
     }
     let (worktree, branch, added) = match runtime::worktree(home, repo, &folder, base.as_deref()) {
         Ok((worktree, branch, added)) => {
+            if let runtime::Added::Kept(Some(recovery)) = &added {
+                let tx = db.transaction()?;
+                crate::trace::worktree_recovered(&tx, trace, admission.task, &worktree, recovery)?;
+                tx.commit()?;
+            }
             let start = added.base();
             state::set_base(db, admission.task, start)?;
             if base.is_some() && start.is_some() {

@@ -47,7 +47,30 @@ folder only when Priory created it. With several runners, each numbers its own t
 and branch take the runner's name first: `<runner>-<task id>` on `priory/<runner>-<task id>`. A task
 that had a branch before keeps it.
 
-A start reuses a worktree only when it belongs to Priory's clone and is on that branch.
+A start reuses a worktree only when it belongs to Priory's clone. A folder that is not a worktree of
+that clone blocks the task.
+
+An agent can leave the worktree off its branch: on a detached HEAD after `git checkout
+origin/<branch>`, or on a branch it made. The next start then puts the worktree back on the task's
+branch when no work can be lost, and blocks when some could:
+
+- An operation in progress (a rebase, merge, cherry-pick, revert or bisect) blocks the task. The
+  reason names the operation and the commands that finish it or drop it.
+- Uncommitted changes, staged, unstaged or untracked, block the task. Ignored files do not count.
+  The reason counts the files and gives the commands that keep them on a branch or drop them.
+- Otherwise Priory switches the worktree back to its branch. Before that, it looks for commits on
+  the old HEAD that are neither on the task's branch nor on a remote-tracking branch, and not on one
+  as a rebased copy either. Priory compares patches with `git patch-id`, as `git cherry` does, so a
+  commit that the agent rebased and pushed counts as pushed. A merge commit always counts as not
+  pushed.
+- When the HEAD was detached and holds such commits, Priory first keeps them on a new branch,
+  `priory/<task id>-kept-<short sha>`. When the HEAD was on a branch, that branch keeps them, and
+  Priory makes no new one.
+
+Each switch writes a `factory.worktree.recovered` record to the trace. It names the old HEAD, the
+branch it was on, the branch it went back to, any kept branch and how many commits were kept (see
+[trace-schema.md](../trace-schema.md#factoryworktreerecovered)). After a person cleans up a blocked
+worktree, `priory resume <task>` lets the next start put it back.
 
 The folder can be gone while the branch remains. That happens to a revived task whose worktree the
 sweep removed, and to a retired task. The next start then adds the worktree back on that branch. A
