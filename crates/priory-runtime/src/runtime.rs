@@ -190,12 +190,20 @@ fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> 
 /// process that keeps the worktree.
 pub(crate) const OWN_GIT: &str = "PRIORY_GIT";
 
-pub(crate) fn git(dir: &Path) -> Command {
+/// Git in `dir`, as Priory runs it on a clone or a worktree. It runs no hook and no file system
+/// monitor, since a jailed agent can write both into the clone it shares with the host.
+pub fn git(dir: &Path) -> Command {
     let mut command = Command::new("git");
     command
         .env(OWN_GIT, std::process::id().to_string())
         .arg("-C")
-        .arg(dir);
+        .arg(dir)
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+        ]);
     command
 }
 
@@ -643,10 +651,23 @@ pub trait Harness {
         None
     }
     /// The harness's own home under the person's `home`: its login, sessions, transcripts and
-    /// trusted folders, which a jailed run keeps. Each path comes with whether it is a folder.
-    fn own_home(&self, home: Option<&Path>) -> Vec<(PathBuf, bool)>;
+    /// trusted folders, which a jailed run keeps, each with how the jail binds it.
+    fn own_home(&self, home: Option<&Path>) -> Vec<(PathBuf, Own)>;
     /// The variables that move the harness's own home, which a jailed run keeps.
     fn home_env(&self) -> &'static [&'static str];
+}
+
+/// How a jailed run gets a path of its harness's own home. Each folder is made when missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Own {
+    /// A folder the run reads only.
+    Read,
+    /// A folder the run writes.
+    Write,
+    /// A folder the run writes in an empty copy of its own, gone when the run ends.
+    Scratch,
+    /// A file the run reads only, when it exists.
+    File,
 }
 
 /// The folder a variable names, else `fallback` under `home`.
@@ -685,17 +706,28 @@ impl Harness for ClaudeCode {
         "claude"
     }
 
-    fn own_home(&self, home: Option<&Path>) -> Vec<(PathBuf, bool)> {
-        if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|dir| !dir.is_empty()) {
-            return vec![(PathBuf::from(dir), true)];
+    /// Claude Code runs hooks, plugins, MCP servers and scripts that its settings, plugins and
+    /// `.claude.json` name, so those stay read-only. It writes its transcripts in `projects`, and
+    /// the scripts its shell sources in `session-env` and `shell-snapshots`, which stay in the jail.
+    fn own_home(&self, home: Option<&Path>) -> Vec<(PathBuf, Own)> {
+        let named = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|dir| !dir.is_empty());
+        let Some(dir) = named
+            .clone()
+            .map(PathBuf::from)
+            .or_else(|| Some(home?.join(".claude")))
+        else {
+            return Vec::new();
+        };
+        let mut own = vec![
+            (dir.join("projects"), Own::Write),
+            (dir.join("session-env"), Own::Scratch),
+            (dir.join("shell-snapshots"), Own::Scratch),
+            (dir.clone(), Own::Read),
+        ];
+        if named.is_none() {
+            own.extend(home.map(|home| (home.join(".claude.json"), Own::File)));
         }
-        home.map(|home| {
-            vec![
-                (home.join(".claude"), true),
-                (home.join(".claude.json"), false),
-            ]
-        })
-        .unwrap_or_default()
+        own
     }
 
     fn home_env(&self) -> &'static [&'static str] {
@@ -807,9 +839,9 @@ impl Harness for ClaudeCode {
 pub struct Codex;
 
 impl Harness for Codex {
-    fn own_home(&self, home: Option<&Path>) -> Vec<(PathBuf, bool)> {
+    fn own_home(&self, home: Option<&Path>) -> Vec<(PathBuf, Own)> {
         named_or("CODEX_HOME", home, ".codex")
-            .map(|dir| vec![(dir, true)])
+            .map(|dir| vec![(dir, Own::Write)])
             .unwrap_or_default()
     }
 

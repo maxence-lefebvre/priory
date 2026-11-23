@@ -285,7 +285,7 @@ mean the same file on both sides.
 | `$HOME` | a new tmpfs, with only the binds below |
 | the task's worktree | read-write |
 | the clone's git folder under `repos/` | read-write, since a commit writes there |
-| `~/.claude` and `~/.claude.json`, or the harness's own home for Codex | read-write: the login, sessions, transcripts and trusted folders |
+| `~/.claude` and `~/.claude.json`, or the harness's own home for Codex | read-write: the login, sessions, transcripts and trusted folders. A later change made the clone's config and hooks and Claude's home read-only: see [sandboxes.md](../daemon/sandboxes.md#what-a-jailed-run-sees) |
 | the run's MCP configuration file and Priory's binary | read-only |
 | the daemon's socket folder and `signals.spool` | read-write |
 | the sandbox's `read` and `write` paths | as declared |
@@ -329,7 +329,9 @@ home and the paths the factory names, and holds only the variables it names. It 
 - **The socket.** The daemon's socket is bound in, and a line written to it with `nc` is still a
   call no guard reads, as [guard.md](../daemon/guard.md#how-a-command-is-read) says. Later slice 2
   closes this.
-- **The clone.** The run can write other tasks' refs in the shared clone. Open question 3.
+- **The clone.** The run can write other tasks' refs in the shared clone. Open question 3. Its
+  config, hooks and worktree links are read-only, so the daemon's git on the host runs nothing
+  the run wrote.
 - **The Claude login.** The run can read its own harness's credentials, which every option but a
   proxy that injects them shares.
 

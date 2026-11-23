@@ -4,7 +4,7 @@
 
 use crate::daemon::repo_of;
 use priory_factory::factory::Factory;
-use priory_runtime::script;
+use priory_runtime::{runtime::git, script};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -630,9 +630,7 @@ struct Job {
 impl Job {
     /// Checks out the commit, searches its tracked files, runs the command and reads its files.
     fn record(self) -> Recorded {
-        let added = Command::new("git")
-            .arg("-C")
-            .arg(&self.clone)
+        let added = git(&self.clone)
             .args(["worktree", "add", "--quiet", "--detach"])
             .arg(&self.scratch)
             .arg(&self.commit)
@@ -649,9 +647,7 @@ impl Job {
             ),
             Err(why) => Recorded::Ended("failed", format!("cannot run git: {why}")),
         };
-        let _ = Command::new("git")
-            .arg("-C")
-            .arg(&self.clone)
+        let _ = git(&self.clone)
             .args(["worktree", "remove", "--force"])
             .arg(&self.scratch)
             .output();
@@ -760,11 +756,7 @@ fn tracked_secret(checkout: &Path, secrets: &[Secret]) -> Option<String> {
     if secrets.is_empty() {
         return None;
     }
-    let listed = Command::new("git")
-        .arg("-C")
-        .arg(checkout)
-        .args(["ls-files", "-z"])
-        .output();
+    let listed = git(checkout).args(["ls-files", "-z"]).output();
     let listed = match listed {
         Ok(output) if output.status.success() => output.stdout,
         Ok(output) => {

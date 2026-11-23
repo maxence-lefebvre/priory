@@ -526,9 +526,7 @@ fn origin(scratch: &Path, home: &Path, repo: &str, start: &str) -> Result<PathBu
     }
     let bare = scratch.join("origin").join(format!("{repo}.git"));
     let git = |dir: &Path, args: &[&str]| -> Result<(), String> {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(dir)
+        let output = priory_runtime::runtime::git(dir)
             .args(args)
             .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(Stdio::null())

@@ -312,6 +312,158 @@ fn a_real_jail_hides_the_home_keeps_the_worktree_and_reaches_the_daemon() {
     }
 }
 
+/// A probe for the fake `claude` that plants a `pre-push` hook in the clone's hooks folder, and in
+/// a folder of its own that it names in `core.hooksPath`. Each hook leaves a file in the fake's
+/// folder when it runs.
+fn hooks(setup: &Setup) -> String {
+    let fake = setup.dir.join("fake").display().to_string();
+    format!(
+        "common=$(git rev-parse --path-format=absolute --git-common-dir)\n\
+         mkdir -p \"$common/hooks\" {fake}/hooks\n\
+         printf '#!/bin/sh\\ntouch {fake}/clone-hook-ran\\n' > \"$common/hooks/pre-push\" && echo planted the clone hook\n\
+         printf '#!/bin/sh\\ntouch {fake}/path-hook-ran\\n' > {fake}/hooks/pre-push\n\
+         chmod +x \"$common/hooks/pre-push\" {fake}/hooks/pre-push\n\
+         git config core.hooksPath {fake}/hooks && echo set hooksPath\n"
+    )
+}
+
+/// Starts a jailed task on `OPEN_PR` whose agent runs `probe`, and opens its pull request.
+fn opened_after(setup: &mut Setup, probe: &str, variables: &[(&str, &str)]) -> String {
+    fs::write(setup.dir.join("factory/factory.toml"), sandboxes(setup)).unwrap();
+    fs::write(
+        setup.dir.join("factory/workflows/implement.toml"),
+        format!("sandbox = \"jail\"\n{OPEN_PR}"),
+    )
+    .unwrap();
+    fs::write(setup.dir.join("fake/probe"), probe).unwrap();
+    setup.calls(&[passed_with_evidence()]);
+    setup.publish(&requested(42));
+    setup.start_with(Path::new(env!("CARGO_BIN_EXE_priory")), variables);
+    setup.until("asks", |rows| rows.len() == 1);
+    setup.gone("priory-1");
+    let commit = setup.commit(1, "widget.txt");
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    let actions = setup.until("actions", |rows| rows.len() == 1);
+    assert_eq!(actions[0][4], "opened", "{actions:?}");
+    commit
+}
+
+#[test]
+fn a_hook_a_jailed_agent_plants_never_runs_in_the_daemons_push() {
+    let mut setup = Setup::new("jail-hooks");
+
+    let probe = hooks(&setup);
+
+    let commit = opened_after(&mut setup, &probe, &VARIABLES);
+
+    let probe = fs::read_to_string(setup.dir.join("fake/probe.log")).unwrap();
+    assert!(
+        probe.contains("planted the clone hook\nset hooksPath"),
+        "{probe}"
+    );
+    assert_eq!(setup.pushed("priory/1"), commit);
+    for ran in ["clone-hook-ran", "path-hook-ran"] {
+        assert!(!setup.dir.join("fake").join(ran).exists(), "{ran}");
+    }
+    let git = fs::canonicalize(setup.dir.join("home/repos/owner/repo/.git")).unwrap();
+    let run = &fake_log(&setup, "bwrap.log")[1];
+    for read in [
+        "config",
+        "hooks",
+        "commondir",
+        "worktrees",
+        "worktrees/1/commondir",
+    ] {
+        let path = git.join(read).display().to_string();
+        assert!(
+            run.contains(&format!("--ro-bind {path} {path}")),
+            "{read}\n{run}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs bubblewrap"]
+fn a_real_jail_leaves_nothing_the_host_runs_and_hides_the_state_file() {
+    let mut setup = Setup::new("jail-real-hooks");
+    real(&setup);
+    let fake = setup.dir.join("fake").display().to_string();
+    let claude = setup.dir.join("claude");
+    fs::create_dir_all(&claude).unwrap();
+    fs::write(claude.join("settings.json"), "{}\n").unwrap();
+    let claude = claude.display().to_string();
+    let state = setup.dir.join("priory.db").display().to_string();
+    let probe = format!(
+        "{}printf '#!/bin/sh\\ntouch {fake}/ssh-ran\\n' > {fake}/ssh && chmod +x {fake}/ssh\n\
+         git config core.sshCommand {fake}/ssh || echo sshCommand refused\n\
+         git config remote.origin.pushurl ssh://git@example.invalid/x || echo pushurl refused\n\
+         echo '{{\"hooks\":{{}}}}' > {claude}/settings.json || echo settings refused\n\
+         echo /x > \"$common/commondir\" || echo commondir refused\n\
+         echo t > {claude}/projects/probe.jsonl && echo wrote a transcript\n\
+         ls {state} && echo saw the state file\n",
+        hooks(&setup)
+    );
+    let home = setup.dir.join("user").display().to_string();
+    let mut variables = VARIABLES.to_vec();
+    variables.push(("HOME", &home));
+
+    let commit = opened_after(&mut setup, &probe, &variables);
+
+    let probe = fs::read_to_string(setup.dir.join("fake/probe.log")).unwrap();
+    for refused in [
+        "sshCommand refused",
+        "pushurl refused",
+        "commondir refused",
+        "settings refused",
+    ] {
+        assert!(probe.contains(refused), "{refused}\n{probe}");
+    }
+    assert!(probe.contains("wrote a transcript"), "{probe}");
+    for done in [
+        "planted the clone hook",
+        "set hooksPath",
+        "saw the state file",
+    ] {
+        assert!(!probe.contains(done), "{done}\n{probe}");
+    }
+    assert_eq!(setup.pushed("priory/1"), commit);
+    for ran in ["clone-hook-ran", "path-hook-ran", "ssh-ran"] {
+        assert!(!setup.dir.join("fake").join(ran).exists(), "{ran}");
+    }
+    let clone = setup.dir.join("home/repos/owner/repo");
+    let config = fs::read_to_string(clone.join(".git/config")).unwrap();
+    assert!(
+        !config.contains("example.invalid") && !config.contains(&fake),
+        "{config}"
+    );
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("claude/settings.json")).unwrap(),
+        "{}\n"
+    );
+}
+
+#[test]
+fn a_jailed_run_keeps_the_clones_own_worktree_config() {
+    let mut setup = Setup::new("jail-keeps-config");
+    jailed(&setup);
+    setup.calls(&[result("passed"), result("passed")]);
+    setup.publish(&requested(1));
+    setup.start();
+    setup.until("tasks", |rows| with(rows, 4, "done") == 1);
+    let git = setup.dir.join("home/repos/owner/repo/.git");
+    let kept = "[core]\n\tsparseCheckout = true\n";
+    fs::write(git.join("config.worktree"), kept).unwrap();
+
+    setup.publish(&requested(2));
+
+    setup.until("tasks", |rows| with(rows, 4, "done") == 2);
+    assert_eq!(
+        fs::read_to_string(git.join("config.worktree")).unwrap(),
+        kept
+    );
+}
+
 #[test]
 fn a_jailed_tasks_lead_answers_its_ask_in_the_tasks_jail() {
     let mut setup = hands_off("jail-lead", &format!("sandbox = \"jail\"\n{WORKFLOW}"));
