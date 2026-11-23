@@ -162,8 +162,8 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   draw with their [links](#links).
 
 The detail shows the sections Why, Brief, Plan, PR, Trace, History and Command. Brief shows the
-request and the `groom` step's result, Plan the `plan` step's result or else the task's
-`progress`, PR the pull request's title, branches, state, review and checks, then the task's stack when it
+request and the `groom` step's result, Plan the `plan` step's result, or else the latest result of a step
+whose name starts with `plan-`, or else the task's `progress`, PR the pull request's title, branches, state, review and checks, then the task's stack when it
 has two or more pull requests (see [Stacks](#stacks)), and Trace each run with its
 span, outcome and tokens. A check shows a check, a cross, a clock while it has no conclusion, or a
 dash when skipped or neutral; review and check states read in plain words, such as "changes

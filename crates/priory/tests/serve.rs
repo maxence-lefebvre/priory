@@ -1468,6 +1468,55 @@ fn a_task_endpoint_shows_its_brief_plan_pull_request_and_each_runs_tokens() {
     assert_eq!(task["runs"][0]["tokens"], Value::Null);
 }
 
+/// The plan a task endpoint returns once task 1 has a passed result for each of `steps`, in order.
+fn plan_after(name: &str, steps: &[&str]) -> Value {
+    let mut setup = Setup::new(name, SERVE);
+    setup.seed();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    for (run, step) in (1..).zip(steps) {
+        db.execute(
+            "INSERT INTO runs (id, task, step, tmux, session, started, ended, ended_as)
+             VALUES (?1, 1, ?2, 'tmux', 's', '2026-11-17T10:00:00Z', '2026-11-17T10:30:00Z', 'moved')",
+            rusqlite::params![run, step],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO results (run, task, step, outcome, summary) VALUES (?1, 1, ?2, 'passed', ?3)",
+            rusqlite::params![run, step, format!("Result of {step}.")],
+        )
+        .unwrap();
+    }
+    let address = setup.start(&["serve", &setup.factory()]);
+    api(&address, "/api/tasks/1")["plan"].clone()
+}
+
+#[test]
+fn a_plan_implementation_result_is_the_tasks_plan() {
+    let plan = plan_after(
+        "task-plan-prefix",
+        &["groom", "plan-implementation", "approve-implementation"],
+    );
+
+    assert_eq!(plan["step"], "plan-implementation");
+    assert_eq!(plan["summary"], "Result of plan-implementation.");
+    assert_eq!(plan["run"], 2);
+}
+
+#[test]
+fn a_plan_step_result_wins_over_a_later_plan_prefixed_one() {
+    let plan = plan_after("task-plan-exact", &["groom", "plan", "plan-review"]);
+
+    assert_eq!(plan["step"], "plan");
+    assert_eq!(plan["run"], 2);
+}
+
+#[test]
+fn a_step_whose_name_only_contains_plan_is_no_plan() {
+    let plan = plan_after("task-plan-none", &["groom", "planner", "replan"]);
+
+    assert_eq!(plan, Value::Null);
+}
+
 #[test]
 fn a_task_without_a_groom_or_plan_step_or_pull_request_shows_none() {
     let mut setup = Setup::new("task-detail-empty", SERVE);
