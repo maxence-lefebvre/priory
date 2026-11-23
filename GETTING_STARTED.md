@@ -9,9 +9,9 @@ that you approved.
 
 You need:
 
-- Linux. Priory's test suite runs on Linux only. With a systemd user session, every agent runs
-  in a slice that caps its CPU and memory; without one, agents still run (see
-  [agents-slice.md](docs/daemon/agents-slice.md)).
+- Linux, or macOS on Apple silicon. CI runs Priory's test suite on Linux only. With a systemd
+  user session, every agent runs in a slice that caps its CPU and memory; without one, as on
+  macOS, agents still run (see [agents-slice.md](docs/daemon/agents-slice.md)).
 - On `PATH`: `git`, `tmux`, `openssl`, `gh` logged in to GitHub, and `claude`, logged in. The agent of this
   tutorial runs Claude Code, its harness. To run Codex instead, set `harness = "codex"` in step 2 and read
   [codex.md](docs/daemon/codex.md).

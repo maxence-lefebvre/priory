@@ -1,6 +1,7 @@
 use crate::runtime::{OWN_GIT, clone_of, git, run};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// A folder under `PRIORY_HOME/worktrees/<owner>/<name>/`, named for a task.
 pub struct Found {
@@ -141,6 +142,15 @@ fn occupied(path: &Path) -> bool {
     let Ok(path) = fs::canonicalize(path) else {
         return false;
     };
+    if cfg!(target_os = "macos") {
+        let listed = run(Command::new("lsof").args(["-w", "-a", "-d", "cwd", "-Fpn"]));
+        return cwds_of_lsof(&listed.unwrap_or_default())
+            .into_iter()
+            // A process gone since `lsof` listed it, such as a short `sleep`, holds nothing.
+            .any(|(pid, cwd)| {
+                cwd.starts_with(&path) && !own_macos(pid) && ps(pid, "pid=").is_some()
+            });
+    }
     fs::read_dir("/proc")
         .into_iter()
         .flatten()
@@ -149,6 +159,53 @@ fn occupied(path: &Path) -> bool {
             fs::read_link(process.path().join("cwd")).is_ok_and(|cwd| cwd.starts_with(&path))
                 && !own(&process.path())
         })
+}
+
+/// The pid and working directory of each process in the fields `lsof -Fpn` printed.
+fn cwds_of_lsof(listed: &str) -> Vec<(u32, PathBuf)> {
+    let mut pid = None;
+    let mut cwds = Vec::new();
+    for line in listed.lines() {
+        if let Some(process) = line.strip_prefix('p') {
+            pid = process.parse().ok();
+        } else if let (Some(pid), Some(cwd)) = (pid, line.strip_prefix('n')) {
+            cwds.push((pid, PathBuf::from(cwd)));
+        }
+    }
+    cwds
+}
+
+/// As `own` on macOS, which shows no process's environment: the process is a child of a Priory
+/// process that runs `git`, or descends from such a child.
+fn own_macos(pid: u32) -> bool {
+    let mut below = pid;
+    // A bound on the walk, since pids can be reused while it reads.
+    for _ in 0..64 {
+        let Some(parent) = ps(below, "ppid=").and_then(|parent| parent.parse::<u32>().ok()) else {
+            return false;
+        };
+        if parent <= 1 {
+            return false;
+        }
+        if parent == std::process::id() || is_priory(parent) {
+            return ps(below, "args=").is_some_and(|args| runs_git(&args));
+        }
+        below = parent;
+    }
+    false
+}
+
+/// Whether a command line runs `git`, directly or as a script its interpreter runs.
+fn runs_git(args: &str) -> bool {
+    args.split_whitespace()
+        .take(2)
+        .any(|word| Path::new(word).file_name() == Some("git".as_ref()))
+}
+
+/// One `field` of the live process `pid`, as `ps -o` prints it.
+fn ps(pid: u32, field: &str) -> Option<String> {
+    let line = run(Command::new("ps").args(["-o", field, "-p", &pid.to_string()])).ok()?;
+    Some(line.trim().to_owned()).filter(|value| !value.is_empty())
 }
 
 /// Whether the process is a git command Priory runs, or a child of one, which ends on its own: its
@@ -203,6 +260,10 @@ fn parent(process: &Path) -> Option<u32> {
 /// Whether process `pid` runs the same program as this process, Priory, even one replaced on disk
 /// since it started.
 fn is_priory(pid: u32) -> bool {
+    if cfg!(target_os = "macos") {
+        let own = ps(std::process::id(), "comm=");
+        return own.is_some() && own == ps(pid, "comm=");
+    }
     let program = |link: PathBuf| {
         fs::read_link(link).ok().map(|path| {
             let path = path.to_string_lossy().into_owned();
@@ -223,4 +284,34 @@ pub fn remove(home: &Path, found: &Found) -> Result<(), String> {
         run(git(&clone).args(["merge-base", "--is-ancestor", &branch, "origin/HEAD"])).is_ok();
     let delete = if merged { "-D" } else { "-d" };
     run(git(&clone).args(["branch", delete, &branch])).map(drop)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    #[test]
+    fn cwds_of_lsof_pairs_each_pid_with_its_working_directory() {
+        assert_eq!(
+            cwds_of_lsof("p12\nfcwd\nn/a b\np13\nfcwd\nn/\n"),
+            [(12, PathBuf::from("/a b")), (13, PathBuf::from("/"))]
+        );
+        assert_eq!(cwds_of_lsof("n/no pid\npx\nn/bad pid\n"), []);
+    }
+
+    #[test]
+    fn runs_git_reads_the_program_or_the_script_its_interpreter_runs() {
+        assert!(runs_git("/opt/homebrew/bin/git -C /w status"));
+        assert!(runs_git("bash /tests/fake/git -C /w status"));
+        assert!(!runs_git("sleep 60 git"));
+        assert!(!runs_git("/bin/gitk"));
+    }
+
+    proptest! {
+        #[test]
+        fn cwds_of_lsof_reads_any_text_without_panicking(listed in "[pn0-9/a\\n]{0,200}") {
+            let _ = cwds_of_lsof(&listed);
+        }
+    }
 }

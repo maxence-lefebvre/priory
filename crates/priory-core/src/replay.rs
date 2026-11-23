@@ -1035,17 +1035,19 @@ mod tests {
         let pid = String::from_utf8_lossy(&pid.stdout).trim().to_owned();
         // A dead process reads Z until its parent reaps it, then X for a moment before it is gone.
         let running = || {
-            fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
-                !stat
-                    .rsplit_once(") ")
-                    .is_some_and(|(_, state)| state.starts_with(['Z', 'X']))
-            })
+            Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid])
+                .output()
+                .is_ok_and(|ps| {
+                    let state = String::from_utf8_lossy(&ps.stdout);
+                    ps.status.success() && !state.trim().starts_with(['Z', 'X'])
+                })
         };
         assert!(running(), "no tmux server {pid}");
 
         drop(Scratch {
             dir: dir.clone(),
-            env: Vec::new(),
+            env: vec![("PATH".into(), std::env::var_os("PATH").unwrap_or_default())],
             daemon: None,
         });
 
