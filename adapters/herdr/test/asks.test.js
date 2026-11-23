@@ -497,7 +497,8 @@ test("an untitled ask with a 12-line question heads its row and detail with a sh
   assert.deepEqual(detail.questionSpans, [{ text: "FND-2434 asks at approve-implementation" }]);
   assert.equal(detail.why.question, LONG);
   assert.equal(detail.why.questionSpans.map((span) => span.text).join(""), LONG);
-  assert.deepEqual(detail.why.questionSpans.find((span) => span.url), { text: "pull/812", url: "https://github.com/acme/app/pull/812" });
+  // The bare URL links whole, so the `pull/N` rule does not split it.
+  assert.deepEqual(detail.why.questionSpans.filter((span) => span.url), [{ text: "https://github.com/acme/app/pull/812", url: "https://github.com/acme/app/pull/812" }]);
   assert.equal(detail.why.text, null);
   const row = asksList([long], { view: "all", now }).sections.flatMap((section) => section.rows)[0];
   assert.equal(row.text, "FND-2434 asks at approve-implementation");
