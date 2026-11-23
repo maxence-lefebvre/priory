@@ -26,7 +26,8 @@ lives in `adapters/github/`, and its [README](../../adapters/github/README.md) s
    `adapters/github` in a clone.
 3. Open `chrome://extensions` (or `edge://extensions`), turn on Developer mode, choose Load
    unpacked and pick that folder.
-4. Open a pull request on github.com. The Priory strip appears above its tabs.
+4. Open a pull request on github.com. The Priory strip appears above its tabs, on the classic
+   page and on GitHub's new pull request page.
 
 After a `git pull`, or after you unzip a new release into the same folder, choose the reload
 button on the extension's card.
@@ -41,7 +42,11 @@ button on the extension's card.
 3. Paste the token: the value of `PRIORY_TOKEN`, or of the variable `[serve] token_env` names.
 4. Choose Connect, and allow the browser to let the extension reach that address.
 
-The panel then reads the task. Sign out is at the bottom of the Task tab. It forgets the token and
+The panel then reads the task. You can also sign in from the browser's side panel: open it, pick
+Priory on GitHub, and fill in the same form. A sign-in in either place signs in every Priory frame
+in the browser.
+
+Sign out is at the bottom of the Task tab. It forgets the token and
 everything the extension kept: each pull request's last read, an unsent answer and your quiz
 answers. A `401` from the daemon signs you out too.
 
@@ -70,6 +75,13 @@ answers. A `401` from the daemon signs you out too.
 
 When a write loses its connection, the daemon may have applied it. The panel keeps the draft, says
 so, and clears the warning once a read shows the answer, or when you send again.
+
+## If the strip is not above the tabs
+
+When the extension finds no tab row on a pull request page, it draws the strip at the top of the
+page instead, without the Guide tab. The panel still opens from the strip. After 3 s it also logs
+one warning in the page's DevTools console: `Priory: no tab row found on <the page's URL>`. GitHub
+changed its page: report the URL, the warning and which tab you were on.
 
 ## The review guide block
 

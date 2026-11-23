@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, stillArmed, submitted, takesText, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
@@ -11,10 +11,10 @@ import { KINDS, edgeStyle, historyRows, lockBadge, nodeShape, timeline, ungatedP
 import { droppedNote, droppedWhy, emptyDetail, eventWords, handled, neverOwned, sinceWords, routeAction, unheardActs, unheardNote, unroutedNote } from "./inbox.js";
 import { editBody, issueName, laneLayout, momentWords, stages, successors } from "./batches.js";
 import { EARLIER_CAP, KEYS, keyboardSession, paintRows, sayLine, screenRows, screenWatch } from "./terminal.js";
-import { actionNote, arrivalAsk, batchParts, capsuleWords, countHead, countWords, deskBanners, dueParts, plural, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups } from "./desk.js";
+import { actionNote, arrivalAsk, batchParts, capsuleWords, countHead, countWords, deskBanners, dueParts, plural, memoryNote, memoryTag, mergeSince, nextLink, onRoom, progressView, rowAction, sectionInView, sinceGroups, taskRepo } from "./desk.js";
 import { TASK_VIEWS, elsewhere, filtered, olderPart, remoteActs, remoteId, remoteSent, taskFacets, taskLabel, taskViews, triageWords, workStep } from "./tasks.js";
 import { RUN_FACETS, RUN_VIEWS, duration, runState, runViews, tokenText } from "./runs.js";
-import { PANELS, backTo, pageTitle } from "./pages.js";
+import { PANELS, TYPED_FIELDS, backTo, pageTitle, taskRead } from "./pages.js";
 import { QUEUE_VIEWS, moveOptions, queueBands, waitReason } from "./queue.js";
 
 const ICONS = {
@@ -95,6 +95,8 @@ function html(strings, ...values) {
 }
 // Agent text with the factory's autolinks; `linked` escapes it.
 const autolinked = (text, repo) => raw(linked(text ?? "", state.data?.links || [], repo ?? null));
+// A Desk row's text links `#n` in its task's repository.
+const repoOf = (task) => taskRepo(state.data?.tasks, task);
 const md = (text, repo) => html`<div class="md">${raw(markdown(text, state.data?.links || [], repo ?? null))}</div>`;
 const icon = (name, size = "") => raw(`<svg class="ico ${size}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`);
 
@@ -150,9 +152,9 @@ const state = {
   rendered: 0,
   scrolls: new Map(),
   observers: [],
-  // The answer waiting out its Undo, then in flight: { id, text, timer, sending }.
+  // The answer in flight: { id, text }.
   pending: null,
-  // The command option the first tap armed, until the second tap or 4 s: { id, text, at, timer }.
+  // The option the first tap armed, until the second tap sends it or 4 s pass: { id, revision, text, at, timer }.
   armed: null,
   // A task's cancel or revive armed by its first tap, until the second tap or 4 s: { task, act, at, timer }.
   taskArmed: null,
@@ -283,7 +285,7 @@ async function refresh() {
     // The Costs panel reads its own reports; a refresh keeps the last ones.
     state.data = { views, links, desk, asks, bands: asksList.bands, queue, tasks, runs, older, report, reports, spend: state.data?.spend ?? null, flows: state.data?.flows ?? null };
     acceptReport();
-    state.task = null;
+    if (state.task) state.task.stale = true;
     if (state.batch) state.batch.stale = true;
     state.snapshot = snapshot;
     keep();
@@ -424,7 +426,7 @@ function itemRow(item) {
   return html`<div class="row">
     ${tile(kind)}
     <span class="l1">${key}<span>${item.step || ""}</span><span>${item.kind}</span>${item.task && item.kind !== "batch" ? prsTag({}, item.task) : ""}<span class="age">${timeTag(item.since)}</span></span>
-    <span class="l2 r t-${role(kind)}">${autolinked(line, null)}</span>${next ? html`<span class="l3">${autolinked(next, null)}</span>` : ""}${stopped ? taskActs(item.task, item.kind) : rowActs(item)}</div>`;
+    <span class="l2 r t-${role(kind)}">${autolinked(line, repoOf(item.task))}</span>${next ? html`<span class="l3">${autolinked(next, repoOf(item.task))}</span>` : ""}${stopped ? taskActs(item.task, item.kind) : rowActs(item)}</div>`;
 }
 
 // The one row of every memory candidate that waits, which opens their review list.
@@ -657,7 +659,7 @@ function nextCard(model) {
   const verb = ask ? "Answer…" : href?.startsWith("#") ? "See the banner" : "Open task";
   const button = item.kind === "todo" ? todoDone(item.id, "next") : href ? html`<a class="btn ${ask ? "primary" : "secondary"}" href="${href}">${verb}</a>` : "";
   return html`<section class="next" aria-label="The next thing"><p class="l1">${tile(kind, "sm")}<span class="mono">${taskLabel(item.key)}</span><span>${item.step || ""}</span><span class="age">${timeTag(item.since)}</span></p>
-    <p class="q">${item.kind === "todo" ? todoText(item) : autolinked(text, ask?.repo || task?.repo)}</p>${ask && routedMark(ask) ? html`<p class="why t-live">${routedMark(ask)}</p>` : ""}${runnerOf(ask) ? html`<p class="why">${runnerTag(ask)} ${sentLine(ask)}</p>` : ""}<p class="why t-${role(kind)}">${item.why}</p>
+    <p class="q">${item.kind === "todo" ? todoText(item) : autolinked(text, ask?.repo || task?.repo)}</p>${ask && routedMark(ask) ? html`<p class="why t-live">${routedMark(ask)}</p>` : ""}${runnerOf(ask) ? html`<p class="why">${runnerTag(ask)} ${sentLine(ask)}</p>` : ""}<p class="why t-${role(kind)}">${autolinked(item.why, ask?.repo || task?.repo)}</p>
     ${ask?.recommendation ? html`<p class="rec">${icon("corner-down-right", "s15")}<span>${ask.recommendation}</span></p>` : ""}
     ${button}</section>`;
 }
@@ -670,7 +672,7 @@ function sinceYouLooked() {
   const groups = sinceGroups(events);
   const body = groups.length
     ? groups.map((group) => html`<div class="sgroup">${group.task ? html`<a class="mono" href="/tasks/${group.task}" title="task ${group.task}">${taskLabel(group.key)}</a>` : html`<span class="mono">factory</span>`}
-      <ol>${group.events.map((event) => html`<li>${timeTag(event.time)}<span>${sinceWords(event.what)}</span></li>`)}</ol></div>`)
+      <ol>${group.events.map((event) => html`<li>${timeTag(event.time)}<span>${autolinked(sinceWords(event.what), repoOf(event.task ?? group.task))}</span></li>`)}</ol></div>`)
     : null;
   const shown = body ? html`<div class="strip since" data-since>${body}</div>` : html`<p class="empty" data-since>Nothing happened since you looked.</p>`;
   return html`<div class="sec">Since you looked<span>${from ? `since ${today(from) ? clock(from) : date(from)}` : "latest 50"}</span></div>${shown}`;
@@ -854,7 +856,7 @@ function deskTable(model, selected) {
     <td>${stateWord("memories")}</td><td class="mono"></td><td></td><td class="q full"><span>${plural(item.candidates?.length ?? 0, "memory candidate")}: ${(item.candidates || []).map((candidate) => candidate.name).join(", ")}</span>${fold(review)}</td>
     <td class="recw">${review}</td><td class="r">${timeTag(item.since)}</td></tr>` : html`<tr>
     <td>${stateWord(item.kind === "prompt" ? "prompt" : item.kind)}</td><td class="mono">${item.kind === "batch" ? html`<a href="/batches/${item.id}">${taskLabel(item.key)}</a>` : ["blocked", "failed"].includes(item.kind) ? html`<a href="/tasks/${item.task}" title="task ${item.task}">${taskLabel(item.key)}</a>` : taskLabel(item.key)}</td><td>${item.step || ""}</td>
-    <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${item.what}</span>${fold(itemActs(item))}</td><td class="recw">${itemActs(item)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
+    <td class="q full t-${role(item.kind)}">${item.task ? prsTag({}, item.task) : ""}<span>${autolinked(item.what, repoOf(item.task))}</span>${fold(itemActs(item))}</td><td class="recw">${itemActs(item)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const todoLine = (item) => html`<tr>
     <td>${stateWord("todo")}</td><td class="mono"></td><td></td><td class="q full"><span>${todoText(item)}</span>${fold(todoDone(item.id))}</td><td class="recw">${todoDone(item.id)}</td><td class="r">${timeTag(item.since)}</td></tr>`;
   const group = (title, count) => html`<tr class="grp"><td colspan="6">${title}<span>${count}</span></td></tr>`;
@@ -1093,7 +1095,8 @@ const selectedAsk = () => {
   return first === "asks" && id ? decodeURIComponent(id) : null;
 };
 
-// One button per option, as the detail and the answer sheet draw them. A command option armed by its first tap shows its command.
+// One button per option, as the detail and the answer sheet draw them. The first tap arms an option;
+// an armed command option also shows its command.
 function optionList(ask, wide) {
   const pending = state.pending?.id === ask.id ? state.pending : null;
   const armed = state.armed?.id === ask.id && state.armed.revision === ask.revision ? state.armed.text : null;
@@ -1105,14 +1108,16 @@ function optionList(ask, wide) {
     const chosen = pending?.text === option;
     const off = locked || (pending && !chosen);
     const notes = [recommended && "Recommended", runs && "Runs a command"].filter(Boolean).join(". ");
-    const label = armed === option
-      ? html`<span><small>Tap again to run</small>${option}<small>Cancels in 4 s</small></span><span class="drain" aria-hidden="true"></span>`
-      : html`<span>${option}${notes ? html`<small>${notes}</small>` : ""}</span>`;
+    const label = armed === option ? armedLabel(option, runs) : html`<span>${option}${notes ? html`<small>${notes}</small>` : ""}</span>`;
     const button = html`<button class="opt ${recommended ? "rec-opt" : ""} ${chosen ? "chosen" : ""} ${armed === option ? "armed" : ""}" data-option="${i}" data-answer="${i}" aria-disabled="${off || pending ? "true" : "false"}" ${locked ? raw('aria-describedby="answer-locked"') : ""}>
       ${chosen ? icon("check", "s20") : ""}${label}${wide ? html`<kbd>${i + 1}</kbd>` : ""}</button>`;
-    return armed === option ? html`${button}${commandBlock(ask, bound)}` : button;
+    return armed === option && runs ? html`${button}${commandBlock(ask, bound)}` : button;
   });
 }
+
+// An armed option: what the second tap does, the option, and the ring that drains over ARM_MS.
+const armedLabel = (option, runs) =>
+  html`<span><small>Tap again to ${runs ? "run" : "send"}</small>Confirm: ${option}<small>Cancels in ${ARM_MS / 1000} s</small></span><span class="drain" aria-hidden="true"></span>`;
 
 function askDetail(id, wide) {
   const ask = state.data.asks.find((candidate) => String(candidate.id) === id);
@@ -1214,13 +1219,13 @@ function askDetail(id, wide) {
   const history = html`<section class="sect" id="history"><div class="sh">${icon("history", "s15")}Answer history</div><ol class="hist">${historyItems}</ol></section>`;
   const recommended = options.find((option) => option === ask.recommendation) || options[0];
   const sending = pending
-    ? html`<div class="sending" role="status"><span>Sending <b>"${pending.text}"</b></span>${pending.sending ? "" : html`<button class="btn secondary" data-action="undo">Undo</button>`}</div>`
+    ? html`<div class="sending" role="status"><span>Sending <b>"${pending.text}"</b></span></div>`
     : "";
   const barArmed = armed !== null && armed === recommended;
   const bar = !wide && !pending && ask.state === "open" && options.length
-    ? html`<div class="abar" hidden>${barArmed ? commandBlock(ask, bound) : ""}<button class="btn secondary" data-action="options">${icon("chevron-up", "s15")}${plural(options.length, "option")}</button>
-      <button class="btn primary ${barArmed ? "armed" : ""}" data-answer="${options.indexOf(recommended)}" aria-disabled="${locked ? "true" : "false"}">${barArmed
-        ? html`<span><small>Tap again to run</small>${recommended}<small>Cancels in 4 s</small></span><span class="drain" aria-hidden="true"></span>`
+    ? html`<div class="abar" hidden>${barArmed && runsCommand(ask, recommended) ? commandBlock(ask, bound) : ""}<button class="btn secondary" data-action="options">${icon("chevron-up", "s15")}${plural(options.length, "option")}</button>
+      <button id="bar-answer" class="btn primary ${barArmed ? "armed" : ""}" data-answer="${options.indexOf(recommended)}" aria-disabled="${locked ? "true" : "false"}">${barArmed
+        ? armedLabel(recommended, runsCommand(ask, recommended))
         : html`<span>${recommended}</span><small>${[recommended === ask.recommendation ? "Recommended" : "First option", runsCommand(ask, recommended) && "Runs a command"].filter(Boolean).join(". ")}</small>`}</button>
       ${locked === "offline" ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : ""}</div>`
     : "";
@@ -1231,20 +1236,23 @@ function askDetail(id, wide) {
 }
 
 // The ask's task as /api/tasks/{id} serves it, read once per ask and again after each refresh.
+let taskCalls = 0;
 function taskOf(ask) {
   if (!ask.task || runnerOf(ask)) return null;
-  if (state.task?.id === ask.task) return state.task.body;
-  state.task = { id: ask.task, body: null };
+  const { task, read } = taskRead(state.task, ask.task);
+  if (!read) return task.body;
+  const call = ++taskCalls;
+  state.task = { ...task, call };
   api(`/api/tasks/${ask.task}`).then((body) => {
-    if (state.task?.id !== ask.task) return;
+    if (state.task?.call !== call) return;
     state.task.body = body;
     render();
   }, (error) => {
-    if (state.task?.id !== ask.task) return;
+    if (state.task?.call !== call) return;
     state.task.error = error.message;
     render();
   });
-  return null;
+  return state.task.body;
 }
 
 // A batch as /api/batches/{id} serves it: by id on its page, by its planning task's key in a go ask.
@@ -1835,8 +1843,6 @@ function prStackList(stack, latest) {
     <span class="${pull.next ? "t-live" : ""}">${pull.next ? `${pull.state}, next to merge` : pull.state}</span></li>`)}</ol>`;
 }
 
-// An agent's command runs on the options in its `runs`; an outside ask's string command never runs.
-const runsCommand = (ask, option) => Array.isArray(ask.command?.runs) && ask.command.runs.includes(option);
 
 // The argv word by word, each in its own box, so a space, a quote or an empty word shows as it is.
 function commandBlock(ask, note) {
@@ -1859,7 +1865,6 @@ function ranLine(ran) {
 }
 
 // Writes: each is the twin of a CLI verb, sent with the revision the page showed.
-const UNDO_MS = 4000;
 const askOnScreen = () => state.data.asks.find((ask) => String(ask.id) === selectedAsk());
 
 async function post(path, body) {
@@ -1872,27 +1877,20 @@ async function post(path, body) {
   return { status: response.status, body: await response.json().catch(() => ({})) };
 }
 
-// Nothing leaves the page until the Undo time passes; then Undo goes, since the daemon may apply it.
-function answer(ask, text, written) {
+// An answer leaves at once: a tapped option was already confirmed by its second tap, and Send is a
+// deliberate press of its own. "Sending" shows only while the request is in flight.
+function answer(ask, text, written, run = false) {
+  disarm();
   if (state.pending) return;
   state.notices.delete(ask.id);
-  const pending = { id: ask.id, text, sending: false };
-  pending.timer = setTimeout(() => send(ask, pending, written), UNDO_MS);
-  state.pending = pending;
-  render();
+  state.pending = { id: ask.id, text };
+  send(ask, state.pending, written, run);
 }
 
-function undo() {
-  if (!state.pending || state.pending.sending) return;
-  clearTimeout(state.pending.timer);
-  state.pending = null;
-  render();
-}
-
-// The first tap on a command option arms it; the second, within 4 s, runs it with no Undo.
-function arm(ask, option) {
+// The first tap on an option arms it; the second, within ARM_MS, sends it.
+function arm(armed) {
   disarm();
-  state.armed = { id: ask.id, revision: ask.revision, text: option, at: Date.now(), timer: setTimeout(() => { state.armed = null; render(); }, ARM_MS) };
+  state.armed = { ...armed, timer: setTimeout(() => { state.armed = null; render(); }, ARM_MS) };
   render();
 }
 
@@ -1902,19 +1900,10 @@ function disarm() {
   state.armed = null;
 }
 
-function runCommand(ask, option) {
-  disarm();
-  if (state.pending) return;
-  state.notices.delete(ask.id);
-  state.pending = { id: ask.id, text: option, sending: false };
-  send(ask, state.pending, false, true);
-}
-
-async function send(ask, pending, written, confirmed = false) {
-  pending.sending = true;
+async function send(ask, pending, written, run) {
   render();
   const body = { [written ? "text" : "option"]: pending.text, revision: ask.revision };
-  if (confirmed) body.run = true;
+  if (run) body.run = true;
   const sent = await write(ask, `/api/asks/${encodeURIComponent(ask.id)}/answer`, body, pending.text);
   state.pending = null;
   if (sent) return next(ask);
@@ -1985,16 +1974,13 @@ function act(target) {
   const ask = askOnScreen();
   if (!ask || target.getAttribute("aria-disabled") === "true") return;
   if (target.dataset.answer !== undefined) {
-    const option = ask.options[Number(target.dataset.answer)];
-    if (!runsCommand(ask, option)) {
-      disarm();
-      return answer(ask, option, false);
-    }
-    if (stillArmed(state.armed, ask, option, Date.now())) return runCommand(ask, option);
-    return arm(ask, option);
+    if (state.pending) return;
+    const pressed = press(state.armed, ask, ask.options[Number(target.dataset.answer)], Date.now());
+    if (pressed.send) return answer(ask, pressed.send.text, false, pressed.send.run);
+    if (pressed.arm) arm(pressed.arm);
+    return;
   }
   const action = target.dataset.action;
-  if (action === "undo") return undo();
   if (state.pending) return;
   if (action === "options") return openSheet();
   if (action === "write") {
@@ -2239,7 +2225,9 @@ function noteRow(id, text, task = state.data.report?.report.task) {
 
 const reportRowOf = (id) => (state.data.report ? reportRows(dossier(state.data.report, { now: Date.now() })).find((row) => row.id === id) : null);
 
-// Nothing leaves the page until the Undo time passes, as an answer waits: a pick wakes the report's agent.
+// Nothing leaves the page until the Undo time passes: a pick wakes the report's agent.
+const UNDO_MS = 4000;
+
 function pick(target) {
   const row = reportRowOf(target.dataset.row);
   const reopened = row?.pick?.state === "agreed" && state.reportChanging === row.id;
@@ -2947,11 +2935,6 @@ function focusKey(element) {
 
 function render() {
   const app = document.getElementById("app");
-  // Leaving the ask, or signing out, cancels an answer that has not left yet.
-  if (state.pending && !state.pending.sending && (!state.token || selectedAsk() !== String(state.pending.id))) {
-    clearTimeout(state.pending.timer);
-    state.pending = null;
-  }
   if (state.reportPending && !state.reportPending.sending && (!state.token || current() !== "reports")) {
     clearTimeout(state.reportPending.timer);
     state.reportPending = null;
@@ -2961,7 +2944,7 @@ function render() {
   if (state.renderedKey) state.scrolls.set(state.renderedKey, [...app.querySelectorAll(".scroll")].map((element) => element.scrollTop));
   const focused = focusKey(document.activeElement);
   const typed = app.querySelector("#token")?.value;
-  const field = ["draft", "report-draft", "report-query"].includes(document.activeElement?.id) ? document.activeElement : null;
+  const field = TYPED_FIELDS.includes(document.activeElement?.id) ? document.activeElement : null;
   const caret = field ? [field.id, field.selectionStart, field.selectionEnd, field.selectionDirection] : undefined;
   state.observers.forEach((observer) => observer.disconnect());
   state.observers = [];
@@ -2970,7 +2953,10 @@ function render() {
   // Likewise a Cancel armed on another runner's task at a generation the list no longer shows.
   if (typeof state.taskArmed?.task === "string" && remoteGeneration(state.taskArmed.task) !== state.taskArmed.generation) disarmTask();
   if (state.memoryArmed && current() !== "memories") disarmMemory();
+  // The answer bar shows once the options scroll away; a redraw keeps it shown, so focus on it stays.
+  const barShown = app.querySelector(".abar:not([hidden])") !== null;
   app.innerHTML = page().text;
+  if (barShown) app.querySelector(".abar")?.removeAttribute("hidden");
   document.title = state.token && state.data ? pageTitle(location.pathname, { tasks: [...state.data.tasks, state.task?.body].filter(Boolean) }) : "Priory";
   paintTerminal(app, true);
   observeTerminal(app);
@@ -3199,7 +3185,7 @@ document.addEventListener("click", (event) => {
     return;
   }
   if (["pick", "pick-undo", "pick-change", "pick-keep", "report-go", "report-next", "report-search", "compose", "compose-cancel", "reply", "resolve", "reopen"].includes(action)) return reportAct(target);
-  if (target.dataset.answer !== undefined || ["undo", "options", "write", "dismiss", "snooze", "unsnooze"].includes(action)) return act(target);
+  if (target.dataset.answer !== undefined || ["options", "write", "dismiss", "snooze", "unsnooze"].includes(action)) return act(target);
   if (action === "mode" || action === "theme") {
     const root = document.documentElement;
     if (action === "mode") root.dataset.mode = target.dataset.pickMode;
@@ -3327,7 +3313,8 @@ document.addEventListener("keydown", (event) => {
     const body = askOnScreen() && !state.failed && !state.pending && snoozeShortcut(askOnScreen(), Date.now());
     if (body) snooze(askOnScreen(), { dataset: { for: body.for } });
   } else if (selectedAsk() && /^[1-9]$/.test(event.key)) {
-    document.querySelector(`.opt[data-answer="${Number(event.key) - 1}"]`)?.click();
+    const index = optionKey(event);
+    if (index !== null) document.querySelector(`.opt[data-answer="${index}"]`)?.click();
   } else if (event.key === "j" || event.key === "k") {
     const next = rows[Math.min(rows.length - 1, Math.max(0, at + (event.key === "j" ? 1 : -1)))];
     if (next) go(hrefOf(next));

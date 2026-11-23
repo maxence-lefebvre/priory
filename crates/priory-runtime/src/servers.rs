@@ -82,7 +82,7 @@ pub fn codex_config() -> PathBuf {
     }
 }
 
-fn home() -> PathBuf {
+pub(crate) fn home() -> PathBuf {
     std::env::var_os("HOME").map_or_else(PathBuf::new, PathBuf::from)
 }
 

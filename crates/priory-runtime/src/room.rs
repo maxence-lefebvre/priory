@@ -91,7 +91,7 @@ pub fn own_of(status: &str, stat: &str) -> Option<Own> {
     })
 }
 
-fn proc() -> PathBuf {
+pub(crate) fn proc() -> PathBuf {
     std::env::var_os("PRIORY_PROC")
         .filter(|proc| !proc.is_empty())
         .map_or_else(|| PathBuf::from("/proc"), PathBuf::from)

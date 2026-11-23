@@ -103,6 +103,10 @@ pub struct Settings {
     /// Each sandbox a workflow can turn on with `sandbox`, by its name.
     #[serde(default)]
     pub sandboxes: BTreeMap<String, Sandbox>,
+    /// Priory records Claude Code's and Codex's folder trust for the worktrees and clones it
+    /// creates for the repositories the factory names, so no run stops on a trust dialog.
+    #[serde(default)]
+    pub trust_worktrees: bool,
 }
 
 /// `[sandboxes.<name>]`: a jail around a run's agent, which sees its worktree, its harness's own
@@ -2641,6 +2645,24 @@ impl Factory {
             .as_ref()
             .and_then(|settings| settings.value.notify.as_ref());
         notify.is_some_and(|notify| notify.desktop)
+    }
+
+    /// Whether Priory records folder trust for its own worktrees and clones.
+    pub fn trust_worktrees(&self) -> bool {
+        self.settings
+            .as_ref()
+            .is_some_and(|settings| settings.value.trust_worktrees)
+    }
+
+    /// Whether the factory names `repo`: a trigger's, the sweeper's, or a `[repos]` key.
+    pub fn names_repo(&self, repo: &str) -> bool {
+        let settings = self.settings.as_ref().map(|settings| &settings.value);
+        settings.is_some_and(|settings| {
+            settings.repos.contains_key(repo) || settings.sweep.repo.as_deref() == Some(repo)
+        }) || self
+            .triggers
+            .values()
+            .any(|trigger| trigger.value.repo.as_deref() == Some(repo))
     }
 
     /// The defaults of `priory add`; none makes it need `--workflow`.

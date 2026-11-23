@@ -225,6 +225,8 @@ impl Setup {
             .env("PRIORY_HOME", self.dir.join("home"))
             .env("FAKE_DIR", self.dir.join("fake"))
             .env("PRIORY_PROC", self.dir.join("proc"))
+            .env("PRIORY_CGROUP", self.dir.join("cgroup"))
+            .env_remove("PRIORY_SLICE")
             // The person's own harness configs, which a run's MCP servers come from.
             .env("CLAUDE_CONFIG_DIR", self.dir.join("claude"))
             .env("CODEX_HOME", self.dir.join("codex"))
@@ -2740,6 +2742,70 @@ fn two_admissions_in_one_tick_count_each_others_declared_memory() {
     });
 }
 
+/// Puts the live pane of tmux session `tmux` in a scope of `priory-agents.slice` that holds `gb` GB
+/// of anonymous memory, beside 8 GB of file cache that `memory.current` also counts.
+fn scoped(setup: &Setup, tmux: &str, gb: u64) {
+    let listed = setup.tmux(&[
+        "list-panes",
+        "-s",
+        "-t",
+        &format!("={tmux}:"),
+        "-F",
+        "#{pane_pid}",
+    ]);
+    let pid = String::from_utf8(listed.stdout).unwrap();
+    let pid = pid
+        .lines()
+        .next()
+        .expect("the run has a pane")
+        .trim()
+        .to_owned();
+    let scope = "user.slice/user-1000.slice/user@1000.service/priory.slice/priory-agents.slice/run-r1.scope";
+    let dir = setup.dir.join("cgroup").join(scope);
+    fs::create_dir_all(&dir).unwrap();
+    write_atomic(
+        &dir.join("memory.current"),
+        &format!("{}\n", (gb + 8) << 30),
+    );
+    write_atomic(
+        &dir.join("memory.stat"),
+        &format!("anon {}\nfile {}\nshmem 0\n", gb << 30, 8u64 << 30),
+    );
+    fs::create_dir_all(setup.dir.join("proc").join(&pid)).unwrap();
+    write_atomic(
+        &setup.dir.join("proc").join(&pid).join("cgroup"),
+        &format!("0::/{scope}\n"),
+    );
+}
+
+#[test]
+fn a_run_that_uses_its_promised_memory_does_not_count_it_twice() {
+    let mut setup = Setup::new("promise-use");
+    setup.memory(12);
+    setup.hold("hold-stop");
+    setup.calls(&[result("passed")]);
+    setup.publish(&requested(42));
+    setup.publish(&requested(43));
+
+    setup.start();
+
+    // With no scope, the first run keeps its whole 4 GB promise, so the second waits.
+    let reason = "waits for room: 8.0 GB of memory free, needs 4.0 GB and keeps 6.4 GB free";
+    setup.until("tasks", |rows| rows.len() == 2 && rows[1][7] == reason);
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 1);
+    // File cache is free memory already, so 8 GB of it in the scope frees no promise.
+    scoped(&setup, &runs[0][3], 0);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(setup.rows("tasks")[1][7], reason);
+    // Its scope now holds 4 GB of its own, which the 12 GB measured free already leaves out.
+    scoped(&setup, &runs[0][3], 4);
+
+    let tasks = setup.until("tasks", |rows| rows[1][4] == "running");
+    assert_eq!(tasks[0][4], "running");
+    setup.release("hold-stop");
+}
+
 #[test]
 fn teardown_kills_a_tmux_server_that_a_late_child_starts() {
     let setup = Setup::new("teardown-late-tmux");
@@ -3788,6 +3854,279 @@ fn a_run_on_claudes_trust_dialog_blocks_at_once_and_names_the_folders_to_trust()
     assert_eq!(outbox[0][3], "queued");
 }
 
+/// A factory that turns on `trust_worktrees`, and a Claude config with a key of the person's own.
+fn trusting(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    fs::write(
+        setup.dir.join("factory/factory.toml"),
+        "name = \"demo\"\ntrust_worktrees = true\n",
+    )
+    .unwrap();
+    fs::create_dir_all(setup.dir.join("claude")).unwrap();
+    fs::write(
+        setup.dir.join("claude/.claude.json"),
+        r#"{"oauthAccount":{"emailAddress":"a@b"}}"#,
+    )
+    .unwrap();
+    setup
+}
+
+/// Starts the daemon with a HOME of its own, so no harness config of the person's is in reach.
+fn start_trusting(setup: &mut Setup) {
+    let home = setup.dir.join("user");
+    fs::create_dir_all(&home).unwrap();
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    setup.start_with(exe, &[("HOME", home.to_str().unwrap())]);
+}
+
+fn claude_json(setup: &Setup) -> serde_json::Value {
+    serde_json::from_str(&fs::read_to_string(setup.dir.join("claude/.claude.json")).unwrap())
+        .unwrap()
+}
+
+#[test]
+fn trust_worktrees_records_claudes_trust_in_the_worktree_and_the_clone_before_the_run() {
+    let mut setup = trusting("trust-claude");
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let worktree = fs::canonicalize(setup.dir.join("home/worktrees/owner/repo/1")).unwrap();
+    let clone = fs::canonicalize(setup.dir.join("home/repos/owner/repo")).unwrap();
+    let config = claude_json(&setup);
+    assert_eq!(config["oauthAccount"]["emailAddress"], "a@b");
+    let projects = config["projects"].as_object().unwrap();
+    let keys: Vec<&String> = projects.keys().collect();
+    let mut expected = [worktree.display().to_string(), clone.display().to_string()];
+    expected.sort();
+    assert_eq!(keys, expected.iter().collect::<Vec<_>>());
+    assert!(
+        projects
+            .values()
+            .all(|project| project == &json!({"hasTrustDialogAccepted": true}))
+    );
+    let records = traced(&setup, "factory.run.trusted");
+    let outcomes: Vec<(&str, &str)> = records
+        .iter()
+        .map(|record| {
+            (
+                record["data"]["path"].as_str().unwrap(),
+                record["data"]["outcome"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            (worktree.to_str().unwrap(), "granted"),
+            (clone.to_str().unwrap(), "granted")
+        ]
+    );
+    assert_eq!(records[0]["data"]["harness"], "claude-code");
+    assert_eq!(
+        records[0]["data"]["file"],
+        setup.dir.join("claude/.claude.json").display().to_string()
+    );
+}
+
+#[test]
+fn trust_worktrees_off_writes_no_claude_config() {
+    let mut setup = Setup::new("trust-off");
+    fs::create_dir_all(setup.dir.join("claude")).unwrap();
+    fs::write(setup.dir.join("claude/.claude.json"), "{}").unwrap();
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("claude/.claude.json")).unwrap(),
+        "{}"
+    );
+    assert!(traced(&setup, "factory.run.trusted").is_empty());
+    assert!(!codex_profile(&setup).exists());
+}
+
+#[test]
+fn a_trust_dialog_despite_trust_worktrees_blocks_with_its_own_reason_and_is_traced() {
+    let mut setup = trusting("trust-missed");
+    setup.publish(&requested(42));
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::write(
+        setup.dir.join("fake/silent"),
+        TRUST_DIALOG.replace("WORKTREE", &worktree.display().to_string()),
+    )
+    .unwrap();
+    start_trusting(&mut setup);
+
+    let tasks = setup.within(20, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+
+    assert_eq!(
+        tasks[0][7],
+        format!(
+            "claude asked whether to trust {} although Priory recorded its trust; this version of the harness keys trust differently. Trust the folder by hand, or turn trust_worktrees off",
+            worktree.display()
+        )
+    );
+    let missed: Vec<_> = traced(&setup, "factory.run.trusted")
+        .into_iter()
+        .filter(|record| record["data"]["outcome"] == "missed")
+        .collect();
+    assert_eq!(missed.len(), 1);
+    assert_eq!(missed[0]["data"]["path"], worktree.display().to_string());
+    assert_eq!(missed[0]["data"]["version"], "2.1.330 (Claude Code)");
+}
+
+#[test]
+fn a_refused_grant_keeps_the_manual_trust_reason_and_writes_no_missed_record() {
+    let mut setup = trusting("trust-refused");
+    fs::remove_file(setup.dir.join("claude/.claude.json")).unwrap();
+    setup.publish(&requested(42));
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::write(
+        setup.dir.join("fake/silent"),
+        TRUST_DIALOG.replace("WORKTREE", &worktree.display().to_string()),
+    )
+    .unwrap();
+    start_trusting(&mut setup);
+
+    let tasks = setup.within(20, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+
+    assert!(
+        tasks[0][7].contains("Priory never answers it"),
+        "{}",
+        tasks[0][7]
+    );
+    let outcomes: Vec<_> = traced(&setup, "factory.run.trusted")
+        .into_iter()
+        .map(|record| record["data"]["outcome"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(outcomes, ["refused", "refused"]);
+    assert!(!setup.dir.join("claude/.claude.json").exists());
+}
+
+#[test]
+fn a_codex_run_whose_grant_was_refused_starts_without_priorys_profile() {
+    let mut setup = trusting("trust-codex-refused");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::create_dir_all(setup.dir.join("codex")).unwrap();
+    fs::write(setup.dir.join("codex/config.toml"), "profile = \"work\"\n").unwrap();
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    assert!(!codex_args(&setup).contains(&"priory-trust".to_owned()));
+    assert_eq!(fs::read_to_string(codex_profile(&setup)).unwrap(), "");
+    let record = until_traced(&setup, "factory.run.trusted");
+    assert_eq!(record["data"]["outcome"], "refused");
+}
+
+#[test]
+fn a_repository_the_factory_does_not_name_gets_no_grant() {
+    let mut setup = trusting("trust-unnamed");
+    let origin = setup.dir.join("origin/owner");
+    assert!(
+        git(&origin)
+            .args(["clone", "-q", "--bare", "repo.git", "other.git"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut message = requested(42);
+    message.data["repo"] = json!("owner/other");
+    setup.publish(&message);
+    start_trusting(&mut setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let record = until_traced(&setup, "factory.run.trusted");
+    assert_eq!(record["data"]["outcome"], "refused");
+    assert_eq!(
+        record["data"]["why"],
+        "the factory does not name owner/other"
+    );
+    assert_eq!(
+        claude_json(&setup),
+        json!({"oauthAccount": {"emailAddress": "a@b"}})
+    );
+}
+
+#[test]
+fn a_grant_claude_overwrote_restarts_the_run_once_then_fails_the_task() {
+    let mut setup = trusting("trust-overwritten");
+    setup.publish(&requested(42));
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    fs::write(
+        setup.dir.join("fake/silent"),
+        TRUST_DIALOG.replace("WORKTREE", &worktree.display().to_string()),
+    )
+    .unwrap();
+    // Claude rewrites its config from a copy without the grant, at every start.
+    fs::write(
+        setup.dir.join("fake/probe"),
+        r#"printf '{"oauthAccount":{}}' > "$CLAUDE_CONFIG_DIR/.claude.json""#,
+    )
+    .unwrap();
+    start_trusting(&mut setup);
+
+    let tasks = setup.within(40, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "failed")
+    });
+
+    let reason = &tasks[0][7];
+    assert!(
+        reason.starts_with(&format!(
+            "claude asked whether to trust {}: it overwrote the trust Priory recorded before it read it",
+            worktree.display()
+        )),
+        "{reason}"
+    );
+    assert!(reason.contains("failed again after its repair"), "{reason}");
+    assert_eq!(setup.rows("runs").len(), 2);
+    let repaired = traced(&setup, "factory.task.repaired");
+    assert_eq!(repaired.len(), 1);
+    assert_eq!(
+        repaired[0]["data"]["cause"],
+        "claude overwrote Priory's trust grant"
+    );
+    assert_eq!(repaired[0]["data"]["outcome"], "ready");
+}
+
+fn codex_profile(setup: &Setup) -> PathBuf {
+    setup.dir.join("codex/priory-trust.config.toml")
+}
+
+#[test]
+fn trust_worktrees_gives_a_codex_run_priorys_profile_that_trusts_the_clone() {
+    let mut setup = trusting("trust-codex");
+    fs::write(setup.dir.join("factory/agents/implementer/agent.md"), CODEX).unwrap();
+    fs::create_dir_all(setup.dir.join("codex")).unwrap();
+    setup.publish(&requested(42));
+    start_trusting(&mut setup);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let clone = fs::canonicalize(setup.dir.join("home/repos/owner/repo")).unwrap();
+    let profile: toml::Table = fs::read_to_string(codex_profile(&setup))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let projects = profile["projects"].as_table().unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(
+        projects[clone.to_str().unwrap()]["trust_level"].as_str(),
+        Some("trusted")
+    );
+    assert_eq!(codex_args(&setup)[..2], ["-p", "priory-trust"]);
+    assert!(!setup.dir.join("codex/config.toml").exists());
+}
+
 const STEPS: &str = r#"
 start = "plan"
 
@@ -4216,6 +4555,104 @@ fn a_human_step_asks_ends_the_run_and_sleeps_until_an_answer_resumes_the_session
         format!("{}\n", prompted("Implement the plan.", "failed, passed"))
     );
     assert_eq!(setup.rows("tasks")[0][4], "running");
+}
+
+/// The data of each trace record of `kind`, oldest first.
+fn trace_records(setup: &Setup, kind: &str) -> Vec<serde_json::Value> {
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    let mut statement = db
+        .prepare("SELECT event FROM trace WHERE type = ?1 ORDER BY seq")
+        .unwrap();
+    statement
+        .query_map([kind], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|event| {
+            serde_json::from_str::<serde_json::Value>(&event.unwrap()).unwrap()["data"].clone()
+        })
+        .collect()
+}
+
+/// Waits up to 20 seconds for a trace record of `kind`, and returns them all.
+fn until_record(setup: &Setup, kind: &str) -> Vec<serde_json::Value> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let records = trace_records(setup, kind);
+        if !records.is_empty() {
+            return records;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no {kind} record\ndaemon: {}",
+            fs::read_to_string(setup.dir.join("daemon.log")).unwrap_or_default()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn a_workflow_edit_while_a_task_waits_at_a_human_step_takes_effect_at_its_next_step() {
+    let mut setup = Setup::with_workflow("reload-next", STEPS);
+    setup.calls(&[result("unsure")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+
+    let edited = STEPS.replace(
+        "next = { approved = \"implement\", rejected = \"stop\" }",
+        "next = { approved = \"done\", rejected = \"stop\" }",
+    );
+    write_atomic(&setup.dir.join("factory/workflows/implement.toml"), &edited);
+    until_record(&setup, "factory.config.reloaded");
+    let answered = setup.priory(&["answer", "1", "approved", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "done")
+    });
+    // The task ends from approve, as the edited `next` says, and no run starts for implement.
+    assert_eq!(tasks[0][3], "approve");
+    assert_eq!(setup.rows("runs").len(), 1);
+}
+
+#[test]
+fn an_edit_that_removes_the_step_a_task_is_at_keeps_the_last_good_factory() {
+    let mut setup = Setup::with_workflow("reload-stranded", STEPS);
+    setup.calls(&[result("unsure")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+
+    let start = STEPS.find("[[steps]]\nid = \"approve\"").unwrap();
+    let end = STEPS.find("[[steps]]\nid = \"implement\"").unwrap();
+    let edited = format!("{}{}", &STEPS[..start], &STEPS[end..])
+        .replace("unsure = \"approve\"", "unsure = \"stop\"");
+    write_atomic(&setup.dir.join("factory/workflows/implement.toml"), &edited);
+
+    let refused = until_record(&setup, "factory.config.refused");
+    assert_eq!(
+        refused[0]["problems"],
+        json!([
+            "workflows/implement.toml: task 1 is at step approve, which this edit removes: end or move task 1, or keep the step"
+        ])
+    );
+    assert!(trace_records(&setup, "factory.config.reloaded").is_empty());
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert!(log.contains("kept the last good factory"), "{log}");
+    // The held edit is reported once, however many ticks it waits.
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(trace_records(&setup, "factory.config.refused").len(), 1);
+
+    let cancelled = setup.priory(&["cancel", "1"]);
+
+    assert!(cancelled.status.success(), "{cancelled:?}");
+    let reloaded = until_record(&setup, "factory.config.reloaded");
+    assert_eq!(reloaded.len(), 1, "{reloaded:?}");
+    let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+    assert_eq!(log.matches("which this edit removes").count(), 1, "{log}");
 }
 
 const TWO_AGENTS: &str = r#"
@@ -15628,6 +16065,53 @@ fn a_run_cancelled_before_any_step_sends_a_span_with_its_end_reason_under_the_ro
     assert_eq!(
         attribute(&run["attributes"], "priory.run.ended_as"),
         "cancelled"
+    );
+}
+
+#[test]
+fn each_reload_and_each_refused_reload_sends_a_span_of_its_own() {
+    let mut setup = Setup::with_workflow("otlp-reload", STEPS);
+    setup.telemetry("http://127.0.0.1:4318");
+    setup.calls(&[result("unsure")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("runs", |rows| {
+        rows.first().is_some_and(|row| row[7] == "asleep")
+    });
+    let workflow = setup.dir.join("factory/workflows/implement.toml");
+    write_atomic(&workflow, &format!("{STEPS}\n# edited\n"));
+    until_record(&setup, "factory.config.reloaded");
+    write_atomic(&workflow, "start = \"nowhere\"\n");
+    until_record(&setup, "factory.config.refused");
+
+    // Selected by name: the plan step's run and step spans may arrive before or between them.
+    let named = |name: &str| {
+        spans(&setup.complete_posts())
+            .into_iter()
+            .find(|span| span["name"] == name)
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while named("factory.config.reloaded").is_none() || named("factory.config.refused").is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "no reload spans: {:?}",
+            setup.posts()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let reloaded = named("factory.config.reloaded").unwrap();
+    let refused = named("factory.config.refused").unwrap();
+
+    assert_ne!(reloaded["traceId"], refused["traceId"]);
+    assert_eq!(refused["startTimeUnixNano"], refused["endTimeUnixNano"]);
+    let problems = attribute(&refused["attributes"], "priory.reload.problems");
+    assert!(
+        problems.as_str().unwrap().contains("implement.toml"),
+        "{problems}"
+    );
+    assert_eq!(
+        attribute(&reloaded["attributes"], "priory.reload.problems"),
+        serde_json::Value::Null
     );
 }
 

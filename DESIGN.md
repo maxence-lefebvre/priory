@@ -172,7 +172,7 @@ The view sets two attributes on `<html>`:
 | Token                                       | Meaning                                                                |
 | ------------------------------------------- | ---------------------------------------------------------------------- |
 | `--bg`                                      | page ground                                                            |
-| `--surface`                                 | the drawer, sheets, option buttons, chips, inputs                      |
+| `--surface`                                 | the drawer, sheets, option buttons, chips, inputs, native select lists |
 | `--raised`                                  | pressed rows, the segmented control track, skeletons, code and commands |
 | `--line`                                    | hairlines between rows and around panels; never the only edge of a control |
 | `--control-line`                            | edges of inputs, option buttons and secondary buttons, at least 3:1    |
@@ -728,8 +728,8 @@ did not show. Until then the options are disabled under a `layers` note, "Readin
 - The section chips stick under the header.
 - A **sticky answer bar** on `--bar`, `--answer-bar` tall, holds two buttons with
   `--radius-card`: a secondary "3 options" with `chevron-up`, and the recommended option as a
-  primary button with "Recommended" under its label. The recommended button answers in one tap,
-  or arms a command ask. "3 options" opens the answer sheet.
+  primary button with "Recommended" under its label. The recommended button arms on the first
+  tap and answers on the second, as every option does. "3 options" opens the answer sheet.
 - The **answer sheet** slides up over `--scrim`: "Answer ask #42" and the revision, every
   option, the command block for a command ask, and a close button. Tapping the scrim closes it.
 
@@ -740,8 +740,16 @@ that expands it. Options sit in one row while each label fits on two lines, and 
 otherwise.
 
 - After an answer, the next ask slides in and the position updates.
-- Previous, next and a horizontal swipe move without answering. Nothing answers except a tap on
-  an option or "Send".
+- Previous, next and a horizontal swipe move without answering. Nothing answers except a second
+  tap on an armed option or "Send".
+- **Every option arms first.** The first tap arms an option: it turns solid `--emph` with a 3 px
+  `--action` ring, reads "Tap again to send" over "Confirm: Merge" and "Cancels in 4 s", and a
+  ring counts the 4 s down. The other options dim. A second tap on it within the 4 s sends at
+  once, with no undo bar. A second tap within 250 ms of the first does nothing, so an accidental
+  double tap cannot send. A held key does not repeat into a send. A tap on another option moves the arm there. After the 4 s the option
+  disarms, and the next tap arms it again. A new revision of the ask disarms it, so a second tap
+  never answers an older question. In the drawer, the option's key pressed twice does the same.
+- "Send" under the text field sends at once: pressing it is already a second, deliberate step.
 - Leaving the detail returns to the list at the same scroll position.
 
 Ask states:
@@ -749,7 +757,7 @@ Ask states:
 | State     | What the person sees                                                                      |
 | --------- | ----------------------------------------------------------------------------------------- |
 | open      | As above.                                                                                 |
-| sending   | The chosen option shows a check; the others dim. A bar at the bottom says `Sending "Merge"` with an "Undo" button for 4 s. The view sends after the 4 s. |
+| sending   | The chosen option shows a check; the others dim. A bar at the bottom says `Sending "Merge"` while the request is in flight. It has no Undo. |
 | answered  | The card collapses to the question, the answer, who answered and when. No buttons.        |
 | refused   | A `--warn-text` banner: "The question changed. Read revision 3 and answer again." The detail reloads the new revision; the old answer stays in the text field and in the history. |
 | taken     | "Already answered 2 min ago: Merge." Shown when another answer came first.                |
@@ -763,11 +771,8 @@ A **command ask** (R6.8) binds one option to a command. Its answer runs the comm
 - The Command section and the answer sheet show the command in a mono block on `--raised`: each
   word of its argv in its own boxed chip, so a space, a quote or an empty word shows as it is, its
   target folder, the revision it is bound to, and "Runs at most once."
-- It has no undo bar. The first tap arms the option: it turns solid `--emph` with a 3 px
-  `--action` ring, reads "Tap again to run" over the option's name and "Cancels in 4 s", and a
-  ring counts the 4 s down. The other options dim. The second tap sends. A new revision of the ask
-  disarms it, so a second tap never runs a command armed on an older question. In the drawer, the
-  option's key pressed twice does the same.
+- It arms on the first tap as every option does, but reads "Tap again to run". The second tap
+  sends the answer and runs the command.
 - While armed, the command block sits right under the armed option, in the options and in the
   sheet, or right above the answer bar when armed there: the command line, its target and
   "Bound to revision 2". The person sees exactly what the second tap runs without scrolling.
@@ -1184,7 +1189,7 @@ sits under More.
   before a choice. The recommendation is in words: the pick's note follows in a caption,
   "Recommends Take". A tap turns the option solid `--emph`
   with a `check` and dims the other picks; a bar at the bottom says `Picking "Take"` with Undo for
-  4 s, as an answer's does. Nothing is sent before the 4 s end. An agreed pick folds to one line:
+  4 s. Nothing is sent before the 4 s end. An agreed pick folds to one line:
   a `check` in `--ok-text`, "Picked Take." and what the workflow did with it. Until the workflow
   applies it, a ghost Change button ends the line: it reopens the control with the choice solid,
   "Pick another option to change it." and Keep Take, and a new option goes through the same Undo.
@@ -1360,7 +1365,7 @@ run.
 - Allowed gestures: horizontal swipe between asks in an ask's detail and between tabs; pinch and
   drag on diagrams; the browser's own back swipe. Nothing else.
 - No pull to refresh: panels update live. Set `overscroll-behavior: contain` on scrolling panels.
-- No long press, no hover-only controls, no double tap except the second tap of a command ask, a
+- No long press, no hover-only controls, no double tap except the second tap of an ask's option, a
   Cancel or a Revive.
 - Respect the safe-area insets on all four edges.
 
@@ -1451,8 +1456,8 @@ the adapter lives and how it reads and acts, and [`docs/reference/herdr-panels.m
 - **Stacks.** A Desk or Queue row shows `3 PRs` in `--text-2` after its state, and the wide Desk
   table under the row's text. The Asks PR section draws each stack row's state in words, with no
   tile.
-- **The armed command option** counts its 4 s down with a bar that drains under its label,
-  instead of a ring.
+- **The armed option** counts its 4 s down with a bar that drains under its label, instead of a
+  ring.
 - **Pointer.** Buttons keep the arrow cursor. Only links that leave Priory take the pointing hand.
 - **Mode.** A mod draws with Priory's tokens, not Herdr's theme. The adapter resolves each
   `light-dark()` pair from Herdr's appearance.

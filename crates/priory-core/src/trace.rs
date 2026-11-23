@@ -417,6 +417,55 @@ pub(crate) fn summarized(
     append(tx, trace, "factory.summarizer.called", &time, data)
 }
 
+/// Whether Priory recorded a harness's trust for `run` before it started, granted or present.
+pub(crate) fn granted(db: &Connection, run: i64) -> bool {
+    db.query_row(
+        "SELECT EXISTS (SELECT 1 FROM trace WHERE type = 'factory.run.trusted'
+           AND json_extract(event, '$.data.run') = ?1
+           AND json_extract(event, '$.data.outcome') IN ('granted', 'present'))",
+        [run.to_string()],
+        |row| row.get(0),
+    )
+    .unwrap_or(false)
+}
+
+/// Appends a `factory.run.trusted` record: what Priory did about `harness`'s trust in one path
+/// for `run`, with the harness's `version` when it asked anyway.
+pub(crate) fn trusted(
+    tx: &Transaction,
+    trace: &Trace,
+    run: i64,
+    harness: &str,
+    grant: &priory_runtime::trust::Grant,
+    version: Option<&str>,
+) -> rusqlite::Result<()> {
+    let (task, key, time): (i64, String, String) = tx.query_row(
+        "SELECT tasks.id, tasks.key, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.id = ?1",
+        [run],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let file = (!grant.file.as_os_str().is_empty()).then(|| grant.file.display().to_string());
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "task": task.to_string(),
+        "key": key,
+        "run": run.to_string(),
+        "machine": trace.machine,
+        "harness": harness,
+        "path": grant.path.display().to_string(),
+        "file": file,
+        "outcome": grant.outcome.as_str(),
+        "why": grant.why,
+        "version": version,
+    });
+    if let Value::Object(fields) = &mut data {
+        fields.retain(|_, value| !value.is_null());
+    }
+    append(tx, trace, "factory.run.trusted", &time, data)
+}
+
 /// Appends a `factory.run.preempted` record: `run` ended at its turn end to make room for the
 /// head task `head`, in band `head_band`, `waited` milliseconds after it was marked.
 pub(crate) fn preempted(

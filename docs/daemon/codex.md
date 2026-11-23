@@ -51,7 +51,10 @@ config that routes approvals to Codex's reviewer does not decide a `manual` run'
 plan permission mode) and any `allow` or `deny` rule (Codex has no per-tool rules).
 
 Codex runs only the hooks a person trusted in its `/hooks` review, by hash, and asks whether to
-trust a folder, as Claude does. Priory answers neither and never skips the review. Hooks are
+trust a folder, as Claude does. Priory answers neither and never skips the review. A run that
+shows the folder dialog blocks its task at once, as a Claude run does. With `trust_worktrees`,
+Priory records the folder trust in its own profile instead (see
+[Trusting the worktrees and the clone](sessions.md#with-trust_worktrees)). Hooks are
 identical in every run, since each run's session reaches them as `PRIORY_SESSION`, so a person
 trusts them once, with the clone. A Codex run that sends no `SessionStart` within 60 seconds blocks
 its task with `codex showed no SessionStart within 60s; trust the clone and Priory's hooks once: cd
