@@ -31,7 +31,7 @@
     strip ??= frame("strip", "display:block;width:100%;height:50px;margin:0 0 8px");
     if (found && (!strip.isConnected || strip.dataset.at === "fallback")) {
       strip.dataset.at = found.kind;
-      found.nav.before(strip);
+      found.at.before(strip);
     } else if (!found && !strip.isConnected) {
       strip.dataset.at = "fallback";
       fallback(document).prepend(strip);
@@ -43,17 +43,37 @@
     if (guide?.count && !guideTab?.isConnected) {
       const like = tabLike(found.nav);
       if (!like) return;
-      guideTab = like.cloneNode(false);
-      for (const name of ["aria-current", "aria-selected", "data-turbo-frame", "id", "aria-controls"]) guideTab.removeAttribute(name);
-      guideTab.classList.remove("selected");
-      if (guideTab.localName === "a") guideTab.href = "#priory-guide";
-      guideTab.textContent = `Guide ${guide.count}`;
+      guideTab = guideLike(like, found.kind);
       guideTab.addEventListener("click", (event) => {
         event.preventDefault();
         open("guide");
       });
-      like.parentElement.append(guideTab);
+      // The new page's row is a list: the tab goes in its own item, after the last one.
+      const item = found.kind === "new" && like.parentElement.localName === "li" ? like.parentElement : null;
+      if (item) {
+        const wrap = item.cloneNode(false);
+        wrap.removeAttribute("aria-hidden");
+        wrap.append(guideTab);
+        guideTab = wrap;
+        item.parentElement.append(wrap);
+      } else like.parentElement.append(guideTab);
     }
+  }
+
+  // A copy of a tab's own element, so the Guide tab takes GitHub's style, with none of its state.
+  function guideLike(like, kind) {
+    const tab = like.cloneNode(false);
+    for (const name of ["aria-current", "aria-selected", "aria-controls", "data-turbo-frame", "data-dd-action-name", "data-discover", "id", "tabindex"]) tab.removeAttribute(name);
+    tab.classList.remove("selected");
+    if (tab.localName === "a") tab.href = "#priory-guide";
+    const label = `Guide ${guide.count}`;
+    if (kind === "new") {
+      const text = document.createElement("span");
+      text.setAttribute("data-component", "text");
+      text.textContent = label;
+      tab.append(text);
+    } else tab.textContent = label;
+    return tab;
   }
 
   function warn() {
