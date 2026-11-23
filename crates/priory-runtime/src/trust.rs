@@ -135,7 +135,11 @@ pub fn codex(codex_home: &Path, clone: &Path) -> Vec<Grant> {
         Ok(text) => match text.parse::<toml::Table>() {
             Ok(table) => table,
             Err(error) => {
-                let why = format!("{} is not TOML: {error}", own.display());
+                // The parser's message quotes the line, which can hold a token, so only its number goes out.
+                let line = error
+                    .span()
+                    .map_or(0, |span| text[..span.start].lines().count().max(1));
+                let why = format!("{} is not TOML, at line {line}", own.display());
                 return grants(&profile, &[clone], Err(why));
             }
         },
@@ -479,10 +483,16 @@ mod tests {
     #[test]
     fn codex_refuses_a_config_toml_it_cannot_parse() {
         let dir = temp();
-        fs::write(dir.path().join("config.toml"), "profile = [unclosed\n").unwrap();
+        fs::write(
+            dir.path().join("config.toml"),
+            "model = \"x\"\nheaders = { Authorization = \"Bearer sk-secret-123 }\n",
+        )
+        .unwrap();
         let grants = codex(dir.path(), Path::new("/home/a/repos/o/r"));
         assert_eq!(grants[0].outcome, Outcome::Refused);
-        assert!(grants[0].why.as_deref().unwrap().contains("is not TOML"));
+        let why = grants[0].why.as_deref().unwrap();
+        assert!(why.ends_with("is not TOML, at line 2"), "{why}");
+        assert!(!why.contains("sk-secret"));
         assert!(!dir.path().join("priory-trust.config.toml").exists());
     }
 
