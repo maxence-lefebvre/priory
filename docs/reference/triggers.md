@@ -51,13 +51,14 @@ Without a `repo`, a Linear, Sentry, Honeycomb, Intercom or Slack trigger's tasks
 
 ## `github`
 
-Starts a task when an issue or pull request of `repo` is opened or labeled. See
+Starts a task when an issue or pull request of `repo` is opened or labeled, or when someone
+comments on or reviews a pull request that no task owns. See
 [github-issues.md](../intake/github-issues.md) and [pull-requests.md](../intake/pull-requests.md).
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `repo` | string | yes | | The repository the intake polls, `owner/name` | `"owner/name"` |
-| `on` | string | yes | | `issues.labeled`, `issues.opened`, `pull_request.labeled` or `pull_request.opened`. For `pull_request.review_requested`, see [Review requests](#review-requests) | `"issues.labeled"` |
+| `on` | string | yes | | `issues.labeled`, `issues.opened`, `pull_request.labeled` or `pull_request.opened`. For `pull_request.comment`, `pull_request_review_comment` and `pull_request_review.submitted`, see [Comments and reviews](#comments-and-reviews). For `pull_request.review_requested`, see [Review requests](#review-requests) | `"issues.labeled"` |
 | `filter` | table | no | | `label`: only events that add this label. `*.labeled` only | `{ label = "agent" }` |
 | `key` | string | no | the number | `issue.number`, or `pull_request.number` for a `pull_request.*` event. The task key is `github:owner/name#42` | `"issue.number"` |
 | `backfill` | boolean | no | `false` | Whether the first poll's events start tasks too | `true` |
@@ -74,6 +75,42 @@ key = "issue.number"           # pull_request.number for a pull_request event
 band = "today"
 lane = "core/intake"           # otherwise lanes.toml derives it
 backfill = false               # true: the first poll's events start tasks too
+```
+
+### Comments and reviews
+
+A `github` trigger with `on = "pull_request.comment"`, `"pull_request_review_comment"` or
+`"pull_request_review.submitted"` starts a task when someone comments on or reviews an open pull
+request of `repo` that `author` opened. Its task is keyed to the pull request and subscribes to it,
+so later comments reach that task. A pull request that an active task already owns gets no new
+task: its comments go to that task (see
+[routing.md](../daemon/routing.md#comments-on-a-pull-request-no-task-owns)). A bot's review starts
+a task only when `commenter` names the bot. A comment from someone without write access starts no
+task. Neither does an agent's comment, one by the login `gh` runs as whose body holds
+`<!-- agent-comment -->`, marked `agent` (see
+[routing.md](../daemon/routing.md#an-agents-own-comments)). Your own comments on your pull requests
+carry no marker, so they start a task like anyone else's. A pull request whose newest task failed
+or was dropped gets no new task either: `priory revive` brings that task back. `priory check` refuses these
+triggers in a factory of several runners.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `on` | string | yes | | `pull_request.comment` for a comment on the conversation, `pull_request_review_comment` for a comment in a review thread, `pull_request_review.submitted` for a review | `"pull_request.comment"` |
+| `filter` | table | yes | | `author`: the GitHub login that opened the pull request. `commenter`, optional: the login that wrote the comment or review | `{ author = "octocat" }` |
+| `key` | string | no | the number | `pull_request.number`. The task key is `github:owner/name#42` | `"pull_request.number"` |
+
+One trigger takes one `on`, so comments, thread comments and reviews take a file each. This one
+starts a task for each conversation comment on a pull request that `octocat` opened. Save it as
+`triggers/my-pull-request-comments.toml`:
+
+```toml
+#:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
+source = "github"
+repo = "owner/name"
+on = "pull_request.comment"    # or pull_request_review_comment, pull_request_review.submitted
+filter = { author = "octocat" } # add commenter = "<login>" to take only that login's comments
+workflow = "implement"
+band = "today"
 ```
 
 ### Review requests
@@ -508,12 +545,14 @@ noop = [
 | `` lane `<lane>` is not `<team>/<theme>` `` | A malformed `lane` |
 | `` `<name>` is also defined in triggers/<name>.toml `` | `<name>.toml` and `<name>.yaml` both exist |
 | `` a GitHub trigger needs `repo = "owner/name"` `` | A `github` trigger without a valid `repo`. A `schedule` trigger gets the same with `schedule` |
-| `` a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled`, `pull_request.opened` or `pull_request.review_requested`, not `<on>` `` | A bad `on` |
+| `` a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled`, `pull_request.opened`, `pull_request.comment`, `pull_request_review_comment`, `pull_request_review.submitted` or `pull_request.review_requested`, not `<on>` `` | A bad `on` |
+| `` a `<on>` trigger needs `filter = { author = "<GitHub login>" }`, and takes `commenter` too `` | A comment or review trigger without `author` in its `filter`, or with another key there |
+| `` a `<on>` trigger needs one runner; this factory has <n> `` | A comment or review trigger in a factory of several runners |
 | `` a `pull_request.review_requested` trigger needs `reviewer = "<GitHub login>"` `` | No `reviewer`, or one that is not letters, digits and dashes |
 | `` a `pull_request.review_requested` trigger takes no `<key>`: ... `` | `repo`, `filter` or `key` on a review request trigger |
 | `` team `<team>` is not `org/team`, a GitHub organization and team slug `` | An entry of `teams` that is not an organization, a `/` and a team slug |
 | `` only a GitHub `pull_request.review_requested` trigger names a `reviewer` `` | `reviewer` on another trigger |
-| `` `filter` works only with `on = "*.labeled"`, on `label` `` | A GitHub `filter` on another event or key |
+| `` `filter` works only with `on = "*.labeled"`, on `label` `` | A GitHub `filter` on another event or key, except a comment or review trigger's |
 | `` a GitHub trigger's `key` is `issue.number` `` | Another `key`. `pull_request.number` for a pull request event |
 | `` a `linear.view` trigger, and only it, names a `view` `` | `view` missing on `linear.view`, or set on `linear` |
 | `` a `linear` trigger handles `issue.created`, `issue.state_changed`, `comment.created`, not `<on>` `` | A bad `on`. `linear.view` lists `issue.entered`, `issue.left` |

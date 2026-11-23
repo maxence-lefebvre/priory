@@ -499,12 +499,17 @@ pub fn pull_request_state(repo: &str, number: u64) -> Result<String, String> {
     .map(|state| state.trim().to_owned())
 }
 
-/// Writes `body` as a new comment on pull request `number` of `repo`, and returns its URL.
+/// The line that marks a comment an agent wrote, since agents post as the person's `gh` login.
+pub const AGENT_COMMENT: &str = "<!-- agent-comment -->";
+
+/// Writes `body` as a new comment on pull request `number` of `repo`, marked as an agent's, and
+/// returns its URL.
 pub fn comment_on_pull_request(repo: &str, number: u64, body: &str) -> Result<String, String> {
     let number = number.to_string();
+    let body = format!("{body}\n\n{AGENT_COMMENT}\n");
     fed(
         Command::new("gh").args(["pr", "comment", &number, "-R", repo, "--body-file", "-"]),
-        Some(body.as_bytes().to_vec()),
+        Some(body.into_bytes()),
     )
     .map(|url| url.trim().to_owned())
 }

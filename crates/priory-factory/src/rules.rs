@@ -427,6 +427,21 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         check_auto_answer(trigger, &mut problems);
         check_pre(factory, trigger, &mut problems);
         check_intent(trigger, &mut problems);
+        // A runner's claim of a key cannot see the pull requests another runner's tasks own.
+        if trigger.value.source == "github"
+            && FEEDBACK.contains(&trigger.value.on.as_str())
+            && factory.runners.len() > 1
+        {
+            problems.push(problem(
+                trigger,
+                trigger.lines.field("on"),
+                format!(
+                    "a `{}` trigger needs one runner; this factory has {}",
+                    trigger.value.on,
+                    factory.runners.len()
+                ),
+            ));
+        }
         match trigger.value.source.as_str() {
             "github" => check_github(trigger, &mut problems),
             "linear" | "linear.view" => check_linear(trigger, &mut problems),
@@ -1588,6 +1603,13 @@ fn check_schedule(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
 
 const REVIEW_REQUESTED: &str = "pull_request.review_requested";
 
+/// The comments and reviews on a pull request a GitHub trigger can start a task from.
+pub const FEEDBACK: [&str; 3] = [
+    "pull_request.comment",
+    "pull_request_review_comment",
+    "pull_request_review.submitted",
+];
+
 /// A review request trigger polls one person's requests in every repository, so it names that
 /// person and no repository, filter or key.
 fn check_review_request(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
@@ -1697,12 +1719,14 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
         "pull_request.labeled",
         "pull_request.opened",
     ];
-    if !ON.contains(&value.on.as_str()) {
+    let feedback = FEEDBACK.contains(&value.on.as_str());
+    if !ON.contains(&value.on.as_str()) && !feedback {
         problems.push(problem(
             trigger,
             trigger.lines.field("on").or(trigger.lines.field("source")),
             format!(
-                "a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled`, `pull_request.opened` or `{REVIEW_REQUESTED}`, not `{}`",
+                "a GitHub trigger handles `issues.labeled`, `issues.opened`, `pull_request.labeled`, `pull_request.opened`, `{}` or `{REVIEW_REQUESTED}`, not `{}`",
+                FEEDBACK.join("`, `"),
                 value.on
             ),
         ));
@@ -1710,14 +1734,30 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     let label_only = |filter: &BTreeMap<String, String>| {
         value.on.ends_with(".labeled") && filter.keys().all(|key| key == "label")
     };
-    if !value.filter.as_ref().is_none_or(label_only) {
+    let by_people = |filter: &BTreeMap<String, String>| {
+        filter.contains_key("author")
+            && filter
+                .keys()
+                .all(|key| ["author", "commenter"].contains(&key.as_str()))
+    };
+    if feedback && !value.filter.as_ref().is_some_and(by_people) {
+        problems.push(problem(
+            trigger,
+            trigger.lines.field("filter").or(trigger.lines.field("on")),
+            format!(
+                "a `{}` trigger needs `filter = {{ author = \"<GitHub login>\" }}`, and takes `commenter` too",
+                value.on
+            ),
+        ));
+    }
+    if !feedback && !value.filter.as_ref().is_none_or(label_only) {
         problems.push(problem(
             trigger,
             trigger.lines.field("filter"),
             "`filter` works only with `on = \"*.labeled\"`, on `label`".into(),
         ));
     }
-    let number = if value.on.starts_with("pull_request.") {
+    let number = if value.on.starts_with("pull_request") {
         "pull_request.number"
     } else {
         "issue.number"

@@ -127,6 +127,54 @@ A task request is the exception to these rules. Only an active task whose own ke
 request's `key` keeps it. A task that owns that key only as a pull request or issue it waits on
 does not. In that case, the request creates its own task.
 
+### Comments on a pull request no task owns
+
+A [comment or review trigger](../reference/triggers.md#comments-and-reviews) requests a task for
+each comment on a pull request it matches. Unlike other task requests, it joins a task that
+already has the comment, and its outcome is `coalesced`:
+
+- the task the comment's own event reached, kept, woke or reopened, such as a task that owns the
+  pull request's head branch;
+- else any active task that owns the pull request, by key, wait, claim or subscription.
+
+The comment's event already reached that task, so the request adds nothing. When the pull
+request's newest task failed or was dropped, the request is `ignored`: `priory revive` brings that
+task back (see [Feedback on a failed or dropped task](#feedback-on-a-failed-or-dropped-task)).
+Otherwise the request creates a task.
+
+That task's key is the pull request, `github:owner/name#42`, and it subscribes to it on creation
+(see the first row of [Resources](#resources-what-a-task-owns)). So a second comment goes to it:
+
+1. Ana comments on pull request 42, which no task owns. Its event is `ignored`.
+2. The trigger's request creates task 5, keyed `github:owner/name#42`. Its first prompt carries the
+   comment.
+3. Ana comments again. Task 5 owns the pull request, so it takes the event, `kept` or `woke`.
+4. The trigger's second request is `coalesced` on task 5. No second task starts.
+
+A `priory request --key github:owner/name#42` keys its task the same way, so that task subscribes
+to the pull request too (see [cli.md](../intake/cli.md)).
+
+### An agent's own comments
+
+Agents post with the person's own `gh` login, so the login alone cannot tell an agent's comment from
+the person's. An agent marks its comment with the line `<!-- agent-comment -->` in its body, a fixed
+marker that GitHub does not render. The intake sets two fields on a comment, review or review thread
+comment:
+
+| Field | `true` when | What reads it |
+| ----- | ----------- | ------------- |
+| `own` | the login `gh` runs as wrote it | the person's handling: [triage](../reference/tools.md#review-feedback) does not put it to the agent |
+| `agent` | it is `own` and its body holds the marker | triggers, waking during a turn, and the agent's reply in triage |
+
+Priory adds the marker to each comment it posts itself, and the starter factories tell agents to add
+it. The marker in another login's comment proves nothing: that comment is neither `own` nor `agent`.
+
+An `agent` comment starts no task, so an agent cannot restart its own task. It is the agent's reply:
+it wakes nothing during the agent's turn (see [Subscriptions in tools.md](tools.md#subscriptions)),
+and triage records no class for it. An `own` comment without the marker is the person's direction.
+It can start a task, it wakes its task whenever it was written, the agent follows it, and the next
+result records it as `persons-call` with no ask.
+
 ## Outcomes
 
 Each inbox entry gets one of these outcomes:
@@ -135,6 +183,8 @@ Each inbox entry gets one of these outcomes:
 | ----------------------------------------- | --------- | -------------------------------------------- |
 | A schedule's or review request's `factory.task.requested`, with a task asleep at a model step owning its key | `woke` | that task, now `ready` |
 | A schedule's or review request's `factory.task.requested`, with a task in another active state owning its key | `coalesced` | that task, unchanged |
+| A comment or review trigger's `factory.task.requested`, with a task its comment reached or an active task owning its pull request | `coalesced` | that task, unchanged |
+| A comment or review trigger's `factory.task.requested`, with no such task and the pull request's newest task failed or dropped | `ignored` | none |
 | A review, comment or review thread comment, with no active task owning a resource it names, and a done task it reopens | `reopened` | that task, now `ready` at its reopen step |
 | `priory.task.requested.cli`, with an active task owning its key, at a model step whose agent started or waiting on a step's ask | `said` | that task, which hears the text as `priory say` sends it |
 | `priory.task.requested.cli`, with an active task owning its key whose agent has not started | `kept` | that task, which reads the text in its first prompt |

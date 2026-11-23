@@ -91,10 +91,12 @@ feedback items https://github.com/owner/name/pull/57#discussion_r803, https://gi
 An item written by the login `gh api user` names, the account the intake runs as and so the
 factory's person, goes to the person: the rule does not name it, the agent need not sort it, and
 the next result records it as `persons-call` with no ask. Only an item with `own` true is the
-person's, so a Linear or issue comment never is. The agent's own replies post as the same account:
-an item with `own` true written inside a run of the task, past its first second and before its
-last, is the agent's, as routing reads it, and no class is recorded for it. A person's own comment
-written in that window reads as the agent's too. No factory key names another login.
+person's, so a Linear or issue comment never is. The agent's own replies post as the same account
+and carry `<!-- agent-comment -->`, so the intake marks them `agent` too (see
+[An agent's own comments](../daemon/routing.md#an-agents-own-comments)). An item with `agent` true
+is the agent's reply, and no class is recorded for it. An `own` item from before the marker, with
+no `agent` field, is the agent's when written inside a run of the task, past its first second and
+before its last. No factory key names another login.
 
 A factory with a calibrated triage decision model sorts some items itself: an item it marks
 `nothing-to-do` is not named by the rule, and the next result records its class with no word from

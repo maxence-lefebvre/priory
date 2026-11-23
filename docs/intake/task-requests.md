@@ -32,8 +32,8 @@ A GitHub trigger matches an event when all of these hold:
 4. The event is not from a baseline, unless the trigger sets `backfill = true` (see
    [github-polling.md](github-polling.md#baseline)).
 
-GitHub triggers start from `issues.labeled`, `issues.opened`, `pull_request.labeled` or
-`pull_request.opened`.
+GitHub triggers start from `issues.labeled`, `issues.opened`, `pull_request.labeled`,
+`pull_request.opened`, or a comment or review on a pull request (see [pull-requests.md](pull-requests.md#trigger)).
 
 ## An example
 
@@ -81,7 +81,7 @@ with `"triggers": ["agent-label"]`, then this request:
 | Slack message | `slack:<channel>:<ts>` |
 | Slack message shortcut | `slack:<channel>:<thread ts>`, the thread of the message, or the message itself outside a thread |
 | Schedule | `schedule:<key>`, or `schedule:<trigger>@<scheduled>` without a fixed key |
-| `priory request` | `cli:<key>` |
+| `priory request` | `cli:<key>`, or the issue or pull request its key names, such as `github:owner/name#42` |
 | `priory add` | the issue its text links to, such as `github:owner/name#42` or `linear:ENG-7`, else `cli:<YYYY-MM-DD>-<n>` |
 
 The message id is the UUIDv5 of `factory.task.requested:{trigger}:{source}`, where `source` is the

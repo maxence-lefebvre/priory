@@ -84,22 +84,23 @@ impl Github {
             .iter()
             .map(|(name, trigger)| (name.as_str(), trigger))
             .collect();
-        let published = observed.message(&triggers).and_then(|mut message| {
-            // GitHub redelivers for 3 days; an older body is a replay the change match may miss.
-            if message.time.as_second() < now()?.as_second() - LOOKBACK_SECONDS {
-                return Ok(false);
-            }
-            message.data["delivery"] = json!(delivery);
-            super::mark_own(&mut message);
-            let _claim = claim()?;
-            if reported(bus, &message)? {
-                super::counted("github", "webhook", "duplicate");
-                return Ok(false);
-            }
-            publish_delivered(bus, &message, "github")?;
-            dispatch(bus, &triggers, &message)?;
-            Ok(true)
-        });
+        let published = observed
+            .message(&triggers, super::gh::viewer)
+            .and_then(|mut message| {
+                // GitHub redelivers for 3 days; an older body is a replay the change match may miss.
+                if message.time.as_second() < now()?.as_second() - LOOKBACK_SECONDS {
+                    return Ok(false);
+                }
+                message.data["delivery"] = json!(delivery);
+                let _claim = claim()?;
+                if reported(bus, &message)? {
+                    super::counted("github", "webhook", "duplicate");
+                    return Ok(false);
+                }
+                publish_delivered(bus, &message, "github")?;
+                dispatch(bus, &triggers, &message)?;
+                Ok(true)
+            });
         match published {
             Ok(true) => accepted("published"),
             Ok(false) => accepted("dropped"),
@@ -217,6 +218,10 @@ impl Github {
                 data["github_id"] = review["id"].clone();
                 super::pulls::associate(&mut data, &review["author_association"]);
                 data["open"] = json!(pull["state"] == "open");
+                author(&mut data, &pull["user"]["login"]);
+                if review["user"]["type"] == "Bot" {
+                    data["bot"] = json!(true);
+                }
                 let name = format!("github:{repo}:pulls/reviews:{}", review["id"]);
                 (REVIEWED, name, data)
             }
@@ -274,6 +279,7 @@ fn feedback(event: &str, repo: &str, payload: &Value) -> Option<Observed> {
             "open": pull["state"] == "open",
         });
         head_repo(&mut branches, pull);
+        author(&mut branches, &pull["user"]["login"]);
         let number = pull["number"].as_u64()?;
         return Some(comment(
             THREAD_COMMENTED,
@@ -294,7 +300,8 @@ fn feedback(event: &str, repo: &str, payload: &Value) -> Option<Observed> {
     });
     super::pulls::associate(&mut data, &found["author_association"]);
     // The issue in the payload names no branch: routing finds the task by its pull request.
-    let branches = json!({ "open": issue["state"] == "open" });
+    let mut branches = json!({ "open": issue["state"] == "open" });
+    author(&mut branches, &issue["user"]["login"]);
     Some(comment(
         COMMENTED,
         repo,
@@ -308,6 +315,13 @@ fn feedback(event: &str, repo: &str, payload: &Value) -> Option<Observed> {
 fn head_repo(data: &mut Value, pull: &Value) {
     if let Some(head) = pull["head"]["repo"]["full_name"].as_str() {
         data["head_repo"] = json!(head);
+    }
+}
+
+/// Sets `author`, the login that opened the pull request, when the payload names one.
+fn author(data: &mut Value, login: &Value) {
+    if login.is_string() {
+        data["author"] = login.clone();
     }
 }
 
@@ -360,6 +374,92 @@ mod tests {
         }
     }
 
+    /// A delivery of `event` on pull request 3 of `o/r`, which `max` opened, with `extra` merged in.
+    fn on_pull(event: &str, extra: &Value) -> Observed {
+        let mut payload = json!({
+            "action": if event == "pull_request_review" { "submitted" } else { "created" },
+            "repository": { "full_name": "o/r" },
+            "pull_request": {
+                "number": 3, "state": "open", "user": { "login": "max" },
+                "head": { "ref": "h", "sha": "s" }, "base": { "ref": "main" },
+            },
+            "issue": {
+                "number": 3, "state": "open", "user": { "login": "max" },
+                "pull_request": { "url": "u" },
+            },
+        });
+        for (key, value) in extra.as_object().unwrap() {
+            payload[key] = value.clone();
+        }
+        let body = payload.to_string();
+        github()
+            .observe(event, &payload, body.as_bytes())
+            .unwrap()
+            .unwrap()
+    }
+
+    fn comment_by(login: &str, kind: &str) -> Value {
+        json!({ "comment": {
+            "id": 9, "body": "b", "html_url": "https://github.com/o/r/pull/3#c", "created_at":
+            "2026-01-01T00:00:00Z", "path": "p", "line": 1, "author_association": "MEMBER",
+            "user": { "login": login, "type": kind },
+        } })
+    }
+
+    fn feedback_trigger(on: &str, filter: &Value) -> Trigger {
+        serde_json::from_value(
+            json!({ "source": "github", "repo": "o/r", "on": on, "filter": filter, "workflow": "w" }),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_delivered_review_or_comment_names_the_pull_request_s_author_and_a_bot_reviewer() {
+        let review = on_pull(
+            "pull_request_review",
+            &json!({ "review": {
+                "id": 5, "state": "commented", "body": "", "commit_id": "s",
+                "html_url": "https://github.com/o/r/pull/3#r", "submitted_at": "2026-01-01T00:00:00Z",
+                "author_association": "MEMBER", "user": { "login": "rayon-bot[bot]", "type": "Bot" },
+            } }),
+        );
+        let thread = on_pull("pull_request_review_comment", &comment_by("ana", "User"));
+        let conversation = on_pull("issue_comment", &comment_by("ana", "User"));
+
+        assert_eq!(review.data["author"], "max");
+        assert_eq!(review.data["bot"], true);
+        assert_eq!(thread.data["author"], "max");
+        assert_eq!(conversation.data["author"], "max");
+        assert!(thread.data.get("bot").is_none());
+    }
+
+    #[test]
+    fn a_feedback_trigger_skips_a_closed_pull_request_and_a_marked_comment_by_the_login_gh_runs_as()
+    {
+        let mine = feedback_trigger("pull_request.comment", &json!({ "author": "max" }));
+        let threads = feedback_trigger("pull_request_review_comment", &json!({ "author": "max" }));
+        let triggers = [("mine", &mine), ("threads", &threads)];
+        let matched = |observed: &Observed, viewer: crate::intake::Viewer| {
+            observed.message(&triggers, viewer).unwrap().data["triggers"].clone()
+        };
+        let marked = |login: &str| {
+            let mut comment = comment_by(login, "User");
+            comment["comment"]["body"] = json!("Fixed in abc.\n\n<!-- agent-comment -->");
+            on_pull("issue_comment", &comment)
+        };
+        let ana = on_pull("issue_comment", &comment_by("ana", "User"));
+        let max = on_pull("issue_comment", &comment_by("max", "User"));
+        let mut closed = on_pull("pull_request_review_comment", &comment_by("ana", "User"));
+        closed.data["open"] = json!(false);
+
+        assert_eq!(matched(&ana, || Some("max")), json!(["mine"]));
+        // The person shares the agents' login: only the marker makes a comment an agent's.
+        assert_eq!(matched(&max, || Some("max")), json!(["mine"]));
+        assert_eq!(matched(&marked("max"), || Some("max")), json!([]));
+        assert_eq!(matched(&marked("ana"), || Some("max")), json!(["mine"]));
+        assert_eq!(matched(&closed, || None), json!([]));
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(512))]
 
@@ -384,7 +484,7 @@ mod tests {
             });
             let body = payload.to_string();
             if let Ok(Some(observed)) = github().observe(event, &payload, body.as_bytes()) {
-                let _ = observed.message(&[]);
+                let _ = observed.message(&[], || None);
             }
         }
 
@@ -414,7 +514,7 @@ mod tests {
             });
             let body = payload.to_string();
             if let Ok(Some(observed)) = github().observe(event, &payload, body.as_bytes()) {
-                let _ = observed.message(&[]);
+                let _ = observed.message(&[], || None);
             }
         }
 

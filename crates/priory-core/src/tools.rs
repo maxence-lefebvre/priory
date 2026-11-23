@@ -1490,7 +1490,7 @@ pub(crate) fn event(
             }
             let place = crate::stack::place(tx, task, &on)?;
             let said = feedback(&on, place.as_deref(), &kind_of_event, &data)
-                .filter(|_| later || kind_of_event == REVIEWED || data["own"] == false)
+                .filter(|_| later || kind_of_event == REVIEWED || not_agents(&data))
                 .filter(|_| !settles(&kind_of_event, &data));
             let Some(said) = said else {
                 continue;
@@ -1507,7 +1507,7 @@ pub(crate) fn event(
         // A comment written before the wait, such as the agent's own, wakes nothing.
         let place = crate::stack::place(tx, task, &resource)?;
         let said = feedback(&resource, place.as_deref(), &kind_of_event, &data)
-            .filter(|_| later || kind_of_event == REVIEWED || data["own"] == false);
+            .filter(|_| later || kind_of_event == REVIEWED || not_agents(&data));
         if daemon {
             let Some(said) = said.filter(|_| !settles(&kind_of_event, &data)) else {
                 return judge(tx, wait, factory);
@@ -4817,6 +4817,12 @@ pub(crate) fn reopenable(
         |row| row.get(0),
     )
     .optional()
+}
+
+/// Whether the intake knows no agent wrote a GitHub comment or review: another login wrote it, or
+/// the person's login without the agent comment marker. It wakes its task whenever it was written.
+pub(crate) fn not_agents(data: &Value) -> bool {
+    data["own"] == false || data["agent"] == false
 }
 
 /// The report a comment in `message` posts when it lands on the own key of the newest task on that

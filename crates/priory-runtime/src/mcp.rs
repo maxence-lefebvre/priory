@@ -416,7 +416,7 @@ pub(crate) fn tools() -> Value {
                     },
                     "feedback": {
                         "type": "object",
-                        "description": "When the prompt carried review feedback: each item's URL mapped to its class. trivial: one obvious answer inside this change's scope, fix it and reply. nothing-to-do: an approval or thanks. persons-call: a behaviour, design or scope change, a disagreement or anything unclear, ask the person.",
+                        "description": "When the prompt carried review feedback: each item's URL mapped to its class. trivial: one obvious answer inside this change's scope, fix it and reply, ending the reply with the line <!-- agent-comment -->. nothing-to-do: an approval or thanks. persons-call: a behaviour, design or scope change, a disagreement or anything unclear, ask the person.",
                         "additionalProperties": { "enum": ["trivial", "nothing-to-do", "persons-call"] },
                     },
                     "branches": {
