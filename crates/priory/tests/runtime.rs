@@ -4498,6 +4498,70 @@ fn a_snoozed_ask_leaves_the_desk_and_asks_until_its_time_while_the_task_stays_as
     assert_eq!(setup.rows("asks").len(), 1);
 }
 
+/// Leaves task 1's worktree on a detached HEAD, one commit past `priory/1`, or one commit behind
+/// it with `behind`, then answers the ask the task sleeps on, which starts its next run.
+fn detached_then_woken(name: &str, behind: bool) -> (Setup, String) {
+    let setup = asleep_on_an_ask(name);
+    let worktree = setup.worktree(1);
+    assert!(
+        git(&worktree)
+            .args(["checkout", "-q", "--detach"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let head = setup.commit(1, "rebased.txt");
+    if behind {
+        assert!(
+            git(&worktree)
+                .args(["branch", "-f", "priory/1", "HEAD"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            git(&worktree)
+                .args(["checkout", "-q", "--detach", "HEAD~1"])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let answered = setup.priory(&["answer", "1", "sqlite", "--revision", "1"]);
+    assert!(answered.status.success(), "{answered:?}");
+    (setup, head)
+}
+
+#[test]
+fn a_worktree_left_on_a_detached_head_ahead_of_its_branch_starts_the_next_run_on_the_branch() {
+    let (setup, head) = detached_then_woken("detached-ahead", false);
+
+    setup.until("runs", |rows| rows.len() == 2);
+
+    let tasks = setup.rows("tasks");
+    assert_eq!(tasks[0][4], "running", "{tasks:?}");
+    let worktree = setup.worktree(1);
+    let current = git(&worktree)
+        .args(["branch", "--show-current"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&current.stdout), "priory/1\n");
+    let at = git(&worktree).args(["rev-parse", "HEAD"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&at.stdout).trim(), head);
+}
+
+#[test]
+fn a_worktree_left_on_a_detached_head_behind_its_branch_blocks_the_task() {
+    let (setup, _) = detached_then_woken("detached-behind", true);
+
+    let tasks = setup.until("tasks", |rows| rows[0][4] == "blocked");
+
+    assert!(
+        tasks[0][7].contains("exists but is not priory/1"),
+        "{tasks:?}"
+    );
+}
+
 /// The trace records of `kind`, oldest first.
 fn traced(setup: &Setup, kind: &str) -> Vec<serde_json::Value> {
     String::from_utf8(setup.priory(&["trace"]).stdout)
@@ -5350,6 +5414,30 @@ fn an_outside_ask_takes_an_answer_or_a_dismiss_only_at_its_current_revision() {
     assert_eq!(notes(&setup), "dismissed");
     setup.priory(&["ask", "cache.notes", &fleet_ask(&["later"])]);
     assert_eq!(notes(&setup), serde_json::Value::Null);
+}
+
+#[test]
+fn an_outside_ask_snoozes_by_the_id_asks_lists() {
+    let mut setup = Setup::new("outside-snooze");
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+
+    let snoozed = setup.priory(&["snooze", "ask", "cache.ship", "--for", "20h"]);
+
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    assert_eq!(asks["asks"][0]["id"], "cache.ship");
+    assert!(asks["asks"][0]["snoozed_until"].is_string(), "{asks}");
+    let desk: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["desk", "--json"]).stdout).unwrap();
+    assert_eq!(desk["counts"]["snoozed"], 1, "{desk}");
+    let cleared = setup.priory(&["snooze", "ask", "cache.ship", "--clear"]);
+    assert!(cleared.status.success(), "{cleared:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    assert!(asks["asks"][0]["snoozed_until"].is_null(), "{asks}");
 }
 
 #[test]
@@ -17587,6 +17675,90 @@ fn a_comment_on_a_row_stores_shows_as_a_thread_and_wakes_the_task_with_one_line(
         Some(
             "The person commented on row fnd-2409 in your report (reply with `priory report reply 1 TEXT`): Check the release branch first"
         )
+    );
+}
+
+#[test]
+fn a_comment_on_a_rows_key_lands_on_that_row() {
+    let setup = asleep_on_a_report("report-comment-key", &bonjour(serde_json::Value::Null));
+
+    let commented = setup.priory(&["report", "comment", "FND-2409", "--expected", "1", "Why?"]);
+
+    assert!(commented.status.success(), "{commented:?}");
+    let comments = &shown(&setup)["sections"][0]["rows"][0]["comments"];
+    assert_eq!(comments[0]["text"], "Why?", "{comments}");
+}
+
+/// A report with one row per outside ask, whose `Dismiss ask` and `Not today` act on it.
+fn ask_rows(asks: &[&str]) -> serde_json::Value {
+    let rows: Vec<serde_json::Value> = asks
+        .iter()
+        .map(|ask| {
+            json!({
+                "id": format!("ask-{ask}"), "key": ask, "text": "Ship the cache today?",
+                "pick": { "id": format!("2026-11-23_t1_ask_{ask}"),
+                          "options": ["Not today", "Dismiss ask"],
+                          "asks": {
+                              "Not today": { "act": "snooze", "ask": ask, "until": "2099-11-24T06:00:00Z" },
+                              "Dismiss ask": { "act": "dismiss", "ask": ask },
+                          } },
+                "comments": []
+            })
+        })
+        .collect();
+    json!({
+        "date": "2026-11-23",
+        "since": "2026-11-22T18:00:00+01:00",
+        "greeting": "Bonjour, Max",
+        "sections": [{ "id": "agree", "title": "To agree", "rows": rows }]
+    })
+}
+
+#[test]
+fn a_pick_on_an_ask_row_dismisses_or_snoozes_the_ask_and_wakes_no_agent() {
+    let setup = asleep_on_a_report("report-ask-pick", &ask_rows(&["cache.ship", "cache.notes"]));
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    setup.priory(&["ask", "cache.notes", &fleet_ask(&["ship", "wait"])]);
+    let prompts = setup.rows("outbox").len();
+
+    let dismissed = setup.priory(&[
+        "report",
+        "pick",
+        "2026-11-23_t1_ask_cache.ship",
+        "Dismiss ask",
+        "--expected",
+        "1",
+    ]);
+    let snoozed = setup.priory(&[
+        "report",
+        "pick",
+        "2026-11-23_t1_ask_cache.notes",
+        "Not today",
+        "--expected",
+        "2",
+    ]);
+
+    assert!(dismissed.status.success(), "{dismissed:?}");
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    let asks = &asks["asks"];
+    assert_eq!(
+        [&asks[0]["id"], &asks[0]["withdrawn_reason"]],
+        ["cache.ship", "dismissed"]
+    );
+    assert_eq!([&asks[1]["id"], &asks[1]["state"]], ["cache.notes", "open"]);
+    assert_eq!(asks[1]["snoozed_until"], "2099-11-24T06:00:00Z");
+    let rows = &shown(&setup)["sections"][0]["rows"];
+    assert_eq!(rows[0]["pick"]["applied"], "dismissed");
+    assert_eq!(
+        rows[1]["pick"]["applied"],
+        "snoozed until 2099-11-24T06:00:00Z"
+    );
+    assert_eq!(
+        setup.rows("outbox").len(),
+        prompts,
+        "no prompt for the agent"
     );
 }
 

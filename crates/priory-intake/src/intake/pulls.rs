@@ -309,6 +309,8 @@ struct CommitRuns {
 struct Run {
     id: u64,
     name: String,
+    #[serde(default)]
+    head_sha: String,
     status: String,
     conclusion: Option<String>,
     completed_at: Option<String>,
@@ -319,7 +321,8 @@ struct Run {
 /// The completed check runs on the merge commits of `merges` in `repo`, as events of the pull
 /// requests that merged there. A commit is read once per poll until every run completed, when the
 /// daemon's record of these events stops `merges` listing it, or until it has no run past the grace
-/// period, which `unchecked` remembers.
+/// period, which `unchecked` remembers. A cancelled run waits for its name's run on a later commit
+/// of the base branch, as `later_run` reads it.
 pub(super) fn merge_checks(
     repo: &str,
     merges: &[Merge],
@@ -345,20 +348,31 @@ pub(super) fn merge_checks(
         if found.total_count == 0 && merged + GRACE_SECONDS <= now {
             unchecked.insert(merge.commit.clone());
         }
-        let done = |run: &&Run| run.status == "completed";
-        let pending = found.total_count - found.check_runs.iter().filter(done).count();
         let conclusion = |run: &Run| run.conclusion.as_deref().unwrap_or_default().to_lowercase();
-        let failing = found
+        let mut done = Vec::new();
+        for run in found
             .check_runs
             .iter()
-            .filter(done)
-            .filter(|run| !super::PASSING.contains(&conclusion(run).as_str()))
+            .filter(|run| run.status == "completed")
+        {
+            let later = match conclusion(run).as_str() {
+                "cancelled" => later_run(repo, merge, &run.name)?,
+                _ => Later::Not,
+            };
+            if !matches!(later, Later::Running) {
+                done.push((run, later));
+            }
+        }
+        let pending = found.total_count - done.len();
+        let failing = done
+            .iter()
+            .filter(|(run, _)| !super::PASSING.contains(&conclusion(run).as_str()))
             .count();
-        for run in found.check_runs.iter().filter(done) {
+        for (run, later) in done {
             let Some(time) = run.completed_at.as_deref() else {
                 continue;
             };
-            let data = json!({
+            let mut data = json!({
                 "repo": repo,
                 "pull_request": merge.pull_request,
                 "url": run.html_url,
@@ -373,6 +387,9 @@ pub(super) fn merge_checks(
                 "pending": pending,
                 "failing": failing,
             });
+            if let Later::Succeeded(sha) = later {
+                data["superseded_by"] = json!(sha);
+            }
             checks.push(Observed {
                 kind: CHECKED,
                 name: format!(
@@ -388,6 +405,50 @@ pub(super) fn merge_checks(
         }
     }
     Ok(checks)
+}
+
+/// What the run named like a cancelled one did on a later commit of the base branch.
+enum Later {
+    /// It succeeded on this descendant commit, so the cancelled run is not red.
+    Succeeded(String),
+    /// It has not concluded yet, so the cancelled run waits for it.
+    Running,
+    /// There is none on a descendant commit, or it failed: the cancelled run counts as red.
+    Not,
+}
+
+#[derive(Deserialize)]
+struct Compare {
+    status: String,
+}
+
+/// The run named `name` on the tip of `merge`'s base branch, when the tip descends from the merge
+/// commit. A cancelled tip run waits too: a newer push cancelled it, and its own run follows.
+fn later_run(repo: &str, merge: &Merge, name: &str) -> Result<Later, String> {
+    let path = format!(
+        "repos/{repo}/commits/heads/{}/check-runs",
+        merge.base_branch
+    );
+    let check_name = format!("check_name={name}");
+    let found: CommitRuns = gh(&path, &["-X", "GET", "-f", &check_name])?;
+    let Some(tip) = found.check_runs.first() else {
+        return Ok(Later::Not);
+    };
+    if tip.head_sha.is_empty() || tip.head_sha == merge.commit {
+        return Ok(Later::Not);
+    }
+    let path = format!("repos/{repo}/compare/{}...{}", merge.commit, tip.head_sha);
+    let compare: Compare = gh(&path, &["-X", "GET", "-f", "per_page=1"])?;
+    if compare.status != "ahead" {
+        return Ok(Later::Not);
+    }
+    let conclusion = tip.conclusion.as_deref().unwrap_or_default().to_lowercase();
+    Ok(match (tip.status.as_str(), conclusion.as_str()) {
+        ("completed", "success") => Later::Succeeded(tip.head_sha.clone()),
+        ("completed", "cancelled") => Later::Running,
+        ("completed", _) => Later::Not,
+        _ => Later::Running,
+    })
 }
 
 const PULL_FIELDS: &str = "fragment pull on PullRequest { number headRefName headRefOid baseRefName headRepository { nameWithOwner } merged mergeCommit { oid } body state author { login } \

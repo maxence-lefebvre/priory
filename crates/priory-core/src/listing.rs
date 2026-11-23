@@ -139,7 +139,9 @@ fn desk_items() -> String {
            (SELECT generation FROM tasks WHERE tasks.id = desk.task) AS generation, {},
            {}, {DESK_TITLE}
          FROM ({DESK}) AS desk
-         LEFT JOIN snoozes ON snoozes.item = desk.id AND typeof(desk.id) = 'integer' AND snoozes.kind =
+         LEFT JOIN snoozes ON snoozes.item = CASE WHEN typeof(desk.id) = 'integer' THEN desk.id
+             WHEN desk.kind = 'ask' THEN (SELECT id FROM asks WHERE asks.name = desk.id) END
+           AND snoozes.kind =
            CASE WHEN desk.kind IN ('blocked', 'failed') THEN 'task' ELSE desk.kind END
          ORDER BY desk.part, CASE WHEN desk.part = 0 THEN desk.since END, desk.kind, desk.id",
         places(),

@@ -92,6 +92,13 @@ also raises a `landed wrong` alarm on the desk, once per merge commit (see
 - A restart reads once more only a commit that had no run, since the daemon's record of the others persists.
 - A merge into a branch other than the default counts too: the event names the pull request's base branch as it is.
 - Past 100 runs on a commit, the first 100 are read and `pending` stays above 0, so the commit is read until the 7 days end.
+- A `cancelled` run, as a workflow's concurrency group leaves one when a newer push supersedes it,
+  counts as red only when no later run of the same name succeeded. The intake reads that name's run
+  on the tip of the base branch, `repos/{repo}/commits/heads/{base}/check-runs?check_name={name}`,
+  and checks with `repos/{repo}/compare/{merge}...{tip}` that the tip descends from the merge
+  commit. A success there publishes the cancelled run with `superseded_by` set to the tip, which
+  counts as passing. A tip run that is still running or was cancelled too keeps the cancelled run
+  pending, so the commit is read again on the next poll. Any other answer publishes it as it is.
 
 ### Check run snapshots
 

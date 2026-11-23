@@ -146,8 +146,8 @@ priory report resolve COMMENT
 priory report reopen COMMENT
 ```
 
-`ROW` is the row's `id`: a row without one takes no comments. The daemon finds the report written
-last that has a row with that id. `COMMENT` is a comment's number, a thread's or a reply's: each
+`ROW` is the row's `id`, or its `key`: a row without an `id` takes no comments. The daemon finds
+the report written last that has a row with that id or key, and prefers a row whose id matches. `COMMENT` is a comment's number, a thread's or a reply's: each
 verb acts on its thread. Each verb raises the report's revision. The daemon refuses:
 
 - a comment when the report is at another revision than `REVISION`, as a stale pick is refused;
@@ -208,3 +208,21 @@ When the publish fails, the pick stays recorded and `priory report pick` exits w
 daemon publishes every pending dispatch again when it starts, and once its log answers again, at
 most every 10 seconds while a publish keeps failing. So a lost log or a crash after the choice never
 loses its task, and a crash before it never requests one.
+
+## Act on an ask from a pick
+
+A pick's `asks` maps an option to an act on an open ask, named by the id that `priory asks` lists:
+
+```json
+"asks": {
+  "Dismiss ask": { "act": "dismiss", "ask": "fleet.fnd-2345-merge-order" },
+  "Not today": { "act": "snooze", "ask": "fleet.fnd-2345-merge-order", "until": "2026-11-24T06:00:00Z" }
+}
+```
+
+`dismiss` closes the ask with no answer, as `priory dismiss` does. `snooze` hides it from the desk
+until `until`, an RFC 3339 UTC time, as `priory snooze` does. Picking that option applies the act,
+records the choice and sets `applied` to `dismissed` or `snoozed until <until>`, all in one
+transaction. It wakes no task, so the act lands even while the report's agent is busy or asleep.
+The pick is refused, and nothing is recorded, when the act is refused: the ask is not open, or a
+step's ask takes only its options. An option cannot both request a task and act on an ask.

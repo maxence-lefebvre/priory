@@ -368,7 +368,8 @@ const NOW: &str = "2026-11-21T12:00:00Z";
 
 impl Setup {
     /// Makes `owner/repo` polled and installs a `gh` that logs its calls to `gh.log`, answers the
-    /// check runs of commit `sha` from `checks-<sha>.json`, and reads `[]` elsewhere.
+    /// check runs of commit `sha` from `checks-<sha>.json` (`heads/main` from `checks-heads-main.json`),
+    /// a compare from `compare.json`, and reads `[]` elsewhere.
     fn polled_repo(&self) {
         let trigger = "source = \"github\"\nrepo = \"owner/repo\"\non = \"issues.labeled\"\n\
                        filter = { label = \"agent\" }\nworkflow = \"plan\"\nkey = \"issue.number\"\nband = \"today\"\n";
@@ -377,8 +378,11 @@ impl Setup {
         fs::write(file, trigger).unwrap();
         let script = format!(
             "#!/bin/sh\necho \"$*\" >> '{dir}/gh.log'\ncase \"$2\" in\n  repos/owner/repo/commits/*)\n    \
-             sha=$(echo \"$2\" | cut -d/ -f5)\n    cat \"{dir}/checks-$sha.json\" 2>/dev/null || \
-             echo '{{\"total_count\":0,\"check_runs\":[]}}' ;;\n  *) echo '[]' ;;\nesac\n",
+             sha=${{2#repos/owner/repo/commits/}}\n    sha=$(echo \"${{sha%%/check-runs*}}\" | tr / -)\n    \
+             cat \"{dir}/checks-$sha.json\" 2>/dev/null || \
+             echo '{{\"total_count\":0,\"check_runs\":[]}}' ;;\n  repos/owner/repo/compare/*)\n    \
+             cat \"{dir}/compare.json\" 2>/dev/null || echo '{{\"status\":\"diverged\"}}' ;;\n  \
+             *) echo '[]' ;;\nesac\n",
             dir = self.dir.display()
         );
         let gh = self.dir.join("bin/gh");
@@ -404,6 +408,29 @@ impl Setup {
             answer.to_string(),
         )
         .unwrap();
+    }
+
+    /// Makes the run of `name` on the tip `sha` of `main` one with `status` and `conclusion`, and
+    /// the compare of a merge commit with it say `compare`.
+    fn tip_run(&self, name: &str, sha: &str, status: &str, conclusion: &str, compare: &str) {
+        let run = json!({ "id": 500, "name": name, "head_sha": sha, "status": status,
+                          "conclusion": conclusion, "completed_at": "2026-11-20T10:30:00Z",
+                          "html_url": "https://github.com/owner/repo/runs/500" });
+        let answer = json!({ "total_count": 1, "check_runs": [run] });
+        fs::write(self.dir.join("checks-heads-main.json"), answer.to_string()).unwrap();
+        let compare = json!({ "status": compare });
+        fs::write(self.dir.join("compare.json"), compare.to_string()).unwrap();
+    }
+
+    /// The `landed wrong` lines on the desk.
+    fn alarms(&self) -> Vec<String> {
+        self.desk()["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["kind"] == "report")
+            .map(|item| item["what"].as_str().unwrap().to_owned())
+            .collect()
     }
 
     /// One intake poll at `NOW`, then the daemon reading what it published.
@@ -506,6 +533,65 @@ fn a_merge_commit_is_read_until_every_check_completed_then_not_again() {
         "the poll that saw them all complete was the last"
     );
     assert_eq!(setup.red_after_merge(), 1);
+}
+
+/// A merge of task 1 at `m10` whose `ci` run was cancelled.
+fn cancelled_at_merge(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    setup.polled_repo();
+    setup.task(1, "green");
+    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z")]);
+    setup.checks_at("m10", &[(1, "completed", "cancelled")]);
+    setup
+}
+
+#[test]
+fn a_cancelled_run_that_a_later_run_on_a_descendant_passed_is_not_red() {
+    let setup = cancelled_at_merge("cancelled-superseded");
+    setup.tip_run("ci", "m11", "completed", "success", "ahead");
+
+    setup.poll();
+    setup.poll();
+
+    assert_eq!(setup.red_after_merge(), 0);
+    assert_eq!(setup.alarms(), Vec::<String>::new());
+    assert_eq!(setup.reads_of("m10"), 1, "the merge commit is settled");
+}
+
+#[test]
+fn a_cancelled_run_waits_for_the_later_run_then_counts_as_it_did() {
+    let setup = cancelled_at_merge("cancelled-waits");
+    setup.tip_run("ci", "m11", "in_progress", "", "ahead");
+    setup.poll();
+    assert_eq!(setup.red_after_merge(), 0);
+    assert_eq!(setup.alarms(), Vec::<String>::new());
+
+    setup.tip_run("ci", "m11", "completed", "failure", "ahead");
+    setup.poll();
+
+    assert_eq!(
+        setup.reads_of("m10"),
+        2,
+        "a waiting run keeps the commit polled"
+    );
+    assert_eq!(setup.red_after_merge(), 1);
+    assert_eq!(
+        setup.alarms(),
+        [
+            "priory: landed wrong: owner/repo#10 of task 1 is red on main: ci cancelled https://github.com/owner/repo/runs/1"
+        ]
+    );
+}
+
+#[test]
+fn a_cancelled_run_with_no_later_run_on_a_descendant_is_red() {
+    let setup = cancelled_at_merge("cancelled-diverged");
+    setup.tip_run("ci", "m11", "completed", "success", "diverged");
+
+    setup.poll();
+
+    assert_eq!(setup.red_after_merge(), 1);
+    assert_eq!(setup.alarms().len(), 1);
 }
 
 #[test]

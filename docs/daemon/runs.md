@@ -19,7 +19,10 @@ step. A held task gets its ask once its hold releases it.
 
 The daemon creates the worktree on a new branch from `origin/HEAD`, and stores that commit as the
 task's `base_sha` the first time. A revived task keeps it, so a scorer and a benchmark know where
-the task started. When the repository has recipes, a setup or resume runs first (see Recipes). The
+the task started. A later run reuses the worktree on `priory/<task id>`. When an agent left it on a
+detached HEAD that descends from that branch, as a rebase can, with no rebase or merge under way,
+the daemon moves the branch to HEAD and checks it out. Any other branch or HEAD blocks the task
+with `<path> exists but is not priory/<task id> of <clone>`. When the repository has recipes, a setup or resume runs first (see Recipes). The
 daemon then records the run and task as `running`, and starts the agent's
 harness in a detached tmux session named `priory-<task id>`, in the worktree. It first kills a
 session of that name left by an ended run, since the task has no other live run. An agent with

@@ -284,6 +284,9 @@ pub fn worktree(
         let current = run(git(&path).args(["branch", "--show-current"]))?;
         let ours =
             fs::canonicalize(common.trim()).ok() == fs::canonicalize(clone.join(".git")).ok();
+        if ours && current.trim().is_empty() && adopt_detached(&path, &branch) {
+            return Ok((path, branch, Added::Kept));
+        }
         if !ours || current.trim() != branch {
             return Err(format!(
                 "{} exists but is not {branch} of {}",
@@ -323,6 +326,20 @@ pub fn worktree(
     })?;
     let base = head(&path, &branch);
     Ok((path, branch, Added::New(base)))
+}
+
+/// Puts the worktree at `path`, left on a detached HEAD, back on `branch` when HEAD descends from
+/// it and no rebase or merge is under way, as a rebase that detached HEAD leaves it. The branch
+/// only moves forward, so it loses no commit.
+fn adopt_detached(path: &Path, branch: &str) -> bool {
+    let busy = ["rebase-merge", "rebase-apply", "MERGE_HEAD"]
+        .iter()
+        .any(|name| {
+            run(git(path).args(["rev-parse", "--path-format=absolute", "--git-path", name]))
+                .is_ok_and(|found| Path::new(found.trim()).exists())
+        });
+    let ahead = run(git(path).args(["merge-base", "--is-ancestor", branch, "HEAD"])).is_ok();
+    !busy && ahead && run(git(path).args(["checkout", "--quiet", "-B", branch])).is_ok()
 }
 
 /// Runs `phase` of a worktree's start, and times it for the metrics by how it ended.
