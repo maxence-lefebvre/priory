@@ -442,3 +442,24 @@ fn a_real_jail_leaves_nothing_the_host_runs_and_hides_the_state_file() {
         "{}\n"
     );
 }
+
+#[test]
+fn a_jailed_run_keeps_the_clones_own_worktree_config() {
+    let mut setup = Setup::new("jail-keeps-config");
+    jailed(&setup);
+    setup.calls(&[result("passed"), result("passed")]);
+    setup.publish(&requested(1));
+    setup.start();
+    setup.until("tasks", |rows| with(rows, 4, "done") == 1);
+    let git = setup.dir.join("home/repos/owner/repo/.git");
+    let kept = "[core]\n\tsparseCheckout = true\n";
+    fs::write(git.join("config.worktree"), kept).unwrap();
+
+    setup.publish(&requested(2));
+
+    setup.until("tasks", |rows| with(rows, 4, "done") == 2);
+    assert_eq!(
+        fs::read_to_string(git.join("config.worktree")).unwrap(),
+        kept
+    );
+}

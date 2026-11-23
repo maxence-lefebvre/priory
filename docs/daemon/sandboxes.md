@@ -61,7 +61,8 @@ A write anywhere else lands in the jail's own folders in memory, and is gone whe
 The read-only paths are the ones a process on the host runs code from. Git runs the hooks, the
 `core.sshCommand`, the filters and the credential helpers that the clone's `config` names. A
 worktree's `.git` file and any git folder's `commondir` lead git to that `config`, so the jail
-writes the clone's `commondir` as `.` and its `config.worktree` files empty before it binds them.
+writes the clone's `commondir` as `.` and its `config.worktree` files empty when they are missing,
+then binds them. A file that exists keeps its content.
 Claude Code runs the hooks, plugins, MCP servers and scripts that its settings and
 `~/.claude.json` name. Its shell sources the scripts in `session-env` and `shell-snapshots`, so a
 run writes its own in memory. The daemon's git also runs with `core.hooksPath=/dev/null` and

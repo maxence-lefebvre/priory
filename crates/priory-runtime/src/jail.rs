@@ -313,13 +313,19 @@ fn git_folders(binds: &mut Binds, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Makes `file` hold `text`, over what an earlier run may have left, so the jail binds it
-/// read-only. It writes only a file that differs, since git on the host may be reading it.
+/// Writes `text` to `file` when it is missing, so the jail can bind it read-only. A file that
+/// exists keeps its content: the bind keeps every jail from writing it.
 fn pin(file: &Path, text: &str) -> Result<(), String> {
-    if std::fs::read_to_string(file).is_ok_and(|held| held == text) {
-        return Ok(());
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(file)
+    {
+        Ok(mut created) => std::io::Write::write_all(&mut created, text.as_bytes()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(error),
     }
-    std::fs::write(file, text).map_err(|error| format!("{}: {error}", file.display()))
+    .map_err(|error| format!("{}: {error}", file.display()))
 }
 
 /// The folder of the state file `PRIORY_DB` names, which the jail empties: the run's MCP
