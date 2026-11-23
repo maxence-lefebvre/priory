@@ -28,7 +28,14 @@ sandbox = "jail"
 
 Every model step of the workflow starts its agent in the jail, debate turns included. A shared
 agent's run follows the workflow of the task it serves, so one conversation can run jailed for one
-task and not for another. Code steps, recipes, `record` commands, a human step's `command` and the
+task and not for another. A lead's or an investigator's task follows the workflow of the task it serves,
+since its prompt holds that task's agent's words: the lead that answers a jailed task's ask, and
+the investigator of its `consult`, start in the same jail with the same binds. A lead or an
+investigator of an unjailed task starts as before.
+
+A helper in the jail sees its own worktree, not the person's files. An investigator's MCP servers
+start inside it too, so a server that reads files under the home, such as its login or its package
+cache, needs them in the sandbox's `read` or `write`. Name a login read-only in `read`. Code steps, recipes, `record` commands, a human step's `command` and the
 compaction of an idle shared session stay on the host: they are the factory's own commands, not the
 agent's.
 
