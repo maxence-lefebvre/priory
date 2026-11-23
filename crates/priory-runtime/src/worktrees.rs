@@ -1,4 +1,4 @@
-use crate::runtime::{OWN_GIT, clone_of, git, run};
+use crate::runtime::{OWN_GIT, clone_of, fed, git, run};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -58,37 +58,107 @@ pub fn fetch(home: &Path, repo: &str) -> Result<(), String> {
     run(git(&clone).args(["remote", "set-head", "origin", "--auto"])).map(drop)
 }
 
-/// Why the worktree must stay, or `None` when it can go. `merged_head` is the head commit of the
-/// task's merged pull request, which a squash merge leaves out of the default branch. A check that
-/// cannot run keeps the worktree.
-pub fn blocker(home: &Path, found: &Found, merged_head: Option<&str>) -> Option<String> {
-    blocked(home, found, merged_head).unwrap_or_else(|error| Some(format!("cannot check: {error}")))
+/// What the sweep does with the worktree of an ended task.
+#[derive(Debug, PartialEq)]
+pub enum Verdict {
+    /// The branch merged: the worktree and the branch go.
+    Remove,
+    /// Every commit is on a remote: the worktree goes and the branch stays for a revive.
+    Retire,
+    /// The worktree stays, for this reason.
+    Keep(String),
 }
 
-fn blocked(
+/// What the sweep does with the worktree. `merged_head` is the head commit of the task's merged
+/// pull request, which a squash merge leaves out of the default branch. `done` retires a worktree
+/// whose commits are all pushed, or patch-equivalent to pushed ones. A check that cannot run keeps
+/// the worktree.
+pub fn verdict(home: &Path, found: &Found, merged_head: Option<&str>, done: bool) -> Verdict {
+    judged(home, found, merged_head, done)
+        .unwrap_or_else(|error| Verdict::Keep(format!("cannot check: {error}")))
+}
+
+fn judged(
     home: &Path,
     found: &Found,
     merged_head: Option<&str>,
-) -> Result<Option<String>, String> {
+    done: bool,
+) -> Result<Verdict, String> {
     if let Some(reason) = unsettled(home, found)? {
-        return Ok(Some(reason));
+        return Ok(Verdict::Keep(reason));
     }
     let path = &found.path;
     let tip = run(git(path).args(["rev-parse", "HEAD"]))?;
     let tip = tip.trim();
     let merged = run(git(path).args(["merge-base", "--is-ancestor", tip, "origin/HEAD"])).is_ok();
     if merged || merged_head == Some(tip) {
-        return Ok(None);
+        return Ok(Verdict::Remove);
     }
-    let unpushed = run(git(path).args(["rev-list", "-n1", tip, "--not", "--remotes"]))?;
-    Ok(Some(
-        if unpushed.is_empty() {
-            "not merged"
-        } else {
-            "unpushed commits"
-        }
-        .to_owned(),
-    ))
+    let unpushed = run(git(path).args(["rev-list", tip, "--not", "--remotes"]))?;
+    let pushed = unpushed.is_empty() || (done && rebased(path, tip, unpushed.lines().count())?);
+    Ok(match (pushed, done) {
+        (true, true) => Verdict::Retire,
+        (true, false) => Verdict::Keep("not merged".to_owned()),
+        (false, _) => Verdict::Keep("unpushed commits".to_owned()),
+    })
+}
+
+/// Whether each of the `count` commits of `tip` on no remote has a patch-equivalent commit on one,
+/// as a rebase of the branch they were pushed to leaves. A merge or an empty commit has no patch id.
+fn rebased(path: &Path, tip: &str, count: usize) -> Result<bool, String> {
+    let local = [tip, "--not", "--remotes"];
+    if !run(git(path).args(["rev-list", "--merges"]).args(local))?.is_empty() {
+        return Ok(false);
+    }
+    let ours = patch_ids(path, &local)?;
+    if ours.len() != count {
+        return Ok(false);
+    }
+    let dates = run(git(path).args(["log", "--format=%at"]).args(local))?;
+    let Some(oldest) = dates
+        .lines()
+        .filter_map(|date| date.parse::<u64>().ok())
+        .min()
+    else {
+        return Ok(false);
+    };
+    // A rebase keeps the author date and sets a later commit date, so older commits cannot match.
+    let since = format!("--max-age={oldest}");
+    let theirs = patch_ids(path, &["--no-merges", "--remotes", "--not", tip, &since])?;
+    Ok(ours.iter().all(|id| theirs.contains(id)))
+}
+
+/// The stable patch id of each commit `git log` lists for `revs`.
+fn patch_ids(path: &Path, revs: &[&str]) -> Result<Vec<String>, String> {
+    let patches = run(git(path)
+        .args(["log", "-p", "--no-color", "--no-ext-diff"])
+        .args(revs))?;
+    let ids = fed(
+        git(path).args(["patch-id", "--stable"]),
+        Some(patches.into_bytes()),
+    )?;
+    Ok(ids
+        .lines()
+        .filter_map(|line| line.split_whitespace().next().map(str::to_owned))
+        .collect())
+}
+
+/// The disk the folder takes, in bytes, without following symbolic links.
+pub fn size(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    let own = meta.blocks() * 512;
+    if !meta.is_dir() {
+        return own;
+    }
+    own + fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| size(&entry.path()))
+        .sum::<u64>()
 }
 
 /// Why the worktree of an asleep task must stay, or `None` when it can retire. Retiring keeps the

@@ -1,13 +1,15 @@
 use crate::recipe::{self, Teardown};
 use priory_factory::factory::Factory;
-use priory_runtime::worktrees::{self, Found};
+use priory_runtime::worktrees::{self, Found, Verdict};
 use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 /// A task folder under `PRIORY_HOME/worktrees` and why it stays, or `None` when it can go.
+/// `retire` keeps the branch when the folder goes.
 struct Entry {
     found: Found,
     stays: Option<String>,
+    retire: bool,
 }
 
 /// The task a worktree folder is named after: `<task>`, or `<runner>-<task>` with runners.
@@ -18,6 +20,7 @@ fn task_of(found: &Found) -> Option<i64> {
 fn assess(db: &Connection, home: &Path) -> rusqlite::Result<Vec<Entry>> {
     let mut entries = Vec::new();
     for found in worktrees::found(home) {
+        let mut retire = false;
         let task = task_of(&found);
         let task = task
             .map(|id| {
@@ -43,7 +46,7 @@ fn assess(db: &Connection, home: &Path) -> rusqlite::Result<Vec<Entry>> {
             Some(state @ ("queued" | "held" | "ready" | "running" | "asleep" | "blocked")) => {
                 Some(format!("kept while task {} is {state}", found.name))
             }
-            Some(_) => {
+            Some(state) => {
                 let head: Option<String> = db
                     .query_row(
                         "SELECT json_extract(data, '$.head_sha') FROM inbox
@@ -55,20 +58,28 @@ fn assess(db: &Connection, home: &Path) -> rusqlite::Result<Vec<Entry>> {
                     )
                     .optional()?
                     .flatten();
-                match worktrees::blocker(home, &found, head.as_deref()) {
-                    Some(stays) => Some(stays),
-                    None => match task_of(&found).map(|id| recipe::teardown_of(db, id)) {
-                        Some(found) => match found? {
-                            Some(Teardown::Runs) => Some("teardown runs".to_owned()),
-                            Some(Teardown::Failed(reason)) => Some(reason),
-                            Some(Teardown::Done) | None => None,
-                        },
-                        None => None,
-                    },
+                let verdict = worktrees::verdict(home, &found, head.as_deref(), state == "done");
+                retire = verdict == Verdict::Retire;
+                match verdict {
+                    Verdict::Keep(stays) => Some(stays),
+                    Verdict::Remove | Verdict::Retire => {
+                        match task_of(&found).map(|id| recipe::teardown_of(db, id)) {
+                            Some(found) => match found? {
+                                Some(Teardown::Runs) => Some("teardown runs".to_owned()),
+                                Some(Teardown::Failed(reason)) => Some(reason),
+                                Some(Teardown::Done) | None => None,
+                            },
+                            None => None,
+                        }
+                    }
                 }
             }
         };
-        entries.push(Entry { found, stays });
+        entries.push(Entry {
+            found,
+            stays,
+            retire,
+        });
     }
     Ok(entries)
 }
@@ -84,7 +95,9 @@ pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<
         .collect();
     repos.dedup();
     let unfetched = fetch(home, &repos, jiff::Timestamp::now());
-    for entry in assess(db, home)? {
+    let entries = assess(db, home)?;
+    measure(home, &entries);
+    for entry in entries {
         if unfetched.contains(&entry.found.repo) {
             continue;
         }
@@ -104,7 +117,12 @@ pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<
         if !matches!(torn, Teardown::Done) {
             continue;
         }
-        if let Err(error) = worktrees::remove(home, &entry.found) {
+        let removed = if entry.retire {
+            worktrees::retire(home, &entry.found)
+        } else {
+            worktrees::remove(home, &entry.found)
+        };
+        if let Err(error) = removed {
             eprintln!(
                 "priory daemon: removing {}: {error}",
                 entry.found.path.display()
@@ -112,6 +130,44 @@ pub fn run(db: &Connection, factory: &Factory, home: &Path) -> rusqlite::Result<
         }
     }
     Ok(())
+}
+
+fn sizes_file(home: &Path) -> PathBuf {
+    home.join("sweep").join("sizes.json")
+}
+
+/// Records the size of each folder that stays, in bytes, for the desk to read.
+fn measure(home: &Path, entries: &[Entry]) {
+    let sizes: std::collections::BTreeMap<String, u64> = entries
+        .iter()
+        .filter(|entry| entry.stays.is_some())
+        .map(|entry| {
+            let path = entry.found.path.display().to_string();
+            (path, worktrees::size(&entry.found.path))
+        })
+        .collect();
+    let file = sizes_file(home);
+    let written = std::fs::create_dir_all(file.parent().expect("a file has a folder"))
+        .and_then(|()| std::fs::write(&file, serde_json::to_vec(&sizes).expect("serializes")));
+    if let Err(written) = written {
+        eprintln!("priory daemon: recording {}: {written}", file.display());
+    }
+}
+
+/// `bytes` in the largest unit that keeps it at 1 or more, such as `7.4 GB`.
+fn human(bytes: u64) -> String {
+    let mut size = bytes as f64;
+    for unit in ["B", "KB", "MB", "GB"] {
+        if size < 1024.0 {
+            return if unit == "B" {
+                format!("{bytes} B")
+            } else {
+                format!("{size:.1} {unit}")
+            };
+        }
+        size /= 1024.0;
+    }
+    format!("{size:.1} TB")
 }
 
 /// How long the sweep waits before it fetches again a clone whose fetch failed.
@@ -310,14 +366,24 @@ pub(crate) fn retire(
     Ok(())
 }
 
-/// Every worktree under `home` that stays: its path, its task when its name is one, and why.
+/// Every worktree under `home` that stays: its path, its task when its name is one, and why, with
+/// the size the last sweep measured.
 pub fn stays(db: &Connection, home: &Path) -> rusqlite::Result<Vec<(String, Option<i64>, String)>> {
+    let sizes: std::collections::HashMap<String, u64> = std::fs::read(sizes_file(home))
+        .ok()
+        .and_then(|read| serde_json::from_slice(&read).ok())
+        .unwrap_or_default();
     Ok(assess(db, home)?
         .into_iter()
         .filter_map(|entry| {
             let reason = entry.stays?;
             let task = entry.found.name.parse().ok();
-            Some((entry.found.path.display().to_string(), task, reason))
+            let path = entry.found.path.display().to_string();
+            let reason = match sizes.get(&path) {
+                Some(&bytes) => format!("{reason}, {}", human(bytes)),
+                None => reason,
+            };
+            Some((path, task, reason))
         })
         .collect())
 }

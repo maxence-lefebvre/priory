@@ -167,7 +167,7 @@ pub(crate) fn run(command: &mut Command) -> Result<String, String> {
 }
 
 /// As `run`, with `input` on the command's stdin.
-fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> {
+pub(crate) fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> {
     let output = fed_within(command, input, command_timeout())
         .map_err(|error| format!("{command:?}: {error}"))?
         .ok_or_else(|| {

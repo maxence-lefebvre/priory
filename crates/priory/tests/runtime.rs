@@ -10085,15 +10085,35 @@ fn a_reopened_approval_shows_the_verification_a_later_result_sent() {
 impl Setup {
     /// A setup whose tasks 1 to `n` ran to done, with the daemon stopped.
     fn ended(name: &str, n: u64) -> Setup {
+        Setup::ended_as(name, &vec!["passed"; n as usize])
+    }
+
+    /// A setup whose task `i + 1` ended with result `outcomes[i]`, with the daemon stopped.
+    fn ended_as(name: &str, outcomes: &[&str]) -> Setup {
         let mut setup = Setup::new(name);
-        setup.calls(&vec![result("passed"); n as usize]);
+        setup.calls(
+            &outcomes
+                .iter()
+                .map(|outcome| result(outcome))
+                .collect::<Vec<_>>(),
+        );
         setup.start();
-        for issue in 1..=n {
-            setup.publish(&requested(issue));
-            setup.until("tasks", |rows| with(rows, 4, "done") == issue as usize);
+        for issue in 1..=outcomes.len() {
+            setup.publish(&requested(issue as u64));
+            setup.until("tasks", |rows| {
+                rows.len() == issue && matches!(rows[issue - 1][4].as_str(), "done" | "dropped")
+            });
         }
         setup.crash();
         setup
+    }
+
+    /// Pushes the worktree of `task` to `branch` of origin, as a task on a person's pull request does.
+    fn push_to(&self, task: u64, branch: &str) {
+        self.git(
+            &self.worktree(task),
+            &["push", "-q", "origin", &format!("HEAD:refs/heads/{branch}")],
+        );
     }
 
     fn worktree(&self, task: u64) -> PathBuf {
@@ -10196,8 +10216,17 @@ fn a_sweep_removes_the_worktree_and_branch_of_a_done_task_whose_branch_merged() 
 }
 
 impl Setup {
-    /// The reason `priory desk` gives for keeping the worktree of `task`, if it lists one.
+    /// The reason `priory desk` gives for keeping the worktree of `task`, if it lists one, without
+    /// the size a sweep measured.
     fn stays(&self, task: u64) -> Option<String> {
+        self.kept(task).map(|what| match what.rsplit_once(", ") {
+            Some((reason, size)) if size.ends_with('B') => reason.to_owned(),
+            _ => what,
+        })
+    }
+
+    /// What `priory desk` says of the worktree of `task`, if it lists one.
+    fn kept(&self, task: u64) -> Option<String> {
         let wanted = self.worktree(task).display().to_string();
         self.rows("desk")
             .into_iter()
@@ -10227,12 +10256,72 @@ fn kept_by(name: &str, spoil: impl FnOnce(&Setup)) -> (Setup, Option<String>) {
 }
 
 #[test]
-fn a_sweep_keeps_a_branch_that_is_not_merged_and_the_desk_says_so() {
-    let (_setup, reason) = kept_by("sweep-unmerged", |setup| {
-        setup.work_on(2);
-        setup.push(2);
-    });
-    assert_eq!(reason.as_deref(), Some("not merged"));
+fn a_sweep_removes_the_worktree_of_a_done_task_pushed_to_a_persons_branch_and_keeps_its_branch() {
+    let mut setup = Setup::ended("sweep-pushed", 2);
+    setup.work_on(2);
+    setup.push_to(2, "ana/fix");
+
+    setup.swept();
+
+    setup.removed(2);
+    assert!(setup.branches().contains("priory/2"));
+    assert_eq!(setup.stays(2), None);
+}
+
+#[test]
+fn a_sweep_removes_the_worktree_of_a_done_task_whose_commit_a_rebase_rewrote_on_the_remote() {
+    let mut setup = Setup::ended("sweep-rebased", 2);
+    let commit = setup.commit(2, "widget.txt");
+    let tree = format!("{commit}^{{tree}}");
+    let parent = format!("{commit}^");
+    let rebased = setup.git(
+        &setup.clone(),
+        &[
+            "-c",
+            "user.name=ana",
+            "-c",
+            "user.email=ana@a",
+            "commit-tree",
+            &tree,
+            "-p",
+            &parent,
+            "-m",
+            "widget, rebased",
+        ],
+    );
+    let rebased = rebased.trim();
+    assert_ne!(rebased, commit);
+    setup.git(
+        &setup.clone(),
+        &[
+            "push",
+            "-q",
+            "origin",
+            &format!("{rebased}:refs/heads/ana/fix"),
+        ],
+    );
+
+    setup.swept();
+
+    setup.removed(2);
+    assert!(setup.branches().contains("priory/2"));
+}
+
+#[test]
+fn a_sweep_keeps_a_dropped_task_pushed_to_a_persons_branch_as_not_merged_with_its_size() {
+    let mut setup = Setup::ended_as("sweep-dropped", &["passed", "failed"]);
+    setup.work_on(2);
+    setup.push_to(2, "ana/fix");
+
+    setup.swept();
+
+    assert!(setup.worktree(2).is_dir());
+    let kept = setup.kept(2).expect("the desk lists the worktree");
+    let size = kept
+        .strip_prefix("not merged, ")
+        .and_then(|size| size.strip_suffix(" KB"))
+        .and_then(|size| size.parse::<f64>().ok());
+    assert!(size.is_some_and(|size| size > 0.0), "{kept}");
 }
 
 #[test]
@@ -10291,7 +10380,11 @@ fn a_sweep_keeps_a_worktree_the_task_does_not_record() {
 
     let desk = setup.rows("desk");
     assert_eq!(desk[0][2], other.display().to_string());
-    assert_eq!(desk[0][5], "not recorded as the worktree of task 1");
+    assert!(
+        desk[0][5].starts_with("not recorded as the worktree of task 1, "),
+        "{}",
+        desk[0][5]
+    );
 }
 
 #[test]

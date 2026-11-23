@@ -21,6 +21,15 @@ It removes a folder and its branch `priory/<id>` only when all checks hold:
   branch (a `github.pull_request.closed` event with `merged` true). Otherwise it stays as
   `unpushed commits` when a commit is on no remote branch, else as `not merged`.
 
+A `done` task whose branch did not merge loses only its worktree when every commit of the branch
+is on a remote branch, any remote branch. A task that works on a person's pull request pushes to
+that person's branch, so its own branch never merges. The sweep keeps `priory/<id>`, and a reopen
+or revive adds the worktree back from it. A commit also counts as pushed when a remote branch holds
+a commit with the same patch (`git patch-id --stable`), as a rebase of that branch leaves. A merge
+commit or an empty commit has no patch, so it counts only when it is on a remote branch itself. A
+`failed` or `dropped` task keeps its worktree as `not merged`, since a person revives it in place.
+No later sweep deletes that branch once the pull request merges, since the sweep walks folders.
+
 When the task's repository has a [`teardown` recipe](runs.md#recipes), the sweep runs it in the
 worktree first, once all checks hold, and removes the worktree at the sweep after it succeeds. The
 daemon sweeps again as soon as a teardown ends. A failed teardown keeps the worktree. The desk says
@@ -38,7 +47,9 @@ logged and retried at the next sweep. A git command that cannot run keeps the wo
 reason: `no task <id>`, `kept while task <id> is <state>`, `not a worktree of <clone>`,
 `not recorded as the worktree of task <id>`, `not on branch priory/<id>`, `uncommitted changes`,
 `untracked files`, `a process runs in it`, `unpushed commits`, `not merged`, `teardown runs` or
-`teardown failed: ...`. It reads the refs of the last fetch.
+`teardown failed: ...`. It reads the refs of the last fetch. Each reason ends with the size of the
+folder, such as `not merged, 7.4 GB`, as the last sweep measured it. A folder the sweep has not
+measured yet shows its reason alone.
 
 ## Retiring asleep tasks
 
