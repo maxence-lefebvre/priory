@@ -3022,7 +3022,8 @@ mod tests {
         sh(&tree, &["checkout", "--quiet", "--detach"]);
         let head = commit(&tree, "a.txt", "a\n");
         sh(&tree, &["checkout", "--quiet", "--detach", "origin/main"]);
-        sh(&tree, &["cherry-pick", &head]);
+        // `-x` changes the message, so the copy is another commit even within the same second.
+        sh(&tree, &["cherry-pick", "-x", &head]);
         sh(
             &tree,
             &["push", "--quiet", "origin", "HEAD:refs/heads/copy"],
