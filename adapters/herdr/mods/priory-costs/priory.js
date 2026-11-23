@@ -130,8 +130,9 @@ export async function follow({ read, wait, sleep, failed, retry, stopped = () =>
 // The web view's autolinks, in crates/priory-core/web/links.js; a test keeps the two the same.
 /**
  * Splits `text` into spans, each `{ text }` or `{ text, url }`. At each point the earliest match
- * wins, and the first rule on a tie. A rule whose URL is not `https:`, whose regex this engine
- * refuses, or that needs `{repo}` when `repo` is null, links nothing.
+ * wins, and the first rule on a tie. A bare `https://` URL links to itself and wins a tie, so no rule
+ * links a part of it. A rule whose URL is not `https:`, whose regex this engine refuses, or that
+ * needs `{repo}` when `repo` is null, links nothing.
  * @param {string} text @param {{ pattern: string, url: string }[]} links @param {string | null} repo
  * @returns {{ text: string, url?: string }[]}
  */
@@ -144,10 +145,30 @@ export function autolink(text, links, repo) {
       return [];
     }
   });
+  // A bare URL ends at a space, `<`, `>` or `"`, and leaves out the punctuation, `…` and unbalanced
+  // `)` that prose puts after it. Its link is its own text, when that parses as an `https:` URL.
+  const bare = (/** @type {number} */ from) => {
+    const regex = /https:\/\/[^\s<>"]+/gu;
+    regex.lastIndex = from;
+    for (let match = regex.exec(text); match; match = regex.exec(text)) {
+      let url = match[0];
+      for (let last = ""; last !== url;) {
+        last = url;
+        url = url.replace(/[.,;:!?'…]+$/u, "");
+        if (url.endsWith(")") && url.split(")").length > url.split("(").length) url = url.slice(0, -1);
+      }
+      try {
+        if (new URL(url).protocol === "https:") return { index: match.index, text: url, url };
+      } catch {
+        // Not a URL: look for the next one.
+      }
+    }
+    return null;
+  };
   const spans = [];
   let at = 0;
   for (;;) {
-    let best = null;
+    let best = bare(at);
     for (const rule of rules) {
       rule.regex.lastIndex = at;
       let match = rule.regex.exec(text);
@@ -155,16 +176,17 @@ export function autolink(text, links, repo) {
         rule.regex.lastIndex = match.index + (text.codePointAt(match.index) > 0xffff ? 2 : 1);
         match = rule.regex.exec(text);
       }
-      if (match?.[0] && (!best || match.index < best.match.index)) best = { rule, match };
+      if (!match?.[0] || (best && match.index >= best.index)) continue;
+      const found = match;
+      const url = rule.url
+        .replaceAll("{repo}", () => String(repo).split("/").map(encodeURIComponent).join("/"))
+        .replace(/\$(\d+)/g, (_, group) => encodeURIComponent(found[Number(group)] ?? ""));
+      best = { index: match.index, text: match[0], url };
     }
     if (!best) break;
-    const { rule, match } = best;
-    if (match.index > at) spans.push({ text: text.slice(at, match.index) });
-    const url = rule.url
-      .replaceAll("{repo}", () => String(repo).split("/").map(encodeURIComponent).join("/"))
-      .replace(/\$(\d+)/g, (_, group) => encodeURIComponent(match[Number(group)] ?? ""));
-    spans.push({ text: match[0], url });
-    at = match.index + match[0].length;
+    if (best.index > at) spans.push({ text: text.slice(at, best.index) });
+    spans.push({ text: best.text, url: best.url });
+    at = best.index + best.text.length;
   }
   if (at < text.length) spans.push({ text: text.slice(at) });
   return spans;

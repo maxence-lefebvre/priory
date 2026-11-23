@@ -50,3 +50,23 @@ test("an empty match before an astral character moves past the whole character",
     `😀<a class="autolink" href="https://example.com/123" rel="noopener noreferrer" target="_blank">123</a>`,
   );
 });
+
+test("links a Desk card's bare URL and its owner/repo#N, and leaves the prose around them", () => {
+  const rule = [{ pattern: String.raw`\b([\w.-]+)/([\w.-]+)#(\d+)\b`, url: "https://github.com/$1/$2/issues/$3" }];
+  const text = "priory: landed wrong: acme/shop#20705 of task 163 is red on dev: deploy cancelled https://github.com/acme/shop/actions/runs/451251.";
+
+  assert.equal(
+    linked(text, rule, null),
+    `priory: landed wrong: <a class="autolink" href="https://github.com/acme/shop/issues/20705" rel="noopener noreferrer" target="_blank">acme/shop#20705</a>` +
+      ` of task 163 is red on dev: deploy cancelled ` +
+      `<a class="autolink" href="https://github.com/acme/shop/actions/runs/451251" rel="noopener noreferrer" target="_blank">https://github.com/acme/shop/actions/runs/451251</a>.`,
+  );
+});
+
+test("a bare URL never takes an http target or markup around it, and escapes its href", () => {
+  assert.equal(linked("http://x.dev", [], null), "http://x.dev");
+  assert.equal(
+    linked(`<https://x.dev/a?b=1&c="2">`, [], null),
+    `&#60;<a class="autolink" href="https://x.dev/a?b=1&#38;c=" rel="noopener noreferrer" target="_blank">https://x.dev/a?b=1&#38;c=</a>&#34;2&#34;&#62;`,
+  );
+});

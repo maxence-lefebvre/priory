@@ -245,7 +245,7 @@ a.facet[aria-current="true"] { background: var(--action-soft); color: var(--acti
 .sh .ico { color: var(--text-3); }
 .sh .meta { margin-left: auto; font: 400 var(--type-caption) var(--font-ui); color: var(--text-3); display: inline-flex; gap: 8px; align-items: center; white-space: nowrap; }
 .sh .meta .mono { font-size: 12px; color: var(--text-2); }
-a.autolink { color: var(--action-text); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+a.autolink { color: var(--action-text); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; overflow-wrap: anywhere; }
 .text { font: 400 var(--type-read) var(--font-ui); max-width: var(--measure); white-space: pre-wrap; overflow-wrap: anywhere; }
 .md { font: 400 var(--type-read) var(--font-ui); max-width: var(--measure); overflow-wrap: anywhere; display: grid; gap: 10px; min-width: 0; }
 .md :is(p, ul, ol, pre, h3, h4, h5) { margin: 0; }

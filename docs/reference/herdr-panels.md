@@ -238,13 +238,13 @@ History is left out: the panel would need each task's events.
 
 ## Links
 
-Each panel links the factory's keys in the text the web view links: an ask's question and text, a
+Each panel links the factory's keys and bare `https://` URLs in the text the web view links: an ask's question and text, a
 task's title and a report row's text. A text shows its links once: in the panel's detail where it
 has one, else in its row. A row drawn as a button that truncates to one line keeps plain text.
 
 | Panel | Linked text |
 | ----- | ----------- |
-| Desk | The next thing's heading, and each row's text: an ask's heading, a task's title or reason |
+| Desk | The next thing's heading and reason, each row's text: an ask's heading, a task's title or reason, a report's text, and each Since you looked line |
 | Asks | The opened ask's heading, and its full question and text under Why |
 | Queue | The opened row's title |
 | Bonjour | Each report row's text, and each pick card's text |
