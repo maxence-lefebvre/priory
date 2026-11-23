@@ -1202,6 +1202,10 @@ pub struct Agent {
     /// The MCP servers the run gets, by name.
     #[serde(default)]
     pub mcp_servers: Vec<String>,
+    /// The claude.ai connectors the run gets, by the name claude.ai shows, such as `Linear`. A
+    /// Claude Code run that names one loads no other connector's or server's tools.
+    #[serde(default)]
+    pub connectors: Vec<String>,
     /// The skills the run gets, by name, from the factory or the kit. Unset, it gets every skill;
     /// empty, none.
     pub skills: Option<Vec<String>>,

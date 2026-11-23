@@ -25,6 +25,7 @@ against it, but `priory check` applies the same rules.
 | `memory` | size | no | | What a runner must have free to admit a run. See [memory-gate.md](../daemon/memory-gate.md) | `"6GB"` |
 | `disk` | size | no | | Disk a run reserves above the runner's floor | `"20GB"` |
 | `mcpServers` | array of strings | no | `[]` | The MCP servers the run gets beside `priory`, and no others, by their names in the person's own harness config. See [mcpServers](#mcpservers) | `["github"]` |
+| `connectors` | array of strings | no | `[]` | The claude.ai connectors the run gets, by the name claude.ai shows, and no other connector or server of the person's. Claude Code only. See [connectors](#connectors) | `["Linear", "Slack"]` |
 | `skills` | array of strings | no | every skill | The skills the run gets, by name, from the factory's `skills/` or the kit's. `[]` gives none. See [skills.md](../daemon/skills.md#skills-per-agent) | `["review-comments"]` |
 | `connectorSignIn` | boolean | no | `false` | Lets the run call an MCP server's `authenticate` and `complete_authentication` tools. Off by default: an unattended run that signs in clears the stored token every later run needs. See [guard.md](../daemon/guard.md#connector-sign-in) | `true` |
 | `investigator` | boolean | no | `false` | Makes the agent an investigator: a read-only agent that answers other agents' consults, one question each, in a fresh run. See [Investigators](#investigators) | `true` |
@@ -70,6 +71,51 @@ run instead, and blocks its task with one of the errors below.
 | `agent <agent> cannot read its MCP servers: <path> is not valid JSON at line <n> column <m>` | The Claude Code config does not parse. The message never quotes the file, which can hold tokens |
 | `agent <agent> cannot read its MCP servers: <path> is not valid TOML at line <n>` | A Codex config does not parse. A file that cannot be read gives `<path>: <error>` after the colon |
 
+### `connectors`
+
+A claude.ai connector is an MCP server a person connects once in claude.ai, under Settings,
+Connectors. It follows their Claude login to every machine, so no runner's config defines it.
+Claude Code names its server `claude.ai <name>` and its tools `mcp__claude_ai_<name>__<tool>`, with
+each run of characters other than letters, digits, `-` and `_` turned into one `_`. So `Google Drive`
+gives `mcp__claude_ai_Google_Drive__<tool>`.
+
+```toml
+connectors = ["Linear", "Slack"]
+```
+
+A connector is its own key rather than a name in `mcpServers`, for three reasons. Its definition
+lives in the person's claude.ai account, not in a config file Priory copies. Claude Code loads no
+connector under `--strict-mcp-config`, so a run with one starts differently (see
+[runs.md](../daemon/runs.md)). And a Codex run cannot reach one.
+
+Without `--strict-mcp-config`, Claude Code loads every server of the person's config and every
+connector of their account. So a run whose agent names a connector also gets:
+
+| Limit | What it covers |
+| ----- | -------------- |
+| A deny rule `mcp__<server>` in its `--settings` for each server it does not name | The `mcpServers` and each project's `mcpServers` of the person's Claude Code config, the worktree's `.mcp.json`, the machine's `managed-mcp.json`, and the connectors listed under `claudeAiMcpEverConnected` in the config: those that once connected on this machine |
+| The tool guard's denial of any other MCP tool (see [guard.md](../daemon/guard.md#servers-a-connector-run-does-not-name)) | A connector Priory cannot list, and a plugin's server |
+
+A server it does not name still starts, since Claude Code has no flag that keeps one out once strict
+mode is off. Its tools are denied.
+
+`priory check` refuses a name it can tell is wrong. Whether the person's account has the connector,
+only the runner can tell: before the run starts, the daemon runs `claude mcp get "claude.ai <name>"`
+for each connector, in the worktree, in the background. The task waits with the reason
+`checks its connectors with claude mcp get` meanwhile. A connector found counts as found for 10
+minutes, so most runs start with no check. The daemon also asks for `claude.ai <name> (2)`, the name
+Claude Code gives a second connector of the same name. It never keeps what `claude mcp get` prints.
+
+| Message | Cause |
+| ------- | ----- |
+| `agent <agent> names connector <name>, which the claude.ai account that claude signs in with on this runner does not have: connect it in claude.ai under Settings, Connectors, then resume the task` | `claude mcp get` finds no such server |
+| `agent <agent> names connector <name>, which the claude.ai account holds twice, as claude.ai <name> and claude.ai <name> (2): rename one in claude.ai, then resume the task` | The account has two connectors of that name |
+| `agent <agent> cannot check its connector <name>: claude mcp get "claude.ai <name>" <error>` | `claude mcp get` ended with another status, did not answer within 60 seconds, or could not start |
+
+Each of them blocks the task, and `priory resume` checks again. A connector that needs a sign-in
+offers an `authenticate` tool, which the guard denies unless the agent sets `connectorSignIn` (see
+[guard.md](../daemon/guard.md#connector-sign-in)).
+
 ### Investigators
 
 An investigator answers a `consult` from a run of another agent (see
@@ -84,6 +130,7 @@ refuses one that could write:
 | No `allow` rule names `Agent` or `Task` | Each starts a subagent, which can carry its own permission mode |
 | No `allow` rule holds a `*` or names a whole MCP server such as `mcp__sentry` | Each MCP tool is written out by its exact name, so a tool the server adds later is denied until a person adds it |
 | Each of its `mcpServers` has a `read_only` sentence under [`[mcp.<name>]`](factory.md#mcpname) | The person states where the service enforces that the server only reads. Priory cannot check it |
+| Each of its `connectors` has a `read_only` sentence under `[mcp."claude.ai <name>"]`, and an `allow` rule that names one of its tools | The same statement, for a connector. A connector loads beside every other one of the account, so the run may call only the connector tools `allow` names |
 | No `session = "shared"` and no `connectorSignIn` | Each consult starts a fresh session, and an unattended run never signs in |
 | A `model` that `prices.toml` prices | The daemon prices the run's tokens each second against `[consult] cap` |
 | No workflow step and no trigger's `lead` names it | It only answers consults |
@@ -178,6 +225,13 @@ Answer in one short paragraph.
 | `` investigator `<name>` names MCP server `<server>`, which needs a `read_only` sentence under [mcp.<server>] in factory.toml: where the service enforces that it only reads `` | A server with no `read_only` sentence |
 | `` investigator `<name>` cannot take session = "shared": each consult starts a fresh session, so no task's data reaches another's report `` | A shared investigator |
 | `` investigator `<name>` cannot take `connectorSignIn`: an unattended investigator never signs in `` | `connectorSignIn = true` on an investigator |
+| `` investigator `<name>` names connector `<connector>`, which needs a `read_only` sentence under [mcp."claude.ai <connector>"] in factory.toml: where the service enforces that it only reads `` | A connector with no `read_only` sentence |
+| `` investigator `<name>` names connector `<connector>`, but its `allow` names none of the connector's tools: write each as mcp__claude_ai_<connector>__<tool> `` | A connector none of whose tools `allow` names |
+| `` `connectors` holds an empty name `` | `""` in `connectors` |
+| `` `connectors` names `<name>` twice `` | A name repeated in `connectors` |
+| `` `connectors` names `claude.ai <name>`: write the connector's name as claude.ai shows it, `<name>`, since Claude Code adds `claude.ai ` itself `` | A name with Claude Code's prefix |
+| `` `connectors` names `<a>` and `<b>`, whose tools Claude Code names alike, mcp__claude_ai_<server>__<tool>: keep one `` | Two names that give one tool prefix, such as `Google Drive` and `Google_Drive` |
+| `` a codex agent cannot take `connectors`: claude.ai connectors reach Claude Code alone `` | A Codex agent with `connectors` |
 | `` investigator `<name>` needs a `model` with a price in prices.toml, so its cap can be enforced `` | No `model`. With a model `prices.toml` lacks: `` runs model `<model>`, which prices.toml does not price, so its cap cannot be enforced `` |
 | `invalid value: integer `0`, expected a nonzero u64` | `compactAt = 0` or `idleCompactAt = 0`. A negative or non-integer value gets serde's matching message |
 

@@ -187,7 +187,7 @@ fn an_unknown_field_names_its_file_and_line() {
     assert_eq!(outcome.code, 1);
     assert_eq!(
         outcome.stderr,
-        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, compactAt, idleCompactAt, onChange, memory, disk, mcpServers, skills, connectorSignIn, investigator, permissions\n"
+        "agents/implementer/agent.md:4:1: unknown field `modle`, expected one of description, harness, model, effort, runner, session, compactAt, idleCompactAt, onChange, memory, disk, mcpServers, connectors, skills, connectorSignIn, investigator, permissions\n"
     );
 }
 
@@ -4232,6 +4232,132 @@ fn each_investigator_rule_fails_with_its_line() {
             outcome.stderr
         );
     }
+}
+
+/// The valid factory with `connectors` on its implementer, set to `list`.
+fn with_connectors(name: &str, harness: &str, list: &str) -> Outcome {
+    let agent = AGENT
+        .replace("claude-code", harness)
+        .replace(
+            "mcpServers = [\"github\"]\n",
+            &format!("mcpServers = [\"github\"]\nconnectors = {list}\n"),
+        )
+        .replace(
+            "permissions = { defaultMode = \"auto\", allow = [\"Bash(cargo test:*)\", \"Edit\"], deny = [\"Bash(git push:*)\"] }",
+            "permissions = { defaultMode = \"auto\" }",
+        );
+    check(&factory(name, &with("agents/implementer/agent.md", &agent)))
+}
+
+#[test]
+fn an_agent_that_names_claude_ai_connectors_passes() {
+    let outcome = with_connectors(
+        "connectors",
+        "claude-code",
+        "[\"Linear\", \"Google Drive\"]",
+    );
+
+    assert_eq!((outcome.code, outcome.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn a_connector_name_that_is_empty_repeated_prefixed_or_ambiguous_fails_the_check() {
+    let cases = [
+        (
+            "connectors-empty",
+            "[\"\"]",
+            "agents/implementer/agent.md:6: `connectors` holds an empty name\n",
+        ),
+        (
+            "connectors-twice",
+            "[\"Linear\", \"Linear\"]",
+            "agents/implementer/agent.md:6: `connectors` names `Linear` twice\n",
+        ),
+        (
+            "connectors-prefixed",
+            "[\"claude.ai Linear\"]",
+            "agents/implementer/agent.md:6: `connectors` names `claude.ai Linear`: write the connector's name as claude.ai shows it, `Linear`, since Claude Code adds `claude.ai ` itself\n",
+        ),
+        (
+            "connectors-ambiguous",
+            "[\"Google Drive\", \"Google_Drive\"]",
+            "agents/implementer/agent.md:6: `connectors` names `Google Drive` and `Google_Drive`, whose tools Claude Code names alike, mcp__claude_ai_Google_Drive__<tool>: keep one\n",
+        ),
+    ];
+    for (name, list, stderr) in cases {
+        let outcome = with_connectors(name, "claude-code", list);
+
+        assert_eq!(
+            (outcome.code, outcome.stderr.as_str()),
+            (1, stderr),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_codex_agent_cannot_name_a_connector() {
+    let outcome = with_connectors("connectors-codex", "codex", "[\"Linear\"]");
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.lines().any(|line| line
+            == "agents/implementer/agent.md:6: a codex agent cannot take `connectors`: claude.ai connectors reach Claude Code alone"),
+        "{}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn an_investigator_names_a_connector_only_with_a_read_only_sentence_and_its_tools_allowed() {
+    let agent = INVESTIGATOR
+        .replace(
+            "mcpServers = [\"sentry\"]\n",
+            "mcpServers = [\"sentry\"]\nconnectors = [\"Linear\"]\n",
+        )
+        .replace(
+            "\"Read\"]",
+            "\"Read\", \"mcp__claude_ai_Linear__get_issue\"]",
+        );
+    let stated = format!(
+        "{CONSULTING}\n[mcp.\"claude.ai Linear\"]\nread_only = \"The connector's account has read access only.\"\n"
+    );
+    let no_tools = agent.replace(", \"mcp__claude_ai_Linear__get_issue\"", "");
+
+    let ok = consulting(
+        "investigator-connector",
+        &[
+            ("agents/sentry/agent.md", &agent),
+            ("factory.toml", &stated),
+        ],
+    );
+    let unstated = consulting(
+        "investigator-connector-unstated",
+        &[("agents/sentry/agent.md", &agent)],
+    );
+    let unused = consulting(
+        "investigator-connector-unused",
+        &[
+            ("agents/sentry/agent.md", &no_tools),
+            ("factory.toml", &stated),
+        ],
+    );
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (unstated.code, unstated.stderr.as_str()),
+        (
+            1,
+            "agents/sentry/agent.md:7: investigator `sentry` names connector `Linear`, which needs a `read_only` sentence under [mcp.\"claude.ai Linear\"] in factory.toml: where the service enforces that it only reads\n"
+        )
+    );
+    assert_eq!(
+        (unused.code, unused.stderr.as_str()),
+        (
+            1,
+            "agents/sentry/agent.md:7: investigator `sentry` names connector `Linear`, but its `allow` names none of the connector's tools: write each as mcp__claude_ai_Linear__<tool>\n"
+        )
+    );
 }
 
 #[test]

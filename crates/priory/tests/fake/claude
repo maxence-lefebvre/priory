@@ -32,6 +32,17 @@
 # A call with an `output` key stands for a built-in tool that ran: it appends the tool_use and its
 # tool_result, with that output, to FAKE_DIR/transcript.jsonl as Claude writes them, and no hook hears it.
 set -u
+# `claude mcp get NAME` logs NAME to mcp-get.log, then finds it as Claude Code 2.1.330 does when
+# FAKE_DIR/connectors lists it, one name a line, and otherwise exits 1 naming no such server.
+if [ "${1-}" = mcp ] && [ "${2-}" = get ]; then
+  printf '%s\n' "$3" >> "$FAKE_DIR/mcp-get.log"
+  if grep -qxF -- "$3" "$FAKE_DIR/connectors" 2>/dev/null; then
+    printf '%s:\n  Scope: claude.ai\n  Status: \xe2\x9c\x93 Connected\n' "$3"
+    exit 0
+  fi
+  printf 'No MCP server named "%s". Run `claude mcp add` to add one.\n' "$3" >&2
+  exit 1
+fi
 if [[ " $* " == *" -p "* ]]; then
   { cat; echo '---'; } >> "$FAKE_DIR/handler.log"
   printf '%s\n' "$@" >> "$FAKE_DIR/handler-args.log"

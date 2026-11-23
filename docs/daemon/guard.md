@@ -101,6 +101,16 @@ Each denial also does two things:
 - It adds a to-do, `Sign in to <connector>`, to the desk, unless one is open already. Two runs
   denied for one connector leave one item. See [desk.md](desk.md#sign-in-to-dos).
 
+## Servers a connector run does not name
+
+A run whose agent names claude.ai `connectors` starts without `--strict-mcp-config`, so it loads
+every server and connector of the person's (see [agents.md](../reference/agents.md#connectors)).
+Its pane gets `PRIORY_MCP_SERVERS`, the servers its agent names as their tools name them, such as
+`priory,sentry,claude_ai_Linear`. The guard denies a call of any other MCP tool, without asking the
+daemon, and tells the agent to carry on with its other sources. It denies it before the sign-in
+guard, so a connector the agent does not name never adds a sign-in to-do. A run without connectors
+has no such variable, and `--strict-mcp-config` keeps other servers out.
+
 ## How a command is read
 
 The guard parses the command rather than matching its text:

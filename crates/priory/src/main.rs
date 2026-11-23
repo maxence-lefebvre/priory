@@ -4160,6 +4160,10 @@ fn guard(input: &Value) -> Option<String> {
         _ => Default::default(),
     };
     let tool = input["tool_name"].as_str().unwrap_or_default();
+    if let Some(reason) = unnamed_server(tool, std::env::var("PRIORY_MCP_SERVERS").ok().as_deref())
+    {
+        return deny(&reason);
+    }
     let command = shell_command(input);
     let cwd = input["cwd"].as_str().map(PathBuf::from);
     let git = |dir: Option<&str>, args: &[&str]| {
@@ -4212,6 +4216,26 @@ fn guard(input: &Value) -> Option<String> {
     }
     report_connector_use(tool);
     None
+}
+
+/// The denial of an MCP tool whose server is none of `servers`, the comma-separated servers a run
+/// with claude.ai connectors gets, as its tools name them. Such a run starts without
+/// `--strict-mcp-config`, so every connector of the person's account and every plugin's server
+/// load too, and no permission rule can name the ones Priory cannot list.
+fn unnamed_server(tool: &str, servers: Option<&str>) -> Option<String> {
+    let servers = servers.filter(|servers| !servers.is_empty())?;
+    let name = tool.strip_prefix("mcp__")?;
+    if servers
+        .split(',')
+        .any(|server| name.starts_with(&format!("{server}__")))
+    {
+        return None;
+    }
+    let server = name.rsplit_once("__").map_or(name, |(server, _)| server);
+    Some(format!(
+        "Priory denied `{tool}`: this run gets only the MCP servers and claude.ai connectors its agent names ({}), and `{server}` is none of them. Do not try it another way: carry on with your other sources.",
+        servers.split(',').collect::<Vec<_>>().join(", ")
+    ))
 }
 
 /// A shell tool's command in a hook's input: Claude's string, or Codex's words quoted for a shell.
