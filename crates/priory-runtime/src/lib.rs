@@ -1,3 +1,4 @@
+pub mod cgroup;
 pub mod eval;
 pub mod http;
 pub mod jail;

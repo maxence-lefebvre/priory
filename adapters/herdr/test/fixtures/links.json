@@ -9,6 +9,10 @@
     ["Fix ENG-7 before #12 lands, then PR #3 and doc-4.", "acme/app"],
     ["<b title=\"#5\">it's ENG-8</b>", "acme/app"],
     ["#9 has no repository but ENG-9 links", null],
-    ["", "acme/app"]
+    ["", "acme/app"],
+    ["See https://ci.example.com/runs/7#L12, then #4.", "acme/app"],
+    ["(https://en.example.org/wiki/F_(math)) and https://x.dev/a…", null],
+    ["http://plain.dev and https:// alone and https://ENG-7.example.com/ENG-7", "acme/app"],
+    ["see `https://ci.example.com/x` and [https://ci.example.com/y](#3)", "acme/app"]
   ]
 }

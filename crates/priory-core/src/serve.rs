@@ -16,8 +16,8 @@ use rusqlite::{Connection, OptionalExtension};
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, PoisonError, RwLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -153,7 +153,7 @@ const WEB_HEADERS: &str = "Content-Security-Policy: default-src 'none'; script-s
 
 /// Listens on `listen` and serves the state from a pool of threads, each with its own read-only
 /// connection. Refuses to start without the token or a state file it can read.
-pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>>, String> {
+pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Server, String> {
     let config = factory
         .serve()
         .ok_or("factory.toml has no [serve] table, so nothing listens")?;
@@ -222,32 +222,13 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         .local_addr()
         .map_err(|error| format!("listen on {listen}: {error}"))?;
     let web = config.web;
-    let served = Arc::new(Served {
-        views: listing::views(factory).to_string(),
-        links: listing::links(factory).to_string(),
-        flows: listing::flows(factory),
-        gates: crate::risk::Gates::of(factory),
-        schedules: listing::schedule_triggers(factory),
-        workflows: factory.workflows.keys().cloned().collect(),
-        request: serde_json::json!({
-            "workflow": factory.request().map(|defaults| &defaults.workflow),
-            "band": factory.request().and_then(|defaults| defaults.band.as_ref()),
-            "workflows": factory.workflows.keys().collect::<Vec<_>>(),
-            "bands": factory.bands(),
-        })
-        .to_string(),
-        prices: factory.prices.clone(),
-        book: crate::spend::Book::new(factory),
-        terminal: config.terminal,
-        secrets: screen::secrets(&factory.secret_envs()),
-        snapshots: AtomicUsize::new(0),
-        kit: factory.settings.as_ref().and_then(|s| s.value.kit.clone()),
-        memories_repo: factory
-            .settings
-            .as_ref()
-            .and_then(|s| s.value.memories.clone()),
-        memories: crate::memories::Held::of(factory).factory,
-    });
+    let snapshots = Arc::new(AtomicUsize::new(0));
+    let live = Arc::new(RwLock::new(Arc::new(Served::of(
+        factory,
+        config.terminal,
+        snapshots.clone(),
+    ))));
+    let served = live.clone();
     let hooks: &'static [&'static str] = [
         (github.is_some(), GITHUB),
         (linear.is_some(), LINEAR),
@@ -274,7 +255,7 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
         let db = state::read_only();
         let waiters = Arc::clone(&waiters);
         let home = runtime::home();
-        let served = served.clone();
+        let live = served.clone();
         let remote = remote.clone();
         let mut github = github.clone().map(|github| {
             (
@@ -318,53 +299,77 @@ pub fn start(factory: &Factory, listen: SocketAddr) -> Result<Vec<JoinHandle<()>
                 log::open(&event_log).map_err(|error| error.to_string()),
             )
         });
-        move |request: &Request| match (
-            request.method == "POST",
-            request.path.split('?').next(),
-            &mut github,
-            &mut linear,
-            &mut sentry,
-            &mut figma,
-            &mut cloudwatch,
-            &mut honeycomb,
-            &mut intercom,
-        ) {
-            (true, Some(GITHUB), Some((github, bus)), _, _, _, _, _, _) => {
-                github.receive(bus, request)
+        move |request: &Request| {
+            let served = live.read().unwrap_or_else(PoisonError::into_inner).clone();
+            match (
+                request.method == "POST",
+                request.path.split('?').next(),
+                &mut github,
+                &mut linear,
+                &mut sentry,
+                &mut figma,
+                &mut cloudwatch,
+                &mut honeycomb,
+                &mut intercom,
+            ) {
+                (true, Some(GITHUB), Some((github, bus)), _, _, _, _, _, _) => {
+                    github.receive(bus, request)
+                }
+                (true, Some(LINEAR), _, Some((linear, bus)), _, _, _, _, _) => {
+                    linear.receive(bus, request)
+                }
+                (true, Some(SENTRY), _, _, Some((sentry, bus)), _, _, _, _) => {
+                    sentry.receive(bus, request)
+                }
+                (true, Some(FIGMA), _, _, _, Some((figma, bus)), _, _, _) => {
+                    figma.receive(bus, request)
+                }
+                (true, Some(CLOUDWATCH), _, _, _, _, Some((cloudwatch, bus)), _, _) => {
+                    cloudwatch.receive(bus, request)
+                }
+                (true, Some(HONEYCOMB), _, _, _, _, _, Some((honeycomb, bus)), _) => {
+                    honeycomb.receive(bus, request)
+                }
+                (true, Some(INTERCOM), _, _, _, _, _, _, Some((intercom, bus))) => {
+                    intercom.receive(bus, request)
+                }
+                _ if request.method == "POST" => write(&db, &home, &served, &remote, request),
+                _ => route(
+                    &db,
+                    &home,
+                    &served,
+                    web,
+                    &waiters,
+                    request.method,
+                    request.path,
+                ),
             }
-            (true, Some(LINEAR), _, Some((linear, bus)), _, _, _, _, _) => {
-                linear.receive(bus, request)
-            }
-            (true, Some(SENTRY), _, _, Some((sentry, bus)), _, _, _, _) => {
-                sentry.receive(bus, request)
-            }
-            (true, Some(FIGMA), _, _, _, Some((figma, bus)), _, _, _) => {
-                figma.receive(bus, request)
-            }
-            (true, Some(CLOUDWATCH), _, _, _, _, Some((cloudwatch, bus)), _, _) => {
-                cloudwatch.receive(bus, request)
-            }
-            (true, Some(HONEYCOMB), _, _, _, _, _, Some((honeycomb, bus)), _) => {
-                honeycomb.receive(bus, request)
-            }
-            (true, Some(INTERCOM), _, _, _, _, _, _, Some((intercom, bus))) => {
-                intercom.receive(bus, request)
-            }
-            _ if request.method == "POST" => write(&db, &home, &served, &remote, request),
-            _ => route(
-                &db,
-                &home,
-                &served,
-                web,
-                &waiters,
-                request.method,
-                request.path,
-            ),
         }
     })
     .map_err(|error| format!("start the server threads: {error}"))?;
     eprintln!("priory: serving on http://{bound}");
-    Ok(workers)
+    Ok(Server {
+        workers,
+        live,
+        terminal: config.terminal,
+        snapshots,
+    })
+}
+
+/// A running server: its threads, and what they read from the factory.
+pub struct Server {
+    pub workers: Vec<JoinHandle<()>>,
+    live: Arc<RwLock<Arc<Served>>>,
+    terminal: Terminal,
+    snapshots: Arc<AtomicUsize>,
+}
+
+impl Server {
+    /// Serves what `factory` holds from the next request on. `[serve]` itself waits for a restart.
+    pub fn update(&self, factory: &Factory) {
+        let served = Served::of(factory, self.terminal, self.snapshots.clone());
+        *self.live.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(served);
+    }
 }
 
 /// The value of the environment variable `name`, refused when unset or empty.
@@ -381,7 +386,7 @@ struct Remote {
     runners: Vec<String>,
 }
 
-/// What every server thread reads from the factory, once, when the server starts.
+/// What every server thread reads from the factory, when the server starts and on each reload.
 struct Served {
     views: String,
     links: String,
@@ -398,14 +403,45 @@ struct Served {
     terminal: Terminal,
     /// The secret values the terminal hides, read when the server starts.
     secrets: Vec<String>,
-    /// Screens being read now.
-    snapshots: AtomicUsize,
+    /// Screens being read now, kept across reloads.
+    snapshots: Arc<AtomicUsize>,
     /// The factory's `[kit]`, for the memories a candidate on the desk replaces.
     kit: Option<priory_factory::factory::Kit>,
     /// The factory's `[memories]`, for the same.
     memories_repo: Option<priory_factory::factory::MemoriesRepo>,
     /// The factory's own memories, each name's text.
     memories: BTreeMap<String, String>,
+}
+
+impl Served {
+    fn of(factory: &Factory, terminal: Terminal, snapshots: Arc<AtomicUsize>) -> Served {
+        Served {
+            views: listing::views(factory).to_string(),
+            links: listing::links(factory).to_string(),
+            flows: listing::flows(factory),
+            gates: crate::risk::Gates::of(factory),
+            schedules: listing::schedule_triggers(factory),
+            workflows: factory.workflows.keys().cloned().collect(),
+            request: serde_json::json!({
+                "workflow": factory.request().map(|defaults| &defaults.workflow),
+                "band": factory.request().and_then(|defaults| defaults.band.as_ref()),
+                "workflows": factory.workflows.keys().collect::<Vec<_>>(),
+                "bands": factory.bands(),
+            })
+            .to_string(),
+            prices: factory.prices.clone(),
+            book: crate::spend::Book::new(factory),
+            terminal,
+            secrets: screen::secrets(&factory.secret_envs()),
+            snapshots,
+            kit: factory.settings.as_ref().and_then(|s| s.value.kit.clone()),
+            memories_repo: factory
+                .settings
+                .as_ref()
+                .and_then(|s| s.value.memories.clone()),
+            memories: crate::memories::Held::of(factory).factory,
+        }
+    }
 }
 
 fn route(

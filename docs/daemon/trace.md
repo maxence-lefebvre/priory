@@ -68,7 +68,8 @@ Known limits:
 
 ## OpenTelemetry export
 
-The daemon can send its `factory.step.ended` records to an OTLP/HTTP endpoint as spans. It is off
+The daemon can send its `factory.step.ended` records, and its reload records, to an OTLP/HTTP
+endpoint as spans. It is off
 unless `factory.toml` names the endpoint, and then nothing is sent:
 
 ```toml
@@ -104,6 +105,15 @@ task id and generation, run id or record id, so sending a record again gives the
 | `gen_ai.usage.input_tokens` | step | the record's `input`, `cache_read` and `cache_write` tokens together |
 | `gen_ai.usage.output_tokens`, `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.cache_creation.input_tokens` | step | the record's `output`, `cache_read` and `cache_write` tokens |
 | `gen_ai.operation.name`, `gen_ai.agent.name` | run | `invoke_agent` and the run's agent |
+
+Each `factory.config.reloaded` and `factory.config.refused` record (see [reload.md](reload.md)) is
+a span of the record's type, alone in a trace of its own, that starts and ends at the record's time.
+
+| Attribute | Value |
+| --------- | ----- |
+| `priory.factory.revision` | the record's `factory_revision` |
+| `priory.reload.restart_only` | the record's `restart_only`, one key per line; absent when empty |
+| `priory.reload.problems` | the record's `problems`, one per line; absent on a reload |
 
 The resource carries `service.name = priory`, `priory.factory` and `host.name`, the machine.
 
