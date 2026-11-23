@@ -601,13 +601,28 @@ fn a_queued_task_at_a_model_step_gets_a_worktree_a_tmux_session_and_a_run() {
         kit,
         commit,
         memories,
+        sandbox,
     ] = &runs[0][..]
     else {
         panic!("runs: {runs:?}");
     };
     assert_eq!(
-        [id, task, step, tmux, ended, end, kit, commit, memories].map(String::as_str),
-        ["1", "1", "implement", "priory-1", "-", "-", "-", "-", "-"],
+        [
+            id, task, step, tmux, ended, end, kit, commit, memories, sandbox
+        ]
+        .map(String::as_str),
+        [
+            "1",
+            "1",
+            "implement",
+            "priory-1",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-",
+            "-"
+        ],
         "a factory without skills or instructions gives its runs none"
     );
     assert!(uuid::Uuid::parse_str(session).is_ok(), "session {session}");
