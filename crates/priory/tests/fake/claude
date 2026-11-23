@@ -2,6 +2,8 @@
 # A stand-in for Claude Code: runs the --settings hooks as Claude would and logs every prompt typed into it.
 # FAKE_DIR holds args.log, env.log (variable names), otel.log (OTEL_RESOURCE_ATTRIBUTES, if set), pid, typed.log, pending (a paste arrived), submitted (a prompt was submitted),
 # the hold files hold-submit, hold-call (after the submit, before the turn's tool call) and hold-stop,
+# drop-enter (the number of Enters after a paste to lose), burst (lose an Enter that comes within 0.2s
+# of its paste), dropped.log (one line per lost Enter),
 # silent (show its content and never report a hook, as when Claude waits on its trust dialog), and
 # die (show its content and exit before any hook, as a harness that fails to start), and
 # crash (exit before the turn's Stop, leaving a dead pane as a tmux with remain-on-exit does).
@@ -166,6 +168,16 @@ tool() {
 
 wait_while() { while [ -e "$FAKE_DIR/$1" ]; do sleep 0.05; done; }
 
+# Whether to lose this Enter: FAKE_DIR/drop-enter holds how many Enters after a paste are lost.
+# Each lost one adds a line to dropped.log.
+dropped() {
+  local left
+  left=$(cat "$FAKE_DIR/drop-enter" 2>/dev/null) || return 1
+  [ "${left:-0}" -gt 0 ] || return 1
+  echo $((left - 1)) > "$FAKE_DIR/drop-enter"
+  echo >> "$FAKE_DIR/dropped.log"
+}
+
 started=''
 start() {
   [ -n "$started" ] && return
@@ -187,11 +199,36 @@ while :; do
   prompt=''
   if [ -n "$first" ]; then
     prompt="$first"$'\n'
+  elif [ -e "$FAKE_DIR/burst" ]; then
+    # Reads key by key, as Claude does, and takes keys that arrive within 0.2s of a paste's end as
+    # part of the paste, as when it reads them in one burst: an Enter among them submits nothing.
+    stty -icanon
+    while IFS= read -r -N 1 key || exit 0; do
+      [ -z "$prompt" ] && [ "$key" = $'\n' ] && continue
+      prompt+=$key
+      [[ $prompt == *$'\e[201~' ]] && break
+    done
+    printf '%s' "$prompt" > "$FAKE_DIR/pending"
+    while IFS= read -r -N 1 -t 0.2 key; do
+      [ "$key" = $'\n' ] && echo >> "$FAKE_DIR/dropped.log"
+    done
+    while IFS= read -r -N 1 key || exit 0; do
+      [ "$key" = $'\n' ] && break
+    done
+    prompt+=$'\n'
   else
     # A pane killed mid-read must exit here, not log an empty prompt and take the next queued call.
+    ended=''
     while IFS= read -r line || exit 0; do
-      prompt+="$line"$'\n'
-      [[ $line == *$'\e[201~'* ]] && break
+      # An Enter on an empty input submits nothing, as in Claude.
+      [ -z "$prompt" ] && [ -z "$line" ] && continue
+      if [ -z "$ended" ]; then
+        prompt+="$line"$'\n'
+        [[ $line == *$'\e[201~'* ]] || continue
+        ended=1
+        printf '%s' "$prompt" > "$FAKE_DIR/pending"
+      fi
+      dropped || break
     done
   fi
   prompt=${prompt//$'\e[200~'/}
