@@ -4403,3 +4403,152 @@ fn a_factory_folder_that_does_not_exist_is_named() {
         format!("{}: missing: no such folder\n", dir.display())
     );
 }
+
+const SANDBOXED_FACTORY: &str = r#"name = "demo"
+
+[sandboxes.jail]
+kind = "bwrap"
+read = ["~/.cargo", "/opt/toolchain"]
+write = ["~/.cache/sccache"]
+env = ["RUSTC_WRAPPER"]
+"#;
+
+/// The tests' fake programs, a `bwrap` among them, first on `PATH`.
+fn with_fake_bwrap() -> std::ffi::OsString {
+    let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fake");
+    std::env::join_paths(std::iter::once(fake).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap()
+}
+
+fn check_on(dir: &Path, path: &std::ffi::OsStr, args: &[&str]) -> Outcome {
+    let output = harness::priory()
+        .arg("check")
+        .args(args)
+        .arg(dir)
+        .env("PATH", path)
+        .env(
+            "HERDR_APP_HOME",
+            Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-herdr"),
+        )
+        .output()
+        .unwrap();
+    Outcome {
+        code: output.status.code().unwrap(),
+        stdout: String::from_utf8(output.stdout).unwrap(),
+        stderr: String::from_utf8(output.stderr).unwrap(),
+    }
+}
+
+fn sandboxed(name: &str, factory_toml: &'static str) -> PathBuf {
+    let mut files = with("factory.toml", factory_toml);
+    files.retain(|(file, _)| *file != "workflows/implement.toml");
+    let workflow: &'static str =
+        Box::leak(format!("sandbox = \"jail\"\n{WORKFLOW}").into_boxed_str());
+    files.push(("workflows/implement.toml", workflow));
+    factory(name, &files)
+}
+
+#[test]
+fn a_sandboxed_workflow_passes_where_bwrap_is_installed_and_explain_lists_its_binds() {
+    let dir = sandboxed("sandbox-ok", SANDBOXED_FACTORY);
+
+    let checked = check_on(&dir, &with_fake_bwrap(), &[]);
+    let explained = check_on(&dir, &with_fake_bwrap(), &["--explain"]);
+
+    assert_eq!((checked.code, checked.stderr.as_str()), (0, ""));
+    assert_eq!(explained.code, 0, "{}", explained.stderr);
+    let table: Vec<&str> = explained
+        .stdout
+        .lines()
+        .skip_while(|line| *line != "workflow\tsandbox\tkind\tread\twrite\tenv")
+        .take_while(|line| !line.is_empty())
+        .collect();
+    assert_eq!(
+        table,
+        [
+            "workflow\tsandbox\tkind\tread\twrite\tenv",
+            "implement\tjail\tbwrap\t~/.cargo, /opt/toolchain\t~/.cache/sccache\tRUSTC_WRAPPER",
+        ]
+    );
+}
+
+#[test]
+fn a_sandboxed_workflow_is_refused_where_bwrap_is_not_installed() {
+    let dir = sandboxed("sandbox-no-bwrap", SANDBOXED_FACTORY);
+    let empty = Path::new(env!("CARGO_TARGET_TMPDIR")).join("check-empty-path");
+    fs::create_dir_all(&empty).unwrap();
+
+    let outcome = check_on(&dir, empty.as_os_str(), &[]);
+    let plain = check_on(
+        &factory("sandbox-none-no-bwrap", &valid()),
+        empty.as_os_str(),
+        &[],
+    );
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "workflows/implement.toml:1: `sandbox` turns on sandbox `jail`, and `bwrap` is not on PATH: install bubblewrap, or remove `sandbox`\n"
+    );
+    assert_eq!((plain.code, plain.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn each_sandbox_rule_fails_with_its_line() {
+    let factory_toml = r#"name = "demo"
+
+[serve]
+listen = "127.0.0.1:7391"
+
+[sandboxes.jail]
+kind = "bwrap"
+read = ["relative/path", "~"]
+write = ["~/"]
+env = ["PRIORY_TOKEN", "NOT-A-NAME", "FINE"]
+"#;
+    let dir = sandboxed("sandbox-rules", factory_toml);
+    let mut files = with("factory.toml", SANDBOXED_FACTORY);
+    files.retain(|(file, _)| *file != "workflows/implement.toml");
+    files.push(("workflows/implement.toml", "\nsandbox = \"cell\"\nstart = \"implement\"\n\n[[steps]]\nid = \"implement\"\ndecides = \"model\"\nagent = \"implementer\"\nprompt = \"Implement.\"\neffect = \"reversible\"\nnext = { passed = \"done\", failed = \"stop\" }\n"));
+    let undeclared = factory("sandbox-undeclared", &files);
+
+    let outcome = check_on(&dir, &with_fake_bwrap(), &[]);
+    let undeclared = check_on(&undeclared, &with_fake_bwrap(), &[]);
+
+    assert_eq!(outcome.code, 1);
+    assert_eq!(
+        outcome.stderr,
+        "factory.toml:6: sandbox `jail` has `read` path `relative/path`, which is not absolute or under `~/`\n\
+         factory.toml:6: sandbox `jail` has `read` path `~`, which is the home itself, which would undo the jail\n\
+         factory.toml:6: sandbox `jail` has `write` path `~/`, which is the home itself, which would undo the jail\n\
+         factory.toml:6: sandbox `jail` keeps `PRIORY_TOKEN` in `env`, which holds a secret of the factory\n\
+         factory.toml:6: sandbox `jail` keeps `NOT-A-NAME` in `env`, which is not a variable name\n"
+    );
+    assert_eq!(undeclared.code, 1);
+    assert_eq!(
+        undeclared.stderr,
+        "workflows/implement.toml:2: `sandbox` names `cell`, which `[sandboxes]` in factory.toml does not declare\n"
+    );
+}
+
+#[test]
+fn a_sandbox_kind_other_than_bwrap_is_refused_with_its_line() {
+    let dir = sandboxed(
+        "sandbox-kind",
+        "name = \"demo\"\n\n[sandboxes.jail]\nkind = \"podman\"\n",
+    );
+
+    let outcome = check_on(&dir, &with_fake_bwrap(), &[]);
+
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.starts_with("factory.toml:4:")
+            && outcome
+                .stderr
+                .contains("unknown variant `podman`, expected `bwrap`"),
+        "{}",
+        outcome.stderr
+    );
+}

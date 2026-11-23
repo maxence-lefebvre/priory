@@ -15,6 +15,7 @@ For a factory that works in `owner/name`, Priory home looks like this:
 $PRIORY_HOME/
   daemon.lock                  one daemon per home
   signals.spool                signals sent while no daemon listened
+  spools/<session>/            a jailed run's own spool (see sandboxes.md)
   repos/owner/name/            Priory's clone of owner/name, with no checkout
   partial/owner/name/          a clone in progress, renamed into repos/ once complete
   worktrees/owner/name/3/      the worktree of task 3, on branch priory/3

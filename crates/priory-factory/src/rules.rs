@@ -56,6 +56,16 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 problems.push(problem(settings, at, message));
             }
         }
+        let secrets = factory.secret_envs();
+        for (name, sandbox) in &settings.value.sandboxes {
+            for message in sandbox_problems(name, sandbox, &secrets) {
+                problems.push(problem(
+                    settings,
+                    settings.lines.field("sandboxes"),
+                    message,
+                ));
+            }
+        }
         if let Some(memories) = &settings.value.memories {
             let at = settings.lines.field("memories");
             for message in memories_problems(memories) {
@@ -1998,6 +2008,19 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
             format!("`guard.allow` names `{allowed}`, {why}"),
         ));
     }
+    if let Some(sandbox) = &workflow.value.sandbox {
+        let declared = factory
+            .settings
+            .as_ref()
+            .is_some_and(|settings| settings.value.sandboxes.contains_key(sandbox));
+        if !declared {
+            problems.push(problem(
+                workflow,
+                workflow.lines.field("sandbox"),
+                format!("`sandbox` names `{sandbox}`, which `[sandboxes]` in factory.toml does not declare"),
+            ));
+        }
+    }
     let start = workflow.value.start.as_str();
     if !steps.contains_key(start) {
         problems.push(problem(
@@ -2393,6 +2416,75 @@ fn built_in(factory: &Factory, workflow: &Loaded<Workflow>) -> bool {
         .workflows
         .iter()
         .any(|(name, other)| name.starts_with("priory/") && std::ptr::eq(other, workflow))
+}
+
+/// A problem for each workflow that turns a sandbox on, when this machine has no `bwrap`.
+pub fn missing_bwrap(factory: &Factory, installed: bool) -> Vec<Problem> {
+    if installed {
+        return Vec::new();
+    }
+    factory
+        .workflows
+        .values()
+        .filter_map(|workflow| {
+            let sandbox = workflow.value.sandbox.as_ref()?;
+            Some(problem(
+                workflow,
+                workflow.lines.field("sandbox"),
+                format!(
+                    "`sandbox` turns on sandbox `{sandbox}`, and `bwrap` is not on PATH: install bubblewrap, or remove `sandbox`"
+                ),
+            ))
+        })
+        .collect()
+}
+
+/// What is wrong with `[sandboxes.<name>]`: a path that is not absolute or under `~/`, or is the
+/// home itself, and a variable that is no name, which the run's shell could not keep, or that
+/// holds one of the factory's secrets.
+fn sandbox_problems(
+    name: &str,
+    sandbox: &crate::factory::Sandbox,
+    secrets: &[String],
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (field, paths) in [("read", &sandbox.read), ("write", &sandbox.write)] {
+        for path in paths {
+            let rooted = path.starts_with('/') || path.starts_with("~/");
+            let trimmed = path.trim_end_matches('/');
+            let why = if trimmed == "~" {
+                "the home itself, which would undo the jail"
+            } else if rooted && trimmed.is_empty() {
+                "the whole file system, which would undo the jail"
+            } else if !rooted {
+                "not absolute or under `~/`"
+            } else {
+                continue;
+            };
+            problems.push(format!(
+                "sandbox `{name}` has `{field}` path `{path}`, which is {why}"
+            ));
+        }
+    }
+    for variable in &sandbox.env {
+        let named = variable
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+            && variable
+                .chars()
+                .all(|char| char.is_ascii_alphanumeric() || char == '_');
+        if !named {
+            problems.push(format!(
+                "sandbox `{name}` keeps `{variable}` in `env`, which is not a variable name"
+            ));
+        } else if secrets.contains(variable) {
+            problems.push(format!(
+                "sandbox `{name}` keeps `{variable}` in `env`, which holds a secret of the factory"
+            ));
+        }
+    }
+    problems
 }
 
 fn problem<T>(loaded: &Loaded<T>, line: Option<usize>, message: String) -> Problem {

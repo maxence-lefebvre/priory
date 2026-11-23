@@ -227,6 +227,16 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         );
         Vec::new()
     });
+    // Checked once, as the slice is: a jailed task never starts unjailed where this fails.
+    let jailing = if factory.sandboxed() {
+        priory_runtime::jail::probe().inspect_err(|error| {
+            eprintln!(
+                "priory daemon: this runner cannot start bubblewrap, so jailed tasks block: {error}"
+            );
+        })
+    } else {
+        Ok(())
+    };
     state::uncertain(&db)?;
     crate::keyboard::adopt(&mut db, &trace)?;
     // No one watches a compaction a stopped daemon started, so it never types its `/compact`.
@@ -393,6 +403,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             &share,
             &home,
             &scope,
+            &jailing,
             &mut commands,
             &mut recipes,
             fetched,
@@ -1156,6 +1167,7 @@ fn tend(
     share: &Share,
     home: &Path,
     scope: &[String],
+    jailing: &Result<(), String>,
     commands: &mut Vec<(i64, Script)>,
     recipes: &mut crate::recipe::Running,
     kit: crate::kit::Current<'_>,
@@ -1242,6 +1254,7 @@ fn tend(
             trace.runner.as_deref(),
             home,
             scope,
+            jailing,
             &admission,
             recipes,
             kit,
@@ -2018,6 +2031,7 @@ fn start(
     runner: Option<&str>,
     home: &Path,
     scope: &[String],
+    jailing: &Result<(), String>,
     admission: &Admission,
     recipes: &mut crate::recipe::Running,
     kit: crate::kit::Current<'_>,
@@ -2026,6 +2040,18 @@ fn start(
         .value
         .step(&admission.step)
         .expect("admissible checked the step");
+    let sandbox = factory.sandbox_of(&admission.workflow);
+    if let (Some((name, _)), Err(why)) = (sandbox, jailing) {
+        return Ok(Err(format!(
+            "workflow {} needs sandbox {name}, and this runner cannot start bubblewrap: {why}",
+            admission.workflow
+        )));
+    }
+    let jail = sandbox.map(|(_, sandbox)| priory_runtime::jail::Jail {
+        read: sandbox.read.clone(),
+        write: sandbox.write.clone(),
+        env: sandbox.env.clone(),
+    });
     let speaker = match &step.debate {
         Some(debate) => Some(crate::debate::speaker_of(db, admission.task, step, debate)?),
         None => None,
@@ -2155,6 +2181,7 @@ fn start(
             memories_commit: sources.memories_commit,
             harness: agent.value.harness.name(),
             resumes: resume.is_some(),
+            sandbox: sandbox.map(|(name, _)| name),
         },
     )?;
     // The new run is the task's only live one, so a session of this name is an ended run's agent.
@@ -2185,6 +2212,7 @@ fn start(
         prompt: first.as_deref(),
         debate: turn.is_some(),
         servers: &servers,
+        jail: jail.as_ref(),
     };
     Ok(launch(
         factory,
@@ -2253,6 +2281,8 @@ struct Started<'a> {
     prompt: Option<&'a str>,
     debate: bool,
     servers: &'a priory_runtime::servers::Servers,
+    /// The sandbox its harness starts in, if its workflow turns one on.
+    jail: Option<&'a priory_runtime::jail::Jail>,
 }
 
 /// The MCP servers `agent` names, found in the person's own config of its harness when its run
@@ -2330,6 +2360,7 @@ fn launch(
             debate: started.debate,
             servers: started.servers,
             tools,
+            jail: started.jail,
         },
     )
     .map_err(|failed| {
@@ -2426,6 +2457,7 @@ fn compact_idle(
             prompt: None,
             debate: false,
             servers: &servers,
+            jail: None,
         };
         let env: Vec<String> = guard_env(trace.factory).into_iter().collect();
         if let Err(error) = launch(

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# A stand-in for bubblewrap: appends its arguments, one call per line, to FAKE_DIR/bwrap.log, then
+# runs the command after its options in its place, honouring only --chdir, --setenv and --unsetenv.
+# FAKE_DIR/bwrap-fail makes it fail as on a host that forbids user namespaces.
+# FAKE_DIR/bwrap-real makes it run the real bwrap, found on PATH after this directory.
+if [ -n "${FAKE_DIR-}" ]; then
+  printf '%s\n' "$*" >> "$FAKE_DIR/bwrap.log"
+  if [ -e "$FAKE_DIR/bwrap-fail" ]; then
+    echo 'bwrap: setting up uid map: Permission denied' >&2
+    exit 1
+  fi
+  if [ -e "$FAKE_DIR/bwrap-real" ]; then
+    exec "$(PATH=${PATH#*:} command -v bwrap)" "$@"
+  fi
+fi
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --) shift; break ;;
+    --chdir) cd "$2" || exit 1; shift 2 ;;
+    --setenv) export "$2=$3"; shift 3 ;;
+    --unsetenv) unset "$2"; shift 2 ;;
+    --tmpfs|--dev|--proc|--dir|--remount-ro) shift 2 ;;
+    --bind|--ro-bind|--dev-bind|--bind-try|--ro-bind-try|--dev-bind-try|--symlink) shift 3 ;;
+    --*) shift ;;
+    *) break ;;
+  esac
+done
+exec "$@"

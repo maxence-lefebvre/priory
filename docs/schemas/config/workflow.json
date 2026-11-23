@@ -368,6 +368,13 @@
         "null"
       ]
     },
+    "sandbox": {
+      "description": "The sandbox of `factory.toml` that every model step of the workflow runs its agent in.\nNone runs agents with the person's whole user, as before.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "start": {
       "description": "The id of the first step.",
       "type": "string"

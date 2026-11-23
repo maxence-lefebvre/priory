@@ -19,6 +19,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `band` | string | no | the last band | The band of its tasks when neither their request nor their trigger sets one | `"today"` |
 | `reopen` | string | no | the step that opened the pull request | The model step a done task goes back to when its open pull request gets feedback (see [routing.md](../daemon/routing.md#feedback-reopens-a-done-task)) | `"implement"` |
 | `max_prs` | integer, at least 1 | no | no cap | The most pull requests a task's stack may hold. `open-pr` fails with more branches (see [tools.md](../daemon/tools.md#code-steps)) | `3` |
+| `sandbox` | string | no | none: agents run as the person's whole user | A sandbox of [`[sandboxes]`](factory.md#sandboxesname) that every model step of the workflow, debate turns included, starts its agent in. `priory check` refuses it on a machine without `bwrap`. See [sandboxes.md](../daemon/sandboxes.md) | `"jail"` |
 | `guard` | table | no | none allowed | `allow`: the guards whose calls every step of the workflow may make with no approval, built-in or from `[guard]`. It cannot name `gh-pr-merge`, `gh-pr-approve`, `priory-person`, `connector-sign-in` or `unreadable`. See [guard.md](../daemon/guard.md) | `{ allow = ["git-push-default"] }` |
 | `steps` | array of tables | yes | | The steps, in any order | see below |
 
@@ -400,6 +401,8 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` step `<id>`: `record`: <path> is not a file in the factory folder `` | A `record` path that does not exist or is a folder |
 | `` step `<id>`: `record`: <path> is not executable: chmod +x it `` | A `record` file without an execute bit |
 | ``invalid value: integer `0`, expected a nonzero usize`` | `max_prs` is 0 |
+| `` `sandbox` names `<name>`, which `[sandboxes]` in factory.toml does not declare `` | `sandbox` names a sandbox `factory.toml` lacks |
+| `` `sandbox` turns on sandbox `<name>`, and `bwrap` is not on PATH: install bubblewrap, or remove `sandbox` `` | `priory check` ran on a machine without bubblewrap. The daemon does not refuse to start: it blocks each jailed task instead |
 | `` `guard.allow` names `<name>`, which is no built-in guard nor one of `[guard]` in factory.toml `` | A workflow's or a step's `guard.allow` names a guard that does not exist |
 | `` `guard.allow` names `<name>`, which only a person's approval grants, so only an irreversible step may name it `` | A workflow's `guard.allow` names `gh-pr-merge` or `gh-pr-approve` |
 | `` step `<id>`: `guard.allow` names `<name>`, which only a person's approval grants, and the step is `autonomous` `` | An `autonomous` step's `guard.allow` names `gh-pr-merge` or `gh-pr-approve` |

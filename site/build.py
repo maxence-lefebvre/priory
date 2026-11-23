@@ -29,6 +29,7 @@ GROUPS = [
         "docs/testing-a-factory.md",
         "docs/adding-a-second-machine.md",
         "docs/sharing-build-caches.md",
+        "docs/jailing-a-workflow.md",
         "docs/sending-traces-to-opentelemetry.md",
         "docs/sending-metrics.md",
         "docs/evaluating-a-prompt.md",

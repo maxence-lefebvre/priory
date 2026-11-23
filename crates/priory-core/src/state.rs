@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 106;
+const VERSION: i64 = 107;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1895,6 +1895,12 @@ ALTER TABLE runs ADD COLUMN resumes INTEGER;
 PRAGMA user_version = 106;
 ";
 
+// The sandbox a run's agent started in, for `priory runs` and its step's trace record.
+const SCHEMA_107: &str = "
+ALTER TABLE runs ADD COLUMN sandbox TEXT;
+PRAGMA user_version = 107;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1910,7 +1916,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106,
+    SCHEMA_106, SCHEMA_107,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -3727,6 +3733,8 @@ pub(crate) struct NewRun<'a> {
     pub harness: &'a str,
     /// It resumes a session rather than starting one.
     pub resumes: bool,
+    /// The sandbox of the task's workflow its agent starts in, if any.
+    pub sandbox: Option<&'a str>,
 }
 
 /// The agent's shared session, once a run of it reached `SessionStart`, which every task resumes.
@@ -3787,8 +3795,8 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
         "INSERT INTO runs (task, step, agent, tmux, session, kit_hash, kit_commit, memories_commit,
-           debate, harness, resumes)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+           debate, harness, resumes, sandbox)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             run.task,
             run.step,
@@ -3800,7 +3808,8 @@ pub(crate) fn start(db: &mut Connection, run: &NewRun) -> rusqlite::Result<i64> 
             run.memories_commit,
             run.debate,
             run.harness,
-            run.resumes
+            run.resumes,
+            run.sandbox
         ],
     )?;
     let id = tx.last_insert_rowid();

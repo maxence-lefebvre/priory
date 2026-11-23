@@ -154,6 +154,7 @@ as a website, with search, built from `main`.
   [test a factory with fake agents](docs/testing-a-factory.md),
   [add a second machine](docs/adding-a-second-machine.md),
   [share build caches](docs/sharing-build-caches.md),
+  [jail a workflow's agents](docs/jailing-a-workflow.md),
   [send traces to an OpenTelemetry backend](docs/sending-traces-to-opentelemetry.md),
   [send metrics to an OpenTelemetry backend](docs/sending-metrics.md),
   [evaluate a prompt change](docs/evaluating-a-prompt.md),

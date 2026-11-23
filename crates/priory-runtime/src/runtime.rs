@@ -617,6 +617,8 @@ pub struct Launch<'a> {
     pub servers: &'a Servers,
     /// Which of Priory's own tools its MCP server serves the run.
     pub tools: crate::mcp::Tools,
+    /// The sandbox the run's harness starts in, or none for the person's whole user.
+    pub jail: Option<&'a crate::jail::Jail>,
 }
 
 /// A coding agent CLI that Priory runs in tmux, with hooks and tools that report to the daemon.
@@ -640,6 +642,19 @@ pub trait Harness {
     fn private_file(&self, _exe: &Path, _launch: &Launch) -> Option<(PathBuf, String)> {
         None
     }
+    /// The harness's own home under the person's `home`: its login, sessions, transcripts and
+    /// trusted folders, which a jailed run keeps. Each path comes with whether it is a folder.
+    fn own_home(&self, home: Option<&Path>) -> Vec<(PathBuf, bool)>;
+    /// The variables that move the harness's own home, which a jailed run keeps.
+    fn home_env(&self) -> &'static [&'static str];
+}
+
+/// The folder a variable names, else `fallback` under `home`.
+fn named_or(variable: &str, home: Option<&Path>, fallback: &str) -> Option<PathBuf> {
+    std::env::var_os(variable)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| home.map(|home| home.join(fallback)))
 }
 
 /// The factory's instructions, then the agent's own prompt.
@@ -668,6 +683,23 @@ pub struct ClaudeCode;
 impl Harness for ClaudeCode {
     fn program(&self) -> &'static str {
         "claude"
+    }
+
+    fn own_home(&self, home: Option<&Path>) -> Vec<(PathBuf, bool)> {
+        if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|dir| !dir.is_empty()) {
+            return vec![(PathBuf::from(dir), true)];
+        }
+        home.map(|home| {
+            vec![
+                (home.join(".claude"), true),
+                (home.join(".claude.json"), false),
+            ]
+        })
+        .unwrap_or_default()
+    }
+
+    fn home_env(&self) -> &'static [&'static str] {
+        &["CLAUDE_CONFIG_DIR"]
     }
 
     fn args(&self, exe: &Path, launch: &Launch) -> Result<Vec<String>, String> {
@@ -758,6 +790,16 @@ impl Harness for ClaudeCode {
 pub struct Codex;
 
 impl Harness for Codex {
+    fn own_home(&self, home: Option<&Path>) -> Vec<(PathBuf, bool)> {
+        named_or("CODEX_HOME", home, ".codex")
+            .map(|dir| vec![(dir, true)])
+            .unwrap_or_default()
+    }
+
+    fn home_env(&self) -> &'static [&'static str] {
+        &["CODEX_HOME"]
+    }
+
     fn program(&self) -> &'static str {
         "codex"
     }
@@ -909,7 +951,7 @@ fn tmux_socket_fits(socket: &Path) -> Result<(), String> {
 }
 
 /// `stderr` as one line.
-fn one_line(stderr: &str) -> String {
+pub(crate) fn one_line(stderr: &str) -> String {
     let lines: Vec<_> = stderr
         .lines()
         .map(str::trim)
@@ -972,9 +1014,22 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
             ])
             .arg(&file);
     }
-    // A scope execs the agent in place, so the pane's process is still the agent's.
+    let jail = match launch.jail {
+        Some(jail) => {
+            let files: Vec<PathBuf> = harness
+                .file(launch)
+                .into_iter()
+                .chain(harness.private_file(&exe, launch))
+                .map(|(file, _)| file)
+                .collect();
+            jail.command(harness, &exe, launch, &files)?
+        }
+        None => Vec::new(),
+    };
+    // A scope execs the agent in place, so the pane's process is still the agent's, or the jail's.
     command
         .args(launch.scope)
+        .args(&jail)
         .arg("env")
         .args(NESTED.iter().flat_map(|name| ["-u", name]))
         .arg(harness.program())
@@ -1953,11 +2008,28 @@ pub fn replay(
     home: &Path,
     mut apply: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<(), String> {
-    let taken = home.join("signals.spool.taken");
+    drain(home, &mut apply)?;
+    // Each jailed run's own spool, by its session.
+    let mut runs: Vec<PathBuf> = fs::read_dir(home.join("spools"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    runs.sort();
+    for dir in runs {
+        drain(&dir, &mut apply)?;
+    }
+    Ok(())
+}
+
+/// Applies and removes the spool in `dir`.
+fn drain(dir: &Path, apply: &mut impl FnMut(&str) -> Result<(), String>) -> Result<(), String> {
+    let taken = dir.join("signals.spool.taken");
     let at = |error: std::io::Error| format!("{}: {error}", taken.display());
     loop {
         // shortcut: a hook that opened the spool before this rename and writes after the read is lost; move the spool into SQLite if that shows up.
-        if !taken.exists() && fs::rename(spool(home), &taken).is_err() {
+        if !taken.exists() && fs::rename(spool(dir), &taken).is_err() {
             return Ok(());
         }
         for line in fs::read_to_string(&taken).map_err(at)?.lines() {
@@ -2017,13 +2089,17 @@ pub fn send(home: &Path, line: &str) -> Result<(), String> {
             }
         }
     }
-    fs::create_dir_all(home).map_err(|error| error.to_string())?;
+    // A jailed run sees only its own spool, which the daemon names.
+    let spool = std::env::var_os("PRIORY_SPOOL")
+        .filter(|spool| !spool.is_empty())
+        .map_or_else(|| spool(home), PathBuf::from);
+    fs::create_dir_all(spool.parent().unwrap_or(home)).map_err(|error| error.to_string())?;
     OpenOptions::new()
         .create(true)
         .append(true)
-        .open(spool(home))
+        .open(&spool)
         .and_then(|mut file| file.write_all(line.as_bytes()))
-        .map_err(|error| format!("{}: {error}", spool(home).display()))
+        .map_err(|error| format!("{}: {error}", spool.display()))
 }
 
 #[cfg(test)]
@@ -2068,6 +2144,7 @@ mod tests {
             debate: false,
             servers,
             tools,
+            jail: None,
         }
     }
 

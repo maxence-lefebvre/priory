@@ -93,9 +93,9 @@ fn main() -> ExitCode {
         Some("serve") => serve_http(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("runs") => match (args.next(), args.next()) {
             (None, _) => list(
-                "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend\tkit\tcommit\tmemories",
+                "id\ttask\tstep\ttmux\tsession\tstarted\tended\tend\tkit\tcommit\tmemories\tsandbox",
                 "SELECT id, task, step, tmux, coalesce(thread, session), started, ended, ended_as, kit_hash,
-                   kit_commit, memories_commit
+                   kit_commit, memories_commit, sandbox
                  FROM runs ORDER BY id",
             ),
             (Some(flag), None) if flag == "--json" => runs_json(),
@@ -3814,6 +3814,14 @@ fn check(args: Vec<OsString>) -> ExitCode {
             factory::WRITING_LIMIT
         );
     }
+    // Only here: a runner without bubblewrap blocks each jailed task, and runs the others.
+    let missing = rules::missing_bwrap(&factory, priory_runtime::jail::on_path("bwrap"));
+    if !missing.is_empty() {
+        for problem in &missing {
+            eprintln!("{problem}");
+        }
+        return ExitCode::FAILURE;
+    }
     warn_of_stale_herdr_layout(&factory, &dir);
     for warning in priory_factory::rules::warnings(&factory) {
         eprintln!("warning: {warning}");
@@ -4103,6 +4111,36 @@ fn print_explanation(factory: &factory::Factory, json: bool) {
                 cell(outcome),
                 proof.name()
             ));
+        }
+    }
+    let sandboxes = factory
+        .settings
+        .as_ref()
+        .map(|settings| &settings.value.sandboxes)
+        .filter(|sandboxes| !sandboxes.is_empty());
+    if sandboxes.is_some() {
+        state::emit("");
+        state::emit("workflow\tsandbox\tkind\tread\twrite\tenv");
+        let listed = |items: &[String]| match items {
+            [] => "-".to_owned(),
+            items => cell(&items.join(", ")),
+        };
+        for name in factory
+            .workflows
+            .keys()
+            .filter(|name| !name.starts_with("priory/"))
+        {
+            match factory.sandbox_of(name) {
+                Some((sandbox, value)) => state::emit(&format!(
+                    "{}\t{}\tbwrap\t{}\t{}\t{}",
+                    cell(name),
+                    cell(sandbox),
+                    listed(&value.read),
+                    listed(&value.write),
+                    listed(&value.env)
+                )),
+                None => state::emit(&format!("{}\t-\t-\t-\t-\t-", cell(name))),
+            }
         }
     }
     let debates: Vec<_> = factory
