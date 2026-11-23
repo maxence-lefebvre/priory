@@ -100,6 +100,11 @@ files. A running task carries on.
 
 A lane's caps only ever hold new runs. Its `task` cap holds the task with an ask like any task cap.
 
+A lead's or an investigator's task waits too, though the pause, the review limit and `max_running`
+let it pass. It would spend past the cap, and the task it answers could not use the answer yet:
+that task's next run waits for the same cap. A consult whose deadline passes in the wait wakes its
+task with no report. See [runs.md](runs.md#work-already-running).
+
 ## What a person sees
 
 - A browser [subscribed to notifications](serve.md#notifications) gets one when a `day` or `week`

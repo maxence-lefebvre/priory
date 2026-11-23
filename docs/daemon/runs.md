@@ -149,6 +149,11 @@ The queue holds the `queued` and `ready` tasks at a model step. It starts their 
 then in the order a person set inside the band, then oldest first, or in turns between lanes (see
 [Turns between lanes](#turns-between-lanes)). Code steps still run oldest first (see Code steps).
 
+A lead's task, which answers a `hands-off` task's ask, and an investigator's task, which answers a
+consult, start ahead of every other task of their band, even the ones a person ordered. Each
+finishes the work of a task that already ran and now sleeps on it. See
+[Work already running](#work-already-running).
+
 Bands default to `blocker`, `now`, `today` and `later`, highest first. `factory.toml` can name
 its own, highest first:
 
@@ -258,6 +263,11 @@ start if they fit: unlike a task that waits for room, a task at its cap holds no
 on the daemon's tick after one of those runs ends. A woken task waits too, since its run is a new
 start, and so does a task a person ordered. A running task carries on.
 
+The cap is hard: a task of the first band waits too, unlike under the [review limit](#review-limit).
+A lane or a trigger caps its runs for a service that limits its rate, such as an API that takes so
+many calls a minute, and an urgent task would hit that limit as any other. Only a lead's or an
+investigator's task passes the cap (see [Work already running](#work-already-running)).
+
 With several runners, each daemon counts only its own runs, so the count applies to each runner
 apart. See [`lanes.toml`](../reference/lanes.md) and [the trigger keys](../reference/triggers.md).
 
@@ -294,6 +304,9 @@ person takes to review, instead of all waiting at once.
 A task of the factory's first band, `blocker` unless `factory.toml` names its own `bands`, starts
 whatever the count. An incident fix does not wait for an unrelated review. Lower bands still wait.
 
+A lead's or an investigator's task starts whatever the count too (see
+[Work already running](#work-already-running)).
+
 The limit holds only a task's first run, as a pause does. A `ready` task, woken by an answer, a
 fired wait or a `say`, or resumed, revived or stopped for room, starts whatever the count, since it
 works on a pull request that already exists. A running task carries on.
@@ -308,6 +321,28 @@ Known limits:
 - A pull request stays open in the count until the intake reports its merge or close. A draft
   counts as any open pull request.
 - A workflow whose first step is a code step starts that step whatever the count.
+
+### Work already running
+
+A task that consults an investigator, or asks under `intervention = "hands-off"`, sleeps and gives
+back its room. The daemon queues a task for the investigator or the lead in the asking task's band
+and lane, with the trigger `priory/consult` or `priory/lead`. Its answer is the rest of work
+already started, so the queue treats it as such:
+
+- It starts ahead of every other task of its band, so a backlog does not take the room the asking
+  task gave back. A consult's `[consult] deadline` counts the wait (see
+  [tools.md](tools.md#consulting-an-investigator)).
+- `priory pause` does not hold it, as it holds no woken task.
+- The review limit does not hold it. A lane at the limit is full of pull requests that wait for a
+  person, and the person is not told about a routed ask.
+- `max_running` does not hold it. The asking task's run, which counted, has ended.
+
+A reached `day` or `week` spend cap still holds it, with the other new runs (see
+[spend.md](spend.md#new-runs-wait)). The cap exists to stop spending before a person looks, and the
+answer would buy nothing: the asking task's next run is held by the same cap.
+
+A higher band's task, a task that waits for room ahead of it and a busy shared session still hold
+it, as they hold any task.
 - With several runners, each daemon counts only the tasks of its own state file.
 - One limit applies to every lane and batch. The factory sets no limit per lane.
 

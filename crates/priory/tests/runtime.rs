@@ -54,7 +54,7 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Undoes migrations 106, a run's start time, harness and resumption, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes migrations 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
@@ -69,7 +69,7 @@ macro_rules! undo_pre {
       WHERE results.task = tasks.id), '') AS results
     FROM tasks LEFT JOIN inbox ON inbox.id = tasks.source; ALTER TABLE tasks DROP COLUMN pre_title; ALTER TABLE tasks DROP COLUMN pre_text;
   ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
-  ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons;
+  ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
   ALTER TABLE runs DROP COLUMN resumes;
   "
@@ -18549,7 +18549,9 @@ fn a_person_who_answers_a_routed_ask_first_drops_its_queued_lead_task() {
     setup.calls(&[ask()]);
     setup.publish(&requested(42));
     setup.start();
-    setup.until("tasks", |rows| rows.len() == 2 && rows[0][4] == "asleep");
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows.iter().any(|row| row[0] == "1" && row[4] == "asleep")
+    });
     assert_eq!(asks_json(&setup)["asks"][0]["routed_to"], json!("lead"));
     let desk: serde_json::Value =
         serde_json::from_slice(&setup.priory(&["desk", "--json"]).stdout).unwrap();
@@ -18591,7 +18593,9 @@ fn a_routed_step_ask_that_changes_while_it_waits_returns_to_the_person_and_drops
     setup.calls(&[result("passed")]);
     setup.publish(&requested(42));
     setup.start();
-    setup.until("tasks", |rows| rows.len() == 2 && rows[0][4] == "asleep");
+    setup.until("tasks", |rows| {
+        rows.len() == 2 && rows.iter().any(|row| row[0] == "1" && row[4] == "asleep")
+    });
     assert_eq!(asks_json(&setup)["asks"][0]["routed_to"], json!("lead"));
 
     let said = setup.priory(&["say", "1", "Use the v2 API."]);
@@ -30246,7 +30250,6 @@ fn a_judge_that_lost_its_calibration_holds_the_result_on_one_ask_that_names_it()
         "{ask}"
     );
     assert_eq!(ask["options"], json!(["grade again", "let it through"]));
-    assert_eq!(setup.rows("tasks")[0][4], "running");
     assert_eq!(results(&setup), 0);
     let scores = gate_scores(&setup);
     assert_eq!(
@@ -30264,6 +30267,81 @@ fn a_judge_that_lost_its_calibration_holds_the_result_on_one_ask_that_names_it()
     setup.until("tasks", |rows| rows[0][4] == "done");
     assert_eq!(results(&setup), 1);
     assert_eq!(setup.typed().len(), 1, "{:?}", setup.typed());
+}
+
+#[test]
+fn a_result_held_on_a_judges_ask_ends_its_run_asleep_and_a_say_waits_for_the_answer() {
+    let (setup, _) = held_by_an_uncalibrated_judge("gate-judge-asleep", "name = \"demo\"\n");
+
+    let runs = setup.until("runs", |rows| rows[0][7] != "-");
+
+    assert_eq!(runs[0][7], "asleep", "{runs:?}");
+    setup.gone("priory-1");
+    assert_eq!(setup.rows("tasks")[0][4], "asleep");
+    let said = setup.priory(&["say", "1", "Also add b.txt."]);
+    assert!(said.status.success(), "{said:?}");
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(
+        setup.rows("tasks")[0][4],
+        "asleep",
+        "the say waits for the answer"
+    );
+    assert_eq!(setup.rows("runs").len(), 1);
+
+    let answered = setup.priory(&["answer", "1", "let it through", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("tasks", |rows| rows[0][4] == "done");
+    assert_eq!(results(&setup), 1);
+    assert_eq!(
+        setup.rows("runs").len(),
+        1,
+        "no run started for the held result"
+    );
+}
+
+#[test]
+fn results_that_wait_on_one_uncalibrated_judge_share_one_ask_whose_answer_grades_each() {
+    let (setup, _) = held_by_an_uncalibrated_judge("gate-judge-one-ask", "name = \"demo\"\n");
+    setup.until("runs", |rows| rows[0][7] == "asleep");
+    setup.hold("hold-call");
+    setup.publish(&requested(43));
+    setup.until("runs", |rows| rows.len() == 2);
+    let commit = setup.commit(2, "b.txt");
+    setup.calls(&[json!({ "name": "result", "arguments": {
+        "outcome": "passed", "summary": "Adds b.txt.", "commit": commit
+    } })]);
+    setup.release("hold-call");
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] == "asleep");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while gate_scores(&setup).len() < 2 {
+        assert!(Instant::now() < deadline, "task 2's gate never graded");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(asks_json(&setup)["asks"].as_array().unwrap().len(), 1);
+
+    let again = setup.priory(&["answer", "1", "grade again", "--revision", "1"]);
+
+    assert!(again.status.success(), "{again:?}");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while gate_scores(&setup).len() < 4 || asks_json(&setup)["asks"].as_array().unwrap().len() < 2 {
+        assert!(
+            Instant::now() < deadline,
+            "the held results were not graded again"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(
+        asks_json(&setup)["asks"].as_array().unwrap().len(),
+        2,
+        "one new ask for the judge, not one per task"
+    );
+    let through = setup.priory(&["answer", "2", "let it through", "--revision", "1"]);
+    assert!(through.status.success(), "{through:?}");
+    setup.until("tasks", |rows| rows.iter().all(|row| row[4] == "done"));
+    assert_eq!(results(&setup), 2);
+    assert_eq!(setup.rows("runs").len(), 2);
 }
 
 #[test]

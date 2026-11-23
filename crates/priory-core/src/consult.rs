@@ -99,7 +99,8 @@ pub(crate) fn ask(
         )));
     }
     let made: i64 = tx.query_row(
-        "SELECT count(*) FROM consults WHERE task = ?1",
+        "SELECT count(*) FROM consults JOIN tasks ON tasks.id = consults.task
+         WHERE consults.task = ?1 AND consults.generation = tasks.generation",
         [asker.task],
         |row| row.get(0),
     )?;
@@ -112,7 +113,9 @@ pub(crate) fn ask(
     }
     let over = tx
         .query_row(
-            "SELECT id, cost, cap FROM consults WHERE task = ?1 AND outcome = 'cap' ORDER BY id LIMIT 1",
+            "SELECT consults.id, consults.cost, consults.cap FROM consults JOIN tasks ON tasks.id = consults.task
+             WHERE consults.task = ?1 AND consults.generation = tasks.generation
+               AND consults.outcome = 'cap' ORDER BY consults.id LIMIT 1",
             [asker.task],
             |row| {
                 Ok((

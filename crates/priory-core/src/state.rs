@@ -1876,8 +1876,15 @@ CREATE TABLE IF NOT EXISTS aging (
 PRAGMA user_version = 104;
 ";
 
-// Reserved for the gate's ask and judges in an open pull request, which takes 105.
-const SCHEMA_105: &str = "PRAGMA user_version = 105;";
+// The ask a gate's held result waits on while a judge it names is not calibrated, shared by every
+// gate whose uncalibrated judges are the same, and those judges' names as JSON.
+const SCHEMA_105: &str = "
+ALTER TABLE gates ADD COLUMN ask INTEGER REFERENCES asks (id);
+ALTER TABLE gates ADD COLUMN judges TEXT;
+UPDATE gates SET ask = (SELECT id FROM asks WHERE asks.name LIKE 'gate-' || gates.id || '-%'
+  ORDER BY id DESC LIMIT 1) WHERE state = 'grading';
+PRAGMA user_version = 105;
+";
 
 // When a run's `SessionStart` arrived, to the millisecond, its harness, and whether it resumed a
 // session, for the `runs` metrics group.
@@ -1932,8 +1939,16 @@ macro_rules! moved_up {
     };
 }
 
-/// The order the queue starts tasks in: band, then a person's order, then age. A band the factory
-/// no longer has comes after the last one. A task that `[queue] age` moved up starts in the higher
+/// Whether a task is a lead's or an investigator's that waits to start, which finishes the work of
+/// a task that already ran. The triggers are `tools::LEAD_TRIGGER` and `consult::TRIGGER`.
+macro_rules! helper {
+    () => {
+        "(tasks.trigger IN ('priory/lead', 'priory/consult') AND tasks.state IN ('queued', 'ready'))"
+    };
+}
+
+/// The order the queue starts tasks in: band, then a waiting lead's or investigator's task, then
+/// a person's order, then age. A band the factory no longer has comes after the last one. A task that `[queue] age` moved up starts in the higher
 /// band after the tasks a person ordered there. With `[queue] fair = "lane"`, the tasks a person has
 /// not ordered take turns between lanes before age: the oldest of each lane first, and among those
 /// the lane whose last run started longest ago, so a lane that never ran comes first.
@@ -1942,7 +1957,9 @@ pub const START_ORDER: &str = concat!(
     aged!(),
     ", ",
     rank!(),
-    ", (SELECT count(*) FROM bands)), ",
+    ", (SELECT count(*) FROM bands)), NOT ",
+    helper!(),
+    ", ",
     moved_up!(),
     " OR tasks.position IS NULL, iif(",
     moved_up!(),
@@ -3268,6 +3285,8 @@ pub(crate) fn admissible<'r>(
         else {
             continue;
         };
+        let helper = [crate::tools::LEAD_TRIGGER, crate::consult::TRIGGER]
+            .contains(&admission.trigger.as_str());
         let speaker = match &step.debate {
             Some(debate) => Some(crate::debate::speaker_of(db, admission.task, step, debate)?),
             None => None,
@@ -3286,8 +3305,11 @@ pub(crate) fn admissible<'r>(
                 })),
             _ => None,
         };
+        // A lead's or an investigator's task finishes a task that already ran, so no hold for new
+        // work applies to it.
+        let new_work = admission.fresh && !helper;
         // A pause holds only new tasks: a woken, resumed or revived one is `ready` and goes on.
-        let busy = busy.or_else(|| paused.clone().filter(|_| admission.fresh));
+        let busy = busy.or_else(|| paused.clone().filter(|_| new_work));
         let busy = match busy {
             Some(reason) => Some(reason),
             None => crate::spend::waits(db, &book, admission.task)?,
@@ -3295,7 +3317,7 @@ pub(crate) fn admissible<'r>(
         // The review limit, as a pause, holds only a task's first run.
         let busy = match busy {
             Some(reason) => Some(reason),
-            None if admission.fresh => {
+            None if new_work => {
                 let first_band = factory.bands().first().copied();
                 crate::review::waits(db, factory.review_limit(), first_band, admission.task)?
             }
@@ -3303,6 +3325,7 @@ pub(crate) fn admissible<'r>(
         };
         let busy = match busy {
             Some(reason) => Some(reason),
+            None if helper => None,
             None => crowded(db, factory, &admission)?,
         };
         let waits = match (busy, head) {
@@ -3317,11 +3340,10 @@ pub(crate) fn admissible<'r>(
                         let short = room::wait(measured, share, promised, need);
                         let mut reason = short.as_ref().map(|short| short.reason.clone());
                         // A lead that can never fit never answers: dropping it returns its ask.
-                        if let Some(reason) = reason.as_ref().filter(|_| {
-                            [crate::tools::LEAD_TRIGGER, crate::consult::TRIGGER]
-                                .contains(&admission.trigger.as_str())
-                                && !room::fits_ever(measured, share, need)
-                        }) {
+                        if let Some(reason) = reason
+                            .as_ref()
+                            .filter(|_| helper && !room::fits_ever(measured, share, need))
+                        {
                             db.execute(
                                 "UPDATE tasks SET state = 'dropped', reason = ?2 WHERE id = ?1",
                                 params![admission.task, reason],

@@ -311,8 +311,8 @@ export's tests do, and a `PRIORY_PROC` folder for `/proc/self`:
    histograms after gauges and before counters, and the intake and `priory serve` skip the group.
 2. **Built.** The `runs` group, with the `SessionStart` time on the run's row and its migration.
    Tests use the fake `claude`, one that never sends `SessionStart`, and one that shows the trust
-   dialog. As built, migration 106 adds `session_started`, `harness` and `resumes` to `runs`, and
-   105 stays reserved for an open pull request. The daemon reads ended starts and recipes from the
+   dialog. As built, migration 106 adds `session_started`, `harness` and `resumes` to `runs`. The
+   daemon reads ended starts and recipes from the
    state file each interval, counting those that ended since it started, and `runtime::worktree`
    times clone, fetch and checkout. A start's duration begins at `started`, which the row keeps to
    the second.

@@ -2499,9 +2499,13 @@ pub(crate) fn wake_on(
     set_ready(tx, task)
 }
 
+/// Wakes the asleep `task`, unless a gate holds its result on a person's answer: the prompt then
+/// waits for the verdict, as it does while a gate grades.
 pub(crate) fn set_ready(tx: &Transaction, task: i64) -> rusqlite::Result<()> {
     tx.execute(
-        "UPDATE tasks SET state = 'ready', reason = NULL WHERE id = ?1 AND state = 'asleep'",
+        "UPDATE tasks SET state = 'ready', reason = NULL WHERE id = ?1 AND state = 'asleep'
+         AND NOT EXISTS (SELECT 1 FROM gates JOIN runs ON runs.id = gates.run
+           WHERE gates.task = ?1 AND gates.state = 'grading' AND runs.ended IS NOT NULL)",
         [task],
     )
     .map(drop)
@@ -2880,8 +2884,9 @@ pub(crate) fn preempt_idle(
     Ok(Some(run.tmux))
 }
 
-/// Stores the result a gate held for the live run `run`, once the gate refused none of it, and,
-/// when the run's turn already ended, moves its task as its `Stop` would have. Returns why the
+/// Stores the result a gate held for run `run`, live or asleep on the gate's ask, once the gate
+/// refused none of it, and, when the run's turn already ended, moves its task as its `Stop` would
+/// have. Returns why the
 /// result cannot be stored, or the tmux session to kill.
 pub(crate) fn release(
     tx: &Transaction,
@@ -2898,11 +2903,12 @@ pub(crate) fn release(
             |row| row.get::<_, String>(0),
         )
         .optional()?;
-    let Some(run) = live
+    let live = live
         .map(|session| self::run(tx, &session))
         .transpose()?
-        .flatten()
-    else {
+        .flatten();
+    let parked = live.is_none();
+    let Some(run) = live.map_or_else(|| asleep(tx, run), |live| Ok(Some(live)))? else {
         return Ok(Err(format!("run {run} ended before its gate graded it")));
     };
     if let Err(refused) = result(tx, &run, arguments, trace.factory, head, None)? {
@@ -2912,7 +2918,64 @@ pub(crate) fn release(
     if !stopped {
         return Ok(Ok(None));
     }
-    Ok(Ok(settle(tx, &run, trace)?.flatten()))
+    if !parked {
+        return Ok(Ok(settle(tx, &run, trace)?.flatten()));
+    }
+    // The run ended when it slept on the gate's ask; the answer only says how.
+    let ended: String = tx.query_row("SELECT ended FROM runs WHERE id = ?1", [run.id], |row| {
+        row.get(0)
+    })?;
+    settle(tx, &run, trace)?;
+    tx.execute(
+        "UPDATE runs SET ended = ?2 WHERE id = ?1",
+        params![run.id, ended],
+    )?;
+    Ok(Ok(None))
+}
+
+/// The run `id` that slept while its gate's ask waited on a person, with its task still asleep on
+/// it. No process carries on, so its next step needs a new run.
+fn asleep(tx: &Transaction, id: i64) -> rusqlite::Result<Option<Run>> {
+    tx.query_row(
+        "SELECT runs.id, runs.task, runs.step, tasks.workflow, runs.tmux, runs.session, runs.debate
+         FROM runs JOIN tasks ON tasks.id = runs.task
+         WHERE runs.id = ?1 AND runs.ended_as = 'asleep' AND tasks.state = 'asleep'",
+        [id],
+        |row| {
+            Ok(Run {
+                id: row.get(0)?,
+                task: row.get(1)?,
+                step: row.get(2)?,
+                agent: None,
+                workflow: row.get(3)?,
+                tmux: row.get(4)?,
+                session: row.get(5)?,
+                debate: row.get(6)?,
+            })
+        },
+    )
+    .optional()
+}
+
+/// Ends the live run `run` as asleep and puts its running task to sleep, as an open ask does.
+/// Returns the tmux session to kill.
+pub(crate) fn sleep(tx: &Transaction, run: i64) -> rusqlite::Result<Option<String>> {
+    let found: Option<(i64, String)> = tx
+        .query_row(
+            "SELECT task, tmux FROM runs WHERE id = ?1 AND ended IS NULL",
+            [run],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((task, tmux)) = found else {
+        return Ok(None);
+    };
+    end(tx, run, "asleep")?;
+    tx.execute(
+        "UPDATE tasks SET state = 'asleep' WHERE id = ?1 AND state = 'running'",
+        [task],
+    )?;
+    Ok(Some(tmux))
 }
 
 /// Queues the reason a gate refused a result as the task's next prompt, with how to end its step.
@@ -4487,7 +4550,7 @@ pub(crate) fn say(
     let prompt = wake(tx, task, text)?;
     tx.execute("UPDATE outbox SET wakes = 1 WHERE id = ?1", [prompt])?;
     if state == "asleep" {
-        set(tx, task, "ready", None, None)?;
+        set_ready(tx, task)?;
     }
     Ok(Ok(format!("task {task} will hear it")))
 }
