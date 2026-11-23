@@ -916,7 +916,8 @@
           "items": {
             "enum": [
               "process",
-              "log"
+              "log",
+              "runs"
             ]
           },
           "type": "array"

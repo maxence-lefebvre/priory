@@ -852,7 +852,7 @@ pub struct Telemetry {
     pub headers_env: Option<String>,
     /// The metric groups each process sends to the endpoint's `/v1/metrics`; none sends no metric.
     #[serde(default)]
-    #[schemars(extend("items" = { "enum": ["process", "log"] }))]
+    #[schemars(extend("items" = { "enum": ["process", "log", "runs"] }))]
     pub metrics: Vec<String>,
     /// How often a process samples its groups and sends one request, at least 10s; 60s when unset.
     #[serde(default, deserialize_with = "duration")]
@@ -864,7 +864,7 @@ pub struct Telemetry {
 }
 
 /// The metric groups a process can send, by name.
-pub const METRIC_GROUPS: &[&str] = &["process", "log"];
+pub const METRIC_GROUPS: &[&str] = &["process", "log", "runs"];
 
 /// The least `metrics_every`.
 pub const METRICS_EVERY_LEAST: Duration = Duration::from_secs(10);
@@ -1289,6 +1289,16 @@ fn refuse_bypass<'de, D: Deserializer<'de>>(
 pub enum Harness {
     ClaudeCode,
     Codex,
+}
+
+impl Harness {
+    /// Its name in an agent's file: `claude-code` or `codex`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Harness::ClaudeCode => "claude-code",
+            Harness::Codex => "codex",
+        }
+    }
 }
 
 /// `per-task`: one conversation per task. `shared`: one conversation across tasks, such as a lead.

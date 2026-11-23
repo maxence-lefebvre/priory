@@ -9,11 +9,11 @@ static ON: AtomicBool = AtomicBool::new(false);
 static TICKS: Mutex<Vec<f64>> = Mutex::new(Vec::new());
 static TIMED: Mutex<Vec<Timed>> = Mutex::new(Vec::new());
 
-/// One duration a process timed: metric `metric`, under `outcome` when it has one.
+/// One duration a process timed: metric `metric`, under its `attributes`, such as its outcome.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Timed {
     pub metric: &'static str,
-    pub outcome: Option<&'static str>,
+    pub attributes: Vec<(&'static str, &'static str)>,
     pub seconds: f64,
 }
 
@@ -41,17 +41,21 @@ pub fn take() -> Vec<f64> {
 
 /// Records one duration of `metric`, such as a wait for the log's connection.
 pub fn time(metric: &'static str, elapsed: Duration) {
-    timed_as(metric, None, elapsed);
+    timed_as(metric, &[], elapsed);
 }
 
-/// Records one duration of `metric` that ended as `outcome`.
-pub fn timed_as(metric: &'static str, outcome: Option<&'static str>, elapsed: Duration) {
+/// Records one duration of `metric` under `attributes`, such as how it ended.
+pub fn timed_as(
+    metric: &'static str,
+    attributes: &[(&'static str, &'static str)],
+    elapsed: Duration,
+) {
     if ON.load(Ordering::Relaxed)
         && let Ok(mut timed) = TIMED.lock()
     {
         timed.push(Timed {
             metric,
-            outcome,
+            attributes: attributes.to_vec(),
             seconds: elapsed.as_secs_f64(),
         });
     }

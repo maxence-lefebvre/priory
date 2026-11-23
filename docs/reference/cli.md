@@ -54,7 +54,7 @@ does and the page that describes it.
   [serve.md](../daemon/serve.md#where-it-runs).
 
 Each of these processes, without `--once`, sends its own metrics when `[telemetry] metrics` names
-a group. `PRIORY_METRICS` replaces that list for one process, such as `process,log` or `none`. See
+a group. `PRIORY_METRICS` replaces that list for one process, such as `process,log,runs` or `none`. See
 [metrics.md](../daemon/metrics.md), and [the metrics reference](metrics.md) for every metric.
 
 ## Asking for work

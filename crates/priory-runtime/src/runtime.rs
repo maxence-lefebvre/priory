@@ -262,10 +262,12 @@ pub fn worktree(
             fs::create_dir_all(dir.parent().expect("a clone has a parent"))
                 .map_err(|error| error.to_string())?;
         }
-        run(Command::new("git")
-            .args(["clone", "--quiet", "--no-checkout"])
-            .arg(format!("https://github.com/{repo}.git"))
-            .arg(&partial))?;
+        phased("clone", || {
+            run(Command::new("git")
+                .args(["clone", "--quiet", "--no-checkout"])
+                .arg(format!("https://github.com/{repo}.git"))
+                .arg(&partial))
+        })?;
         fs::rename(&partial, &clone).map_err(|error| error.to_string())?;
     }
     if path.exists() {
@@ -285,29 +287,55 @@ pub fn worktree(
     }
     // A revived task whose worktree the sweep removed carries on from the branch it left.
     if head(&clone, &branch).is_some() {
-        // A worktree folder a person deleted stays registered, and git refuses to add it again.
-        run(git(&clone).args(["worktree", "prune"]))?;
-        run(git(&clone)
-            .args(["worktree", "add", "--quiet"])
-            .arg(&path)
-            .arg(&branch))?;
+        phased("checkout", || {
+            // A worktree folder a person deleted stays registered, and git refuses to add it again.
+            run(git(&clone).args(["worktree", "prune"]))?;
+            run(git(&clone)
+                .args(["worktree", "add", "--quiet"])
+                .arg(&path)
+                .arg(&branch))
+        })?;
         return Ok((path, branch, Added::Restored));
     }
-    run(git(&clone).args(["fetch", "--quiet", "origin"]))?;
-    run(git(&clone).args(["remote", "set-head", "origin", "--auto"]))?;
+    phased("fetch", || {
+        run(git(&clone).args(["fetch", "--quiet", "origin"]))?;
+        run(git(&clone).args(["remote", "set-head", "origin", "--auto"]))
+    })?;
     let start = match from {
         Some(from) if head(&clone, from).is_some() => format!("refs/heads/{from}"),
         Some(from) => return Err(format!("branch {from} to start from is gone")),
         None => "origin/HEAD".to_owned(),
     };
-    run(git(&clone)
-        // Tracking the trunk would let a bare `git push` with `push.default=upstream` land on it.
-        .args(["worktree", "add", "--quiet", "--no-track", "-b", &branch])
-        .arg(&path)
-        .arg(start))?;
+    phased("checkout", || {
+        run(git(&clone)
+            // Tracking the trunk would let a bare `git push` with `push.default=upstream` land on it.
+            .args(["worktree", "add", "--quiet", "--no-track", "-b", &branch])
+            .arg(&path)
+            .arg(start))
+    })?;
     let base = head(&path, &branch);
     Ok((path, branch, Added::New(base)))
 }
+
+/// Runs `phase` of a worktree's start, and times it for the metrics by how it ended.
+fn phased<T>(phase: &'static str, step: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let started = std::time::Instant::now();
+    let done = step();
+    let outcome = match &done {
+        Ok(_) => "ok",
+        Err(error) if error.contains(": timed out after ") => "timeout",
+        Err(_) => "error",
+    };
+    crate::ticks::timed_as(
+        PHASE,
+        &[("priory.phase", phase), ("outcome", outcome)],
+        started.elapsed(),
+    );
+    done
+}
+
+/// The metric that times each phase of a worktree's start.
+pub const PHASE: &str = "priory.worktree.phase.duration";
 
 /// The commit `branch` points to, read from Priory's clone under `home` when `worktree` is gone, as
 /// after a retirement or a sweep.

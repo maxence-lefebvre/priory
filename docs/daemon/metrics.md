@@ -3,7 +3,7 @@
 Priory can send its own health as OpenTelemetry metrics, beside the spans of
 [the trace export](trace.md#opentelemetry-export). Spans say what a task did after its step ends.
 Metrics say how each Priory process is doing every interval: how long its loop takes, how much
-memory and CPU it uses, and whether the daemon reaches its log. [The metrics
+memory and CPU it uses, whether the daemon reaches its log, and how long its runs take to start. [The metrics
 reference](../reference/metrics.md) lists every metric. The design and the groups still to come
 are in [the metrics design note](../design/metrics.md).
 
@@ -15,13 +15,13 @@ off unless `factory.toml` names the groups to send:
 ```toml
 [telemetry]
 otlp = "http://127.0.0.1:4318"
-metrics = ["process", "log"]   # the groups, by name
-metrics_every = "60s"          # how often each process sends
-metrics_cap = 1000             # data points per minute, per process
+metrics = ["process", "log", "runs"]   # the groups, by name
+metrics_every = "60s"                  # how often each process sends
+metrics_cap = 1000                     # data points per minute, per process
 ```
 
-[`[telemetry]`](../reference/factory.md#telemetry) lists the keys. The groups are `process` and
-`log`. `priory check` refuses an unknown group, a `metrics_every` under 10 seconds and a
+[`[telemetry]`](../reference/factory.md#telemetry) lists the keys. The groups are `process`, `log`
+and `runs`. `priory check` refuses an unknown group, a `metrics_every` under 10 seconds and a
 `metrics_cap` of 0.
 
 `PRIORY_METRICS` replaces `metrics` for one process, as a comma-separated list such as `process,log`,
@@ -30,7 +30,7 @@ for one, without editing the factory every runner shares. A process refuses to s
 variable names an unknown group:
 
 ```text
-priory daemon: PRIORY_METRICS names `nope`, which is not a metrics group: the groups are process, log, or none
+priory daemon: PRIORY_METRICS names `nope`, which is not a metrics group: the groups are process, log, runs, or none
 ```
 
 ## Which process sends what
@@ -41,7 +41,7 @@ metrics. `priory daemon --view-only` sends as `daemon`. A daemon with `[serve]` 
 inside itself, so its server requests count in the daemon's tick.
 
 Each process sends only the groups it owns. All three send `process`, about themselves. Only the
-daemon sends `log`: the intake and `priory serve` skip it when `metrics` names it.
+daemon sends `log` and `runs`: the intake and `priory serve` skip them when `metrics` names them.
 
 The resource of every request names the factory, the host, the runner and the process, as
 [the reference](../reference/metrics.md#resource) lists. `service.name` is `priory`, as on spans, so
@@ -86,6 +86,35 @@ as a history, where the desk's banner shows only the moment.
   its waiting tasks can move. On the cut-off runner itself, log time stops, so the ages hold still.
 - **The connection.** On Postgres, `priory.log.connection.wait` times how long each call waited
   for the log's one connection, which a call that hangs holds until its timeout.
+
+## The runs group
+
+The runs group says how long a run takes to reach Claude's or Codex's `SessionStart`, which starts
+hang, and how long each part of a worktree's start takes.
+
+- **The start.** `priory.run.start.duration` counts each run's start, from the second its row
+  records as `started` to its `SessionStart`, by harness and by `first` or `resume`: whether the
+  run resumed a session. A run that ends before any `SessionStart`, on the trust dialog, after 60
+  seconds with none, or because its harness exited, counts as `error`, up to its end
+  ([sessions.md](sessions.md#trusting-the-worktrees-and-the-clone)). A run that carries its process
+  into the next step has no start, and counts nothing.
+- **The hung start.** `priory.run.starts.active` counts the live runs with no `SessionStart` yet,
+  and `priory.run.start.oldest.age` gives the oldest one's age. Each harness the factory's agents
+  use has a point, 0 with none. A start that hangs on a dialog the screen check does not know climbs
+  to 60 seconds every time.
+- **The worktree.** `priory.worktree.phase.duration` times each phase of a task's start:
+  `clone`, `fetch` and `checkout` around their `git` commands, and the repository's `setup`,
+  `resume` and `teardown` recipes ([runs.md](runs.md#recipes)) from their start to their end. A
+  `git` command past `command_timeout`, or a recipe past its `timeout`, counts as `timeout`. The
+  clone, the fetch and the checkout run on the daemon's thread, so a slow one also shows in the
+  tick's `max`.
+- **The worktrees.** `priory.worktrees.active` counts the task folders under `worktrees/` in
+  Priory home, as [the sweep](sweep.md) lists them.
+
+The daemon reads the starts and the recipes from the state file. It counts those that ended since
+it started, so a restart counts again from zero. The state keeps when each run's `SessionStart`
+arrived, to the millisecond, its harness, and whether it resumed a session. A run from before
+Priory kept them counts once its `SessionStart` arrives, by its agent's harness, as `first`.
 
 ## The cap
 

@@ -227,6 +227,9 @@ pane wrapped counts as one line, so a secret that wraps is hidden whole. Both hi
 screen does (see [serve.md](serve.md#a-runs-screen)), and show `[redacted]` alone when one still
 shows.
 
+The daemon's `runs` metrics group counts both as starts that ended in `error`, and shows a start
+still waiting for `SessionStart` by its age. See [metrics.md](metrics.md#the-runs-group).
+
 In both cases, its queued prompts stay queued. A prompt it was launched with returns to the queue,
 so the task's next run gets them. A Codex run blocks with the Codex instruction under Codex.
 
