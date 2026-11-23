@@ -40,7 +40,7 @@ cannot tell which keys a source refuses; `priory check` does.
 | `intervention` | `plan` or `hands-off` | no | a person answers every ask | Who answers its tasks' asks. See [`intervention` and `lead`](#intervention-and-lead) | `"plan"` |
 | `lead` | string | with `hands-off` | | The agent that answers asks of a `hands-off` task | `"lead"` |
 | `auto_answer` | `high` or `medium` | no | no ask is answered this way | The lowest confidence at which the daemon answers its tasks' asks with their recommendation. See [`auto_answer`](#auto_answer) | `"high"` |
-| `max_running` | integer | no | no cap | The most of its tasks that may have a live run at once, 1 or more. New starts past it wait. See [runs.md](../daemon/runs.md#at-most-so-many-running) | `3` |
+| `max_running` | integer | no | no cap | The most of its tasks that may have a live run at once, 1 or more. New starts past it wait, in every band. See [runs.md](../daemon/runs.md#at-most-so-many-running) | `3` |
 | `caps` | table | no | no cap | Spend caps in dollars for its tasks: `task`, `day` and `week`, each above zero. See [spend.md](../daemon/spend.md) | `{ task = 2.0, day = 10.0 }` |
 | `pre` | table | no | | A script that runs on each matching event before its task request, and can drop or change it. See [`pre`](#pre) | `{ argv = ["scripts/sentry-pre"] }` |
 | `staged` | boolean | no | `false` | Whether its tasks are a trial: model steps run, and each task blocks before its first irreversible step with what that step would have done. See [Staged tasks](../daemon/tools.md#staged-tasks) | `true` |
@@ -339,8 +339,23 @@ workflow = "implement"
 ## Task requests: `triggers/cli.toml` and `hold`
 
 `priory request` starts a task by hand, without a matching trigger (see
-[cli.md](../intake/cli.md)). It reads only `repo` from `triggers/cli.toml`, when the request names
-none. Like every trigger's `repo`, that repository is polled for GitHub events.
+[cli.md](../intake/cli.md)). Its tasks name the trigger `cli`, so they take these keys of
+`triggers/cli.toml`:
+
+| Key | When a request reads it |
+| --- | ----------------------- |
+| `repo` | When the request names none |
+| `band` | When the request names none, before the workflow's `band` |
+| `intervention` | When the request names none |
+| `lead` | Always: it answers the asks of a `hands-off` task |
+| `auto_answer` | When the request names none |
+| `intent` and `noop` | Always |
+| `max_running` | Always: it caps the live runs of every `cli` task |
+| `caps` | Always: they count toward every `cli` task |
+| `staged` | Always: every `cli` task blocks before its first irreversible step |
+
+A request ignores `source`, `workflow`, `key`, `lane`, `hold` and `pre`. Like every trigger's
+`repo`, that repository is polled for GitHub events.
 
 <!-- example: factory/triggers/cli.toml -->
 ```toml

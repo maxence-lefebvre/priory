@@ -327,7 +327,9 @@ reached the cap, the investigator's run failed, or it needs a sign-in, which goe
   cap. A run can pass the cap by what one model call costs. A run whose transcript the daemon cannot
   read, or whose model has no price, ends at once.
 - `[consult] per_task` stops a task that keeps asking, and a task one of whose consults passed its
-  cap makes no more.
+  cap makes no more. Both count the task's current generation: a revived task may consult again.
+- An investigator's task starts ahead of its band's other tasks, and passes the pause, the review
+  limit and `max_running`. See [runs.md](runs.md#work-already-running).
 
 A cancel, a revive or a drop of the asking task withdraws its open consult and drops the
 investigator's task. The daemon ends a run that task still has, and a report for a consult of an
@@ -381,7 +383,8 @@ answer, so the two lists cannot drift.
 
 In the transaction that stores a routed ask, the daemon queues a lead task for it, with the key
 `priory:ask:<ask>:<revision>`, the trigger `priory/lead`, and the asking task's repository, band and
-lane. It starts the built-in workflow `priory/lead/<lead>`: one model step, `answer`, whose
+lane. It starts ahead of its band's other tasks, and passes the pause, the review limit and
+`max_running` (see [runs.md](runs.md#work-already-running)). It starts the built-in workflow `priory/lead/<lead>`: one model step, `answer`, whose
 outcomes `answered` and `skipped` both lead to `done`. Its first prompt carries a
 `priory.ask.routed` event: the task, its key, the ask, its revision, question, options,
 recommendation, trade-off, title and text.
