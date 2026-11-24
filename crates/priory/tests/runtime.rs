@@ -69,7 +69,7 @@ macro_rules! undo_scheduled_sweeps {
     };
 }
 
-/// Undoes migrations 112, scheduled sweeps, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes migrations 113, a subscription's kinds, 112, scheduled sweeps, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
@@ -87,6 +87,7 @@ macro_rules! undo_pre {
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
   ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv; DROP TABLE lapses;
+  DROP TRIGGER push_a_landed_wrong; DROP TRIGGER push_a_stall; ALTER TABLE push_subscriptions DROP COLUMN kinds;
   ")
     };
 }
@@ -3129,7 +3130,9 @@ fn a_state_file_at_111_keeps_its_stall_runs_and_takes_scheduled_ones() {
     let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
     db.execute_batch(concat!(
         undo_scheduled_sweeps!(),
-        "PRAGMA foreign_keys = OFF;
+        "DROP TRIGGER push_a_landed_wrong; DROP TRIGGER push_a_stall;
+         ALTER TABLE push_subscriptions DROP COLUMN kinds;
+         PRAGMA foreign_keys = OFF;
          INSERT INTO stalls (id, resource, missing, task, ended)
            VALUES (7, 'disk', '1 GB', 1, '2026-01-01T00:00:00Z');
          INSERT INTO sweeps VALUES (5, 7, 'old', '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z',

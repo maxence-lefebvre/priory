@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 112;
+const VERSION: i64 = 113;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2000,6 +2000,24 @@ CREATE INDEX sweeps_by_script ON sweeps (script, started);
 "
 );
 
+// The notification kinds a person turned on or off for a subscription, a JSON object of booleans;
+// a kind it lacks takes its default. A merge that landed wrong and a stalled queue queue an alarm
+// too, for the subscriptions that turned it on.
+const SCHEMA_113: &str = "
+ALTER TABLE push_subscriptions ADD COLUMN kinds TEXT;
+CREATE TRIGGER push_a_landed_wrong AFTER INSERT ON inbox
+  WHEN NEW.type = 'priory.report' AND NEW.subject = 'priory'
+  AND json_extract(NEW.data, '$.line') LIKE 'landed wrong: %'
+  AND EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
+  INSERT INTO push_queue (kind, item, state) VALUES ('alarm', NEW.seq, 'landed');
+END;
+CREATE TRIGGER push_a_stall AFTER INSERT ON stalls
+  WHEN EXISTS (SELECT 1 FROM push_subscriptions) BEGIN
+  INSERT INTO push_queue (kind, item, state) VALUES ('alarm', NEW.id, 'stall');
+END;
+PRAGMA user_version = 113;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2015,7 +2033,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -4897,6 +4915,33 @@ mod move_line_tests {
 
         assert_eq!(moved, Err("move takes a band, a place or both".to_owned()));
         assert_eq!(revision(&db).unwrap(), expected);
+    }
+}
+
+#[cfg(test)]
+mod push_kinds {
+    use super::*;
+
+    #[test]
+    fn an_upgrade_keeps_the_subscriptions_with_no_choice() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&MIGRATIONS[..112].concat()).unwrap();
+        db.execute(
+            "INSERT INTO push_subscriptions (endpoint, p256dh, auth) VALUES ('e', 'p', 'a')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut db).unwrap();
+
+        let row: (String, Option<String>) = db
+            .query_row(
+                "SELECT endpoint, kinds FROM push_subscriptions",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("e".to_owned(), None));
     }
 }
 
