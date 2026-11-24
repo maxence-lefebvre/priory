@@ -955,7 +955,7 @@
         },
         "reclaim": {
           "default": null,
-          "description": "The free disk under which the sweep deletes idle tasks' build output; 40 GB when unset.",
+          "description": "The free disk under which the sweep deletes idle tasks' build output; 20 % of the disk,\nat most 40 GB, when unset.",
           "pattern": "^(?=[^KMGT]*[1-9])([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(KB|MB|GB|TB)$",
           "type": "string"
         },

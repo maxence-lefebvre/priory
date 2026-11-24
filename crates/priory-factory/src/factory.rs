@@ -1022,7 +1022,8 @@ pub struct Sweep {
     pub agent: Option<String>,
     /// The repository the sweeper works in and files its issue on, a GitHub `owner/name`.
     pub repo: Option<String>,
-    /// The free disk under which the sweep deletes idle tasks' build output; 40 GB when unset.
+    /// The free disk under which the sweep deletes idle tasks' build output; 20 % of the disk,
+    /// at most 40 GB, when unset.
     #[serde(default, deserialize_with = "size")]
     #[schemars(
         with = "String",

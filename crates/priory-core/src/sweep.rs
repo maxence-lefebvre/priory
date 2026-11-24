@@ -1,10 +1,9 @@
 use crate::recipe::{self, Teardown};
 use crate::trace::{self, Trace};
 use priory_factory::factory::Factory;
-use priory_runtime::runtime::remove_sealed;
 use priory_runtime::worktrees::{self, Found, Verdict};
 use rusqlite::{Connection, OptionalExtension};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -417,16 +416,31 @@ pub(crate) struct Reclaim {
     walk: Option<JoinHandle<Vec<Output>>>,
     pending: VecDeque<Output>,
     delete: Option<Delete>,
+    /// The paths the daemon logged a problem with, so it logs each once.
+    reported: HashSet<PathBuf>,
+    /// The build folders on another filesystem than `home`, which cannot move.
+    elsewhere: HashSet<PathBuf>,
 }
 
-/// A thread that deletes what `home/reclaim` holds, the `output` moved there included, if any. A
-/// daemon that stopped during a delete leaves files there.
+/// A thread that deletes `output`, moved to `home/reclaim`, or what a stopped daemon left there. It
+/// returns each folder it could not delete, and why.
 struct Delete {
     output: Option<Output>,
-    thread: JoinHandle<Result<(), String>>,
+    thread: JoinHandle<Vec<(PathBuf, String)>>,
 }
 
 impl Reclaim {
+    /// Whether no walk and no delete runs and no folder waits.
+    pub(crate) fn settled(&self) -> bool {
+        self.walk.is_none() && self.delete.is_none() && self.pending.is_empty()
+    }
+
+    fn report(&mut self, path: PathBuf, reason: &str) {
+        if self.reported.insert(path) {
+            eprintln!("priory daemon: reclaiming build output: {reason}");
+        }
+    }
+
     /// With `due`, starts a walk when none runs and nothing waits. `under` says free disk is
     /// under the threshold. Each deletion is traced once it ends.
     pub(crate) fn tick(
@@ -439,18 +453,17 @@ impl Reclaim {
         mut under: impl FnMut() -> bool,
     ) -> rusqlite::Result<()> {
         if let Some(delete) = self.delete.take_if(|delete| delete.thread.is_finished()) {
-            let deleted = delete
-                .thread
-                .join()
-                .unwrap_or_else(|_| Err("a delete thread panicked".to_owned()));
-            match (deleted, delete.output) {
-                (Err(error), _) => eprintln!("priory daemon: reclaiming build output: {error}"),
-                (Ok(()), Some(output)) => {
-                    let tx = db.transaction()?;
-                    trace::worktree_reclaimed(&tx, trace, output.task, &output.path, output.bytes)?;
-                    tx.commit()?;
-                }
-                (Ok(()), None) => {}
+            let stuck = delete.thread.join().unwrap_or_else(|_| {
+                let reason = "a delete thread panicked".to_owned();
+                vec![(home.join(RECLAIM), reason)]
+            });
+            if let (Some(output), true) = (delete.output, stuck.is_empty()) {
+                let tx = db.transaction()?;
+                trace::worktree_reclaimed(&tx, trace, output.task, &output.path, output.bytes)?;
+                tx.commit()?;
+            }
+            for (path, reason) in stuck {
+                self.report(path, &reason);
             }
         }
         if let Some(walk) = self.walk.take_if(|walk| walk.is_finished()) {
@@ -460,14 +473,23 @@ impl Reclaim {
             return Ok(());
         }
         let Some(output) = self.pending.pop_front() else {
-            if due && set_aside(home).next().is_some() {
+            if !due {
+                return Ok(());
+            }
+            if let Err(reason) = reclaim_folder(home) {
+                self.report(home.join(RECLAIM), &reason);
+                return Ok(());
+            }
+            let left = leftovers(home);
+            if !left.is_empty() {
                 self.delete = Some(Delete {
                     output: None,
-                    thread: delete(home),
+                    thread: delete(home, left, None),
                 });
             }
-            if due && under() {
-                self.walk = Some(walk(home, idle_build(db, factory, home)?));
+            if under() {
+                let worktrees = idle_build(db, factory, home)?;
+                self.walk = Some(walk(home, worktrees, self.elsewhere.clone()));
             }
             return Ok(());
         };
@@ -484,17 +506,28 @@ impl Reclaim {
         }
         // Only this thread starts runs, so none starts between these checks and the move.
         let name = format!("{}-{}", output.task, jiff::Timestamp::now().as_nanosecond());
-        let aside = home.join(RECLAIM).join(name);
+        let aside = match reclaim_folder(home) {
+            Ok(folder) => folder.join(name),
+            Err(reason) => {
+                self.pending.clear();
+                self.report(home.join(RECLAIM), &reason);
+                return Ok(());
+            }
+        };
         let Output {
             found, build, path, ..
         } = &output;
         if let Err(error) = worktrees::set_aside(home, found, build, path, &aside) {
-            eprintln!("priory daemon: task {}: {error}", output.task);
+            eprintln!("priory daemon: task {}: {}", output.task, error.reason);
+            if error.elsewhere {
+                self.elsewhere.insert(output.path);
+            }
             return Ok(());
         }
+        let thread = delete(home, vec![aside], Some(output.path.clone()));
         self.delete = Some(Delete {
             output: Some(output),
-            thread: delete(home),
+            thread,
         });
         Ok(())
     }
@@ -503,26 +536,72 @@ impl Reclaim {
 /// The folder of `home` a build folder moves to before its delete.
 const RECLAIM: &str = "reclaim";
 
-/// What waits under `home/reclaim` for its delete.
-fn set_aside(home: &Path) -> impl Iterator<Item = PathBuf> {
-    std::fs::read_dir(home.join(RECLAIM))
+/// `home/reclaim`, made when absent. Anything but a real folder there is refused, since a symlink
+/// would lead the delete out of `home`.
+fn reclaim_folder(home: &Path) -> Result<PathBuf, String> {
+    let folder = home.join(RECLAIM);
+    match std::fs::symlink_metadata(&folder) {
+        Ok(meta) if meta.is_dir() => Ok(folder),
+        Ok(_) => Err(format!("{} is not a folder", folder.display())),
+        Err(_) => match std::fs::create_dir(&folder) {
+            Ok(()) => Ok(folder),
+            Err(error) => Err(format!("cannot make {}: {error}", folder.display())),
+        },
+    }
+}
+
+/// The folders a stopped daemon left under `home/reclaim`: real ones the daemon named, a task and
+/// nanoseconds.
+fn leftovers(home: &Path) -> Vec<PathBuf> {
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    let named = |name: &str| {
+        name.split_once('-')
+            .is_some_and(|(task, nanoseconds)| digits(task) && digits(nanoseconds))
+    };
+    let Ok(folder) = reclaim_folder(home) else {
+        return Vec::new();
+    };
+    std::fs::read_dir(folder)
         .into_iter()
         .flatten()
         .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter(|entry| entry.file_name().to_str().is_some_and(named))
         .map(|entry| entry.path())
+        .collect()
 }
 
-/// Deletes all of `home/reclaim` on a thread.
-fn delete(home: &Path) -> JoinHandle<Result<(), String>> {
+/// Deletes each of `paths`, folders under `home/reclaim`, on a thread. One that must stay after all
+/// goes back to `from`, when nothing took its place.
+fn delete(
+    home: &Path,
+    paths: Vec<PathBuf>,
+    from: Option<PathBuf>,
+) -> JoinHandle<Vec<(PathBuf, String)>> {
     let home = home.to_path_buf();
     std::thread::spawn(move || {
-        for path in set_aside(&home) {
-            remove_sealed(&path);
+        let mut stuck = Vec::new();
+        for path in paths {
+            let deleted = reclaim_folder(&home).and_then(|_| {
+                worktrees::expendable(&path).map_err(|reason| {
+                    let back = from.as_ref().is_some_and(|from| {
+                        std::fs::symlink_metadata(from).is_err()
+                            && std::fs::rename(&path, from).is_ok()
+                    });
+                    let end = if back {
+                        "it moved back"
+                    } else {
+                        "it stays there"
+                    };
+                    format!("{reason}; {end}")
+                })?;
+                worktrees::discard(&path)
+            });
+            if let Err(reason) = deleted {
+                stuck.push((path, reason));
+            }
         }
-        match set_aside(&home).next() {
-            Some(left) => Err(format!("cannot delete {}", left.display())),
-            None => Ok(()),
-        }
+        stuck
     })
 }
 
@@ -575,12 +654,17 @@ fn build_of(factory: &Factory, found: &Found) -> Option<Vec<String>> {
 }
 
 /// Lists and sizes the build folders of `worktrees` on a thread, largest first.
-fn walk(home: &Path, worktrees: Vec<(i64, Found, Vec<String>)>) -> JoinHandle<Vec<Output>> {
+/// It skips the folders `elsewhere`.
+fn walk(
+    home: &Path,
+    worktrees: Vec<(i64, Found, Vec<String>)>,
+    elsewhere: HashSet<PathBuf>,
+) -> JoinHandle<Vec<Output>> {
     let home = home.to_path_buf();
     std::thread::spawn(move || {
         let mut outputs = Vec::new();
         for (task, found, build) in worktrees {
-            let Ok(folders) = worktrees::build_output(&home, &found, &build) else {
+            let Ok(folders) = worktrees::build_output(&home, &found, &build, &elsewhere) else {
                 continue;
             };
             let found = Arc::new(found);
@@ -711,7 +795,8 @@ pub fn stays(db: &Connection, home: &Path) -> rusqlite::Result<Vec<(String, Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use priory_runtime::runtime;
+    use priory_runtime::runtime::{self, remove_sealed};
+    use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
     use std::time::{Duration, Instant};
 
@@ -862,7 +947,7 @@ mod tests {
         assert_eq!(home.traced(), 0);
 
         home.deleted();
-        assert_eq!(set_aside(&home.dir).count(), 0);
+        assert_eq!(leftovers(&home.dir).len(), 0);
         home.tick(false, true);
         assert_eq!(home.traced(), 1);
         assert!(tree.join("a.txt").exists());
@@ -875,7 +960,7 @@ mod tests {
         home.tick(true, false);
         home.deleted();
         home.tick(false, false);
-        assert_eq!(set_aside(&home.dir).count(), 0);
+        assert_eq!(leftovers(&home.dir).len(), 0);
         assert_eq!(home.traced(), 0);
     }
 
@@ -1003,5 +1088,191 @@ mod tests {
                 .unwrap();
             home.keeps(&tree);
         }
+    }
+
+    const CARGO: &str = "Signature: 8a477f597d28d172789f06886806bc55\n\
+        # This file is a cache directory tag created by cargo.\n";
+
+    /// Walks, then takes the first folder and waits for its delete and the tick after it.
+    fn take(home: &mut Home) {
+        home.walk();
+        home.tick(false, true);
+        home.deleted();
+        home.tick(false, true);
+    }
+
+    #[test]
+    fn reclaim_neither_empties_nor_fills_a_folder_a_symlink_leads_to() {
+        let mut home = Home::new("symlink");
+        let tree = home.task(1, "asleep");
+        let outside = home.dir.join("outside");
+        std::fs::create_dir_all(outside.join("7-1")).unwrap();
+        std::os::unix::fs::symlink(&outside, home.dir.join("reclaim")).unwrap();
+        home.tick(true, true);
+        assert!(home.reclaim.settled());
+
+        // Also when the symlink takes the folder's place after the walk.
+        std::fs::remove_file(home.dir.join("reclaim")).unwrap();
+        home.walk();
+        std::fs::remove_dir(home.dir.join("reclaim")).unwrap();
+        std::os::unix::fs::symlink(&outside, home.dir.join("reclaim")).unwrap();
+        home.keeps(&tree);
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn reclaim_deletes_only_folders_it_named() {
+        let mut home = Home::new("foreign");
+        let reclaim = home.dir.join("reclaim");
+        for name in ["7-1", "notes", "7-", "-1", "7-1-2", "7-x"] {
+            std::fs::create_dir_all(reclaim.join(name)).unwrap();
+        }
+        std::fs::write(reclaim.join("8-1"), "a file").unwrap();
+        home.tick(true, false);
+        home.deleted();
+        let mut left: Vec<_> = std::fs::read_dir(&reclaim)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["-1", "7-", "7-1-2", "7-x", "8-1", "notes"]);
+    }
+
+    #[test]
+    fn a_stuck_leftover_is_reported_once_and_later_output_is_traced() {
+        let mut home = Home::new("stuck");
+        home.task(1, "asleep");
+        let stuck = home.dir.join("reclaim/7-1");
+        std::fs::create_dir_all(stuck.join("nested/.git")).unwrap();
+        for _ in 0..2 {
+            home.tick(true, false);
+            home.deleted();
+            home.tick(false, false);
+        }
+        assert_eq!(home.reclaim.reported, HashSet::from([stuck.clone()]));
+
+        home.walk();
+        home.deleted();
+        home.tick(false, true);
+        home.deleted();
+        home.tick(false, true);
+        assert_eq!(home.traced(), 1);
+        assert!(stuck.join("nested/.git").exists());
+    }
+
+    #[test]
+    fn an_undeletable_leftover_is_reported_and_not_traced() {
+        let mut home = Home::new("undeletable");
+        home.task(1, "asleep");
+        let reclaim = home.dir.join("reclaim");
+        let stuck = reclaim.join("7-1");
+        std::fs::create_dir_all(&stuck).unwrap();
+        std::fs::set_permissions(&reclaim, std::fs::Permissions::from_mode(0o555)).unwrap();
+        home.tick(true, false);
+        home.deleted();
+        home.tick(false, false);
+        std::fs::set_permissions(&reclaim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(home.reclaim.reported.contains(&stuck));
+        assert_eq!(home.traced(), 0);
+        assert!(stuck.exists());
+    }
+
+    #[test]
+    fn reclaim_keeps_a_folder_that_holds_a_repository() {
+        let mut home = Home::new("nested");
+        let tree = home.task(1, "asleep");
+        std::fs::create_dir_all(tree.join("target/nested/.git")).unwrap();
+        home.walk();
+        home.keeps(&tree);
+
+        std::fs::remove_dir(tree.join("target/nested/.git")).unwrap();
+        home.walk();
+        std::fs::create_dir(tree.join("target/nested/.git")).unwrap();
+        home.tick(false, true);
+        home.deleted();
+        home.tick(false, true);
+        assert!(tree.join("target/debug/lib.rlib").exists(), "it moved back");
+        assert_eq!(home.traced(), 0);
+    }
+
+    #[test]
+    fn reclaim_takes_a_cargo_target_with_a_repository_in_its_tmp() {
+        let mut home = Home::new("cargo");
+        let tree = home.task(1, "asleep");
+        std::fs::create_dir_all(tree.join("target/tmp/a/.git")).unwrap();
+        home.walk();
+        home.keeps(&tree);
+
+        std::fs::write(tree.join("target/CACHEDIR.TAG"), CARGO).unwrap();
+        take(&mut home);
+        assert!(!tree.join("target").exists());
+        assert_eq!(home.traced(), 1);
+    }
+
+    #[test]
+    fn reclaim_keeps_a_folder_inside_a_submodule() {
+        for checked_out in [true, false] {
+            let mut home = Home::new("submodule");
+            let text = "name = \"demo\"\n[repos.\"o/r\"]\nbuild = [\"sub/target\"]\n";
+            std::fs::write(home.dir.join("factory.toml"), text).unwrap();
+            home.factory = priory_factory::factory::load(&home.dir).0;
+            let tree = home.task(1, "asleep");
+            std::fs::remove_dir_all(tree.join("target")).unwrap();
+            let sub = tree.join("sub");
+            std::fs::create_dir_all(sub.join("target")).unwrap();
+            git(&sub, &["init", "-q"]);
+            std::fs::write(sub.join("target/kept"), "tracked").unwrap();
+            git(&sub, &["add", "."]);
+            git(&sub, &["commit", "-q", "-m", "sub"]);
+            git(&tree, &["-c", "advice.addEmbeddedRepo=false", "add", "sub"]);
+            git(&tree, &["commit", "-q", "-m", "sub"]);
+            if !checked_out {
+                std::fs::remove_dir_all(sub.join(".git")).unwrap();
+            }
+            home.walk();
+            home.tick(false, true);
+            assert!(home.reclaim.settled());
+            assert!(sub.join("target/kept").exists());
+        }
+    }
+
+    #[test]
+    fn reclaim_tries_a_worktree_on_another_filesystem_once_and_leaves_its_mode() {
+        use std::os::unix::fs::MetadataExt;
+        let mut home = Home::new("elsewhere");
+        let shm = PathBuf::from(format!("/dev/shm/priory-elsewhere-{}", std::process::id()));
+        std::fs::create_dir_all(&shm).unwrap();
+        let device = |path: &Path| std::fs::metadata(path).unwrap().dev();
+        assert_ne!(device(&shm), device(&home.dir));
+        std::os::unix::fs::symlink(&shm, home.dir.join("worktrees")).unwrap();
+        let target = home.task(1, "asleep").join("target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        home.walk();
+        home.tick(false, true);
+        assert!(home.reclaim.delete.is_none());
+        assert_eq!(home.reclaim.elsewhere, HashSet::from([target.clone()]));
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o555);
+
+        home.walk();
+        let walked = home.reclaim.walk.take().unwrap().join().unwrap();
+        assert!(walked.is_empty());
+        remove_sealed(&shm);
+    }
+
+    #[test]
+    fn the_walk_leaves_the_index_of_a_worktree_alone() {
+        use std::os::unix::fs::MetadataExt;
+        let mut home = Home::new("index");
+        let tree = home.task(1, "asleep");
+        let index = home.dir.join("repos/o/r/.git/worktrees/1/index");
+        let before = std::fs::metadata(&index).unwrap().ino();
+        // A new timestamp with the same content, which a plain status writes into the index.
+        std::fs::File::open(tree.join("a.txt"))
+            .and_then(|file| file.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1)))
+            .unwrap();
+        home.walk();
+        assert_eq!(std::fs::metadata(&index).unwrap().ino(), before);
     }
 }

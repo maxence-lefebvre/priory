@@ -15617,6 +15617,28 @@ fn the_sweep_deletes_one_build_folder_per_tick() {
 }
 
 #[test]
+fn a_retirement_waits_for_the_reclaim_to_take_the_build_output() {
+    let (setup, target) = asleep_with_build_output("reclaim-retire");
+    // Ignored, so it does not itself keep the worktree from retiring.
+    let exclude = setup.git(
+        &setup.worktree(1),
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "info/exclude",
+        ],
+    );
+    fs::write(exclude.trim(), "target\n").unwrap();
+
+    setup.disk(10);
+    setup.removed(1);
+
+    assert!(!target.exists());
+    assert_eq!(trace_records(&setup, "factory.worktree.reclaimed").len(), 1);
+}
+
+#[test]
 fn a_live_run_keeps_its_build_output_until_it_ends() {
     let mut setup = Setup::new("reclaim-live");
     setup.recipes(BUILD);

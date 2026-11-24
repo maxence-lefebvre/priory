@@ -1,5 +1,9 @@
-use crate::runtime::{OWN_GIT, SCAN, at_risk, clone_of, git, run, unseal};
+use crate::runtime::{OWN_GIT, SCAN, at_risk, clone_of, git, remove_sealed, run, unseal};
+use std::collections::HashSet;
 use std::fs;
+use std::io::ErrorKind;
+use std::os::unix::ffi::OsStringExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// A folder under `PRIORY_HOME/worktrees/<owner>/<name>/`, named for a task.
@@ -133,11 +137,13 @@ pub fn retire_blocker(home: &Path, found: &Found) -> Option<String> {
 
 /// The folders of `build` that exist in the worktree, each with the disk it takes in bytes, or why
 /// none may go: the same checks as a retirement, where untracked files inside `build` do not count.
-/// A folder that holds a tracked file is left out. It walks every file, so call it off the tick.
+/// A folder in `skip`, or one that must stay, is left out. It walks every file, so call it off the
+/// tick.
 pub fn build_output(
     home: &Path,
     found: &Found,
     build: &[String],
+    skip: &HashSet<PathBuf>,
 ) -> Result<Vec<(PathBuf, u64)>, String> {
     if let Some(reason) = unsettled(home, found, build)? {
         return Err(reason);
@@ -145,7 +151,8 @@ pub fn build_output(
     Ok(build
         .iter()
         .map(|folder| found.path.join(folder))
-        .filter(|path| deletable(found, path).is_ok())
+        .filter(|path| !skip.contains(path))
+        .filter(|path| deletable(found, path).is_ok() && no_repository(path).is_ok())
         .map(|path| {
             let bytes = size(&path);
             (path, bytes)
@@ -153,7 +160,8 @@ pub fn build_output(
         .collect())
 }
 
-/// Why the build folder `path` must stay: a symlink on the way leads out, or git tracks a file in it.
+/// Why the build folder `path` must stay: a symlink on the way leads out, a mount is at or under it,
+/// it is in a nested repository or a submodule, or git tracks a file in it.
 fn deletable(found: &Found, path: &Path) -> Result<(), String> {
     let worktree = &found.path;
     let (Ok(root), Ok(rest)) = (fs::canonicalize(worktree), path.strip_prefix(worktree)) else {
@@ -167,11 +175,137 @@ fn deletable(found: &Found, path: &Path) -> Result<(), String> {
             path.display()
         ));
     }
+    unmounted(path)?;
+    let nested = || Err(format!("{} is in a nested repository", path.display()));
+    let within = || rest.ancestors().filter(|part| !part.as_os_str().is_empty());
+    if within().any(|part| fs::symlink_metadata(worktree.join(part).join(".git")).is_ok()) {
+        return nested();
+    }
+    let staged = run(git(worktree)
+        .args(["ls-files", "--stage", "-z", "--"])
+        .args(within()))?;
+    let gitlink = |entry: &str| {
+        entry
+            .strip_prefix("160000 ")
+            .and_then(|entry| entry.split_once('\t'))
+            .is_some_and(|(_, at)| within().any(|part| part == Path::new(at)))
+    };
+    if staged.split('\0').any(gitlink) {
+        return nested();
+    }
     let tracked = run(git(worktree).args(["ls-files", "--"]).arg(rest))?;
     if !tracked.is_empty() {
         return Err(format!("{} holds tracked files", path.display()));
     }
     Ok(())
+}
+
+/// Why the folder `path`, already moved aside, must not be deleted: a mount is at or under it, or it
+/// holds a git repository. It walks every file, so call it off the tick.
+pub fn expendable(path: &Path) -> Result<(), String> {
+    unmounted(path)?;
+    no_repository(path)
+}
+
+/// Deletes the folder `path`, which `expendable` allows. The `tmp` of a cargo target goes first, so
+/// what a stopped delete leaves still has the tag that exempts the repositories in it.
+pub fn discard(path: &Path) -> Result<(), String> {
+    let gone = |path: &Path| {
+        remove_sealed(path);
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            _ => Err(format!("cannot delete {}", path.display())),
+        }
+    };
+    if let Some(scratch) = scratch(path) {
+        gone(&scratch)?;
+    }
+    gone(path)
+}
+
+/// The `tmp` folder of a cargo target, where tests keep scratch files.
+fn scratch(path: &Path) -> Option<PathBuf> {
+    let tag = path.join("CACHEDIR.TAG");
+    let tmp = path.join("tmp");
+    let cargo = fs::symlink_metadata(&tag).is_ok_and(|meta| meta.is_file())
+        && fs::read_to_string(&tag).is_ok_and(|tag| {
+            tag.starts_with("Signature: 8a477f597d28d172789f06886806bc55")
+                && tag.contains("created by cargo")
+        })
+        && fs::symlink_metadata(&tmp).is_ok_and(|meta| meta.is_dir());
+    cargo.then_some(tmp)
+}
+
+/// Refuses a folder with a `.git` entry in it, except in a cargo target's `tmp`.
+fn no_repository(path: &Path) -> Result<(), String> {
+    let scratch = scratch(path);
+    let mut folders = vec![path.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        let unread = |error| format!("cannot read {}: {error}", folder.display());
+        for entry in fs::read_dir(&folder).map_err(unread)? {
+            let entry = entry.map_err(unread)?;
+            if entry.file_name() == ".git" {
+                return Err(format!("{} holds a git repository", folder.display()));
+            }
+            if entry.file_type().map_err(unread)?.is_dir() && Some(entry.path()) != scratch {
+                folders.push(entry.path());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a folder with a mount at or under it, which a rename carries along and a delete empties.
+fn unmounted(path: &Path) -> Result<(), String> {
+    let unread = |error| format!("cannot check {} for mounts: {error}", path.display());
+    let real = fs::canonicalize(path).map_err(unread)?;
+    let table = fs::read("/proc/self/mountinfo").map_err(unread)?;
+    match mount_under(&table, &real) {
+        Some(mount) => Err(format!("{} is a mount", mount.display())),
+        None => Ok(()),
+    }
+}
+
+/// The first mount point at or under `path` in a `mountinfo` table.
+fn mount_under(table: &[u8], path: &Path) -> Option<PathBuf> {
+    table
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| line.split(|byte| *byte == b' ').nth(4))
+        .map(|point| PathBuf::from(std::ffi::OsString::from_vec(unescaped(point))))
+        .find(|point| point.starts_with(path))
+}
+
+/// `field` with each `\` and 3 octal digits, as the kernel writes a space, back to its byte.
+fn unescaped(field: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(field.len());
+    let mut rest = field;
+    while let Some((first, after)) = rest.split_first() {
+        let octal = (*first == b'\\')
+            .then(|| after.get(..3))
+            .flatten()
+            .filter(|digits| digits.iter().all(|digit| (b'0'..=b'7').contains(digit)))
+            .and_then(|digits| u8::from_str_radix(std::str::from_utf8(digits).ok()?, 8).ok());
+        bytes.push(octal.unwrap_or(*first));
+        rest = if octal.is_some() { &after[3..] } else { after };
+    }
+    bytes
+}
+
+/// Why a build folder did not move.
+#[derive(Debug)]
+pub struct Unmoved {
+    pub reason: String,
+    /// The worktree is on another filesystem, so no later try can work either.
+    pub elsewhere: bool,
+}
+
+impl From<String> for Unmoved {
+    fn from(reason: String) -> Unmoved {
+        Unmoved {
+            reason,
+            elsewhere: false,
+        }
+    }
 }
 
 /// Moves the build folder `path` of `found` to `aside`, on the same disk, after the checks of
@@ -183,17 +317,22 @@ pub fn set_aside(
     build: &[String],
     path: &Path,
     aside: &Path,
-) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
+) -> Result<(), Unmoved> {
     if let Some(reason) = unsettled(home, found, build)? {
-        return Err(reason);
+        return Err(reason.into());
     }
     deletable(found, path)?;
     // Moving a folder to another parent rewrites its `..`, which a read-only folder refuses.
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755))
-        .and_then(|()| fs::create_dir_all(aside.parent().unwrap_or(home)))
-        .and_then(|()| fs::rename(path, aside))
-        .map_err(|error| format!("cannot move {}: {error}", path.display()))
+    let failed = |error: std::io::Error| Unmoved {
+        reason: format!("cannot move {}: {error}", path.display()),
+        elsewhere: error.kind() == ErrorKind::CrossesDevices,
+    };
+    let before = fs::symlink_metadata(path).map_err(failed)?.permissions();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).map_err(failed)?;
+    fs::rename(path, aside).map_err(|error| {
+        let _ = fs::set_permissions(path, before);
+        failed(error)
+    })
 }
 
 /// Removes the worktree and keeps its branch. Git refuses when anything is uncommitted or untracked.
@@ -222,7 +361,9 @@ fn unsettled(home: &Path, found: &Found, build: &[String]) -> Result<Option<Stri
     if run(git(path).args(["branch", "--show-current"]))?.trim() != branch {
         return Ok(Some(format!("not on branch {branch}")));
     }
+    // Without it, the walk's status could hold `index.lock` while a run starts.
     let status = run(git(path).args([
+        "--no-optional-locks",
         "status",
         "--porcelain",
         "--untracked-files=all",
@@ -338,4 +479,59 @@ pub fn remove(home: &Path, found: &Found) -> Result<(), String> {
         run(git(&clone).args(["merge-base", "--is-ancestor", &branch, "origin/HEAD"])).is_ok();
     let delete = if merged { "-D" } else { "-d" };
     run(git(&clone).args(["branch", delete, &branch])).map(drop)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    const TABLE: &[u8] = b"22 1 8:1 / / rw - ext4 /dev/sda1 rw\n\
+        23 22 0:5 / /w/a\\040b/target/mnt rw shared:1 - tmpfs tmpfs rw\n";
+
+    #[test]
+    fn a_mount_at_or_under_a_folder_is_found_and_one_beside_or_above_it_is_not() {
+        let under = |path: &str| mount_under(TABLE, Path::new(path));
+        let mount = Some(PathBuf::from("/w/a b/target/mnt"));
+        assert_eq!(under("/w/a b/target"), mount);
+        assert_eq!(under("/w/a b/target/mnt"), mount);
+        assert_eq!(under("/w/a b/target/mn"), None);
+        assert_eq!(under("/w/a b/target/mnt/deep"), None);
+        assert_eq!(under("/w/other"), None);
+    }
+
+    #[test]
+    fn a_mounted_folder_is_neither_taken_nor_deleted() {
+        let found = Found {
+            path: PathBuf::from("/"),
+            repo: "o/r".to_owned(),
+            name: "1".to_owned(),
+        };
+        let proc = Path::new("/proc");
+        let refused = deletable(&found, proc).unwrap_err();
+        assert!(refused.ends_with("is a mount"), "{refused}");
+        let refused = expendable(proc).unwrap_err();
+        assert!(refused.ends_with("is a mount"), "{refused}");
+    }
+
+    proptest! {
+        #[test]
+        fn mount_under_never_panics(table in proptest::collection::vec(any::<u8>(), 0..200)) {
+            let _ = mount_under(&table, Path::new("/w"));
+        }
+
+        #[test]
+        fn mount_under_reads_back_any_mount_point(name in "[a-z \\\\\t]{1,20}") {
+            let escaped: String = name
+                .bytes()
+                .map(|byte| match byte {
+                    b'a'..=b'z' => char::from(byte).to_string(),
+                    byte => format!("\\{byte:03o}"),
+                })
+                .collect();
+            let table = format!("23 22 0:5 / /w/{escaped} rw - tmpfs tmpfs rw\n");
+            let point = Path::new("/w").join(&name);
+            prop_assert_eq!(mount_under(table.as_bytes(), Path::new("/w")), Some(point));
+        }
+    }
 }
