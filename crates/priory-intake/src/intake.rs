@@ -939,6 +939,9 @@ fn task_requested(name: &str, trigger: &Trigger, source: &Message, key: String) 
     if let Some(hold) = &trigger.hold {
         data["hold"] = json!(hold);
     }
+    if let Some(labels) = trigger.labels.as_ref().filter(|labels| !labels.is_empty()) {
+        data["labels"] = json!(labels);
+    }
     Message::new(TASK_REQUESTED, data)
         .id(id(&format!("{TASK_REQUESTED}:{name}:{}", source.id)))
         .subject(key)

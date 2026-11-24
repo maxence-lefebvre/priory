@@ -32364,3 +32364,205 @@ fn a_parked_task_is_left_out_of_the_queue_and_the_task_list() {
     let found = person(&setup, "search", &["Adopted", "--state", "held"]);
     assert!(found.contains("owner/repo#7"), "{found}");
 }
+
+/// A runner file whose filter keeps tasks labelled `project=oss` off it on weekdays, 08:00 to 18:00 UTC.
+const OSS_OFF_BY_DAY: &str = r#"platform = { os = "linux" }
+
+[[filters]]
+match = "!project=oss"
+when = { days = ["mon", "tue", "wed", "thu", "fri"], hours = "08:00-18:00", timezone = "UTC" }
+"#;
+
+/// A runner file whose filter keeps tasks labelled `project=oss` off it at every hour.
+const NO_OSS: &str = r#"platform = { os = "linux" }
+
+[[filters]]
+match = "!project=oss"
+"#;
+
+/// A Tuesday inside the work hours of `OSS_OFF_BY_DAY`, and a minute after they end.
+const WORK_HOURS: &str = "2026-11-24T10:00:00Z";
+const EVENING: &str = "2026-11-24T18:01:00Z";
+
+/// Runner `host` of a factory with runners `desktop` and `server` of those runner files.
+fn placed(test: &str, host: &str, desktop: &str, server: &str, bus: Option<&Setup>) -> Setup {
+    let mut setup = Setup::new(&format!("{test}-{host}"));
+    for (path, content) in [
+        ("factory/runners/desktop.toml", desktop),
+        ("factory/runners/server.toml", server),
+        ("proc/sys/kernel/hostname", &format!("{host}\n")),
+    ] {
+        let file = setup.dir.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, content).unwrap();
+    }
+    if let Some(other) = bus {
+        setup.bus = other.bus.clone();
+    }
+    setup
+}
+
+fn oss(issue: u64) -> Message {
+    let mut message = requested(issue);
+    message.data["labels"] = json!({ "project": "oss" });
+    message
+}
+
+/// The runners that claimed `key` on the log, in log order.
+fn claimants(setup: &Setup, key: &str) -> Vec<String> {
+    setup
+        .bus()
+        .messages(&herdr_bus::MessageQuery {
+            output: Some(OUTPUT.into()),
+            limit: 1000,
+            ..herdr_bus::MessageQuery::default()
+        })
+        .unwrap()
+        .into_iter()
+        .rev()
+        .filter(|stored| stored.message.kind == "priory.task.claimed")
+        .filter(|stored| stored.message.data["key"] == key)
+        .map(|stored| stored.message.data["runner"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn a_negative_filter_keeps_a_labelled_task_off_the_desktop_in_work_hours_and_the_server_runs_it() {
+    let mut desktop = placed(
+        "filter-off",
+        "desktop",
+        OSS_OFF_BY_DAY,
+        "platform = { os = \"linux\" }\n",
+        None,
+    );
+    let mut server = placed(
+        "filter-off",
+        "server",
+        OSS_OFF_BY_DAY,
+        "platform = { os = \"linux\" }\n",
+        Some(&desktop),
+    );
+    desktop.publish(&oss(1));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    desktop.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "factory.task.requested" && row[4] == "unaccepted")
+    });
+    server.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    let tasks = server.until_own_tasks(|rows| with(rows, 4, "running") == 1);
+    assert_eq!(tasks[0][1], "github:owner/repo#1");
+
+    let listed = desktop.until("tasks", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "github:owner/repo#1" && row[13] == "server")
+    });
+    assert!(
+        listed.iter().all(|row| row[0] == "-"),
+        "the desktop has no task of its own: {listed:?}"
+    );
+    assert_eq!(claimants(&desktop, "github:owner/repo#1"), ["server"]);
+    desktop.crash();
+    server.crash();
+}
+
+#[test]
+fn a_task_no_runner_accepts_says_until_when_and_the_desktop_claims_it_once_its_window_lifts() {
+    let mut desktop = placed("filter-lift", "desktop", OSS_OFF_BY_DAY, NO_OSS, None);
+    let mut server = placed(
+        "filter-lift",
+        "server",
+        OSS_OFF_BY_DAY,
+        NO_OSS,
+        Some(&desktop),
+    );
+    desktop.publish(&oss(1));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+
+    server.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    server.until("inbox", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "factory.task.requested" && row[4] == "unaccepted")
+    });
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    let listed = desktop.until("tasks", |rows| {
+        rows.iter().any(|row| row[1] == "github:owner/repo#1")
+    });
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    let tasks: serde_json::Value =
+        serde_json::from_slice(&desktop.priory(&["tasks", "--json"]).stdout).unwrap();
+    let row = &tasks["tasks"][0];
+    assert_eq!(
+        [&row["key"], &row["runner"], &row["reason"], &row["labels"]],
+        [
+            &json!("github:owner/repo#1"),
+            &json!(null),
+            &json!("no runner accepts it until 18:00"),
+            &json!({ "project": "oss" })
+        ],
+        "{tasks}"
+    );
+    let desk: serde_json::Value =
+        serde_json::from_slice(&desktop.priory(&["desk", "--json"]).stdout).unwrap();
+    let item = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["key"] == "github:owner/repo#1")
+        .unwrap_or_else(|| panic!("no desk item: {desk}"));
+    assert_eq!(
+        [&item["kind"], &item["what"]],
+        [
+            &json!("queue"),
+            &json!("-: no runner accepts it until 18:00")
+        ],
+        "{desk}"
+    );
+    assert!(claimants(&desktop, "github:owner/repo#1").is_empty());
+
+    desktop.crash();
+    desktop.start_with(exe, &[("PRIORY_NOW", EVENING)]);
+    let tasks = desktop.until_own_tasks(|rows| with(rows, 4, "running") == 1);
+    assert_eq!(tasks[0][1], "github:owner/repo#1");
+    assert_eq!(claimants(&desktop, "github:owner/repo#1"), ["desktop"]);
+    let listed = server.until("tasks", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "github:owner/repo#1" && row[13] == "desktop")
+    });
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    desktop.crash();
+    server.crash();
+}
+
+#[test]
+fn a_single_runners_filter_holds_its_task_with_the_reason_until_the_window_lifts() {
+    let mut setup = Setup::new("filter-single");
+    for (path, content) in [
+        ("factory/runners/desktop.toml", OSS_OFF_BY_DAY),
+        ("proc/sys/kernel/hostname", "desktop\n"),
+    ] {
+        let file = setup.dir.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, content).unwrap();
+    }
+    setup.publish(&oss(1));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+
+    setup.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    let tasks = setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[7] != "-")
+    });
+    assert_eq!(
+        [tasks[0][4].as_str(), tasks[0][7].as_str()],
+        [
+            "queued",
+            "runner desktop's filter !project=oss holds it until 18:00"
+        ]
+    );
+    setup.crash();
+
+    setup.start_with(exe, &[("PRIORY_NOW", EVENING)]);
+    setup.until("tasks", |rows| with(rows, 4, "running") == 1);
+    setup.crash();
+}

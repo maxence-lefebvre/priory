@@ -2,6 +2,7 @@ pub mod case;
 pub mod draw;
 pub mod explain;
 pub mod factory;
+pub mod filters;
 pub mod guard;
 pub mod labels;
 pub mod lanes;

@@ -4716,3 +4716,65 @@ fn a_sandbox_kind_other_than_bwrap_is_refused_with_its_line() {
         outcome.stderr
     );
 }
+
+#[test]
+fn trigger_labels_and_runner_filters_pass_and_each_bad_one_names_its_line() {
+    let trigger = format!("{TRIGGER}labels = {{ project = \"oss\" }}\n");
+    let runner = format!(
+        "{RUNNER}\n[[filters]]\nmatch = \"!project=oss\"\n\
+         when = {{ days = [\"mon\", \"fri\"], hours = \"08:00-18:00\", timezone = \"Europe/Paris\" }}\n"
+    );
+    let mut files = with("triggers/agent-label.toml", &trigger);
+    files.retain(|(path, _)| *path != "runners/desktop.toml");
+    files.push(("runners/desktop.toml", &runner));
+    let outcome = check(&factory("filters-valid", &files));
+    assert_eq!(outcome.code, 0, "{}", outcome.stderr);
+
+    let cases = [
+        (
+            "triggers/agent-label.toml",
+            "\"oss\" }",
+            "\"o s\" }",
+            "triggers/agent-label.toml:8:10: label project has value \"o s\": use letters, digits, `_`, `.`, `:`, `/` or `-`\n",
+        ),
+        (
+            "runners/desktop.toml",
+            "\"!project=oss\"",
+            "\"project\"",
+            "runners/desktop.toml:3:9: \"project\" is not a match such as \"project=oss\" or \"!project=oss\"\n",
+        ),
+        (
+            "runners/desktop.toml",
+            "\"08:00-18:00\"",
+            "\"8am-6pm\"",
+            "runners/desktop.toml:4:41: \"8am-6pm\" is not hours such as \"08:00-18:00\"\n",
+        ),
+        (
+            "runners/desktop.toml",
+            "\"fri\"",
+            "\"fry\"",
+            "runners/desktop.toml:4:17: \"fry\" is not a day: use mon, tue, wed, thu, fri, sat or sun\n",
+        ),
+        (
+            "runners/desktop.toml",
+            "Europe/Paris",
+            "Europe/Atlantis",
+            "runners/desktop.toml:4:67: \"Europe/Atlantis\" is not a time zone such as \"Europe/Paris\"\n",
+        ),
+    ];
+    for (index, (path, from, to, error)) in cases.into_iter().enumerate() {
+        let (trigger, runner) = match path {
+            "triggers/agent-label.toml" => (trigger.replace(from, to), runner.clone()),
+            _ => (trigger.clone(), runner.replace(from, to)),
+        };
+        let mut files = with("triggers/agent-label.toml", &trigger);
+        files.retain(|(path, _)| *path != "runners/desktop.toml");
+        files.push(("runners/desktop.toml", &runner));
+        let outcome = check(&factory(&format!("filters-bad-{index}"), &files));
+        assert_eq!(
+            (outcome.code, outcome.stderr.as_str()),
+            (1, error),
+            "{to:?}"
+        );
+    }
+}

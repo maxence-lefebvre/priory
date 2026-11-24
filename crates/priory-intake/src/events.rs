@@ -861,6 +861,14 @@ pub struct TaskRequested {
     /// the trigger's when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_answer: Option<priory_factory::factory::Confidence>,
+    /// The task's labels, which runner filters match: the trigger's `labels`, or `priory request`
+    /// or `priory add --label`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(extend(
+        "propertyNames" = { "pattern": "^[a-z0-9][a-z0-9_.-]*$" },
+        "additionalProperties" = { "type": "string", "pattern": "^[A-Za-z0-9_.:/-]+$" }
+    ))]
+    pub labels: Option<std::collections::BTreeMap<String, String>>,
     /// The batch a planning task plans, from `priory batch add`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch: Option<BatchRequest>,

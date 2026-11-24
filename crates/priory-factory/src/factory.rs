@@ -1641,6 +1641,16 @@ pub struct Trigger {
     pub band: Option<String>,
     /// The lane of its tasks, `<team>/<theme>`; `lanes.toml` derives it when unset.
     pub lane: Option<String>,
+    /// The labels of its tasks, such as `{ project = "oss" }`, which runner filters match.
+    #[serde(default, deserialize_with = "crate::filters::labels")]
+    #[schemars(
+        with = "BTreeMap<String, String>",
+        extend(
+            "propertyNames" = { "pattern": "^[a-z0-9][a-z0-9_.-]*$" },
+            "additionalProperties" = { "type": "string", "pattern": "^[A-Za-z0-9_.:/-]+$" }
+        )
+    )]
+    pub labels: Option<BTreeMap<String, String>>,
     /// Whether the events of the first poll start tasks too.
     pub backfill: Option<bool>,
     /// The local time of day a schedule fires, `HH:MM`.
@@ -1864,14 +1874,16 @@ fn until<'de, D: Deserializer<'de>>(input: D) -> Result<Option<Until>, D::Error>
         })
 }
 
-fn time_of_day<'de, D: Deserializer<'de>>(input: D) -> Result<Option<jiff::civil::Time>, D::Error> {
+pub(crate) fn time_of_day<'de, D: Deserializer<'de>>(
+    input: D,
+) -> Result<Option<jiff::civil::Time>, D::Error> {
     let text = String::deserialize(input)?;
     jiff::civil::Time::strptime("%H:%M", &text)
         .map(Some)
         .map_err(|_| D::Error::custom(format!("{text:?} is not a time of day such as \"09:00\"")))
 }
 
-fn weekdays<'de, D: Deserializer<'de>>(
+pub(crate) fn weekdays<'de, D: Deserializer<'de>>(
     input: D,
 ) -> Result<Option<Vec<jiff::civil::Weekday>>, D::Error> {
     use jiff::civil::Weekday::*;
@@ -1894,7 +1906,9 @@ fn weekdays<'de, D: Deserializer<'de>>(
         .map(Some)
 }
 
-fn time_zone<'de, D: Deserializer<'de>>(input: D) -> Result<Option<jiff::tz::TimeZone>, D::Error> {
+pub(crate) fn time_zone<'de, D: Deserializer<'de>>(
+    input: D,
+) -> Result<Option<jiff::tz::TimeZone>, D::Error> {
     let text = String::deserialize(input)?;
     jiff::tz::TimeZone::get(&text).map(Some).map_err(|_| {
         D::Error::custom(format!(
@@ -2267,6 +2281,9 @@ pub struct Runner {
     pub platform: Platform,
     /// The share of the machine its agents may take together; 90% of each when unset.
     pub agents: Option<Share>,
+    /// The tasks it claims and starts: only those every filter whose window is open accepts.
+    #[serde(default)]
+    pub filters: Vec<crate::filters::Filter>,
 }
 
 /// The machine's operating system and CPU architecture.

@@ -291,6 +291,7 @@ fn submit(factory: &Factory, payload: &Value, ended: Ended) -> String {
         intervention: None,
         session: None,
         auto_answer: None,
+        labels: Vec::new(),
     };
     let key = format!("slack:{channel}:{thread}");
     let ended = match ended(&key) {

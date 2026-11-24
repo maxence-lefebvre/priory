@@ -36,6 +36,7 @@ cannot tell which keys a source refuses; `priory check` does.
 | `key` | string | no | per source | Which events are the same work. A factory holds at most one active task per key | `"issue.number"` |
 | `band` | string | no | the workflow's `band`, else the last band | The band of its tasks | `"today"` |
 | `lane` | string | no | derived by `lanes.toml` | The lane of its tasks, `<team>/<theme>` | `"core/intake"` |
+| `labels` | table of strings | no | none | The labels of its tasks, which [runner filters](runners.md#filters) match. A key is lower case letters, digits, `_`, `.` and `-`. A value is letters, digits, `_`, `.`, `:`, `/` and `-` | `{ project = "oss" }` |
 | `hold` | table | no | | Files each task held. See [`hold`](#hold) | `{ reason = "triage first" }` |
 | `intervention` | `plan` or `hands-off` | no | a person answers every ask | Who answers its tasks' asks. See [`intervention` and `lead`](#intervention-and-lead) | `"plan"` |
 | `lead` | string | with `hands-off` | | The agent that answers asks of a `hands-off` task | `"lead"` |
@@ -391,7 +392,7 @@ workflow = "implement"
 | `caps` | Always: they count toward every `cli` task |
 | `staged` | Always: every `cli` task blocks before its first irreversible step |
 
-A request ignores `source`, `workflow`, `key`, `lane`, `hold` and `pre`. Like every trigger's
+A request ignores `source`, `workflow`, `key`, `lane`, `labels`, `hold` and `pre`: its labels are its `--label` flags. Like every trigger's
 `repo`, that repository is polled for GitHub events.
 
 <!-- example: factory/triggers/cli.toml -->
@@ -538,6 +539,8 @@ noop = [
 | ------- | ----- |
 | `` unknown field `<key>`, expected one of ... `` | A key no table above lists |
 | `` missing field `workflow` `` | No `workflow` |
+| `` label key "<key>" is not lower case letters, digits, `_`, `.` or `-` `` | A `labels` key with another character |
+| `` label <key> has value "<value>": use letters, digits, `_`, `.`, `:`, `/` or `-` `` | A `labels` value that is empty or has another character |
 | `<n> is not a spend cap: give dollars above zero` | A `caps` value of zero or less, or not finite |
 | `` `caps` needs prices.toml, which turns the steps' tokens into dollars `` | `caps` in a factory without `prices.toml` |
 | `` `max_running` is 0: give at least 1, or hold the tasks instead `` | `max_running = 0` |

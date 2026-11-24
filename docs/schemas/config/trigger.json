@@ -338,6 +338,18 @@
         "null"
       ]
     },
+    "labels": {
+      "additionalProperties": {
+        "pattern": "^[A-Za-z0-9_.:/-]+$",
+        "type": "string"
+      },
+      "default": null,
+      "description": "The labels of its tasks, such as `{ project = \"oss\" }`, which runner filters match.",
+      "propertyNames": {
+        "pattern": "^[a-z0-9][a-z0-9_.-]*$"
+      },
+      "type": "object"
+    },
     "lane": {
       "description": "The lane of its tasks, `<team>/<theme>`; `lanes.toml` derives it when unset.",
       "type": [

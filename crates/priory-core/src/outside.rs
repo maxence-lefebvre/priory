@@ -65,6 +65,7 @@ pub fn request(call: &Call) -> Result<priory_intake::request::Add, String> {
         relates: Vec::new(),
         intervention: None,
         auto_answer: None,
+        labels: Vec::new(),
         session: Some(call.session.clone().unwrap_or_else(|| ANONYMOUS.to_owned())),
     })
 }

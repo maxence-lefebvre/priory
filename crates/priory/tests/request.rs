@@ -915,3 +915,78 @@ fn a_key_that_names_a_pull_request_keys_and_subscribes_its_task_to_it() {
     let task: serde_json::Value = serde_json::from_slice(&task.stdout).unwrap();
     assert_eq!(task["subscriptions"][0]["resource"], "github:owner/repo#43");
 }
+
+#[test]
+fn a_requests_labels_reach_its_task_and_a_bad_or_repeated_one_publishes_nothing() {
+    let setup = Setup::new("labels");
+    succeeded(&setup.request(&[
+        "--workflow",
+        "implement",
+        "--key",
+        "docs-1",
+        "--label",
+        "project=oss",
+        "--label",
+        "size=s",
+        "Fix the docs",
+    ]));
+    let labels = json!({ "project": "oss", "size": "s" });
+    assert_eq!(setup.published()[1].message.data["labels"], labels);
+
+    let factory = setup.dir.join("factory");
+    succeeded(&setup.priory(&["daemon", factory.to_str().unwrap(), "--once"]));
+    let task: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["task", "1", "--json"]).stdout).unwrap();
+    assert_eq!(task["labels"], labels, "{task}");
+    let tasks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["tasks", "--json"]).stdout).unwrap();
+    assert_eq!(tasks["tasks"][0]["labels"], labels, "{tasks}");
+
+    for (index, (flags, error)) in [
+        (
+            ["project=oss", "project=web"],
+            "priory request: --label project is given twice\n",
+        ),
+        (
+            ["project=oss", "Size=s"],
+            "priory request: label key \"Size\" is not lower case letters, digits, `_`, `.` or `-`\n",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let setup = Setup::new(&format!("labels-bad-{index}"));
+        let output = setup.request(&[
+            "--workflow",
+            "implement",
+            "--key",
+            "docs-2",
+            "--label",
+            flags[0],
+            "--label",
+            flags[1],
+            "Fix the docs",
+        ]);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stderr), error);
+        assert!(setup.published().is_empty());
+    }
+}
+
+#[test]
+fn add_takes_labels() {
+    let setup = Setup::with("add-labels", DEFAULTS);
+
+    succeeded(&setup.add(&[
+        "--repo",
+        "owner/repo",
+        "--label",
+        "project=oss",
+        "Fix the docs",
+    ]));
+
+    assert_eq!(
+        setup.published()[1].message.data["labels"],
+        json!({ "project": "oss" })
+    );
+}

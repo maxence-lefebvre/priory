@@ -1367,6 +1367,7 @@ Schema: [`factory.task.requested.json`](../schemas/events/factory.task.requested
 | `relates` | array, optional | `priory request` or `priory add --relates`: each `{ "kind", "task" }`, the relation's kind and the other task's id. See [relations.md](../daemon/relations.md) |
 | `intervention` | `plan` or `hands-off`, optional | `priory request` or `priory add --intervention`; the task takes its trigger's when absent |
 | `session` | string, optional | The outside session that added the task through [`priory mcp --outside`](../daemon/tools.md#the-outside-server): its hc terminal, then a space and its Claude session id, or `outside` without an hc terminal. The task keeps it as `added_by` |
+| `labels` | object, optional | The trigger's `labels`, or `priory request` or `priory add --label`: each key and value a string. [Runner filters](runners.md#filters) match them |
 | `auto_answer` | `high` or `medium`, optional | `priory request` or `priory add --auto-answer`; the task takes its trigger's when absent. See [triggers.md](triggers.md#auto_answer) |
 | `batch` | object, optional | `priory batch add`: `issues`, the batch's issues as task keys, and `entries`, the workflow of each entry's task. The task it creates plans that batch. See [batches.md](../daemon/batches.md) |
 | `scheduled` | RFC 3339, optional | When the firing was due. Schedule sources only |

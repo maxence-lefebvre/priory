@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 109;
+const VERSION: i64 = 110;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1957,6 +1957,14 @@ CREATE INDEX open_holds ON holds (task) WHERE released IS NULL;
 "
 );
 
+// A task's labels, as a JSON object, which runner filters match, and why a request no runner's
+// filters accept waits.
+const SCHEMA_110: &str = "
+ALTER TABLE tasks ADD COLUMN labels TEXT;
+ALTER TABLE inbox ADD COLUMN reason TEXT;
+PRAGMA user_version = 110;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1972,7 +1980,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2374,9 +2382,9 @@ pub(crate) fn route_in(
             tx.execute(
                 "INSERT INTO tasks
                    (key, workflow, step, state, band, lane, team, project, lane_derived, trigger, source, repo, entered, tldr, intervention, lead,
-                    pre_title, pre_text, pre_context, pre_script, added_by, auto_answer, intent, noop)
+                    pre_title, pre_text, pre_context, pre_script, added_by, auto_answer, intent, noop, labels)
                  VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?12, ?13, ?14,
-                   ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+                   ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
                 params![
                     new.key,
                     new.workflow,
@@ -2403,7 +2411,8 @@ pub(crate) fn route_in(
                     new.session,
                     new.auto_answer.map(|level| level.as_str()),
                     new.intent,
-                    (!new.noop.is_empty()).then(|| serde_json::json!(new.noop).to_string())
+                    (!new.noop.is_empty()).then(|| serde_json::json!(new.noop).to_string()),
+                    (!new.labels.is_empty()).then(|| serde_json::json!(new.labels).to_string())
                 ],
             )?;
             let id = tx.last_insert_rowid();
@@ -3434,6 +3443,12 @@ pub(crate) fn admissible<'r>(
         let new_work = admission.fresh && !helper;
         // A pause holds only new tasks: a woken, resumed or revived one is `ready` and goes on.
         let busy = busy.or_else(|| paused.clone().filter(|_| new_work));
+        // So do this runner's filters: a task that started stays on its runner.
+        let busy = match busy {
+            Some(reason) => Some(reason),
+            None if new_work => filtered(db, factory, runner, admission.task)?,
+            None => None,
+        };
         let busy = match busy {
             Some(reason) => Some(reason),
             None => crate::spend::waits(db, &book, admission.task)?,
@@ -3529,6 +3544,31 @@ pub(crate) fn admissible<'r>(
     }
     crate::stall::record(db, stall.as_ref().map(|(task, short)| (*task, short)))?;
     Ok(None)
+}
+
+/// Why this runner's filters hold `task` now, if they do. A factory of one runner has no runner
+/// name, so its one runner file applies.
+fn filtered(
+    db: &Connection,
+    factory: &Factory,
+    runner: Option<&str>,
+    task: i64,
+) -> rusqlite::Result<Option<String>> {
+    let Some(runner) = runner.or_else(|| match factory.runners.keys().collect::<Vec<_>>()[..] {
+        [one] => Some(one.as_str()),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+    let labels: Option<String> =
+        db.query_row("SELECT labels FROM tasks WHERE id = ?1", [task], |row| {
+            row.get(0)
+        })?;
+    let labels = labels
+        .and_then(|labels| serde_json::from_str(&labels).ok())
+        .unwrap_or_default();
+    let now = priory_intake::intake::now().unwrap_or_else(|_| jiff::Timestamp::now());
+    Ok(crate::runners::refusal(factory, runner, &labels, now))
 }
 
 /// Why a task waits for its lane's or trigger's `max_running`: `waits: lane core/intake has 2

@@ -89,6 +89,40 @@ the log late does not start a finished task over. Another request of the key tha
 claim was pending goes to the winner's task, as it would had the task existed. A task that moves
 gets those requests again on its new runner.
 
+## Placing tasks with filters
+
+A task can carry labels, such as `project=oss`, from its trigger's `labels` or from
+`priory request --label`. They travel in `factory.task.requested`, so every runner reads them. Each
+runner file can list filters, each with an optional window of days and hours, as
+[runners.md](../reference/runners.md#filters) describes. A runner takes only the tasks that every
+filter whose window is open accepts. Take a desktop whose filter `!project=oss` applies on weekdays
+from 08:00 to 18:00, and a server with no filter: by day the server takes the oss tasks, and at
+night either runner can.
+
+Each runner checks its own filters twice, on its own clock:
+
+1. When it reads a request whose key no runner holds. A runner whose filters refuse the request
+   sends no claim, and records the request as `unaccepted`. The first claim in log order still
+   wins, so filters only decide which runners send one.
+2. Before the first run of a task it owns. A task its filters refuse now waits with the reason
+   `runner desktop's filter !project=oss holds it until 18:00`, and starts once the window lifts.
+   This check applies in a factory of one runner too.
+
+A runner keeps a task it claimed when its window closes before the task's first run. The task
+stays `waiting` on the log, as any unstarted task does, and runs when the window lifts. Use
+`priory give` to move it before then. Moving it on its own would need either a new hold or a
+takeover that reads each runner's filter files, and two runners with different copies of
+`runners/` could then both take the key. Keeping it changes no claim rule, so the proof in [Why no
+task runs twice](#why-no-task-runs-twice) holds as it is. A task that started never moves for a
+filter.
+
+When no runner's filters accept a request, no runner claims it. Each runner lists it in
+`priory tasks`, its JSON and the Desk's queue, with no runner and the reason
+`no runner accepts it until 18:00`: the first time a runner's filters lift, in that runner's
+filter timezone. A request no window ever lifts says `no runner accepts it`. Each runner checks
+its unaccepted requests again when it reads its own alive message, once a minute, and claims the
+first request of each key its filters accept by then.
+
 ## Holds and leases
 
 The owner publishes each task's hold, with the task's generation, whenever either changes:
@@ -414,3 +448,6 @@ Every runner also refuses a claim for a runner without a runner file.
 - A key's newer task starts at generation 1 again. An action sent to the old task and read after
   the key's new task started can apply to the new one.
 - Each runner adds one alive message a minute to `factory.intake`.
+- A task its runner claimed waits there while that runner's filter holds it, even when another
+  runner would accept it. A filter lifted at the window's end takes up to a minute to claim a
+  request no runner accepted.

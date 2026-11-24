@@ -4,6 +4,7 @@ use crate::trace::Trace;
 use herdr_bus::Message;
 use jiff::{SignedDuration, Timestamp};
 use priory_factory::factory::{EventLog, Factory};
+use priory_factory::filters::{self, Labels};
 use priory_intake::intake::{
     self, ASK_ANSWERED as ANSWERED, ASK_APPLIED as APPLIED, ASK_DISMISSED as DISMISSED,
     ASK_POSTED as POSTED, OUTPUT, RUNNER_ALIVE as ALIVE, TASK_ACTED as ACTED,
@@ -136,6 +137,7 @@ pub(crate) fn handle(
             renew(tx, text("runner"), message.time)?;
             if text("runner") == me {
                 take_over(tx, me, message)?;
+                offer(tx, me, trace.factory, message.time)?;
             }
             "noted"
         }
@@ -185,7 +187,7 @@ pub(crate) fn handle(
                 outcome
             }
         }
-        _ if crate::route::requests(message) => match requested(tx, message, me)? {
+        _ if crate::route::requests(message) => match requested(tx, message, me, trace.factory)? {
             Some(outcome) => outcome,
             None => return Ok(None),
         },
@@ -510,11 +512,13 @@ fn post(tx: &Transaction, me: &str, now: Timestamp) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// A request for a key no local task has: routed when this runner owns the key, else claimed.
+/// A request for a key no local task has: routed when this runner owns the key, else claimed when
+/// this runner's filters accept it.
 fn requested(
     tx: &Transaction,
     message: &Message,
     me: &str,
+    factory: &Factory,
 ) -> rusqlite::Result<Option<&'static str>> {
     let Some(key) = crate::route::resources(message).into_iter().next() else {
         return Ok(None);
@@ -526,12 +530,120 @@ fn requested(
         Some(owner) if owner.hold != Hold::Ended && owner.runner == me => Ok(None),
         Some(owner) if owner.hold != Hold::Ended => Ok(Some("elsewhere")),
         _ => {
-            let claim = json!({ "key": key, "runner": me, "request": message.id.to_string() });
-            let id = format!("claim/{}/{me}", message.id);
-            send(tx, &stamped(CLAIMED, claim, &id).subject(key))?;
+            let now = intake::now().unwrap_or_else(|_| Timestamp::now());
+            if refusal(factory, me, &labels(&message.data), now).is_some() {
+                crate::state::record(tx, message, None, UNACCEPTED, None)?;
+                tx.execute(
+                    "UPDATE inbox SET reason = ?2 WHERE id = ?1",
+                    params![
+                        message.id.to_string(),
+                        unaccepted(factory, &labels(&message.data), now)
+                    ],
+                )?;
+                return Ok(Some(UNACCEPTED));
+            }
+            claim(tx, me, &key, &message.id.to_string())?;
             Ok(Some("claiming"))
         }
     }
+}
+
+/// Publishes this runner's claim of `key` for its request `request`.
+fn claim(tx: &Transaction, me: &str, key: &str, request: &str) -> rusqlite::Result<()> {
+    let claim = json!({ "key": key, "runner": me, "request": request });
+    let id = format!("claim/{request}/{me}");
+    send(tx, &stamped(CLAIMED, claim, &id).subject(key))
+}
+
+/// The inbox outcome of a request that no filter of this runner let it claim.
+const UNACCEPTED: &str = "unaccepted";
+
+/// The labels a task request carries.
+pub(crate) fn labels(data: &Value) -> Labels {
+    serde_json::from_value(data["labels"].clone()).unwrap_or_default()
+}
+
+/// Why runner `runner`'s filters keep a task with `labels` off it at `at`, if they do:
+/// `runner desktop's filter !project=oss holds it until 18:00`.
+pub(crate) fn refusal(
+    factory: &Factory,
+    runner: &str,
+    labels: &Labels,
+    at: Timestamp,
+) -> Option<String> {
+    let file = &factory.runners.get(runner)?.value;
+    let refused = filters::accepts(&file.filters, labels, at).err()?;
+    let until = refused
+        .until
+        .map(|until| {
+            format!(
+                " until {}",
+                filters::when(until, at, &filters::zone(&file.filters))
+            )
+        })
+        .unwrap_or_default();
+    Some(format!(
+        "runner {runner}'s filter {} holds it{until}",
+        refused.filter
+    ))
+}
+
+/// Why no runner claims a task with `labels` at `at`: `no runner accepts it until 18:00`, at the
+/// first time one of them does.
+fn unaccepted(factory: &Factory, labels: &Labels, at: Timestamp) -> String {
+    let lifts = factory.runners.values().map(|file| {
+        let filters = &file.value.filters;
+        match filters::accepts(filters, labels, at) {
+            Ok(()) => Some((at, filters::zone(filters))),
+            Err(refused) => refused.until.map(|until| (until, filters::zone(filters))),
+        }
+    });
+    match lifts.flatten().min_by_key(|(until, _)| *until) {
+        Some((until, zone)) if until > at => {
+            format!(
+                "no runner accepts it until {}",
+                filters::when(until, at, &zone)
+            )
+        }
+        Some(_) => "waits for a runner to claim it".to_owned(),
+        None => "no runner accepts it".to_owned(),
+    }
+}
+
+/// Claims, once its filters accept it at `at`, the first unaccepted request of each key no runner
+/// holds; tells again why each other one waits.
+fn offer(tx: &Transaction, me: &str, factory: &Factory, at: Timestamp) -> rusqlite::Result<()> {
+    let waiting = tx
+        .prepare(
+            "SELECT id, subject, data FROM inbox WHERE outcome = 'unaccepted'
+               AND seq = (SELECT min(seq) FROM inbox AS first
+                 WHERE first.subject = inbox.subject AND first.outcome = 'unaccepted')
+             ORDER BY seq",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, key, data) in waiting {
+        let labels = labels(&serde_json::from_str(&data).unwrap_or_default());
+        if refusal(factory, me, &labels, at).is_some() {
+            tx.execute(
+                "UPDATE inbox SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
+                params![id, unaccepted(factory, &labels, at)],
+            )?;
+            continue;
+        }
+        claim(tx, me, &key, &id)?;
+        tx.execute(
+            "UPDATE inbox SET outcome = 'claiming', reason = NULL WHERE id = ?1",
+            [&id],
+        )?;
+    }
+    Ok(())
 }
 
 /// Applies a claim read from the log: the first that wins a key makes its runner the owner, which
@@ -607,7 +719,7 @@ fn claimed(
     let mut pending: Vec<String> = tx
         .prepare(
             "SELECT id FROM inbox WHERE subject = ?1 AND id != ?2
-               AND outcome IN ('claiming', 'elsewhere')
+               AND outcome IN ('claiming', 'elsewhere', 'unaccepted')
                AND seq > (SELECT seq FROM inbox WHERE id = ?2)
              ORDER BY seq",
         )?
@@ -631,7 +743,8 @@ fn claimed(
     for id in &pending {
         if runner != me {
             tx.execute(
-                "UPDATE inbox SET outcome = 'elsewhere' WHERE id = ?1 AND outcome = 'claiming'",
+                "UPDATE inbox SET outcome = 'elsewhere', reason = NULL
+                 WHERE id = ?1 AND outcome IN ('claiming', 'unaccepted')",
                 [id],
             )?;
             continue;
@@ -1214,7 +1327,7 @@ pub(crate) fn with_remote_tasks(db: &Connection, tasks: &mut Value) -> rusqlite:
                json_extract(request.data, '$.workflow'), json_extract(request.data, '$.band'),
                json_extract(request.data, '$.lane'),
                coalesce(nullif(json_extract(request.data, '$.tldr'), ''), request.subject),
-               claims.generation
+               claims.generation, coalesce(json_extract(request.data, '$.labels'), '{}')
              FROM claims LEFT JOIN inbox AS claim ON claim.seq = claims.won
                LEFT JOIN inbox AS request ON request.id = claims.request
              WHERE claims.runner != ?1 AND claims.hold != 'ended'
@@ -1231,6 +1344,8 @@ pub(crate) fn with_remote_tasks(db: &Connection, tasks: &mut Value) -> rusqlite:
                     "lane": row.get::<_, Option<String>>(6)?,
                     "title": row.get::<_, Option<String>>(7)?,
                     "generation": row.get::<_, Option<i64>>(8)?,
+                    "labels": serde_json::from_str::<Value>(&row.get::<_, String>(9)?)
+                        .unwrap_or_default(),
                     "state": null, "step": null,
                 }),
             ))
@@ -1242,7 +1357,51 @@ pub(crate) fn with_remote_tasks(db: &Connection, tasks: &mut Value) -> rusqlite:
         task["submissions"] = task_submissions(db, runner, &key, None)?;
     }
     list.extend(remote.into_iter().map(|(_, task)| task));
+    list.extend(unaccepted_rows(db)?);
     Ok(())
+}
+
+/// The first request of each key that no runner's filters let it claim yet, as a task row with no
+/// runner and the reason it waits.
+fn unaccepted_rows(db: &Connection) -> rusqlite::Result<Vec<Value>> {
+    db.prepare(
+        "SELECT subject, time, reason, json_extract(data, '$.workflow'), json_extract(data, '$.band'),
+           json_extract(data, '$.lane'), coalesce(nullif(json_extract(data, '$.tldr'), ''), subject),
+           coalesce(json_extract(data, '$.labels'), '{}')
+         FROM inbox WHERE outcome = 'unaccepted'
+           AND seq = (SELECT min(seq) FROM inbox AS first
+             WHERE first.subject = inbox.subject AND first.outcome = 'unaccepted')
+         ORDER BY seq",
+    )?
+    .query_map([], |row| {
+        Ok(json!({
+            "id": null, "key": row.get::<_, String>(0)?, "runner": null, "hold": null,
+            "since": row.get::<_, String>(1)?, "reason": row.get::<_, Option<String>>(2)?,
+            "workflow": row.get::<_, Option<String>>(3)?,
+            "band": row.get::<_, Option<String>>(4)?,
+            "lane": row.get::<_, Option<String>>(5)?,
+            "title": row.get::<_, Option<String>>(6)?,
+            "labels": serde_json::from_str::<Value>(&row.get::<_, String>(7)?).unwrap_or_default(),
+            "generation": null, "state": null, "step": null, "submissions": [],
+        }))
+    })?
+    .collect()
+}
+
+/// The desk's queue items of the requests no runner's filters let it claim yet.
+pub(crate) fn unaccepted_desk_items(db: &Connection) -> rusqlite::Result<Vec<Value>> {
+    Ok(unaccepted_rows(db)?
+        .into_iter()
+        .map(|row| {
+            let band = row["band"].as_str().unwrap_or("-");
+            let reason = row["reason"].as_str().unwrap_or_default();
+            json!({
+                "since": row["since"], "kind": "queue", "id": null, "task": null, "key": row["key"],
+                "step": null, "lane": row["lane"], "what": format!("{band}: {reason}"),
+                "generation": null, "snoozed_until": null, "snoozed_at": null, "back_early": null,
+            })
+        })
+        .collect())
 }
 
 /// The actions sent to runner `runner`'s task of `key`, of `generation` when given, oldest first.
