@@ -27,17 +27,17 @@ function handled(event, task) {
 const BARS = /** @type {Record<string, number>} */ ({ high: 3, medium: 2, low: 1 });
 
 /** Who answered, as the web's answeredBy words it; a test keeps the two the same. @param {string | null | undefined} by */
-const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : by === "auto" ? "auto" : by.startsWith("session:") ? `session ${by.slice(8)}` : "a person");
+const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : by === "auto" || by === "autopilot" ? by : by.startsWith("session:") ? `session ${by.slice(8)}` : "a person");
 
 /** Who answered, as the row's tile: auto, session, agent or person, else null. @param {string | null | undefined} by */
-const answererOf = (by) => (!by ? null : by === "auto" ? "auto" : by.startsWith("session:") ? "session" : by.startsWith("agent:") ? "agent" : "person");
+const answererOf = (by) => (!by ? null : by === "auto" || by === "autopilot" ? "auto" : by.startsWith("session:") ? "session" : by.startsWith("agent:") ? "agent" : "person");
 
 /** @param {any} ask */
 function askNote(ask) {
   if (ask.state === "withdrawn") return "Withdrawn";
   const by = answeredBy(ask.answered_by);
   const note = `Answered ${ask.answer}${by ? ` by ${by}` : ""}`;
-  return ask.confidence && ask.answered_by !== "auto" ? `${note}, ${ask.confidence}` : note;
+  return ask.confidence && answererOf(ask.answered_by) !== "auto" ? `${note}, ${ask.confidence}` : note;
 }
 
 /** @param {{ conclusion: string | null }[]} checks */
@@ -75,7 +75,7 @@ export function taskView(task, { now, links = [] }) {
       ...asks.filter((ask) => ask.state === "answered").sort((a, b) => (Date.parse(b.answered_at) || 0) - (Date.parse(a.answered_at) || 0)),
       ...asks.filter((ask) => ask.state !== "open" && ask.state !== "answered"),
     ].map((ask) => {
-      const auto = ask.state === "answered" && ask.answered_by === "auto";
+      const auto = ask.state === "answered" && answererOf(ask.answered_by) === "auto";
       return {
         id: ask.id,
         tile: ask.state === "open" ? "ask" : ask.state === "answered" ? answererOf(ask.answered_by) ?? "answered" : ask.state,

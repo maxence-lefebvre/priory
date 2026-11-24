@@ -84,6 +84,43 @@ answerer on each ask, and an auto answer's confidence and rationale. The first a
 a person who wants another course tells the agent with `priory say`. `priory check --explain`
 lists the same irreversible steps and paths with no human decision whatever the level.
 
+### Autopilot
+
+`priory autopilot on` lets the daemon answer for a while, such as a night. It covers the asks open
+now and each new one. A task's own `auto_answer` acts first and stays recorded as `auto`, whatever
+autopilot's level. Only a person turns it on: it is a [person verb](guard.md).
+
+It always ends: after `--for`, at `--until`, or at the next 08:00 in `[autopilot] timezone`, and at
+most 7 days later. The end is stored in the state file and read before each answer, so neither a
+restart nor a stopped daemon extends it. A second `on` ends the first window and starts another.
+
+The daemon answers an ask with its recommendation when all of these hold:
+
+1. An agent's `ask` call made it, with a confidence at or above `--level`, `high` by default.
+2. A `hands-off` lead could answer it, as [above](#answered-by-auto), at a step the workflow still has.
+3. `--lane` names its task's lane, or no lane was named.
+4. It is neither snoozed nor with a lead. An ask comes back to autopilot when its snooze ends or its
+   lead gives up. A new ask is answered before a lead is called.
+
+Every other open ask stays for the person. Its desk row starts with `autopilot left this (<why>): `,
+and its JSON carries the reason as `autopilot_left`. A pause changes nothing: an answered task goes
+on as after a person's answer.
+
+A factory can let autopilot approve plans with
+[`approve_plans`](../reference/factory.md#autopilot). It then approves the plan of a task with
+`intervention = "plan"`, in a workflow that the list names, when the plan is green and a person
+decides again before any irreversible step. If the factory has a `critic`, the critic grades such a
+plan first. Autopilot leaves a plan that the critic did not read.
+
+An answer is recorded as answered by `autopilot`, with a
+[`factory.ask.autopilot_answered`](../trace-schema.md#factoryaskautopilot_answered) trace record
+that says why it was eligible. The first answer stands, with one exception. Until the agent gets
+autopilot's answer, a person's `priory answer` on the same revision replaces it. After that, the
+refusal names `priory say`.
+
+`priory autopilot report` lists what a window answered and why, what it left and why, and the command
+that reverses each answer. When a window ends, the daemon posts one report line to the desk.
+
 ## Waits
 
 A wait ends with the first event that fires it. To hear every event on a resource without ending

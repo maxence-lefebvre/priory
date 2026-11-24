@@ -269,6 +269,60 @@ pub fn auto_answerable(
     level != Confidence::Low && confidence >= level && delegable(workflow, at, command)
 }
 
+/// Why autopilot leaves an agent's ask at step `at`, stated at `confidence`, when it is on at
+/// `level`, or `None` when it answers it. It answers what `auto_answerable` does, at a step the
+/// workflow still has: an open ask can outlive an edit that removed its step.
+pub fn autopilot_refusal(
+    workflow: &Workflow,
+    at: &str,
+    command: bool,
+    level: Confidence,
+    confidence: Option<Confidence>,
+) -> Option<String> {
+    if workflow.step(at).is_none() {
+        return Some(format!("its step {at} is no longer in the workflow"));
+    }
+    if let Some(why) = undelegable(workflow, at, command) {
+        return Some(why);
+    }
+    match confidence {
+        None => Some("its agent stated no confidence".to_owned()),
+        Some(confidence)
+            if !auto_answerable(workflow, at, command, Some(level), Some(confidence)) =>
+        {
+            Some(format!(
+                "its confidence is {}, under {}",
+                confidence.as_str(),
+                level.as_str()
+            ))
+        }
+        Some(_) => None,
+    }
+}
+
+/// Why autopilot never approves the plan a step grades green at `at`, or `None` when it may: a
+/// person decides again before any irreversible step, and the approval starts no batch.
+pub fn plan_refusal(workflow: &Workflow, at: &str) -> Option<String> {
+    let Some(step) = workflow.step(at) else {
+        return Some(format!("its step {at} is no longer in the workflow"));
+    };
+    if step.decides != Decider::Model || step.debate.is_some() {
+        return Some(format!("step {at} asks for a decision, not for a plan"));
+    }
+    let target = step.next.get("green").and_then(|to| workflow.step(to));
+    match target {
+        None => return Some(format!("step {at} grades no plan that leads to a step")),
+        Some(target) if target.decides == Decider::Human => {
+            return Some(format!("a person decides at step {}", target.id));
+        }
+        Some(target) if target.action.as_deref() == Some("start-batch") => {
+            return Some("it starts a batch".to_owned());
+        }
+        Some(_) => {}
+    }
+    undelegable(workflow, at, false)
+}
+
 /// Whether answering the ask of human step `ask` can let an irreversible step run before a
 /// person decides again.
 pub fn answer_lets_irreversible_run(workflow: &Workflow, ask: &str) -> bool {
@@ -493,6 +547,30 @@ next = { opened = "done", failed = "stop" }
 
         proptest! {
             #![proptest_config(ProptestConfig::with_cases(512))]
+
+            #[test]
+            fn every_ask_autopilot_answers_is_one_auto_answer_could_at_a_step_that_exists(
+                steps in drawn(),
+                command in any::<bool>(),
+                level in 0..3usize,
+                confidence in proptest::option::of(0..3usize),
+            ) {
+                let workflow: Workflow = toml::from_str(&workflow(&steps)).unwrap();
+                let words = [Confidence::Low, Confidence::Medium, Confidence::High];
+                let (level, confidence) = (words[level], confidence.map(|at| words[at]));
+                for at in workflow.steps.iter().map(|step| step.id.as_str()).chain(["removed"]) {
+                    if autopilot_refusal(&workflow, at, command, level, confidence).is_none() {
+                        prop_assert!(at != "removed");
+                        prop_assert!(guarded(&workflow, at), "{at} can let an irreversible step run");
+                        prop_assert!(auto_answerable(&workflow, at, command, Some(level), confidence));
+                    }
+                    if plan_refusal(&workflow, at).is_none() {
+                        prop_assert!(at != "removed");
+                        prop_assert!(delegable(&workflow, at, false));
+                        prop_assert!(guarded(&workflow, at), "{at} can let an irreversible step run");
+                    }
+                }
+            }
 
             #[test]
             fn every_auto_answerable_ask_is_one_a_lead_may_answer(

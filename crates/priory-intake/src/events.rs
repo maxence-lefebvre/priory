@@ -1188,6 +1188,22 @@ pub struct MemoryDropped {
     pub retire: Option<bool>,
 }
 
+/// A person turns autopilot on or off with `priory autopilot`. Every runner applies it in log order.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AutopilotSet {
+    /// When it ends by itself; absent when it is turned off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("format" = "date-time"))]
+    pub until: Option<String>,
+    /// The lowest confidence it acts on: `high` or `medium`. Absent when it is turned off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<priory_factory::factory::Confidence>,
+    /// The lanes it covers; every lane when empty or absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lanes: Option<Vec<String>>,
+}
+
 /// Where a stream stands after a poll that moved it; a missing marker means the stream is still
 /// in its baseline.
 #[derive(JsonSchema)]

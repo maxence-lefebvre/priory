@@ -401,7 +401,7 @@ export function submitted(ask) {
 }
 
 /** Who answered, as the views say it: a person, `agent:<lead>`, auto, or `session <name>` for a person's own session. Null when unrecorded. @param {string | null | undefined} by */
-export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : by === "auto" ? "auto" : by.startsWith("session:") ? `session ${by.slice(8)}` : "a person");
+export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : by === "auto" || by === "autopilot" ? by : by.startsWith("session:") ? `session ${by.slice(8)}` : "a person");
 
 const date = (/** @type {string} */ iso) => new Date(iso).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 

@@ -25,6 +25,25 @@
       },
       "type": "object"
     },
+    "Autopilot": {
+      "additionalProperties": false,
+      "description": "What `priory autopilot` may answer while a person has it on.",
+      "properties": {
+        "approve_plans": {
+          "default": [],
+          "description": "The workflows whose green plans autopilot approves for a task with `intervention = \"plan\"`,\nwhere a person decides again before any irreversible step.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "timezone": {
+          "description": "The IANA zone `--until HH:MM` and the default end, 08:00, are read in, such as\n`Europe/Paris`; the machine's own when unset.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "Backend": {
       "enum": [
         "herdr-bus",
@@ -1137,6 +1156,9 @@
   "properties": {
     "asks": {
       "$ref": "#/definitions/Asks"
+    },
+    "autopilot": {
+      "$ref": "#/definitions/Autopilot"
     },
     "bands": {
       "description": "The bands, highest first, when they are not the default ones.",

@@ -844,8 +844,19 @@ fn ask(
     let auto = factory.workflows.get(&run.workflow).is_some_and(|flow| {
         explain::auto_answerable(&flow.value, &run.step, command.is_some(), level, confidence)
     });
+    let pilot = match factory.workflows.get(&run.workflow).filter(|_| !auto) {
+        Some(flow) => crate::autopilot::answers(
+            tx,
+            &flow.value,
+            run.task,
+            &run.step,
+            command.is_some(),
+            confidence,
+        )?,
+        None => None,
+    };
     // A low confidence is the agent saying it does not know: a lead's guess is no person's answer.
-    let lead = match auto || confidence == Some(Confidence::Low) {
+    let lead = match auto || pilot.is_some() || confidence == Some(Confidence::Low) {
         true => None,
         false => lead_of(
             tx,
@@ -911,6 +922,14 @@ fn ask(
                 rationale.as_deref().unwrap_or_default(),
             )?;
         }
+    }
+    if let Some(window) = pilot
+        && crate::autopilot::judge(tx, id, &window, trace, head)?
+    {
+        tx.execute(
+            "DELETE FROM push_queue WHERE kind = 'ask' AND item = ?1",
+            [id],
+        )?;
     }
     Ok(Ok(format!(
         "ask {id} stored: end your turn now; the answer arrives as your next prompt"
@@ -3168,6 +3187,9 @@ pub const LEAD_TRIGGER: &str = "priory/lead";
 /// `auto_answer` level.
 pub const AUTO: &str = "auto";
 
+/// Who answers an ask the daemon answered while a person had autopilot on.
+pub const AUTOPILOT: &str = "autopilot";
+
 /// What `answered_by` starts with for an ask a person's own session answered or dismissed through
 /// `priory mcp --outside`: `session:` and the session's name.
 pub const SESSION: &str = "session:";
@@ -3856,7 +3878,18 @@ pub(crate) fn answer_in_tx(
     trace: &Trace,
     head: &dyn Fn(&Path, &str) -> Option<String>,
 ) -> rusqlite::Result<Result<String, String>> {
-    let applied = answer_in(tx, answer, trace, head)?;
+    if let Some(replaced) = replace_autopilot(tx, answer)? {
+        return Ok(Ok(replaced));
+    }
+    let mut applied = answer_in(tx, answer, trace, head)?;
+    if let Err(why) = &mut applied
+        && by_person(&answer.by)
+        && let Some(task) = autopilot_answered(tx, answer)?
+    {
+        why.push_str(&format!(
+            " by autopilot, and its task went on: tell it with `priory say {task} TEXT`"
+        ));
+    }
     if let Err(why) = &applied {
         tx.execute(
             "INSERT INTO ask_refusals (ask, revision, answer, by, why)
@@ -3867,8 +3900,76 @@ pub(crate) fn answer_in_tx(
     Ok(applied)
 }
 
+/// Whether `by`, an answer's author, is a person, and no agent, session or the daemon itself.
+fn by_person(by: &str) -> bool {
+    by != AUTO && by != AUTOPILOT && !by.starts_with("agent:") && !by.starts_with(SESSION)
+}
+
+/// The task of the ask that `answer` names, when autopilot answered it at that revision.
+fn autopilot_answered(tx: &Transaction, answer: &Answer) -> rusqlite::Result<Option<i64>> {
+    tx.query_row(
+        "SELECT task FROM asks WHERE id = ?1 AND revision = ?2 AND answered_by = ?3
+         AND answer IS NOT NULL AND withdrawn IS NULL",
+        params![answer.ask, answer.revision, AUTOPILOT],
+        |row| row.get(0),
+    )
+    .optional()
+}
+
+/// Puts a person's answer in place of the one autopilot gave an agent's ask, while the prompt that
+/// carries it is still queued. The agent then reads only the person's.
+fn replace_autopilot(tx: &Transaction, answer: &Answer) -> rusqlite::Result<Option<String>> {
+    if !by_person(&answer.by) {
+        return Ok(None);
+    }
+    let Some(task) = autopilot_answered(tx, answer)? else {
+        return Ok(None);
+    };
+    let (kind, given): (String, String) = tx.query_row(
+        "SELECT kind, answer FROM asks WHERE id = ?1",
+        [answer.ask],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if kind != "agent" {
+        return Ok(None);
+    }
+    let prompt = |text: &str| answer_prompt(&answer.ask.to_string(), answer.revision, text);
+    let queued = tx
+        .prepare("SELECT id, text FROM outbox WHERE task = ?1 AND state = 'queued' ORDER BY id")?
+        .query_map([task], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let old = format!("\n{}", prompt(&given));
+    let Some((id, text)) = queued
+        .into_iter()
+        .map(|(id, text)| (id, format!("\n{text}")))
+        .find(|(_, text)| text.contains(&old))
+    else {
+        return Ok(None);
+    };
+    let text = text.replacen(&old, &format!("\n{}", prompt(&answer.text)), 1);
+    tx.execute(
+        "UPDATE outbox SET text = ?2 WHERE id = ?1",
+        params![id, &text[1..]],
+    )?;
+    tx.execute(
+        &format!("UPDATE asks SET answer = ?2, answered = {NOW}, answered_by = ?3 WHERE id = ?1"),
+        params![answer.ask, answer.text, answer.by],
+    )?;
+    Ok(Some(format!(
+        "ask {} answered, in place of autopilot's answer {given}",
+        answer.ask
+    )))
+}
+
+/// The line that carries `text`, the answer to ask `label`, to its agent.
+fn answer_prompt(label: &str, revision: i64, text: &str) -> String {
+    format!("Answer to ask {label} (revision {revision}): {text}")
+}
+
 /// Applies `answer` in `tx`, writing nothing when it refuses it.
-fn answer_in(
+pub(crate) fn answer_in(
     tx: &Transaction,
     answer: &Answer,
     trace: &Trace,
@@ -4090,10 +4191,7 @@ fn answer_in(
         wake(
             tx,
             task,
-            &format!(
-                "Answer to ask {label} (revision {}): {}",
-                answer.revision, answer.text
-            ),
+            &answer_prompt(&label, answer.revision, &answer.text),
         )?;
         // An answer that beats the run's Stop leaves it running: the answer is its next prompt.
         if state == "asleep" {

@@ -210,6 +210,11 @@ test("each answered ask says who answered, newest answer first, with its confide
   for (const ask of answered.slice(0, 3)) assert.ok(view.asks.find((row) => row.id === ask.id).note.includes(`by ${answeredBy(ask.answered_by)}`));
 });
 
+test("autopilot's answer is named as its own, with its rationale as an auto answer's", () => {
+  const [ask] = taskView({ ...task, asks: [{ ...answered[0], answered_by: "autopilot" }] }, { now }).asks;
+  assert.deepEqual([ask.tile, ask.note, ask.rationale], ["auto", "Answered every order, as today by autopilot", "The brief asks for it in so many words."]);
+});
+
 test("the Task panel draws an auto answer with its answerer's icon, confidence, rationale and how to change course", async () => {
   herdr.reset();
   herdr.replies = { task: { ...task, asks: answered }, links: { links: [] } };

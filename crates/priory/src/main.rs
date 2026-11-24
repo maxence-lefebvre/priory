@@ -1,7 +1,8 @@
 use priory_core::memory::Gate;
 use priory_core::{
-    daemon, deliver, embed, evidence, grades, label, listing, post, progress, proof, relate,
-    reload, report, risk, runners, search, sections, serve, snooze, state, subscribe, todo, tools,
+    autopilot, daemon, deliver, embed, evidence, grades, label, listing, post, progress, proof,
+    relate, reload, report, risk, runners, search, sections, serve, snooze, state, subscribe, todo,
+    tools,
 };
 use priory_factory::{explain, factory, plural, readiness, rules};
 use priory_intake::{intake, request};
@@ -138,6 +139,9 @@ fn main() -> ExitCode {
             }
             _ => usage(),
         },
+        Some("autopilot") => {
+            autopilot(args.map(|arg| arg.to_string_lossy().into_owned()).collect())
+        }
         Some("seen") => seen(args.map(|arg| arg.to_string_lossy().into_owned()).collect()),
         Some("unpause") => match args.next() {
             None => {
@@ -256,7 +260,7 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory check [DIR] --repo PATH [--json]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory intake pre [DIR] TRIGGER < EVENT.json    runs the trigger's pre script on one event, publishes nothing\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory daemon --view-only [DIR]    mirrors every runner's asks and tasks and serves them, runs nothing\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory adopt [DIR] TRIGGER [PR...]\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--all] [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen [DIR] (TASK | --run RUN) [--history N] [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory recap [--since <instant-or-duration>] [--max-bytes N]\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--by lane] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo|lane] [--json]\n       priory grades [--since <instant-or-duration>] [--by lane] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]\n       priory score [DIR] --calibrate SCORER --budget USD [--json]\n       priory calibrate triage [DIR] [--json]\n       priory bench capture [DIR] TASK --into FOLDER\n       priory bench replay [DIR] CASE --budget USD [--turn-timeout DURATION]\n       priory bench FILE --base REF --head REF --budget USD [--runs N] [--case NAME] [--turn-timeout DURATION] [--post OWNER/NAME#N]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY\n       priory say [--generation N] [DIR] RUNNER:KEY TEXT\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory patterns [--all] [--json]\n       priory patterns find [DIR] [--since <instant-or-duration>]\n       priory patterns show ID [--json]\n       priory patterns (close | dismiss) [DIR] ID\n       priory patterns capture [DIR] ID --into FOLDER\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory evidence add FILE --caption TEXT\n       priory evidence TASK [--json]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory memories [DIR] [--all] [--json]\n       priory memories (accept | drop) [DIR] CANDIDATE\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID [--debate] [--consult | --investigator]\n       priory mcp --outside\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT\n       priory hook PreToolUse --outside"
+        "usage: priory --version\n       priory check [DIR] [--explain [--json]]\n       priory check [DIR] --repo PATH [--json]\n       priory draw [DIR] WORKFLOW\n       priory intake [DIR] [--once]\n       priory intake pre [DIR] TRIGGER < EVENT.json    runs the trigger's pre script on one event, publishes nothing\n       priory daemon [DIR] [--once]    --once routes pending events, starts no task and exits\n       priory daemon --view-only [DIR]    mirrors every runner's asks and tasks and serves them, runs nothing\n       priory batch add [DIR] ISSUE... [--repo <owner/name>] [--entries <workflow>] [--band <band>] [--lane <lane>]\n       priory batch show [BATCH] [--json]\n       priory batch edit BATCH --expected REVISION (--drop ENTRY [--with-successors] | --move ENTRY (--top | --before OTHER | --after OTHER) | --moment ENTRY OTHER MOMENT)\n       priory add [DIR] [--workflow <name>] [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... <text>\n       priory request [DIR] --workflow <name> --key <key> [--band <band>] [--lane <lane>] [--repo <owner/name>] [--intervention plan|hands-off] [--auto-answer high|medium] [--relates KIND:TASK]... [--hold <reason> [CONDITION]...] <text>\n       priory adopt [DIR] TRIGGER [PR...]\n       priory serve [DIR] [--listen ADDR]\n       priory inbox [--unrouted] [--since SEQ] [--json]\n       priory inbox read SEQ\n       priory post SOURCE LINE\n       priory tasks [--all] [--lane <lane>] [--grade red|yellow|green] [--json]\n       priory tasks --graph [TASK] [--mermaid]\n       priory queue [DIR] [--json]\n       priory schedules [DIR] [--json]\n       priory links [DIR] [--json]\n       priory flows [DIR] --json\n       priory views [DIR] --json\n       priory runs [--json]\n       priory outbox\n       priory asks [--all] [--band <band>[,<band>...]]... [--risk <risk>[,<risk>...]]... [--json]\n       priory waits\n       priory actions\n       priory attach (TASK | --run RUN) [--read-only] [--print]\n       priory screen [DIR] (TASK | --run RUN) [--history N] [--json]\n       priory desk [--all] [--json] [--person NAME]\n       priory seen [--person NAME] [--at TIME]\n       priory wait --since REV [--timeout D]\n       priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)\n       priory todo add TEXT [--band B] [--due TIME]\n       priory todo done ID\n       priory todo list [--json]\n       priory trace\n       priory recap [--since <instant-or-duration>] [--max-bytes N]\n       priory report put TASK FILE|-\n       priory report show [TASK] [--json]\n       priory report list [--json]\n       priory report pick PICK OPTION --expected REVISION\n       priory report comment ROW --expected REVISION TEXT\n       priory report (reply COMMENT TEXT | resolve COMMENT | reopen COMMENT)\n       priory report [DIR] --workflow <name> [--since <instant-or-duration>] [--cost] [--by lane]\n       priory report risk [DIR] [--workflow <name>] [--since <instant-or-duration>] [--by lane] [--json]\n       priory report attention [--since <instant-or-duration>] [--by workflow|lane|kind] [--json]\n       priory costs [DIR] [--since <instant-or-duration>] [--by workflow|agent|model|machine|repo|lane] [--json]\n       priory grades [--since <instant-or-duration>] [--by lane] [--json]\n       priory score [DIR] TASK [--scorer NAME] [--budget USD] [--json]\n       priory score [DIR] --calibrate SCORER --budget USD [--json]\n       priory calibrate triage [DIR] [--json]\n       priory bench capture [DIR] TASK --into FOLDER\n       priory bench replay [DIR] CASE --budget USD [--turn-timeout DURATION]\n       priory bench FILE --base REF --head REF --budget USD [--runs N] [--case NAME] [--turn-timeout DURATION] [--post OWNER/NAME#N]\n       priory move TASK [--band <band>] [--top | --before TASK | --after TASK] [--expected REVISION]\n       priory resume TASK\n       priory say TASK TEXT\n       priory pause [REASON]\n       priory unpause\n       priory autopilot on [DIR] [--until TIME | --for DURATION] [--level high|medium] [--lane LANE]...\n       priory autopilot off [DIR]\n       priory autopilot [status [--json]]\n       priory autopilot report [WINDOW] [--json]\n       priory cancel TASK [--expected REVISION]\n       priory revive TASK [--step STEP]\n       priory hold TASK --reason TEXT [--until TIME] [--after TASK-OR-ISSUE]... [--merge PR]... [--if-closed release|drop|ask] [--blockers] [--expected REVISION]\n       priory release TASK [--expected REVISION]\n       priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY\n       priory say [--generation N] [DIR] RUNNER:KEY TEXT\n       priory task TASK [--json]\n       priory label [DIR] TASK wrong (--evidence URL [--happened DATE] | --clear)\n       priory patterns [--all] [--json]\n       priory patterns find [DIR] [--since <instant-or-duration>]\n       priory patterns show ID [--json]\n       priory patterns (close | dismiss) [DIR] ID\n       priory patterns capture [DIR] ID --into FOLDER\n       priory relate TASK builds-on|fixes|takes-up|relates OTHER [--remove]\n       priory subscribe TASK RESOURCE [--expected REVISION]\n       priory unsubscribe TASK RESOURCE\n       priory tldr TASK TEXT\n       priory progress TASK JSON\n       priory search QUERY [--state STATE[,STATE...]] [--limit N]\n       priory gate\n       priory evidence add FILE --caption TEXT\n       priory evidence TASK [--json]\n       priory memory [(acquire | lease) [--gb N] [--timeout D] -- COMMAND...]\n       priory memories [DIR] [--all] [--json]\n       priory memories (accept | drop) [DIR] CANDIDATE\n       priory answer [--revision N | --expected N] [--run] [--] [DIR] [RUNNER:]ASK OPTION-OR-TEXT\n       priory give [DIR] KEY RUNNER [--force]\n       priory ask ID JSON\n       priory dismiss [--revision N | --expected N] [DIR] [RUNNER:]ASK\n       priory deliver ASK (--retry | --clear)\n       priory mcp --session ID [--debate] [--consult | --investigator]\n       priory mcp --outside\n       priory mcp --eval LOG [--describe TOOL TEXT]\n       priory eval FILE --budget USD [--case NAME] [--runs N] [--model MODEL]\n       priory hook EVENT\n       priory hook PreToolUse --outside"
     );
     ExitCode::from(2)
 }
@@ -1606,6 +1610,146 @@ fn seen(args: Vec<String>) -> ExitCode {
     exit("seen", done.map(|text| println!("{text}")))
 }
 
+/// `priory autopilot on|off|status|report`: what a person lets the daemon answer for a while.
+fn autopilot(args: Vec<String>) -> ExitCode {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match &args[..] {
+        ["on", flags @ ..] => autopilot_on(flags),
+        ["off"] => autopilot_off(None),
+        ["off", dir] if !dir.starts_with('-') => autopilot_off(Some(dir)),
+        [] | ["status"] | ["status", "--json"] => exit(
+            "autopilot",
+            state::read_only()
+                .and_then(|db| autopilot::status(&db).map_err(|error| error.to_string()))
+                .map(|status| match args.len() {
+                    2 => state::emit(&status.to_string()),
+                    _ => state::emit(
+                        &autopilot::line(&status).unwrap_or_else(|| "autopilot is off".to_owned()),
+                    ),
+                }),
+        ),
+        ["report", rest @ ..] => {
+            let json = rest.contains(&"--json");
+            let rest: Vec<_> = rest.iter().filter(|arg| **arg != "--json").collect();
+            let window = match &rest[..] {
+                [] => None,
+                [id] => match id.parse() {
+                    Ok(id) => Some(id),
+                    Err(_) => return usage(),
+                },
+                _ => return usage(),
+            };
+            let report = state::read_only()
+                .and_then(|db| autopilot::report(&db, window).map_err(|error| error.to_string()))
+                .and_then(|found| {
+                    found.ok_or_else(|| match window {
+                        Some(id) => format!("there is no autopilot window {id}"),
+                        None => "autopilot was never on".to_owned(),
+                    })
+                });
+            exit(
+                "autopilot",
+                report.map(|report| match json {
+                    true => state::emit(&report.to_string()),
+                    false => autopilot::print(&report),
+                }),
+            )
+        }
+        _ => usage(),
+    }
+}
+
+fn autopilot_on(flags: &[&str]) -> ExitCode {
+    let (mut span, mut at, mut level, mut lanes, mut dir) = (None, None, None, Vec::new(), None);
+    let mut flags = flags.iter().copied();
+    while let Some(flag) = flags.next() {
+        let slot = match flag {
+            "--for" => &mut span,
+            "--until" => &mut at,
+            "--level" => &mut level,
+            "--lane" => match flags.next() {
+                Some(lane) => {
+                    lanes.push(lane.to_owned());
+                    continue;
+                }
+                None => return usage(),
+            },
+            _ if dir.is_none() && !flag.starts_with('-') => {
+                dir = Some(flag);
+                continue;
+            }
+            _ => return usage(),
+        };
+        match flags.next() {
+            Some(value) if slot.is_none() => *slot = Some(value),
+            _ => return usage(),
+        }
+    }
+    let level = match level.unwrap_or("high") {
+        "high" => factory::Confidence::High,
+        "medium" => factory::Confidence::Medium,
+        _ => return usage(),
+    };
+    if span.is_some() && at.is_some() {
+        return usage();
+    }
+    let Some(factory) = load(&factory::folder(dir)) else {
+        return ExitCode::FAILURE;
+    };
+    let turned = (|| {
+        let role = autopilot::role(&factory, priory_runtime::room::hostname().as_deref())?;
+        let now = jiff::Timestamp::now();
+        let setting = autopilot::Setting {
+            until: autopilot::until(span, at, now, factory.autopilot_timezone())?,
+            level,
+            lanes,
+        };
+        let mut db = state::open()?;
+        let message = autopilot::set(&mut db, Some(&setting), role == autopilot::Role::Runner)
+            .map_err(|error| error.to_string())?;
+        if role == autopilot::Role::Viewer {
+            autopilot::publish(&factory, &message)?;
+        }
+        let status = autopilot::status(&db).map_err(|error| error.to_string())?;
+        autopilot::line(&status).ok_or_else(|| "autopilot ended at once".to_owned())
+    })();
+    exit("autopilot on", turned.map(|line| println!("{line}")))
+}
+
+/// Off takes effect in this state file whatever the factory or the log, so neither keeps autopilot on.
+fn autopilot_off(dir: Option<&str>) -> ExitCode {
+    let mut db = match state::open() {
+        Ok(db) => db,
+        Err(error) => return exit("autopilot off", Err(error)),
+    };
+    let several = priory_core::runners::me(&db).ok().flatten().is_some();
+    let factory = match several {
+        true => load(&factory::folder(dir)),
+        false => None,
+    };
+    let host = priory_runtime::room::hostname();
+    // A view-only machine's daemon publishes nothing it queued, so its setting goes to the log here.
+    let viewer = factory
+        .filter(|factory| autopilot::role(factory, host.as_deref()) == Ok(autopilot::Role::Viewer));
+    let turned = autopilot::status(&db)
+        .and_then(|on| {
+            let message = autopilot::set(&mut db, None, several && viewer.is_none())?;
+            Ok((on, message))
+        })
+        .map_err(|error| error.to_string())
+        .and_then(|(on, message)| {
+            println!(
+                "{}",
+                match on.is_null() {
+                    true => "autopilot was not on",
+                    false => "autopilot is off: see `priory autopilot report`",
+                }
+            );
+            viewer.map_or(Ok(()), |factory| autopilot::publish(&factory, &message))
+        });
+    exit("autopilot off", turned)
+}
+
 /// `priory todo add TEXT [--band B] [--due TIME]` and `priory todo done ID` go to the daemon;
 /// `priory todo list [--json]` reads the state.
 fn todo(args: Vec<String>) -> ExitCode {
@@ -1905,6 +2049,9 @@ fn listed(verb: &str, mut args: Vec<String>) -> ExitCode {
             "desk" => {
                 if let Some(paused) = value["paused"].as_str() {
                     state::emit(paused);
+                }
+                if let Some(line) = autopilot::line(&value["autopilot"]) {
+                    state::emit(&line);
                 }
                 for cap in value["caps"].as_array().into_iter().flatten() {
                     state::emit(cap.as_str().unwrap_or_default());

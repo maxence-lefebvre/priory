@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 112;
+const VERSION: i64 = 113;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2000,6 +2000,44 @@ CREATE INDEX sweeps_by_script ON sweeps (script, started);
 "
 );
 
+// What a person let the daemon answer, for how long, and what became of each open ask meanwhile.
+const SCHEMA_113: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS autopilot_windows (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  setting  TEXT NOT NULL UNIQUE,
+  started  TEXT NOT NULL,
+  until    TEXT NOT NULL,
+  level    TEXT NOT NULL CHECK (level IN ('high', 'medium')),
+  lanes    TEXT NOT NULL,
+  ended    TEXT,
+  why      TEXT CHECK (why IN ('off', 'time', 'replaced')),
+  reported TEXT
+);
+CREATE TABLE IF NOT EXISTS autopilot_asks (
+  window   INTEGER NOT NULL REFERENCES autopilot_windows (id),
+  ask      INTEGER NOT NULL REFERENCES asks (id),
+  revision INTEGER NOT NULL,
+  verdict  TEXT NOT NULL CHECK (verdict IN ('answered', 'left')),
+  option   TEXT,
+  why      TEXT NOT NULL,
+  noted    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  PRIMARY KEY (window, ask)
+);
+CREATE INDEX IF NOT EXISTS autopilot_by_ask ON autopilot_asks (ask);
+CREATE TRIGGER IF NOT EXISTS ask_version_autopilot AFTER INSERT ON autopilot_asks BEGIN
+  INSERT INTO ask_versions (ask, version) VALUES (NEW.ask, 2)
+    ON CONFLICT (ask) DO UPDATE SET version = version + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS ask_version_autopilot_again AFTER UPDATE ON autopilot_asks BEGIN
+  INSERT INTO ask_versions (ask, version) VALUES (NEW.ask, 2)
+    ON CONFLICT (ask) DO UPDATE SET version = version + 1;
+END;
+",
+    bumps!("autopilot_windows", "autopilot_asks"),
+    "PRAGMA user_version = 113;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -2015,7 +2053,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2349,7 +2387,9 @@ pub(crate) fn route_in(
         record(tx, message, None, "outsider", None)?;
         return Ok(Vec::new());
     }
-    if crate::memories::handle(tx, message)?.is_some() {
+    if crate::memories::handle(tx, message)?.is_some()
+        || crate::autopilot::handle(tx, message, trace.runner.is_some())?.is_some()
+    {
         return Ok(Vec::new());
     }
     if let Some(me) = trace.runner.as_deref()

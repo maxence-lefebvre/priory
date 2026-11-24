@@ -32,6 +32,7 @@ one: [reload.md](../daemon/reload.md#what-a-reload-changes) lists them.
 | `slack` | table | no | no Slack shortcut | The Slack message shortcut. See [`[slack.shortcut]`](#slackshortcut) | |
 | `asks` | table | no | answers are only stored | What happens to the answer of an ask from outside Priory. See [`[asks]`](#asks) | |
 | `runs` | table | no | no command at a run's start | What the daemon runs when a run starts. See [`[runs]`](#runs) | |
+| `autopilot` | table | no | no plan approved, the machine's zone | What `priory autopilot` may approve, and the zone of its end. See [`[autopilot]`](#autopilot) | |
 | `links` | table of strings | no | the built-in `#n` link | Autolinks, each a regex and a URL template. See [`[links]`](#links) | |
 | `request` | table | no | `priory add` needs `--workflow` | The defaults of `priory add` and `POST /api/request`. See [`[request]`](#request) | |
 | `batch` | table | no | `priory batch add` is refused | How `priory batch add` plans batches. See [`[batch]`](#batch) | |
@@ -342,6 +343,15 @@ and [tools.md](tools.md#commands-an-answer-runs) for the commands an answer runs
 | `deliver` | string | no | none: an answer is only stored | The command that delivers an outside ask's answer or dismissal to the session that asked, relative to the factory folder. `priory check` refuses one that is not an executable file | `"adapters/herdr/deliver"` |
 | `targets` | table of strings | no | none: only `worktree` | The folders, by name, where an answer can run an agent's ask command besides the task's worktree, relative to the factory folder or absolute | `{ ops = "../ops" }` |
 
+## `[autopilot]`
+
+See [waits.md](../daemon/waits.md#autopilot) for what `priory autopilot` answers while it is on.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `approve_plans` | array of strings | no | `[]`: no plan | The workflows whose green plans autopilot approves for a task with `intervention = "plan"`. `priory check` refuses a workflow where every green plan leads to a person, to a batch, or to an irreversible step before a person decides again | `["implement"]` |
+| `timezone` | string | no | the machine's zone | The IANA zone that `--until HH:MM` and the default end, 08:00, are read in | `"Europe/Paris"` |
+
 ## `[runs]`
 
 See [sessions.md](../daemon/sessions.md#opening-a-run-when-it-starts) for when the daemon runs the
@@ -640,6 +650,8 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` the critic `<name>` reads on = "<on>": a critic reads a plan, which names no commit, so use one on result `` | `critic` names a scorer on `diff` or `ask` |
 | `` the pre-review `<name>` is no scorer in scorers/ `` | `pre_review` names a scorer the factory lacks |
 | `` the pre-review `<name>` is of kind <kind>: a pre-review is a judge, which reads the lessons `` | `pre_review` names a scorer that is not a `judge` |
+| `` `approve_plans` names workflow `<name>`, which does not exist `` | `[autopilot] approve_plans` names no file under `workflows/` |
+| `` `approve_plans` names workflow `<name>`, where autopilot may approve no plan: <why> `` | No step of that workflow grades a plan that autopilot may approve |
 | `` `[guard]` command `<name>` has the name of another guard `` | A `[guard]` command takes a built-in guard's name or another command's |
 | `` `[guard]` command `<name>` needs a program in `run` `` | A `[guard]` command with an empty `run` |
 | `` unknown field `<key>`, expected one of ... `` | A key the tables above do not list, or a top-level key such as `gate` written below a table such as `[serve]`, which makes it that table's key |

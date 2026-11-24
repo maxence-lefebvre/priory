@@ -156,6 +156,21 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 problems.push(problem(settings, settings.lines.field("critic"), message));
             }
         }
+        for name in &settings.value.autopilot.approve_plans {
+            let refused = match factory.workflows.get(name) {
+                None => Some(format!(
+                    "`approve_plans` names workflow `{name}`, which does not exist"
+                )),
+                Some(flow) => plan_never_approved(name, &flow.value),
+            };
+            if let Some(message) = refused {
+                problems.push(problem(
+                    settings,
+                    settings.lines.field("autopilot"),
+                    message,
+                ));
+            }
+        }
         if let Some(name) = &settings.value.pre_review {
             let refused = match factory.scorers.get(name) {
                 None => Some(format!("the pre-review `{name}` is no scorer in scorers/")),
@@ -1367,6 +1382,24 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
             ));
         }
     }
+}
+
+/// Why autopilot approves no plan of workflow `name`, when none of its steps has one it may.
+fn plan_never_approved(name: &str, workflow: &Workflow) -> Option<String> {
+    let mut refusals = Vec::new();
+    for step in &workflow.steps {
+        let why = crate::explain::plan_refusal(workflow, &step.id)?;
+        if step.next.contains_key("green") {
+            refusals.push(why);
+        }
+    }
+    let why = match refusals.is_empty() {
+        true => "no step grades a plan green".to_owned(),
+        false => refusals.join("; "),
+    };
+    Some(format!(
+        "`approve_plans` names workflow `{name}`, where autopilot may approve no plan: {why}"
+    ))
 }
 
 /// `auto_answer = "low"` would accept every ask an agent makes, which is `hands-off` with no reader.

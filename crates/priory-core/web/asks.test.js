@@ -49,10 +49,10 @@ test("the detail says the lead is answering and that the first answer stands", (
   assert.equal(routedNote(ask(2)), null);
 });
 
-test("answeredBy names a person for the CLI and the server, the lead as agent:<lead>, auto, a session by its name, and nobody when unrecorded", () => {
+test("answeredBy names a person for the CLI and the server, the lead as agent:<lead>, auto, autopilot, a session by its name, and nobody when unrecorded", () => {
   assert.deepEqual(
-    ["cli", "serve", "agent:lead", "auto", "session:t9 8f3c2a10", null].map(answeredBy),
-    ["a person", "a person", "agent:lead", "auto", "session t9 8f3c2a10", null],
+    ["cli", "serve", "agent:lead", "auto", "autopilot", "session:t9 8f3c2a10", null].map(answeredBy),
+    ["a person", "a person", "agent:lead", "auto", "autopilot", "session t9 8f3c2a10", null],
   );
 });
 

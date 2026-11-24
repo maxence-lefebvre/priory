@@ -380,6 +380,7 @@ conversation that lacks its `id` or `created_at`, gets `400`.
 | Field | Type | Meaning |
 | ----- | ---- | ------- |
 | `paused` | string or null | `paused since <time>: <reason>` while admissions are paused |
+| `autopilot` | object or null | While [autopilot](../daemon/waits.md#autopilot) is on: `window`, `since`, `until`, `level`, `lanes`, and how many asks it `answered` and `left` here |
 | `caps` | array of strings | One line per spend cap reached whose new runs wait, such as `spend cap reached: lane core/intake spent $12.40 of its day cap of $10.00; its new runs wait for the next day` (see [spend.md](../daemon/spend.md)) |
 | `reviews` | array of strings | One line per lane or batch whose review limit holds a queued task, such as `review limit reached: lane core/intake has 5 pull requests waiting for a person, at the limit of 5; its new runs wait` (see [runs.md](../daemon/runs.md#review-limit)) |
 | `banner` | string or null | The stall banner while the queue is stalled |
@@ -414,6 +415,7 @@ Each item:
 | `what` | string | What the item is about |
 | `routed_to` | string or null | An `ask` item's lead, which answers it in the person's place, or null. Other kinds have no `routed_to` |
 | `confidence`, `rationale` | string or null | An `ask` item's stated confidence and its rationale, or null. Other kinds have neither |
+| `autopilot_left` | string or null | Why [autopilot](../daemon/waits.md#autopilot) left an `ask` item to the person, or null. Other kinds have none |
 | `generation` | integer or null | The task's generation |
 | `snoozed_until`, `snoozed_at`, `back_early` | | The item's [snooze](#snooze) |
 | `runner`, `last_seen` | | An `ask` item's runner, in a factory of several, and for another runner's ask when that runner was last alive. Another runner's ask has `<runner>:<ask>` as `id`, a null `task` and no snooze, and ranks with the local asks |
@@ -525,8 +527,9 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `ran` | object or null | The command its answer ran: `status` (`running`, `done`, `failed` or `uncertain`), `revision`, `error`, `stdout` and `stderr`. Null when no answer ran it |
 | `coordinator`, `run_id`, `session` | string or null | Who asked from outside Priory: its coordinator, its run id and its session |
 | `answer`, `answered_at` | string or null | The answer and when it came |
-| `answered_by` | string or null | Who answered: `cli`, `serve`, `agent:<lead>` for a lead's answer, `auto` for the daemon's answer at the task's [`auto_answer`](triggers.md#auto_answer) level, or `session:<session>` for a person's own session through [`priory mcp --outside`](../daemon/tools.md#answers-from-the-session), which a dismissed ask keeps too. Null when unanswered, or answered before Priory recorded it |
+| `answered_by` | string or null | Who answered: `cli`, `serve`, `agent:<lead>` for a lead's answer, `auto` for the daemon's answer at the task's [`auto_answer`](triggers.md#auto_answer) level, `autopilot` for its answer while a person had [autopilot](../daemon/waits.md#autopilot) on, or `session:<session>` for a person's own session through [`priory mcp --outside`](../daemon/tools.md#answers-from-the-session), which a dismissed ask keeps too. Null when unanswered, or answered before Priory recorded it |
 | `confidence`, `rationale` | string or null | How sure the agent was of its recommendation, `high`, `medium` or `low`, and why. Null when it stated none. See [tools.md](tools.md#confidence) |
+| `autopilot_left`, `autopilot_why` | string or null | Why [autopilot](../daemon/waits.md#autopilot) left the open ask, and why it could answer the answered one, or null |
 | `routed_to` | string or null | The lead the ask is routed to, which answers it in the person's place, or null for a person. See [tools.md](../daemon/tools.md#hands-off) |
 | `delivery` | object or null | The latest delivery of an outside ask's answer or dismissal to its session: `state` (`queued`, `running`, `delivered` or `failed`), `revision`, `tries`, `error`, `since` and `cleared`, when a person cleared a failed one from the desk with `priory deliver --clear`. Null when nothing was delivered. See [asks.md](../daemon/asks.md) |
 | `since` | string | When the agent asked |

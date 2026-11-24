@@ -435,6 +435,9 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
                 &searching,
             )?;
         }
+        // After the socket's lines, so an answer a person sent before this tick comes first.
+        let head = |worktree: &Path, branch: &str| runtime::kept_head(&home, worktree, branch);
+        crate::autopilot::tick(&mut db, &trace, &head)?;
         start_answers(&mut db, &trace, &home, &mut commands)?;
         commands = run_commands(&mut db, &trace, &home, commands)?;
         // A teardown that ended lets the sweep remove its worktree now, not a sweep later.

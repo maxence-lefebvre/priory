@@ -109,6 +109,7 @@ fn generated() -> Vec<(String, Value)> {
         event::<MemoryWritten>("priory.memory.written"),
         event::<MemoryAccepted>("priory.memory.accepted"),
         event::<MemoryDropped>("priory.memory.dropped"),
+        event::<AutopilotSet>("priory.autopilot.set"),
     ]
 }
 

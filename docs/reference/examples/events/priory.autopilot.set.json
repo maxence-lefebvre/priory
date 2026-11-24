@@ -1,0 +1,12 @@
+{
+  "id": "0196f1d3-7d80-7f90-a1b2-3c4d5e6f7082",
+  "type": "priory.autopilot.set",
+  "subject": "autopilot",
+  "time": "2026-11-24T21:00:00Z",
+  "data": {
+    "until": "2026-11-25T07:00:00Z",
+    "level": "high",
+    "lanes": []
+  },
+  "links": []
+}

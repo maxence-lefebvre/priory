@@ -879,6 +879,54 @@ met its task's `auto_answer` level (see [waits.md](daemon/waits.md#answered-by-a
 | `rationale`  | yes      | The agent's one-line reason                                      |
 | `level`      | yes      | The task's `auto_answer` level when the ask was stored           |
 
+## `factory.ask.autopilot_answered`
+
+The daemon answered an ask while a person had autopilot on (see
+[waits.md](daemon/waits.md#autopilot)). It shares `factory`, `factory_revision`, `workflow`, `task`,
+`key`, `generation`, `step` and `machine` with `factory.step.ended`.
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d6-0000-7000-8000-000000000010",
+  "source": "factory://example/desktop",
+  "type": "factory.ask.autopilot_answered",
+  "time": "2026-11-25T01:12:09Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "workflow": "implement",
+    "task": "14",
+    "key": "github:example/app#42",
+    "run": "31",
+    "generation": 1,
+    "step": "implement",
+    "machine": "desktop",
+    "ask": "14",
+    "revision": 1,
+    "option": "document --format",
+    "why": "its confidence, high, meets high, and a person decides again before any irreversible step",
+    "level": "high",
+    "window": 3,
+    "confidence": "high",
+    "rationale": "the flag duplicates --format"
+  }
+}
+```
+
+| Field                     | Required | Meaning                                                |
+| ------------------------- | -------- | ------------------------------------------------------ |
+| `ask`                     | yes      | The ask the daemon answered                            |
+| `revision`                | yes      | The revision it answered                               |
+| `option`                  | yes      | The option that became the answer                      |
+| `why`                     | yes      | Why the ask was eligible                               |
+| `level`                   | yes      | The level autopilot was on at                          |
+| `window`                  | yes      | The window, as `priory autopilot report` takes it      |
+| `run`                     | no       | The run that asked. A plan's ask has none              |
+| `confidence`, `rationale` | no       | What the agent stated. A plan's ask has neither        |
+| `grade`                   | no       | A plan's grade, `green`                                |
+
 ## `factory.ask.session_answered` and `factory.ask.session_dismissed`
 
 A person's own session answered or dismissed an ask through the `answer` or `dismiss` tool of

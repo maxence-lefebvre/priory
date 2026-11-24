@@ -85,7 +85,9 @@ pub(crate) fn view(
     if seen.is_none() {
         let outcome = if crate::route::outsider(message) {
             Some("outsider")
-        } else if crate::memories::handle(&tx, message)?.is_some() {
+        } else if crate::memories::handle(&tx, message)?.is_some()
+            || crate::autopilot::handle(&tx, message, true)?.is_some()
+        {
             None
         } else if crate::route::requests(message) {
             Some("elsewhere")
@@ -773,7 +775,7 @@ fn stamped(kind: &str, data: serde_json::Value, name: &str) -> Message {
 }
 
 /// Queues `message` for the log, in the transaction of the change it follows.
-fn send(tx: &Transaction, message: &Message) -> rusqlite::Result<()> {
+pub(crate) fn send(tx: &Transaction, message: &Message) -> rusqlite::Result<()> {
     tx.execute(
         "INSERT INTO sends (message) VALUES (?1)",
         [serde_json::to_string(message).expect("a message serializes")],
@@ -1121,7 +1123,7 @@ fn remote_row(
 }
 
 /// Every mirrored ask, open or closed since `since` when given, oldest first.
-fn remote_rows(db: &Connection, since: Option<&str>) -> rusqlite::Result<Vec<Value>> {
+pub(crate) fn remote_rows(db: &Connection, since: Option<&str>) -> rusqlite::Result<Vec<Value>> {
     let mirrored = db
         .prepare("SELECT runner, ask, data FROM remote_asks ORDER BY runner, ask")?
         .query_map([], |row| {
@@ -1364,8 +1366,12 @@ pub(crate) fn remote_desk_items(db: &Connection) -> rusqlite::Result<Vec<Value>>
             .as_str()
             .map(|to| format!("routed to {to}: "))
             .unwrap_or_default();
+        let left = ask["autopilot_left"]
+            .as_str()
+            .map(|why| format!("autopilot left this ({why}): "))
+            .unwrap_or_default();
         let what = format!(
-            "{routed}{} {}",
+            "{left}{routed}{} {}",
             ask["question"].as_str().unwrap_or_default(),
             ask["options"]
         );
@@ -1378,7 +1384,7 @@ pub(crate) fn remote_desk_items(db: &Connection) -> rusqlite::Result<Vec<Value>>
         items.push(json!({
             "since": ask["since"], "kind": "ask", "id": ask["id"], "task": null, "key": key,
             "step": ask["step"], "lane": ask["lane"], "what": what, "routed_to": ask["routed_to"],
-            "generation": null,
+            "autopilot_left": ask["autopilot_left"], "generation": null,
             "snoozed_until": null, "snoozed_at": null, "back_early": null, "title": title,
             "urgency": urgency, "runner": ask["runner"], "last_seen": ask["last_seen"],
         }));

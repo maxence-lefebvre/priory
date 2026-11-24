@@ -56,6 +56,8 @@ pub const MEMORY_WRITTEN: &str = "priory.memory.written";
 pub const MEMORY_ACCEPTED: &str = "priory.memory.accepted";
 /// A person drops a memory candidate, so no run gets it.
 pub const MEMORY_DROPPED: &str = "priory.memory.dropped";
+/// A person turns autopilot on or off, for every runner.
+pub const AUTOPILOT_SET: &str = "priory.autopilot.set";
 const LABELED: &str = "github.issues.labeled";
 const OPENED: &str = "github.issues.opened";
 pub const ISSUE_CLOSED: &str = "github.issues.closed";
@@ -252,6 +254,7 @@ pub fn output() -> Output {
             MEMORY_WRITTEN,
             MEMORY_ACCEPTED,
             MEMORY_DROPPED,
+            AUTOPILOT_SET,
         ])
 }
 

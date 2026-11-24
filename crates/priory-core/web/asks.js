@@ -82,7 +82,7 @@ export function submitted(ask) {
 }
 
 /** Who answered, as the views say it: a person, `agent:<lead>`, auto, or `session <name>` for a person's own session. Null when unrecorded. @param {string | null | undefined} by */
-export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : by === "auto" ? "auto" : by.startsWith("session:") ? `session ${by.slice(8)}` : "a person");
+export const answeredBy = (by) => (!by ? null : by.startsWith("agent:") ? by : by === "auto" || by === "autopilot" ? by : by.startsWith("session:") ? `session ${by.slice(8)}` : "a person");
 
 /**
  * The option index a key press picks on an ask, or null: `1` to `9`, never a key held down, whose
@@ -139,7 +139,7 @@ export const shrunkHead = (ask) => ({
 });
 
 /** Who answered, as the answered row's icon: auto, session, agent or person; null when unrecorded. @param {string | null | undefined} by */
-export const answererOf = (by) => (!by ? null : by === "auto" ? "auto" : by.startsWith("session:") ? "session" : by.startsWith("agent:") ? "agent" : "person");
+export const answererOf = (by) => (!by ? null : by === "auto" || by === "autopilot" ? "auto" : by.startsWith("session:") ? "session" : by.startsWith("agent:") ? "agent" : "person");
 
 /** A confidence's bars, of three. */
 export const CONFIDENCE_BARS = { high: 3, medium: 2, low: 1 };

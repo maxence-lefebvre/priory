@@ -44,6 +44,11 @@ rationale. It never answers an ask whose answer lets an irreversible step run, a
 ask that runs a command. Each such answer is marked `by auto` and listed in the desk's Since you
 looked. See [docs/daemon/waits.md](daemon/waits.md#answered-by-auto).
 
+**Autopilot.** For a while you choose, `priory autopilot on` lets the daemon answer the asks that
+auto-answer could, whatever their trigger says. It ends by itself, marks what it leaves for you, and
+reports what it answered, why, and how to reverse it. See
+[docs/daemon/waits.md](daemon/waits.md#autopilot).
+
 **Task and run.** A task is one unit of work, from its event to `done`, `failed` or `dropped`. A run
 is one agent process working on a task's step. A task can have many runs, and its agent's session
 carries over between them. A repository's [recipes](daemon/runs.md#recipes) are the commands
