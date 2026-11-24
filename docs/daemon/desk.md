@@ -237,6 +237,11 @@ remote is gone, remove <home>/worktrees/<owner>/<name> and <home>/repos/<owner>/
 daemon reads it from Priory home, not the state, so a client sees it at its next read. See
 [sweep.md](sweep.md#a-clone-that-fails-to-fetch).
 
+For 24 hours after the sweep restored the agents slice's limits, the banner ends with `another
+process set <slice> to <limits>; the sweep restored its limits at <time>`. While the daemon may not
+set them, it ends with `left the limits of <slice> alone: <why>` instead. The daemon reads both from
+Priory home too. See [agents-slice.md](agents-slice.md#restoring-the-limits).
+
 The banner is `intake` in `priory desk --json` and `/api/desk`. A source that starts failing, or
 recovers, moves the state's revision, so a client that waits on `/api/events` redraws the banner at
 once. A repeated poll with the same outcome moves nothing. The stopped banner comes from time
@@ -292,7 +297,15 @@ prompts.
   debater reads it. It replies `task <id> is in a debate at step <step>: the step after the debate
   reads it`.
 
-Otherwise it replies `task <id> will hear it`. It refuses a `done`, `failed` or `dropped` task, a
+- A `done` task whose pull request is open reopens as its next generation, with TEXT as the first
+  prompt. Its step, session and branch are those of [feedback that reopens a done
+  task](routing.md#feedback-reopens-a-done-task). It replies `task <id> reopened at <step>,
+  generation <n>`. It is refused, with the reason, when the task owns no pull request, when that
+  pull request merged or closed, when another active task holds its key or a resource it owns, or
+  when no agent runs the step it would reopen at. A merge the intake has not published yet does not
+  refuse it. A pick or comment on a done task's report reopens nothing.
+
+Otherwise it replies `task <id> will hear it`. It refuses a `failed` or `dropped` task, a
 task at a human or code step with no open ask, and a task that has neither a run nor a queued
 prompt, such as a `queued` one, since its first run builds the step's prompt then.
 
