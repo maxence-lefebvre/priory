@@ -34134,6 +34134,22 @@ fn a_parked_task_stays_parked_when_its_pull_request_reopened_before_its_adopt_re
 }
 
 #[test]
+fn a_parked_task_is_done_when_a_late_open_review_follows_the_merge_before_its_adopt_request() {
+    let setup = adopting("adopt-merged-then-open", &[7]);
+    setup.publish(&on_alice_pull(
+        "github.pull_request.closed",
+        json!({ "merged": true, "open": false, "github_id": 400 }),
+    ));
+    setup.publish(&polled_review(true, 801));
+    setup.until("inbox", |rows| rows.len() == 2);
+
+    adopt(&setup, &["my-prs", "7"]);
+
+    all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "done");
+    assert!(setup.rows("runs").is_empty());
+}
+
+#[test]
 fn adopt_skips_a_pull_request_whose_head_branch_an_active_task_owns() {
     let mut setup = Setup::new("adopt-branch-owner");
     fs::write(setup.dir.join("factory/triggers/my-prs.toml"), MY_PRS).unwrap();
