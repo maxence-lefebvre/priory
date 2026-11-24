@@ -438,3 +438,18 @@ test("reads the memory candidates with the factory folder, then accepts or drops
     ["memories", "drop", "/srv/factory", "c-2"],
   ]);
 });
+
+test("a long run of prose after a URL is left out in linear time", () => {
+  for (const tail of [")", ".)", "."]) {
+    const started = performance.now();
+    const [span, rest] = autolink(`https://a.dev/x${tail.repeat(65_536 / tail.length)}`, [], null);
+    assert.equal(span.url, "https://a.dev/x");
+    assert.equal(rest.text.length, 65_536);
+    assert.ok(performance.now() - started < 1000, tail);
+  }
+  const dotted = `https://a.dev/${".".repeat(65_536)}x`;
+  const started = performance.now();
+  assert.equal(autolink(dotted, [], null).at(-1)?.text, dotted);
+  assert.ok(performance.now() - started < 1000, "dots");
+  assert.deepEqual(autolink("(https://a.dev/b_(c)).", [], null).map((span) => span.text), ["(", "https://a.dev/b_(c)", ")."]);
+});

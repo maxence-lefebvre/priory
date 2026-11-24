@@ -21861,6 +21861,11 @@ fn a_plan_task_waits_for_a_person_after_a_green_grade_then_moves_on_when_approve
     );
     setup.until("tasks", |rows| rows[0][4] == "asleep");
     assert_eq!(setup.rows("tasks")[0][3], "plan");
+    let shown = &task_json(&setup, "1")["plan_file"];
+    assert_eq!(
+        [&shown["ask"], &shown["files"][0]["text"]],
+        [&json!(1), &json!("Plan: add a flag")]
+    );
 
     let answered = setup.priory(&["answer", "1", "approved", "--revision", "1"]);
 
