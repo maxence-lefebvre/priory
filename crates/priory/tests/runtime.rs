@@ -3018,15 +3018,103 @@ fn a_scheduled_script_runs_on_its_every_and_never_overlaps_itself() {
 
 [sweep]
 scripts = [
-  { run = "echo start >> \"$FAKE_DIR/log\"; sleep 2; echo end >> \"$FAKE_DIR/log\"", every = "1s" },
+  { run = "echo start >> \"$FAKE_DIR/log\"; sleep 12; echo end >> \"$FAKE_DIR/log\"", every = "10s" },
 ]
 "#;
     fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
 
     setup.start();
 
-    let log = until_fake_lines(&setup, "log", |lines| lines.len() >= 6);
-    assert_eq!(log[..6], ["start", "end", "start", "end", "start", "end"]);
+    let log = until_fake_lines(&setup, "log", |lines| lines.len() >= 4);
+    assert_eq!(log[..4], ["start", "end", "start", "end"]);
+}
+
+#[test]
+fn a_failed_scheduled_script_whose_text_changes_leaves_the_desk() {
+    let mut setup = Setup::new("scheduled-fixed");
+    let failing = r#"name = "demo"
+
+[sweep]
+scripts = [{ run = "echo nope; exit 3", every = "1h" }]
+"#;
+    let config = setup.dir.join("factory/factory.toml");
+    fs::write(&config, failing).unwrap();
+    setup.start();
+    setup.until("desk", |rows| {
+        rows.iter()
+            .any(|row| row[1] == "sweep" && row[5] == "echo nope; exit 3: exit 3: nope")
+    });
+
+    write_atomic(&config, &failing.replace("exit 3", "exit 0"));
+
+    setup.until("desk", |rows| !rows.iter().any(|row| row[1] == "sweep"));
+}
+
+#[test]
+fn the_daemon_keeps_only_the_latest_ended_scheduled_run_of_each_script() {
+    let mut setup = Setup::new("scheduled-pruned");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [{ run = "echo ran >> \"$FAKE_DIR/ran\"", every = "1h" }]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    setup.start();
+    until_fake_lines(&setup, "ran", |lines| lines.len() == 1);
+    setup.crash();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         DELETE FROM sweeps;
+         INSERT INTO stalls (id, resource, missing, task, ended)
+           VALUES (7, 'disk', '1 GB', 1, '2026-01-01T00:00:00Z');",
+    )
+    .unwrap();
+    let script = "echo ran >> \"$FAKE_DIR/ran\"";
+    for (stall, script, status) in [
+        (Some(7), script, "exit 0"),
+        (None, script, "exit 3"),
+        (None, script, "exit 0"),
+        (None, "gone", "exit 0"),
+        (None, "gone", "exit 0"),
+        (None, "broken", "exit 3"),
+        (None, script, "exit 0"),
+    ] {
+        db.execute(
+            "INSERT INTO sweeps (stall, script, ended, status, output)
+             VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?3, '')",
+            rusqlite::params![stall, script, status],
+        )
+        .unwrap();
+    }
+
+    setup.start();
+
+    let kept = || -> Vec<(Option<i64>, String)> {
+        db.prepare("SELECT stall, script FROM sweeps ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while kept().len() > 3 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        kept(),
+        [
+            (Some(7), script.to_owned()),
+            (None, "gone".to_owned()),
+            (None, script.to_owned()),
+        ]
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    assert_eq!(
+        fs::read_to_string(setup.dir.join("fake/ran")).unwrap(),
+        "ran\n"
+    );
 }
 
 #[test]

@@ -1692,6 +1692,24 @@ fn a_sweep_script_needs_when_or_every_and_a_valid_every() {
 }
 
 #[test]
+fn a_sweep_script_runs_every_10_seconds_at_most() {
+    let least =
+        "name = \"demo\"\n\n[sweep]\nscripts = [{ run = \"nh clean all\", every = \"10s\" }]\n";
+    let ok = check(&factory("sweep-least", &with("factory.toml", least)));
+    let under = least.replace("\"10s\"", "\"9s\"");
+    let refused = check(&factory("sweep-under", &with("factory.toml", &under)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (refused.code, refused.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: the sweep script `nh clean all` has `every` 9s: it needs to be 10s or more\n"
+        )
+    );
+}
+
+#[test]
 fn repository_recipes_pass_and_a_bad_one_names_its_line() {
     let good = "name = \"demo\"\n\n[repos.\"owner/repo\"]\nsetup = { argv = [\"npm\", \"ci\"], timeout = \"15m\" }\nresume = { shell = \"npm ci --prefer-offline\" }\nteardown = { shell = \"docker compose down\" }\n";
     let ok = check(&factory("recipes-ok", &with("factory.toml", good)));
