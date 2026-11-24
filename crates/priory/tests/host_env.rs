@@ -18,6 +18,7 @@ const EXPORTED: &[(&str, &str)] = &[
     ("PRIORY_NOW", "2001-01-01T00:00:00Z"),
     ("PRIORY_SESSION", "host-session"),
     ("TMUX", "/tmp/host-tmux,1,0"),
+    ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/bus"),
     ("PRIORY_TEST_HOST_ENV", "1"),
 ];
 
@@ -61,6 +62,12 @@ fn inside_a_host_that_exports_priory_settings() {
         listed.contains(&format!("\nXDG_STATE_HOME={}\n", state.display())),
         "{listed}"
     );
+    let run = Path::new(env!("CARGO_TARGET_TMPDIR")).join("host-run");
+    assert!(
+        listed.contains(&format!("\nXDG_RUNTIME_DIR={}\n", run.display())),
+        "{listed}"
+    );
+    assert!(!run.join("systemd").exists() && !run.join("bus").exists());
 }
 
 #[test]

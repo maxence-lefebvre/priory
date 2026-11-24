@@ -347,17 +347,31 @@ A run that sends no `SessionStart` within its window, for another reason, also e
 The window is 60 seconds from its start, 180 when Priory recorded the run's trust, and 600 under
 direnv. The daemon kills its tmux session and blocks its task with the reason `claude showed
 no SessionStart within 60s; trust the worktrees folder and the clone once: ...`, the same commands,
-then `. Its pane ended with: ` and the last 5 non-empty lines of its pane, joined by ` | `, so a
+`. Resume the task to try again`, then `. Its pane ended with: ` and the last 5 non-empty lines of its pane, joined by ` | `, so a
 person sees the dialog or warning that stopped it. The daemon log gets the last 30. A line the
 pane wrapped counts as one line, so a secret that wraps is hidden whole. Both hide secrets as the
 screen does (see [serve.md](serve.md#a-runs-screen)), and show `[redacted]` alone when one still
 shows.
 
-When Priory recorded trust for each path of the run, as `granted` or `present` (see
-[With trust_worktrees](#with-trust_worktrees)), the folders are not the cause, so for Claude the
-reason drops the commands: `claude showed no SessionStart within 180s although Priory recorded its
-trust; it started too slowly. Resume the task to try again`. The daemon never restarts the run by
-itself, since a restart changes nothing that made it slow. `priory resume` starts it again.
+The reason names a cause the daemon can see, the first of these that applies:
+
+- Since the run started, the CPU quota of the [agents slice](agents-slice.md) kept back at least 10 %
+  of the CPU its agents wanted: `priory-agents.slice was throttled: its quota kept back <n>% of the CPU
+  its agents wanted since the run started, under CPUQuota=<quota>`. The share is the growth of
+  `throttled_usec` in the slice's `cpu.stat`, over its growth plus that of `usage_usec`.
+- Claude's pane shows its input box: `its prompt is ready and asks for no trust, so its SessionStart
+  hook is late or never reached the daemon`.
+- Priory recorded trust for each path of a Claude run, as `granted` or `present` (see
+  [With trust_worktrees](#with-trust_worktrees)): `it started too slowly`.
+
+At Claude's input box, or when Priory recorded a Claude run's trust, the cause replaces the commands,
+so a person does not accept a trust that is not missing. Recorded trust also adds `although Priory
+recorded its trust` after the window: `claude showed no SessionStart within 180s although Priory
+recorded its trust; it started too slowly`. Elsewhere, as at Codex's `Hooks need review`, the
+throttling follows the commands after `; `.
+
+The daemon never restarts the run by itself, since a restart changes nothing that made it slow.
+`priory resume` starts it again.
 
 The daemon's `runs` metrics group counts both as starts that ended in `error`, and shows a start
 still waiting for `SessionStart` by its age. See [metrics.md](metrics.md#the-runs-group).

@@ -59,7 +59,7 @@ identical in every run, since each run's session reaches them as `PRIORY_SESSION
 trusts them once, with the clone. A Codex run that sends no `SessionStart` within its window
 blocks its task with `codex showed no SessionStart within 60s; trust the clone and Priory's hooks once: cd
 <clone path> && codex -c 'hooks.SessionStart=...' ..., accept the folder, type /hooks and trust
-Priory's hooks, then exit`, then the pane's last lines as under [Trusting the worktrees and the clone](sessions.md#trusting-the-worktrees-and-the-clone). The command
+Priory's hooks, then exit. Resume the task to try again`, then the pane's last lines as under [Trusting the worktrees and the clone](sessions.md#trusting-the-worktrees-and-the-clone). The command
 carries Priory's hooks exactly as runs get them. A hook nobody trusted shows Codex's `Hooks need
 review` dialog, which those lines show. The folder trust Priory records does not cover hooks, so a
 run with it keeps this reason, after 180 seconds.
