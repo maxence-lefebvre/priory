@@ -395,6 +395,7 @@ struct Served {
     gates: crate::risk::Gates,
     schedules: Vec<(String, Trigger)>,
     workflows: Vec<String>,
+    default_workflow: Option<String>,
     /// `GET /api/request`: what the Add control prefills and offers.
     request: String,
     prices: BTreeMap<String, Price>,
@@ -422,6 +423,7 @@ impl Served {
             gates: crate::risk::Gates::of(factory),
             schedules: listing::schedule_triggers(factory),
             workflows: factory.workflows.keys().cloned().collect(),
+            default_workflow: factory.request().map(|defaults| defaults.workflow.clone()),
             request: serde_json::json!({
                 "workflow": factory.request().map(|defaults| &defaults.workflow),
                 "band": factory.request().and_then(|defaults| defaults.band.as_ref()),
@@ -613,7 +615,14 @@ fn route(
         },
         "/api/queue" => match intake::now() {
             Ok(now) => listing::revised(db, "queue", |db| {
-                listing::queue(db, &served.schedules, &served.workflows, now).map(Some)
+                listing::queue(
+                    db,
+                    &served.schedules,
+                    &served.workflows,
+                    served.default_workflow.as_deref(),
+                    now,
+                )
+                .map(Some)
             }),
             Err(error) => return Reply::error(500, &error),
         },

@@ -4,14 +4,19 @@
 const values = (rows, field) => [...new Set(rows.map((row) => row[field]).filter((value) => value != null))].sort();
 
 /**
- * The chips' choices: the factory's workflows and bands, and each lane a task carries. A queue
- * read without the factory folder lists no workflows, so the chips offer those the tasks carry.
+ * The dropdowns' choices: the factory's workflows and bands, and each lane a task carries. A queue
+ * read without the factory folder lists no workflows, so the dropdown offers those the tasks carry.
  * @param {any} queue `priory queue --json` @param {any[]} tasks `priory tasks --json`'s tasks
  */
 export function addChoices(queue, tasks) {
   const listed = [...queue.waiting, ...tasks];
   const workflow = queue.workflows?.length ? queue.workflows : values(listed, "workflow");
-  return { workflow, band: queue.bands ?? [], lane: values(listed, "lane") };
+  return {
+    workflow,
+    band: queue.bands ?? [],
+    lane: values(listed, "lane"),
+    unpicked: { workflow: queue.default_workflow ? `default (${queue.default_workflow})` : "default", band: "default", lane: "routed" },
+  };
 }
 
 /**

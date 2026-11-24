@@ -133,6 +133,20 @@ export function press(root, id) {
   for (const node of reached) if (!node.calls.disabled?.[0]) node.on.on_click?.({}, context());
 }
 
+/**
+ * Presses a key with the focus on the element with `id`: it bubbles to the root until a handler stops it.
+ * @param {any} root @param {string} id @param {string} key
+ */
+export function keydown(root, id, key) {
+  const path = pathTo(root, id);
+  if (!path) throw new Error(`no element ${id}`);
+  const cx = context();
+  for (const node of path.reverse()) {
+    node.on.on_key_down?.({ key, keystroke: key, modifiers: {} }, cx);
+    if (cx.stopped) return;
+  }
+}
+
 // gpui-kit
 export class View {}
 export const div = () => element("div");
@@ -151,7 +165,14 @@ export const Popover = { new: (/** @type {string} */ id) => element("popover", i
 export const ScrollHandle = { new: () => ({ scroll_to_item() {} }) };
 const fieldState = () => {
   let value = "";
-  return { value: () => value, set_value: (/** @type {string} */ next) => { value = next; }, on() {}, focus() {} };
+  const handlers = /** @type {Record<string, Function>} */ ({});
+  return {
+    value: () => value,
+    set_value: (/** @type {string} */ next) => { value = next; },
+    on(/** @type {string} */ event, /** @type {Function} */ handler) { handlers[event] = handler; },
+    emit(/** @type {string} */ event) { handlers[event]?.({}, context()); },
+    focus() {},
+  };
 };
 export const InputState = { new: fieldState };
 export const TextareaState = { new: fieldState };
