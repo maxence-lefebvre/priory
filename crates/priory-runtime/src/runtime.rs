@@ -353,7 +353,7 @@ fn recover(path: &Path, branch: &str, from: Option<String>) -> Result<Recovery, 
             "{shown} {place}, not on {branch}, and {branch} is gone"
         ));
     }
-    let at_risk = at_risk(path, branch, SCAN)?;
+    let at_risk = at_risk(path, Some(branch), SCAN)?;
     let kept_branch = match (&from, at_risk) {
         (None, 1..) => {
             let kept = format!("{branch}-kept-{short}");
@@ -419,20 +419,27 @@ fn changes(status: &str) -> String {
 
 /// The most remote commits a recovery compares by patch; past it, a detached HEAD's commits are
 /// kept on a branch unread.
-const SCAN: usize = 2000;
+pub(crate) const SCAN: usize = 2000;
 
-/// How many commits on the HEAD of `path` are neither on `branch` nor on a remote-tracking ref,
-/// nor patch-equivalent to a commit there. A merge commit has no patch id, so it always counts.
-/// When more than `scan` remote commits could match, none is compared and every commit counts.
-fn at_risk(path: &Path, branch: &str, scan: usize) -> Result<usize, String> {
-    let local = format!("refs/heads/{branch}");
+/// How many commits on the HEAD of `path` are neither on `branch`, when given, nor on a
+/// remote-tracking ref, nor patch-equivalent to a commit there. A merge commit has no patch id, so
+/// it always counts. When more than `scan` remote commits could match, none is compared and every
+/// commit counts.
+pub(crate) fn at_risk(path: &Path, branch: Option<&str>, scan: usize) -> Result<usize, String> {
+    let local: Vec<String> = branch
+        .map(|branch| format!("refs/heads/{branch}"))
+        .into_iter()
+        .collect();
     let listed = |merges: bool| -> Result<Vec<String>, String> {
         let mut command = git(path);
         command.arg("rev-list");
         if !merges {
             command.arg("--no-merges");
         }
-        let out = run(command.args(["HEAD", "--not", &local, "--remotes"]))?;
+        let out = run(command
+            .args(["HEAD", "--not"])
+            .args(&local)
+            .arg("--remotes"))?;
         Ok(out.lines().map(str::to_owned).collect())
     };
     let all = listed(true)?;
@@ -454,14 +461,9 @@ fn at_risk(path: &Path, branch: &str, scan: usize) -> Result<usize, String> {
         .unwrap_or(0);
     // A rebase keeps the author date, so a rebased copy was committed after it.
     let since = format!("--max-age={oldest}");
-    let window = [
-        "--no-merges".to_owned(),
-        since,
-        "--remotes".to_owned(),
-        local,
-        "--not".to_owned(),
-        "HEAD".to_owned(),
-    ];
+    let mut window = vec!["--no-merges".to_owned(), since, "--remotes".to_owned()];
+    window.extend(local);
+    window.extend(["--not".to_owned(), "HEAD".to_owned()]);
     let count = run(git(path).args(["rev-list", "--count"]).args(&window))?;
     if count
         .trim()
@@ -512,6 +514,21 @@ fn patch_ids(
         .collect())
 }
 
+/// Whether `path` is a worktree of `clone` whose gitdir is gone, as a `git worktree remove` that
+/// failed partway leaves it: git deleted the tracked files and the gitdir, not the rest.
+fn orphaned(path: &Path, clone: &Path) -> bool {
+    let Ok(link) = fs::read_to_string(path.join(".git")) else {
+        return false;
+    };
+    let Some(gitdir) = link.trim().strip_prefix("gitdir: ").map(Path::new) else {
+        return false;
+    };
+    let Ok(registry) = fs::canonicalize(clone.join(".git").join("worktrees")) else {
+        return false;
+    };
+    gitdir.parent() == Some(registry.as_path()) && !gitdir.exists()
+}
+
 /// The task's worktree folder `name` on `priory/<name>`, from the local branch `from` of Priory's
 /// own clone of `repo` (`owner/name`), else from its default branch. The clone has no checkout: a person trusts it and the worktrees
 /// folder once in Claude, which covers its worktrees. A worktree of that clone left on that branch by an interrupted
@@ -542,6 +559,9 @@ pub fn worktree(
                 .arg(&partial))
         })?;
         fs::rename(&partial, &clone).map_err(|error| error.to_string())?;
+    }
+    if orphaned(&path, &clone) {
+        remove_sealed(&path);
     }
     if path.exists() {
         let common =
@@ -1566,6 +1586,12 @@ fn seal(dir: &Path) -> std::io::Result<()> {
 /// can hold a `PRIORY_HOME`: a user other than root cannot remove a sealed kit, plugin or memory
 /// folder with `fs::remove_dir_all` alone.
 pub fn remove_sealed(dir: &Path) {
+    unseal(dir);
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// Makes `dir` and every folder under it writable by its owner, so their files can be removed.
+pub(crate) fn unseal(dir: &Path) {
     let mut folders = vec![dir.to_path_buf()];
     while let Some(folder) = folders.pop() {
         if !fs::symlink_metadata(&folder).is_ok_and(|meta| meta.is_dir()) {
@@ -1576,7 +1602,6 @@ pub fn remove_sealed(dir: &Path) {
             folders.extend(entries.filter_map(|entry| entry.ok().map(|entry| entry.path())));
         }
     }
-    let _ = fs::remove_dir_all(dir);
 }
 
 /// Renames `staging` to `target`, and moves aside and removes what `target` held before.
@@ -3077,8 +3102,8 @@ mod tests {
         );
         sh(&tree, &["checkout", "--quiet", "--detach", &head]);
 
-        assert_eq!(at_risk(&tree, "priory/1", 1), Ok(0));
-        assert_eq!(at_risk(&tree, "priory/1", 0), Ok(1));
+        assert_eq!(at_risk(&tree, Some("priory/1"), 1), Ok(0));
+        assert_eq!(at_risk(&tree, Some("priory/1"), 0), Ok(1));
     }
 
     #[test]
@@ -3253,6 +3278,51 @@ mod tests {
                 home.home().join("repos/o/n").display()
             )
         );
+    }
+
+    /// Task 1's worktree holds `target/sealed/out` under a 0555 folder that git ignores, as a
+    /// test run that seals a kit leaves.
+    fn sealed(home: &Home) -> PathBuf {
+        let exclude = home.home().join("repos/o/n/.git/info/exclude");
+        fs::write(&exclude, "target/\n").unwrap();
+        let sealed = home.tree().join("target/sealed");
+        fs::create_dir_all(&sealed).unwrap();
+        fs::write(sealed.join("out"), "x\n").unwrap();
+        fs::set_permissions(&sealed, fs::Permissions::from_mode(0o555)).unwrap();
+        sealed
+    }
+
+    #[test]
+    fn retiring_a_worktree_with_a_sealed_folder_under_an_ignored_target_removes_it_whole() {
+        let home = Home::new("retire-sealed");
+        sealed(&home);
+        let found = crate::worktrees::Found {
+            path: home.tree(),
+            repo: "o/n".to_owned(),
+            name: "1".to_owned(),
+        };
+
+        crate::worktrees::retire(&home.home(), &found).unwrap();
+
+        assert!(!home.tree().exists());
+        assert!(!home.home().join("repos/o/n/.git/worktrees/1").exists());
+        assert!(head(&home.home().join("repos/o/n"), "priory/1").is_some());
+        assert_eq!(home.again(), Ok(Added::Restored));
+    }
+
+    #[test]
+    fn a_folder_whose_gitdir_is_gone_is_added_back_from_its_branch() {
+        let home = Home::new("orphaned");
+        let sealed = sealed(&home);
+        // What a `git worktree remove` that failed on the sealed folder leaves behind.
+        fs::remove_file(home.tree().join("README.md")).unwrap();
+        fs::remove_dir_all(home.home().join("repos/o/n/.git/worktrees/1")).unwrap();
+
+        assert_eq!(home.again(), Ok(Added::Restored));
+
+        assert!(!sealed.exists());
+        assert!(home.tree().join("README.md").is_file());
+        assert_eq!(sh(&home.tree(), &["branch", "--show-current"]), "priory/1");
     }
 
     #[test]
