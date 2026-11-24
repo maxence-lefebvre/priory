@@ -88,8 +88,9 @@ To have the runs of a step open in Herdr by themselves, on the machine that runs
    label.
 5. Restart the daemon, and run `priory check`.
 
-The next run of a flagged step opens a kept hc terminal that runs `priory attach --run <run>`, in a
-tab named `task-<task>` of that space. [Opening runs in Herdr](adapters/herdr.md#opening-runs-in-herdr)
+The next run of a flagged step opens a kept hc terminal that runs
+`priory attach --run <run> --read-only`, in a tab named `task-<task>` of that space.
+[Opening runs in Herdr](adapters/herdr.md#opening-runs-in-herdr)
 says what the script does and how it fails.
 
 ## Installing for a Herdr on another machine

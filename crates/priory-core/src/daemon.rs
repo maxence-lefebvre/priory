@@ -1513,8 +1513,8 @@ fn tend(
     Ok(())
 }
 
-/// Whether a person may be watching the tmux session `name`: a client is attached, or tmux
-/// cannot tell.
+/// Whether a person may be typing in the tmux session `name`: a client that can type is attached,
+/// or tmux cannot tell. A read-only view, as Herdr opens by itself, protects nothing.
 fn watched(name: &str) -> bool {
     runtime::clients(name).is_none_or(|clients| clients > 0)
 }

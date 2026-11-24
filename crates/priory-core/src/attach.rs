@@ -32,12 +32,17 @@ pub(crate) fn start(
     let Some(command) = trace.factory.attach() else {
         return Ok(());
     };
+    let exe = match priory_runtime::runtime::exe() {
+        Ok(exe) => exe,
+        Err(reason) => return failed(db, trace, run, &reason, ""),
+    };
     let mut attach = Command::new(command);
     attach
         .args([task.to_string(), run.to_string()])
         .env("PRIORY_TASK", task.to_string())
         .env("PRIORY_RUN", run.to_string())
-        .env("PRIORY_TMUX", tmux);
+        .env("PRIORY_TMUX", tmux)
+        .env("PRIORY_EXE", exe);
     let log = home.join("attach").join(format!("{run}.log"));
     match script::spawn_command(attach, &trace.factory.dir, &log, TIMEOUT) {
         Ok(script) => running.push(Attaching { run, script }),

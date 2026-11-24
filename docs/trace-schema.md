@@ -152,9 +152,9 @@ goes on. See [sessions.md](daemon/sessions.md#opening-a-run-when-it-starts).
     "factory": "example",
     "factory_revision": "999daf0",
     "task": "0196f1b0-0000-7000-8000-000000000001",
-    "key": "schedule:bonjour@2026-11-24T06:00:00Z",
+    "key": "schedule:nightly@2026-11-24T06:00:00Z",
     "run": "0196f1b0-0000-7000-8000-000000000002",
-    "step": "dossier",
+    "step": "implement",
     "machine": "desktop",
     "reason": "exit 1",
     "output": "attach: hc is not on PATH; install herdr-core or fix the daemon's PATH"

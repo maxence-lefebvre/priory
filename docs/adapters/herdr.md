@@ -174,20 +174,28 @@ daemon's environment. Then:
 
 1. `hc ls --label priory.run=RUN`: when a live terminal already carries the run's label, it exits 0
    and opens nothing.
-2. Otherwise `hc run --bg --keep --no-parent --no-notify` starts `priory attach --run RUN`,
+2. Otherwise `priory attach --run RUN --read-only --print` checks that the run has a live pane. When
+   it fails, the script prints its error and exits 1. `hc run --bg` alone would hide that error.
+3. `hc run --bg --keep --no-parent --no-notify` starts `priory attach --run RUN --read-only`,
    labelled `herdr.space=<space>`, `herdr.tab=task-<TASK>`, `priory.task=<TASK>` and
    `priory.run=<RUN>`. The hc core starts it with its own environment, so the script passes the
-   daemon's `PRIORY_DB`, `PRIORY_HOME` and `TMUX_TMPDIR` through `env`, and names the daemon's
-   `priory` by its full path.
+   daemon's `PRIORY_DB`, `PRIORY_HOME` and `TMUX_TMPDIR` through `env`, and runs the daemon's
+   own executable, `PRIORY_EXE`.
 
 It exits 1 with `attach: hc is not on PATH; install herdr-core or fix the daemon's PATH` when the
 daemon's `PATH` has no `hc`, and with `attach: set PRIORY_HERDR_SPACE to the Herdr space that shows
-runs` when the variable is unset. The daemon records either as a `factory.run.attach_failed` record.
+runs` or `attach: PRIORY_EXE is unset; run this from a daemon that sets it` when a variable is unset.
+The daemon records each as a `factory.run.attach_failed` record.
 
-The terminal runs `priory attach` without `--read-only`, as the Priory bar's attach does. So it
-records a `factory.terminal.attach_issued` record, and a Herdr window that shows it resizes the
-agent's window. When the run ends, `--keep` leaves a shell in the terminal. The next run of the
-task opens a new terminal in the same tab.
+The terminal only shows the run: use the Priory bar's attach to type. So it protects the run from no
+budget, spend cap or urgent wake. Before it attaches, it sets its own size to 200x51, which keeps
+the agent's 200x50 window under tmux's one-line status. A Herdr window that shows the terminal
+resizes it, and with it the agent's window while no other client can type.
+
+When the run ends, the terminal's program exits and leaves no shell: `--keep` gives a shell only
+to a terminal whose program is lost with the hc core. The next run of the task opens a new
+terminal in the same tab. The script does not check that `PRIORY_HERDR_SPACE` names a space that
+exists.
 
 ## Writing another adapter
 
