@@ -790,34 +790,33 @@ pub fn is_ancestor(worktree: &Path, below: &str, commit: &str) -> bool {
 
 /// The origin branches, as last pushed or fetched, that hold every commit of the local branch
 /// `branch` of `worktree`'s clone, or the other way round. A branch already in the trunk has none.
-pub fn in_line(home: &Path, worktree: &Path, branch: &str) -> Vec<String> {
-    let Some(repo) = worktree
-        .parent()
-        .and_then(|repo| repo.strip_prefix(home.join("worktrees")).ok())
-    else {
-        return Vec::new();
-    };
+/// `None` when git cannot say.
+pub fn in_line(home: &Path, worktree: &Path, branch: &str) -> Option<Vec<String>> {
+    let repo = worktree
+        .parent()?
+        .strip_prefix(home.join("worktrees"))
+        .ok()?;
     let clone = home.join("repos").join(repo);
-    let Some(head) = kept_head(home, worktree, branch) else {
-        return Vec::new();
-    };
+    let head = kept_head(home, worktree, branch)?;
     if is_ancestor(&clone, &head, "origin/HEAD") {
-        return Vec::new();
+        return Some(Vec::new());
     }
     let refs = |filter: &[&str]| {
         run(git(&clone)
             .args(["for-each-ref", "--format=%(refname:lstrip=3)"])
             .args(filter)
             .arg("refs/remotes/origin"))
-        .unwrap_or_default()
+        .ok()
     };
-    let ahead = refs(&["--contains", &head]);
-    let behind = refs(&["--merged", &head, "--no-merged", "origin/HEAD"]);
-    ahead
-        .lines()
-        .chain(behind.lines())
-        .map(str::to_owned)
-        .collect()
+    let ahead = refs(&["--contains", &head])?;
+    let behind = refs(&["--merged", &head, "--no-merged", "origin/HEAD"])?;
+    Some(
+        ahead
+            .lines()
+            .chain(behind.lines())
+            .map(str::to_owned)
+            .collect(),
+    )
 }
 
 /// The open pull requests of `repo` that `author` opened, or every open one without an author,

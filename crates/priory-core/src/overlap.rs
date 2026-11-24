@@ -17,9 +17,11 @@ pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusql
         return Ok(());
     }
     record(db, home)?;
+    forget_closed(db)?;
     let mut fresh = BTreeSet::new();
     for (task, _) in overlaps(db)? {
-        if !works_on_open(db, home, task)? {
+        // Unknown is not a no: a wrong hold is never judged again, so git is asked on the next tick.
+        if works_on_open(db, home, task)? == Some(false) {
             fresh.insert(task);
         }
     }
@@ -139,7 +141,7 @@ fn wait_for(db: &Connection, other: i64) -> rusqlite::Result<Option<Wait>> {
     }))
 }
 
-/// A task, the run whose end recorded its head, and the pushed branch that head is in line with.
+/// A task, the run whose end recorded its head, and the pull request that head is in line with.
 type InLine = (i64, Option<i64>, String);
 
 /// Only a yes is kept: a no places a hold, and a held task is not asked about.
@@ -151,27 +153,41 @@ fn known() -> std::sync::MutexGuard<'static, BTreeSet<InLine>> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Drops what is known about pull requests no longer open, so a reopened one is judged again.
+fn forget_closed(db: &Connection) -> rusqlite::Result<()> {
+    if known().is_empty() {
+        return Ok(());
+    }
+    let open: BTreeSet<String> = db
+        .prepare("SELECT resource FROM pull_requests WHERE state = 'open'")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    known().retain(|(_, _, resource)| open.contains(resource));
+    Ok(())
+}
+
 /// Whether `task`'s branch is in line with the branch of an open pull request of its repository,
-/// other than one a stacked entry is stacked on: that entry is new work on top.
-fn works_on_open(db: &Connection, home: &Path, task: i64) -> rusqlite::Result<bool> {
+/// other than one a stacked entry is stacked on: that entry is new work on top. `None` when git
+/// cannot say.
+fn works_on_open(db: &Connection, home: &Path, task: i64) -> rusqlite::Result<Option<bool>> {
     let (worktree, branch, run): (Option<String>, Option<String>, Option<i64>) = db.query_row(
         "SELECT worktree, branch, files_run FROM tasks WHERE id = ?1",
         [task],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
     let (Some(worktree), Some(branch)) = (worktree, branch) else {
-        return Ok(false);
+        return Ok(Some(false));
     };
     let worktree = Path::new(&worktree);
     let Some(repo) = worktree
         .parent()
         .and_then(|repo| repo.strip_prefix(home.join("worktrees")).ok())
     else {
-        return Ok(false);
+        return Ok(Some(false));
     };
-    let open: Vec<String> = db
+    let open: Vec<(String, String)> = db
         .prepare(
-            "SELECT DISTINCT branch FROM pull_requests WHERE state = 'open'
+            "SELECT DISTINCT resource, branch FROM pull_requests WHERE state = 'open'
              AND substr(resource, 1, instr(resource, '#') - 1) = ?2
              AND task NOT IN (WITH RECURSIVE below (id) AS (
                  SELECT base_task FROM tasks WHERE id = ?1
@@ -179,26 +195,32 @@ fn works_on_open(db: &Connection, home: &Path, task: i64) -> rusqlite::Result<bo
                ) SELECT id FROM below WHERE id IS NOT NULL)",
         )?
         .query_map(params![task, format!("github:{}", repo.display())], |row| {
-            row.get(0)
+            Ok((row.get(0)?, row.get(1)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
-    let entry = |pushed: &str| (task, run, pushed.to_owned());
-    if open.iter().any(|pushed| known().contains(&entry(pushed))) {
-        return Ok(true);
+    let entry = |resource: &str| (task, run, resource.to_owned());
+    if open
+        .iter()
+        .any(|(resource, _)| known().contains(&entry(resource)))
+    {
+        return Ok(Some(true));
     }
     if open.is_empty() {
-        return Ok(false);
+        return Ok(Some(false));
     }
-    let found: Vec<InLine> = runtime::in_line(home, worktree, &branch)
+    let Some(in_line) = runtime::in_line(home, worktree, &branch) else {
+        return Ok(None);
+    };
+    let found: Vec<InLine> = open
         .iter()
-        .filter(|pushed| open.contains(pushed))
-        .map(|pushed| entry(pushed))
+        .filter(|(_, pushed)| in_line.contains(pushed))
+        .map(|(resource, _)| entry(resource))
         .collect();
     let works = !found.is_empty();
     let mut known = known();
     known.retain(|(other, at, _)| *other != task || *at == run);
     known.extend(found);
-    Ok(works)
+    Ok(Some(works))
 }
 
 fn files_of(json: &str) -> Vec<String> {

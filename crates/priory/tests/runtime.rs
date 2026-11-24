@@ -22418,14 +22418,7 @@ fn requested_as(key: &str) -> Message {
 /// Task 1's branch is pushed and is the head of the open pull request 7.
 fn opened_pull_request(setup: &Setup) {
     setup.push_to(1, "priory/1");
-    rusqlite::Connection::open(setup.dir.join("priory.db"))
-        .unwrap()
-        .execute(
-            "INSERT INTO pull_requests (task, resource, branch, base)
-             VALUES (1, 'github:owner/repo#7', 'priory/1', 'main')",
-            [],
-        )
-        .unwrap();
+    records_pull_requests(setup, "(1, 'github:owner/repo#7', 'priory/1', 'main')");
 }
 
 /// Moves task 2's branch to the pull request's head.
