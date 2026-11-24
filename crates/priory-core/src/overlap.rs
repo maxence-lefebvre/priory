@@ -60,7 +60,7 @@ pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusql
             if said {
                 continue;
             }
-            let Some(wait) = wait_for(&tx, other)? else {
+            let Some(wait) = wait_for(&tx, task, other)? else {
                 continue;
             };
             let held = Hold {
@@ -85,8 +85,9 @@ struct Wait {
 }
 
 /// What `other` ends or merges to get out of the way: its open pull request, else its end; `None`
-/// when it is done with no pull request left open.
-fn wait_for(tx: &rusqlite::Transaction, other: i64) -> rusqlite::Result<Option<Wait>> {
+/// when it is done with no pull request left open, or when that pull request is `task`'s own work,
+/// since `task` would then wait on itself.
+fn wait_for(tx: &rusqlite::Transaction, task: i64, other: i64) -> rusqlite::Result<Option<Wait>> {
     let open: Option<String> = tx
         .query_row(
             "SELECT resource FROM pull_requests WHERE task = ?1 AND state = 'open' ORDER BY created LIMIT 1",
@@ -95,6 +96,15 @@ fn wait_for(tx: &rusqlite::Transaction, other: i64) -> rusqlite::Result<Option<W
         )
         .optional()?;
     if let Some(resource) = open {
+        let own: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND key = ?2)
+             OR EXISTS (SELECT 1 FROM pull_requests WHERE task = ?1 AND resource = ?2)",
+            params![task, resource],
+            |row| row.get(0),
+        )?;
+        if own {
+            return Ok(None);
+        }
         return Ok(Some(Wait {
             after: None,
             merge: Some(resource.trim_start_matches("github:").to_owned()),

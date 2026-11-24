@@ -20660,6 +20660,34 @@ fn a_task_overlapping_one_with_an_open_pull_request_is_held_until_it_merges() {
     );
 }
 
+#[test]
+fn a_task_working_on_the_open_pull_request_it_overlaps_is_not_held_on_it() {
+    let setup = overlapping_after("overlap-own-pr", "shared.txt", "name = \"demo\"", |setup| {
+        let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+        // Task 1 opened #7; task 2, requested next, updates that same pull request.
+        db.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO pull_requests (task, resource, branch, base)
+             VALUES (1, 'github:owner/repo#7', 'priory/1', 'main'),
+                    (2, 'github:owner/repo#7', 'priory/1', 'main');",
+        )
+        .unwrap();
+    });
+
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| {
+            row[0] == "2" && (row[4] == "held" || row[3] == "check" && row[4] == "running")
+        })
+    });
+
+    assert_eq!(
+        state_of(&setup, "2").0,
+        "running",
+        "{:?}",
+        state_of(&setup, "2")
+    );
+}
+
 const FIX: &str = r#"
 start = "triage"
 
