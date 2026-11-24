@@ -399,7 +399,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut redispatch: Option<Instant> = None;
     let mut entering = Entering::default();
     let mut live = Live::new(factory, watch, trace.revision.clone(), server);
-    let mut upgrader = Upgrader::default();
+    let mut upgrader = Upgrader::new(factory);
     loop {
         let tick = Instant::now();
         if live.poll(&mut db, &trace, true)? {

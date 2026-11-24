@@ -1,6 +1,7 @@
 //! `priory upgrade resume`: the helper that swaps the binary while the services are stopped, watches
 //! the new daemon, and puts the old binary back when it fails. It runs from a copy of the old binary.
 
+use crate::memory;
 use crate::provenance::{self, to_hex};
 use crate::upgrade::{self, Kept, Outcome, Store};
 use priory_runtime::upgrade::{self as journal, Journal, Phase};
@@ -8,8 +9,10 @@ use priory_runtime::{room, runtime};
 use rusqlite::{Connection, OpenFlags};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs;
 use std::io::ErrorKind;
+use std::os::unix::ffi::OsStringExt as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
@@ -22,6 +25,13 @@ const KEPT: usize = 3;
 const LIMIT: Duration = Duration::from_secs(60);
 /// Below this much free disk, a failure is the disk's.
 const SHORT: u64 = 64 << 20;
+/// How SQLite and the system say that a disk is full or fails.
+const FULL: [&str; 4] = [
+    "disk is full",
+    "disk I/O error",
+    "No space left",
+    "Disk quota exceeded",
+];
 /// What the rollback's last records may take.
 const RESERVE: usize = 64 << 10;
 
@@ -117,6 +127,8 @@ pub fn resume(verify: Verify) -> Result<(), String> {
                         serves(&home, &journal)
                     }
                 };
+                // What fails both daemons alike is the machine's fault.
+                journal.refuse &= answered.is_none();
                 let kind = match journal.refuse {
                     true => upgrade::ROLLED_BACK,
                     false => upgrade::PUT_OFF,
@@ -192,7 +204,24 @@ fn blame(home: &Path, journal: &mut Journal, fault: Fault) {
 
 /// Whether the disk of `path` is almost full, so a failure there is the disk's.
 pub(crate) fn short(path: &Path) -> bool {
-    room::free(folder(path)).is_ok_and(|free| free < SHORT)
+    let folder = folder(path);
+    room::free(folder).is_ok_and(|free| free < SHORT) || over_quota(folder)
+}
+
+/// Whether `folder` takes no `SHORT` bytes more, which a quota decides and the free room does not show.
+fn over_quota(folder: &Path) -> bool {
+    let probe = folder.join(format!(".priory-room-{}", std::process::id()));
+    let mut command = Command::new("fallocate");
+    command
+        .env("LC_ALL", "C")
+        .args(["--length", &SHORT.to_string()]);
+    let tried = runtime::fed_within(command.arg(&probe), None, LIMIT);
+    let _ = fs::remove_file(&probe);
+    // Without fallocate, or on a filesystem that has none, the free room decides.
+    tried.ok().flatten().is_some_and(|output| {
+        let error = String::from_utf8_lossy(&output.stderr);
+        !output.status.success() && FULL.iter().any(|words| error.contains(words))
+    })
 }
 
 pub(crate) fn folder(path: &Path) -> &Path {
@@ -236,6 +265,11 @@ fn prepare(home: &Path, journal: &mut Journal, verify: Verify) -> Result<(), Fau
         if !running[0] {
             return Err(Fault::Machine(format!("{} is stopped", journal.units[0])));
         }
+        journal.intake_stable = stable(&journal.units[1], journal.watch)?;
+        // The daemon, which waited so long, works on from here.
+        if journal.ready_by.is_some_and(|by| journal::now() > by) {
+            return Err(Fault::Machine("its checks took too long".to_owned()));
+        }
         journal.running = Some(running);
         // A failed write stopped nothing, so nothing is started for it.
         journal::write(home, journal).inspect_err(|_| journal.running = None)?;
@@ -278,9 +312,56 @@ fn ready(journal: &Journal, verify: Verify) -> Result<(), Fault> {
     }
     check(&journal.exe, &next, &journal.factory)?;
     version_is(&next, to)?;
+    startable(journal)?;
     link(&journal.exe, &journal.kept)?;
     link(&journal.kept, &journal::beside(&journal.exe, "back"))?;
     Ok(())
+}
+
+/// That the old binary would start as its unit starts it now: its environment may have changed since.
+fn startable(journal: &Journal) -> Result<(), Fault> {
+    let daemon = &journal.units[0];
+    let mut command = Command::new("systemd-run");
+    command.args(["--user", "--quiet", "--wait", "--pipe", "--collect"]);
+    command.arg("--property=RuntimeMaxSec=30");
+    for line in journal::property(daemon, "EnvironmentFiles")?.lines() {
+        let (path, errors) = line
+            .rsplit_once(" (ignore_errors=")
+            .unwrap_or((line, "no)"));
+        let optional = if errors == "yes)" { "-" } else { "" };
+        command.arg(format!("--property=EnvironmentFile={optional}{path}"));
+    }
+    // Its values come from the process, so no secret is on a command line.
+    let inline = journal::property(daemon, "Environment")?;
+    let pid = journal::property(daemon, "MainPID")?;
+    let environ = fs::read(format!("/proc/{pid}/environ")).unwrap_or_default();
+    for (name, value) in inline_values(&inline, &environ) {
+        command.env(&name, value).arg(format!("--setenv={name}"));
+    }
+    command.arg("--").arg(&journal.exe);
+    command.args(["upgrade", "startable"]).arg(&journal.factory);
+    command.args(journal.bound.map(|bound| bound.to_string()));
+    match run(&mut command) {
+        Ok(_) => Ok(()),
+        Err(Fault::Release(error) | Fault::Machine(error)) => Err(Fault::Machine(format!(
+            "the daemon could not start again: {error}"
+        ))),
+    }
+}
+
+/// The variables of the process environment `environ` that a unit's `Environment` names.
+fn inline_values(inline: &str, environ: &[u8]) -> Vec<(String, OsString)> {
+    let names: Vec<&str> = inline
+        .split_whitespace()
+        .filter_map(|word| Some(word.trim_start_matches(['"', '\'', '$']).split_once('=')?.0))
+        .collect();
+    let pairs = environ.split(|byte| *byte == 0).filter_map(|pair| {
+        let at = pair.iter().position(|byte| *byte == b'=')?;
+        let name = std::str::from_utf8(&pair[..at]).ok()?;
+        let value = OsString::from_vec(pair[at + 1..].to_vec());
+        names.contains(&name).then(|| (name.to_owned(), value))
+    });
+    pairs.collect()
 }
 
 fn drop_staged(journal: &Journal) {
@@ -373,6 +454,21 @@ fn holder(databases: &[&Path], but: &[u32]) -> Result<Option<String>, String> {
 fn active(unit: &str) -> Result<bool, String> {
     let state = journal::property(unit, "ActiveState")?;
     Ok(matches!(&*state, "active" | "activating" | "reloading"))
+}
+
+/// Whether the process of `unit` runs since `seconds` ago or longer, so it is in no crash loop.
+fn stable(unit: &str, seconds: u64) -> Result<bool, String> {
+    if journal::property(unit, "ActiveState")? != "active" {
+        return Ok(false);
+    }
+    let pid = journal::property(unit, "MainPID")?.parse().ok();
+    let started = pid.and_then(memory::started);
+    let up = fs::read_to_string("/proc/uptime").ok();
+    let up: Option<f64> = up.and_then(|text| text.split_whitespace().next()?.parse().ok());
+    // Linux reports 100 ticks a second to every process.
+    Ok(started
+        .zip(up)
+        .is_some_and(|(started, up)| up - started as f64 / 100.0 >= seconds as f64))
 }
 
 /// Whose fault it is that `unit` ended: one killed from elsewhere, as by the OOM killer, is not the
@@ -486,13 +582,7 @@ pub(crate) fn run(command: &mut Command) -> Result<String, Fault> {
         let error = format!("{}: {}", output.status, error.trim());
         return Err(match output.status.signal() {
             Some(9 | 15) => Fault::Machine(error),
-            // SQLite's and the system's words for a full or failing disk.
-            _ if ["disk is full", "disk I/O error", "No space left"]
-                .iter()
-                .any(|words| error.contains(words)) =>
-            {
-                Fault::Machine(error)
-            }
+            _ if FULL.iter().any(|words| error.contains(words)) => Fault::Machine(error),
             _ => Fault::Release(error),
         });
     }
@@ -509,7 +599,12 @@ fn healthy(home: &Path, journal: &mut Journal) -> Result<(), Fault> {
         false => vec![daemon.clone()],
     };
     start(&units)?;
-    let watched = watch(home, journal, &daemon, with_intake.then_some(&*intake));
+    let watched = watch(
+        home,
+        journal,
+        &daemon,
+        (with_intake && journal.intake_stable).then_some(&*intake),
+    );
     // A service a person stopped meanwhile says nothing about the release, and stays stopped.
     let mut stopped = None;
     for (at, unit) in units.iter().enumerate() {
@@ -529,20 +624,25 @@ fn watch(home: &Path, journal: &Journal, daemon: &str, intake: Option<&str>) -> 
     if answered != journal.to {
         return Err(Fault::Release(format!("the daemon answers as {answered}")));
     }
-    // Each with the line it fails with, seen while systemd still holds how it ended.
-    let mut watched = vec![(daemon, "the daemon stopped after it answered")];
-    watched.extend(intake.map(|unit| (unit, "the intake did not stay up")));
+    let mut watched = vec![daemon];
+    watched.extend(intake);
     let pids = || -> Result<Vec<String>, String> {
-        let pid = |(unit, _): &(&str, _)| journal::property(unit, "MainPID");
+        let pid = |unit: &&str| journal::property(unit, "MainPID");
         watched.iter().map(pid).collect()
     };
     let first = pids()?;
     let until = Instant::now() + Duration::from_secs(journal.watch);
     loop {
-        for ((unit, what), (before, now)) in watched.iter().zip(first.iter().zip(pids()?)) {
-            if *before != now || now == "0" {
-                return Err(ended(unit, what)?);
+        for (unit, (before, now)) in watched.iter().zip(first.iter().zip(pids()?)) {
+            if *before == now && now != "0" {
+                continue;
             }
+            // Its sources end it, such as one without its key.
+            if Some(*unit) == intake {
+                return Err(Fault::Machine("the intake did not stay up".to_owned()));
+            }
+            // Asked while systemd still holds how it ended.
+            return Err(ended(unit, "the daemon stopped after it answered")?);
         }
         let left = until.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -724,4 +824,24 @@ fn finish(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_unit_s_own_variables_take_the_values_of_its_process() {
+        let environ = b"TOKEN=a=b\0PATH=/bin\0NAME=x y\0";
+        let found = inline_values("TOKEN=old \"NAME=x y\" GONE=1", environ);
+        let pair = |name: &str, value: &str| (name.to_owned(), OsString::from(value));
+        assert_eq!(found, [pair("TOKEN", "a=b"), pair("NAME", "x y")]);
+    }
+
+    #[test]
+    fn any_environment_is_read_without_a_panic() {
+        proptest::proptest!(|(inline in ".{0,100}", environ in proptest::collection::vec(0u8..=255, 0..100))| {
+            let _ = inline_values(&inline, &environ);
+        });
+    }
 }

@@ -44,7 +44,10 @@ case "$verb" in
       verb_of=daemon
       case "$unit" in *intake*) verb_of=intake ;; esac
       ulimit -S -f unlimited 2>/dev/null
-      "$FAKE/exe" "$verb_of" "$FAKE/factory" >> "$FAKE/$unit.log" 2>&1 < /dev/null &
+      (
+        [ -e "$FAKE/env" ] && . "$FAKE/env"
+        exec "$FAKE/exe" "$verb_of" "$FAKE/factory"
+      ) >> "$FAKE/$unit.log" 2>&1 < /dev/null &
       echo $! > "$FAKE/$unit.pid"
       rm -f "$FAKE/$unit.stopped"
     done ;;
@@ -54,6 +57,9 @@ case "$verb" in
     alive "$running" || running=0
     case "$*" in
       *MainPID*) echo "$running" ;;
+      *EnvironmentFiles*) [ -e "$FAKE/env" ] && [ ! -e "$FAKE/inline" ] && echo "$FAKE/env (ignore_errors=no)" ;;
+      *Environment*) cat "$FAKE/inline" 2>/dev/null ;;
+      *Restart*) cat "$FAKE/restart" 2>/dev/null || echo on-failure ;;
       *ActiveState*) [ "$running" = 0 ] && { [ -e "$FAKE/$unit.stopped" ] && echo inactive || { [ -e "$FAKE/$unit.pid" ] && echo failed || echo inactive; }; } || echo active ;;
       *ExecMainCode*) [ -e "$FAKE/$unit.stopped" ] && echo 2 || echo 1 ;;
       *ExecMainStatus*) [ -e "$FAKE/$unit.stopped" ] && echo 15 || echo 1 ;;
@@ -71,15 +77,20 @@ exit 0
 const SYSTEMD_RUN: &str = r#"#!/bin/sh
 [ "$1" = --version ] && { echo 'systemd 258 (fake)'; exit 0; }
 scope=no
+wait=no
 while [ $# -gt 0 ] && [ "$1" != -- ]; do
   case "$1" in
-    --setenv=*) export "${1#--setenv=}" ;;
+    --setenv=*=*) export "${1#--setenv=}" ;;
+    --wait) wait=yes; kept=$TOKEN; unset TOKEN SECRET ;;
+    --setenv=TOKEN) export TOKEN="$kept" ;;
+    --property=EnvironmentFile=*) . "${1#--property=EnvironmentFile=}" ;;
     --scope) scope=yes ;;
   esac
   shift
 done
 shift
 [ $scope = yes ] && exec "$@"
+[ $wait = yes ] && exec "$@"
 echo "$*" >> "$FAKE/systemd-run.log"
 [ -e "$FAKE/no-helper" ] && exit 0
 "$FAKE/as-helper" >> "$FAKE/helper.log" 2>&1 < /dev/null &
@@ -176,6 +187,11 @@ impl Setup {
         succeeded(&setup.priory(&["daemon", setup.path("factory").to_str().unwrap(), "--once"]));
         succeeded(&setup.priory(&["post", "marker", "kept"]));
         setup
+    }
+
+    fn start(&self, unit: &str) {
+        let mut command = self.command("systemctl");
+        succeeded(&command.args(["--user", "start", unit]).output().unwrap());
     }
 
     fn path(&self, name: &str) -> PathBuf {
@@ -1073,6 +1089,191 @@ fn a_service_that_starts_inside_an_interrupted_upgrade_starts_its_helper() {
     }
 }
 
+/// A fault that fails both daemons alike, such as a missing secret, is never the release's.
+#[test]
+fn an_old_daemon_that_fails_after_the_rollback_too_clears_the_refusal() {
+    let setup = Setup::new("both-fail", "");
+    setup.upgrade(&fake(CURRENT, "exit 0", "exit 1"), |_| {});
+    // From the next start on, the old one fails too.
+    let broken = fake("0.0.1", "exit 0", "[ -e \"$FAKE/broken\" ] && exit 1");
+    script(&setup.path("exe"), &broken);
+    fs::write(setup.path("broken"), "").unwrap();
+
+    setup.helper();
+
+    assert_eq!(setup.installed(), broken, "{}", setup.logs());
+    assert!(!setup.path("home/upgrade/journal.json").exists());
+    fs::remove_file(setup.path("broken")).unwrap();
+    setup.start("priory-daemon.service");
+    let record = setup.recorded();
+    assert_eq!(record["type"], "factory.upgrade.put_off");
+    let reason = record["data"]["reason"].as_str().unwrap();
+    assert!(reason.contains("the daemon does not answer"), "{reason}");
+    assert!(setup.desk().contains("off: "), "{}", setup.desk());
+    assert_eq!(setup.store()["refused"], json!({}));
+    assert!(setup.store()["put_off"][CURRENT]["until"].is_string());
+}
+
+/// A port nothing listens on now.
+fn port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().port()
+}
+
+fn served(port: u16) -> String {
+    format!("[serve]\nlisten = \"127.0.0.1:{port}\"\ntoken_env = \"TOKEN\"\n")
+}
+
+#[test]
+fn a_daemon_that_could_not_start_again_puts_the_upgrade_off_and_stops_nothing() {
+    let github = "[webhooks.github]\nsecret_env = \"SECRET\"\n";
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let other = taken.local_addr().unwrap().port();
+    let own = port();
+    let same = served(own);
+    for (name, factory, env, why) in [
+        ("token", same.clone(), "", "TOKEN is unset"),
+        (
+            "secret",
+            format!("{same}{github}"),
+            "export TOKEN=0123456789abcdef0123456789abcdef",
+            "SECRET is unset",
+        ),
+        (
+            "bind",
+            served(other),
+            "export TOKEN=0123456789abcdef0123456789abcdef",
+            "listen on 127.0.0.1",
+        ),
+    ] {
+        let setup = Setup::new(&format!("startable-{name}"), "");
+        let write = |text: &str| {
+            fs::write(
+                setup.path("factory/factory.toml"),
+                format!("name = \"demo\"\n{text}"),
+            )
+            .unwrap();
+        };
+        setup.upgrade(&fake(CURRENT, "exit 0", ":"), |journal| {
+            journal["bound"] = json!(format!("127.0.0.1:{own}"));
+        });
+        write(&factory);
+        fs::write(setup.path("env"), format!("{env}\n")).unwrap();
+
+        setup.helper();
+
+        // The machine's fix of it, and an unchanged factory.
+        write("");
+        setup.assert_put_off(name, why);
+        let log = fs::read_to_string(setup.path("systemctl.log")).unwrap();
+        assert!(!log.contains("stop "), "{name}: {log}");
+    }
+}
+
+/// The daemon's own port is no fault, and neither is a token the unit itself sets.
+#[test]
+fn a_daemon_that_serves_is_upgraded() {
+    for inline in [false, true] {
+        let port = port();
+        let setup = Setup::new(&format!("serves-{inline}"), &served(port));
+        let token = "0123456789abcdef0123456789abcdef";
+        fs::write(setup.path("env"), format!("export TOKEN={token}\n")).unwrap();
+        let new = fake(CURRENT, "exit 0", ":");
+        setup.upgrade(&new, |journal| {
+            journal["bound"] = json!(format!("127.0.0.1:{port}"));
+        });
+        if inline {
+            fs::write(setup.path("inline"), format!("\"A=b c\" TOKEN={token}\n")).unwrap();
+        }
+
+        setup.helper();
+
+        assert_eq!(setup.installed(), new, "{}", setup.logs());
+        assert_eq!(setup.recorded()["type"], "factory.upgrade.installed");
+    }
+}
+
+#[test]
+fn an_intake_that_ends_during_the_watch_puts_the_upgrade_off() {
+    let setup = Setup::new("intake-ends", "");
+    let new = fake(CURRENT, "exit 0", ":").replace("exec sleep 600", "sleep 3; exit 1");
+    setup.upgrade(&new, |journal| journal["watch"] = json!(6));
+    std::thread::sleep(Duration::from_secs(7));
+
+    setup.helper();
+
+    setup.assert_put_off("intake", "the intake did not stay up");
+}
+
+#[test]
+fn an_intake_in_a_crash_loop_before_the_stop_is_not_watched() {
+    let setup = Setup::new("intake-loops", "");
+    let new = fake(CURRENT, "exit 0", ":").replace("exec sleep 600", "sleep 3; exit 1");
+    setup.upgrade(&new, |journal| journal["watch"] = json!(8));
+    // As systemd does in a loop: the process is a moment old.
+    let pid = fs::read_to_string(setup.path("priory-intake.service.pid")).unwrap();
+    succeeded(&setup.command("kill").arg(pid.trim()).output().unwrap());
+    setup.start("priory-intake.service");
+
+    setup.helper();
+
+    assert_eq!(setup.installed(), new, "{}", setup.logs());
+    assert_eq!(setup.recorded()["type"], "factory.upgrade.installed");
+}
+
+/// A quota leaves room on the disk that this user cannot take.
+#[test]
+fn a_quota_is_no_fault_of_the_release() {
+    for (name, new, tool) in [
+        (
+            "said",
+            fake(
+                CURRENT,
+                "echo 'Disk quota exceeded (os error 122)' >&2; exit 1",
+                ":",
+            ),
+            "exit 0",
+        ),
+        (
+            "measured",
+            fake(CURRENT, "exit 0", "exit 1"),
+            "echo 'fallocate: fallocate failed: Disk quota exceeded' >&2; exit 1",
+        ),
+    ] {
+        let setup = Setup::new(&format!("quota-{name}"), "");
+        script(
+            &setup.path("bin/fallocate"),
+            &format!("#!/bin/sh\n{tool}\n"),
+        );
+        setup.upgrade(&new, |_| {});
+
+        setup.helper();
+
+        setup.assert_put_off(
+            name,
+            if name == "said" {
+                "quota"
+            } else {
+                "almost full"
+            },
+        );
+    }
+}
+
+#[test]
+fn a_helper_that_is_late_stops_nothing() {
+    let setup = Setup::new("late", "");
+    setup.upgrade(&fake(CURRENT, "exit 0", ":"), |journal| {
+        journal["ready_by"] = json!(1);
+    });
+
+    setup.helper();
+
+    setup.assert_put_off("late", "took too long");
+    let log = fs::read_to_string(setup.path("systemctl.log")).unwrap();
+    assert!(!log.contains("stop "), "{log}");
+}
+
 const UPGRADE: &str = "[upgrade]\nchannel = \"patch\"\n";
 
 /// The next patch of the running version, which the fake release server offers.
@@ -1241,6 +1442,74 @@ fn a_helper_that_never_starts_leaves_the_daemon_at_work() {
     assert_eq!(setup.store()["put_off"], json!({}));
     let unknown = setup.priory(&["upgrade", "retry", "9.9.9"]);
     assert!(!unknown.status.success());
+}
+
+/// The helper's check never ends in time, and the daemon does not wait for it.
+#[test]
+fn a_daemon_works_on_while_a_late_helper_checks() {
+    let setup = Setup::new("late-daemon", UPGRADE);
+    let helper = setup.path("as-helper");
+    let slow = fs::read_to_string(&helper).unwrap();
+    let slow = slow.replace(
+        "exec ",
+        "exec 9> \"$FAKE/home/upgrade/lock\"; flock 9; : > \"$FAKE/slow\"; sleep 70; exec 9>&-; exec ",
+    );
+    script(&helper, &slow);
+    setup.stage(&fake(&next(), "exit 0", ":"));
+    setup.serve();
+    setup.wait("the helper checks", || setup.path("slow").exists());
+    let since = Instant::now();
+
+    setup.wait("the daemon answers", || setup.answers());
+
+    assert!(
+        since.elapsed() < Duration::from_secs(60),
+        "{:?}",
+        since.elapsed()
+    );
+    assert!(setup.path("home/upgrade/journal.json").exists());
+    let record = setup.recorded();
+    assert_eq!(record["type"], "factory.upgrade.put_off");
+    let log = fs::read_to_string(setup.path("systemctl.log")).unwrap();
+    assert!(!log.contains("stop "), "{log}");
+}
+
+#[test]
+fn an_edit_that_waits_for_a_restart_puts_the_upgrade_off() {
+    let setup = Setup::new("restart-only", UPGRADE);
+    setup.serve();
+    setup.wait("the daemon answers", || setup.answers());
+    fs::write(
+        setup.path("factory/factory.toml"),
+        format!("name = \"demo\"\n{UPGRADE}{}", served(port())),
+    )
+    .unwrap();
+    setup.wait("it reloads", || {
+        let trace = setup.priory(&["trace"]);
+        String::from_utf8_lossy(&trace.stdout).contains("factory.config.reloaded")
+    });
+
+    setup.stage(&fake(&next(), "exit 0", ":"));
+
+    let record = setup.recorded();
+    assert_eq!(record["type"], "factory.upgrade.put_off");
+    let reason = record["data"]["reason"].as_str().unwrap();
+    assert!(reason.contains("[serve] changed"), "{reason}");
+    assert!(!setup.path("systemd-run.log").exists());
+    assert!(setup.answers());
+}
+
+#[test]
+fn a_daemon_unit_that_never_restarts_is_not_upgraded() {
+    let setup = Setup::new("no-restart", UPGRADE);
+    fs::write(setup.path("restart"), "no\n").unwrap();
+    setup.serve();
+
+    setup.wait("the desk says so", || {
+        setup.desk().contains("needs Restart=on-failure")
+    });
+
+    assert!(!setup.path("curl.log").exists());
 }
 
 #[test]

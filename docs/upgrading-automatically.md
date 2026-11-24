@@ -17,6 +17,8 @@ Both units must run one binary by its own path, not a link, in a folder the user
 systemctl --user show --value --property=ExecStart priory-daemon priory-intake
 ```
 
+The daemon's unit must have `Restart=on-failure` or `Restart=always`, or the daemon looks nothing up.
+
 `PRIORY_DB` and `HERDR_BUS_DB` must be set to absolute paths in the units' environment file.
 
 ## 2. Turn it on

@@ -265,6 +265,9 @@ An agent's settings and its shell call these. A person rarely does.
   [upgrades.md](../daemon/upgrades.md).
 - `priory upgrade probe DIR`: migrates the state and opens the log, on the copies an upgrade's
   rehearsal makes.
+- `priory upgrade startable DIR [ADDR]`: exits 1 when a daemon could not start in this environment: a
+  token or a webhook secret is unset, or the `[serve]` address is taken. `ADDR` is the address the
+  running daemon holds, which counts as free.
 - `priory gate`: runs the factory's `gate` in the run's worktree and records its exit code for the
   branch's head.
   See [tools.md](../daemon/tools.md#proofs).

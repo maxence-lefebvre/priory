@@ -50,6 +50,9 @@ which a jail hides, until all of these hold:
 A run whose transcript cannot be read counts as busy. After a day, the desk says what it waits for.
 It never forces its way in.
 
+An edit of a key that only a restart applies, such as `[serve]`, puts the upgrade off until the
+daemon restarted with it: nothing shows yet that a daemon starts with it.
+
 The transcript can lag behind a call by a moment. A tool call the agent makes while the daemon is
 down waits up to 30 seconds, as in an upgrade by hand. A call in flight at the stop can still fail.
 
@@ -72,20 +75,25 @@ more until the helper stops it.
 The helper, `priory upgrade resume`, first gets ready while both services run:
 
 1. it copies the new binary beside the old one, and checks that copy's sha256 and attestation, the
-   old binary's attestation, and `priory check` with both;
+   old binary's attestation, and `priory check` with both. The old binary then runs
+   `priory upgrade startable` with the environment of the daemon's unit, as its next start would read
+   it: a missing token or secret or a taken address puts the upgrade off;
 2. it gives the old binary two more names, `priory.<old version>` and one for a rollback, and
    reserves 64 KiB for a rollback's last records;
 3. it looks for a quiet moment again. For a release that migrates, no other process may have either
    database open, such as a standalone `priory serve`, whose webhooks a rollback would lose;
 4. it records which of the two units run. It later starts those alone, never one a person stopped.
+   It also records whether the intake ran for as long as it would be watched.
 
-A failure so far stops nothing. Then it:
+A failure so far stops nothing. All of this has 30 seconds, after which the helper puts the upgrade
+off and the daemon, which waits for it, works on at most 10 seconds later. Then it:
 
 5. stops both services, looks for a quiet moment once more, and copies both databases beside
    themselves with `VACUUM INTO`. When this fails, it starts them again;
 6. renames the new binary over the old one, then runs `priory check` with it;
 7. starts the services, waits up to 2 minutes for the daemon to answer its version on the socket,
-   and watches for a minute that it stays the same process.
+   and watches for a minute that it stays the same process. It watches the intake too, unless that
+   was in a crash loop before the stop.
 
 After a migration, only the daemon starts at step 7. It opens its databases and answers its version,
 but reads no message, serves nothing, dispatches nothing and starts no run. Any other process that
@@ -113,10 +121,12 @@ service removes the journal and runs.
 ## Refused or put off
 
 A release is refused for good when the fault is its own: it fails `priory check` where the old binary
-passes, it says another version, or its daemon ends by itself.
+passes, it says another version, or its daemon ends by itself. When the old daemon does not answer
+after the rollback either, the fault is this machine's: the refusal is cleared, and the desk shows the
+put-off once a daemon runs.
 
 Everything else puts the upgrade off: a factory the old binary refuses too, a missing tool, a step
-that ran out of its time, a daemon that is up but does not answer in time, an almost full disk, a
+that ran out of its time, a daemon that is up but does not answer in time, an almost full disk or quota, an intake that ends, a
 killed helper or daemon, a busy moment, or a service a person stopped meanwhile. It waits 1 hour, then 2, 4, 8
 and 16, then 24 each time, also across a restart. So a release whose daemon hangs is tried again
 once a day until a newer one comes. Each try stops the services, and the trace holds each reason.
@@ -154,4 +164,7 @@ factory on a herdr-bus log.
 - A reboot in the middle of an upgrade, with a new binary that does not even start, leaves the
   services down.
 - A `herdr-bus` client of another program that writes the log's file directly is not held back.
+- A quota shows only where `fallocate` is on the `PATH` and works, or where the failure names it.
+- The check of the daemon's environment needs systemd 249 or later for the variables its unit sets
+  with `Environment=`, and reads their values from the running daemon.
 - Only systemd user services upgrade. The daemon never re-executes itself.

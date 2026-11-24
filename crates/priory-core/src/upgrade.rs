@@ -3,9 +3,9 @@
 
 use crate::swap::{self, Fault};
 use crate::trace::{self, Trace};
-use crate::{memory, post};
+use crate::{memory, post, reload};
 use jiff::Timestamp;
-use priory_factory::factory::{Channel, Upgrade};
+use priory_factory::factory::{Channel, Factory, Upgrade};
 use priory_runtime::upgrade::{self as journal, Journal, Phase};
 use priory_runtime::{room, transcript};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
@@ -37,6 +37,8 @@ const PUT_OFF_HOURS: i64 = 24;
 const PATIENCE: jiff::SignedDuration = jiff::SignedDuration::from_hours(24);
 const ANSWERS_WITHIN: u64 = 120;
 const WATCH: u64 = 60;
+/// How many seconds the helper has for its checks, while the daemon's loop waits.
+const READY_WITHIN: u64 = 30;
 /// The most lines `noted` remembers.
 const NOTED: usize = 50;
 const BINARY_MAX: u64 = 200 << 20;
@@ -215,8 +217,9 @@ enum Work {
 }
 
 /// The daemon's upgrades: what it looks for, has staged and rehearsed.
-#[derive(Default)]
-pub(crate) struct Upgrader {
+pub(crate) struct Upgrader<'a> {
+    /// The factory the daemon started with.
+    start: &'a Factory,
     work: Option<Work>,
     looked: Option<Instant>,
     checked: Option<Instant>,
@@ -226,7 +229,19 @@ pub(crate) struct Upgrader {
     error: Option<String>,
 }
 
-impl Upgrader {
+impl<'a> Upgrader<'a> {
+    pub(crate) fn new(start: &'a Factory) -> Self {
+        Upgrader {
+            start,
+            work: None,
+            looked: None,
+            checked: None,
+            not_a_release: false,
+            rehearsed: None,
+            error: None,
+        }
+    }
+
     /// Moves an upgrade on. Once its helper runs, it stops this process from here.
     pub(crate) fn tick(&mut self, db: &mut Connection, trace: &Trace, home: &Path, working: bool) {
         // An upgrade that cannot go on never stops the daemon.
@@ -312,6 +327,15 @@ impl Upgrader {
         {
             return Ok(());
         }
+        // The running daemon never proved that one starts with these.
+        let changed = reload::restart_only(self.start, trace.factory);
+        if !changed.is_empty() {
+            let reason = format!(
+                "{} changed: restart the daemon and the intake first",
+                changed.join(", ")
+            );
+            return self.put_off(db, trace, home, &staged.version, &reason);
+        }
         let rehearsed = self
             .rehearsed
             .as_ref()
@@ -338,7 +362,7 @@ impl Upgrader {
             self.rehearse(home, staged, &host, &trace.factory.dir);
             return Ok(());
         };
-        let journal = plan(home, staged, rehearsal, host, upgrade, &trace.factory.dir)?;
+        let journal = plan(home, staged, rehearsal, host, upgrade, trace.factory)?;
         let started = journal::copy(&journal.exe, &journal::helper(home))
             .and_then(|()| journal::write(home, &journal))
             .and_then(|()| {
@@ -494,6 +518,8 @@ impl Upgrader {
 /// Makes the version that `outcome` put off wait, longer each time.
 fn delay(home: &Path, outcome: &Outcome) -> Result<(), String> {
     Store::update(home, |store| {
+        // A rollback whose old daemon failed too refused it too soon.
+        store.refused.remove(&outcome.to);
         let before = store.put_off.get(&outcome.to);
         if before.is_some_and(|before| before.op == outcome.op) {
             return;
@@ -714,6 +740,14 @@ fn host(upgrade: &Upgrade) -> Result<Host, String> {
             upgrade.units[0]
         ));
     }
+    // Such a daemon stays down after its first failure, and no helper can tell why.
+    let restart = journal::property(&upgrade.units[0], "Restart")?;
+    if !matches!(&*restart, "always" | "on-failure") {
+        return Err(format!(
+            "the unit {} needs Restart=on-failure, and has Restart={restart}",
+            upgrade.units[0]
+        ));
+    }
     let probe = journal::beside(&exe, "probe");
     fs::write(&probe, "")
         .and_then(|()| fs::remove_file(&probe))
@@ -860,11 +894,13 @@ fn plan(
     rehearsal: Rehearsal,
     host: Host,
     upgrade: &Upgrade,
-    factory: &Path,
+    factory: &Factory,
 ) -> Result<Journal, String> {
+    let bound = factory.serve().map(|serve| serve.listen);
     let factory = factory
+        .dir
         .canonicalize()
-        .map_err(|error| format!("{}: {error}", factory.display()))?;
+        .map_err(|error| format!("{}: {error}", factory.dir.display()))?;
     let op = format!("{}-{}", Timestamp::now().as_second(), std::process::id());
     let backup = |path: &Path| journal::beside(path, &format!("upgrade-{CURRENT}-{op}"));
     // A file a person kept under the plain name stays theirs.
@@ -897,6 +933,9 @@ fn plan(
         units: upgrade.units.clone(),
         answers_within: ANSWERS_WITHIN,
         watch: WATCH,
+        ready_by: Some(journal::now() + READY_WITHIN),
+        bound,
+        intake_stable: false,
         reason: None,
         refuse: false,
         running: None,

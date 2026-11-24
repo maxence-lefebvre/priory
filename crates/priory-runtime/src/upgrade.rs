@@ -3,10 +3,11 @@
 
 use std::fs::{self, File};
 use std::io::Write as _;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -65,6 +66,15 @@ pub struct Journal {
     /// How many seconds the new daemon has to answer, and then how many it is watched.
     pub answers_within: u64,
     pub watch: u64,
+    /// Past this second since the epoch the helper stops nothing any more.
+    #[serde(default)]
+    pub ready_by: Option<u64>,
+    /// The address the running daemon's server holds.
+    #[serde(default)]
+    pub bound: Option<SocketAddr>,
+    /// The intake ran without an end for as long as it would be watched.
+    #[serde(default)]
+    pub intake_stable: bool,
     /// Why it rolls back or stopped short.
     #[serde(default)]
     pub reason: Option<String>,
@@ -80,6 +90,12 @@ impl Journal {
     pub fn migrates(&self) -> bool {
         self.migrates_state || self.migrates_bus
     }
+}
+
+/// The seconds since the epoch.
+pub fn now() -> u64 {
+    let since = SystemTime::now().duration_since(UNIX_EPOCH);
+    since.unwrap_or_default().as_secs()
 }
 
 /// The folder of the upgrade's own files.
@@ -337,12 +353,17 @@ fn launch(home: &Path, journal: &Journal, unit: &str) -> Result<(), String> {
 /// How long a helper that died has to be started again by its unit.
 const GONE: Duration = Duration::from_secs(30);
 
-/// Waits while the helper works, until it stops this process or puts the upgrade off. A helper that
-/// is gone for good before it changed anything is given up.
+/// How long past its time to get ready a helper may still stop the services.
+const LATE: u64 = 10;
+
+/// Waits while the helper works, until it stops this process, puts the upgrade off or ran out of
+/// time to stop anything. A helper that is gone for good before it changed anything is given up.
 pub fn wait(home: &Path) -> Result<(), String> {
     let mut gone = None;
-    while read(home)?.is_some() {
+    while let Some(journal) = read(home)? {
+        let late = journal.ready_by.is_some_and(|by| now() > by + LATE);
         match lock(home, Duration::ZERO)? {
+            None if late && journal.running.is_none() => return Ok(()),
             None => gone = None,
             Some(_lock) => {
                 let since = *gone.get_or_insert_with(Instant::now);
