@@ -9,6 +9,7 @@ use std::process::Command;
 /// a test must not inherit. A test that needs one sets it on the command it builds.
 pub const HOST: &[&str] = &[
     "TMUX",
+    "DBUS_SESSION_BUS_ADDRESS",
     "OTEL_RESOURCE_ATTRIBUTES",
     "HC_TERMINAL_ID",
     "CLAUDE_CODE_SESSION_ID",
@@ -29,7 +30,8 @@ pub fn removed(name: &OsStr) -> bool {
 
 /// `program`, without the host's Priory settings. `PRIORY_HOME` falls back to
 /// `$XDG_STATE_HOME/priory-oss`, so that points into the build's scratch folder, never the
-/// person's own state.
+/// person's own state, and
+/// `XDG_RUNTIME_DIR` points at a folder with no systemd user manager, so no test reaches the person's.
 pub fn command(program: impl AsRef<OsStr>) -> Command {
     let mut command = Command::new(program);
     for (name, _) in std::env::vars_os() {
@@ -41,6 +43,9 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
         "XDG_STATE_HOME",
         Path::new(env!("CARGO_TARGET_TMPDIR")).join("host-state"),
     );
+    let run = Path::new(env!("CARGO_TARGET_TMPDIR")).join("host-run");
+    std::fs::create_dir_all(&run).unwrap();
+    command.env("XDG_RUNTIME_DIR", run);
     command
 }
 

@@ -4370,13 +4370,13 @@ pub struct Act {
 pub(crate) fn act(
     db: &mut Connection,
     act: &Act,
-    factory: &priory_factory::factory::Factory,
+    trace: &Trace,
 ) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if let Err(stale) = crate::state::expect_revision(&tx, act.expected) {
         return Ok((Err(stale), None));
     }
-    let acted = act_in_tx(&tx, act, factory)?;
+    let acted = act_in_tx(&tx, act, trace)?;
     if acted.0.is_ok() {
         tx.commit()?;
     }
@@ -4387,8 +4387,9 @@ pub(crate) fn act(
 pub(crate) fn act_in_tx(
     tx: &Transaction,
     act: &Act,
-    factory: &priory_factory::factory::Factory,
+    trace: &Trace,
 ) -> rusqlite::Result<(Result<String, String>, Option<String>)> {
+    let factory = trace.factory;
     let held = match (act.act.as_str(), &act.hold) {
         ("hold", Some(hold)) => Some(crate::hold::hold(tx, act.task, hold, factory)?),
         ("release", _) => Some(crate::hold::release_task(tx, act.task)?),
@@ -4445,10 +4446,11 @@ pub(crate) fn act_in_tx(
             };
             // A fixed first line keeps a text starting with `/` from running as a slash command.
             let text = format!("{SAYS}{text}");
-            Ok((
-                say_or_hold(tx, act.task, &text, &state, &factory.workflows)?,
-                None,
-            ))
+            let said = match state.as_str() {
+                "done" => say_reopens(tx, trace, act.task, &text)?,
+                _ => say_or_hold(tx, act.task, &text, &state, &factory.workflows)?,
+            };
+            Ok((said, None))
         }
         "cancel" if ["done", "failed", "dropped"].contains(&state.as_str()) => {
             Ok((Err(format!("task {} is already {state}", act.task)), None))
@@ -4520,6 +4522,108 @@ pub(crate) fn say_or_hold(
         )));
     }
     say(tx, task, text, state, workflows)
+}
+
+/// Reopens the done `task` with `text` as its first prompt while a pull request of it is open, or
+/// says why not.
+fn say_reopens(
+    tx: &Transaction,
+    trace: &Trace,
+    task: i64,
+    text: &str,
+) -> rusqlite::Result<Result<String, String>> {
+    let resource = match open_pull_request(tx, task)? {
+        Ok(resource) => resource,
+        Err(why) => return Ok(Err(format!("task {task} is done and {why}"))),
+    };
+    let target = match reopens_at(tx, &trace.factory.workflows, task, &resource)? {
+        Ok(target) => target,
+        Err(why) => return Ok(Err(format!("task {task} is done and {why}"))),
+    };
+    let (workflow, at, generation): (String, String, i64) = tx.query_row(
+        "SELECT workflow, step, generation FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    let generation = reenter(tx, trace, task, &workflow, &at, generation, &resource)?;
+    let prompt = format!(
+        "{text}\nThis reopened your done task as generation {generation}: {resource} is still open. Check the worktree, then continue."
+    );
+    wake_on(tx, task, &prompt, None)?;
+    trace::reopened(tx, trace, task, &resource, Some(&resource))?;
+    Ok(Ok(format!(
+        "task {task} reopened at {target}, generation {generation}"
+    )))
+}
+
+/// The step the done `task` reopens at for `resource`, or why it cannot: an active task holds its
+/// key or a resource of it, or no agent runs that step.
+fn reopens_at(
+    tx: &Transaction,
+    workflows: &Workflows,
+    task: i64,
+    resource: &str,
+) -> rusqlite::Result<Result<String, String>> {
+    let (key, workflow, at): (String, String, String) = tx.query_row(
+        "SELECT key, workflow, step FROM tasks WHERE id = ?1",
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if let Some(rival) = rival(tx, task, &key)? {
+        return Ok(Err(rival));
+    }
+    let target = reentry(tx, workflows, task, &workflow, &at, resource)?;
+    if step(workflows, &workflow, &target).is_none_or(|step| step.decides != Decider::Model) {
+        return Ok(Err(format!(
+            "would reopen at step {target}, which no agent runs"
+        )));
+    }
+    Ok(Ok(target))
+}
+
+/// The lowest open pull request of `task`, or why it has none: it owns none, or they merged or
+/// closed.
+fn open_pull_request(tx: &Transaction, task: i64) -> rusqlite::Result<Result<String, String>> {
+    let stack = crate::stack::of(tx, task)?;
+    let pulls = match stack.is_empty() {
+        true => pull_request(tx, task)?
+            .map(|resource| (resource, "open".to_owned()))
+            .into_iter()
+            .collect(),
+        false => stack
+            .into_iter()
+            .map(|pull| (pull.resource, pull.state))
+            .collect::<Vec<_>>(),
+    };
+    let mut why = "owns no pull request".to_owned();
+    for (resource, mut state) in pulls {
+        if state == "open" {
+            state = last_read(tx, &resource)?;
+        }
+        if state == "open" {
+            return Ok(Ok(resource));
+        }
+        why = format!("its pull request {resource} is {state}");
+    }
+    Ok(Err(why))
+}
+
+/// Whether the newest event that says so read the pull request `resource` `open`, `closed` or
+/// `merged`. A merge stands whatever came after it; `open` when none says.
+fn last_read(tx: &Transaction, resource: &str) -> rusqlite::Result<String> {
+    tx.query_row(
+        "SELECT state FROM (
+           SELECT seq, CASE WHEN type = ?2 AND json_extract(data, '$.merged') = 1 THEN 'merged'
+             WHEN type != ?2 AND json_extract(data, '$.open') = 1 THEN 'open' ELSE 'closed' END AS state
+           FROM inbox
+           WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1
+           AND (type = ?2 OR json_extract(data, '$.open') IS NOT NULL))
+         ORDER BY state = 'merged' DESC, seq DESC LIMIT 1",
+        params![resource, CLOSED],
+        |row| row.get(0),
+    )
+    .optional()
+    .map(|state| state.unwrap_or_else(|| "open".to_owned()))
 }
 
 /// Queues `text` as the next prompt of the agent at the task's model step, as an answer
@@ -4714,30 +4818,8 @@ fn revive(
     let Some(entered) = step(workflows, &workflow, target) else {
         return Ok(Err(format!("step {target} is not in workflow {workflow}")));
     };
-    let active = tx
-        .query_row(
-            "SELECT id FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')",
-            [&key],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?;
-    if let Some(active) = active {
-        return Ok(Err(format!("task {active} is already active on key {key}")));
-    }
-    let shared = tx
-        .query_row(
-            "SELECT owned.resource, tasks.id FROM owned JOIN owned AS mine ON mine.resource = owned.resource
-             JOIN tasks ON tasks.id = owned.task
-             WHERE mine.task = ?1 AND owned.task != ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')
-             ORDER BY tasks.id LIMIT 1",
-            [act.task],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-        )
-        .optional()?;
-    if let Some((resource, active)) = shared {
-        return Ok(Err(format!(
-            "task {active} is already active on {resource}"
-        )));
+    if let Some(rival) = rival(tx, act.task, &key)? {
+        return Ok(Err(rival));
     }
     let generation = generation + 1;
     regenerate(tx, act.task, generation)?;
@@ -4757,6 +4839,37 @@ fn revive(
         "task {} is {now} at {target}, generation {generation}",
         act.task
     )))
+}
+
+/// The active task that holds the `key` or a resource of the ended `task`, as why it cannot restart.
+fn rival(tx: &Transaction, task: i64, key: &str) -> rusqlite::Result<Option<String>> {
+    let active = tx
+        .query_row(
+            "SELECT id FROM tasks WHERE key = ?1 AND state NOT IN ('done', 'failed', 'dropped')",
+            [key],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if let Some(active) = active {
+        return Ok(Some(format!(
+            "task {active} is already active on key {key}"
+        )));
+    }
+    tx.query_row(
+        "SELECT owned.resource, tasks.id FROM owned JOIN owned AS mine ON mine.resource = owned.resource
+         JOIN tasks ON tasks.id = owned.task
+         WHERE mine.task = ?1 AND owned.task != ?1 AND tasks.state NOT IN ('done', 'failed', 'dropped')
+         ORDER BY tasks.id LIMIT 1",
+        [task],
+        |row| {
+            Ok(format!(
+                "task {} is already active on {}",
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(0)?
+            ))
+        },
+    )
+    .optional()
 }
 
 /// Makes `generation` the task's, withdrawing the open asks, waits and queued prompts of the
@@ -4910,6 +5023,22 @@ fn reenter(
     resource: &str,
 ) -> rusqlite::Result<i64> {
     let workflows = &trace.factory.workflows;
+    let target = reentry(tx, workflows, task, workflow, at, resource)?;
+    let generation = generation + 1;
+    regenerate(tx, task, generation)?;
+    enter(tx, task, workflow, &target, None, "", trace.factory)?;
+    Ok(generation)
+}
+
+/// The step a done task reopens at.
+fn reentry(
+    tx: &Transaction,
+    workflows: &Workflows,
+    task: i64,
+    workflow: &str,
+    at: &str,
+    resource: &str,
+) -> rusqlite::Result<String> {
     let opened: Option<String> = tx
         .query_row(
             "SELECT results.step FROM actions JOIN results ON results.run = actions.result
@@ -4922,11 +5051,7 @@ fn reenter(
     let named = workflows
         .get(workflow)
         .and_then(|flow| flow.value.reopen.clone());
-    let target = named.or(opened).unwrap_or_else(|| at.to_owned());
-    let generation = generation + 1;
-    regenerate(tx, task, generation)?;
-    enter(tx, task, workflow, &target, None, "", trace.factory)?;
-    Ok(generation)
+    Ok(named.or(opened).unwrap_or_else(|| at.to_owned()))
 }
 
 /// Ends the live run of `session`, whose tmux session was gone when the daemon started, as `lost`.
