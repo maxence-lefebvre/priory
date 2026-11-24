@@ -1729,35 +1729,40 @@ fn verdict(
         return Some(("exited", reason, false));
     }
     let handed = || runtime::direnv_handed(home, &run.session).map(|ago| ago.as_secs() as i64);
-    let late = run
-        .waited
-        .and_then(|waited| state::late(waited, run.direnv != 0, handed()));
-    if let Some(within) = late {
+    let late = run.waited.and_then(|waited| {
+        // Read only past the shortest window, since each read is a query.
+        let trusted = waited >= state::READY_WITHIN && granted();
+        let handed = (run.direnv != 0).then(handed).flatten();
+        state::late(waited, run.direnv != 0, handed, trusted).map(|within| (within, trusted))
+    });
+    if let Some((within, trusted)) = late {
+        let program = harness.program();
         let mut reason = if run.direnv == 1 && runtime::direnv_loading(home, &run.session) {
             format!(
-                "direnv did not finish loading {}/.envrc within {within}s, so {} never started; warm it \
-                 with `direnv exec <worktree> true`, or fix the .envrc",
+                "direnv did not finish loading {}/.envrc within {within}s, so {program} never \
+                 started; warm it with `direnv exec <worktree> true`, or fix the .envrc",
                 run.worktree.as_deref().unwrap_or("its folder"),
-                harness.program(),
             )
         } else {
             let ready = rows.as_deref().is_some_and(|rows| harness.at_prompt(rows));
-            let advice = match (ready, throttled()) {
+            let known = trusted && !harness.reviews_hooks();
+            let recorded = if known {
+                " although Priory recorded its trust"
+            } else {
+                ""
+            };
+            let advice = match (ready || known, throttled()) {
                 (true, Some(throttled)) => throttled,
-                (true, None) => {
-                    "its prompt is ready and asks for no trust, so its SessionStart hook is late \
-                     or never reached the daemon. Resume the task to try again"
-                        .to_owned()
-                }
+                (true, None) if ready => "its prompt is ready and asks for no trust, so its \
+                                          SessionStart hook is late or never reached the daemon"
+                    .to_owned(),
+                (true, None) => "it started too slowly".to_owned(),
                 (false, Some(throttled)) => format!("{}; {throttled}", trust()),
                 (false, None) => trust(),
             };
-            format!(
-                "{} showed no SessionStart within {within}s; {}",
-                harness.program(),
-                advice
-            )
+            format!("{program} showed no SessionStart within {within}s{recorded}; {advice}")
         };
+        reason.push_str(". Resume the task to try again");
         let rows = rows.unwrap_or_default();
         let secrets = crate::screen::secrets(&factory.secret_envs());
         // When a secret still shows after redaction, no row of the pane is kept.
@@ -3168,7 +3173,7 @@ mod tests {
         };
 
         let (ended_as, reason, _) =
-            verdict(&run, &Factory::default(), &home, &|| false, &|| None).unwrap();
+            verdict(&run, &Factory::default(), &home, &|| true, &|| None).unwrap();
 
         assert_eq!(ended_as, "exited");
         assert!(
@@ -3178,6 +3183,10 @@ mod tests {
             "{reason}"
         );
         assert!(!reason.contains("trust the"), "{reason}");
+        assert!(
+            reason.contains("fix the .envrc. Resume the task to try again"),
+            "{reason}"
+        );
     }
 
     #[test]

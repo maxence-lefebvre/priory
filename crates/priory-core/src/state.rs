@@ -4399,19 +4399,27 @@ pub(crate) struct LiveRun {
 /// How many seconds a harness gets to reach `SessionStart`.
 pub(crate) const READY_WITHIN: i64 = 60;
 
+/// `READY_WITHIN` for a harness with recorded trust, which is slow, not stuck on the trust dialog.
+const TRUSTED_READY_WITHIN: i64 = 180;
+
 /// How many seconds direnv gets to load an `.envrc`, which may build a cold nix shell first.
-pub(crate) const DIRENV_READY_WITHIN: i64 = 600;
+const DIRENV_READY_WITHIN: i64 = 600;
 
 /// The window that a run started `waited` seconds ago, without `SessionStart`, ran past, if any.
 /// Under direnv its harness's window counts from `handed`, the seconds since direnv handed over.
-pub(crate) fn late(waited: i64, direnv: bool, handed: Option<i64>) -> Option<i64> {
+pub(crate) fn late(waited: i64, direnv: bool, handed: Option<i64>, trusted: bool) -> Option<i64> {
+    let harness = if trusted {
+        TRUSTED_READY_WITHIN
+    } else {
+        READY_WITHIN
+    };
     let (past, within) = match (direnv, handed) {
-        (false, _) => (waited >= READY_WITHIN, READY_WITHIN),
+        (false, _) => (waited >= harness, harness),
         (true, None) => (waited >= DIRENV_READY_WITHIN, DIRENV_READY_WITHIN),
         // The run can write the marker's time, so the whole start has a limit of its own.
         (true, Some(handed)) => (
-            handed >= READY_WITHIN || waited >= DIRENV_READY_WITHIN + READY_WITHIN,
-            READY_WITHIN,
+            handed >= harness || waited >= DIRENV_READY_WITHIN + harness,
+            harness,
         ),
     };
     past.then_some(within)
@@ -4981,21 +4989,28 @@ mod ready_within {
     use super::*;
 
     #[test]
-    fn a_run_under_direnv_is_late_60s_after_its_envrc_loaded_or_600s_into_loading() {
-        for (waited, direnv, handed, within) in [
-            (59, false, None, None),
-            (60, false, None, Some(60)),
-            (120, true, None, None),
-            (600, true, None, Some(600)),
-            (590, true, Some(30), None),
-            (61, true, Some(60), Some(60)),
-            (630, true, Some(30), None),
-            (660, true, Some(0), Some(60)),
+    fn a_run_is_late_after_its_harnesss_window_or_600s_into_loading_its_envrc() {
+        for (waited, direnv, handed, trusted, within) in [
+            (59, false, None, false, None),
+            (60, false, None, false, Some(60)),
+            (179, false, None, true, None),
+            (180, false, None, true, Some(180)),
+            (120, true, None, false, None),
+            (599, true, None, true, None),
+            (600, true, None, true, Some(600)),
+            (590, true, Some(30), false, None),
+            (61, true, Some(60), false, Some(60)),
+            (181, true, Some(179), true, None),
+            (181, true, Some(180), true, Some(180)),
+            (630, true, Some(30), false, None),
+            (660, true, Some(0), false, Some(60)),
+            (779, true, Some(0), true, None),
+            (780, true, Some(0), true, Some(180)),
         ] {
             assert_eq!(
-                late(waited, direnv, handed),
+                late(waited, direnv, handed, trusted),
                 within,
-                "{waited} {direnv} {handed:?}"
+                "{waited} {direnv} {handed:?} {trusted}"
             );
         }
     }
