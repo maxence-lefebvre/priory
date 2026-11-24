@@ -353,9 +353,10 @@ it, as they hold any task.
 ## Holds
 
 `priory hold <task> --reason <text>` holds a `queued` or `ready` task, so it never starts until
-its hold is released. It refuses any other state: a running task already has a process, which a
-hold would have to kill mid-turn, and an asleep task waits on its own ask or wait, whose wake would
-race the hold. Hold such a task once it is back in the queue. `priory release <task>` lets a held
+its hold is released. A `running` task is held at the end of its turn (see
+[Holding a running task](#holding-a-running-task)). It refuses any other state: an asleep task, for
+example, waits on its own ask or wait, whose wake would race the hold. Hold such a task once it is
+back in the queue. `priory release <task>` lets a held
 task go, back to the state it was held from. Both go to the daemon over its socket, as
 `priory resume` does, so a hold and a run start never race.
 
@@ -415,6 +416,46 @@ task under `conditions`, with `met` and `met_as` once it is met.
 A batch's entry is held on one `merged` condition per entry it starts after, which no flag sets (see
 [batches.md](batches.md)). Its reason reads `held: batch 4, until task 31 merges`.
 
+### Holding a running task
+
+`priory hold` on a running task marks it and changes nothing until its turn ends. The task's reason
+reads `holds after this turn: <reason>, <condition>`, and the desk lists it with its `held` rows.
+The mark is stored in the state file, so it survives a daemon restart. A second hold replaces it.
+`priory release` withdraws it, with the reply `task 12 is no longer to be held`.
+
+At the turn's end, the run settles as an [urgent wake](room.md#what-happens-at-the-turn-end) does,
+but ends as `held`:
+
+- A turn that ended with no tool, or whose process would carry on, parks the task held. A result
+  moves the task to its next step first.
+- A turn that ended with an ask or a wait puts the task to sleep. The task is held once it is ready.
+- A result that ends the task closes the hold.
+
+The daemon judges the hold's conditions from when the task is held. A condition met by then releases
+it at once. The task keeps its worktree, branch, uncommitted files and session. Once released, its
+next run resumes the session, with a prompt that names the hold ahead of any other queued prompt.
+
+`--now` does not wait for the turn's end, for an emergency such as a full disk. It ends the run at
+once and kills its process. The worktree is left as it is, so a file the agent was writing may be
+incomplete, and the prompt of the next run tells the agent to check. A result, ask or wait the turn
+already sent still counts. While a gate grades the result, the run goes on, since ending it would drop the result: the task is
+held after the verdict, and the reply says whether the turn still runs. A prompt typed but not
+confirmed when the run ends stays on the desk as `uncertain`. A run that never took a prompt gives it
+back to the queue, and the next run starts a new session with it. The first prompt of a resumed Codex
+run stays `uncertain` once the run has read its transcript, since the session may hold that
+prompt's turn. On a queued or ready task, `--now`
+changes nothing.
+
+`--now` kills the run's tmux pane. A process that left the pane's session, such as a daemonized
+server, goes on, and the [memory grants](memory-gate.md) of a command that goes on stay until it
+exits.
+
+A run at an `irreversible` step, in a shared session, in a debate turn, or with a keyboard a person
+holds is not stopped. A debate turn settles as usual, and the task is held before the next one. `--now` refuses it, with the reason. A hold without `--now` keeps its mark and applies at
+the next turn end, or as soon as the run is idle and none of those is true. A run whose gate grades,
+one with a prompt that is not confirmed, and one that took no prompt yet also keep the mark. A tmux client attached
+to the run does not keep it from being held.
+
 When a task's Linear issue leaves the watched view before the task's first run, the daemon holds
 the task and asks a person whether to drop or keep it, since the view may have said "not this one":
 `ENG-7 left the view My loop backlog. Drop the task?`, with the options `drop` and `keep`. The
@@ -449,7 +490,7 @@ Set `[queue] overlap = false` in `factory.toml` to turn this off (see
 
 Known limits:
 
-- Only a task between runs is held: a running task has a process, which a hold would have to kill.
+- Only a task between runs is held for an overlap. A running task is not marked.
   A task that overlaps while running is held at its next queued step, if it has one.
 - The files come from the end of a run. Later commits in a running task show at its next run's end.
 
