@@ -7,6 +7,7 @@ mod conform;
 mod consult;
 mod debate;
 mod evidence;
+mod hold_running;
 mod metrics;
 mod outside_answer;
 #[cfg(feature = "postgres")]
@@ -13179,24 +13180,6 @@ fn a_task_request_whose_hold_names_null_conditions_files_its_task_held() {
     assert_eq!(
         held_as(&setup, "1"),
         ["held", "held: a, until a person releases it"]
-    );
-}
-
-#[test]
-fn a_running_task_cannot_be_held() {
-    let mut setup = Setup::new("hold-running");
-    setup.publish(&requested(42));
-    setup.start();
-    setup.until("tasks", |rows| {
-        rows.first().is_some_and(|row| row[4] == "running")
-    });
-
-    let refused = setup.priory(&["hold", "1", "--reason", "too late"]);
-
-    assert!(!refused.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&refused.stderr),
-        "priory hold: task 1 is running: only a queued or ready task can be held\n"
     );
 }
 

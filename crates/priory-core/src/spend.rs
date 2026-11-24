@@ -554,6 +554,7 @@ fn window_ended(db: &mut Connection, now: &str) -> rusqlite::Result<()> {
             )?;
         }
         crate::hold::meet(&tx, id, &format!("the cap's {name} ended"))?;
+        crate::hold::leave(&tx, id)?;
         tx.commit()?;
     }
     Ok(())
@@ -640,6 +641,7 @@ pub(crate) fn answered(tx: &Transaction, id: i64, answer: &str) -> rusqlite::Res
                 )?;
             }
             crate::hold::meet(tx, id, "the cap was raised by a person")?;
+            crate::hold::leave(tx, id)?;
         }
         _ => crate::hold::drop_task(tx, task, "stopped by a person at a spend cap")?,
     }
