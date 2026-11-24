@@ -8270,6 +8270,11 @@ fn a_blank_or_mistyped_answer_on_a_human_step_is_refused_and_the_ask_stays_open(
         refused_answer(&setup, &"a ".repeat(10_000)),
         "priory answer: ask 1 takes an answer of at most 16384 bytes, not 20000\n"
     );
+    let refused = &asks_json(&setup)["asks"][0]["refused"];
+    assert_eq!(
+        refused.as_array().unwrap().last().unwrap()["answer"],
+        "a ".repeat(100)
+    );
     let tasks = setup.rows("tasks");
     assert_eq!([&tasks[0][3], &tasks[0][4]], ["approve", "asleep"]);
     assert_eq!(asks_json(&setup)["asks"][0]["state"], "open");
