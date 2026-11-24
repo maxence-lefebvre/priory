@@ -158,8 +158,10 @@ socket. Detach with tmux's
 detach key, `C-b d` by default. tmux keeps owning the session, so the agent goes on after you
 detach.
 
-- `--read-only` adds tmux's `-r`: you watch without typing into the agent, and your terminal's size
-  leaves the agent's window alone.
+- `--read-only` adds tmux's `-f read-only,ignore-size`, which `-r` abbreviates: you watch without
+  typing into the agent. Your terminal sizes the agent's window only while no client on the tmux
+  server can type. Such a client does not protect the run from its
+  [budget](health.md#budget), a [spend cap](spend.md) or an [urgent wake](room.md#what-is-never-stopped).
 - `--print` prints the attach command instead of running it, so a view host can run it in a pane,
   such as `hc run -- <that command>` in a Herdr pane.
 
@@ -177,7 +179,7 @@ asks you to run attach with the daemon's `TMUX` and `TMUX_TMPDIR`, so you never 
 server's session of the same name.
 
 The daemon sets a run's idle flag and turn from hooks, tool calls and its own typing of a prompt.
-It never reads tmux clients, so attaching and detaching change no run's idle flag, turn or prompt. A client that can type can still type into the
+It reads no tmux client for them, so attaching and detaching change no run's idle flag, turn or prompt. A client that can type can still type into the
 agent, as a person at the pane would: the daemon then sees that turn's hooks like any other.
 
 `priory screen [DIR] TASK` prints the same pane's screen once, and exits. `DIR` names the factory
@@ -189,6 +191,39 @@ Known limits:
 
 - tmux refuses to attach from inside another tmux client unless you unset `TMUX` first.
 - An attach without `--read-only` resizes the agent's window to your terminal.
+
+## Opening a run when it starts
+
+A model step with `attach = true` opens each of its runs where a person can watch it, through the
+factory's `[runs] attach` command. Priory never calls a view host itself. The command is the view
+host's adapter, such as [`adapters/herdr/attach`](../adapters/herdr.md#opening-runs-in-herdr).
+Debate steps count as model steps, so each debate turn's run gets the command too.
+
+After the daemon starts a run's harness in tmux, it runs the command once, in the factory folder.
+The command gets the task id and the run id as its arguments, and as `PRIORY_TASK` and
+`PRIORY_RUN` in its environment, with the run's tmux session as `PRIORY_TMUX` and the daemon's
+executable as `PRIORY_EXE`. It also gets the daemon's own environment, so `PRIORY_DB`,
+`PRIORY_HOME` and `TMUX_TMPDIR` name the daemon's state and tmux server.
+
+The daemon starts the command, then goes on with its loop. It never holds or fails the run:
+
+- A command that exits with a status other than 0, or that runs past 30 seconds, gets a
+  `factory.run.attach_failed` record with the reason and the tail of its output. The daemon kills
+  it at 30 seconds.
+- A command that cannot start, such as a file that was removed, gets the same record with the
+  error.
+- A run whose harness did not start runs no command.
+
+Each new run of the step runs the command once. Each new run also starts a new tmux session, so a
+terminal attached to the old run has nothing left to show. A wait inside a run starts no new run,
+so it runs no command.
+
+Known limits:
+
+- A daemon that restarts while a command runs does not check that command's exit status, stop it
+  at 30 seconds or clean up its log, `attach/<run>.log` in Priory home.
+- The command opens a view, and nothing closes it. The view host's terminal for an ended run stays
+  until a person closes it.
 
 ## Trusting the worktrees and the clone
 
@@ -228,6 +263,34 @@ a worktree or clone that a symlink leads elsewhere.
   it. It also refuses a profile that is not a regular file, such as a FIFO. When the daemon cannot
   read a config back after a dialog, it blocks the task without the restart. Codex still runs only the hooks a person trusted with
   `/hooks`, so that step stays manual.
+- **direnv** refuses a folder's `.envrc` until a person runs `direnv allow`, unless its
+  `direnv.toml` whitelists the folder. When `direnv` is on the daemon's PATH and the worktree has
+  an `.envrc`, the daemon writes a direnv config folder of its own for the run,
+  `direnv/<session>/` in Priory home. Its `direnv.toml`, which only the person can read, is the
+  person's own (from `DIRENV_CONFIG`, else `$XDG_CONFIG_HOME/direnv`, else `~/.config/direnv`)
+  with the worktree and the clone added to `[whitelist] exact`, each as the daemon spells it and
+  as its real path, since direnv matches the path it is given and Priory home may go through a
+  symlink. Its `direnvrc` and `lib` link to the real paths of the person's, so a home-manager
+  link into `/nix/store` still resolves in a jail and libraries such as nix-direnv still load.
+  The run's harness then starts as `direnv exec <worktree> <harness>`, with `DIRENV_CONFIG`
+  naming that folder, so every command the agent runs gets the `.envrc` environment, such as a
+  nix flake's toolchain. The daemon never edits the person's `direnv.toml` or direnv's allow
+  folder. It refuses the grant, and starts the run without direnv, when the person's
+  `direnv.toml` cannot be read or parsed. Without `direnv` or without an `.envrc`, nothing
+  changes. An agent that edits `.envrc` reloads it with `direnv exec . <command>`.
+
+  Whitelisting a path in `exact` skips direnv's content check: an `.envrc` that changes, by a
+  commit or by the agent, loads without a new `direnv allow`. The variables an `.envrc` exports
+  reach the harness's environment as they are, outside the daemon's secret redaction, so keep
+  secrets out of a repository's `.envrc`.
+
+  The harness starts only after the `.envrc` loads: a `use flake` took 12s on a fresh worktree
+  and under 1s after. A run under direnv gets 600s, rather than 60s, to reach `SessionStart`,
+  and one whose `.envrc` is still loading then blocks with a reason that names direnv. When
+  direnv itself fails before the harness starts, for example because the `.envrc` exits non-zero
+  or `nix` is not on PATH in a jail, the harness starts without the `.envrc`. The daemon records
+  direnv's error as a `failed` `factory.run.trusted` record and in the task's reason, which a
+  later block reason keeps. A harness that exits on its own under direnv is not started again.
 
 Each path gets a `factory.run.trusted` record in the trace, whose `outcome` is `granted`, `present`
 or `refused` (see [trace-schema.md](../trace-schema.md#factoryruntrusted)).

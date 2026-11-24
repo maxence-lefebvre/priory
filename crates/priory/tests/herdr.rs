@@ -53,7 +53,8 @@ fn setup(name: &str) -> PathBuf {
         &hc,
         "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\0' \"$arg\"; done >> \"$FAKE_DIR/hc.log\"\n\
          printf '\\036' >> \"$FAKE_DIR/hc.log\"\n\
-         if [ \"$1\" = get ]; then [ -e \"$FAKE_DIR/get.json\" ] || exit 1; cat \"$FAKE_DIR/get.json\"; fi\n",
+         if [ \"$1\" = get ]; then [ -e \"$FAKE_DIR/get.json\" ] || exit 1; cat \"$FAKE_DIR/get.json\"; fi\n\
+         if [ \"$1\" = ls ]; then cat \"$FAKE_DIR/ls.json\" 2>/dev/null || echo '{\"terminals\": []}'; fi\n",
     )
     .unwrap();
     fs::set_permissions(&hc, fs::Permissions::from_mode(0o755)).unwrap();
@@ -162,5 +163,189 @@ fn deliver_resumes_the_asking_session_when_its_terminal_runs_another_claude_sess
             .map(|call| call[0].as_str())
             .collect::<Vec<_>>(),
         ["get", "run"]
+    );
+}
+
+/// Runs `adapters/herdr/attach 7 12` with `path` as its PATH, space `main` and `exe` as the daemon's
+/// `PRIORY_EXE`. Returns its exit code, its stderr and each `hc` call's arguments.
+fn attach(
+    dir: &Path,
+    path: &std::ffi::OsStr,
+    exe: Option<&Path>,
+) -> (Option<i32>, String, Vec<Vec<String>>) {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../adapters/herdr/attach");
+    let log = dir.join("fake/hc.log");
+    let _ = fs::remove_file(&log);
+    let mut command = harness::command(script);
+    if let Some(exe) = exe {
+        command.env("PRIORY_EXE", exe);
+    }
+    let output = command
+        .args(["7", "12"])
+        .env("PATH", path)
+        .env("PRIORY_HERDR_SPACE", "main")
+        .env("FAKE_DIR", dir.join("fake"))
+        .output()
+        .unwrap();
+    let calls = fs::read_to_string(&log)
+        .unwrap_or_default()
+        .split_terminator('\x1e')
+        .map(|call| call.split_terminator('\0').map(str::to_owned).collect())
+        .collect();
+    (
+        output.status.code(),
+        String::from_utf8(output.stderr).unwrap(),
+        calls,
+    )
+}
+
+/// Writes a fake daemon executable that runs `body`, outside PATH, and returns it.
+fn daemon_exe(dir: &Path, body: &str) -> PathBuf {
+    let exe = dir.join("daemon-priory");
+    fs::write(&exe, format!("#!/bin/sh\n{body}\n")).unwrap();
+    fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+    exe
+}
+
+/// The test's PATH with `dir`'s fake `hc` in front.
+fn faked_path(dir: &Path) -> std::ffi::OsString {
+    std::env::join_paths(
+        std::iter::once(dir.join("fake"))
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap()
+}
+
+#[test]
+fn attach_opens_one_kept_terminal_per_run_in_the_space_and_a_tab_per_task() {
+    let dir = setup("attach");
+    let priory = daemon_exe(
+        &dir,
+        "[ \"$*\" = 'attach --run 12 --read-only --print' ] && \
+         echo \"tmux -S '/tmp/t 1/default' attach-session -f read-only,ignore-size -t '=priory-7'\"",
+    );
+    let path = faked_path(&dir);
+
+    let opened = attach(&dir, &path, Some(&priory));
+    fs::write(
+        dir.join("fake/ls.json"),
+        r#"{"terminals": [{"name": "t3", "state": "live"}]}"#,
+    )
+    .unwrap();
+    let again = attach(&dir, &path, Some(&priory));
+
+    let listed = ["ls", "--json", "--label", "priory.run=12"].map(String::from);
+    assert_eq!(opened.0, Some(0), "{}", opened.1);
+    assert_eq!(
+        opened.2,
+        [
+            listed.to_vec(),
+            [
+                "run",
+                "--bg",
+                "--keep",
+                "--no-parent",
+                "--no-notify",
+                "--label",
+                "herdr.space=main",
+                "--label",
+                "herdr.tab=task-7",
+                "--label",
+                "priory.task=7",
+                "--label",
+                "priory.run=12",
+                "--",
+                "env",
+                "-u",
+                "TMUX",
+                "sh",
+                "-c",
+                "stty cols 200 rows 51; exec \"$@\"",
+                "sh",
+                "tmux",
+                "-S",
+                "/tmp/t 1/default",
+                "attach-session",
+                "-f",
+                "read-only,ignore-size",
+                "-t",
+                "=priory-7",
+            ]
+            .map(String::from)
+            .to_vec(),
+        ]
+    );
+    assert_eq!((again.0, again.2), (Some(0), vec![listed.to_vec()]));
+}
+
+#[test]
+fn attach_without_hc_on_path_exits_non_zero_and_says_so() {
+    let dir = setup("attach-no-hc");
+    let bin = dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let python = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|folder| folder.join("python3"))
+        .find(|python| python.is_file())
+        .unwrap();
+    std::os::unix::fs::symlink(python, bin.join("python3")).unwrap();
+
+    let (code, stderr, calls) = attach(&dir, bin.as_os_str(), None);
+
+    assert_eq!(
+        (code, stderr.as_str(), calls.len()),
+        (
+            Some(1),
+            "attach: hc is not on PATH; install herdr-core or fix the daemon's PATH\n",
+            0
+        )
+    );
+}
+
+#[test]
+fn attach_to_a_run_without_a_tagged_pane_opens_nothing_and_says_why() {
+    let dir = setup("attach-no-pane");
+    let exe = daemon_exe(&dir, "echo 'priory attach: no live pane' >&2; exit 1");
+
+    let (code, stderr, calls) = attach(&dir, &faked_path(&dir), Some(&exe));
+
+    assert_eq!(
+        (code, stderr.as_str()),
+        (Some(1), "priory attach: no live pane\n")
+    );
+    assert!(calls.iter().all(|call| call[0] != "run"), "{calls:?}");
+}
+
+#[test]
+fn attach_opens_nothing_when_the_printed_command_is_empty_or_unreadable() {
+    let dir = setup("attach-no-command");
+    for printed in ["", "tmux 'unclosed"] {
+        let exe = daemon_exe(&dir, &format!("echo \"{printed}\""));
+
+        let (code, stderr, calls) = attach(&dir, &faked_path(&dir), Some(&exe));
+
+        assert_eq!(
+            (code, stderr),
+            (
+                Some(1),
+                format!("attach: priory attach printed no command: {printed}\n")
+            )
+        );
+        assert!(calls.iter().all(|call| call[0] != "run"), "{calls:?}");
+    }
+}
+
+#[test]
+fn attach_without_the_daemons_executable_exits_non_zero_and_says_so() {
+    let dir = setup("attach-no-exe");
+
+    let (code, stderr, calls) = attach(&dir, &faked_path(&dir), None);
+
+    assert_eq!(
+        (code, stderr.as_str(), calls.len()),
+        (
+            Some(1),
+            "attach: PRIORY_EXE is unset; run this from a daemon that sets it\n",
+            0
+        )
     );
 }

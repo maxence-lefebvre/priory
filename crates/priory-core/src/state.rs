@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 110;
+const VERSION: i64 = 111;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1957,9 +1957,16 @@ CREATE INDEX open_holds ON holds (task) WHERE released IS NULL;
 "
 );
 
+// Whether a run started under `direnv exec`: 1, then 2 once the daemon saw direnv fail and the
+// harness start without the `.envrc`.
+const SCHEMA_110: &str = "
+ALTER TABLE runs ADD COLUMN direnv INTEGER;
+PRAGMA user_version = 110;
+";
+
 // A scheduled sweep script runs outside any stall.
-const SCHEMA_110: &str = concat!(
-    "CREATE TABLE sweeps_110 (
+const SCHEMA_111: &str = concat!(
+    "CREATE TABLE sweeps_111 (
   id      INTEGER PRIMARY KEY AUTOINCREMENT,
   stall   INTEGER REFERENCES stalls (id),
   script  TEXT NOT NULL,
@@ -1970,14 +1977,14 @@ const SCHEMA_110: &str = concat!(
   pid     INTEGER,
   pid_started INTEGER
 );
-INSERT INTO sweeps_110 SELECT id, stall, script, started, ended, status, output, pid, pid_started
+INSERT INTO sweeps_111 SELECT id, stall, script, started, ended, status, output, pid, pid_started
   FROM sweeps;
 DROP TABLE sweeps;
-ALTER TABLE sweeps_110 RENAME TO sweeps;
+ALTER TABLE sweeps_111 RENAME TO sweeps;
 CREATE INDEX sweeps_by_script ON sweeps (script, started);
 ",
     bumps!("sweeps"),
-    "PRAGMA user_version = 110;
+    "PRAGMA user_version = 111;
 "
 );
 
@@ -1996,7 +2003,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -3378,6 +3385,16 @@ pub(crate) struct Admission {
     pub lane: Option<String>,
 }
 
+/// One pass over the queue.
+pub(crate) struct Pass {
+    /// The task to start, if any. The pass stops at it.
+    pub admission: Option<Admission>,
+    /// What live runs and held grants reserved in this pass.
+    pub promised: room::Need,
+    /// The tasks passed that wait for room, by what their queue's head lacks.
+    pub waiting: BTreeMap<&'static str, u64>,
+}
+
 /// The first queued or ready task at a model step, in start order, that fits in the runner's room.
 /// Each one before it gets the reason it waits.
 pub(crate) fn admissible<'r>(
@@ -3388,7 +3405,7 @@ pub(crate) fn admissible<'r>(
     room: impl Fn() -> &'r Result<Room, String>,
     watched: &dyn Fn(&str) -> bool,
     checking: &dyn Fn(i64) -> bool,
-) -> rusqlite::Result<Option<Admission>> {
+) -> rusqlite::Result<Pass> {
     let mut statement = db.prepare(&format!(
         "SELECT id, workflow, step, trigger, state = 'queued', repo, preempted, lane FROM tasks
              WHERE state IN ('queued', 'ready')
@@ -3422,6 +3439,7 @@ pub(crate) fn admissible<'r>(
     let book = crate::spend::Book::new(factory);
     // The first task that waits for room: no task behind it starts, so it is never starved.
     let mut head = None;
+    let mut waiting = BTreeMap::new();
     let mut stall = None;
     let mut planned = false;
     for admission in queued {
@@ -3483,7 +3501,10 @@ pub(crate) fn admissible<'r>(
             (Some(reason), _) => Some(reason),
             // The sweeper frees the room the queue waits for, so it never waits for room itself.
             (None, _) if admission.trigger == crate::stall::TRIGGER => None,
-            (None, Some(head)) => Some(format!("waits behind task {head}, which waits for room")),
+            (None, Some((head, cause))) => {
+                *waiting.entry(cause).or_default() += 1;
+                Some(format!("waits behind task {head}, which waits for room"))
+            }
             (None, None) => {
                 let need = room::need(agent.map(|(_, agent)| agent));
                 match room() {
@@ -3501,14 +3522,20 @@ pub(crate) fn admissible<'r>(
                             )?;
                             continue;
                         }
+                        if let Some(short) = &short {
+                            *waiting.entry(short.cause()).or_default() += 1;
+                        }
                         // A task that can never fit would hold the queue forever.
-                        if short.is_some() && room::fits_ever(measured, share, need) {
-                            head = Some(admission.task);
+                        if let Some(short) = short
+                            .as_ref()
+                            .filter(|_| room::fits_ever(measured, share, need))
+                        {
+                            head = Some((admission.task, short.cause()));
                             // Waiting only for live runs to end is backpressure, not a stall.
                             stall = room::wait(measured, share, room::Need::default(), need)
                                 .map(|short| (admission.task, short));
                             // Only memory and declared disk are promises a stop gives back.
-                            if short.as_ref().is_some_and(|short| short.resource != "CPU") {
+                            if short.resource != "CPU" {
                                 planned = true;
                                 let urgent = crate::preempt::Head {
                                     task: admission.task,
@@ -3526,14 +3553,19 @@ pub(crate) fn admissible<'r>(
                         reason
                     }
                     Err(error) => {
-                        head = Some(admission.task);
+                        head = Some((admission.task, room::UNMEASURED));
+                        *waiting.entry(room::UNMEASURED).or_default() += 1;
                         Some(format!("waits for room: cannot measure it: {error}"))
                     }
                 }
             }
         };
         let Some(mut reason) = waits else {
-            return Ok(Some(admission));
+            return Ok(Pass {
+                admission: Some(admission),
+                promised,
+                waiting,
+            });
         };
         // A stopped task waits for the room its stop made; its own plan, if any, says more.
         if let Some(head) = admission.preempted
@@ -3552,7 +3584,11 @@ pub(crate) fn admissible<'r>(
         crate::preempt::withdraw(db)?;
     }
     crate::stall::record(db, stall.as_ref().map(|(task, short)| (*task, short)))?;
-    Ok(None)
+    Ok(Pass {
+        admission: None,
+        promised,
+        waiting,
+    })
 }
 
 /// Why a task waits for its lane's or trigger's `max_running`: `waits: lane core/intake has 2
@@ -4292,9 +4328,12 @@ pub(crate) fn block(
         &format!("UPDATE runs SET ended = {NOW}, ended_as = ?2 WHERE task = ?1 AND ended IS NULL"),
         params![task, ended_as],
     )?;
+    // A run that started without its `.envrc` keeps saying so, since that may be why it stopped.
     tx.execute(
-        "UPDATE tasks SET state = 'blocked', reason = ?2 WHERE id = ?1",
-        params![task, reason],
+        "UPDATE tasks SET state = 'blocked', reason = ?2 || coalesce('; ' || CASE
+           WHEN (SELECT direnv FROM runs WHERE id = ?3) = 2 THEN reason END, '')
+         WHERE id = ?1",
+        params![task, reason, live],
     )?;
     tx.commit()
 }
@@ -4319,8 +4358,11 @@ pub(crate) struct LiveRun {
     pub worktree: Option<String>,
     /// Its `SessionStart` arrived.
     pub ready: bool,
-    /// No `SessionStart` arrived within `READY_WITHIN` of the start.
+    /// No `SessionStart` arrived within `READY_WITHIN` of the start, or `DIRENV_READY_WITHIN` under
+    /// direnv.
     pub late: bool,
+    /// 1 when it started under `direnv exec`, 2 once direnv failed and it started without, else 0.
+    pub direnv: i64,
     /// How long its current turn has run, in seconds.
     pub turn: Option<i64>,
     /// Claude's message for the permission prompt it shows, if any.
@@ -4329,11 +4371,26 @@ pub(crate) struct LiveRun {
 
 pub(crate) const READY_WITHIN: &str = "60 seconds";
 
+/// `READY_WITHIN` for a run under direnv, whose `.envrc` may build a cold nix shell first.
+pub(crate) const DIRENV_READY_WITHIN: &str = "600 seconds";
+
+/// Marks run `run` as started under direnv (1), or as started without its `.envrc` after direnv
+/// failed (2).
+pub(crate) fn direnv(db: &Connection, run: i64, state: i64) -> rusqlite::Result<()> {
+    db.execute(
+        "UPDATE runs SET direnv = ?2 WHERE id = ?1",
+        params![run, state],
+    )?;
+    Ok(())
+}
+
 pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
     let mut statement = db.prepare(&format!(
         "SELECT runs.id, runs.task, runs.step, tasks.workflow, runs.tmux, runs.session, tasks.worktree,
-         NOT runs.ready AND runs.started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{READY_WITHIN}'),
-         unixepoch('now') - unixepoch(runs.turn), runs.prompted, coalesce(runs.agent, ''), runs.ready
+         NOT runs.ready AND runs.started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now',
+           CASE WHEN runs.direnv THEN '-{DIRENV_READY_WITHIN}' ELSE '-{READY_WITHIN}' END),
+         unixepoch('now') - unixepoch(runs.turn), runs.prompted, coalesce(runs.agent, ''), runs.ready,
+         coalesce(runs.direnv, 0)
          FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id"
     ))?;
     statement
@@ -4351,6 +4408,7 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
                 prompted: row.get(9)?,
                 agent: row.get(10)?,
                 ready: row.get(11)?,
+                direnv: row.get(12)?,
             })
         })?
         .collect()
@@ -4861,5 +4919,40 @@ mod promises {
         // Run 1 uses all of its 4 GB, run 2 has no scope, run 3 is the grant's own, and the grant
         // counts all of its 10 GB.
         assert_eq!(promised.memory, 14 * GB);
+    }
+}
+
+#[cfg(test)]
+mod ready_within {
+    use super::*;
+
+    #[test]
+    fn a_run_under_direnv_is_late_only_after_its_longer_window() {
+        let db = memory();
+        for (task, ago, direnv) in [(1, 120, None), (2, 120, Some(1)), (3, 700, Some(1))] {
+            db.execute(
+                "INSERT INTO tasks
+                   (key, workflow, step, state, band, lane, lane_derived, trigger, source, entered)
+                 VALUES ('cli:' || ?1, 'build', 'implement', 'running', 'now', 'cli', 0, 'cli', 'a',
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                [task],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO runs (task, step, agent, tmux, session, started, direnv)
+                 VALUES (?1, 'implement', 'implementer', 'priory-' || ?1, 's' || ?1,
+                   strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-' || ?2 || ' seconds'), ?3)",
+                params![task, ago, direnv],
+            )
+            .unwrap();
+        }
+
+        let late: Vec<(i64, bool, i64)> = live(&db)
+            .unwrap()
+            .into_iter()
+            .map(|run| (run.task, run.late, run.direnv))
+            .collect();
+
+        assert_eq!(late, [(1, true, 0), (2, false, 1), (3, true, 1)]);
     }
 }

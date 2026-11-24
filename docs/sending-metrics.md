@@ -17,7 +17,7 @@ groups to send in `[telemetry]` of `factory.toml`:
 ```toml
 [telemetry]
 otlp = "http://127.0.0.1:4318"
-metrics = ["process", "log", "runs", "intake", "work"]
+metrics = ["process", "log", "runs", "intake", "work", "room"]
 metrics_every = "60s"   # the default; at least "10s"
 metrics_cap = 1000      # the default; data points per minute, per process
 ```
@@ -100,7 +100,7 @@ that the daemon reads from an environment variable. The key never goes in `facto
    [telemetry]
    otlp = "https://api.honeycomb.io"   # https://api.eu1.honeycomb.io in the EU
    headers_env = "OTEL_EXPORTER_OTLP_HEADERS"
-   metrics = ["process", "log", "runs", "intake", "work"]
+   metrics = ["process", "log", "runs", "intake", "work", "room"]
    ```
 
 The same headers go with spans. Check
@@ -154,8 +154,8 @@ the collector started.
 
 ## Set the first alerts
 
-Start with these six. Each threshold comes from a limit Priory itself enforces, so an alert fires
-before the limit acts.
+Start with these seven. Each threshold comes from a limit Priory itself enforces, so an alert fires
+before the limit acts, or as it does.
 
 | Metric | Alert when | Why that threshold |
 | ------ | ---------- | ------------------ |
@@ -165,6 +165,12 @@ before the limit acts.
 | `priory.intake.poll.age` | above 300 seconds | The intake polls every 60 seconds, and the desk's [intake banner](daemon/desk.md#intake-banner) shows an intake that has not polled for 5 minutes |
 | `priory.process.tick.duration`, `stat = p95` | above 1 second for 5 minutes, on `priory.service = daemon` | The daemon ticks every second, so a longer tick means it falls behind. `stat = max` names the one slow clone or fetch |
 | `priory.spend.headroom` | below a tenth of the cap's limit | At 0 the daemon holds or stops starting the tasks under the cap ([spend.md](daemon/spend.md#past-a-cap)) |
+| `priory.room.tasks.waiting`, any `priory.room.cause` | above 0 for 30 minutes | The daemon waits 30 minutes by default after the sweep scripts before it [calls the sweeper](daemon/sweep.md) on a stalled queue. The cause names what to free |
+
+The room alert counts tasks on one runner, so group it by `priory.runner`, or by `host.name` in a
+factory of one runner. A runner that you keep full on purpose fires it too: raise its time there.
+The gauge is absent while the head of the queue waits for its claim to reach the log, so read a gap
+as unknown, not as 0.
 
 `priory.asks.oldest.age` is worth an alert too, at the time you want a person to answer in. Priory
 sets no limit on how long an ask waits.

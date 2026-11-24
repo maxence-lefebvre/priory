@@ -4,10 +4,4 @@
 case " $* " in
   *" fetch "*) if [ -e "$FAKE_DIR/git-hang" ]; then (trap '' TERM; sleep 60) & sleep 60; fi ;;
 esac
-# FAKE_GIT_HOLD, set on one command, holds its `git -C <dir> status` in <dir> while that file exists,
-# after writing FAKE_GIT_HOLD.held, as a slow check under load does.
-if [ -n "$FAKE_GIT_HOLD" ] && [ "$1" = -C ] && [[ " $* " == *" status "* ]]; then
-  cd "$2" && echo held > "$FAKE_GIT_HOLD.held"
-  while [ -e "$FAKE_GIT_HOLD" ]; do sleep 0.05; done
-fi
 PATH=${PATH#*:} exec git "$@"
