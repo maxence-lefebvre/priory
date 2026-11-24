@@ -1296,7 +1296,7 @@ fn take(
             Ok((replied(tools::dismiss(db, &dismiss, trace.factory)?), None))
         }
         Ok(Input::Act(act)) => {
-            let (reply, kill) = tools::act(db, &act, trace.factory)?;
+            let (reply, kill) = tools::act(db, &act, trace)?;
             Ok((replied(reply), kill))
         }
         Ok(Input::Snooze(snooze)) => Ok((replied(snooze::snooze(db, &snooze, trace)?), None)),
