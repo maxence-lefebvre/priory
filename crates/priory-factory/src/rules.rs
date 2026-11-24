@@ -1027,6 +1027,11 @@ pub fn warnings(factory: &Factory) -> Vec<Problem> {
             ));
         }
     }
+    if let Some(settings) = &factory.settings {
+        for message in settings.value.private.warnings() {
+            warnings.push(problem(settings, settings.lines.field("private"), message));
+        }
+    }
     warnings.extend(caps_warnings(factory));
     warnings
 }

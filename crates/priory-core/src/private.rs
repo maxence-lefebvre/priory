@@ -25,6 +25,11 @@ pub(crate) struct Line {
 #[serde(deny_unknown_fields)]
 struct Nothing {}
 
+const NO_DIR: &str = "Priory cannot tell which folder it runs in: use a literal path";
+const GONE: &str = "a file it publishes cannot be read: write it in an earlier call, and name it with a literal path";
+/// What a refusal calls the people a commit names.
+const PEOPLE: [&str; 2] = ["author", "committer"];
+
 type Terms = [(String, Regex)];
 
 /// Refuses `publish`, a call made in `cwd`, when it would put a private term on a listed
@@ -39,9 +44,20 @@ pub fn screen(rules: &Private, cwd: &Path, publish: &Publish) -> Result<(), Stri
             publish.call
         )
     };
-    let dir = folder(cwd, &publish.dirs);
-    let remotes = remotes(&dir);
-    if !listed(rules, publish, &dir, &remotes) {
+    if publish.lost && publish.repo.is_none() {
+        return Err(unread(NO_DIR));
+    }
+    let places: Vec<(PathBuf, Vec<Remote>)> = publish
+        .folders
+        .iter()
+        .map(|dirs| {
+            let dir = folder(cwd, dirs);
+            let remotes = remotes(&dir);
+            (dir, remotes)
+        })
+        .filter(|(dir, remotes)| listed(rules, publish, dir, remotes))
+        .collect();
+    if places.is_empty() {
         return Ok(());
     }
     if let Some(why) = publish.unread {
@@ -53,17 +69,26 @@ pub fn screen(rules: &Private, cwd: &Path, publish: &Publish) -> Result<(), Stri
         note(&mut hits, &terms, place, text);
     }
     for file in &publish.files {
-        let path = folder(cwd, &publish.dirs[..file.dirs.min(publish.dirs.len())]).join(&file.path);
-        match contents(&path) {
-            Ok(text) => note(&mut hits, &terms, &shown(&terms, &file.path), &text),
-            Err(_) if !file.needed => {}
-            Err(why) => return Err(unread(&why)),
+        let mut unreadable = Some(GONE.to_owned());
+        for dirs in &file.folders {
+            match contents(&folder(cwd, dirs).join(&file.path)) {
+                Ok(text) => {
+                    unreadable = None;
+                    note(&mut hits, &terms, &shown(&terms, &file.path), &text);
+                }
+                Err(why) => unreadable = unreadable.map(|_| why),
+            }
+        }
+        if let Some(why) = unreadable.filter(|_| file.needed) {
+            return Err(unread(&why));
         }
     }
-    let range = revisions(rules, publish, &dir, &remotes).map_err(|why| unread(&why))?;
-    if let Some(range) = range {
-        commits(&dir, &range, &terms, &mut hits)
-            .map_err(|_| unread("git could not list the commits it publishes"))?;
+    for (dir, remotes) in &places {
+        let range = revisions(rules, publish, dir, remotes).map_err(|why| unread(&why))?;
+        if let Some(range) = range {
+            commits(dir, &range, &terms, &mut hits)
+                .map_err(|_| unread("git could not list the commits it publishes"))?;
+        }
     }
     refused(&format!("`{}`", publish.call), hits)
 }
@@ -98,8 +123,17 @@ fn refused(what: &str, hits: Vec<String>) -> Result<(), String> {
         0 => String::new(),
         more => format!("; and {more} more"),
     };
+    let person = hits
+        .iter()
+        .any(|hit| PEOPLE.iter().any(|person| hit.ends_with(person)));
+    let reset = match person {
+        true => {
+            " To change who made a commit, set user.name and user.email, then run `git commit --amend --reset-author`, in a rebase for an older commit."
+        }
+        false => "",
+    };
     Err(format!(
-        "Priory denied {what}: it would publish private terms to a repository the factory keeps them out of: {}{more}. Rewrite that text without them, amend or rebase the commits that hold them, then try again. Do not publish it another way.",
+        "Priory denied {what}: it would publish private terms to a repository the factory keeps them out of: {}{more}.{reset} Rewrite that text without them, amend or rebase the commits that hold them, then try again. Do not publish it another way.",
         hits[..hits.len().min(MOST)].join("; ")
     ))
 }
@@ -123,15 +157,14 @@ fn folder(cwd: &Path, dirs: &[String]) -> PathBuf {
 }
 
 fn contents(path: &Path) -> Result<String, String> {
-    let missing = "a file it publishes cannot be read: write it in an earlier call, and name it with a literal path";
-    let found = std::fs::metadata(path).map_err(|_| missing.to_owned())?;
+    let found = std::fs::metadata(path).map_err(|_| GONE.to_owned())?;
     if !found.is_file() {
         return Err("it publishes something that is not a regular file".to_owned());
     }
     if found.len() > FILE {
         return Err("a file it publishes is over 4 MiB".to_owned());
     }
-    let bytes = std::fs::read(path).map_err(|_| missing.to_owned())?;
+    let bytes = std::fs::read(path).map_err(|_| GONE.to_owned())?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
@@ -159,6 +192,15 @@ struct Remote {
 impl Remote {
     fn listed(&self, rules: &Private) -> bool {
         self.urls.iter().any(|url| url_listed(rules, url))
+    }
+
+    /// Whether every URL names a listed repository, so what it holds is public already.
+    fn surely_listed(&self, rules: &Private) -> bool {
+        !self.urls.is_empty()
+            && self
+                .urls
+                .iter()
+                .all(|url| slug(url).is_some_and(|slug| rules.lists(&slug)))
     }
 }
 
@@ -191,7 +233,7 @@ fn remotes(dir: &Path) -> Vec<Remote> {
 
 /// Whether `publish` writes to a listed repository, or to one Priory cannot name.
 fn listed(rules: &Private, publish: &Publish, dir: &Path, remotes: &[Remote]) -> bool {
-    if publish.anywhere || publish.unread.is_some() {
+    if publish.anywhere {
         return true;
     }
     if let Some(repo) = &publish.repo {
@@ -271,7 +313,13 @@ fn revisions(
             if args.is_empty() {
                 args.push(known("HEAD").ok_or("the branch it pushes has no commit")?);
             }
-            args.extend(["--not".to_owned(), format!("--remotes={}", remote.name)]);
+            args.push("--not".to_owned());
+            args.extend(
+                remotes
+                    .iter()
+                    .filter(|other| other.name == remote.name || other.surely_listed(rules))
+                    .map(|other| format!("--remotes={}", other.name)),
+            );
             Ok(Some(args))
         }
         Commits::Head(head) => {
@@ -303,20 +351,55 @@ fn commits(
     terms: &Terms,
     hits: &mut Vec<String>,
 ) -> Result<(), String> {
+    // The daemon runs this outside a run's jail, so no merge driver of the repository may run.
+    let drivers = read(
+        dir,
+        &[
+            "config",
+            "-z",
+            "--name-only",
+            "--get-regexp",
+            r"^merge\..*\.driver$",
+        ],
+    )
+    .unwrap_or_default();
+    let drivers: Vec<&str> = drivers.split_terminator('\0').collect();
     let log = |format: &str, options: &[&str]| {
+        let mut command = git(dir);
+        for (at, driver) in drivers.iter().enumerate() {
+            command
+                .env(format!("GIT_CONFIG_KEY_{at}"), driver)
+                .env(format!("GIT_CONFIG_VALUE_{at}"), "false");
+        }
+        command.env("GIT_CONFIG_COUNT", drivers.len().to_string());
         runtime::run(
-            git(dir)
+            command
                 .args(["-c", "core.quotePath=false", "-c", "log.showRoot=true"])
-                .args(["-c", "log.showSignature=false", "log", "--encoding=UTF-8"])
-                .args(["--no-color", "--no-notes", format])
+                .args([
+                    "-c",
+                    "log.showSignature=false",
+                    "-c",
+                    "merge.renormalize=false",
+                ])
+                .args(["log", "--encoding=UTF-8", "--no-color", "--no-notes"])
+                .args(["--no-relative", format])
                 .args(options)
                 .args(range)
                 .arg("--"),
         )
     };
-    let messages = log("--format=%x00%h%n%B", &["--no-patch"])?;
+    let format = "--format=%x00%h%n%an <%ae>%n%cn <%ce>%n%B";
+    let messages = log(format, &["--no-patch"])?;
     for message in messages.split('\0').skip(1) {
-        let (commit, text) = message.split_once('\n').unwrap_or((message, ""));
+        let mut parts = message.splitn(4, '\n');
+        let mut part = || parts.next().unwrap_or_default();
+        let commit = part();
+        for person in PEOPLE {
+            for (_, label) in screen::labels(part(), terms) {
+                hits.push(format!("rule {label}: commit {commit} {person}"));
+            }
+        }
+        let text = part();
         note(hits, terms, &format!("commit {commit} message"), text);
     }
     let patch = log(

@@ -546,9 +546,27 @@ fn check_reports_what_is_wrong_with_private_terms_by_label_and_never_by_term() {
     ] {
         assert_eq!(check(terms), format!("factory.toml:3: {problem}\n"));
     }
+    for typo in [
+        "terms = [{ label = \"x\", text = \"vault9\" }]",
+        "terms = [\"vault9\"]",
+        "terms = \"vault9\"",
+        "repos = \"vault9\"",
+        "terms = [{ label = \"x\", vault9 = 1 }]",
+        "terms = [{ label = \"x\", text = [98765] }]",
+    ] {
+        let printed = check(typo);
+        assert!(printed.contains("`[private]` takes `repos`"), "{printed}");
+        assert!(!printed.contains("vault9") && !printed.contains("98765"));
+    }
+    let clean = |text: &str| {
+        check(&format!(
+            "repos = [\"o/r\"]\nterms = [{{ label = \"x\", text = [\"{text}\"] }}]"
+        ))
+    };
+    assert_eq!(clean("vault9"), "");
     assert_eq!(
-        check("repos = [\"o/r\"]\nterms = [{ label = \"x\", text = [\"vault9\"] }]"),
-        ""
+        clean("R"),
+        "warning: factory.toml:3: `[private]` term `x` matches entry 1 of `repos`: a text that names that repository is refused\n"
     );
 }
 

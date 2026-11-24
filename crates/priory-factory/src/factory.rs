@@ -82,7 +82,7 @@ pub struct Settings {
     #[serde(default)]
     pub guard: crate::guard::Guards,
     /// Terms no run may publish to the repositories it lists.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::private::private")]
     pub private: crate::private::Private,
     /// Autolinks, in order: each key a regex, each value an `https://` URL template whose `$1`
     /// names the regex's first group. An entry with a built-in link's regex replaces it.

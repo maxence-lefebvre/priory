@@ -19691,6 +19691,147 @@ fn a_push_with_a_private_term_in_a_message_a_line_or_a_path_is_denied_and_a_clea
 }
 
 #[test]
+fn a_call_priory_cannot_read_passes_on_an_unlisted_repository_and_is_denied_on_a_listed_one() {
+    let setup = Setup::with_private_terms("private-unread");
+    let calls = [
+        "git commit -qam x && git push",
+        "gh pr edit 3 -F -",
+        "gh pr edit 3 -b \"$(notes)\"",
+        "gh pr edit 3 -b \"$BODY\"",
+        "notes > b.md; gh pr edit 3 -F b.md",
+        "gh api -X PATCH repos/{owner}/{repo}/issues/3 -f body=\"$(notes)\"",
+    ];
+    for call in calls {
+        says(setup.private_denial(call), "Priory denied");
+    }
+    let to = |owner: &str| {
+        let url = format!("https://github.com/{owner}/repo");
+        setup.private_git(&["remote", "set-url", "origin", &url]);
+    };
+    to("other");
+    for call in calls {
+        assert_eq!(setup.private_denial(call), None, "{call}");
+    }
+    says(setup.private_denial("cd $D && git push"), "which folder");
+    let named = "cd $D && gh pr edit 3 -R other/repo -b x";
+    assert_eq!(setup.private_denial(named), None);
+}
+
+#[test]
+fn a_cd_in_a_shell_of_its_own_hides_no_commit_and_one_that_lasts_moves_the_check() {
+    let setup = Setup::with_private_terms("private-cd");
+    setup.private_commit("a.txt", "vault9\n", "Add a");
+    let other = setup.private_worktree().join("other");
+    fs::create_dir(&other).unwrap();
+    for args in [
+        &["init", "-q"][..],
+        &["remote", "add", "origin", "https://github.com/other/repo"],
+    ] {
+        assert!(git(&other).args(args).status().unwrap().success());
+    }
+    for call in [
+        "(cd other && ls); git push origin HEAD",
+        "bash -c 'cd other'; git push origin HEAD",
+        "x=$(cd other && pwd); git push origin HEAD",
+        "cd other | cat; git push origin HEAD",
+    ] {
+        says(setup.private_denial(call), "a.txt:1");
+    }
+    let moved = "cd other && git push origin HEAD";
+    assert_eq!(setup.private_denial(moved), None);
+}
+
+#[test]
+fn an_issue_a_merge_and_a_link_in_a_field_hide_no_term() {
+    let setup = Setup::with_private_terms("private-api");
+    for call in [
+        "gh api -X PATCH repos/owner/repo/issues/3 -f body=vault9",
+        "gh api -X PATCH repos/owner/repo/pulls/3 -f body='https://github.com/repos/o/r/pulls/1 vault9'",
+        "gh pr merge 3 --squash --subject vault9",
+        "gh pr merge 3 -sb vault9",
+    ] {
+        says(setup.private_denial(call), "rule host");
+    }
+}
+
+#[test]
+fn a_commits_people_and_a_file_outside_the_current_folder_are_screened() {
+    let setup = Setup::with_private_terms("private-people");
+    let push = "git push origin HEAD";
+    let author = "--author=vault9 <a@b.c>";
+    setup.private_git(&["commit", "-q", "--allow-empty", author, "-m", "x"]);
+    let head = setup.private_head();
+    says(
+        setup.private_denial(push),
+        &format!("rule host: commit {head} author"),
+    );
+    says(setup.private_denial(push), "--reset-author");
+    setup.private_git(&[
+        "-c",
+        "user.email=a@vault9",
+        "commit",
+        "-q",
+        "--amend",
+        "--reset-author",
+        "-m",
+        "x",
+    ]);
+    says(setup.private_denial(push), "committer");
+    setup.private_git(&["commit", "-q", "--amend", "--reset-author", "-m", "x"]);
+    assert_eq!(setup.private_denial(push), None);
+
+    fs::create_dir(setup.private_worktree().join("sub")).unwrap();
+    setup.private_git(&["config", "diff.relative", "true"]);
+    setup.private_commit("top.txt", "vault9\n", "x");
+    says(
+        setup.private_denial(&format!("cd sub && {push}")),
+        "top.txt:1",
+    );
+    says(
+        setup.private_denial("git push --dry-run --no-dry-run origin HEAD"),
+        "top.txt:1",
+    );
+    // A whole word only.
+    setup.private_commit("top.txt", "vault99\n", "x");
+    setup.private_git(&["reset", "-q", "--soft", "HEAD~2"]);
+    setup.private_git(&["commit", "-qm", "x"]);
+    assert_eq!(setup.private_denial(push), None);
+}
+
+#[test]
+fn a_push_to_a_listed_remote_with_no_tracking_refs_leaves_out_what_another_one_holds() {
+    let setup = Setup::with_private_terms("private-remotes");
+    setup.private_commit("a.txt", "vault9\n", "Add a");
+    setup.private_git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    let url = "https://github.com/owner/repo";
+    setup.private_git(&["remote", "add", "fork", url]);
+    let push = "git push fork HEAD";
+    assert_eq!(setup.private_denial(push), None);
+    let private = "https://github.com/other/private";
+    setup.private_git(&["remote", "set-url", "origin", private]);
+    says(setup.private_denial(push), "a.txt:1");
+}
+
+#[test]
+fn screening_a_merge_runs_no_merge_driver_of_the_repository() {
+    let setup = Setup::with_private_terms("private-driver");
+    setup.private_commit("a.txt", "one\n", "Add a");
+    setup.private_git(&["checkout", "-q", "-b", "side"]);
+    setup.private_commit("a.txt", "two\n", "Edit a");
+    setup.private_git(&["checkout", "-q", "priory/1"]);
+    setup.private_commit("a.txt", "three\n", "Edit a too");
+    setup.private_git(&["merge", "-q", "-X", "ours", "--no-edit", "side"]);
+    let ran = setup.dir.join("ran");
+    let driver = format!("touch '{}'", ran.display());
+    setup.private_git(&["config", "merge.evil.driver", &driver]);
+    let attributes = setup.private_worktree().join(".git/info/attributes");
+    fs::create_dir_all(attributes.parent().unwrap()).unwrap();
+    fs::write(attributes, "* merge=evil\n").unwrap();
+    assert_eq!(setup.private_denial("git push origin HEAD"), None);
+    assert!(!ran.exists(), "the driver ran");
+}
+
+#[test]
 fn a_merge_of_the_trunk_shows_only_what_it_resolved() {
     let setup = Setup::with_private_terms("private-merge");
     setup.private_commit("mine.txt", "fine\n", "Add mine");

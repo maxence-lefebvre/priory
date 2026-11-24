@@ -448,7 +448,7 @@ Each entry of `terms` needs `text` or `regex`, or both:
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `label` | string | yes | | The name a refusal gives in place of the term. Used once, and holds no term itself | `"ticket-id"` |
-| `text` | array of strings | no | `[]` | Literal strings, matched in any case | `["acme-internal"]` |
+| `text` | array of strings | no | `[]` | Literal strings, matched in any case. An end that is a letter, a digit or `_` matches only at a word's edge, so `acme` does not match `acme_x`: use `regex` for that | `["acme-internal"]` |
 | `regex` | array of strings | no | `[]` | Regexes, in the [regex crate's syntax](https://docs.rs/regex/latest/regex/#syntax), matched one line at a time | `['\bACME-\d+']` |
 
 ```toml
@@ -459,6 +459,9 @@ terms = [
   { label = "internal-repo", text = ["acme-internal"] },
 ]
 ```
+
+`priory check` warns about a term that matches an entry of `repos`, since a text that names the
+repository is then refused. An error in the table repeats none of its values.
 
 The factory's folder holds the terms as plain text, so keep it in a private repository. A run that
 started before the factory had `[private]` is not screened until it restarts.
@@ -676,6 +679,7 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `[private]` term `<label>` has a regex that does not compile: <reason> `` | A `regex` the regex crate refuses |
 | `` `[private]` term `<label>` matches empty text `` | An empty `text`, or a `regex` such as `a*`, which would match every line |
 | `` `[private]` label <n> holds a private term, and refusals print labels `` | A label that one of the terms matches |
+| `` `[private]` takes `repos`, an array of strings, and `terms`, ... `` | A key or a value of `[private]` that the tables above do not list. The error repeats neither |
 | `` unknown field `<key>`, expected one of ... `` | A key the tables above do not list, or a top-level key such as `gate` written below a table such as `[serve]`, which makes it that table's key |
 | `"<text>" is not a duration such as 90s, 15m or 2h` | A duration that is not a whole number and `s`, `m` or `h` |
 | `` `factory` is also defined in factory.toml `` | Both `factory.toml` and `factory.yaml` exist |

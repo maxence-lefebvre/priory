@@ -4713,7 +4713,7 @@ fn hook(event: &str) -> ExitCode {
         });
         let (denied, input) = receiver.recv_timeout(GUARD_DEADLINE).unwrap_or_else(|_| {
             let reason = format!(
-                "Priory's tool guard failed or did not finish within {}s on this call, so it denied it.",
+                "Priory's tool guard failed or did not finish within {}s on this call, so it denied it. If it pushes, fetch the remote first, or push fewer commits at a time.",
                 GUARD_DEADLINE.as_secs()
             );
             (Some(reason), None)

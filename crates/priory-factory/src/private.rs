@@ -20,7 +20,7 @@ pub struct Private {
 #[serde(deny_unknown_fields)]
 pub struct Term {
     pub label: String,
-    /// Literal strings, matched in any case.
+    /// Literal strings, matched in any case and as whole words.
     #[serde(default)]
     pub text: Vec<String>,
     /// Regexes, in the regex crate's syntax.
@@ -31,13 +31,29 @@ pub struct Term {
 impl Term {
     fn compile(&self) -> Result<Vec<Regex>, regex::Error> {
         let literals = self.text.iter().map(|text| {
-            RegexBuilder::new(&regex::escape(text))
+            let word = |c: char| c.is_alphanumeric() || c == '_';
+            let edge = |at_word: bool| if at_word { r"\b" } else { "" };
+            let start = edge(text.starts_with(word));
+            let end = edge(text.ends_with(word));
+            RegexBuilder::new(&format!("{start}{}{end}", regex::escape(text)))
                 .case_insensitive(true)
                 .build()
         });
         let patterns = self.regex.iter().map(|pattern| Regex::new(pattern));
         literals.chain(patterns).collect()
     }
+}
+
+/// Reads `[private]` with an error that repeats nothing of it, since it may hold a term.
+pub(crate) fn private<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Private, D::Error> {
+    serde_json::Value::deserialize(input)
+        .ok()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .ok_or_else(|| {
+            serde::de::Error::custom(
+                "`[private]` takes `repos`, an array of strings, and `terms`, an array of tables of a `label` string and `text` and `regex` arrays of strings",
+            )
+        })
 }
 
 impl Private {
@@ -67,6 +83,22 @@ impl Private {
         self.repos
             .iter()
             .any(|listed| listed.eq_ignore_ascii_case(repo))
+    }
+
+    /// What `priory check` warns about, with no term in it.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        for (label, regex) in self.compile().unwrap_or_default() {
+            for (at, repo) in self.repos.iter().enumerate() {
+                if regex.is_match(repo) {
+                    warnings.push(format!(
+                        "`[private]` term `{label}` matches entry {} of `repos`: a text that names that repository is refused",
+                        at + 1
+                    ));
+                }
+            }
+        }
+        warnings
     }
 
     /// What `priory check` reports, with no term in it.

@@ -1050,7 +1050,7 @@
         },
         "text": {
           "default": [],
-          "description": "Literal strings, matched in any case.",
+          "description": "Literal strings, matched in any case and as whole words.",
           "items": {
             "type": "string"
           },
