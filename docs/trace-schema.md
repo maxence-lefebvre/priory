@@ -132,7 +132,7 @@ when its harness asks anyway, and one when direnv fails before its harness start
 | `path`    | yes      | The worktree or clone the trust covers |
 | `file`    | no       | The config the daemon wrote or read: Claude's `.claude.json`, `$CODEX_HOME/priory-trust.config.toml`, or the run's `direnv/<session>/direnv.toml` in Priory home |
 | `outcome` | yes      | `granted` when the daemon wrote it, `present` when it was already there, `refused` when it wrote nothing, `missed` when the harness asked anyway, `failed` when direnv failed before the harness started, which then started without the `.envrc` |
-| `why`     | no       | For `refused`: why, such as a path outside Priory home, a repository the factory does not name, or an `.envrc` that differs from the commit the task started from and from the default branch. For `missed`: `the grant was gone from the config` when the harness overwrote it. For `failed`: direnv's error, redacted, such as `direnv: error exit status 1` |
+| `why`     | no       | For `refused`: why, such as a path outside Priory home, a repository the factory does not name, or an `.envrc` that is untracked, or differs from the commit the task started from and from the default branch. For `missed`: `the grant was gone from the config` when the harness overwrote it. For `failed`: direnv's error, redacted, such as `direnv: error exit status 1` |
 | `version` | no       | For `missed`: the first line of the harness's `--version` |
 
 ## `factory.run.attach_failed`

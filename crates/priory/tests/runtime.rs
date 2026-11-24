@@ -4954,8 +4954,15 @@ fn an_unparsable_direnv_toml_refuses_the_grant_and_the_run_starts_without_direnv
 
 /// A task whose first run started under direnv and blocked, so its worktree is kept.
 fn blocked_under_direnv(name: &str) -> Setup {
-    let mut setup = trusting(name);
+    let setup = trusting(name);
     envrc(&setup);
+    let setup = blocked_with_direnv(setup);
+    assert_eq!(outcomes_of(&setup, "1"), ["granted", "granted"]);
+    setup
+}
+
+/// A task whose first run blocked with `direnv` installed, so its worktree is kept.
+fn blocked_with_direnv(mut setup: Setup) -> Setup {
     setup.hold("undecided");
     setup.hold("hold-stop");
     setup.calls(&[json!({ "name": "Bash", "arguments": { "command": "rm -rf /" } })]);
@@ -4965,8 +4972,135 @@ fn blocked_under_direnv(name: &str) -> Setup {
     setup.until("tasks", |rows| {
         rows.first().is_some_and(|row| row[4] == "blocked")
     });
-    assert_eq!(outcomes_of(&setup, "1"), ["granted", "granted"]);
     setup
+}
+
+/// Git's trimmed stdout for `args` in `dir`.
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    let output = git(dir).args(args).output().unwrap();
+    assert!(output.status.success(), "{args:?}: {output:?}");
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+#[test]
+fn refs_that_an_agent_moves_during_a_new_start_choose_neither_its_content_nor_its_base() {
+    let mut setup = trusting("envrc-hostile-refs");
+    envrc(&setup);
+    setup.hold("hold-stop");
+    fs::write(setup.dir.join("fake/git-hostile"), "touch /tmp/agent\n").unwrap();
+    setup.publish(&requested(42));
+    start_direnv(&mut setup, true, "", &[]);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let trunk = git_out(&setup.dir.join("work"), &["rev-parse", "HEAD"]);
+    let clone = setup.dir.join("home/repos/owner/repo");
+    for moved in ["refs/remotes/origin/main", "refs/heads/priory/1"] {
+        assert_ne!(git_out(&clone, &["rev-parse", moved]), trunk, "{moved}");
+    }
+    let shown = setup.priory(&["task", "1", "--json"]);
+    let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(shown["base_sha"], json!(trunk));
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1/.envrc");
+    assert_eq!(fs::read_to_string(worktree).unwrap(), "use flake\n");
+    assert_eq!(outcomes_of(&setup, "1"), ["granted", "granted"]);
+}
+
+#[test]
+fn a_tasks_branch_that_an_agent_made_first_starts_it_without_direnv() {
+    let mut setup = trusting("envrc-hostile-branch");
+    envrc(&setup);
+    let clone = setup.dir.join("home/repos/owner/repo");
+    fs::create_dir_all(clone.parent().unwrap()).unwrap();
+    let origin = setup.dir.join("origin/owner/repo.git");
+    let [origin, path] = [&origin, &clone].map(|path| path.to_str().unwrap());
+    git_out(&setup.dir, &["clone", "-q", origin, path]);
+    git_out(&clone, &["checkout", "-q", "-b", "priory/1"]);
+    fs::write(clone.join(".envrc"), "touch /tmp/agent\n").unwrap();
+    committed(&clone, ".envrc");
+    git_out(&clone, &["checkout", "-q", "--detach", "origin/main"]);
+    setup.hold("hold-stop");
+    setup.publish(&requested(42));
+
+    start_direnv(&mut setup, true, "", &[]);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    assert_eq!(outcomes_of(&setup, "1"), ["refused", "refused"]);
+    assert!(!setup.dir.join("fake/direnv.log").exists());
+}
+
+#[test]
+fn an_object_forged_under_the_bases_id_vouches_for_no_envrc() {
+    for object in ["{base}:.envrc", "{base}^{tree}", "{base}"] {
+        let setup = blocked_under_direnv("envrc-forged-object");
+        let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+        let base = git_out(&worktree, &["rev-parse", "HEAD"]);
+        let id =
+            |commit: &str| git_out(&worktree, &["rev-parse", &object.replace("{base}", commit)]);
+        let objects = setup.dir.join("home/repos/owner/repo/.git/objects");
+        // git reads a pack before a loose object.
+        let pack = setup.dir.join("pack");
+        fs::rename(objects.join("pack"), &pack).unwrap();
+        for entry in fs::read_dir(&pack).unwrap().flatten() {
+            if entry.path().extension().is_some_and(|kind| kind == "pack") {
+                let packed = fs::File::open(entry.path()).unwrap();
+                let unpacked = git(&worktree)
+                    .args(["unpack-objects", "-q"])
+                    .stdin(packed)
+                    .status();
+                assert!(unpacked.unwrap().success());
+            }
+        }
+        fs::write(worktree.join(".envrc"), "touch /tmp/agent\n").unwrap();
+        committed(&worktree, ".envrc");
+        let [real, fake] = [id(&base), id("HEAD")].map(|id| objects.join(&id[..2]).join(&id[2..]));
+        fs::remove_file(&real).unwrap();
+        fs::copy(&fake, &real).unwrap();
+
+        let resumed = setup.priory(&["resume", "1"]);
+
+        assert!(resumed.status.success(), "{object}: {resumed:?}");
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+        assert_eq!(outcomes_of(&setup, "2"), ["refused", "refused"], "{object}");
+        assert_eq!(under_direnv(&setup), 1, "{object}");
+    }
+}
+
+#[test]
+fn an_untracked_envrc_is_refused_without_a_clone_and_one_added_on_the_default_branch_is_granted() {
+    for tracked in [false, true] {
+        let setup = trusting("envrc-untracked");
+        fs::create_dir_all(setup.dir.join("home/direnv")).unwrap();
+        fs::write(setup.dir.join("home/direnv/stuck"), "").unwrap();
+        let setup = blocked_with_direnv(setup);
+        envrc(&setup);
+        let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+        fs::write(worktree.join(".envrc"), "use flake\n").unwrap();
+        if tracked {
+            git_out(&worktree, &["add", ".envrc"]);
+        }
+
+        let resumed = setup.priory(&["resume", "1"]);
+
+        assert!(resumed.status.success(), "{resumed:?}");
+        setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 2);
+        let clones = fs::read_to_string(setup.dir.join("fake/git-clones")).unwrap();
+        let log = fs::read_to_string(setup.dir.join("daemon.log")).unwrap();
+        assert_eq!(log.matches("direnv/stuck: ").count(), 1, "{log}");
+        if tracked {
+            assert_eq!(outcomes_of(&setup, "2"), ["granted", "granted"]);
+            assert_eq!(
+                clones.lines().count(),
+                2,
+                "its own and the default branch's"
+            );
+            continue;
+        }
+        assert_eq!(outcomes_of(&setup, "2"), ["refused", "refused"]);
+        assert_eq!(clones.lines().count(), 1, "its own alone");
+        let reason = &setup.rows("tasks")[0][7];
+        assert!(reason.contains(".envrc is untracked"), "{reason}");
+    }
 }
 
 /// What direnv's grants of run `run` came to.

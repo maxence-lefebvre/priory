@@ -171,20 +171,24 @@ pub(crate) fn run(command: &mut Command) -> Result<String, String> {
 }
 
 /// As `run`, with `input` on the command's stdin.
-fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> {
+pub(crate) fn fed(command: &mut Command, input: Option<Vec<u8>>) -> Result<String, String> {
     fed_raw(command, input).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
 /// As `fed`, returning the command's stdout as it wrote it.
 pub(crate) fn fed_raw(command: &mut Command, input: Option<Vec<u8>>) -> Result<Vec<u8>, String> {
-    let output = fed_within(command, input, command_timeout())
+    fed_raw_within(command, input, command_timeout())
+}
+
+/// As `fed_raw`, giving up after `timeout`.
+pub(crate) fn fed_raw_within(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    let output = fed_within(command, input, timeout)
         .map_err(|error| format!("{command:?}: {error}"))?
-        .ok_or_else(|| {
-            format!(
-                "{command:?}: timed out after {}s",
-                command_timeout().as_secs()
-            )
-        })?;
+        .ok_or_else(|| format!("{command:?}: timed out after {}s", timeout.as_secs()))?;
     if !output.status.success() {
         return Err(format!(
             "{command:?}: {}",
@@ -243,14 +247,14 @@ pub enum Added {
     /// The branch was there and its folder was not, as after a retirement or a sweep.
     Restored,
     /// A new branch, from this commit.
-    New(Option<String>),
+    New(String),
 }
 
 impl Added {
     /// The commit a new branch starts from; `None` when the branch already existed.
     pub fn base(&self) -> Option<&str> {
         match self {
-            Added::New(base) => base.as_deref(),
+            Added::New(base) => Some(base),
             Added::Kept(_) | Added::Restored => None,
         }
     }
@@ -603,24 +607,57 @@ pub fn worktree(
         })?;
         return Ok((path, branch, Added::Restored));
     }
-    phased("fetch", || {
+    let trunk = phased("fetch", || {
+        // Before the fetch, which then brings the commit.
+        let trunk = from.is_none().then(|| trunk(repo)).transpose()?;
         run(git(&clone).args(["fetch", "--quiet", "origin"]))?;
-        run(git(&clone).args(["remote", "set-head", "origin", "--auto"]))
+        run(git(&clone).args(["remote", "set-head", "origin", "--auto"]))?;
+        if let Some(trunk) = &trunk
+            && run(git(&clone).args(["cat-file", "-e", trunk])).is_err()
+        {
+            run(git(&clone).args(["fetch", "--quiet", "origin", trunk]))?;
+        }
+        Ok(trunk)
     })?;
-    let start = match from {
-        Some(from) if head(&clone, from).is_some() => format!("refs/heads/{from}"),
-        Some(from) => return Err(format!("branch {from} to start from is gone")),
-        None => "origin/HEAD".to_owned(),
+    let start = match (from, trunk) {
+        (Some(from), _) => {
+            head(&clone, from).ok_or_else(|| format!("branch {from} to start from is gone"))?
+        }
+        (None, Some(trunk)) => trunk,
+        (None, None) => unreachable!("a start without a branch read the default branch"),
     };
     phased("checkout", || {
         run(git(&clone)
+            // An agent can write the clone's replace refs, which would swap the commit's content.
+            .arg("--no-replace-objects")
             // Tracking the trunk would let a bare `git push` with `push.default=upstream` land on it.
             .args(["worktree", "add", "--quiet", "--no-track", "-b", &branch])
             .arg(&path)
-            .arg(start))
+            .arg(&start))
     })?;
-    let base = head(&path, &branch);
-    Ok((path, branch, Added::New(base)))
+    // Not the branch's head: every worktree shares the clone's refs, so an agent can have moved it.
+    Ok((path, branch, Added::New(start)))
+}
+
+/// The head of `repo`'s default branch as GitHub has it. It runs outside the clone, whose refs and
+/// config an agent can write.
+fn trunk(repo: &str) -> Result<String, String> {
+    let url = format!("https://github.com/{repo}.git");
+    let refs = run(git(Path::new("/")).args(["ls-remote", &url, "HEAD"]))?;
+    head_of(&refs)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("{url} names no HEAD commit"))
+}
+
+/// The commit of HEAD in `refs`, the output of `git ls-remote`.
+fn head_of(refs: &str) -> Option<&str> {
+    refs.lines()
+        .filter_map(|line| line.split_once('\t'))
+        .find(|(_, name)| *name == "HEAD")
+        .map(|(commit, _)| commit)
+        .filter(|commit| {
+            matches!(commit.len(), 40 | 64) && commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
 }
 
 /// Runs `phase` of a worktree's start, and times it for the metrics by how it ended.
@@ -1444,8 +1481,49 @@ pub fn direnv_failed(home: &Path, session: &str) -> Option<String> {
     if !spool.join("direnv.failed").exists() {
         return None;
     }
-    let error = fs::read(spool.join("direnv.error")).unwrap_or_default();
+    let error = read_regular(&spool.join("direnv.error"), 64 << 10).unwrap_or_default();
     Some(String::from_utf8_lossy(&error).into_owned())
+}
+
+// Not libc's, which would be a new dependency for two numbers.
+#[cfg(all(
+    target_os = "linux",
+    any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "powerpc64"
+    )
+))]
+const O_NOFOLLOW: i32 = 0o100000;
+#[cfg(all(
+    target_os = "linux",
+    not(any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "powerpc64"
+    ))
+))]
+const O_NOFOLLOW: i32 = 0o400000;
+#[cfg(target_os = "macos")]
+const O_NOFOLLOW: i32 = 0x100;
+#[cfg(target_os = "linux")]
+const O_NONBLOCK: i32 = 0o4000;
+#[cfg(target_os = "macos")]
+const O_NONBLOCK: i32 = 0x4;
+
+/// The first `cap` bytes of the regular file at `path`, which an agent can write: no symlink is
+/// followed, and no FIFO blocks the daemon.
+pub(crate) fn read_regular(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NOFOLLOW | O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.take(cap).read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// How long ago direnv handed the run `session` over to its harness, with or without the `.envrc`,
@@ -2803,6 +2881,54 @@ mod tests {
     }
 
     #[test]
+    fn direnvs_error_is_read_from_a_regular_file_alone_and_up_to_a_cap() {
+        let home = std::env::temp_dir().join(format!("priory-error-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let spool = direnv_spool(&home, "s");
+        fs::create_dir_all(&spool).unwrap();
+        fs::write(spool.join("direnv.failed"), "").unwrap();
+        let error = spool.join("direnv.error");
+        let secret = home.join("secret");
+        fs::write(&secret, "secret").unwrap();
+
+        std::os::unix::fs::symlink(&secret, &error).unwrap();
+        assert_eq!(direnv_failed(&home, "s").as_deref(), Some(""));
+        fs::remove_file(&error).unwrap();
+
+        assert!(
+            Command::new("mkfifo")
+                .arg(&error)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(direnv_failed(&home, "s").as_deref(), Some(""));
+        fs::remove_file(&error).unwrap();
+
+        fs::write(&error, vec![b'x'; 1 << 20]).unwrap();
+        assert_eq!(direnv_failed(&home, "s").unwrap().len(), 64 << 10);
+    }
+
+    proptest! {
+        #[test]
+        fn a_remotes_refs_name_a_full_commit_or_none(
+            refs in ".{0,200}", commit in "[0-9a-f]{0,64}", name in "HEAD|refs/heads/main",
+        ) {
+            prop_assert!(head_of(&refs).is_none_or(|commit| commit.len() >= 40));
+            let line = format!("{commit}\t{name}\n");
+            let full = matches!(commit.len(), 40 | 64) && name == "HEAD";
+            prop_assert_eq!(head_of(&line), full.then_some(commit.as_str()));
+        }
+    }
+
+    #[test]
+    fn a_remotes_head_is_found_among_its_refs() {
+        let commit = "0123456789".repeat(4);
+        let refs = format!("{commit}\tHEAD\nffff\trefs/remotes/origin/HEAD\n");
+        assert_eq!(head_of(&refs), Some(commit.as_str()));
+    }
+
+    #[test]
     fn a_harness_that_exits_1_under_direnv_starts_once() {
         let (code, starts, home) = direnv_exec("exits", r#"shift 2; exec "$@""#);
 
@@ -3147,8 +3273,11 @@ mod tests {
                 ],
             );
             let home = Home { dir };
-            let (_, _, added) = worktree(&home.home(), "o/n", "1", None).unwrap();
-            assert!(matches!(added, Added::New(_)));
+            // By hand: `worktree` would read GitHub's `o/n` for a new one.
+            let tree = home.tree();
+            let start = ["worktree", "add", "--quiet", "--no-track", "-b", "priory/1"];
+            let path = [tree.to_str().unwrap(), "origin/HEAD"];
+            sh(&clone, &[&start[..], &path[..]].concat());
             home
         }
 

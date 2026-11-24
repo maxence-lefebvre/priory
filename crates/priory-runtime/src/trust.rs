@@ -1,11 +1,14 @@
 //! The folder trust Priory records for its own worktrees and clones, when the factory turns on
 //! `trust_worktrees`, so no run stops on its harness's trust dialog (docs/daemon/sessions.md).
 
-use crate::runtime::{Harness, clone_of, fed_raw, git, run};
+use crate::runtime::{Harness, clone_of, fed, fed_raw, fed_raw_within, git, run};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
 
 /// The Codex profile Priory owns: `$CODEX_HOME/priory-trust.config.toml`, layered by `-p`.
 pub const CODEX_PROFILE: &str = "priory-trust";
@@ -152,29 +155,43 @@ fn vouched(
     if !fs::symlink_metadata(&path).map_err(failed)?.is_file() {
         return Err(format!("{} is not a regular file", path.display()));
     }
-    let content = fs::read(&path).map_err(failed)?;
-    let blob = |dir: &Path, commit: &str| {
-        fed_raw(
-            git(dir)
-                .args(["--no-replace-objects", "cat-file", "blob"])
-                .arg(format!("{commit}:.envrc")),
-            None,
-        )
-    };
-    if base.is_some_and(|base| blob(clone, base).is_ok_and(|blob| blob == content)) {
+    let content = crate::runtime::read_regular(&path, ENVRC_CAP + 1).map_err(failed)?;
+    if content.len() as u64 > ENVRC_CAP {
+        return Err(format!("{} is over {ENVRC_CAP} bytes", path.display()));
+    }
+    let blob = hash("blob", content)?;
+    if base.is_some_and(|base| envrc_at(clone, base).is_ok_and(|at| at.as_ref() == Some(&blob))) {
         return Ok(());
+    }
+    // No commit can vouch for it, so GitHub is not asked.
+    if run(git(worktree).args(["ls-files", "--error-unmatch", "--", ".envrc"])).is_err() {
+        return Err(
+            ".envrc is untracked, so neither the commit the task started from nor the default \
+             branch vouches for it"
+                .to_owned(),
+        );
     }
     // An agent can write the clone's refs and config, so the default branch comes from GitHub.
     let _ = fs::remove_dir_all(scratch);
-    let cloned = run(git(Path::new("/"))
-        .args(["clone", "--quiet", "--bare", "--depth=1"])
-        .args(["--filter=blob:none", "--template="])
-        .arg(format!("https://github.com/{repo}.git"))
-        .arg(scratch));
-    let trunk = cloned.as_ref().map(|_| blob(scratch, "HEAD"));
+    let cloned = fed_raw_within(
+        git(Path::new("/"))
+            .args(["clone", "--quiet", "--bare", "--depth=1"])
+            .args(["--filter=blob:none", "--template="])
+            .arg(format!("https://github.com/{repo}.git"))
+            .arg(scratch),
+        None,
+        CLONE_WITHIN,
+    );
+    let trunk = cloned.and_then(|_| run(git(scratch).args(["ls-tree", "HEAD", "--", ".envrc"])));
     let _ = fs::remove_dir_all(scratch);
     match trunk {
-        Ok(Ok(blob)) if blob == content => Ok(()),
+        Ok(entry)
+            if ["100644", "100755"]
+                .iter()
+                .any(|mode| entry.trim_end() == format!("{mode} blob {blob}\t.envrc")) =>
+        {
+            Ok(())
+        }
         Err(why) => Err(format!(
             ".envrc differs from the commit the task started from, and the default branch could \
              not be read: {why}"
@@ -186,7 +203,67 @@ fn vouched(
     }
 }
 
-/// Removes the direnv config folder under Priory `home` of each session that is not `live`.
+/// The largest `.envrc` a run can start in.
+const ENVRC_CAP: u64 = 1 << 20;
+
+/// How long the clone of the default branch may take.
+// shortcut: it holds the daemon's thread, move it off when a clone often nears the limit.
+const CLONE_WITHIN: Duration = Duration::from_secs(20);
+
+/// The id git gives an object of `kind` with `content`.
+fn hash(kind: &str, content: Vec<u8>) -> Result<String, String> {
+    fed(
+        git(Path::new("/")).args(["hash-object", "-t", kind, "--stdin"]),
+        Some(content),
+    )
+    .map(|id| id.trim().to_owned())
+}
+
+/// The content of the object `id` of `clone`, hashed again: git does not check a loose object on
+/// read, and an agent can write one.
+fn object(clone: &Path, kind: &str, id: &str) -> Result<Vec<u8>, String> {
+    let content = fed_raw(
+        git(clone).args(["--no-replace-objects", "cat-file", kind, id]),
+        None,
+    )?;
+    if hash(kind, content.clone())? != id {
+        return Err(format!("{kind} {id} of {} is forged", clone.display()));
+    }
+    Ok(content)
+}
+
+/// The blob id of the regular file `.envrc` at `commit` of `clone`, if it has one.
+fn envrc_at(clone: &Path, commit: &str) -> Result<Option<String>, String> {
+    let content = object(clone, "commit", commit)?;
+    let tree = content
+        .strip_prefix(b"tree ")
+        .and_then(|rest| rest.split(|byte| *byte == b'\n').next())
+        .and_then(|id| std::str::from_utf8(id).ok())
+        .ok_or_else(|| format!("commit {commit} names no tree"))?;
+    let entries = object(clone, "tree", tree)?;
+    Ok(entry(&entries, b".envrc", tree.len() / 2))
+}
+
+/// The id of the regular file `name` in `tree`, git's raw tree of ids `width` bytes long.
+fn entry(mut tree: &[u8], name: &[u8], width: usize) -> Option<String> {
+    while !tree.is_empty() {
+        let nul = tree.iter().position(|byte| *byte == 0)?;
+        let id = tree.get(nul + 1..nul + 1 + width)?;
+        let space = tree[..nul].iter().position(|byte| *byte == b' ')?;
+        if &tree[space + 1..nul] == name {
+            let file = matches!(&tree[..space], b"100644" | b"100755");
+            return file.then(|| id.iter().map(|byte| format!("{byte:02x}")).collect());
+        }
+        tree = &tree[nul + 1 + width..];
+    }
+    None
+}
+
+/// The direnv folders whose failed removal is already logged.
+static KEPT: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+/// Removes the direnv config folder under Priory `home` of each session that is not `live`. It logs
+/// a folder it cannot remove once.
 pub fn forget_direnv(home: &Path, live: &dyn Fn(&str) -> bool) {
     for entry in fs::read_dir(home.join("direnv"))
         .into_iter()
@@ -195,6 +272,10 @@ pub fn forget_direnv(home: &Path, live: &dyn Fn(&str) -> bool) {
     {
         if !entry.file_name().to_str().is_some_and(live)
             && let Err(error) = fs::remove_dir_all(entry.path())
+            && KEPT
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(entry.path())
         {
             eprintln!("priory daemon: {}: {error}", entry.path().display());
         }
@@ -807,7 +888,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_tree_names_the_regular_file_of_that_name_alone() {
+        let tree = [
+            b"100644 a\0AB".as_slice(),
+            b"120000 .envrc\0CD",
+            b"100755 z\0\x01\xff",
+        ];
+        let tree = tree.concat();
+        assert_eq!(entry(&tree, b"a", 2).as_deref(), Some("4142"));
+        assert_eq!(entry(&tree, b"z", 2).as_deref(), Some("01ff"));
+        assert_eq!(entry(&tree, b".envrc", 2), None);
+        assert_eq!(entry(&tree, b"b", 2), None);
+    }
+
     proptest::proptest! {
+        #[test]
+        fn any_bytes_as_a_tree_are_read_without_a_panic(
+            tree in proptest::collection::vec(0u8..128, 0..80), cut in 0usize..40,
+        ) {
+            let id = entry(&tree, b".envrc", 20);
+            proptest::prop_assert!(id.is_none_or(|id| id.len() == 40));
+            let whole = [b"100644 .envrc\0".as_slice(), &[7; 20]].concat();
+            let part = &whole[..cut.min(whole.len())];
+            proptest::prop_assert_eq!(entry(part, b".envrc", 20).is_some(), cut >= whole.len());
+        }
+
         #[test]
         fn a_direnv_whitelist_merge_returns_or_refuses_without_panicking(
             text in "(?s).{0,200}|\\[whitelist\\]\nexact = \\[(\"[a-z/]{0,8}\",? ?){0,3}\\]\n",

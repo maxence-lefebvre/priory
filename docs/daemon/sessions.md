@@ -285,18 +285,31 @@ a worktree or clone that a symlink leads elsewhere.
   without a check, an `.envrc` that one run's agent wrote would run at the start of the next,
   outside the tool guard and the harness's permissions. The daemon grants direnv only when the worktree's
   `.envrc` is a regular file with the same content as the one on the commit the task started from.
+  That commit is the default branch's head, which the daemon reads from GitHub outside the clone:
+  every worktree shares the clone's refs and objects, and an agent can write both. The daemon hashes
+  the commit and its tree again before it compares, so a forged object does not pass.
   A stacked task is checked against the commit its bottom task started from, since its own base
   is another agent's branch. Failing that, the `.envrc` must match the one on the repository's default
-  branch, which the daemon reads from GitHub rather than from the clone, whose refs an agent can
-  write. A task that changes `.envrc` therefore starts its later runs without it until the change
-  is on the default branch.
+  branch, which the daemon clones from GitHub and waits for at most 20s.
+
+  A run starts without its `.envrc`, although no agent wrote it, in these cases:
+
+  - The `.envrc` is a symlink, or is over 1 MiB.
+  - The `.envrc` is untracked, such as one that a setup recipe writes. The daemon does not ask GitHub
+    for it. An untracked copy of the file on the commit the task started from passes.
+  - The task changed the `.envrc`, or merged a branch that did. Its later runs start without it until
+    the change is on the default branch.
+  - The `.envrc` is an older honest version, from neither the commit the task started from nor the
+    default branch, as after a reset to an earlier commit. A rebase on the default branch fixes it.
+  - Git writes the file with other content than it stores, as `core.autocrlf` or a filter does.
 
   The check has limits:
 
-  - It covers `.envrc` alone. A file that the `.envrc` loads, such as `flake.nix`, `.env` or a
-    sourced script, runs as the worktree has it, so an agent's edit of one runs at the next start.
+  - It covers `.envrc` alone. What the `.envrc` loads runs as the worktree has it, so an agent's edit
+    of it runs at the next start: `flake.nix` and `flake.lock`, the caches in `.direnv/`, `.env`, a
+    sourced script, a parent's `.envrc` through `source_up`, and programs in a `PATH_add` folder.
   - A process that an agent left running can rewrite `.envrc` between the check and its load.
-  - It trusts the objects of the clone, and the git config that the clone had when the task started.
+  - A task that started before the daemon read its base from GitHub keeps the base it recorded.
 
   The variables an `.envrc` exports
   reach the harness's environment as they are, outside the daemon's secret redaction, so keep
@@ -304,8 +317,8 @@ a worktree or clone that a symlink leads elsewhere.
 
   The harness starts only after the `.envrc` loads: a `use flake` took 12s on a fresh worktree
   and under 1s after. direnv gets 600s to load it, and a run whose `.envrc` is still loading then
-  blocks with a reason that names direnv. Once direnv hands over, the harness gets the usual 60s to
-  reach `SessionStart`. When
+  blocks with a reason that names direnv. Once direnv hands over, the harness gets its usual window,
+  60s or 180s with recorded trust, to reach `SessionStart`. When
   direnv itself fails before the harness starts, for example because the `.envrc` exits non-zero
   or `nix` is not on PATH in a jail, the harness starts without the `.envrc`. The daemon records
   direnv's error as a `failed` `factory.run.trusted` record and in the task's reason, which a
@@ -366,8 +379,8 @@ exit, then cd <clone path> && claude, accept, exit`. The desk shows the blocked 
 reason. After both folders are trusted, `priory resume` starts the task again.
 
 A run that sends no `SessionStart` within its window, for another reason, also ends as `exited`.
-The window is 60 seconds from its start, 180 when Priory recorded the run's trust, and 600 under
-direnv. The daemon kills its tmux session and blocks its task with the reason `claude showed
+The window is 60 seconds from its start, or 180 when Priory recorded the run's trust. Under direnv,
+the `.envrc` gets 600 seconds to load, and the window counts from there. The daemon kills its tmux session and blocks its task with the reason `claude showed
 no SessionStart within 60s; trust the worktrees folder and the clone once: ...`, the same commands,
 `. Resume the task to try again`, then `. Its pane ended with: ` and the last 5 non-empty lines of its pane, joined by ` | `, so a
 person sees the dialog or warning that stopped it. The daemon log gets the last 30. A line the
