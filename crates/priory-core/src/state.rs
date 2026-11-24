@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 111;
+const VERSION: i64 = 112;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1979,6 +1979,23 @@ CREATE TABLE news (
 PRAGMA user_version = 111;
 ";
 
+// The prompt that carries a message after the turn, withdrawn once a call shows the message, the
+// pairs a duplicate lets talk, and each message a pair sent. Not `relations`, which agents write.
+const SCHEMA_112: &str = "
+ALTER TABLE news ADD COLUMN outbox INTEGER;
+CREATE TABLE pairs (
+  task  INTEGER NOT NULL REFERENCES tasks (id),
+  other INTEGER NOT NULL REFERENCES tasks (id),
+  PRIMARY KEY (task, other)
+);
+CREATE TABLE messages (
+  task  INTEGER NOT NULL REFERENCES tasks (id),
+  other INTEGER NOT NULL REFERENCES tasks (id),
+  at    TEXT NOT NULL
+);
+PRAGMA user_version = 112;
+";
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1994,7 +2011,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.

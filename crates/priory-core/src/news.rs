@@ -74,16 +74,23 @@ pub(crate) fn keep(
     let Some(text) = line(kind, data) else {
         return Ok(());
     };
-    let text = match agree(tx, task, data)? {
+    let text = match agree(tx, task, Some(seq), data)? {
         Some(agree) => format!("{text} {agree}"),
         None => text,
     };
-    tell(tx, task, Some(seq), &text)
+    tell(tx, task, Some(seq), &text, None)
 }
 
 /// When `data` marks the issue of `task` a duplicate of an issue another active task works on: how
-/// the two agree which continues. It also tells the other task, if it runs.
-pub(crate) fn agree(tx: &Transaction, task: i64, data: &Value) -> rusqlite::Result<Option<String>> {
+/// the two agree which continues. It relates the two tasks, which lets them message each other, and
+/// tells the other task, if it runs. `seq`, the event's inbox entry, keeps a second call for the
+/// same event from telling it twice.
+pub(crate) fn agree(
+    tx: &Transaction,
+    task: i64,
+    seq: Option<i64>,
+    data: &Value,
+) -> rusqlite::Result<Option<String>> {
     let Some(of) = data["duplicate_of"].as_str() else {
         return Ok(None);
     };
@@ -102,13 +109,23 @@ pub(crate) fn agree(tx: &Transaction, task: i64, data: &Value) -> rusqlite::Resu
         row.get(0)
     })?;
     let issue = data["issue"].as_str().unwrap_or("-");
+    // A task that only subscribes to the issue does not work on it.
+    if key != format!("linear:{issue}") {
+        return Ok(None);
+    }
+    crate::relate::insert(tx, task, "relates", other, "priory")?;
+    tx.execute(
+        "INSERT OR IGNORE INTO pairs (task, other) VALUES (?1, ?2)",
+        params![task, other],
+    )?;
     tell(
         tx,
         other,
-        None,
+        seq,
         &format!(
             "Task {task} ({key}) works on {issue}, now a duplicate of {of}, your issue. It may message you to agree which task continues. {AGREE}"
         ),
+        None,
     )?;
     Ok(Some(format!(
         "Task {other} ({other_key}) works on {of}. {AGREE}"
@@ -116,15 +133,17 @@ pub(crate) fn agree(tx: &Transaction, task: i64, data: &Value) -> rusqlite::Resu
 }
 
 /// How two tasks on the same work agree which continues.
-const AGREE: &str = "Agree with the other task which one continues: send it a message with the message tool. The task that stops gives its branch, commits and findings to the other with the hand_over tool. If you disagree, ask the person with the ask tool.";
+const AGREE: &str = "Agree with the other task which one continues: send it a message with the message tool. The task that stops pushes its branch, then hands over with the hand_over tool, whose summary says what it found and what is left. If you disagree, ask the person with the ask tool.";
 
 /// Records `text` for the live run of `task`, if it runs, and marks it for the hook. `seq` is the
-/// inbox entry it came from, if any.
+/// inbox entry it came from, if any. `outbox` is a queued prompt that carries the same text after
+/// the turn, which a call that shows the news withdraws.
 pub(crate) fn tell(
     tx: &Transaction,
     task: i64,
     seq: Option<i64>,
     text: &str,
+    outbox: Option<i64>,
 ) -> rusqlite::Result<()> {
     let session: Option<String> = tx
         .query_row(
@@ -139,9 +158,9 @@ pub(crate) fn tell(
         return Ok(());
     };
     tx.execute(
-        "INSERT OR IGNORE INTO news (run, seq, text)
-         SELECT id, ?2, ?3 FROM runs WHERE session = ?1 AND ended IS NULL",
-        params![session, seq, text],
+        "INSERT OR IGNORE INTO news (run, seq, text, outbox)
+         SELECT id, ?2, ?3, ?4 FROM runs WHERE session = ?1 AND ended IS NULL",
+        params![session, seq, text, outbox],
     )?;
     // Best effort: a marker that outlives a rolled-back transaction makes the hook ask for nothing.
     let marker = marker(&session);
@@ -152,9 +171,17 @@ pub(crate) fn tell(
     Ok(())
 }
 
-/// Marks the news `ids` of `session`'s live run shown.
+/// Marks the news `ids` of `session`'s live run shown, and withdraws the queued prompt of each, so
+/// it reaches the agent once.
 fn mark_shown(tx: &Transaction, session: &str, ids: &[i64]) -> rusqlite::Result<()> {
     let ids = serde_json::to_string(ids).expect("ids serialize");
+    tx.execute(
+        "UPDATE outbox SET state = 'withdrawn' WHERE state = 'queued' AND id IN (
+           SELECT news.outbox FROM news JOIN runs ON runs.id = news.run
+           WHERE runs.session = ?1 AND runs.ended IS NULL
+           AND news.id IN (SELECT value FROM json_each(?2)))",
+        params![session, ids],
+    )?;
     tx.execute(
         "UPDATE news SET shown = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE shown IS NULL AND run IN (SELECT id FROM runs WHERE session = ?1 AND ended IS NULL)

@@ -433,16 +433,18 @@ always the caller's own. `priory relate TASK KIND OTHER` does the same for any t
 
 ## `message(task, text)`
 
-`message` sends `text` to the agent of the active task `task`, such as the task whose issue the
-caller's issue duplicates. It does not end the turn. The other agent reads
+`message` sends `text` to the agent of the active task the caller's is paired with: the one whose
+issue the caller's issue duplicates, or the reverse. It does not end the turn. The other agent reads it once, as
 `Task 3 (linear:ENG-7) says: <text>`:
 
-- during its turn, on its next tool call, when it runs (see
-  [News during a turn](../daemon/routing.md#news-during-a-turn));
+- on its next tool call, when it runs (see
+  [News during a turn](../daemon/routing.md#news-during-a-turn)). A push or a result after it is
+  held once, as for any news. When the turn ends before a tool call shows it, a prompt of its own
+  carries it after the turn;
 - as a prompt that wakes it, when it sleeps at a model step;
 - on its open step ask, when a person decides.
 
-It answers with `message` too. See
+It answers with `message` too. A pair of tasks may send each other six messages an hour. See
 [Two tasks on the same work](../daemon/routing.md#two-tasks-on-the-same-work).
 
 ```json
@@ -454,20 +456,26 @@ It answers with `message` too. See
 | `a task does not message itself` | `task` is the caller's own |
 | `no task <id>` | no task has that id |
 | `task <id> is <state>` | the task is done, failed or dropped |
+| `task <id> is not paired with task <id>: an agent may reach only the task that a duplicate's news names` | no duplicate's event paired the two tasks. A relation does not count |
+| `task <a> and task <b> sent each other 6 messages in the last hour: ...` | the pair already sent six messages, in either direction, in the last hour |
 | `task <id> is at step <step>, which no agent runs` | the task waits at a human step with no open ask |
 | `task <id> has no run yet: say it once its agent started` | the task's agent has not started |
 
 ## `hand_over(task, summary)`
 
-`hand_over` stops the caller's task and gives its work to the active task `task`, once the two
+`hand_over` stops the caller's task and gives its work to the paired active task `task`, once the two
 agents agreed which continues. The other agent reads `Task 3 (linear:ENG-7) stopped and handed its
-work over to you: <summary>` the way `message` delivers. Priory records that `task` takes up the
-caller's task, then drops the caller's task with the reason `handed over to task 7 (linear:ENG-9)`
-and ends its run. Push the branch before you call it. It takes the same refusals as `message`, and
-unread news refuses it once, as it refuses `result`.
+work over to you. Its branch is priory/3. It says: <summary>`, delivered as `message` delivers.
+Priory records that `task` takes up the caller's task, then drops the caller's task with the reason
+`handed over to task 7 (linear:ENG-9)` and ends its run.
+
+The other task gets the branch as origin has it. So `hand_over` is refused while the caller's branch
+holds commits that origin lacks: `branch priory/3 has commits origin lacks: push it first, ...`. It
+takes the same refusals as `message`, except the hourly cap, and it is refused during a debate turn,
+as `result` is. Unread news refuses it once, as it refuses `result`.
 
 ```json
-{ "task": 7, "summary": "Branch priory/3 holds commit 1a2b3c4 with the failing test for the empty case. Left: the fix." }
+{ "task": 7, "summary": "The failing test for the empty case is in. Left: the fix itself." }
 ```
 
 ## `finding(key, title, details?)`

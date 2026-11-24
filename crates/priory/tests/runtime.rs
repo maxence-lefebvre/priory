@@ -72,7 +72,7 @@ macro_rules! undo_pre {
   ALTER TABLE tasks DROP COLUMN pre_context; ALTER TABLE tasks DROP COLUMN pre_script; DROP TABLE pending_requests;
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
-  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv; DROP TABLE news;
+  ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv; DROP TABLE messages; DROP TABLE pairs; DROP TABLE news;
   "
     };
 }
@@ -19365,9 +19365,9 @@ fn a_cancel_wakes_a_task_asleep_at_its_checks_gate() {
     );
 }
 
-/// Task 1 on ENG-7 asleep for an hour, and task 2 on ENG-9 in a turn that stays live. Returns
-/// task 2's harness session.
-fn two_tasks(name: &str) -> (Setup, String) {
+/// Task 1 on ENG-7 asleep for an hour, and task 2 on ENG-9 in a turn that stays live, a pair when
+/// `paired`. Returns task 2's harness session.
+fn two_tasks(name: &str, paired: bool) -> (Setup, String) {
     let mut setup = Setup::new(name);
     let hour = wait(json!({ "type": "time", "until": "1 hour" }));
     setup.calls(&[hour, serde_json::Value::Null]);
@@ -19377,7 +19377,20 @@ fn two_tasks(name: &str) -> (Setup, String) {
     setup.hold("hold-stop");
     setup.publish(&linear_requested("ENG-9", "second"));
     let runs = setup.until("runs", |rows| rows.len() == 2);
+    if paired {
+        setup.pair();
+    }
     (setup, runs[1][4].clone())
+}
+
+impl Setup {
+    /// Pairs tasks 1 and 2, as a duplicate's event does, without the news it brings.
+    fn pair(&self) {
+        let db = rusqlite::Connection::open(self.dir.join("priory.db")).unwrap();
+        db.busy_timeout(Duration::from_secs(10)).unwrap();
+        db.execute("INSERT INTO pairs (task, other) VALUES (1, 2)", [])
+            .unwrap();
+    }
 }
 
 fn tool_call(name: &str, arguments: serde_json::Value) -> serde_json::Value {
@@ -19385,9 +19398,33 @@ fn tool_call(name: &str, arguments: serde_json::Value) -> serde_json::Value {
             "params": { "name": name, "arguments": arguments } })
 }
 
+impl Setup {
+    /// What `priory hook PreToolUse` prints for an `ls` of the run whose harness session is
+    /// `session`.
+    fn hook_ls(&self, session: &str) -> String {
+        use std::io::Write;
+        let mut hook = self
+            .command(env!("CARGO_BIN_EXE_priory"))
+            .args(["hook", "PreToolUse"])
+            .env("PRIORY_SESSION", session)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = json!({ "session_id": session, "tool_name": "Bash",
+            "tool_input": { "command": "ls" }, "cwd": self.dir });
+        hook.stdin
+            .take()
+            .unwrap()
+            .write_all(input.to_string().as_bytes())
+            .unwrap();
+        String::from_utf8(hook.wait_with_output().unwrap().stdout).unwrap()
+    }
+}
+
 #[test]
-fn a_message_from_another_task_wakes_the_task_with_who_sent_it() {
-    let (setup, session) = two_tasks("talk-message");
+fn a_message_from_a_related_task_wakes_the_task_with_who_sent_it() {
+    let (setup, session) = two_tasks("talk-message", true);
 
     let replies = setup.mcp(
         &session,
@@ -19412,14 +19449,20 @@ fn a_message_from_another_task_wakes_the_task_with_who_sent_it() {
 }
 
 #[test]
-fn a_message_to_a_missing_task_or_itself_is_refused() {
-    let (setup, session) = two_tasks("talk-refused");
+fn a_message_to_itself_a_missing_task_or_an_unpaired_one_is_refused() {
+    let (setup, session) = two_tasks("talk-refused", false);
+    // An agent's shell can run this too, so it lets no pair talk.
+    let related = setup.priory(&["relate", "2", "builds-on", "1"]);
+    assert!(related.status.success(), "{related:?}");
 
     let replies = setup.mcp(
         &session,
         &[
             tool_call("message", json!({ "task": 2, "text": "hi" })),
             tool_call("message", json!({ "task": 9, "text": "hi" })),
+            tool_call("relate", json!({ "kind": "relates", "task": 1 })),
+            tool_call("message", json!({ "task": 1, "text": "hi" })),
+            tool_call("hand_over", json!({ "task": 1, "summary": "hi" })),
         ],
     );
 
@@ -19428,20 +19471,106 @@ fn a_message_to_a_missing_task_or_itself_is_refused() {
         ("a task does not message itself".to_owned(), true)
     );
     assert_eq!(reply(&replies[1]), ("no task 9".to_owned(), true));
+    let (text, error) = reply(&replies[2]);
+    assert!(!error, "{text}");
+    for refused in &replies[3..] {
+        let (text, error) = reply(refused);
+        assert!(error, "{text}");
+        assert!(
+            text.starts_with("task 1 is not paired with task 2"),
+            "{text}"
+        );
+    }
 }
 
 #[test]
-fn a_hand_over_drops_the_caller_with_a_link_and_gives_the_other_its_summary() {
-    let (setup, session) = two_tasks("talk-hand-over");
+fn a_pair_that_sent_six_messages_in_an_hour_is_refused_a_seventh() {
+    let (setup, session) = two_tasks("talk-cap", true);
+    let say = |text: &str| tool_call("message", json!({ "task": 1, "text": text }));
+    let lines: Vec<_> = (1..=7).map(|n| say(&format!("message {n}"))).collect();
+
+    let replies = setup.mcp(&session, &lines);
+
+    for sent in &replies[..6] {
+        assert_eq!(reply(sent), ("task 1 has your message".to_owned(), false));
+    }
+    let (text, error) = reply(&replies[6]);
+    assert!(error, "{text}");
+    assert_eq!(
+        text,
+        "task 2 and task 1 sent each other 6 messages in the last hour: if you still disagree, ask the person with the ask tool"
+    );
+}
+
+#[test]
+fn a_message_to_a_running_task_reaches_its_next_call_once_and_not_after_its_turn() {
+    let mut setup = Setup::new("talk-running");
+    // Task 2 on ENG-9 takes the first turn and stays live; task 1 on ENG-7 lists files in its own.
+    setup.calls(&[serde_json::Value::Null, json!([bash("ls")])]);
+    setup.hold("hold-stop");
+    setup.publish(&linear_requested("ENG-9", "first"));
+    setup.start();
+    let runs = setup.until("runs", |rows| rows.len() == 1);
+    let session = runs[0][4].clone();
+    setup.calls_left(1);
+    setup.hold("hold-call");
+    setup.publish(&linear_requested("ENG-7", "second"));
+    setup.until("runs", |rows| rows.len() == 2);
+    setup.written("fake/submitted");
+    setup.pair();
 
     let replies = setup.mcp(
         &session,
         &[tool_call(
-            "hand_over",
-            json!({ "task": 1, "summary": "branch priory/2 holds commit abc1234 and the failing test." }),
+            "message",
+            json!({ "task": 2, "text": "I continue." }),
         )],
     );
+    setup.release("hold-call");
 
+    assert_eq!(
+        reply(&replies[0]),
+        ("task 2 has your message".to_owned(), false)
+    );
+    let shown = &setup.replied(1)[0];
+    let context = shown["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{shown}"));
+    assert!(
+        context.contains(
+            "Task 1 (linear:ENG-9) says: I continue.\nAnswer it with the message tool, giving task 1."
+        ),
+        "{context}"
+    );
+    let outbox = setup.rows("outbox");
+    let carried: Vec<_> = outbox
+        .iter()
+        .filter(|row| row[4].starts_with("Task 1 (linear:ENG-9) says:"))
+        .collect();
+    assert_eq!(carried.len(), 1, "{outbox:?}");
+    assert_eq!(carried[0][3], "withdrawn", "{outbox:?}");
+}
+
+#[test]
+fn a_hand_over_waits_for_a_push_then_drops_the_caller_with_a_link_and_gives_the_other_its_summary()
+{
+    let (setup, session) = two_tasks("talk-hand-over", true);
+    let hand_over = tool_call(
+        "hand_over",
+        json!({ "task": 1, "summary": "the failing test for the empty case is in; the fix is left." }),
+    );
+    setup.work_on(2);
+
+    let refused = setup.mcp(&session, std::slice::from_ref(&hand_over));
+    setup.push(2);
+    let replies = setup.mcp(&session, &[hand_over]);
+
+    let (text, error) = reply(&refused[0]);
+    assert!(error, "{text}");
+    assert!(
+        text.starts_with("branch priory/2 has commits origin lacks: push it first"),
+        "{text}"
+    );
     let (text, error) = reply(&replies[0]);
     assert!(!error, "{text}");
     assert_eq!(text, "task 2 dropped: task 1 continues it");
@@ -19456,22 +19585,40 @@ fn a_hand_over_drops_the_caller_with_a_link_and_gives_the_other_its_summary() {
         rows.iter().any(|row| {
             row[1] == "1"
                 && row[4].starts_with(
-                    "Task 2 (linear:ENG-9) stopped and handed its work over to you: branch priory/2",
+                    "Task 2 (linear:ENG-9) stopped and handed its work over to you. Its branch is priory/2. It says: the failing test",
                 )
         })
     });
-    let graph = String::from_utf8(setup.priory(&["tasks", "--graph"]).stdout).unwrap();
-    assert!(graph.contains("1 takes-up 2"), "{graph}");
+    let task: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["task", "1", "--json"]).stdout).unwrap();
+    let takes_up: Vec<_> = task["relations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|relation| relation["kind"] == "takes-up")
+        .map(|relation| [&relation["task"], &relation["other"], &relation["by"]])
+        .collect();
+    assert_eq!(
+        takes_up,
+        [[&json!(1), &json!(2), &json!("agent")]],
+        "{task}"
+    );
 }
 
 #[test]
-fn a_duplicate_of_an_issue_another_task_works_on_names_that_task() {
+fn a_duplicate_of_an_issue_another_running_task_works_on_tells_both_once_and_relates_them() {
     let mut setup = Setup::new("talk-duplicate");
-    let hour = wait(json!({ "type": "time", "until": "1 hour" }));
-    setup.calls(&[hour, json!([bash("gh pr create --title T --body B")])]);
+    // Task 1 on ENG-9 takes the first turn and stays live; task 2 on ENG-7 then opens a pull request.
+    setup.calls(&[
+        serde_json::Value::Null,
+        json!([bash("gh pr create --title T --body B")]),
+    ]);
+    setup.hold("hold-stop");
     setup.publish(&linear_requested("ENG-9", "first"));
     setup.start();
-    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    let runs = setup.until("runs", |rows| rows.len() == 1);
+    let other = runs[0][4].clone();
+    setup.calls_left(1);
     setup.hold("hold-call");
     setup.publish(&linear_requested("ENG-7", "second"));
     setup.until("runs", |rows| rows.len() == 2);
@@ -19484,12 +19631,58 @@ fn a_duplicate_of_an_issue_another_task_works_on_names_that_task() {
 
     setup.release("hold-call");
 
-    let replies = setup.replied(2);
-    let reason = guard_denied(&replies[1]).unwrap_or_else(|| panic!("{replies:?}"));
+    let replies = setup.replied(1);
+    let reason = guard_denied(&replies[0]).unwrap_or_else(|| panic!("{replies:?}"));
     assert!(
         reason.contains("as a duplicate of ENG-9. https://linear.app/acme/issue/ENG-7 Task 1 (linear:ENG-9) works on ENG-9. Agree with the other task which one continues"),
         "{reason}"
     );
+    let printed = setup.hook_ls(&other);
+    let told = "Task 2 (linear:ENG-7) works on ENG-7, now a duplicate of ENG-9, your issue.";
+    assert_eq!(printed.matches(told).count(), 1, "{printed}");
+    let graph = String::from_utf8(setup.priory(&["tasks", "--graph"]).stdout).unwrap();
+    assert!(graph.contains("2 relates 1"), "{graph}");
+    let sent = setup.mcp(
+        &other,
+        &[tool_call(
+            "message",
+            json!({ "task": 2, "text": "I continue." }),
+        )],
+    );
+    assert_eq!(
+        reply(&sent[0]),
+        ("task 2 has your message".to_owned(), false)
+    );
+}
+
+#[test]
+fn a_duplicate_that_fires_the_checks_gate_tells_the_other_running_task_once() {
+    let mut setup = Setup::new("talk-duplicate-gate");
+    setup.calls(&[
+        wait(on_pull_7("review")),
+        passed_at("abc0000000000000000000000000000000000000"),
+    ]);
+    setup.publish(&linear_requested("ENG-7", "first"));
+    setup.start();
+    setup.until("runs", |rows| rows.len() == 1 && rows[0][7] == "asleep");
+    setup.publish(&reviewed());
+    setup.until("runs", |rows| rows.len() == 2 && rows[1][7] != "-");
+    setup.gone("priory-1");
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    setup.hold("hold-stop");
+    setup.publish(&linear_requested("ENG-9", "second"));
+    let runs = setup.until("runs", |rows| rows.len() == 3);
+    let other = runs[2][4].clone();
+
+    setup.publish(&moved_to("Duplicate", "canceled"));
+
+    setup.until("outbox", |rows| {
+        rows.iter()
+            .any(|row| row[4].starts_with("wait 2 fired: Ana moved ENG-7 to Duplicate"))
+    });
+    let printed = setup.hook_ls(&other);
+    let told = "Task 1 (linear:ENG-7) works on ENG-7, now a duplicate of ENG-9, your issue.";
+    assert_eq!(printed.matches(told).count(), 1, "{printed}");
 }
 
 #[test]

@@ -303,7 +303,7 @@ pub(crate) fn call(
             stored
         }
         "hand_over" => {
-            let (stored, ended) = crate::talk::hand_over(&tx, run.task, &call.arguments, factory)?;
+            let (stored, ended) = crate::talk::hand_over(&tx, &run, &call.arguments, factory)?;
             kill = ended;
             stored
         }
@@ -1607,11 +1607,14 @@ pub(crate) fn gate_feedback(
     // Only a cancel: a merge moves a Linear issue to Done and closes issues, and ends the task.
     let news = crate::news::line(&message.kind, &message.data)
         .filter(|_| message.data["to_type"] == "canceled");
-    let resource = feedback_on(&message.kind, &message.data)
-        .filter(|_| !FEEDBACK.contains(&message.kind.as_str()));
-    if news.is_none() && resource.is_none() {
+    // The news itself, or else the resource a comment or reply is on.
+    let Some(about) = news.map(Ok).or_else(|| {
+        feedback_on(&message.kind, &message.data)
+            .filter(|_| !FEEDBACK.contains(&message.kind.as_str()))
+            .map(Err)
+    }) else {
         return Ok(false);
-    }
+    };
     let gate: Option<i64> = tx.query_row(
         "SELECT min(waits.id) FROM waits JOIN tasks ON tasks.id = waits.task
          WHERE waits.task = ?1 AND waits.daemon AND waits.fired IS NULL AND waits.withdrawn IS NULL
@@ -1622,13 +1625,12 @@ pub(crate) fn gate_feedback(
     let Some(gate) = gate else {
         return Ok(false);
     };
-    let said = match (news, resource) {
-        (Some(news), _) => match crate::news::agree(tx, task, &message.data)? {
+    let said = match about {
+        Ok(news) => match crate::news::agree(tx, task, seq, &message.data)? {
             Some(agree) => format!("{news} {agree}"),
             None => news,
         },
-        (None, Some(resource)) => reopened_by(&resource, None, &message.kind, &message.data),
-        (None, None) => return Ok(false),
+        Err(resource) => reopened_by(&resource, None, &message.kind, &message.data),
     };
     let mut text = format!("wait {gate} fired: {said}");
     // Another task kept the event, so its whole line goes with the reason.

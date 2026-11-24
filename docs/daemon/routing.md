@@ -435,18 +435,27 @@ A Linear issue marked a duplicate of another can leave two active tasks that bui
 When the other issue has an active task, the duplicate's news names it and says how the two agree:
 
 ```text
-Ana moved ENG-7 to Duplicate (canceled), as a duplicate of ENG-9. https://linear.app/acme/issue/ENG-7 Task 4 (linear:ENG-9) works on ENG-9. Agree with the other task which one continues: send it a message with the message tool. The task that stops gives its branch, commits and findings to the other with the hand_over tool. If you disagree, ask the person with the ask tool.
+Ana moved ENG-7 to Duplicate (canceled), as a duplicate of ENG-9. https://linear.app/acme/issue/ENG-7 Task 4 (linear:ENG-9) works on ENG-9. Agree with the other task which one continues: send it a message with the message tool. The task that stops pushes its branch, then hands over with the hand_over tool, whose summary says what it found and what is left. If you disagree, ask the person with the ask tool.
 ```
 
-The other task's run reads a line that names the duplicate's task, when it runs. A task asleep at
-its checks gate wakes with the same text.
+Priory pairs the two tasks and records that the duplicate's task relates to the other. The other
+task's run reads a line that names the duplicate's task, when it runs. A task asleep at its checks
+gate wakes with the same text. Each run reads its line once per event, even when routing and the
+checks gate both handle that event.
 
 The agents talk with the [`message`](../reference/tools.md#messagetask-text) tool, which reaches the
 other agent during its turn, or wakes it. The task that stops calls
-[`hand_over`](../reference/tools.md#hand_overtask-summary): the other agent gets its summary, Priory
-records that the other task takes it up, and drops it with the reason `handed over to task 4
-(linear:ENG-9)`. `priory tasks` shows that reason, and `priory tasks --graph` shows `4 takes-up 7`.
-When the agents disagree, either one asks the person with `ask`. Priory picks no task itself.
+[`hand_over`](../reference/tools.md#hand_overtask-summary) once its branch is pushed: the other
+agent gets the branch and the summary, Priory records that the other task takes it up, and drops it
+with the reason `handed over to task 4 (linear:ENG-9)`. `priory tasks` shows that reason, and
+`priory task 4 --json` lists the relation. When the agents disagree, either one asks the person with
+`ask`. Priory picks no task itself.
+
+An agent reaches only the task its own is paired with, and only a duplicate's event pairs two tasks.
+A relation does not count: an agent can record one with the `relate` tool or `priory relate`, and a
+pull request link in a request's text makes one, so an issue's text could steer a run to any task.
+A pair may send each other six messages an hour, so two agents cannot wake each other without end.
+Past that, they ask the person.
 
 A task asleep at a model step wakes on the duplicate's state change with the event alone, without
 the line that names the other task.
