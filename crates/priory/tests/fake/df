@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # A stand-in for `df -Pk`: prints FAKE_DIR/df when a test wrote one, else a disk with 100 GiB free of 200 GiB.
+echo call >> "$FAKE_DIR/df.log"
 if [ -e "$FAKE_DIR/df" ]; then
   cat "$FAKE_DIR/df"
 else

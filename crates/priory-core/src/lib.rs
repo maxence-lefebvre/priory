@@ -1,3 +1,4 @@
+mod attach;
 pub mod batch;
 pub mod bench;
 pub mod capture;

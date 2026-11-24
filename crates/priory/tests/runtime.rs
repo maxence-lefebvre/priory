@@ -16853,7 +16853,7 @@ fn attach_read_only_adds_tmuxs_read_only_flag() {
     assert_eq!(
         String::from_utf8(printed.stdout).unwrap(),
         format!(
-            "tmux -S {} attach-session -r -t '=priory-1'\n",
+            "tmux -S {} attach-session -f read-only,ignore-size -t '=priory-1'\n",
             socket(&setup)
         )
     );
@@ -33151,4 +33151,100 @@ fn a_daemon_restart_keeps_a_live_cloud_run_and_claims_its_later_push() {
     assert_eq!(runs.len(), 1, "{runs:?}");
     assert_eq!(setup.cloud_prompts().len(), 1);
     assert_eq!(task_json(&setup, "1")["results"][0]["outcome"], "pushed");
+}
+
+
+/// A factory whose `[runs] attach` command writes its arguments and ids to `attached`, then exits
+/// with `exit`; with `flagged`, the implement step sets `attach = true`.
+fn attaching(name: &str, flagged: bool, exit: u8) -> Setup {
+    let workflow = if flagged {
+        WORKFLOW.replace(
+            "prompt = \"Implement the issue.\"\n",
+            "prompt = \"Implement the issue.\"\nattach = true\n",
+        )
+    } else {
+        WORKFLOW.to_owned()
+    };
+    let setup = Setup::with_workflow(name, &workflow);
+    let factory = setup.dir.join("factory");
+    fs::write(
+        factory.join("factory.toml"),
+        "name = \"demo\"\n[runs]\nattach = \"bin/attach\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(factory.join("bin")).unwrap();
+    let script = factory.join("bin/attach");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho \"$1 $2 $PRIORY_TASK $PRIORY_RUN $PRIORY_TMUX $PRIORY_EXE\" >> attached\n\
+             echo 'hc: no such space' >&2\nexit {exit}\n"
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    setup
+}
+
+fn attached(setup: &Setup) -> Option<String> {
+    fs::read_to_string(setup.dir.join("factory/attached")).ok()
+}
+
+#[test]
+fn attach_runs_the_command_once_with_the_task_and_run_when_a_flagged_steps_run_starts() {
+    let mut setup = attaching("attach-flagged", true, 0);
+    setup.publish(&requested(42));
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "running")
+    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while attached(&setup).is_none() {
+        assert!(Instant::now() < deadline, "the attach command never ran");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    std::thread::sleep(Duration::from_secs(1));
+
+    assert_eq!(
+        attached(&setup).unwrap(),
+        format!("1 1 1 1 priory-1 {}\n", env!("CARGO_BIN_EXE_priory"))
+    );
+    assert!(traced(&setup, "factory.run.attach_failed").is_empty());
+}
+
+#[test]
+fn attach_runs_nothing_for_a_step_without_attach() {
+    let mut setup = attaching("attach-unflagged", false, 0);
+    setup.publish(&requested(42));
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "running")
+    });
+    std::thread::sleep(Duration::from_secs(1));
+
+    assert_eq!(attached(&setup), None);
+}
+
+#[test]
+fn a_failing_attach_command_leaves_the_run_running_and_records_why() {
+    let mut setup = attaching("attach-failing", true, 3);
+    setup.publish(&requested(42));
+    setup.start();
+
+    let record = until_traced(&setup, "factory.run.attach_failed");
+
+    assert_eq!(
+        [
+            &record["data"]["task"],
+            &record["data"]["run"],
+            &record["data"]["step"],
+            &record["data"]["reason"],
+            &record["data"]["output"],
+        ],
+        ["1", "1", "implement", "exit 3", "hc: no such space"]
+    );
+    assert_eq!(setup.rows("tasks")[0][4], "running");
+    assert_eq!(setup.rows("runs")[0][7], "-");
 }

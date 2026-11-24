@@ -103,7 +103,7 @@ The daemon never marks these runs, and withdraws a mark it finds on one at the t
 | ------- | --- |
 | Is at a step whose effect is `irreversible` | A stop between two of its calls could leave a push without its pull request |
 | Has an open keyboard grant | A person is typing in it |
-| Has a tmux client attached | A person is watching or typing. A `tmux list-clients` that fails counts as a client |
+| Has a tmux client attached that can type | A person may type. A read-only client does not count. A `tmux list-clients` that fails counts as a client |
 | Runs in a shared session | It serves several tasks |
 | Belongs to the sweeper | It frees the room the queue waits for |
 | Belongs to a task in the head's band or a higher one | A band never stops itself. `priory move --band` protects a task |
@@ -175,6 +175,8 @@ A turn end is the only stop point. A turn can run up to its step's `timeout`, so
 wait that long.
 
 ## Measurements
+
+The daemon can send these measurements as [the room group](metrics.md#the-room-group) of its metrics.
 
 `PRIORY_PROC` names a directory to read in place of `/proc`, and `PRIORY_CGROUP` one to read in
 place of `/sys/fs/cgroup`. The tests use them, with a fake `df` on `PATH`, to steer measurements.

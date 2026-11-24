@@ -55,6 +55,9 @@ workspace = "a86dr8yl"                         # the one workspace whose notific
 deliver = "bin/deliver"                        # delivers outside answers, from the factory folder
 targets = { ops = "../ops" }                   # where an answer can run an ask's command
 
+[runs]
+attach = "bin/attach"                          # opens each run of an attach = true step
+
 [request]
 workflow = "implement"                         # what priory add starts without --workflow
 band = "today"                                 # its band without --band

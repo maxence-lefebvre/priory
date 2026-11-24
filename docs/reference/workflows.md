@@ -35,6 +35,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `prompt` | string | model steps | | What the step tells its agent | `"Implement the plan."` |
 | `timeout` | duration | no | none, or `command_timeout` for a command, or `"2h"` for a cloud step | How long one turn of a model step, a `run` action's command, or the command a human step's answer runs, may run before Priory ends it. A cloud step that pushed no branch by then ends `failed` | `"30m"` |
 | `budget` | string | no | none | Model steps only. The dollars the task may spend at this step, as an amount above zero. At each turn end, Priory prices the step's tokens with `prices.toml`, by the model the transcript names. A turn over it that sent a result moves the task and its `factory.step.ended` record carries `overrun`. Any other turn over it, or a turn whose cost is unknown, ends the run and fails the task. Inside a turn, the daemon reads the transcript at most once a minute and ends a run that passed the budget, unless it sent its result. See [health.md](../daemon/health.md#budget) | `"1.00"` |
+| `attach` | boolean | no | `false` | Model steps only, debate steps included. Each new run of the step runs the factory's `[runs] attach` command, which opens the run where a person can watch it. See [sessions.md](../daemon/sessions.md#opening-a-run-when-it-starts) | `true` |
 | `record` | string | no | none | Model steps only. The factory's command that records evidence after the step's result, relative to the factory folder. It must be an executable file inside the folder. The daemon runs it in a checkout of the result's commit, and admits the files it writes as the result's items. See [evidence.md](../daemon/evidence.md) | `"scripts/record-login"` |
 | `options` | array of strings | human steps | `[]` | The answers a person picks from | `["open", "stop"]` |
 | `question` | string | no | the step's id | Human steps only: what the ask says. It may name fields of the task's event, as `command` does. See [Fields of the task's event](#fields-of-the-tasks-event) | `"Compare pull request {pull_request}?"` |
@@ -400,6 +401,8 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` step `<id>`: `budget` needs prices.toml, which turns the step's tokens into dollars `` | A `budget` in a factory without `prices.toml` |
 | `` step `<id>`: only a model step has a `budget` `` | A `budget` on a human or code step |
 | `` step `<id>`: only a model step has a `record` command `` | A `record` on a human or code step |
+| `` step `<id>`: only a model step has `attach = true` `` | `attach = true` on a human or code step |
+| `` step `<id>`: `attach = true` needs `[runs] attach` in the factory's settings `` | `attach = true` in a factory without a `[runs] attach` command |
 | `` step `<id>`: `record`: <path> leads outside the factory folder `` | A `record` path through `..` or a symbolic link that leaves the factory folder |
 | `` step `<id>`: `record`: <path> is not a file in the factory folder `` | A `record` path that does not exist or is a folder |
 | `` step `<id>`: `record`: <path> is not executable: chmod +x it `` | A `record` file without an execute bit |

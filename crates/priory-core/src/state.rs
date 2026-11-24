@@ -3361,6 +3361,16 @@ pub(crate) struct Admission {
     pub lane: Option<String>,
 }
 
+/// One pass over the queue.
+pub(crate) struct Pass {
+    /// The task to start, if any. The pass stops at it.
+    pub admission: Option<Admission>,
+    /// What live runs and held grants reserved in this pass.
+    pub promised: room::Need,
+    /// The tasks passed that wait for room, by what their queue's head lacks.
+    pub waiting: BTreeMap<&'static str, u64>,
+}
+
 /// The first queued or ready task at a model step, in start order, that fits in the runner's room.
 /// Each one before it gets the reason it waits.
 pub(crate) fn admissible<'r>(
@@ -3371,7 +3381,7 @@ pub(crate) fn admissible<'r>(
     room: impl Fn() -> &'r Result<Room, String>,
     watched: &dyn Fn(&str) -> bool,
     checking: &dyn Fn(i64) -> bool,
-) -> rusqlite::Result<Option<Admission>> {
+) -> rusqlite::Result<Pass> {
     let mut statement = db.prepare(&format!(
         "SELECT id, workflow, step, trigger, state = 'queued', repo, preempted, lane FROM tasks
              WHERE state IN ('queued', 'ready')
@@ -3405,6 +3415,7 @@ pub(crate) fn admissible<'r>(
     let book = crate::spend::Book::new(factory);
     // The first task that waits for room: no task behind it starts, so it is never starved.
     let mut head = None;
+    let mut waiting = BTreeMap::new();
     let mut stall = None;
     let mut planned = false;
     for admission in queued {
@@ -3468,7 +3479,10 @@ pub(crate) fn admissible<'r>(
             (None, _) if admission.trigger == crate::stall::TRIGGER => None,
             // A cloud run takes no room here, so it never waits for it or behind a task that does.
             (None, _) if agent.is_some_and(|(_, agent)| crate::cloud::is_cloud(agent)) => None,
-            (None, Some(head)) => Some(format!("waits behind task {head}, which waits for room")),
+            (None, Some((head, cause))) => {
+                *waiting.entry(cause).or_default() += 1;
+                Some(format!("waits behind task {head}, which waits for room"))
+            }
             (None, None) => {
                 let need = room::need(agent.map(|(_, agent)| agent));
                 match room() {
@@ -3486,14 +3500,20 @@ pub(crate) fn admissible<'r>(
                             )?;
                             continue;
                         }
+                        if let Some(short) = &short {
+                            *waiting.entry(short.cause()).or_default() += 1;
+                        }
                         // A task that can never fit would hold the queue forever.
-                        if short.is_some() && room::fits_ever(measured, share, need) {
-                            head = Some(admission.task);
+                        if let Some(short) = short
+                            .as_ref()
+                            .filter(|_| room::fits_ever(measured, share, need))
+                        {
+                            head = Some((admission.task, short.cause()));
                             // Waiting only for live runs to end is backpressure, not a stall.
                             stall = room::wait(measured, share, room::Need::default(), need)
                                 .map(|short| (admission.task, short));
                             // Only memory and declared disk are promises a stop gives back.
-                            if short.as_ref().is_some_and(|short| short.resource != "CPU") {
+                            if short.resource != "CPU" {
                                 planned = true;
                                 let urgent = crate::preempt::Head {
                                     task: admission.task,
@@ -3511,14 +3531,19 @@ pub(crate) fn admissible<'r>(
                         reason
                     }
                     Err(error) => {
-                        head = Some(admission.task);
+                        head = Some((admission.task, room::UNMEASURED));
+                        *waiting.entry(room::UNMEASURED).or_default() += 1;
                         Some(format!("waits for room: cannot measure it: {error}"))
                     }
                 }
             }
         };
         let Some(mut reason) = waits else {
-            return Ok(Some(admission));
+            return Ok(Pass {
+                admission: Some(admission),
+                promised,
+                waiting,
+            });
         };
         // A stopped task waits for the room its stop made; its own plan, if any, says more.
         if let Some(head) = admission.preempted
@@ -3537,7 +3562,11 @@ pub(crate) fn admissible<'r>(
         crate::preempt::withdraw(db)?;
     }
     crate::stall::record(db, stall.as_ref().map(|(task, short)| (*task, short)))?;
-    Ok(None)
+    Ok(Pass {
+        admission: None,
+        promised,
+        waiting,
+    })
 }
 
 /// Why a task waits for its lane's or trigger's `max_running`: `waits: lane core/intake has 2
