@@ -1638,7 +1638,7 @@ fn seal(dir: &Path) -> std::io::Result<()> {
 /// rename needs write access on the parent folder only.
 fn move_aside(home: &Path, path: &Path) -> Result<(), String> {
     let trash = home.join("trash");
-    fs::create_dir_all(&trash).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&trash).map_err(|error| format!("{}: {error}", trash.display()))?;
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
