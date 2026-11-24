@@ -24249,14 +24249,8 @@ fn a_task_moved_twice_to_other_linear_teams_keeps_its_claim_starts_and_is_not_cl
         json!({ "key": "linear:ENG-7", "runner": "a", "hold": "waiting" }),
     );
     b.start_with(exe, &[("PRIORY_NOW", T0)]);
-    // b read the request before a's claim, so it claimed too, and lost.
-    for side in [&a, &b] {
-        side.until("inbox", |rows| {
-            rows.iter().any(|row| {
-                row[1] == "priory.task.claimed" && row[2] == "linear:ENG-7" && row[4] == "refused"
-            })
-        });
-    }
+    // b reads that a holds the key, so it never publishes the claim it queued at the request.
+    until_outcome(&b, "priory.task.held", "linear:ENG-7", "noted");
 
     a.publish(&team_moved("ENG-7", "OPS-3"));
     a.publish(&team_moved("OPS-3", "SUP-9"));
@@ -36051,6 +36045,13 @@ fn a_claim_that_lost_before_a_move_is_not_published_under_the_old_key_after_it()
         .subject("linear:ENG-7"),
     );
     desktop.publish(&team_moved("ENG-7", "OPS-3"));
+    desktop.publish(
+        &Message::new(
+            "priory.task.held",
+            json!({ "key": "linear:OPS-3", "runner": "server", "hold": "kept", "generation": 1 }),
+        )
+        .subject("linear:OPS-3"),
+    );
     desktop.publish(&requested(2));
     let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
     desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
