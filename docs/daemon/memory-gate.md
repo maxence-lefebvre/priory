@@ -19,7 +19,9 @@ duration such as `90s`, `15m` or `2h`.
 3. The command polls the daemon every 250 ms. Once its grant is held, it starts a shell that waits
    for a go-ahead, hands the grant to that shell's process, and only then lets the shell run the
    command with `acquire`'s own working directory, environment and terminal. The shell becomes the
-   command, so the grant follows it. An `acquire` that dies before the hand-off closes the shell's
+   command, so the grant follows it. In a run, that environment is the run's own: its `PATH` and
+   every variable its harness got, including the worktree's direnv environment when the run starts
+   in it (see [sessions.md](sessions.md#with-trust_worktrees)). The gate adds and removes nothing. An `acquire` that dies before the hand-off closes the shell's
    go-ahead pipe, and the command never runs.
 4. When the command exits, however it exits, the grant is released. `acquire` exits with the
    command's code, or 128 plus the killing signal.
@@ -35,6 +37,9 @@ measure the room or refuses the grant, or when the grant still waits after `--ti
 default. A grant above the runner's share of the machine can never fit, so the daemon refuses it at
 once, as
 `9.0 GB never fits: this runner's agents may take 7.2 GB`. A command that cannot start exits 127, or 126 when it is not executable.
+`acquire` and `lease` look a program name without `/` up on `PATH` before they ask for a grant. A
+missing one exits 127 at once and takes no place in the queue, as
+`moon is not on PATH (/usr/bin:/bin); the command did not run`.
 
 `priory memory lease [--gb N] [--timeout D] -- <command>` runs a server or stack that stays up,
 such as a dev server, with N GB reserved for as long as it runs. It takes the same flags, waits in

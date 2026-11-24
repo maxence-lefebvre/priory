@@ -3078,6 +3078,21 @@ mod tests {
     }
 
     #[test]
+    fn a_detached_head_ahead_of_its_branch_with_a_cherry_pick_in_progress_blocks() {
+        let home = Home::new("picking");
+        let tree = home.tree();
+        sh(&tree, &["checkout", "--quiet", "--detach"]);
+        commit(&tree, "a.txt", "a\n");
+        let marker = tree.join(sh(&tree, &["rev-parse", "--git-path", "CHERRY_PICK_HEAD"]));
+        fs::write(&marker, sh(&tree, &["rev-parse", "HEAD"])).unwrap();
+
+        let reason = home.again().unwrap_err();
+
+        assert!(reason.contains("has a cherry-pick in progress"), "{reason}");
+        assert_eq!(sh(&tree, &["branch", "--show-current"]), "");
+    }
+
+    #[test]
     fn a_clean_worktree_on_another_branch_goes_back_and_that_branch_keeps_its_commits() {
         let home = Home::new("other");
         let tree = home.tree();

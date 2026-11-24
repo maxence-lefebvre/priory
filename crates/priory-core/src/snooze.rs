@@ -56,9 +56,9 @@ pub const FIELDS: &str = "CASE WHEN snoozes.back IS NULL
 fn listed(kind: &str) -> Option<&'static str> {
     Some(match kind {
         "ask" => {
-            "SELECT asks.task FROM asks JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1
+            "SELECT asks.task FROM asks LEFT JOIN tasks ON tasks.id = asks.task WHERE asks.id = ?1
              AND asks.answer IS NULL AND asks.withdrawn IS NULL
-             AND tasks.state NOT IN ('done', 'failed', 'dropped')"
+             AND coalesce(tasks.state, '') NOT IN ('done', 'failed', 'dropped')"
         }
         "blocked" => "SELECT id FROM tasks WHERE id = ?1 AND state = 'blocked'",
         "failed" => "SELECT id FROM tasks WHERE id = ?1 AND state = 'failed'",
@@ -77,6 +77,20 @@ pub(crate) fn snooze(
     snooze: &Snooze,
     trace: &Trace,
 ) -> rusqlite::Result<Result<String, String>> {
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let snoozed = snooze_in_tx(&tx, snooze, trace)?;
+    if snoozed.is_ok() {
+        tx.commit()?;
+    }
+    Ok(snoozed)
+}
+
+/// As `snooze`, in `tx`, which the caller commits.
+pub(crate) fn snooze_in_tx(
+    tx: &rusqlite::Transaction,
+    snooze: &Snooze,
+    trace: &Trace,
+) -> rusqlite::Result<Result<String, String>> {
     let Item { kind, id } = &snooze.snooze;
     let Some(listed) = listed(kind) else {
         return Ok(Err(format!(
@@ -88,22 +102,22 @@ pub(crate) fn snooze(
         "blocked" | "failed" => "task",
         kind => kind,
     };
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     // A replace or clear would drop an end the tick has not traced yet.
-    end(&tx, trace)?;
+    end(tx, trace)?;
     let Some(until) = &snooze.until else {
         let task = tx
             .query_row(
                 "DELETE FROM snoozes WHERE kind = ?1 AND item = ?2 RETURNING task",
                 params![stored, id],
-                |row| row.get::<_, i64>(0),
+                |row| row.get::<_, Option<i64>>(0),
             )
             .optional()?;
         let Some(task) = task else {
             return Ok(Err(format!("{kind} {id} is not snoozed")));
         };
-        trace::snoozed(&tx, trace, task, kind, *id, None)?;
-        tx.commit()?;
+        if let Some(task) = task {
+            trace::snoozed(tx, trace, task, kind, *id, None)?;
+        }
         return Ok(Ok(format!("{kind} {id} is back on the desk")));
     };
     let (valid, future): (bool, bool) = tx.query_row(
@@ -121,7 +135,7 @@ pub(crate) fn snooze(
         return Ok(Err(format!("{until} is not in the future")));
     }
     let Some(task) = tx
-        .query_row(listed, [id], |row| row.get::<_, i64>(0))
+        .query_row(listed, [id], |row| row.get::<_, Option<i64>>(0))
         .optional()?
     else {
         return Ok(Err(format!("{kind} {id} is not on the desk")));
@@ -131,8 +145,10 @@ pub(crate) fn snooze(
          VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?4)",
         params![stored, id, task, until],
     )?;
-    trace::snoozed(&tx, trace, task, kind, *id, Some(until))?;
-    tx.commit()?;
+    // An outside ask has no task, so its snooze has no task trace.
+    if let Some(task) = task {
+        trace::snoozed(tx, trace, task, kind, *id, Some(until))?;
+    }
     Ok(Ok(format!("{kind} {id} is snoozed until {until}")))
 }
 
@@ -145,7 +161,7 @@ pub(crate) fn tick(db: &mut Connection, trace: &Trace) -> rusqlite::Result<()> {
 }
 
 fn end(tx: &rusqlite::Transaction, trace: &Trace) -> rusqlite::Result<()> {
-    let ended: Vec<(String, i64, i64, String)> = tx
+    let ended: Vec<(String, i64, Option<i64>, String)> = tx
         .prepare(
             "UPDATE snoozes SET ended = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
              WHERE ended IS NULL
@@ -157,7 +173,9 @@ fn end(tx: &rusqlite::Transaction, trace: &Trace) -> rusqlite::Result<()> {
         })?
         .collect::<rusqlite::Result<_>>()?;
     for (kind, item, task, reason) in &ended {
-        trace::snooze_ended(tx, trace, (*task, kind, *item), reason)?;
+        if let Some(task) = task {
+            trace::snooze_ended(tx, trace, (*task, kind, *item), reason)?;
+        }
     }
     Ok(())
 }

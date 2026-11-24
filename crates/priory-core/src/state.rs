@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 107;
+const VERSION: i64 = 108;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1901,6 +1901,31 @@ ALTER TABLE runs ADD COLUMN sandbox TEXT;
 PRAGMA user_version = 107;
 ";
 
+// An outside ask has no task, and a person snoozes it too.
+const SCHEMA_108: &str = concat!(
+    "
+CREATE TABLE snoozes_108 (
+  kind        TEXT NOT NULL CHECK (kind IN ('ask', 'task', 'prompt')),
+  item        INTEGER NOT NULL,
+  task        INTEGER REFERENCES tasks (id),
+  snoozed     TEXT NOT NULL,
+  until       TEXT NOT NULL,
+  back        TEXT,
+  back_reason TEXT,
+  ended       TEXT,
+  PRIMARY KEY (kind, item)
+);
+INSERT INTO snoozes_108 SELECT kind, item, task, snoozed, until, back, back_reason, ended FROM snoozes;
+DROP TABLE snoozes;
+PRAGMA legacy_alter_table = ON;
+ALTER TABLE snoozes_108 RENAME TO snoozes;
+PRAGMA legacy_alter_table = OFF;
+",
+    bumps!("snoozes"),
+    "PRAGMA user_version = 108;
+"
+);
+
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
 const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA, SCHEMA_2, SCHEMA_3, SCHEMA_4, SCHEMA_5, SCHEMA_6, SCHEMA_7, SCHEMA_8, SCHEMA_9,
@@ -1916,7 +1941,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -2975,7 +3000,8 @@ pub fn merges(db: &Connection, since: &str) -> rusqlite::Result<Vec<priory_intak
            AND json_extract(data, '$.failing') <= (SELECT count(*) FROM inbox AS red
              WHERE red.type = ?3 AND json_extract(red.data, '$.repo') = json_extract(closed.data, '$.repo')
              AND json_extract(red.data, '$.head_sha') = json_extract(closed.data, '$.merge_commit')
-             AND json_extract(red.data, '$.conclusion') NOT IN ('success', 'neutral', 'skipped')))
+             AND json_extract(red.data, '$.conclusion') NOT IN ('success', 'neutral', 'skipped')
+             AND json_extract(red.data, '$.superseded_by') IS NULL))
          ORDER BY time",
     )?
     .query_map(params![CLOSED, since, CHECKED], |row| {

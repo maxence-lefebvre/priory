@@ -389,10 +389,14 @@ pub struct CheckRunCompleted {
     /// Check runs on the same commit not completed at the poll, counting those past the first 100.
     pub pending: u64,
     /// Check runs on the same commit completed with a conclusion other than success, neutral or
-    /// skipped.
+    /// skipped, leaving out a cancelled run that `superseded_by` passed.
     pub failing: u64,
     /// GitHub's check run id.
     pub github_id: u64,
+    /// For a cancelled run on a merge commit: the later commit of the base branch whose run of the
+    /// same name succeeded, so the cancelled run counts as passing. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
     #[serde(flatten)]
     pub source: Source,
 }

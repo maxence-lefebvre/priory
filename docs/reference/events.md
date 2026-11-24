@@ -512,8 +512,9 @@ The pull request fields, and:
 | `conclusion` | string or null | `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required`, `stale` or `startup_failure` |
 | `app` | string or null | The slug of the GitHub App that ran it |
 | `pending` | integer | Check runs on the same commit not completed at the poll, counting those past the first 100 |
-| `failing` | integer | Check runs on the same commit completed with a conclusion other than success, neutral or skipped |
+| `failing` | integer | Check runs on the same commit completed with a conclusion other than success, neutral or skipped, leaving out a cancelled run that `superseded_by` passed |
 | `github_id` | integer | GitHub's check run id |
+| `superseded_by` | string, optional | For a cancelled run on a merge commit: the later commit of the base branch whose run of the same name succeeded, so the cancelled run counts as passing. Absent otherwise |
 
 <!-- example: events/github.check_run.completed.json -->
 ```json
