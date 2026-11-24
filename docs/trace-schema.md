@@ -135,6 +135,39 @@ when its harness asks anyway, and one when direnv fails before its harness start
 | `why`     | no       | For `refused`: why, such as a path outside Priory home or a repository the factory does not name. For `missed`: `the grant was gone from the config` when the harness overwrote it. For `failed`: direnv's error, redacted, such as `direnv: error exit status 1` |
 | `version` | no       | For `missed`: the first line of the harness's `--version` |
 
+## `factory.run.attach_failed`
+
+The factory's `[runs] attach` command did not open a run of a step with `attach = true`. The run
+goes on. See [sessions.md](daemon/sessions.md#opening-a-run-when-it-starts).
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d4-0000-7000-8000-000000000007",
+  "source": "factory://example/desktop",
+  "type": "factory.run.attach_failed",
+  "time": "2026-11-24T07:00:04Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "task": "0196f1b0-0000-7000-8000-000000000001",
+    "key": "schedule:bonjour@2026-11-24T06:00:00Z",
+    "run": "0196f1b0-0000-7000-8000-000000000002",
+    "step": "dossier",
+    "machine": "desktop",
+    "reason": "exit 1",
+    "output": "attach: hc is not on PATH; install herdr-core or fix the daemon's PATH"
+  }
+}
+```
+
+| Field    | Required | Meaning |
+| -------- | -------- | ------- |
+| `step`   | yes      | The step whose run did not open |
+| `reason` | yes      | `exit <code>`, `killed by a signal`, `timed out after 30s`, or why the command could not start |
+| `output` | no       | The tail of what the command printed, at most 2000 bytes, with the factory's secrets hidden |
+
 ## `factory.task.repaired`
 
 A factory's attempt to repair a task whose agent failed. It shares `factory`, `factory_revision`,

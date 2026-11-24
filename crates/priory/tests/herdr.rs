@@ -53,7 +53,8 @@ fn setup(name: &str) -> PathBuf {
         &hc,
         "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\0' \"$arg\"; done >> \"$FAKE_DIR/hc.log\"\n\
          printf '\\036' >> \"$FAKE_DIR/hc.log\"\n\
-         if [ \"$1\" = get ]; then [ -e \"$FAKE_DIR/get.json\" ] || exit 1; cat \"$FAKE_DIR/get.json\"; fi\n",
+         if [ \"$1\" = get ]; then [ -e \"$FAKE_DIR/get.json\" ] || exit 1; cat \"$FAKE_DIR/get.json\"; fi\n\
+         if [ \"$1\" = ls ]; then cat \"$FAKE_DIR/ls.json\" 2>/dev/null || echo '{\"terminals\": []}'; fi\n",
     )
     .unwrap();
     fs::set_permissions(&hc, fs::Permissions::from_mode(0o755)).unwrap();
@@ -162,5 +163,112 @@ fn deliver_resumes_the_asking_session_when_its_terminal_runs_another_claude_sess
             .map(|call| call[0].as_str())
             .collect::<Vec<_>>(),
         ["get", "run"]
+    );
+}
+
+/// Runs `adapters/herdr/attach 7 12` with `path` as its PATH and space `main`. Returns its exit
+/// code, its stderr and each `hc` call's arguments.
+fn attach(dir: &Path, path: &std::ffi::OsStr) -> (Option<i32>, String, Vec<Vec<String>>) {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../adapters/herdr/attach");
+    let log = dir.join("fake/hc.log");
+    let _ = fs::remove_file(&log);
+    let output = harness::command(script)
+        .args(["7", "12"])
+        .env("PATH", path)
+        .env("PRIORY_HERDR_SPACE", "main")
+        .env("PRIORY_DB", "/state/priory.db")
+        .env("TMUX_TMPDIR", "/tmp/t")
+        .env("FAKE_DIR", dir.join("fake"))
+        .output()
+        .unwrap();
+    let calls = fs::read_to_string(&log)
+        .unwrap_or_default()
+        .split_terminator('\x1e')
+        .map(|call| call.split_terminator('\0').map(str::to_owned).collect())
+        .collect();
+    (
+        output.status.code(),
+        String::from_utf8(output.stderr).unwrap(),
+        calls,
+    )
+}
+
+#[test]
+fn attach_opens_one_kept_terminal_per_run_in_the_space_and_a_tab_per_task() {
+    let dir = setup("attach");
+    let priory = dir.join("fake/priory");
+    fs::write(&priory, "#!/bin/sh\n").unwrap();
+    fs::set_permissions(&priory, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(dir.join("fake"))
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+
+    let opened = attach(&dir, &path);
+    fs::write(
+        dir.join("fake/ls.json"),
+        r#"{"terminals": [{"name": "t3", "state": "live"}]}"#,
+    )
+    .unwrap();
+    let again = attach(&dir, &path);
+
+    let listed = ["ls", "--json", "--label", "priory.run=12"].map(String::from);
+    let priory = priory.display().to_string();
+    assert_eq!(opened.0, Some(0), "{}", opened.1);
+    assert_eq!(
+        opened.2,
+        [
+            listed.to_vec(),
+            [
+                "run",
+                "--bg",
+                "--keep",
+                "--no-parent",
+                "--no-notify",
+                "--label",
+                "herdr.space=main",
+                "--label",
+                "herdr.tab=task-7",
+                "--label",
+                "priory.task=7",
+                "--label",
+                "priory.run=12",
+                "--",
+                "env",
+                "PRIORY_DB=/state/priory.db",
+                "TMUX_TMPDIR=/tmp/t",
+                priory.as_str(),
+                "attach",
+                "--run",
+                "12",
+            ]
+            .map(String::from)
+            .to_vec(),
+        ]
+    );
+    assert_eq!((again.0, again.2), (Some(0), vec![listed.to_vec()]));
+}
+
+#[test]
+fn attach_without_hc_on_path_exits_non_zero_and_says_so() {
+    let dir = setup("attach-no-hc");
+    let bin = dir.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let python = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|folder| folder.join("python3"))
+        .find(|python| python.is_file())
+        .unwrap();
+    std::os::unix::fs::symlink(python, bin.join("python3")).unwrap();
+
+    let (code, stderr, calls) = attach(&dir, bin.as_os_str());
+
+    assert_eq!(
+        (code, stderr.as_str(), calls.len()),
+        (
+            Some(1),
+            "attach: hc is not on PATH; install herdr-core or fix the daemon's PATH\n",
+            0
+        )
     );
 }

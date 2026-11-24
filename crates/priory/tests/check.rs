@@ -2153,6 +2153,58 @@ fn the_deliver_command_is_an_executable_file_in_the_factory() {
     assert_eq!((runnable.code, runnable.stderr.as_str()), (0, ""));
 }
 
+#[test]
+fn attach_runs_on_model_steps_only_and_needs_an_executable_runs_attach_command() {
+    use std::os::unix::fs::PermissionsExt;
+    let workflow = WORKFLOW
+        .replace(
+            "prompt = \"Implement the issue.\"\n",
+            "prompt = \"Implement the issue.\"\nattach = true\n",
+        )
+        .replace(
+            "approves = [\"open-pr\"]\n",
+            "approves = [\"open-pr\"]\nattach = true\n",
+        );
+    let mut files = valid();
+    files[3] = ("workflows/implement.toml", &workflow);
+    let without = check(&factory("attach-without", &files));
+    let toml = "name = \"demo\"\n\n[runs]\nattach = \"bin/attach\"\n";
+    files[0] = ("factory.toml", toml);
+    files[3] = ("workflows/implement.toml", WORKFLOW);
+    let missing = check(&factory("attach-missing", &files));
+    files.push(("bin/attach", "#!/bin/sh\nexit 0\n"));
+    let dir = factory("attach-runnable", &files);
+    fs::set_permissions(dir.join("bin/attach"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        dir.join("workflows/implement.toml"),
+        WORKFLOW.replace(
+            "prompt = \"Implement the issue.\"\n",
+            "prompt = \"Implement the issue.\"\nattach = true\n",
+        ),
+    )
+    .unwrap();
+
+    let runnable = check(&dir);
+
+    assert_eq!(
+        (without.code, without.stderr.as_str()),
+        (
+            1,
+            "workflows/implement.toml:4: step `implement`: `attach = true` needs `[runs] attach` \
+             in the factory's settings\n\
+             workflows/implement.toml:13: step `approve-pr`: only a model step has `attach = true`\n"
+        )
+    );
+    assert_eq!(
+        (missing.code, missing.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: `[runs] attach`: bin/attach is not a file in the factory folder\n"
+        )
+    );
+    assert_eq!((runnable.code, runnable.stderr.as_str()), (0, ""));
+}
+
 fn with_writing(name: &str, guide: Option<&str>) -> PathBuf {
     let mut files = valid();
     files[0] = ("factory.toml", "name = \"demo\"\nwriting = \"WRITING.md\"");

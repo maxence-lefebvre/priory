@@ -53,6 +53,8 @@ The adapter lives in `adapters/herdr/` at the repository root, outside the Cargo
   one color per mode. A test fails when the file and `design/tokens/` differ.
 - `adapters/herdr/deliver`: the factory's `[asks] deliver` command; see
   [Delivering answers](#delivering-answers).
+- `adapters/herdr/attach`: the factory's `[runs] attach` command; see
+  [Opening runs in Herdr](#opening-runs-in-herdr).
 
 Herdr loads a mod's imports only from the mod's own folder, and it resolves symbolic links before it
 checks. So each mod keeps a copy of `lib/priory.js` as its own `priory.js`, and a mod that draws
@@ -157,6 +159,35 @@ A kept terminal whose `claude` exited runs a shell, so the script never types in
 would run the answer as a command. Nor does it type into a `claude` that runs another session,
 such as a new conversation started in the same kept terminal. The check and the send are two
 `hc` calls, so a `claude` that exits between them can still receive the text in its shell.
+
+## Opening runs in Herdr
+
+`adapters/herdr/attach` opens a run in a kept hc terminal when the run starts, as
+[sessions.md](../daemon/sessions.md#opening-a-run-when-it-starts) describes. The terminal waits in
+the hc hub even while the Herdr app is closed, and shows in the Herdr space it is labelled with.
+A factory names it with `[runs] attach = "adapters/herdr/attach"`, from a factory folder that holds
+the adapter, and sets `attach = true` on each step to open. It needs Python 3 and `hc`, and no
+other package.
+
+The daemon runs it as `attach TASK RUN`. It reads the space from `PRIORY_HERDR_SPACE` in the
+daemon's environment. Then:
+
+1. `hc ls --label priory.run=RUN`: when a live terminal already carries the run's label, it exits 0
+   and opens nothing.
+2. Otherwise `hc run --bg --keep --no-parent --no-notify` starts `priory attach --run RUN`,
+   labelled `herdr.space=<space>`, `herdr.tab=task-<TASK>`, `priory.task=<TASK>` and
+   `priory.run=<RUN>`. The hc core starts it with its own environment, so the script passes the
+   daemon's `PRIORY_DB`, `PRIORY_HOME` and `TMUX_TMPDIR` through `env`, and names the daemon's
+   `priory` by its full path.
+
+It exits 1 with `attach: hc is not on PATH; install herdr-core or fix the daemon's PATH` when the
+daemon's `PATH` has no `hc`, and with `attach: set PRIORY_HERDR_SPACE to the Herdr space that shows
+runs` when the variable is unset. The daemon records either as a `factory.run.attach_failed` record.
+
+The terminal runs `priory attach` without `--read-only`, as the Priory bar's attach does. So it
+records a `factory.terminal.attach_issued` record, and a Herdr window that shows it resizes the
+agent's window. When the run ends, `--keep` leaves a shell in the terminal. The next run of the
+task opens a new terminal in the same tab.
 
 ## Writing another adapter
 
