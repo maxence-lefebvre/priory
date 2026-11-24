@@ -99,9 +99,9 @@ count these records, and not the debate step's own.
 
 ## `factory.run.trusted`
 
-What the daemon did about a harness's folder trust in one path of a run, when the factory sets
-`trust_worktrees`. A run gets one record for each path before it starts, and one more when its
-harness asks anyway. See [sessions.md](daemon/sessions.md#with-trust_worktrees).
+What the daemon did about a harness's or direnv's folder trust in one path of a run, when the
+factory sets `trust_worktrees`. A run gets one record for each path before it starts, one more
+when its harness asks anyway, and one when direnv fails before its harness starts. See [sessions.md](daemon/sessions.md#with-trust_worktrees).
 
 ```json
 {
@@ -128,12 +128,45 @@ harness asks anyway. See [sessions.md](daemon/sessions.md#with-trust_worktrees).
 
 | Field     | Required | Meaning |
 | --------- | -------- | ------- |
-| `harness` | yes      | `claude-code` or `codex` |
+| `harness` | yes      | `claude-code`, `codex`, or `direnv` for direnv's trust in a worktree with an `.envrc` |
 | `path`    | yes      | The worktree or clone the trust covers |
-| `file`    | no       | The config the daemon wrote or read: Claude's `.claude.json`, or `$CODEX_HOME/priory-trust.config.toml` |
-| `outcome` | yes      | `granted` when the daemon wrote it, `present` when it was already there, `refused` when it wrote nothing, `missed` when the harness asked anyway |
-| `why`     | no       | For `refused`: why, such as a path outside Priory home or a repository the factory does not name. For `missed`: `the grant was gone from the config` when the harness overwrote it |
+| `file`    | no       | The config the daemon wrote or read: Claude's `.claude.json`, `$CODEX_HOME/priory-trust.config.toml`, or the run's `direnv/<session>/direnv.toml` in Priory home |
+| `outcome` | yes      | `granted` when the daemon wrote it, `present` when it was already there, `refused` when it wrote nothing, `missed` when the harness asked anyway, `failed` when direnv failed before the harness started, which then started without the `.envrc` |
+| `why`     | no       | For `refused`: why, such as a path outside Priory home or a repository the factory does not name. For `missed`: `the grant was gone from the config` when the harness overwrote it. For `failed`: direnv's error, redacted, such as `direnv: error exit status 1` |
 | `version` | no       | For `missed`: the first line of the harness's `--version` |
+
+## `factory.run.attach_failed`
+
+The factory's `[runs] attach` command did not open a run of a step with `attach = true`. The run
+goes on. See [sessions.md](daemon/sessions.md#opening-a-run-when-it-starts).
+
+```json
+{
+  "specversion": "1.0",
+  "id": "0196f1d4-0000-7000-8000-000000000007",
+  "source": "factory://example/desktop",
+  "type": "factory.run.attach_failed",
+  "time": "2026-11-24T07:00:04Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "factory": "example",
+    "factory_revision": "999daf0",
+    "task": "0196f1b0-0000-7000-8000-000000000001",
+    "key": "schedule:nightly@2026-11-24T06:00:00Z",
+    "run": "0196f1b0-0000-7000-8000-000000000002",
+    "step": "implement",
+    "machine": "desktop",
+    "reason": "exit 1",
+    "output": "attach: hc is not on PATH; install herdr-core or fix the daemon's PATH"
+  }
+}
+```
+
+| Field    | Required | Meaning |
+| -------- | -------- | ------- |
+| `step`   | yes      | The step whose run did not open |
+| `reason` | yes      | `exit <code>`, `killed by a signal`, `timed out after 30s`, or why the command could not start |
+| `output` | no       | The tail of what the command printed, at most 2000 bytes, with the factory's secrets hidden |
 
 ## `factory.task.repaired`
 

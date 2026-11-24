@@ -31,6 +31,7 @@ one: [reload.md](../daemon/reload.md#what-a-reload-changes) lists them.
 | `webhooks` | table | no | no webhook is taken | The signed webhooks the server takes. Needs `[serve]`. See [`[webhooks.github]`](#webhooksgithub), [`[webhooks.linear]`](#webhookslinear), [`[webhooks.sentry]`](#webhookssentry), [`[webhooks.honeycomb]`](#webhookshoneycomb), [`[webhooks.intercom]`](#webhooksintercom), [`[webhooks.cloudwatch]`](#webhookscloudwatch) and [`[webhooks.figma]`](#webhooksfigma) | |
 | `slack` | table | no | no Slack shortcut | The Slack message shortcut. See [`[slack.shortcut]`](#slackshortcut) | |
 | `asks` | table | no | answers are only stored | What happens to the answer of an ask from outside Priory. See [`[asks]`](#asks) | |
+| `runs` | table | no | no command at a run's start | What the daemon runs when a run starts. See [`[runs]`](#runs) | |
 | `links` | table of strings | no | the built-in `#n` link | Autolinks, each a regex and a URL template. See [`[links]`](#links) | |
 | `request` | table | no | `priory add` needs `--workflow` | The defaults of `priory add` and `POST /api/request`. See [`[request]`](#request) | |
 | `batch` | table | no | `priory batch add` is refused | How `priory batch add` plans batches. See [`[batch]`](#batch) | |
@@ -40,7 +41,7 @@ one: [reload.md](../daemon/reload.md#what-a-reload-changes) lists them.
 | `mcp` | table of tables | no | | A person's statement about each MCP server or connector an investigator names. See [`[mcp.<name>]`](#mcpname) | |
 | `guard` | table | no | the built-in guards alone | Irreversible commands and MCP tools the tool guard denies on top of the built-in ones. See [`[guard]`](#guard) | |
 | `sandboxes` | table of tables | no | no sandbox | The jails a workflow can start its agents in, by name. See [`[sandboxes.<name>]`](#sandboxesname) | |
-| `trust_worktrees` | bool | no | `false`: a person trusts each folder by hand | The daemon records Claude Code's and Codex's folder trust for each run's worktree and clone, for the repositories the factory names. See [sessions.md](../daemon/sessions.md#trusting-the-worktrees-and-the-clone) | `true` |
+| `trust_worktrees` | bool | no | `false`: a person trusts each folder by hand | The daemon records Claude Code's, Codex's and direnv's folder trust for each run's worktree and clone, for the repositories the factory names. When the worktree has an `.envrc` and `direnv` is installed, the run starts in its environment. See [sessions.md](../daemon/sessions.md#trusting-the-worktrees-and-the-clone) | `true` |
 | `repos` | table of tables | no | no recipe runs | The setup, resume and teardown recipes of each repository. See [`[repos]`](#repos) | |
 
 A duration is a whole number followed by `s`, `m` or `h`, such as `"90s"`, `"15m"` or `"2h"`.
@@ -100,7 +101,7 @@ optional. See [Recipes](../daemon/runs.md#recipes) for when each runs and what a
 | `setup` | recipe | no | none | Runs after the daemon adds a task's new worktree, before its agent starts | `{ argv = ["npm", "ci"] }` |
 | `resume` | recipe | no | none | Runs after the daemon adds back a worktree that a retirement removed, before the agent starts | `{ argv = ["npm", "ci", "--prefer-offline"] }` |
 | `teardown` | recipe | no | none | Runs before the sweep or a retirement removes the worktree | `{ shell = "docker compose down" }` |
-| `build` | array of strings | no | `["target"]` when the worktree has a `Cargo.toml`, else none | The folders, relative to the worktree, that a build regenerates. The sweep deletes them in idle worktrees when disk runs low, except a folder that holds a tracked file. `priory check` refuses an absolute path or one with `..`. See [sweep.md](../daemon/sweep.md#reclaiming-build-output) | `["target", "out"]` |
+| `build` | array of strings | no | `["target"]` when the worktree has a `Cargo.toml`, else none | The folders, relative to the worktree, that a build regenerates. The sweep deletes them in idle worktrees when disk runs low, except a folder that holds a tracked file. `[]` opts the repository out. `priory check` refuses an absolute path or one with `..`. See [sweep.md](../daemon/sweep.md#reclaiming-build-output) | `["target", "out"]` |
 
 Each recipe is a table with exactly one of `argv` and `shell`:
 
@@ -196,7 +197,7 @@ See [trace.md](../daemon/trace.md), [metrics.md](../daemon/metrics.md) and, for 
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `otlp` | string | yes | | The OTLP/HTTP base URL. Spans go to its `/v1/traces` | `"http://127.0.0.1:4318"` |
 | `headers_env` | string | no | no headers | The environment variable that holds the headers each request carries, as `key1=value1,key2=value2` with URL-encoded values. The daemon refuses to start when it is unset, empty or malformed. `priory check` refuses a value that is not a variable name | `"OTEL_EXPORTER_OTLP_HEADERS"` |
-| `metrics` | list of strings | no | `[]`: no metric is sent | The metric groups each process sends to `<otlp>/v1/metrics`. The groups are `process`, `log`, `runs`, `intake` and `work`, listed in [the metrics reference](metrics.md). `PRIORY_METRICS` replaces it for one process. See [metrics.md](../daemon/metrics.md) | `["process", "log", "runs", "intake", "work"]` |
+| `metrics` | list of strings | no | `[]`: no metric is sent | The metric groups each process sends to `<otlp>/v1/metrics`. The groups are `process`, `log`, `runs`, `intake`, `work` and `room`, listed in [the metrics reference](metrics.md). `PRIORY_METRICS` replaces it for one process. See [metrics.md](../daemon/metrics.md) | `["process", "log", "runs", "intake", "work", "room"]` |
 | `metrics_every` | duration | no | `"60s"` | How often a process samples its groups and sends one request. At least `"10s"` | `"30s"` |
 | `metrics_cap` | integer | no | `1000` | The data points a process sends per minute at most, over a rolling minute. At least 1 | `500` |
 
@@ -339,6 +340,15 @@ and [tools.md](tools.md#commands-an-answer-runs) for the commands an answer runs
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `deliver` | string | no | none: an answer is only stored | The command that delivers an outside ask's answer or dismissal to the session that asked, relative to the factory folder. `priory check` refuses one that is not an executable file | `"adapters/herdr/deliver"` |
 | `targets` | table of strings | no | none: only `worktree` | The folders, by name, where an answer can run an agent's ask command besides the task's worktree, relative to the factory folder or absolute | `{ ops = "../ops" }` |
+
+## `[runs]`
+
+See [sessions.md](../daemon/sessions.md#opening-a-run-when-it-starts) for when the daemon runs the
+`attach` command.
+
+| Key | Type | Required | Default | Meaning | Example |
+| --- | ---- | -------- | ------- | ------- | ------- |
+| `attach` | string | no | none: no run opens by itself | The command that opens a new run of a step with `attach = true`, relative to the factory folder. It gets the task id and the run id as its arguments. `priory check` refuses one that is not an executable file | `"adapters/herdr/attach"` |
 
 ## `[links]`
 
@@ -601,6 +611,9 @@ workspace = "a86dr8yl"                         # the one workspace whose notific
 deliver = "bin/deliver"                        # delivers outside answers, from the factory folder
 targets = { ops = "../ops" }                   # where an answer can run an ask's command
 
+[runs]
+attach = "bin/attach"                          # opens each run of an attach = true step
+
 [request]
 workflow = "implement"                         # what priory add starts without --workflow
 band = "today"                                 # its band without --band
@@ -650,6 +663,8 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` the sweeper agent `<name>` does not exist `` | `[sweep] agent` names no folder under `agents/` |
 | `` `[asks] deliver`: <path> is not a file in the factory folder `` | `deliver` names no file under the factory folder |
 | `` `[asks] deliver`: <path> is not executable: chmod +x it `` | The `deliver` file has no execute bit |
+| `` `[runs] attach`: <path> is not a file in the factory folder `` | `attach` names no file under the factory folder |
+| `` `[runs] attach`: <path> is not executable: chmod +x it `` | The `attach` file has no execute bit |
 | `` [log] backend = "postgres" needs a priory built with `--features postgres` `` | `[log] backend = "postgres"` in a build without the Postgres adapter |
 | `` `[log] url_env` names the environment variable that holds the connection string, such as PRIORY_LOG_URL, never the string itself `` | `url_env` is not a variable name, such as a pasted URL |
 | `` `headers_env` names the environment variable that holds the headers, such as OTEL_EXPORTER_OTLP_HEADERS, never the headers themselves `` | `[telemetry] headers_env` is not a variable name, such as pasted headers |

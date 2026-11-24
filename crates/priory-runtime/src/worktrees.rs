@@ -1,4 +1,4 @@
-use crate::runtime::{OWN_GIT, clone_of, git, remove_sealed, run};
+use crate::runtime::{OWN_GIT, SCAN, at_risk, clone_of, git, run, unseal};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -58,37 +58,71 @@ pub fn fetch(home: &Path, repo: &str) -> Result<(), String> {
     run(git(&clone).args(["remote", "set-head", "origin", "--auto"])).map(drop)
 }
 
-/// Why the worktree must stay, or `None` when it can go. `merged_head` is the head commit of the
-/// task's merged pull request, which a squash merge leaves out of the default branch. A check that
-/// cannot run keeps the worktree.
-pub fn blocker(home: &Path, found: &Found, merged_head: Option<&str>) -> Option<String> {
-    blocked(home, found, merged_head).unwrap_or_else(|error| Some(format!("cannot check: {error}")))
+/// What the sweep does with the worktree of an ended task.
+#[derive(Debug, PartialEq)]
+pub enum Verdict {
+    /// The branch merged: the worktree and the branch go.
+    Remove,
+    /// Every commit is on a remote: the worktree goes and the branch stays for a revive.
+    Retire,
+    /// The worktree stays, for this reason.
+    Keep(String),
 }
 
-fn blocked(
+/// What the sweep does with the worktree. `merged_head` is the head commit of the task's merged
+/// pull request, which a squash merge leaves out of the default branch. `done` retires a worktree
+/// whose commits are all pushed, or patch-equivalent to pushed ones. A check that cannot run keeps
+/// the worktree.
+pub fn verdict(home: &Path, found: &Found, merged_head: Option<&str>, done: bool) -> Verdict {
+    judged(home, found, merged_head, done)
+        .unwrap_or_else(|error| Verdict::Keep(format!("cannot check: {error}")))
+}
+
+fn judged(
     home: &Path,
     found: &Found,
     merged_head: Option<&str>,
-) -> Result<Option<String>, String> {
+    done: bool,
+) -> Result<Verdict, String> {
     if let Some(reason) = unsettled(home, found, &[])? {
-        return Ok(Some(reason));
+        return Ok(Verdict::Keep(reason));
     }
     let path = &found.path;
     let tip = run(git(path).args(["rev-parse", "HEAD"]))?;
     let tip = tip.trim();
     let merged = run(git(path).args(["merge-base", "--is-ancestor", tip, "origin/HEAD"])).is_ok();
     if merged || merged_head == Some(tip) {
-        return Ok(None);
+        return Ok(Verdict::Remove);
     }
-    let unpushed = run(git(path).args(["rev-list", "-n1", tip, "--not", "--remotes"]))?;
-    Ok(Some(
-        if unpushed.is_empty() {
-            "not merged"
-        } else {
-            "unpushed commits"
-        }
-        .to_owned(),
-    ))
+    // A patch-equivalent commit counts as pushed only for a done task, which loses its worktree.
+    let pushed = if done {
+        at_risk(path, None, SCAN)? == 0
+    } else {
+        run(git(path).args(["rev-list", "-n1", tip, "--not", "--remotes"]))?.is_empty()
+    };
+    Ok(match (pushed, done) {
+        (true, true) => Verdict::Retire,
+        (true, false) => Verdict::Keep("not merged".to_owned()),
+        (false, _) => Verdict::Keep("unpushed commits".to_owned()),
+    })
+}
+
+/// The disk the folder takes, in bytes, without following symbolic links.
+pub fn size(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    let own = meta.blocks() * 512;
+    if !meta.is_dir() {
+        return own;
+    }
+    own + fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| size(&entry.path()))
+        .sum::<u64>()
 }
 
 /// Why the worktree of an asleep task must stay, or `None` when it can retire. Retiring keeps the
@@ -140,40 +174,34 @@ fn deletable(found: &Found, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Deletes the build folder `path` of `found` and all it holds, read-only folders included, after
-/// the checks of `build_output` pass again, since the sizing ran a while ago.
-pub fn reclaim(home: &Path, found: &Found, build: &[String], path: &Path) -> Result<(), String> {
+/// Moves the build folder `path` of `found` to `aside`, on the same disk, after the checks of
+/// `build_output` pass again, since the sizing ran a while ago. A rename takes no longer for a large
+/// folder, so the caller can delete `aside` off the tick.
+pub fn set_aside(
+    home: &Path,
+    found: &Found,
+    build: &[String],
+    path: &Path,
+    aside: &Path,
+) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
     if let Some(reason) = unsettled(home, found, build)? {
         return Err(reason);
     }
     deletable(found, path)?;
-    remove_sealed(path);
-    if fs::symlink_metadata(path).is_ok() {
-        return Err(format!("cannot delete {}", path.display()));
-    }
-    Ok(())
-}
-
-/// The disk the folder takes, in bytes, without following symbolic links.
-pub fn size(path: &Path) -> u64 {
-    use std::os::unix::fs::MetadataExt;
-    let Ok(meta) = fs::symlink_metadata(path) else {
-        return 0;
-    };
-    let own = meta.blocks() * 512;
-    if !meta.is_dir() {
-        return own;
-    }
-    own + fs::read_dir(path)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| size(&entry.path()))
-        .sum::<u64>()
+    // Moving a folder to another parent rewrites its `..`, which a read-only folder refuses.
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+        .and_then(|()| fs::create_dir_all(aside.parent().unwrap_or(home)))
+        .and_then(|()| fs::rename(path, aside))
+        .map_err(|error| format!("cannot move {}: {error}", path.display()))
 }
 
 /// Removes the worktree and keeps its branch. Git refuses when anything is uncommitted or untracked.
+/// The branch stays even once pushed, since the sweep fetches remote refs without `--prune` and a
+/// reopen adds the worktree back from it.
 pub fn retire(home: &Path, found: &Found) -> Result<(), String> {
+    // A read-only folder under an ignored `target/` would stop git halfway, with the gitdir gone.
+    unseal(&found.path);
     run(git(&found.clone(home))
         .args(["worktree", "remove"])
         .arg(&found.path))

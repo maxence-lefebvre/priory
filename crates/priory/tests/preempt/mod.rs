@@ -108,9 +108,15 @@ impl Setup {
 
     /// Attaches a tmux client in control mode to task `task`'s session, as a person watching.
     fn watch(&self, task: &str) -> Child {
+        self.attach_client(task, &[])
+    }
+
+    fn attach_client(&self, task: &str, flags: &[&str]) -> Child {
         let client = self
             .command("tmux")
-            .args(["-C", "attach-session", "-t", &format!("=priory-{task}")])
+            .args(["-C", "attach-session"])
+            .args(flags)
+            .args(["-t", &format!("=priory-{task}")])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .spawn()
@@ -931,4 +937,27 @@ fn the_budget_inside_a_turn_ends_no_run_a_person_watches_in_tmux() {
     client.kill().unwrap();
     client.wait().unwrap();
     setup.overran();
+}
+
+#[test]
+fn the_budget_inside_a_turn_ends_a_run_with_only_a_read_only_client() {
+    let mut setup = Setup::with_workflow("budget-read-only-client", &budgeted("0.01"));
+    fs::write(setup.dir.join("factory/prices.toml"), DEAR).unwrap();
+    setup.calls(&[result("passed")]);
+    // The client attaches before the turn writes the tokens that pass the budget.
+    setup.hold("hold-submit");
+    setup.hold("hold-call");
+    setup.publish(&requested(42));
+    setup.start();
+    setup.written("fake/pending");
+    let mut client = setup.attach_client("1", &["-f", "read-only,ignore-size"]);
+
+    setup.release("hold-submit");
+
+    assert_eq!(
+        setup.until_task("failed"),
+        "step implement spent $0.011200, over its budget of $0.01"
+    );
+    assert_eq!(setup.rows("runs")[0][7], "budget");
+    client.wait().unwrap();
 }

@@ -74,6 +74,8 @@ pub struct Settings {
     pub slack: Option<Slack>,
     #[serde(default)]
     pub asks: Asks,
+    #[serde(default)]
+    pub runs: Runs,
     pub request: Option<RequestDefaults>,
     pub batch: Option<BatchDefaults>,
     /// Irreversible commands and MCP tools on top of the built-in ones.
@@ -646,6 +648,16 @@ pub struct Asks {
     pub deliver: Option<PathBuf>,
 }
 
+/// What happens when a run starts.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Runs {
+    /// The command that opens a run where a person can watch it, relative to the factory folder.
+    /// The daemon runs it once per new run of a step with `attach = true`, with the task id and
+    /// run id as its arguments.
+    pub attach: Option<PathBuf>,
+}
+
 /// The HTTP server over the factory's state, in the daemon and in `priory serve`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -887,7 +899,7 @@ pub struct Telemetry {
     pub headers_env: Option<String>,
     /// The metric groups each process sends to the endpoint's `/v1/metrics`; none sends no metric.
     #[serde(default)]
-    #[schemars(extend("items" = { "enum": ["process", "log", "runs", "intake", "work"] }))]
+    #[schemars(extend("items" = { "enum": ["process", "log", "runs", "intake", "work", "room"] }))]
     pub metrics: Vec<String>,
     /// How often a process samples its groups and sends one request, at least 10s; 60s when unset.
     #[serde(default, deserialize_with = "duration")]
@@ -899,7 +911,7 @@ pub struct Telemetry {
 }
 
 /// The metric groups a process can send, by name.
-pub const METRIC_GROUPS: &[&str] = &["process", "log", "runs", "intake", "work"];
+pub const METRIC_GROUPS: &[&str] = &["process", "log", "runs", "intake", "work", "room"];
 
 /// The least `metrics_every`.
 pub const METRICS_EVERY_LEAST: Duration = Duration::from_secs(10);
@@ -1792,6 +1804,10 @@ pub struct Hold {
     /// Until the task's Linear issue has no open blocker.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub blockers: bool,
+    /// Parks a task keyed by a pull request: a comment or review trigger's request for that pull
+    /// request releases it, and the pull request's merge or close ends it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub parked: bool,
 }
 
 /// What a hold's `after` waits for: another task to end, or a Linear issue to close.
@@ -2024,6 +2040,10 @@ pub struct Step {
     /// Model steps only: the factory's command that records evidence after the step's result, in a
     /// checkout of the result's commit, relative to the factory folder.
     pub record: Option<PathBuf>,
+    /// Model steps only: whether each new run of the step runs the factory's `[runs] attach`
+    /// command, which opens the run where a person can watch it.
+    #[serde(default)]
+    pub attach: bool,
 }
 
 impl Step {
@@ -2722,7 +2742,19 @@ impl Factory {
     /// stores it.
     pub fn deliver(&self) -> Option<PathBuf> {
         let deliver = self.settings.as_ref()?.value.asks.deliver.as_ref()?;
-        Some(self.dir.join(deliver))
+        Some(self.program(deliver))
+    }
+
+    /// The command that opens a new run of a step with `attach = true`, under the factory folder.
+    pub fn attach(&self) -> Option<PathBuf> {
+        let attach = self.settings.as_ref()?.value.runs.attach.as_ref()?;
+        Some(self.program(attach))
+    }
+
+    /// `path` under the factory folder, absolute: a command runs in another folder than the daemon.
+    fn program(&self, path: &Path) -> PathBuf {
+        let path = self.dir.join(path);
+        std::path::absolute(&path).unwrap_or(path)
     }
 
     /// The folder of the ask command target `name`, under the factory folder when relative.

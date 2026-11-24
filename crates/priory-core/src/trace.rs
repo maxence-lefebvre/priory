@@ -466,6 +466,42 @@ pub(crate) fn trusted(
     append(tx, trace, "factory.run.trusted", &time, data)
 }
 
+/// Appends a `factory.run.attach_failed` record: the factory's `[runs] attach` command did not open
+/// run `run`, for `reason`, after printing `output`.
+pub(crate) fn attach_failed(
+    tx: &Transaction,
+    trace: &Trace,
+    run: i64,
+    reason: &str,
+    output: &str,
+) -> rusqlite::Result<()> {
+    let (task, key, step, time): (i64, String, String, String) = tx.query_row(
+        "SELECT tasks.id, tasks.key, runs.step, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.id = ?1",
+        [run],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let mut data = json!({
+        "factory": trace.factory.name,
+        "factory_revision": trace.revision,
+        "task": task.to_string(),
+        "key": key,
+        "run": run.to_string(),
+        "step": step,
+        "machine": trace.machine,
+        "reason": reason,
+    });
+    if !output.is_empty() {
+        let output = crate::screen::plain(output);
+        let secrets = crate::screen::secrets(&trace.factory.secret_envs());
+        data["output"] = json!(
+            crate::screen::redact(&output, &secrets, None)
+                .map_or_else(|| "[redacted]".to_owned(), |(shown, _)| shown)
+        );
+    }
+    append(tx, trace, "factory.run.attach_failed", &time, data)
+}
+
 /// Appends a `factory.run.preempted` record: `run` ended at its turn end to make room for the
 /// head task `head`, in band `head_band`, `waited` milliseconds after it was marked.
 pub(crate) fn preempted(
