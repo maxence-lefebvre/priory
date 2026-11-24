@@ -865,19 +865,19 @@ fn judge(tx: &Transaction, id: i64) -> rusqlite::Result<()> {
     }
 }
 
-/// Ends the parked `task` once its pull request `resource` is closed, as the newest event that
-/// says whether it is open reads: `done` when it merged, else `dropped`.
+/// Ends the parked `task` on its pull request `resource`'s newest closed event that no event seeing
+/// it open follows: `done` when it merged, else `dropped`. Without one, it waits.
 fn parked_closed(tx: &Transaction, task: i64, resource: &str) -> rusqlite::Result<()> {
     let merged = tx
         .query_row(
+            // A poll can see `open: false` before the closed event, which alone says `merged`, arrives.
             "WITH pull AS (SELECT seq, type, data FROM inbox
                WHERE 'github:' || json_extract(data, '$.repo') || '#' || json_extract(data, '$.pull_request') = ?1)
-             SELECT (SELECT json_extract(data, '$.merged') FROM pull
-               WHERE type = 'github.pull_request.closed' ORDER BY seq DESC LIMIT 1)
-             FROM (SELECT type, data FROM pull
-               WHERE type = 'github.pull_request.closed' OR json_type(data, '$.open') IS NOT NULL
-               ORDER BY seq DESC LIMIT 1)
-             WHERE type = 'github.pull_request.closed' OR json_extract(data, '$.open') = 0",
+             SELECT json_extract(data, '$.merged') FROM pull AS closed
+             WHERE type = 'github.pull_request.closed'
+             AND NOT EXISTS (SELECT 1 FROM pull WHERE pull.seq > closed.seq
+               AND type != 'github.pull_request.closed' AND json_extract(data, '$.open') = 1)
+             ORDER BY seq DESC LIMIT 1",
             [resource],
             |row| row.get::<_, Option<bool>>(0),
         )

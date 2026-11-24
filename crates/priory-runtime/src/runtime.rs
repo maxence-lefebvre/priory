@@ -785,7 +785,7 @@ pub fn is_ancestor(worktree: &Path, below: &str, commit: &str) -> bool {
 }
 
 /// The open pull requests of `repo` that `author` opened, or every open one without an author,
-/// each with its `number`, `title` and `url`.
+/// each with its `number`, `title`, `url`, `headRefName` and `isCrossRepository`.
 pub fn open_pull_requests(
     repo: &str,
     author: Option<&str>,
@@ -801,7 +801,7 @@ pub fn open_pull_requests(
         "--limit",
         "1000",
         "--json",
-        "number,title,url",
+        "number,title,url,headRefName,isCrossRepository",
     ]);
     if let Some(author) = author {
         command.args(["--author", author]);

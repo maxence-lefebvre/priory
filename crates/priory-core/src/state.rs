@@ -3187,11 +3187,18 @@ fn owners(tx: &Transaction, resources: &[String]) -> rusqlite::Result<Vec<Task>>
     .collect()
 }
 
-/// The newest task in any state that owns `resource`, by key, claim, wait or subscription.
-pub fn any_owner(db: &Connection, resource: &str) -> rusqlite::Result<Option<i64>> {
+/// The newest task in any state that owns `resource`, by key, claim, wait or subscription, or the
+/// newest active task that owns `branch`, the resource of its pull request's head branch.
+pub fn any_owner(
+    db: &Connection,
+    resource: &str,
+    branch: Option<&str>,
+) -> rusqlite::Result<Option<i64>> {
     db.query_row(
-        "SELECT max(task) FROM owned WHERE resource = ?1",
-        [resource],
+        "SELECT coalesce((SELECT max(task) FROM owned WHERE resource = ?1),
+           (SELECT max(owns.task) FROM owns JOIN tasks ON tasks.id = owns.task
+            WHERE owns.resource = ?2 AND tasks.state NOT IN ('done', 'failed', 'dropped')))",
+        params![resource, branch],
         |row| row.get(0),
     )
 }
