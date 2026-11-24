@@ -8,6 +8,7 @@ use priory_intake::intake::{CHECKED, schedule};
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OptionalExtension, Params, params};
 use serde_json::{Map, Value, json};
+use std::io::Read;
 use std::path::Path;
 
 /// An ask's id in every listing, on the desk, in `/api/asks` and on its web view page: its name
@@ -285,7 +286,7 @@ fn asks_query() -> String {
        WHEN 'dismissed' THEN 'dismissed' || coalesce(' by session ' || CASE WHEN asks.answered_by LIKE 'session:%'
          THEN substr(asks.answered_by, 9) END, '')
        ELSE asks.withdrawn_reason END AS withdrawn_why,
-     asks.revision, asks.question, asks.options, asks.recommendation, asks.tradeoff, asks.answer,
+     asks.kind, asks.revision, asks.question, asks.options, asks.recommendation, asks.tradeoff, asks.answer,
      asks.answered AS answered_at, asks.answered_by, asks.routed AS routed_to, asks.created AS since, asks.title, asks.text,
      asks.confidence, asks.rationale,
      asks.what_waits, asks.next_action, asks.command, asks.coordinator, asks.run_id, asks.session,
@@ -1618,7 +1619,8 @@ pub fn desk(
 }
 
 /// One task with its runs, code steps, asks, waits and results; none when it does not exist.
-pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
+/// `plan_file` is the plan document in the task's worktree under `home`, read now.
+pub fn task(db: &Connection, home: &Path, id: i64) -> rusqlite::Result<Option<Value>> {
     let found = rows(
         db,
         &format!(
@@ -1785,6 +1787,7 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
         "noop": noop,
     });
     task["plan"] = plan;
+    task["plan_file"] = plan_file(home, &task).unwrap_or(Value::Null);
     task["pull_request"] = pull_request(db, id)?.unwrap_or(Value::Null);
     parse_json(&mut task);
     Ok(Some(task))
@@ -1797,6 +1800,46 @@ pub fn task(db: &Connection, id: i64) -> rusqlite::Result<Option<Value>> {
 const BRIEF_STEP: &str = "groom";
 const PLAN_STEP: &str = "plan";
 const PLAN_PREFIX: &str = "plan-";
+
+/// The plan documents an agent writes in its worktree, first found wins.
+const PLAN_FILES: [&str; 2] = [".priory/plan.md", ".priory/brief.md"];
+/// The most bytes of a plan document a task shows.
+const PLAN_FILE_CAP: usize = 64 * 1024;
+
+/// The task's plan document as `{ path, text, truncated }`: the first of `PLAN_FILES` in its
+/// worktree, `home/worktrees/<repo>/<branch without priory/>` as `runtime::worktree` names it.
+/// A file whose real path leaves the worktree, such as a symlink, is skipped.
+fn plan_file(home: &Path, task: &Value) -> Option<Value> {
+    let name = task["branch"].as_str()?.strip_prefix("priory/")?;
+    let worktree = home
+        .join("worktrees")
+        .join(task["repo"].as_str()?)
+        .join(name)
+        .canonicalize()
+        .ok()?;
+    PLAN_FILES.iter().find_map(|file| {
+        let path = worktree.join(file).canonicalize().ok()?;
+        if !path.starts_with(&worktree) || !path.is_file() {
+            return None;
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::open(&path)
+            .ok()?
+            .take(PLAN_FILE_CAP as u64 + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        let truncated = bytes.len() > PLAN_FILE_CAP;
+        bytes.truncate(PLAN_FILE_CAP);
+        let text = String::from_utf8_lossy(&bytes);
+        // A cut inside a character leaves one replacement character at the end; drop it.
+        let text = if truncated {
+            text.trim_end_matches('\u{FFFD}')
+        } else {
+            &text
+        };
+        Some(json!({ "path": path.to_string_lossy(), "text": text, "truncated": truncated }))
+    })
+}
 
 /// The latest pull request task `id` owns, as its stored GitHub events tell it: its title, state,
 /// latest review and the latest conclusion of each check run on its latest head. The head comes
@@ -1895,5 +1938,98 @@ pub fn print(columns: &[&str], rows: &Value) {
             })
             .collect();
         state::emit(&cells.join("\t"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    /// A home holding task 1's worktree, `worktrees/acme/shop/7`, and a state where task 1 has
+    /// that branch and no plan result.
+    fn setup(name: &str) -> (PathBuf, PathBuf, Connection) {
+        let home =
+            std::env::temp_dir().join(format!("priory-plan-file-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let worktree = home.join("worktrees/acme/shop/7");
+        fs::create_dir_all(worktree.join(".priory")).unwrap();
+        let db = state::memory();
+        db.execute(
+            "INSERT INTO tasks
+               (key, workflow, step, state, band, lane, lane_derived, trigger, source, entered,
+                repo, branch)
+             VALUES ('cli:7', 'groom', 'approve-plan', 'asleep', 'now', 'cli', 0, 'cli', '7',
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'acme/shop', 'priory/7')",
+            [],
+        )
+        .unwrap();
+        (home, worktree, db)
+    }
+
+    fn plan_file_of(db: &Connection, home: &Path) -> Value {
+        task(db, home, 1).unwrap().unwrap()["plan_file"].clone()
+    }
+
+    #[test]
+    fn plan_file_is_the_brief_when_no_plan_step_ran() {
+        let (home, worktree, db) = setup("brief");
+        fs::write(
+            worktree.join(".priory/brief.md"),
+            "# Decisions\n\nD1: cursor.\n",
+        )
+        .unwrap();
+        let file = plan_file_of(&db, &home);
+        assert_eq!(file["text"], "# Decisions\n\nD1: cursor.\n");
+        assert_eq!(file["truncated"], false);
+        let path = worktree.canonicalize().unwrap().join(".priory/brief.md");
+        assert_eq!(file["path"], path.to_str().unwrap());
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn plan_file_prefers_plan_md_over_brief_md() {
+        let (home, worktree, db) = setup("prefers");
+        fs::write(worktree.join(".priory/brief.md"), "the brief").unwrap();
+        fs::write(worktree.join(".priory/plan.md"), "the plan").unwrap();
+        assert_eq!(plan_file_of(&db, &home)["text"], "the plan");
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plan_file_skips_a_symlink_out_of_the_worktree() {
+        let (home, worktree, db) = setup("symlink");
+        fs::write(home.join("secret.md"), "outside").unwrap();
+        std::os::unix::fs::symlink(home.join("secret.md"), worktree.join(".priory/plan.md"))
+            .unwrap();
+        assert_eq!(plan_file_of(&db, &home), Value::Null);
+        fs::write(worktree.join(".priory/brief.md"), "inside").unwrap();
+        assert_eq!(plan_file_of(&db, &home)["text"], "inside");
+        fs::remove_dir_all(worktree.join(".priory")).unwrap();
+        std::os::unix::fs::symlink(&home, worktree.join(".priory")).unwrap();
+        fs::write(home.join("plan.md"), "outside").unwrap();
+        assert_eq!(plan_file_of(&db, &home), Value::Null);
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn plan_file_past_the_cap_is_cut_at_a_character() {
+        let (home, worktree, db) = setup("cap");
+        // A 3-byte character straddles the cap.
+        let text = format!("{}€{}", "a".repeat(PLAN_FILE_CAP - 1), "b".repeat(10));
+        fs::write(worktree.join(".priory/plan.md"), text).unwrap();
+        let file = plan_file_of(&db, &home);
+        assert_eq!(file["truncated"], true);
+        assert_eq!(file["text"], "a".repeat(PLAN_FILE_CAP - 1));
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn plan_file_is_null_without_a_worktree() {
+        let (home, _, db) = setup("none");
+        assert_eq!(plan_file_of(&db, &home), Value::Null);
+        fs::remove_dir_all(&home).unwrap();
     }
 }

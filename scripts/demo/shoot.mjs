@@ -24,6 +24,8 @@ const shots = [
   ["web-view-flows-390-dark", "/workflow", 390, 844, "dark", 0],
   ["web-view-costs-1440-light", "/costs", 1440, 900, "light", 0],
   ["web-view-costs-390-dark", "/costs", 390, 844, "dark", 0],
+  ["web-view-plan-ask-1440-light", "/asks/91", 1440, 900, "light", 0],
+  ["web-view-plan-ask-390-light", "/asks/91", 390, 844, "light", 0],
 ];
 
 const browser = await chromium.launch();

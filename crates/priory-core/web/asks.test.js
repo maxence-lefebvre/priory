@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, press, optionKey, takesText, openAsksOf, writeNote, shrunkHead, answeredAsks, confidenceNote, askHeading, askBody, cutAt, HEADING_MAX } from "./asks.js";
+import { ASK_VIEWS, answeredBy, askGroups, routedMark, routedNote, runnerOf, submitted, seenAgo, sentNote, shownGroups, snoozeShortcut, stillArmed, press, optionKey, takesText, openAsksOf, planName, plansFirst, writeNote, shrunkHead, answeredAsks, confidenceNote, askHeading, askBody, cutAt, HEADING_MAX } from "./asks.js";
 
 const now = Date.parse("2026-11-20T12:00:00Z");
 const ask = (id, fields) => ({ id, state: "open", snoozed_until: null, ...fields });
@@ -298,4 +298,19 @@ test("a title, or a question of one short line, is the heading itself, and the b
   const short = { ...untitled, question: "Merge #212 into main? Checks are green at a1f3c9e." };
   assert.equal(askHeading(short), short.question);
   assert.equal(askBody(short), null);
+});
+
+test("an open step ask leads with its task's plan, from the worktree file or the plan step", () => {
+  const ask = { state: "open", kind: "step" };
+  const file = { plan_file: { path: "/w/.priory/brief.md", text: "D1", truncated: false }, plan: null };
+  assert.equal(plansFirst(ask, file), true);
+  assert.equal(plansFirst(ask, { plan_file: null, plan: { step: "plan", run: 2, summary: "1. cursor" } }), true);
+  assert.equal(plansFirst(ask, { plan_file: null, plan: null }), false);
+  assert.equal(plansFirst(ask, null), false);
+  assert.equal(plansFirst({ ...ask, kind: "outside" }, file), false);
+  assert.equal(plansFirst({ ...ask, state: "answered" }, file), false);
+});
+
+test("a plan file is named from its worktree", () => {
+  assert.equal(planName("/home/max/worktrees/acme/shop/7/.priory/brief.md"), ".priory/brief.md");
 });

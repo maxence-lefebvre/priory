@@ -341,14 +341,14 @@ export default class PrioryAsks extends View {
     const digit = Number(event.key);
     if (event.key === "j" || event.key === "down") return this.move(1, cx);
     if (event.key === "k" || event.key === "up") return this.move(-1, cx);
-    if (event.key === "enter" && ask && this.width < PANE.split) { this.reading = this.reading ? null : "why"; return cx.notify(); }
+    if (event.key === "enter" && ask && this.width < PANE.split) { this.reading = this.reading ? null : detail?.first ?? "why"; return cx.notify(); }
     if (!ask || !detail) return;
     if (digit >= 1 && digit <= detail.options.length) return this.choose(ask, digit - 1, cx);
     if (event.key === "w" && ask.state === "open" && ask.free_text !== false) { this.writing.add(ask.id); this.draft(ask.id).focus(); return cx.notify(); }
     if (event.key === "s" && detail.canSnooze && !ask.snoozed_until) return this.snooze(ask, { for: "1h" }, cx);
     if (event.key === "[" || event.key === "]") {
       const chips = detail.chips.map(([id]) => id);
-      const at = chips.indexOf(this.reading ?? "why");
+      const at = chips.indexOf(this.reading ?? detail.first);
       this.reading = chips[Math.min(chips.length - 1, Math.max(0, at + (event.key === "]" ? 1 : -1)))];
       return cx.notify();
     }
@@ -478,7 +478,7 @@ export default class PrioryAsks extends View {
           return v_flex().px(S["space-2"])
             .child(this.row(row, selected, t))
             .when(inPlace && selected && Boolean(ask), (el) => el.child(v_flex().px(S["space-2"]).pt(S["space-2"]).pb(S["space-4"]).gap(S["space-3"])
-              .child(this.decide(ask, t, now)).child(this.chips(ask, t)).child(this.section(ask, "why", t, now))));
+              .child(this.decide(ask, t, now)).child(this.chips(ask, t)).child(this.section(ask, askDetail(ask, { now, armed: this.armed, task: this.task, links: this.links }).first, t, now))));
         }))));
   }
 
@@ -688,7 +688,7 @@ export default class PrioryAsks extends View {
   /** @param {any} ask @param {Palette} t */
   chips(ask, t) {
     const detail = askDetail(ask, { now: Date.now(), armed: null, task: this.task, links: this.links });
-    const current = this.reading ?? (this.width >= PANE.split ? "why" : null);
+    const current = this.reading ?? (this.width >= PANE.split ? detail.first : null);
     return h_flex().flex_none().gap(S["space-1"]).flex_wrap().children(detail.chips.map(([id, label]) =>
       Button.new(`chip-${ask.id}-${id}`).h(PANE.chip).px(S["space-3"]).flex().items_center().rounded(RADIUS.md).selected(current === id)
         .bg(current === id ? t.emph : t.bg).text_color(current === id ? t["on-emph"] : t["text-2"]).text_size(TYPE.small[0]).font_weight(500)

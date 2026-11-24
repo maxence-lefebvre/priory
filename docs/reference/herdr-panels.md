@@ -165,13 +165,15 @@ DESIGN.md's "Herdr adapter" section holds its visual rules; this section says ho
   draw with their [links](#links).
 
 The detail shows the sections Why, Brief, Plan, PR, Trace, History and Command. Brief shows the
-request and the `groom` step's result, Plan the `plan` step's result, or else the latest result of a step
+request and the `groom` step's result, Plan the task's plan document (`plan_file`, see
+[the task endpoint](serve.md)) with its path, or else the `plan` step's result, or else the latest result of a step
 whose name starts with `plan-`, or else the task's `progress`, PR the pull request's title, branches, state, review and checks, then the task's stack when it
 has two or more pull requests (see [Stacks](#stacks)), and Trace each run with its
 span, outcome and tokens. A check shows a check, a cross, a clock while it has no conclusion, or a
 dash when skipped or neutral; review and check states read in plain words, such as "changes
 requested" and "passed", as `checkState` and `stateWords` in `lib/priory.js` say them for the web too.
 A section the task lacks is left out with its chip, as DESIGN.md says.
+An open step ask whose task has a plan puts Plan first, and its detail opens on Plan rather than Why.
 History lists every revision and refused answer of the ask, and its answer, newest first. A refused
 answer shows on a warn tile. Briefs, plans and results draw as plain text, like the agent's text.
 
@@ -535,7 +537,7 @@ waiting: snoozing changes what a person sees, never what the daemon does. `prior
   `withdrawn_why`, the reason in words that the view shows, and `withdrawn_at`.
 - The detail adds the agent's text and the run that asked, `what_waits` and `next_action`, and
   the ask's `revisions` and `refused`, and another runner's ask's `submissions`, for its history. `priory task ID --json` adds the task's
-  `brief`, `plan`, `pull_request` and `runs`.
+  `brief`, `plan`, `plan_file`, `pull_request` and `runs`.
 
 ### Queue
 

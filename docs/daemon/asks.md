@@ -71,3 +71,23 @@ Known limits:
 - An answer to an old revision is still delivered, with that revision, after the ask changed.
 - `priory check` refuses a `deliver` that is not an executable file in the factory folder, but it
   does not run the file. A script with a syntax error still fails each try.
+
+## The plan an ask approves
+
+A step that approves a plan, such as `approve-plan` in a groom workflow, asks after an agent wrote
+that plan to a file in the task's worktree: `.priory/plan.md`, or `.priory/brief.md` for a brief.
+`priory task ID --json` and `/api/tasks/ID` read that file on each call and serve it as
+`plan_file` (see [serve.md](../reference/serve.md)). The web view and the Herdr Asks panel show it
+in the ask's Plan section, as Markdown in the web view and as plain text in Herdr. For an open step
+ask, Plan comes before Why, so the decisions read before the options.
+
+![The approve-plan ask of ENG-270 in the web view: the Plan section leads, with .priory/brief.md, its three decisions, acceptance criteria and plan.](../images/web-view-plan-ask-1440-light.png)
+
+Priory reads only the task's own worktree. A file whose real path leaves it, such as a symlink to
+another folder, is skipped. Past 64 KB the text is cut, and the section says where to read the
+rest. With no file, Plan falls back to the `plan` step's result, as before.
+
+Known limits:
+
+- A task on another runner keeps its worktree on that machine, so this runner shows the fallback.
+- A worktree removed to free disk takes its plan file with it.

@@ -171,8 +171,10 @@ function history(ask) {
 
 const minutes = (/** @type {string} */ from, /** @type {string} */ to) => Math.round((Date.parse(to) - Date.parse(from)) / 60_000);
 
-/** The plan step's latest result, else the progress the agent last published. @param {any} task */
+/** The plan document in the task's worktree, else the plan step's latest result, else the progress the agent last published. @param {any} task */
 function plan(task) {
+  const file = task.plan_file;
+  if (file) return { text: file.truncated ? `${file.text}\n\nShowing the first 64 KB. Read the rest at ${file.path}.` : file.text, from: file.path.slice(file.path.lastIndexOf("/.priory/") + 1) };
   if (task.plan) return { text: task.plan.summary, from: `${task.plan.step}, run ${task.plan.run}` };
   const progress = task.progress;
   if (!progress) return null;
@@ -230,6 +232,8 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
   const groomed = task?.brief?.result;
   const brief = request || groomed ? { request, text: groomed?.summary ?? null, from: groomed ? `${groomed.step}, run ${groomed.run}` : null } : null;
   const planned = task ? plan(task) : null;
+  // A step ask with a plan approves that plan: its Plan section comes first and opens by default.
+  const first = open && ask.kind === "step" && planned ? "plan" : "why";
   const pr = pullRequest(task?.pull_request, task?.stack);
   const runs = trace(task?.runs ?? [], now);
   // A long untitled question heads the detail with a short title and reads whole in Why.
@@ -255,9 +259,10 @@ export function askDetail(ask, { now, armed, task = null, links = [] }) {
       dimmed: arming !== null && arming !== index,
     })),
     chips: /** @type {[string, string][]} */ ([
-      ["why", "Why"], brief && ["brief", "Brief"], planned && ["plan", "Plan"], pr && ["pr", "PR"],
+      first === "plan" && ["plan", "Plan"], ["why", "Why"], brief && ["brief", "Brief"], first === "why" && planned && ["plan", "Plan"], pr && ["pr", "PR"],
       runs.length > 0 && ["trace", "Trace"], ["history", "History"], ask.command && ["command", "Command"],
     ].filter(Boolean)),
+    first,
     brief,
     plan: planned,
     pr,

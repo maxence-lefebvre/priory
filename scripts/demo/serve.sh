@@ -19,6 +19,9 @@ sed -i 's/^name = .*/name = "shop"/' "$dir/factory/factory.toml"
 # the memory a seeded candidate replaces
 mkdir -p "$dir/factory/memories"
 printf -- '---\nname: release-day\ndescription: When releases go out. Read it before you plan or merge a change near a release.\n---\nReleases go out on Tuesdays. Merge nothing risky on a Monday afternoon.\n' > "$dir/factory/memories/release-day.md"
+# the plan document of task 14's worktree, which its approve-plan ask shows
+mkdir -p "$dir/home/worktrees/acme/shop/eng-270/.priory"
+cp "$here/brief.md" "$dir/home/worktrees/acme/shop/eng-270/.priory/brief.md"
 printf '\n[serve]\nlisten = "127.0.0.1:7391"\ntoken_env = "PRIORY_TOKEN"\n' >> "$dir/factory/factory.toml"
 export PRIORY_DB="$dir/state.db" PRIORY_HOME="$dir/home" PRIORY_TOKEN=demo-token
 [ ! -e "$PRIORY_DB" ] || { echo "serve.sh: $PRIORY_DB exists; give a new folder" >&2; exit 1; }

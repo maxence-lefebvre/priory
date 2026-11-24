@@ -100,7 +100,7 @@ pub fn apply(
             let Some(id) = arguments["id"].as_i64() else {
                 return Ok(Err("id must be a task's number".to_owned()));
             };
-            Ok(match listing::task(db, id)? {
+            Ok(match listing::task(db, home, id)? {
                 Some(task) => Ok(task.to_string()),
                 None => Err(format!("no task {id}")),
             })

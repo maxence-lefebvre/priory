@@ -633,7 +633,7 @@ fn route(
             path.strip_prefix("/api/tasks/").map(str::parse),
             path.strip_prefix("/api/reports/").map(str::parse),
         ) {
-            (Some(Ok(id)), _) => listing::revised(db, "task", |db| listing::task(db, id)),
+            (Some(Ok(id)), _) => listing::revised(db, "task", |db| listing::task(db, home, id)),
             (_, Some(Ok(task))) => {
                 listing::revised(db, "report", |db| sections::show(db, Some(task)))
             }

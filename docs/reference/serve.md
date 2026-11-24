@@ -516,6 +516,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `revision` | integer | The question's revision. `priory answer` and `priory dismiss` take it |
 | `question` | string | The question |
 | `options` | array of strings | The options |
+| `kind` | string | Who asked: `step` for a step's ask, `agent` for an agent's `ask` tool, `outside` for a session Priory did not start |
 | `free_text` | boolean | Whether the ask takes free text and a dismissal. False for a step's ask and a hold's ask, which take only their options |
 | `recommendation`, `tradeoff` | string or null | What the agent recommends, and the trade-off |
 | `title`, `text` | string or null | The ask's title and its Markdown body. A human step's ask has the task's [merge risk](tools.md#merge-risk) as its body, when it has one |
@@ -687,6 +688,7 @@ And these objects:
 | ----- | ---- | ------- |
 | `brief` | object | `title` and `request`, the request's title and text, each null when it has none, `result`, the latest result of a step named `groom`, or null, `intent`, its trigger's [`intent`](triggers.md#intent-and-noop) or null, and `noop`, its trigger's no-op cases, `[]` with none |
 | `plan` | object or null | The latest result of a step named `plan`, or else of a step whose name starts with `plan-`, such as `plan-implementation`. A result has `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha` and `created`. When it is null, `progress` holds the plan the agent published |
+| `plan_file` | object or null | The plan document in the task's worktree, read on each request: `.priory/plan.md`, or else `.priory/brief.md`. It has `path`, `text` and `truncated`. `text` holds at most the first 64 KB, and `truncated` is true when the file is longer. The worktree is `worktrees/<repo>/<name>` under the Priory home, with `<name>` the task's branch without `priory/`. Null when the worktree or the file is missing, when the task runs on another runner, or when the file's real path leaves the worktree, as a symlink out of it does |
 | `pull_request` | object or null | The latest pull request the task owns that has stored GitHub events: `repo`, `number`, `title`, `url`, `branch`, `base`, `head_sha` (each from the newest event that carries it), `state` (`open`, `closed` or `merged`; a reopened pull request stays `closed`, since the intake publishes no reopen event), `review` (the latest review's state, or null) and `checks`, the latest conclusion of each check run on the head: `name`, `conclusion` and `at` |
 
 ## Evidence

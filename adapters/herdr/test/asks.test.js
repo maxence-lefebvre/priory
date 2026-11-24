@@ -270,6 +270,23 @@ test("Plan falls back to the task's progress when no plan step ran", () => {
   assert.deepEqual(detail.plan, { text: "Goal: Export the board\n- AC1: a CSV per board\nLatest change: wrote the exporter\nNext: merge", from: "progress" });
 });
 
+test("Plan shows the plan file of the task's worktree, and leads an open step ask", () => {
+  const [answered] = fixture("asks-history.json").asks;
+  const plan_file = { path: "/home/max/worktrees/acme/shop/7/.priory/brief.md", text: "## Decisions\nD1: cursor", truncated: false };
+  const task = { ...fixture("task.json"), plan_file };
+  const step = { ...answered, state: "open", kind: "step", options: ["approve", "revise"] };
+  const detail = askDetail(step, { now, armed: null, task });
+  assert.deepEqual(detail.plan, { text: "## Decisions\nD1: cursor", from: ".priory/brief.md" });
+  assert.equal(detail.first, "plan");
+  assert.deepEqual(detail.chips.slice(0, 2), [["plan", "Plan"], ["why", "Why"]]);
+
+  const cut = askDetail(step, { now, armed: null, task: { ...task, plan_file: { ...plan_file, truncated: true } } }).plan;
+  assert.equal(cut?.text, `## Decisions\nD1: cursor\n\nShowing the first 64 KB. Read the rest at ${plan_file.path}.`);
+  // An outside ask, or one already answered, keeps Why first.
+  assert.equal(askDetail({ ...step, kind: "outside" }, { now, armed: null, task }).first, "why");
+  assert.equal(askDetail({ ...answered, kind: "step" }, { now, armed: null, task }).chips[0][0], "why");
+});
+
 test("History keeps entries of the same second newest first", () => {
   // Hand-built from the captured ask: both revisions and the first answer within one second.
   const [ask] = fixture("asks-history.json").asks;

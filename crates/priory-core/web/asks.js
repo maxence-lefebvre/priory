@@ -38,6 +38,12 @@ export const routedMark = (ask) => (ask?.routed_to && (ask.state ?? "open") === 
 /** What an open ask's detail says of its lead, else null. @param {any} ask */
 export const routedNote = (ask) => (routedMark(ask) ? `${ask.routed_to} is answering. You can still answer first: the first answer stands.` : null);
 
+/** A plan file's path from its worktree, such as `.priory/brief.md`. @param {string} path */
+export const planName = (path) => path.slice(path.lastIndexOf("/.priory/") + 1);
+
+/** Whether an ask approves its task's plan: an open step ask whose task has one. Its Plan section then leads. @param {any} ask @param {any} task */
+export const plansFirst = (ask, task) => ask.state === "open" && ask.kind === "step" && Boolean(task?.plan_file || task?.plan);
+
 /** The runner of another runner's ask, which alone lists `submissions`, else null. @param {any} ask */
 export const runnerOf = (ask) => (Array.isArray(ask?.submissions) ? ask.runner : null);
 

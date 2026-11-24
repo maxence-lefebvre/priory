@@ -1,6 +1,6 @@
 // Priory's web view (DESIGN.md): the frame, the Desk and the Asks, with answering through the CLI's verbs.
 // Agent text is untrusted: every value goes through `html`, which escapes it.
-import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, takesText, writeNote } from "./asks.js";
+import { ARM_MS, ASK_VIEWS, answeredAsks, answeredBy, askBody, askGroups, askHeading, confidenceNote, openAsksOf, planName, plansFirst, routedMark, routedNote, runnerOf, seenAgo, sentNote, shownGroups, shrunkHead, snoozeShortcut, snoozed, optionKey, press, runsCommand, submitted, takesText, writeNote } from "./asks.js";
 import { SPLITS, attentionView, costTiles, dayBars, money, scoreTable, splitTable } from "./costs.js";
 import { addBody, addOutcome } from "./add.js";
 import { linked } from "./links.js";
@@ -1191,8 +1191,10 @@ function askDetail(id, wide) {
     ...(batch.closes?.length ? [["closes", "Closes", closesSection(batch)]] : []),
     ...(splitsOf(batch).length ? [["splits", "Splits", splitsSection(batch)]] : []),
   ] : [];
-  const read = taskSections(taskOf(ask)).filter(([key]) => !batch || key !== "plan");
-  const sections = [...planned.map(([key, label]) => [key, label]), ["why", "Why"], ...read.map(([key, label]) => [key, label]), ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
+  const sectionsRead = taskSections(taskOf(ask)).filter(([key]) => !batch || key !== "plan");
+  const lead = batch || !plansFirst(ask, taskOf(ask)) ? [] : sectionsRead.filter(([key]) => key === "plan");
+  const read = sectionsRead.filter((section) => !lead.includes(section));
+  const sections = [...planned.map(([key, label]) => [key, label]), ...lead.map(([key, label]) => [key, label]), ["why", "Why"], ...read.map(([key, label]) => [key, label]), ["history", "History"], ...(ask.command ? [["command", "Command"]] : [])];
   const jump = html`<nav class="jump" aria-label="Sections">${sections.map(([key, label], i) => html`<a href="#${key}" aria-current="${i === 0 ? "true" : "false"}">${label}</a>`)}</nav>`;
   const why = html`<section class="sect" id="why"><div class="sh">${icon("message-text", "s15")}What the agent asks<span class="meta">${ask.run ? html`run <span class="mono">${ask.run}</span>` : ""}</span></div>
     ${body ? html`<p class="asked">${autolinked(body, ask.repo)}</p>` : ""}
@@ -1230,7 +1232,7 @@ function askDetail(id, wide) {
       ${locked === "offline" ? html`<p class="note">${icon("unplug", "s15")}<span>Reconnect to answer.</span></p>` : ""}</div>`
     : "";
   const reading = read.map(([, , section]) => section);
-  const plan = planned.map(([, , section]) => section);
+  const plan = [...planned, ...lead].map(([, , section]) => section);
   if (wide) return html`<div class="pinned">${header}${top}${sending}</div><div class="scroll" data-sections>${jump}${plan}${why}${reading}${history}${command}</div>`;
   return html`${header}<div class="scroll" data-sections>${top}${jump}${plan}${why}${reading}${history}${command}</div>${bar}${sending}`;
 }
@@ -1568,7 +1570,10 @@ function taskSections(task) {
     const criteria = progress.criteria.length ? html`<p class="meta">Acceptance criteria</p><ol class="hist crit">${progress.criteria.map((criterion) => html`<li><span class="mono">${criterion.id}</span><span>${autolinked(criterion.description, task.repo)}</span><span class="tag">${criterion.state}</span></li>`)}</ol>` : "";
     sections.push(["progress", "Progress", sect("progress", "check", "Progress", "", html`${line("Goal", progress.goal)}${criteria}${line("Latest change", progress.latestChange)}${line("Next", progress.nextAction)}`)]);
   }
-  if (task.plan) sections.push(["plan", "Plan", sect("plan", "check", "Plan", `${task.plan.step}, run ${task.plan.run}`, md(task.plan.summary, task.repo))]);
+  const file = task.plan_file;
+  if (file) {
+    sections.push(["plan", "Plan", sect("plan", "check", "Plan", html`<span class="mono" title="${file.path}">${planName(file.path)}</span>`, html`${md(file.text, task.repo)}${file.truncated ? html`<p class="note">${icon("file-text", "s15")}<span>Showing the first 64 KB. Read the rest at ${file.path}.</span></p>` : ""}`)]);
+  } else if (task.plan) sections.push(["plan", "Plan", sect("plan", "check", "Plan", `${task.plan.step}, run ${task.plan.run}`, md(task.plan.summary, task.repo))]);
   const pr = task.pull_request;
   if (pr) {
     sections.push(["pr", "PR", sect("pr", "workflow", `#${pr.number} ${pr.title || ""}`, stateWords(pr.review),
