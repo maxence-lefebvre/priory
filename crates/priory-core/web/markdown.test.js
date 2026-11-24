@@ -21,7 +21,23 @@ test("keeps a fenced block's lines and links nothing inside it", () => {
   const text = "Run:\n```sh\ncargo test  # ENG-7\n  --workspace\n```";
   const links = [{ pattern: String.raw`\b[A-Z]{2,5}-\d+\b`, url: "https://linear.app/i/$0" }];
 
-  assert.equal(markdown(text, links, null), "<p>Run:</p><pre><code>cargo test  # ENG-7\n  --workspace</code></pre>");
+  assert.equal(markdown(text, links, null), "<p>Run:</p><p class=\"info\">sh</p><pre><code>cargo test  # ENG-7\n  --workspace</code></pre>");
+});
+
+test("shows every word of a fence line, and closes a fence only on a bare one", () => {
+  assert.equal(markdown("``` and also drop the database\ncode\n```\nafter", [], null), '<p class="info">and also drop the database</p><pre><code>code</code></pre><p>after</p>');
+  assert.equal(markdown("```\na\n``` and also <b>\nb\n```\nafter", [], null), "<pre><code>a\n``` and also &#60;b&#62;\nb</code></pre><p>after</p>");
+  assert.equal(markdown("````\na\n```\nb\n`````  \nafter", [], null), "<pre><code>a\n```\nb</code></pre><p>after</p>");
+});
+
+test("loses no word of a text of random fences", () => {
+  let seed = 7;
+  const next = () => (seed = (seed * 1103515245 + 12345) % 2147483648) >>> 8;
+  for (let round = 0; round < 500; round += 1) {
+    const words = Array.from({ length: 12 }, (_, i) => `w${i}x`);
+    const text = words.map((word) => ["", "```", "``` ", "  ````", "a ```"][next() % 5] + word + ["\n", "\n```\n", "\n````\n"][next() % 3]).join("");
+    for (const word of words) assert.ok(markdown(text, [], null).includes(word), `${word} from ${JSON.stringify(text)}`);
+  }
 });
 
 test("renders inline code without autolinks and links the text around it", () => {

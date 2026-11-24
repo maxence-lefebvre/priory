@@ -2346,7 +2346,8 @@ fn adopt(args: Vec<String>) -> ExitCode {
         trigger
             .filter
             .as_ref()
-            .and_then(|filter| filter.get("author")),
+            .and_then(|filter| filter.get("author"))
+            .and_then(factory::FilterValue::one),
     ) else {
         return fail(&format!(
             "trigger {name} is not a pull request comment or review trigger"
@@ -2808,9 +2809,14 @@ fn held(
         pid: child.id(),
     };
     // The daemon takes the same pid again, so a lost reply only delays the hand-over.
+    let mut said = String::new();
     let taken = loop {
         match call(&run, runtime::call_through_restart) {
-            Err(_) if matches!(child.try_wait(), Ok(None)) => {
+            Err(error) if matches!(child.try_wait(), Ok(None)) => {
+                if said != error {
+                    eprintln!("priory memory: grant {grant} waits to start its command: {error}");
+                    said = error;
+                }
                 std::thread::sleep(Duration::from_millis(250));
             }
             taken => break taken.flatten(),

@@ -14,6 +14,11 @@
     "state": "In Progress",
     "labels": ["agent", "bug"],
     "view": "6b3c2f9a1d4e",
+    "order": {
+      "project_id": "c1d5e0a2-3b4f-4e8a-9a61-7f20d4b8e913",
+      "milestone": { "id": "7a0c2f64-1f0e-4f5f-8a35-3f1d5f0f2b11", "sort_order": 1.0, "target_date": "2026-12-01" },
+      "sort_order": -412.5
+    },
     "time": "2026-11-17T12:31:40.077Z",
     "baseline": false,
     "triggers": []
