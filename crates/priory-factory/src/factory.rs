@@ -319,6 +319,10 @@ pub struct Repo {
     /// `priory cloud setup-script` copies it into the cloud environment's setup script. It holds
     /// no secret: anyone who uses the environment can read it.
     pub cloud_setup: Option<String>,
+    /// Whether a task of the repository may start Claude cloud sessions, which push its branch to
+    /// GitHub before a person approves `open-pr`.
+    #[serde(default)]
+    pub cloud: bool,
 }
 
 /// One command of a repository's recipe: `argv`, which Priory execs as it is, or `shell`, which it
@@ -1061,6 +1065,8 @@ pub struct IntakeSettings {
 pub struct Cloud {
     /// How many cloud runs a runner has at once, 4 when unset. Past it, a task waits to start one.
     pub max: Option<std::num::NonZeroU32>,
+    /// How many cloud sessions one task may start, 10 when unset. Past it, the task blocks.
+    pub sessions: Option<std::num::NonZeroU32>,
 }
 
 /// How the queue orders tasks.
@@ -3006,6 +3012,22 @@ impl Factory {
             .as_ref()
             .and_then(|settings| settings.value.cloud.max)
             .map_or(4, std::num::NonZeroU32::get)
+    }
+
+    /// How many cloud sessions one task may start.
+    pub fn cloud_sessions(&self) -> u32 {
+        self.settings
+            .as_ref()
+            .and_then(|settings| settings.value.cloud.sessions)
+            .map_or(10, std::num::NonZeroU32::get)
+    }
+
+    /// Whether a task of `repo` may start cloud sessions.
+    pub fn cloud_repo(&self, repo: &str) -> bool {
+        self.settings
+            .as_ref()
+            .and_then(|settings| settings.value.repos.get(repo))
+            .is_some_and(|repo| repo.cloud)
     }
 
     /// The agent's own prompt, then the factory's writing guide.

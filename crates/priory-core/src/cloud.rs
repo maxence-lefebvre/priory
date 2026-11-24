@@ -21,6 +21,12 @@ pub(crate) const HARNESS: &str = "claude-cloud";
 const DEADLINE: Duration = Duration::from_secs(2 * 60 * 60);
 /// How often the daemon asks `origin` for a live cloud run's branch.
 const POLL: Duration = Duration::from_secs(60);
+/// How soon it asks again: for a push it saw once, and past the deadline after an error.
+const SOON: Duration = Duration::from_secs(15);
+/// How long a task waits after its first failing start; each further one in a row doubles it.
+const BACKOFF: i64 = 60;
+/// The longest such wait.
+const BACKOFF_MAX: i64 = 30 * 60;
 
 /// The run whose session a thread starts. One at a time: a repository has one folder for them.
 static STARTING: Mutex<Option<(i64, Starting)>> = Mutex::new(None);
@@ -36,8 +42,12 @@ static WATCHED: Mutex<BTreeMap<i64, Watch>> = Mutex::new(BTreeMap::new());
 struct Watch {
     polled: Option<Instant>,
     polling: Option<Receiver<Result<Option<String>, String>>>,
-    /// Its last poll started past the deadline.
-    last: bool,
+    /// When its first poll past the deadline started.
+    late: Option<Instant>,
+    /// The last poll, past the deadline, found no push.
+    absent: bool,
+    /// The commit the last poll that found a push saw, taken once a second poll sees it too.
+    seen: Option<String>,
     /// Why the last poll took no push.
     trouble: Option<String>,
     /// What the CLI said when it uploaded the clone.
@@ -78,8 +88,53 @@ fn link(cloud: &str) -> String {
     format!("https://claude.ai/code/{cloud}")
 }
 
+/// A cloud run whose start made no session: its step has a result and it has no session id.
+const REFUSED: &str = "harness = 'claude-cloud' AND thread IS NULL AND ended IS NOT NULL
+  AND EXISTS (SELECT 1 FROM results WHERE results.run = runs.id)";
+
+/// Why `task` may start no further cloud session, once it started as many as a task may.
+pub(crate) fn spent(
+    db: &Connection,
+    factory: &Factory,
+    task: i64,
+) -> rusqlite::Result<Option<String>> {
+    let started: u32 = db.query_row(
+        &format!("SELECT count(*) FROM runs WHERE task = ?1 AND harness = ?2 AND NOT ({REFUSED})"),
+        params![task, HARNESS],
+        |row| row.get(0),
+    )?;
+    let max = factory.cloud_sessions();
+    Ok((started >= max).then(|| {
+        format!(
+            "the task started {started} of at most {max} cloud sessions: raise `[cloud] sessions` in factory.toml, then resume the task"
+        )
+    }))
+}
+
 /// Why a task cannot start a cloud run now.
-pub(crate) fn waits(db: &Connection, factory: &Factory) -> rusqlite::Result<Option<String>> {
+pub(crate) fn waits(
+    db: &Connection,
+    factory: &Factory,
+    task: i64,
+) -> rusqlite::Result<Option<String>> {
+    let (failed, since): (u32, Option<i64>) = db.query_row(
+        &format!(
+            "SELECT count(*), unixepoch('now') - unixepoch(max(ended)) FROM runs
+             WHERE task = ?1 AND {REFUSED} AND id > coalesce(
+               (SELECT max(id) FROM runs WHERE task = ?1 AND thread IS NOT NULL AND harness = '{HARNESS}'), 0)"
+        ),
+        [task],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let wait = match failed {
+        0 => 0,
+        _ => (BACKOFF << (failed - 1).min(10)).min(BACKOFF_MAX),
+    };
+    if let Some(left) = since.map(|since| wait - since).filter(|left| *left > 0) {
+        return Ok(Some(format!(
+            "waits to start a cloud session again: {failed} starts in a row failed, so the next one is in {left}s"
+        )));
+    }
     let live: u32 = db.query_row(
         "SELECT count(*) FROM runs WHERE ended IS NULL AND harness = ?1",
         [HARNESS],
@@ -458,9 +513,22 @@ fn follow(
             Err(TryRecvError::Disconnected) => Err("its thread stopped".into()),
         };
         watch.polling = None;
+        watch.absent = false;
         let taken = match found {
-            Ok(Some(commit)) => cloud::adopt(worktree, &run.branch, &run.head, &commit),
-            Ok(None) => Ok(None),
+            Ok(commit) if commit.as_deref().is_none_or(|commit| commit == run.head) => {
+                watch.seen = None;
+                watch.absent = watch.late.is_some();
+                Ok(None)
+            }
+            // A push may be a first part of the work, or be replaced: the next poll confirms it.
+            Ok(commit) if commit != watch.seen => {
+                watch.seen = commit;
+                Ok(None)
+            }
+            Ok(commit) => {
+                let commit = commit.expect("a push has a commit");
+                cloud::adopt(worktree, &run.branch, &run.head, &commit)
+            }
             Err(reason) => Err(NotTaken::Later(reason)),
         };
         watch.trouble = None;
@@ -504,7 +572,9 @@ fn follow(
     }
     let timeout = step.and_then(|step| step.timeout).unwrap_or(DEADLINE);
     let late = run.age >= 0 && run.age as u64 >= timeout.as_secs();
-    if late && watch.last {
+    // The grace counts from the first late poll, so a runner that slept past the deadline has it whole.
+    let graced = watch.late.is_some_and(|since| since.elapsed() < timeout);
+    if late && (watch.absent || (watch.trouble.is_some() && watch.late.is_some() && !graced)) {
         let seconds = timeout.as_secs();
         let mut summary = match &watch.trouble {
             None => format!("cloud session {cloud} pushed no branch {pushes} within {seconds}s."),
@@ -533,9 +603,13 @@ fn follow(
         )?;
         return Ok(false);
     }
-    // A runner that slept past the deadline still looks once more before it gives up.
-    if late || watch.polled.is_none_or(|polled| polled.elapsed() >= POLL) {
-        watch.last = late;
+    let confirms = watch.seen.is_some() && watch.trouble.is_none();
+    let every = if late || confirms { SOON } else { POLL };
+    let first_late = late && watch.late.is_none();
+    if first_late || watch.polled.is_none_or(|polled| polled.elapsed() >= every) {
+        if late {
+            watch.late.get_or_insert_with(Instant::now);
+        }
         watch.polled = Some(Instant::now());
         let (sender, receiver) = channel();
         watch.polling = Some(receiver);
@@ -573,6 +647,13 @@ fn end(
         session: session.into(),
         arguments,
     };
+    let skipped = match outcome {
+        "pushed" => {
+            let tx = db.transaction()?;
+            crate::tools::graders(&tx, session, outcome, trace.factory, kit)?
+        }
+        _ => Vec::new(),
+    };
     let (stored, _) = crate::tools::call(db, &call, trace, kit, &|worktree, branch| {
         runtime::head(worktree, branch)
     })?;
@@ -587,6 +668,18 @@ fn end(
         [session],
     )?;
     crate::tools::stop(&tx, session, trace)?;
+    if !skipped.is_empty() {
+        let line = format!(
+            "A cloud session cannot fix what a gate refuses, so no pre-review or gate read this push: {}.",
+            skipped.join(", ")
+        );
+        tx.execute(
+            "UPDATE asks SET text = ltrim(coalesce(text, '') || char(10, 10) || ?2, char(10))
+             WHERE id = (SELECT max(id) FROM asks WHERE task = ?1 AND kind = 'step'
+               AND answer IS NULL AND withdrawn IS NULL)",
+            params![task, line],
+        )?;
+    }
     tell(&tx, task)?;
     tx.commit()?;
     Ok(())

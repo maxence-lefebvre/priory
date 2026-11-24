@@ -1081,7 +1081,67 @@ pub fn warnings(factory: &Factory) -> Vec<Problem> {
         }
     }
     warnings.extend(caps_warnings(factory));
+    warnings.extend(cloud_warnings(factory));
     warnings
+}
+
+/// A cloud step starts with a push of the task's branch, which publishes what local steps committed
+/// with no person's look, and only a repository that opts in starts one.
+fn cloud_warnings(factory: &Factory) -> Vec<Problem> {
+    let mut warnings = Vec::new();
+    let is_cloud = |step: &Step| step.agent.as_ref().is_some_and(|name| cloud(factory, name));
+    for workflow in factory.workflows.values() {
+        let steps = &workflow.value.steps;
+        let mut any = false;
+        for (index, step) in steps.iter().enumerate() {
+            any |= is_cloud(step);
+            let commits = (step.decides == Decider::Model || step.action.as_deref() == Some("run"))
+                && !matches!(step.effect, Effect::None | Effect::Read)
+                && !is_cloud(step);
+            if !commits {
+                continue;
+            }
+            let mut seen = BTreeSet::new();
+            let mut ahead: Vec<&str> = step.next.values().map(String::as_str).collect();
+            while let Some(id) = ahead.pop() {
+                let Some(target) = steps.iter().find(|target| target.id == id) else {
+                    continue;
+                };
+                if target.decides == Decider::Human || !seen.insert(id) {
+                    continue;
+                }
+                if is_cloud(target) {
+                    let message = format!(
+                        "step `{}` may commit and leads to cloud step `{id}` with no human step between: the cloud step pushes its commits to GitHub before a person sees them",
+                        step.id
+                    );
+                    let line = workflow.lines.step(index);
+                    warnings.push(problem(workflow, line, message));
+                }
+                ahead.extend(target.next.values().map(String::as_str));
+            }
+        }
+        let opted = factory
+            .settings
+            .as_ref()
+            .is_some_and(|settings| settings.value.repos.values().any(|repo| repo.cloud));
+        if any && !opted {
+            warnings.push(problem(
+                workflow,
+                None,
+                "has a cloud step, and no repository sets `cloud = true` in `[repos]`: its tasks block before their first session".into(),
+            ));
+        }
+    }
+    warnings
+}
+
+/// Whether agent `name` runs in the cloud.
+fn cloud(factory: &Factory, name: &str) -> bool {
+    factory
+        .agents
+        .get(name)
+        .is_some_and(|agent| matches!(agent.value.harness, Harness::ClaudeCloud))
 }
 
 /// Claude Code's model aliases: a transcript names the full model, which no price key can predict.
@@ -1449,12 +1509,7 @@ fn check_cloud(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
 /// What a step whose agent runs in the cloud cannot have: the daemon stores its result from the
 /// branch the session pushes, so nothing checks a proof, a guard or a plan field.
 fn cloud_step_problems(factory: &Factory, step: &Step, sandboxed: bool) -> Vec<String> {
-    let cloud = |name: &String| {
-        factory
-            .agents
-            .get(name)
-            .is_some_and(|agent| matches!(agent.value.harness, Harness::ClaudeCloud))
-    };
+    let cloud = |name: &String| cloud(factory, name);
     let mut problems = Vec::new();
     if let Some(debate) = &step.debate
         && debate.agents.iter().any(cloud)

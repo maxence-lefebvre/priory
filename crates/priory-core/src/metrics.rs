@@ -1281,6 +1281,7 @@ fn known_harness(harness: &str, agents: &BTreeMap<String, &'static str>) -> Opti
     match harness {
         "claude-code" => Some("claude-code"),
         "codex" => Some("codex"),
+        "claude-cloud" => Some("claude-cloud"),
         agent => agents.get(agent).copied(),
     }
 }
@@ -1598,6 +1599,7 @@ mod tests {
         assert!(state.starting.is_empty());
         let agents = BTreeMap::from([("implementer".to_owned(), "codex")]);
         assert_eq!(known_harness("implementer", &agents), Some("codex"));
+        assert_eq!(known_harness("claude-cloud", &agents), Some("claude-cloud"));
         assert_eq!(known_harness("nobody", &agents), None);
     }
 

@@ -459,16 +459,22 @@ pub(crate) fn tick(db: &mut Connection, trace: &Trace) -> rusqlite::Result<Vec<S
     }
     // The live runs of investigators' tasks that ended without a result: a deadline, a cap, a
     // failure, or a withdrawn consult.
-    let ended: Vec<(i64, String)> = tx
+    let ended: Vec<(i64, String, i64)> = tx
         .prepare(
-            "SELECT runs.id, runs.tmux FROM runs JOIN tasks ON tasks.id = runs.task
+            "SELECT runs.id, runs.tmux, runs.task FROM runs JOIN tasks ON tasks.id = runs.task
              WHERE runs.ended IS NULL AND tasks.trigger = ?1
              AND tasks.state IN ('done', 'failed', 'dropped')",
         )?
-        .query_map([TRIGGER], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map([TRIGGER], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
     let mut kill = Vec::new();
-    for (run, tmux) in ended {
+    for (run, tmux, task) in ended {
+        if let Some(left) = crate::cloud::left(&tx, task)? {
+            tx.execute(
+                "UPDATE tasks SET reason = coalesce(reason || '; ', '') || ?2 WHERE id = ?1",
+                params![task, left],
+            )?;
+        }
         crate::tools::end(&tx, run, "cancelled")?;
         kill.push(tmux);
     }

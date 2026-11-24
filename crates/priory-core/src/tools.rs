@@ -313,6 +313,32 @@ pub(crate) fn call(
     Ok((stored, None))
 }
 
+/// The scorers that would read `outcome` of the live run of `session` before it is stored, were it
+/// local: those of its gate, and the pre-review.
+pub(crate) fn graders(
+    tx: &Transaction,
+    session: &str,
+    outcome: &str,
+    factory: &Factory,
+    kit: crate::kit::Current<'_>,
+) -> rusqlite::Result<Vec<String>> {
+    let Some(run) = run(tx, session)? else {
+        return Ok(Vec::new());
+    };
+    let Some(step) = step(&factory.workflows, &run.workflow, &run.step) else {
+        return Ok(Vec::new());
+    };
+    let (id, task, workflow) = (run.id, run.task, run.workflow.as_str());
+    let mut names = crate::gates::scorers(tx, task, workflow, step, outcome, factory)?;
+    let reviews = crate::gates::pre_review(tx, id, task, workflow, step, outcome, factory, kit)?;
+    names.extend(
+        reviews
+            .map(|(name, _)| name)
+            .filter(|name| !names.contains(name)),
+    );
+    Ok(names)
+}
+
 /// Stores the result `arguments` of `run`, or, when `hold` names the kit runs get and a gate grades
 /// its outcome, holds it for the gate and stores nothing.
 fn result(
@@ -401,7 +427,8 @@ fn result(
     {
         return Ok(Err(refused));
     }
-    if let Some(kit) = hold {
+    // A gate's refusal needs a turn to fix it, which a cloud session has not: its ask says so.
+    if let Some(kit) = hold.filter(|_| !cloud) {
         let mut scorers =
             crate::gates::scorers(tx, run.task, &run.workflow, step, &outcome, factory)?;
         let lessons = crate::gates::pre_review(
@@ -4473,6 +4500,7 @@ pub(crate) fn cancel(
     task: i64,
     reason: &str,
 ) -> rusqlite::Result<Option<String>> {
+    let left = crate::cloud::left(tx, task)?;
     let tmux = tx
         .query_row(
             "SELECT tmux FROM runs WHERE task = ?1 AND ended IS NULL",
@@ -4493,7 +4521,11 @@ pub(crate) fn cancel(
         ),
         [task],
     )?;
-    set(tx, task, "dropped", None, Some(reason))?;
+    let reason = match left {
+        Some(left) => format!("{reason}; {left}"),
+        None => reason.to_owned(),
+    };
+    set(tx, task, "dropped", None, Some(&reason))?;
     Ok(tmux)
 }
 

@@ -4876,10 +4876,66 @@ fn cloud_factory(name: &str, agent: &str, step: &str) -> Outcome {
         "next = { passed = \"approve-pr\", failed = \"stop\" }",
         &format!("{step}next = {{ pushed = \"approve-pr\", failed = \"stop\" }}"),
     );
+    cloud_workflow(name, agent, &workflow, CLOUD_REPO)
+}
+
+const CLOUD_REPO: &str = "name = \"demo\"\n\n[repos.\"owner/repo\"]\ncloud = true\n";
+
+/// The factory with `agent`, `workflow` and `settings` as its `factory.toml`.
+fn cloud_workflow(name: &str, agent: &str, workflow: &str, settings: &str) -> Outcome {
     let mut files = with("agents/implementer/agent.md", agent);
-    files.retain(|(file, _)| *file != "workflows/implement.toml");
-    files.push(("workflows/implement.toml", &workflow));
+    files.retain(|(file, _)| !["workflows/implement.toml", "factory.toml"].contains(file));
+    files.push(("workflows/implement.toml", workflow));
+    files.push(("factory.toml", settings));
     check(&factory(name, &files))
+}
+
+#[test]
+fn a_cloud_step_warns_when_a_local_step_commits_before_it_with_no_human_step_between() {
+    let local = "[[steps]]\nid = \"draft\"\ndecides = \"model\"\nagent = \"drafter\"\nprompt = \"Draft.\"\neffect = \"reversible\"\nnext = { passed = \"TO\", failed = \"stop\" }\n";
+    let cloud = WORKFLOW
+        .replace("passed = \"approve-pr\"", "pushed = \"approve-pr\"")
+        .replace("start = \"implement\"", "start = \"draft\"");
+    let gate = "[[steps]]\nid = \"look\"\ndecides = \"human\"\neffect = \"none\"\noptions = [\"go\", \"stop\"]\nnext = { go = \"implement\", stop = \"stop\" }\n";
+    let outcome = |name: &str, to: &str, gate: &str| {
+        let workflow = format!("{cloud}\n{}\n{gate}", local.replace("TO", to));
+        let mut files = with("agents/implementer/agent.md", CLOUD_AGENT);
+        files.retain(|(file, _)| !["workflows/implement.toml", "factory.toml"].contains(file));
+        files.push(("workflows/implement.toml", &workflow));
+        files.push(("factory.toml", CLOUD_REPO));
+        files.push((
+            "agents/drafter/agent.md",
+            "+++\ndescription = \"Drafts.\"\nharness = \"claude-code\"\n+++\nYou draft.\n",
+        ));
+        check(&factory(name, &files))
+    };
+
+    let direct = outcome("cloud-commits", "implement", "");
+    let seen = outcome("cloud-commits-seen", "look", gate);
+
+    assert_eq!(direct.code, 0, "{}", direct.stderr);
+    assert!(
+        direct.stderr.starts_with("warning: workflows/implement.toml:")
+            && direct.stderr.contains(
+                "step `draft` may commit and leads to cloud step `implement` with no human step between"
+            ),
+        "{}",
+        direct.stderr
+    );
+    assert_eq!((seen.code, seen.stderr.as_str()), (0, ""));
+}
+
+#[test]
+fn a_cloud_step_warns_when_no_repository_opts_in() {
+    let workflow = WORKFLOW.replace("passed = \"approve-pr\"", "pushed = \"approve-pr\"");
+
+    let outcome = cloud_workflow("cloud-no-repo", CLOUD_AGENT, &workflow, "name = \"demo\"\n");
+
+    assert_eq!(outcome.code, 0);
+    assert_eq!(
+        outcome.stderr,
+        "warning: workflows/implement.toml: has a cloud step, and no repository sets `cloud = true` in `[repos]`: its tasks block before their first session\n"
+    );
 }
 
 #[test]

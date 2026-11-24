@@ -34357,6 +34357,7 @@ fn cloud(name: &str, workflow: &str) -> Setup {
         CLOUD_AGENT,
     )
     .unwrap();
+    setup.settings(CLOUD_ON);
     setup
 }
 
@@ -34658,7 +34659,7 @@ fn each_cloud_step_of_one_agent_starts_its_own_session_with_the_whole_prompt() {
 
     setup.start();
 
-    setup.until("asks", |rows| rows.len() == 1);
+    setup.within(150, "asks", |rows| rows.len() == 1);
     let prompts = setup.cloud_prompts();
     assert_eq!(prompts.len(), 3, "{prompts:?}");
     for (prompt, step) in prompts.iter().zip([
@@ -34709,7 +34710,7 @@ const COMMITS: &str = "git -c user.name=t -c user.email=t@t commit -qm";
 fn a_cloud_session_starts_from_the_pushed_task_branch_and_sees_no_other() {
     let mut setup = cloud("cloud-isolated", CLOUD);
     setup.settings(&format!(
-        "[repos.\"owner/repo\"]\nsetup = {{ shell = \"echo local > local.txt; git add local.txt; {COMMITS} local; git branch other; git switch -q other; {COMMITS} secret --allow-empty; git switch -q priory/1\" }}\n"
+        "[repos.\"owner/repo\"]\ncloud = true\nsetup = {{ shell = \"echo local > local.txt; git add local.txt; {COMMITS} local; git branch other; git switch -q other; {COMMITS} secret --allow-empty; git switch -q priory/1\" }}\n"
     ));
     setup.cloud_pushes("Add the widget\n");
     setup.publish(&requested(42));
@@ -34745,7 +34746,7 @@ fn a_cloud_session_starts_from_the_pushed_task_branch_and_sees_no_other() {
 fn a_worktree_with_changes_starts_no_cloud_session() {
     let mut setup = cloud("cloud-dirty", CLOUD);
     setup.settings(
-        "[repos.\"owner/repo\"]\nsetup = { shell = \"echo mine > mine.txt; echo more >> README.md\" }\n",
+        "[repos.\"owner/repo\"]\ncloud = true\nsetup = { shell = \"echo mine > mine.txt; echo more >> README.md\" }\n",
     );
     setup.publish(&requested(42));
 
@@ -34796,7 +34797,7 @@ fn a_start_that_may_have_made_a_session_blocks_the_task_and_a_resume_sends_the_w
         ),
     ] {
         let mut setup = cloud(name, CLOUD);
-        setup.settings("command_timeout = \"8s\"\n");
+        setup.settings(&format!("command_timeout = \"8s\"\n{CLOUD_ON}"));
         fs::write(setup.dir.join("fake").join(file), text).unwrap();
         setup.request_with_issue();
 
@@ -35040,7 +35041,7 @@ fn a_live_local_run_that_exits_ends_when_its_agent_turned_cloud() {
 #[test]
 fn cloud_runs_past_the_cap_wait_and_hold_up_no_local_task() {
     let mut setup = cloud("cloud-cap", CLOUD);
-    setup.settings("[cloud]\nmax = 1\n");
+    setup.settings(&format!("[cloud]\nmax = 1\n{CLOUD_ON}"));
     setup.calls(&[result("passed")]);
     setup.publish(&requested(42));
     setup.start();
@@ -35209,7 +35210,7 @@ fn a_retry_after_a_failed_cloud_session_reads_the_feedback_again() {
 
     setup.start();
 
-    setup.until("asks", |rows| rows.len() == 1);
+    setup.within(150, "asks", |rows| rows.len() == 1);
     let prompts = setup.cloud_prompts();
     assert_eq!(prompts.len(), 3, "{prompts:?}");
     for prompt in &prompts[1..] {
@@ -35228,6 +35229,9 @@ fn a_retry_after_a_failed_cloud_session_reads_the_feedback_again() {
 fn stacked_on_unpushed(name: &str) -> Setup {
     let workflow = CLOUD.replace("\"implementer\"", "\"cloud\"");
     let mut setup = batched_with(name, &workflow);
+    let settings = setup.dir.join("factory/factory.toml");
+    let text = fs::read_to_string(&settings).unwrap();
+    fs::write(settings, format!("{text}\n{CLOUD_ON}")).unwrap();
     let agent = setup.dir.join("factory/agents/cloud");
     fs::create_dir_all(&agent).unwrap();
     fs::write(agent.join("agent.md"), CLOUD_AGENT).unwrap();
@@ -35528,7 +35532,9 @@ fn a_missed_deadline_names_the_upload_its_session_started_from() {
 #[test]
 fn a_cloud_run_that_serves_a_jailed_task_is_refused_at_its_start() {
     let mut setup = cloud("cloud-jailed-start", CLOUD);
-    setup.settings("[sandboxes.jail]\nkind = \"bwrap\"\nenv = [\"FAKE_DIR\"]\n");
+    setup.settings(&format!(
+        "[sandboxes.jail]\nkind = \"bwrap\"\nenv = [\"FAKE_DIR\"]\n{CLOUD_ON}"
+    ));
     let jailed = WORKFLOW.replace("\"implementer\"", "\"reviewer\"");
     fs::write(
         setup.dir.join("factory/workflows/jailed.toml"),
@@ -35568,7 +35574,7 @@ fn a_cloud_run_that_serves_a_jailed_task_is_refused_at_its_start() {
 }
 
 /// The `factory.toml` lines that let a task's repository start cloud sessions.
-const CLOUD_ON: &str = "";
+const CLOUD_ON: &str = "[repos.\"owner/repo\"]\ncloud = true\n";
 
 #[test]
 fn a_cloud_push_reaches_its_ask_without_the_pre_review_and_the_ask_says_so() {

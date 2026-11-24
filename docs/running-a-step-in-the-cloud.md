@@ -85,7 +85,16 @@ Print and paste the script again after the kit or the factory's skills change.
    `trust_worktrees = true` in `factory.toml`, and name the repository in a trigger or in `[repos]`.
 4. Make sure no setup recipe leaves untracked files that the repository does not ignore: a worktree
    with changes starts no session.
-5. To change how many cloud runs a runner has at once, 4 when unset, set `max` under `[cloud]`.
+5. Opt the repository in, since a start pushes a branch that a person has not approved:
+
+   ```toml
+   [repos."owner/name"]
+   cloud = true
+   ```
+
+   A workflow with `on: push` runs on that push: see [Secrets](daemon/cloud.md#secrets). To change
+   how many cloud runs a runner has at once, 4 when unset, or how many sessions one task may start,
+   10 when unset, set `max` or `sessions` under `[cloud]`.
 6. Run `priory check`. It names any key a cloud agent or step cannot take.
 
 ## See the run

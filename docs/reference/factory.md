@@ -36,14 +36,14 @@ one: [reload.md](../daemon/reload.md#what-a-reload-changes) lists them.
 | `request` | table | no | `priory add` needs `--workflow` | The defaults of `priory add` and `POST /api/request`. See [`[request]`](#request) | |
 | `batch` | table | no | `priory batch add` is refused | How `priory batch add` plans batches. See [`[batch]`](#batch) | |
 | `caps` | table | no | no cap | Spend caps in dollars for every task and each lane. See [`[caps]`](#caps) | |
-| `cloud` | table | no | 4 cloud runs at once | The bounds of cloud runs. See [`[cloud]`](#cloud) | |
+| `cloud` | table | no | 4 cloud runs at once, 10 sessions per task | The bounds of cloud runs. See [`[cloud]`](#cloud) | |
 | `decisions` | table | no | no decision model | A decision model for each decision point. See [`[decisions.triage]`](#decisionstriage) | |
 | `consult` | table | no | no agent consults | Who may consult which investigator, and the bounds of one consult. See [`[consult]`](#consult) | |
 | `mcp` | table of tables | no | | A person's statement about each MCP server or connector an investigator names. See [`[mcp.<name>]`](#mcpname) | |
 | `guard` | table | no | the built-in guards alone | Irreversible commands and MCP tools the tool guard denies on top of the built-in ones. See [`[guard]`](#guard) | |
 | `sandboxes` | table of tables | no | no sandbox | The jails a workflow can start its agents in, by name. See [`[sandboxes.<name>]`](#sandboxesname) | |
 | `trust_worktrees` | bool | no | `false`: a person trusts each folder by hand | The daemon records Claude Code's, Codex's and direnv's folder trust for each run's worktree and clone, for the repositories the factory names. When the worktree has an `.envrc` and `direnv` is installed, the run starts in its environment. See [sessions.md](../daemon/sessions.md#trusting-the-worktrees-and-the-clone) | `true` |
-| `repos` | table of tables | no | no recipe runs | The setup, resume and teardown recipes and the cloud setup script of each repository. See [`[repos]`](#repos) | |
+| `repos` | table of tables | no | no recipe runs | The setup, resume and teardown recipes, the cloud opt-in and the cloud setup script of each repository. See [`[repos]`](#repos) | |
 
 A duration is a whole number followed by `s`, `m`, `h` or `d`, such as `"90s"`, `"15m"`, `"2h"` or `"7d"`.
 
@@ -70,6 +70,7 @@ See [cloud.md](../daemon/cloud.md) for what a cloud run is.
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `max` | integer, at least 1 | no | `4` | How many cloud runs a runner has at once. Past it, a task waits to start one | `2` |
+| `sessions` | integer, at least 1 | no | `10` | How many cloud sessions one task may start. Past it, the task blocks | `3` |
 
 ## `[intake]`
 
@@ -112,6 +113,7 @@ optional. See [Recipes](../daemon/runs.md#recipes) for when each runs and what a
 | `resume` | recipe | no | none | Runs after the daemon adds back a worktree that a retirement removed, before the agent starts | `{ argv = ["npm", "ci", "--prefer-offline"] }` |
 | `teardown` | recipe | no | none | Runs before the sweep or a retirement removes the worktree | `{ shell = "docker compose down" }` |
 | `build` | array of strings | no | `["target"]` when the worktree has a `Cargo.toml`, else none | The folders, relative to the worktree, that a build regenerates. The sweep deletes them in idle worktrees when disk runs low, except a folder that holds a tracked file, a mount or a git repository. `[]` opts the repository out. `priory check` refuses an absolute path or one with `..`. See [sweep.md](../daemon/sweep.md#reclaiming-build-output) | `["target", "out"]` |
+| `cloud` | boolean | no | `false` | Whether a task of the repository may start Claude cloud sessions, which push its branch before a person approves `open-pr`. Without it, the task blocks. See [cloud.md](../daemon/cloud.md#secrets) | `true` |
 | `cloud_setup` | path | no | none | A script in the repository that installs what its checks need in a Claude cloud session. `priory cloud setup-script` copies it, from the default branch of Priory's clone, into the cloud environment's setup script. It holds no secret. See [cloud.md](../daemon/cloud.md#instructions-and-skills) | `"scripts/cloud-setup.sh"` |
 
 Each recipe is a table with exactly one of `argv` and `shell`:

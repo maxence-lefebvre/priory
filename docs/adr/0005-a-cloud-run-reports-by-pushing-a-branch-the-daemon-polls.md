@@ -26,7 +26,8 @@ The daemon names a branch for each cloud run, `claude/priory-<task>-<token>`, an
 the session to push its work there and to open no pull request. The daemon polls `origin` for that
 branch with `git ls-remote`, at most once a minute per live cloud run. When the branch appears, the
 daemon moves the task's own branch forward to it and stores the run's result itself, outcome
-`pushed`. It takes only a commit that descends from the one the session started at.
+`pushed`. It takes only a commit that descends from the one the session started at, and that two polls in a
+row saw.
 A deadline, the step's `timeout`, ends a run whose branch never appears, outcome `failed`.
 
 `open-pr`, a code step a person approves, then opens the pull request from the task's branch, as

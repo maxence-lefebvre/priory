@@ -418,3 +418,7 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` `guard.allow` names `connector-sign-in`, which only an agent's `connectorSignIn` grants `` | A workflow's or a step's `guard.allow` names `connector-sign-in` |
 | `` `guard.allow` names `unreadable`, which the guard cannot read, so nothing may grant it `` | A workflow's or a step's `guard.allow` names `unreadable` |
 | `` step `<id>`: `guard.allow` grants nothing on a step that is not an irreversible model step `` | `guard.allow` on a step that is not an irreversible model step |
+
+`priory check` also warns, and passes, for a cloud step that a committing local step leads to with no
+human step between, and for a workflow with a cloud step when no repository sets `cloud = true` in
+[`[repos]`](factory.md#repos).

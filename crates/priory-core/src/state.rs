@@ -3517,7 +3517,7 @@ pub(crate) fn admissible<'r>(
         };
         let busy = match (busy, agent) {
             (None, Some((_, agent))) if crate::cloud::is_cloud(agent) => {
-                crate::cloud::waits(db, factory)?
+                crate::cloud::waits(db, factory, admission.task)?
             }
             (busy, _) => busy,
         };

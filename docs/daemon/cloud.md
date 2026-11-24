@@ -26,17 +26,30 @@ can push a branch.
 When a task reaches a step whose agent runs in the cloud, the daemon:
 
 1. creates the task's worktree as for any run, on the task's own branch, `priory/<task>`;
-2. checks that the worktree is on that branch with no staged, unstaged or untracked file, since the
-   session would not see it. Otherwise the task blocks with the files;
-   A trigger with `staged = true` starts no cloud run: the task blocks, since a start pushes. A
-   replay starts none either, and ends with `agent error`. A task stacked on another blocks while
-   its branch holds commits of its parent's branch that are not on `origin`, since the push would
-   carry them. The state of the parent's pull request does not matter. Push the parent's branch, then resume the task;
+2. checks that the repository opted in with `cloud = true`, and that the worktree is on that branch
+   with no staged, unstaged or untracked file, since the session would not see it. Otherwise the
+   task blocks and says which;
 3. records the run, with a harness session id of its own and the commit the branch is at;
 4. records Claude's trust of the folder below, when the factory sets `trust_worktrees`, since
    `claude --cloud` shows Claude's trust dialog in a folder it does not trust;
 5. writes the prompt: the agent's prompt, the step's prompt, the task's event, everything queued
    for the task, and the rules below in place of the line that names the `result` tool.
+
+Some tasks start no cloud run:
+
+- A trigger with `staged = true`, whose task blocks, since a start pushes.
+- A replay, which ends with `agent error`.
+- A task stacked on another, while its branch holds commits of its parent that are not on `origin`,
+  since the push would carry them. Priory checks the parent's branch and the commits the task
+  started from, so a commit the parent amended away counts too. The state of the parent's pull
+  request does not matter. Push those commits, or rebase the task's branch onto a branch that is on
+  `origin`, then resume the task. Priory turns off `fetch.prune` in its clone, so a merged parent's
+  branch still counts as pushed once GitHub deletes it.
+- A task that started `[cloud] sessions` cloud sessions, 10 when unset. It blocks until a person
+  raises the limit.
+
+A task whose last start made no session waits a minute before the next, and each further failure in
+a row doubles the wait, to 30 minutes at most.
 
 The rest runs off the daemon's tick, so a slow command delays no other run. One session starts at a
 time. The daemon:
@@ -57,21 +70,24 @@ A cloud run never carries into the next step. The next cloud step, or the same s
 run with a new session, the whole prompt and a branch of its own.
 
 A start that made no session ends the step `failed`: a refused push, a failed clone, the trust
-dialog, or an error exit. Its summary starts with `the cloud session did not start:`. After any
+dialog, or an error exit with a text Priory knows to mean that no session exists, such as `Not
+logged in`. Its summary starts with `the cloud session did not start:`. After any
 `failed` ending, the feedback the run's prompt held waits for the task's next step.
 
 A start that may have made one blocks the task with `cloud run <id> may have started a cloud
-session`, so no retry starts a second: a timeout, a killed command, output with no session id, or a
-session that started from another commit because the branch `is not on GitHub`. A daemon that stops
+session`, so no retry starts a second: a timeout, a killed command, any other error exit, output
+with no session id, or a session that started from another commit because the branch `is not on GitHub`. A daemon that stops
 during a start blocks the task the same way. A person looks at claude.ai/code, then resumes the
 task, which starts a new session.
 
 ## How a cloud run ends its step
 
 At most once a minute, off the tick, the daemon asks `origin` for each live cloud run's branch with
-`git ls-remote`, and fetches the commit it names. Each of these git calls has 15 seconds and never
-prompts. The daemon takes the commit only when all of these hold:
+`git ls-remote`, which has 15 seconds, and fetches the commit it names, which has `command_timeout`.
+Neither prompts. The daemon takes the commit only when all of these hold:
 
+- a second look, 15 seconds later or more, finds the same commit, so a first part of the work or a
+  push about to be replaced is not taken;
 - it descends from the commit the session started at;
 - the worktree is on the task's branch, at that same commit, with nothing uncommitted.
 
@@ -95,7 +111,9 @@ A run whose push has not been taken when the step's `timeout` passes, 2 hours wh
 cannot ask, so open the session to see why: https://claude.ai/code/<id>`, or with why it could not
 take the push. The step's `next.failed` routes the task. The deadline counts from the run's start,
 and the daemon looks once more after it, so a runner that slept while the session worked finds the
-branch.
+branch. Only a look that finds no push ends the run at once. After an error, or a push the worktree
+cannot take, the daemon looks again every 15 seconds for as long as the `timeout`, counted from that
+first late look, and then the run ends `failed` with the error.
 
 A step with no `pushed` or `failed` outcome cannot store that result, so the task blocks with the
 summary and the refusal. `priory check` refuses such a step first.
@@ -104,11 +122,15 @@ A daemon restart keeps a live cloud run: it has no tmux pane to lose, so it is n
 next poll looks for its branch. A run stays what it started as when a person changes its agent's
 `harness`.
 
-`priory cancel` drops the task and prints the session's page. During a start it says that a session
+`priory cancel`, a review request's removal and a move to another runner drop the task, and its
+reason names the session's page, which `priory cancel` prints too. During a start it says that a session
 may still start, and the dropped task's reason then names the session that did. The session itself goes on until a
 person archives it, and the branches it pushed stay on `origin`.
 
 ## Asks and feedback
+
+The factory's pre-review and a step's gate send a result back to its session, which a cloud session
+cannot act on, so neither reads a cloud push. The ask it leads to names the ones that did not run.
 
 A cloud run cannot ask a person. The session has no way to reach the `ask` tool, and nobody
 answers inside it. A session that needs a decision writes it in its last commit message, which
@@ -126,6 +148,7 @@ during the run does not hold up its push: the next model step's prompt has it, a
 | --------- | --------- |
 | Room and the memory gate | A cloud run reserves no memory or disk, waits for no room, and waits behind no task that does |
 | A bound on concurrent runs | `[cloud] max`, 4 when unset, on each runner |
+| A bound on sessions per task | `[cloud] sessions`, 10 when unset |
 | Worktree, sweep and recipes | Apply: the run has a worktree, and the sweep removes it as any other |
 | Approvals, `open-pr`, checks and merge | Apply: they act on the task's branch after the push |
 | Hooks, health checks and nudges | None: the deadline replaces them |
@@ -146,7 +169,10 @@ branch name is all that ties a push to its run: anyone who can push to the repos
 
 Priory passes the session its prompt: no environment variable and no token. It pushes the task's
 branch to GitHub before the session starts, so the branch's commits are there before a person
-approves `open-pr`.
+approves `open-pr`. A workflow of the repository with `on: push` runs on that push, with the
+repository's secrets, before that approval too. A repository therefore opts in with `cloud = true`,
+and `priory check` warns when a local step that may commit leads to a cloud step with no human step
+between.
 
 Without the Claude GitHub App on the repository, Claude Code uploads the repository it runs in. A
 Priory worktree shares its clone with every other task, so the command never runs there. It runs in
@@ -173,4 +199,5 @@ Priory cannot read a cloud session's tokens: the transcript stays in the cloud. 
 `factory.step.ended` record has no `tokens`, so `priory costs` counts it under `tokens unknown for
 N records` and never prices it at `$0`. The session's use counts against the person's Claude plan,
 which claude.ai shows. `priory runs` shows each cloud run's session id, whose page is
-`https://claude.ai/code/<id>`. Spend caps cannot count it, so `[cloud] max` is the only bound.
+`https://claude.ai/code/<id>`. Spend caps cannot count it, so
+`[cloud] max` bounds the sessions at once and `[cloud] sessions` those of one task.

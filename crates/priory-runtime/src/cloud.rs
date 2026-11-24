@@ -3,14 +3,14 @@
 
 use crate::runtime::{
     ClaudeCode, Harness, NESTED, changes, command_timeout, descends, fed, fed_within, git, head,
-    kill, one_line, run, shown, tmux, tmux_socket, tmux_socket_fits, write_private,
+    kill, one_line, run, tmux, tmux_socket, tmux_socket_fits, write_private,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
-/// How long one git command of a poll may take.
+/// How long the `git ls-remote` of a poll may take.
 const POLL_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Why a start gave no session id.
@@ -75,28 +75,35 @@ pub fn clean_head(worktree: &Path, branch: &str) -> Result<String, String> {
     head(worktree, branch).ok_or_else(|| format!("branch {branch} is gone"))
 }
 
-/// Whether `at` holds a commit of the local branch `parent` that no branch of `origin` has, as
-/// Priory's clone last saw `origin`. Once that branch is gone, its commit `started` stands for it.
+/// Whether `at` holds a commit of the local branch `parent`, or of one of the commits `started` the
+/// task started from, that no branch of `origin` has, as Priory's clone last saw `origin`. The
+/// branch may have lost such a commit to an amend, or be gone.
 pub fn holds_unpushed(
     worktree: &Path,
     at: &str,
     parent: &str,
-    started: Option<&str>,
+    started: &[String],
 ) -> Result<bool, String> {
-    let asked = format!("refs/heads/{parent}\n{}\n", started.unwrap_or_default());
+    let mut asked = format!("refs/heads/{parent}\n");
+    for commit in started {
+        asked.push_str(commit);
+        asked.push('\n');
+    }
     let mut check = git(worktree);
     check.args(["cat-file", "--batch-check=%(objectname)"]);
     let found = fed(&mut check, Some(asked.into_bytes()))?;
     // A commit the clone no longer has is not below `at`.
-    let Some(parent) = found.lines().find(|line| !line.ends_with(" missing")) else {
-        return Ok(false);
-    };
-    let shared = run(git(worktree).args(["merge-base", at, parent]))?;
-    let listed = ["rev-list", "--max-count=1", shared.trim()];
-    let unpushed = run(git(worktree)
-        .args(listed)
-        .args(["--not", "--remotes=origin"]))?;
-    Ok(!unpushed.trim().is_empty())
+    for tip in found.lines().filter(|line| !line.ends_with(" missing")) {
+        let shared = run(git(worktree).args(["merge-base", at, tip]))?;
+        let listed = ["rev-list", "--max-count=1", shared.trim()];
+        let unpushed = run(git(worktree)
+            .args(listed)
+            .args(["--not", "--remotes=origin"]))?;
+        if !unpushed.trim().is_empty() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Pushes the task's branch, then runs `claude --cloud` in an isolated clone of that branch alone.
@@ -156,12 +163,16 @@ fn create(start: &Start, dir: &Path) -> Result<Started, NotStarted> {
         .and_then(|()| write_private(&file, &start.prompt))
         .map_err(|error| format!("{}: {error}", file.display()))?;
     let upload = ["CCR_FORCE_BUNDLE", "CCR_ENABLE_BUNDLE"];
-    run(tmux()
-        .args(["new-session", "-d", "-x", "200", "-y", "50", "-s", name])
+    // The prompt, which the CLI may echo, cannot hold this mark.
+    let since = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
+    let mark = format!("{EXIT}{:x}=", since.unwrap_or_default().as_nanos());
+    let mut new = tmux();
+    new.args(["new-session", "-d", "-x", "200", "-y", "50", "-s", name])
         .arg("-c")
         .arg(dir)
         .args(["--", "sh", "-c", SCRIPT])
         .arg(&file)
+        .arg(&mark)
         .arg("env")
         .args(
             NESTED
@@ -169,23 +180,37 @@ fn create(start: &Start, dir: &Path) -> Result<Started, NotStarted> {
                 .chain(&upload)
                 .flat_map(|variable| ["-u", variable]),
         )
-        .args(["claude", "--cloud"]))?;
+        .args(["claude", "--cloud"]);
+    let late = || NotStarted::Uncertain("tmux did not start claude --cloud in time".into());
+    let opened = fed_within(&mut new, None, command_timeout())
+        .map_err(|error| format!("tmux new-session: {error}"))?
+        .ok_or_else(|| {
+            kill(name);
+            late()
+        })?;
+    if !opened.status.success() {
+        return Err(NotStarted::Refused(format!(
+            "tmux new-session: {}",
+            one_line(&String::from_utf8_lossy(&opened.stderr))
+        )));
+    }
     let deadline = Instant::now() + command_timeout();
     loop {
-        let screen = shown(&format!("={name}:"), true);
-        if let Some(code) = screen
-            .iter()
-            .find_map(|line| line.trim().strip_prefix(EXIT))
-        {
+        let screen = run(tmux()
+            .args(["capture-pane", "-p", "-J", "-S", "-", "-t"])
+            .arg(format!("={name}:")))
+        .unwrap_or_default();
+        let printed = unechoed(&screen, &start.prompt);
+        if let Some(code) = printed.iter().find_map(|line| line.strip_prefix(&*mark)) {
             kill(name);
-            let printed: Vec<_> = screen
+            let said: Vec<_> = printed
                 .iter()
-                .filter(|line| !line.trim().starts_with(EXIT))
-                .map(String::as_str)
+                .copied()
+                .filter(|line| !line.starts_with(&*mark))
                 .collect();
-            return read(code, &printed.join("\n"));
+            return read(code, &said.join("\n"));
         }
-        if ClaudeCode.asks_trust(&screen.join("\n")) {
+        if ClaudeCode.asks_trust(&printed.join("\n")) {
             kill(name);
             return Err(NotStarted::Refused(format!(
                 "claude --cloud asked whether to trust {}; Priory never answers it. Set trust_worktrees = true in factory.toml, or trust the folder by hand",
@@ -208,11 +233,42 @@ fn create(start: &Start, dir: &Path) -> Result<Started, NotStarted> {
     }
 }
 
-const EXIT: &str = "priory-cloud-exit=";
+const EXIT: &str = "priory-cloud-exit-";
 
-/// Runs the CLI with the prompt file `$0` as its last argument, then prints its exit code and stays,
-/// so the pane still shows what it printed.
-const SCRIPT: &str = r#"p=$(cat "$0"; printf x); rm -f "$0"; "$@" "${p%x}"; echo "priory-cloud-exit=$?"; exec sleep 600"#;
+/// Runs the CLI with the prompt file `$0` as its last argument, then prints the mark `$1` and its
+/// exit code and stays, so the pane still shows what it printed.
+const SCRIPT: &str = r#"m=$1; shift; p=$(cat "$0"; printf x); rm -f "$0"; "$@" "${p%x}"; echo "$m$?"; exec sleep 600"#;
+
+/// The lines of `screen` the CLI printed itself, without those that echo a part of `prompt`.
+fn unechoed<'s>(screen: &'s str, prompt: &str) -> Vec<&'s str> {
+    screen
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            let text = line.trim_start_matches(|c: char| !c.is_alphanumeric());
+            !line.is_empty() && (text.is_empty() || !prompt.contains(text))
+        })
+        .collect()
+}
+
+/// What Claude Code 2.1.331 prints when it made no session. Any other error may come after it asked
+/// for one, so it counts as uncertain.
+const REFUSALS: [&str; 14] = [
+    "Not logged in",
+    "Please run /login",
+    "Cloud sessions require a claude.ai login",
+    "Cloud sessions need a claude.ai login",
+    "Cloud sessions need a sign-in with a Claude account",
+    "Cloud sessions aren't available with this API provider",
+    "Cloud sessions are only available on the first-party Anthropic API provider",
+    "Cloud sessions are disabled by your organization's policy",
+    "cloud sessions are unavailable",
+    "Cloud sessions are unavailable",
+    "--cloud requires",
+    "no cloud session was started",
+    "Cancelled before a cloud session was created",
+    "Could not create a cloud environment",
+];
 
 /// What a `claude --cloud` that exited with `code` and `printed` started.
 fn read(code: &str, printed: &str) -> Result<Started, NotStarted> {
@@ -223,6 +279,7 @@ fn read(code: &str, printed: &str) -> Result<Started, NotStarted> {
         // 128 and up is a signal, which may land after the request went out.
         let refused = id.is_none()
             && !printed.contains("may still exist")
+            && own_lines(printed).any(|line| REFUSALS.iter().any(|text| line.contains(text)))
             && code.parse::<u32>().is_ok_and(|code| code < 128);
         return Err(if refused {
             NotStarted::Refused(reason)
@@ -266,8 +323,13 @@ fn own_lines(printed: &str) -> impl Iterator<Item = &str> {
         .filter(|line| !line.contains("Created cloud session:"))
 }
 
-/// The `session_<id>` in the `View:` URL or the `Resume with:` line of `printed`.
+/// The `session_<id>` in the `View:` URL or the `Resume with:` line of `printed`, after the last
+/// line that says the CLI created a session, when one does.
 pub fn session(printed: &str) -> Option<String> {
+    let printed = match printed.rfind("Created cloud session:") {
+        Some(at) => &printed[at..],
+        None => printed,
+    };
     own_lines(printed).find_map(|line| {
         let rest = match line.split_once("https://claude.ai/code/session_") {
             Some((_, rest)) => rest,
@@ -331,7 +393,7 @@ pub fn poll(worktree: &Path, branch: &str) -> Result<Option<String>, String> {
         "origin",
         &commit,
     ];
-    remote(worktree, &fetch, POLL_TIMEOUT)?;
+    remote(worktree, &fetch, command_timeout())?;
     Ok(Some(commit))
 }
 
@@ -415,7 +477,14 @@ mod tests {
             "Cancelled, so a cloud session may still exist"
         ));
         assert!(!refused("1", "View: https://claude.ai/code/session_01"));
-        assert!(!refused("143", ""));
+        assert!(refused(
+            "1",
+            "Error: --cloud requires an interactive terminal."
+        ));
+        assert!(!refused("1", "Error: Unable to create cloud session"));
+        assert!(!refused("1", "Error: a text this version does not know"));
+        assert!(!refused("1", ""));
+        assert!(!refused("143", "Not logged in"));
         assert!(!refused("0", ""));
         let uploaded = "Uploaded this repository\nView: https://claude.ai/code/session_01";
         assert!(read("0", uploaded).is_ok_and(|started| started.upload.is_some()));
@@ -438,6 +507,39 @@ mod tests {
         assert!(matches!(adopted(&unrelated), Err(NotTaken::Never(_))));
         let missing = "1".repeat(40);
         assert!(matches!(adopted(&missing), Err(NotTaken::Later(_))));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_echoed_prompt_line_is_not_the_clis_own() {
+        let screen = "> View: session_Echo\n\nCreated cloud session: View\nNot logged in\n";
+        let printed = unechoed(screen, "Fix it.\nView: session_Echo\n");
+        assert_eq!(printed, ["Created cloud session: View", "Not logged in"]);
+    }
+
+    #[test]
+    fn a_commit_the_parent_amended_away_counts_as_unpushed() {
+        let dir = std::env::temp_dir().join(format!("priory-unpushed-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let sh = |args: &[&str]| run(git(&dir).args(args)).unwrap().trim().to_owned();
+        sh(&["init", "--quiet"]);
+        let tree = sh(&["write-tree"]);
+        let commit = |message: &str, parent: &[&str]| {
+            let name = ["-c", "user.name=t", "-c", "user.email=t@t"];
+            let made = ["commit-tree", &tree, "-m", message];
+            sh(&[&name[..], &made, parent].concat())
+        };
+        let root = commit("root", &[]);
+        let lost = commit("lost", &["-p", &root]);
+        let amended = commit("amended", &["-p", &root]);
+        sh(&["update-ref", "refs/heads/parent", &amended]);
+        sh(&["update-ref", "refs/remotes/origin/parent", &amended]);
+        let holds = |started: &[String]| holds_unpushed(&dir, &lost, "parent", started).unwrap();
+
+        assert!(!holds(&[]));
+        assert!(holds(std::slice::from_ref(&lost)));
+        sh(&["update-ref", "refs/remotes/origin/child", &lost]);
+        assert!(!holds(std::slice::from_ref(&lost)));
         fs::remove_dir_all(&dir).unwrap();
     }
 

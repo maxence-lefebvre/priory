@@ -1930,15 +1930,18 @@ fn base_branch(db: &Connection, task: i64) -> rusqlite::Result<Option<String>> {
     .optional()
 }
 
-/// The branch of the task that `task` stacks on, whatever its pull request's state, and the commit
-/// of it that `task` started from.
-fn parent_branch(db: &Connection, task: i64) -> rusqlite::Result<Option<(String, Option<String>)>> {
+/// The branch of the task that `task` stacks on, whatever its pull request's state, and the commits
+/// `task` started from: its worktree's first one, and the parent's one it last followed.
+fn parent_branch(db: &Connection, task: i64) -> rusqlite::Result<Option<(String, Vec<String>)>> {
     db.query_row(
-        "SELECT base.branch, tasks.parent_head
+        "SELECT base.branch, tasks.base_sha, tasks.parent_head
          FROM tasks JOIN tasks AS base ON base.id = tasks.base_task
          WHERE tasks.id = ?1 AND base.branch IS NOT NULL",
         [task],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| {
+            let commits: [Option<String>; 2] = [row.get(1)?, row.get(2)?];
+            Ok((row.get(0)?, commits.into_iter().flatten().collect()))
+        },
     )
     .optional()
 }
@@ -2593,6 +2596,14 @@ fn start(
                 step.id
             )));
         }
+        if !factory.cloud_repo(repo) {
+            return Ok(Err(format!(
+                "a cloud run pushes {branch} to GitHub before a person approves it, so it needs [repos.\"{repo}\"] cloud = true in factory.toml"
+            )));
+        }
+        if let Some(reason) = crate::cloud::spent(db, factory, admission.task)? {
+            return Ok(Err(reason));
+        }
         if let Some((sandbox, _)) = sandbox {
             return Ok(Err(format!(
                 "workflow {jailed_by} needs sandbox {sandbox}, and a cloud run cannot be jailed"
@@ -2603,16 +2614,11 @@ fn start(
             Err(reason) => return Ok(Err(reason)),
         };
         if let Some((parent, started)) = parent_branch(db, admission.task)? {
-            match priory_runtime::cloud::holds_unpushed(
-                &worktree,
-                &head,
-                &parent,
-                started.as_deref(),
-            ) {
+            match priory_runtime::cloud::holds_unpushed(&worktree, &head, &parent, &started) {
                 Ok(false) => {}
                 Ok(true) => {
                     return Ok(Err(format!(
-                        "{branch} holds commits of {parent} that are not on origin, and a cloud run would push them. Push {parent}, then resume the task"
+                        "{branch} holds commits of {parent} that are not on origin, and a cloud run would push them. Push them to {parent}, or rebase {branch} onto a branch that is on origin, then resume the task"
                     )));
                 }
                 Err(reason) => return Ok(Err(reason)),

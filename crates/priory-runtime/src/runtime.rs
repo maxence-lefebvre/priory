@@ -564,6 +564,8 @@ pub fn worktree(
         })?;
         fs::rename(&partial, &clone).map_err(|error| error.to_string())?;
     }
+    // A person's `fetch.prune` would drop a merged branch, whose commits then look never pushed.
+    let _ = run(git(&clone).args(["config", "remote.origin.prune", "false"]));
     if orphaned(&path, &clone) {
         remove_sealed(&path);
         if path.exists() {
@@ -2284,7 +2286,7 @@ pub fn agent_screen(name: &str, session: &str) -> Vec<String> {
     pane(name, session).map_or_else(Vec::new, |pane| shown(&pane, false))
 }
 
-pub(crate) fn shown(target: &str, joined: bool) -> Vec<String> {
+fn shown(target: &str, joined: bool) -> Vec<String> {
     let mut capture = tmux();
     capture.args(["capture-pane", "-p", "-t", target]);
     if joined {
