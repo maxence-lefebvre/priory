@@ -2322,8 +2322,13 @@ pub(crate) fn handle_in(
 }
 
 /// Moves what names a Linear issue moved to another team onto its new identifier `to`: the keys
-/// of its tasks and their batch entries, what they own and subscribe to, and open waits and holds.
-fn renamed(tx: &Transaction, message: &Message, to: Option<&String>) -> rusqlite::Result<()> {
+/// of its tasks and their batch entries, its requests that wait for a runner, what they own and
+/// subscribe to, and open waits and holds.
+pub(crate) fn renamed(
+    tx: &Transaction,
+    message: &Message,
+    to: Option<&String>,
+) -> rusqlite::Result<()> {
     let (Some(to), Some(previous)) = (to, message.data["previous_issue"].as_str()) else {
         return Ok(());
     };
@@ -2345,6 +2350,13 @@ fn renamed(tx: &Transaction, message: &Message, to: Option<&String>) -> rusqlite
             params![from, to],
         )?;
     }
+    tx.execute(
+        "UPDATE inbox SET subject = ?2 || substr(subject, length(?1) + 1),
+           data = json_replace(data, '$.key', ?2 || substr(subject, length(?1) + 1))
+         WHERE outcome = 'unaccepted'
+           AND (subject = ?1 OR substr(subject, 1, length(?1) + 1) = ?1 || '.')",
+        params![from, to],
+    )?;
     for table in ["owns", "subscriptions", "closed_subscriptions"] {
         tx.execute(
             &format!("UPDATE OR IGNORE {table} SET resource = ?2 WHERE resource = ?1"),
@@ -2387,6 +2399,12 @@ pub(crate) fn route_in(
     }
     let resources = route::resources(message);
     renamed(tx, message, resources.first())?;
+    let settled = match trace.runner.as_deref() {
+        Some(me) if message.kind == "linear.issue.updated" => {
+            crate::runners::settle(tx, me, trace, counter)?
+        }
+        _ => Vec::new(),
+    };
     claim_pull_request(tx, message)?;
     // The intake publishes no reopen, so a later event of an open pull request or issue tells it,
     // and gives back the subscriptions its close ended.
@@ -2592,7 +2610,7 @@ pub(crate) fn route_in(
     }
     // The keyed task keeps the event; another task that shares the resource hears it through its
     // wait or its subscription. A merge that fires a gate may end a run a person's `say` started.
-    let mut kill = Vec::new();
+    let mut kill = settled;
     for other in owners.iter().filter(|other| Some(other.id) != task) {
         let (fired, ended) = crate::tools::event(tx, other.id, seq, factory)?;
         kill.extend(ended);
@@ -3465,10 +3483,11 @@ pub(crate) fn admissible<'r>(
                AND recipes.ended IS NULL
                AND (recipes.started IS NOT NULL OR recipes.moment = 'teardown'))
              -- With several runners, only a task whose key the log gives this one, and not one
-             -- whose `kept` it waits to read back. A lead task stays on its ask's runner.
+             -- whose `kept`, or `waiting` after one, it waits to read back. A lead task stays on its ask's runner.
              AND (?1 IS NULL OR tasks.trigger IN (?2, 'priory/consult') OR EXISTS (SELECT 1 FROM claims WHERE claims.key = tasks.key
                AND claims.runner = ?1
-               AND NOT (claims.hold != 'kept' AND claims.published IS 'kept')))
+               AND NOT (claims.hold != 'kept' AND claims.published IS 'kept')
+               AND NOT (claims.hold = 'kept' AND claims.published IS 'waiting')))
              ORDER BY {START_ORDER}"
     ))?;
     let queued = statement
@@ -3647,7 +3666,7 @@ pub(crate) fn admissible<'r>(
 }
 
 /// Why this runner's filters hold `task` now, if they do. They hold only a task that never ran a
-/// step, since one that started stays on its runner, and never a lead's or an investigator's. A
+/// step, since one that started stays on its runner, and never a lead's, an investigator's or a sweeper's. A
 /// factory of one runner has no runner name, so its one runner file applies.
 pub(crate) fn filtered(
     db: &Connection,
@@ -3662,10 +3681,15 @@ pub(crate) fn filtered(
         return Ok(None);
     };
     let (labels, started): (Option<String>, bool) = db.query_row(
-        "SELECT labels, trigger IN (?2, ?3) OR EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id)
+        "SELECT labels, trigger IN (?2, ?3, ?4) OR EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id)
            OR EXISTS (SELECT 1 FROM actions WHERE actions.task = tasks.id)
          FROM tasks WHERE id = ?1",
-        params![task, crate::tools::LEAD_TRIGGER, crate::consult::TRIGGER],
+        params![
+            task,
+            crate::tools::LEAD_TRIGGER,
+            crate::consult::TRIGGER,
+            crate::stall::TRIGGER
+        ],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     if started {

@@ -14,6 +14,7 @@ use priory_intake::intake::{
 use priory_intake::log::Log;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 /// How long a runner's lease lasts past its last alive message.
@@ -93,6 +94,8 @@ pub(crate) fn view(
         {
             None
         } else {
+            crate::state::renamed(&tx, message, crate::route::resources(message).first())?;
+            settle(&tx, viewer, trace, None)?;
             Some("ignored")
         };
         if let Some(outcome) = outcome {
@@ -157,6 +160,7 @@ pub(crate) fn handle(
                 ],
             )?;
             renew(tx, text("runner"), message.time)?;
+            kill.extend(settle(tx, me, trace, counter)?);
             "noted"
         }
         CLAIMED => return claimed(tx, message, me, trace, counter).map(Some),
@@ -206,13 +210,23 @@ pub(crate) fn handle(
         }
     };
     crate::state::record(tx, message, None, outcome, None)?;
+    if crate::route::requests(message) {
+        // The key names the row everywhere, whatever subject its sender set.
+        tx.execute(
+            "UPDATE inbox SET subject = ?2 WHERE id = ?1",
+            params![
+                message.id.to_string(),
+                crate::route::resources(message).first()
+            ],
+        )?;
+    }
     if outcome == UNACCEPTED {
         let now = intake::now().unwrap_or_else(|_| Timestamp::now());
         tx.execute(
             "UPDATE inbox SET reason = ?2 WHERE id = ?1",
             params![
                 message.id.to_string(),
-                unaccepted(trace.factory, &labels(&message.data), now)
+                unaccepted(trace.factory, &[labels(&message.data)], now)
             ],
         )?;
     }
@@ -581,11 +595,80 @@ fn claim(tx: &Transaction, me: &str, key: &str, request: &str) -> rusqlite::Resu
 /// The inbox outcome of a request that no filter of this runner let it claim.
 const UNACCEPTED: &str = "unaccepted";
 
+/// The inbox rows of the unaccepted requests whose key no runner holds.
+macro_rules! unheld {
+    () => {
+        "outcome = 'unaccepted' AND NOT EXISTS (SELECT 1 FROM claims
+           WHERE claims.key = inbox.subject AND claims.hold != 'ended')"
+    };
+}
+
 /// The inbox rows of the first unaccepted request of each key that no runner holds.
-const WAITING: &str = "outcome = 'unaccepted'
-  AND seq = (SELECT min(seq) FROM inbox AS first
-    WHERE first.subject = inbox.subject AND first.outcome = 'unaccepted')
-  AND NOT EXISTS (SELECT 1 FROM claims WHERE claims.key = inbox.subject AND claims.hold != 'ended')";
+const WAITING: &str = concat!(
+    unheld!(),
+    " AND seq = (SELECT min(seq) FROM inbox AS first
+        WHERE first.subject = inbox.subject AND first.outcome = 'unaccepted')"
+);
+
+/// Settles each unaccepted request whose key a runner holds: its owner routes it, as it would had
+/// it read it now, and every other machine leaves it to that owner. Else its key's end would offer
+/// a request that the owner served already.
+pub(crate) fn settle(
+    tx: &Transaction,
+    me: &str,
+    trace: &Trace,
+    counter: Option<&crate::embed::Counter>,
+) -> Result<Vec<String>, Error> {
+    tx.execute(
+        "UPDATE inbox SET outcome = 'elsewhere', reason = NULL
+         WHERE outcome = 'unaccepted' AND EXISTS (SELECT 1 FROM claims
+           WHERE claims.key = inbox.subject AND claims.hold != 'ended' AND claims.runner != ?1)",
+        [me],
+    )?;
+    let own = tx
+        .prepare(
+            "SELECT id FROM inbox WHERE outcome = 'unaccepted' AND EXISTS (SELECT 1 FROM claims
+               WHERE claims.key = inbox.subject AND claims.hold != 'ended' AND claims.runner = ?1)
+             ORDER BY seq",
+        )?
+        .query_map([me], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    reroute(tx, &own, trace, counter)
+}
+
+/// Routes every unaccepted request, in a factory that has one runner now: no filter keeps a
+/// request from it, only its task's start.
+pub(crate) fn unplace(
+    db: &mut Connection,
+    trace: &Trace,
+    counter: Option<&crate::embed::Counter>,
+) -> Result<Vec<String>, Error> {
+    let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let all = tx
+        .prepare("SELECT id FROM inbox WHERE outcome = 'unaccepted' ORDER BY seq")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    let kill = reroute(&tx, &all, trace, counter)?;
+    tx.commit()?;
+    Ok(kill)
+}
+
+fn reroute(
+    tx: &Transaction,
+    ids: &[String],
+    trace: &Trace,
+    counter: Option<&crate::embed::Counter>,
+) -> Result<Vec<String>, Error> {
+    let mut kill = Vec::new();
+    for id in ids {
+        let Some(request) = stored(tx, id)? else {
+            continue;
+        };
+        tx.execute("UPDATE inbox SET reason = NULL WHERE id = ?1", [id])?;
+        kill.extend(crate::state::route_in(tx, &request, trace, counter)?);
+    }
+    Ok(kill)
+}
 
 /// The labels a task request carries.
 pub(crate) fn labels(data: &Value) -> Labels {
@@ -617,17 +700,20 @@ pub(crate) fn refusal(
     ))
 }
 
-/// Why no runner claims a task with `labels` at `at`: `no runner accepts it until 18:00`, at the
-/// first time one of them does.
-fn unaccepted(factory: &Factory, labels: &Labels, at: Timestamp) -> String {
-    let lifts = factory.runners.values().map(|file| {
+/// Why no runner claims a key whose requests carry `requests`' labels at `at`: `no runner accepts it
+/// until 18:00`, at the first time one of them does.
+fn unaccepted(factory: &Factory, requests: &[Labels], at: Timestamp) -> String {
+    let lifts = factory.runners.values().flat_map(|file| {
         let filters = &file.value.filters;
-        match filters::accepts(filters, labels, at) {
-            Ok(()) => Some((at, filters::zone(filters))),
-            Err(refused) => refused.until.map(|until| (until, filters::zone(filters))),
-        }
+        requests.iter().filter_map(move |labels| {
+            let until = match filters::accepts(filters, labels, at) {
+                Ok(()) => at,
+                Err(refused) => refused.until?,
+            };
+            Some((until, filters::zone(filters)))
+        })
     });
-    match lifts.flatten().min_by_key(|(until, _)| *until) {
+    match lifts.min_by_key(|(until, _)| *until) {
         Some((until, zone)) if until > at => {
             format!(
                 "no runner accepts it until {}",
@@ -639,8 +725,8 @@ fn unaccepted(factory: &Factory, labels: &Labels, at: Timestamp) -> String {
     }
 }
 
-/// Claims, once `me`'s filters accept it at `at`, the first unaccepted request of each key no runner
-/// holds; tells again why each other one waits.
+/// Claims, for each key no runner holds, the first unaccepted request that `me`'s filters accept at
+/// `at`; tells again why the requests of each other key wait.
 fn offer(
     tx: &Transaction,
     me: Option<&str>,
@@ -648,8 +734,10 @@ fn offer(
     at: Timestamp,
 ) -> rusqlite::Result<()> {
     let waiting = tx
-        .prepare(&format!(
-            "SELECT id, subject, data FROM inbox WHERE {WAITING} ORDER BY seq"
+        .prepare(concat!(
+            "SELECT id, subject, data FROM inbox WHERE ",
+            unheld!(),
+            " ORDER BY seq"
         ))?
         .query_map([], |row| {
             Ok((
@@ -659,19 +747,31 @@ fn offer(
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut keys: BTreeMap<String, Vec<(String, Labels)>> = BTreeMap::new();
     for (id, key, data) in waiting {
         let labels = labels(&serde_json::from_str(&data).unwrap_or_default());
-        let Some(me) = me.filter(|me| refusal(factory, me, &labels, at).is_none()) else {
+        keys.entry(key).or_default().push((id, labels));
+    }
+    for (key, requests) in keys {
+        let accepted = me.and_then(|me| {
+            let (id, _) = requests
+                .iter()
+                .find(|(_, labels)| refusal(factory, me, labels, at).is_none())?;
+            Some((me, id))
+        });
+        if let Some((me, id)) = accepted {
+            claim(tx, me, &key, id)?;
             tx.execute(
-                "UPDATE inbox SET reason = ?2 WHERE id = ?1 AND reason IS NOT ?2",
-                params![id, unaccepted(factory, &labels, at)],
+                "UPDATE inbox SET outcome = 'claiming', reason = NULL WHERE id = ?1",
+                [id],
             )?;
             continue;
-        };
-        claim(tx, me, &key, &id)?;
+        }
+        let labels: Vec<_> = requests.into_iter().map(|(_, labels)| labels).collect();
         tx.execute(
-            "UPDATE inbox SET outcome = 'claiming', reason = NULL WHERE id = ?1",
-            [&id],
+            "UPDATE inbox SET reason = ?2
+             WHERE subject = ?1 AND outcome = 'unaccepted' AND reason IS NOT ?2",
+            params![key, unaccepted(factory, &labels, at)],
         )?;
     }
     Ok(())
@@ -699,27 +799,47 @@ impl<'a> Dropping<'a> {
     }
 }
 
-/// Drops the unaccepted requests of a key that no runner holds, and returns how many. It leaves a
-/// request whose claim is on its way: builds that know no drop accept that claim, so every build must.
+/// Drops the requests of a key that no runner holds, and returns how many: the unaccepted ones, and
+/// those whose claim by this runner is not on the log yet, which it then never publishes. It leaves
+/// a request whose claim is on the log: builds that know no drop accept that claim, so every build must.
 fn drop_requests(tx: &Transaction, drop: &Dropping) -> rusqlite::Result<usize> {
-    tx.execute(
-        "UPDATE inbox SET outcome = 'dropped', reason = NULL
-         WHERE outcome = 'unaccepted'
-           AND (subject = ?1 OR ?2 AND substr(subject, 1, length(?1) + 1) = ?1 || '.')
-           AND (?3 IS NULL OR julianday(time) <= julianday(?3))
-           AND (?4 IS NULL OR EXISTS (SELECT 1 FROM inbox AS source
-             WHERE source.id = json_extract(inbox.data, '$.source')
-               AND source.type = 'linear.issue.entered'
-               AND json_extract(source.data, '$.view') = ?4))
-           AND NOT EXISTS (SELECT 1 FROM claims
-             WHERE claims.key = inbox.subject AND claims.hold != 'ended')",
-        params![
-            drop.key,
-            drop.extended,
-            drop.until.map(|until| until.to_string()),
-            drop.view
-        ],
-    )
+    let dropped = tx
+        .prepare(
+            "UPDATE inbox SET outcome = 'dropped', reason = NULL
+             WHERE (outcome = 'unaccepted' OR outcome = 'claiming' AND id IN
+                 (SELECT json_extract(message, '$.data.request') FROM sends
+                  WHERE json_extract(message, '$.type') = ?5
+                    AND json_extract(message, '$.data.from') IS NULL))
+               AND (subject = ?1 OR ?2 AND substr(subject, 1, length(?1) + 1) = ?1 || '.')
+               AND (?3 IS NULL OR julianday(time) <= julianday(?3))
+               AND (?4 IS NULL OR EXISTS (SELECT 1 FROM inbox AS source
+                 WHERE source.id = json_extract(inbox.data, '$.source')
+                   AND source.type = 'linear.issue.entered'
+                   AND json_extract(source.data, '$.view') = ?4))
+               AND NOT EXISTS (SELECT 1 FROM claims
+                 WHERE claims.key = inbox.subject AND claims.hold != 'ended')
+             RETURNING id",
+        )?
+        .query_map(
+            params![
+                drop.key,
+                drop.extended,
+                drop.until.map(|until| until.to_string()),
+                drop.view,
+                CLAIMED
+            ],
+            |row| row.get(0),
+        )?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    for id in &dropped {
+        tx.execute(
+            "DELETE FROM sends WHERE json_extract(message, '$.type') = ?1
+               AND json_extract(message, '$.data.request') = ?2
+               AND json_extract(message, '$.data.from') IS NULL",
+            params![CLAIMED, id],
+        )?;
+    }
+    Ok(dropped.len())
 }
 
 /// Drops the waiting requests of the issue or pull request that `message` closes, of the review it
@@ -1034,6 +1154,7 @@ fn send(tx: &Transaction, message: &Message) -> rusqlite::Result<()> {
 pub(crate) fn tick(
     db: &mut Connection,
     me: &str,
+    factory: &Factory,
     now: Timestamp,
     said: &mut Option<i64>,
 ) -> rusqlite::Result<()> {
@@ -1052,7 +1173,8 @@ pub(crate) fn tick(
         .prepare(
             "SELECT claims.key, tasks.state,
                EXISTS (SELECT 1 FROM runs WHERE runs.task = tasks.id), claims.published,
-               tasks.generation, claims.published_generation
+               tasks.generation, claims.published_generation, tasks.id, claims.hold,
+               claims.generation IS claims.published_generation
              FROM claims JOIN tasks ON tasks.id =
                (SELECT max(id) FROM tasks WHERE tasks.key = claims.key)
              WHERE claims.runner = ?1",
@@ -1064,14 +1186,28 @@ pub(crate) fn tick(
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, i64>(4)?,
                 row.get::<_, Option<i64>>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, bool>(8)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     post(&tx, me, now)?;
-    for (key, hold, published, generation, said_generation) in changed {
-        // A task reserved to start stays kept until it starts.
+    for (key, hold, published, generation, said_generation, task, logged, current) in changed {
+        // Nothing may follow a `waiting` that gives a kept key back before it is read.
+        if logged == "kept" && published.as_deref() == Some("waiting") {
+            continue;
+        }
+        // A task reserved to start stays kept until it starts, unless a filter holds it now. Only a
+        // `kept` read back is taken back: an older one still on its way would follow the `waiting`.
         let hold = match (published.as_deref(), hold) {
-            (Some("kept"), Hold::Waiting) => Hold::Kept,
+            (Some("kept"), Hold::Waiting)
+                if logged != "kept"
+                    || !current
+                    || crate::state::filtered(&tx, factory, Some(me), task)?.is_none() =>
+            {
+                Hold::Kept
+            }
             _ => hold,
         };
         if published.as_deref() == Some(hold.as_str()) && said_generation == Some(generation) {
@@ -1127,6 +1263,11 @@ pub(crate) fn cleared(db: &mut Connection, me: &str, task: i64) -> rusqlite::Res
     };
     // A task the log holds as ended was reopened here: another runner may claim its key until
     // the log says this one keeps it again.
+    // A `waiting` on its way gives the key back: it is read before this runner asks to keep it again.
+    if hold == "kept" && published.as_deref() == Some("waiting") {
+        tx.commit()?;
+        return Ok(Some(false));
+    }
     if hold == "kept" {
         tx.execute(
             "UPDATE tasks SET reason = NULL WHERE id = ?1 AND reason = ?2",
@@ -2079,6 +2220,32 @@ mod tests {
         }
         for state in ["done", "failed", "dropped"] {
             assert_eq!(hold(state, true), Hold::Ended, "{state}");
+        }
+    }
+
+    #[test]
+    fn a_cleared_task_waits_until_the_hold_its_runner_published_last_is_read_back() {
+        for (logged, published, cleared, sent) in [
+            ("waiting", "waiting", Some(false), 1),
+            ("waiting", "kept", Some(false), 0),
+            ("kept", "kept", Some(true), 0),
+            ("kept", "waiting", Some(false), 0),
+        ] {
+            let mut db = crate::state::memory();
+            db.execute_batch(&format!(
+                "INSERT INTO tasks (id, key, workflow, step, state, trigger, source)
+                   VALUES (1, 'k', 'w', 's', 'queued', 't', 'r');
+                 INSERT INTO claims (key, runner, request, won, hold, generation, published,
+                   published_generation)
+                   VALUES ('k', 'a', 'r', 1, '{logged}', 1, '{published}', 1);"
+            ))
+            .unwrap();
+            let case = format!("the log says {logged}, the last sent is {published}");
+            assert_eq!(super::cleared(&mut db, "a", 1).unwrap(), cleared, "{case}");
+            let sends: i64 = db
+                .query_row("SELECT count(*) FROM sends", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(sends, sent, "{case}");
         }
     }
 }

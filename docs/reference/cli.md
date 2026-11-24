@@ -145,7 +145,8 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
 - `priory (resume | cancel | release | revive [--step STEP]) [--generation N] [DIR] RUNNER:KEY`,
   `priory say [--generation N] [DIR] RUNNER:KEY TEXT`: sends the action to another runner's task.
   See [runners.md](../daemon/runners.md#acting-on-another-runners-task).
-- `priory cancel [DIR] KEY`: drops the requests of a key that no runner claimed. See
+- `priory cancel [DIR] KEY`: drops the requests of a key that no runner claimed. A key that waits here
+  wins over `RUNNER:KEY`, when a runner is named like the key's first part. See
   [runners.md](../daemon/runners.md#placing-tasks-with-filters).
 - `priory give [DIR] KEY RUNNER [--force]`: moves a task to another runner, once its runner's lease
   ended or with `--force`. See

@@ -107,7 +107,7 @@ Each runner checks its own filters twice, on its own clock:
 2. Before the first run or code step of a task it owns. A task its filters refuse now waits with
    the reason `runner desktop's filter !project=oss holds it until 18:00`, and starts once the
    window lifts. This check applies in a factory of one runner too. It skips a task that ran any
-   step, and lead and investigator tasks.
+   step, and lead, investigator and sweeper tasks.
 
 A runner keeps a task it claimed when its window closes before the task's first run. The task
 stays `waiting` on the log, as any unstarted task does, and runs when the window lifts. Use
@@ -115,28 +115,39 @@ stays `waiting` on the log, as any unstarted task does, and runs when the window
 takeover that reads each runner's filter files, and two runners with different copies of
 `runners/` could then both take the key. Keeping it changes no claim rule, so the proof in [Why no
 task runs twice](#why-no-task-runs-twice) holds as it is. A task that started never moves for a
-filter.
+filter. When a window opens after the runner read its `kept` back and before the first run, the
+runner publishes `waiting` again. It sends nothing more about the key and starts no run until it
+reads that `waiting` back.
 
 When no runner's filters accept a request, no runner claims it. Each runner and view-only machine lists it in
 `priory tasks`, its JSON, `priory desk` and `/api/desk`, with no runner and the reason
 `no runner accepts it until 18:00`: the first time a runner's filters lift, in that runner's
 filter timezone, which a window must name when the factory has two or more runner files. A request no window ever lifts says `no runner accepts it`. Each runner checks
 its unaccepted requests again when it reads its own alive message, once a minute, and claims the
-first request of each key its filters accept by then. When a runner wins a key, every unaccepted request of that key goes
-to its task, as a later request of the key does. A view-only machine reads the reason again at any
+first request of each key its filters accept by then, whichever of the key's requests that is. When a
+runner wins a key, every unaccepted request of that key goes to its task, as a later request of the
+key does. The same holds when an owner says it holds a key again, as after feedback reopened its
+ended task: on a hold other than `ended`, the owner routes its own unaccepted requests of the key,
+and every other machine records them as `elsewhere`. So a request the owner served is never claimed
+again once its task ends. A Linear issue that moves to another team takes its unaccepted requests to
+its new key. A factory that goes from several runner files to one routes its unaccepted requests when
+its daemon starts. A view-only machine reads the reason again at any
 runner's alive message, so it can be out of date while every runner is off. The web Desk's queue
 does not show these requests.
 
 `priory cancel [DIR] KEY` drops such a request from any machine that lists it: it publishes
-`priory.task.dropped`, and every machine drops the key's requests as it reads that. These events
+`priory.task.dropped`, and every machine drops the key's requests as it reads that. A waiting key
+wins over a runner of the same name as its first part. These events
 drop the requests of a key that no runner holds too:
 
 - the close of the issue or pull request of the key, unless the request is newer than the close;
 - the removal of the review request of a review key, when the reviewer did not review;
 - a Linear issue that leaves the view whose entry made the request.
 
-A drop takes only the `unaccepted` requests of each machine, and never decides who wins a claim. A
-claim on its way when the drop reaches the log still wins, and its task starts. `priory cancel
+A drop takes the `unaccepted` requests of each machine, and the `claiming` ones whose claim that
+machine has not published, which it then never publishes. So a runner that was off and reads a
+request and its drop together claims nothing. A drop never decides who wins a claim: a claim on the
+log when the drop is read still wins, and its task starts. `priory cancel
 RUNNER:KEY` then drops the task.
 
 Upgrade runners together. A runner on a build without filters or drops claims every request of a

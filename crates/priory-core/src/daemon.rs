@@ -198,6 +198,11 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     };
     let consumer = runners::consumer(trace.runner.as_deref());
     runners::name(&db, trace.runner.as_deref())?;
+    if trace.runner.is_none() {
+        runners::unplace(&mut db, &trace, counting.get(&home))?
+            .iter()
+            .for_each(|tmux| runtime::kill(tmux));
+    }
     if once {
         drain(&*bus, &consumer, &mut db, &trace, counting.get(&home))?;
         runners::flush(&db, &*bus)?;
@@ -409,7 +414,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             drain_probed(&*bus, &consumer, &mut db, &trace, counter, true)
         });
         if let Some(me) = &trace.runner {
-            runners::tick(&mut db, me, intake::now()?, &mut alive)?;
+            runners::tick(&mut db, me, factory, intake::now()?, &mut alive)?;
         }
         if let Some(drained) = drained {
             let tried = drained.and_then(|()| runners::flush(&db, &*bus));

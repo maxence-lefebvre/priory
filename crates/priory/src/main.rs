@@ -3893,7 +3893,10 @@ fn act(act: &str, mut args: Vec<String>, hold: Option<factory::Hold>, now: bool)
             let Some(factory) = load(&factory::folder(dir)) else {
                 return ExitCode::FAILURE;
             };
-            if !factory.runners.contains_key(runner) {
+            // A key's source can be a runner's name too.
+            let waits =
+                state::read_only().is_ok_and(|db| runners::waits(&db, task).unwrap_or(false));
+            if waits || !factory.runners.contains_key(runner) {
                 return reply(act, drop_waiting(&factory, task));
             }
         }
