@@ -3135,6 +3135,7 @@ fn a_state_file_at_111_keeps_its_stall_runs_and_takes_scheduled_ones() {
            'exit 3', 'nope', 42, 43);
          INSERT INTO tasks (id, key, workflow, step, state, trigger, source)
            VALUES (1, 'k', 'w', 's', 'done', 't', 'e');
+         DROP TABLE messages; DROP TABLE pairs; DROP TABLE news;
          PRAGMA user_version = 111;"
     ))
     .unwrap();
