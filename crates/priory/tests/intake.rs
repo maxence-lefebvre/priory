@@ -1875,10 +1875,70 @@ fn one_poll_looks_up_at_most_20_reviews() {
     succeeded(&setup.intake());
     assert_eq!(setup.calls(LOOKUPS), 20);
     assert_eq!(review_agents(&setup).len(), 20);
+    let banner = setup.desk()["intake"].to_string();
+    assert!(
+        banner.contains(": over 20 reviews wait for a lookup of their comments"),
+        "{banner}"
+    );
 
     succeeded(&setup.intake());
     assert_eq!(setup.calls(LOOKUPS), 25);
     assert_eq!(review_agents(&setup).len(), 25);
+    assert_eq!(setup.desk()["intake"], serde_json::Value::Null);
+}
+
+/// Empty reviews 5001 to 5025 whose only comments are marked and delivered, with their threads.
+fn answer_repeats(setup: &Setup, newer: Option<(u64, serde_json::Value)>) {
+    let repeats = 5001..5026;
+    let comment = |id: u64| own_reply(id - 4000, true);
+    let delivered: Vec<_> = repeats.clone().map(comment).collect();
+    let mut threads: Vec<_> = repeats.map(|id| (id, json!([comment(id)]))).collect();
+    threads.extend(newer);
+    let reviews: Vec<_> = threads.iter().map(|(id, _)| own_review(*id, "")).collect();
+    answer_reviews(setup, json!(reviews), json!(delivered), &threads);
+    setup.count(LOOKUPS, 0, "");
+}
+
+#[test]
+fn a_newer_review_is_published_while_more_dropped_ones_than_one_poll_looks_up_are_read_again() {
+    let setup = own_review_setup("pr-wrapper-newest");
+    answer_repeats(&setup, Some((5026, json!([own_reply(2026, false)]))));
+
+    succeeded(&setup.intake());
+    assert_eq!(review_agents(&setup), [(5026, json!(false))]);
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.calls(LOOKUPS), 40);
+    assert_eq!(review_agents(&setup), [(5026, json!(false))]);
+    assert_eq!(requests(&setup).len(), 1);
+}
+
+#[test]
+fn a_first_poll_of_more_repeats_than_it_looks_up_ends_its_baseline_on_the_next_one() {
+    let setup = Setup::new("pr-wrapper-baseline-repeats", &[]);
+    pr_trigger(
+        &setup,
+        "my-reviews",
+        "on = \"pull_request_review.submitted\"\nfilter = { author = \"max\", commenter = \"max\" }\n",
+    );
+    answer_repeats(&setup, None);
+
+    succeeded(&setup.intake());
+    assert_eq!(setup.calls(LOOKUPS), 20);
+    let published = review_agents(&setup);
+    assert_eq!(published.len(), 20);
+    assert!(published.iter().all(|(_, agent)| *agent == true));
+    succeeded(&setup.intake());
+
+    assert_eq!(setup.calls(LOOKUPS), 25);
+    // With nothing unread, the last 5 are dropped as repeats.
+    assert_eq!(review_agents(&setup), published);
+    let marked = setup.output().iter().any(|stored| {
+        stored.message.kind == "factory.intake.baseline"
+            && stored.message.data["stream"] == "github.pull_request_review.submitted"
+    });
+    assert!(marked);
+    assert_eq!(requests(&setup), []);
 }
 
 #[test]
