@@ -101,6 +101,23 @@ pub(crate) fn spawned(
     Ok(())
 }
 
+/// Forgets the ended scheduled runs nothing reads: those before the script's latest, and a failed
+/// one of a script no longer in `scheduled`, so it leaves the desk.
+pub(crate) fn prune<'a>(
+    db: &Connection,
+    scheduled: impl Iterator<Item = &'a str>,
+) -> rusqlite::Result<()> {
+    let scheduled = serde_json::json!(scheduled.collect::<Vec<_>>()).to_string();
+    db.execute(
+        "DELETE FROM sweeps WHERE stall IS NULL AND ended IS NOT NULL
+           AND (EXISTS (SELECT 1 FROM sweeps AS later
+               WHERE later.script = sweeps.script AND later.id > sweeps.id)
+             OR (status != 'exit 0' AND script NOT IN (SELECT value FROM json_each(?1))))",
+        [scheduled],
+    )?;
+    Ok(())
+}
+
 /// Records how a script ended. Once every script of its stall ended, the stall is swept.
 pub(crate) fn ended(
     db: &Connection,

@@ -913,6 +913,9 @@ pub const METRIC_GROUPS: &[&str] = &["process", "log", "runs", "intake", "work",
 /// The least `metrics_every`.
 pub const METRICS_EVERY_LEAST: Duration = Duration::from_secs(10);
 
+/// The least `every` of a sweep script.
+pub const SCRIPT_EVERY_LEAST: Duration = Duration::from_secs(10);
+
 /// Where the daemon tells a person that the desk's next item changed, besides Web Push.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1092,8 +1095,8 @@ pub struct Script {
     pub run: String,
     /// The resource whose shortage runs the script; it runs only on its `every` when unset.
     pub when: Option<Resource>,
-    /// How often the script runs, counted from its last run, a stall's run included; only when
-    /// `when` stalls the queue when unset.
+    /// How often the script runs, at least 10s, counted from its last run, a stall's run included;
+    /// only when `when` stalls the queue when unset.
     #[serde(default, deserialize_with = "duration")]
     #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smhd]$"))]
     pub every: Option<Duration>,

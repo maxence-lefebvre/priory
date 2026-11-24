@@ -908,6 +908,8 @@ fn sweep_scripts(
     }
     *running = still;
     let scripts = &factory.sweep().scripts;
+    let scheduled = scripts.iter().filter(|script| script.every.is_some());
+    stall::prune(db, scheduled.map(|script| script.run.as_str()))?;
     let swept = match stall::unswept(db)? {
         Some((stall, resource)) => {
             for script in scripts

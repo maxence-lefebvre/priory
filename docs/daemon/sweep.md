@@ -155,7 +155,13 @@ postpones it. A script with no run on record, such as a new one, runs at the dae
 A script never runs twice at once: its schedule waits while it runs, and a stall that opens during
 a scheduled run of a matching script takes that run as its own instead of starting another. The
 desk lists a scheduled script as a `sweep` row with no task while it runs, and after its last run
-failed until a later run succeeds. A clean scheduled run leaves no row.
+failed until a later run succeeds. A clean scheduled run leaves no row. `every` is at least 10
+seconds.
+
+At each tick, the daemon forgets a scheduled run that ended once its script has a later run, so the
+state database keeps the latest one per script. It also forgets a failed last run once no entry of
+`[sweep] scripts` with `every` has that `run` text, so a fixed or removed command leaves the desk.
+It keeps a clean last run, so a script you remove and add back keeps its schedule. Runs of a stall stay.
 
 After the stall's scripts end, or at its start when none matches, the stall waits `after`, 30
 minutes by default. If it still holds and `agent` names an agent, the daemon creates a task with the
@@ -181,8 +187,8 @@ Unless the factory defines its own `sweep` workflow, the sweeper runs this built
    rarely, so the ask costs little.
 
 `priory check` refuses a `[sweep]` field it does not know, a malformed duration or resource, a
-script with neither `when` nor `every`, an `agent` the factory lacks, and a `repo` that is not
-`owner/name`, with its line.
+script with neither `when` nor `every`, a script's `every` under 10 seconds, an `agent` the factory
+lacks, and a `repo` that is not `owner/name`, with its line.
 
 Known limits:
 
@@ -195,4 +201,7 @@ Known limits:
 - A stall that alternates between two resources starts a new stall, and new scripts, at each change.
 - A script's history is keyed by its `run` text: editing the command runs it at the next tick, and
   two entries with the same `run` share one schedule.
-- The failed run of a scheduled script you then remove from `factory.toml` stays on the desk.
+- A failed scheduled script you remove and add back runs at the next tick, since its run is
+  forgotten.
+- Schedules read the wall clock: setting it back delays every script until the clock passes its
+  last start by `every` again.

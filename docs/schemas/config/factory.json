@@ -755,7 +755,7 @@
       "properties": {
         "every": {
           "default": null,
-          "description": "How often the script runs, counted from its last run, a stall's run included; only when\n`when` stalls the queue when unset.",
+          "description": "How often the script runs, at least 10s, counted from its last run, a stall's run included;\nonly when `when` stalls the queue when unset.",
           "pattern": "^0*[1-9][0-9]*[smhd]$",
           "type": "string"
         },

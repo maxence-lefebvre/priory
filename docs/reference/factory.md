@@ -88,7 +88,7 @@ Each entry of `scripts`:
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `run` | string | yes | | A shell command, run by `sh -c` in `PRIORY_HOME` | `"cargo clean"` |
 | `when` | `memory`, `disk` or `cpu` | no, but `when` or `every` | none: it runs only on its `every` | The resource whose shortage runs it | `"disk"` |
-| `every` | duration | no, but `when` or `every` | none: it runs only when `when` stalls the queue | How often it runs, counted from its last start, a stall's run included | `"4h"` |
+| `every` | duration | no, but `when` or `every` | none: it runs only when `when` stalls the queue | How often it runs, counted from its last start, a stall's run included. At least `"10s"` | `"4h"` |
 | `timeout` | duration | no | `"5m"` | How long it may run before Priory kills it | `"1m"` |
 
 ## `[repos]`
@@ -683,6 +683,7 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `[repos."<repo>"] <recipe>` runs `<command>`, which the guard `<guard>` holds irreversible: a recipe runs with no person's approval `` | A recipe that runs a command the [tool guard](../daemon/guard.md) denies, such as `gh pr merge` |
 | `` `[sweep] repo` needs to be `owner/name` `` | `[sweep] repo` is not a GitHub `owner/name`, such as a path or a name of `..` |
 | `` the sweep script `<run>` needs `when`, `every` or both `` | A `[sweep] scripts` entry with neither `when` nor `every` |
+| `` the sweep script `<run>` has `every` <n>s: it needs to be 10s or more `` | A `[sweep] scripts` entry whose `every` is under 10 seconds |
 | `` `[serve] listen` <address> is beyond this machine: set `public = true` to serve it `` | `listen` is not a loopback address and `public` is not set |
 | `` `[serve] extension_origins` <origin> is not a Chromium extension's origin, `chrome-extension://` and its 32-letter id `` | An entry of `extension_origins` that is not `chrome-extension://` and 32 letters |
 | `` `[webhooks]` needs a `[serve]` table to listen on `` | `[webhooks]` is set without `[serve]` |

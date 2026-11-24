@@ -76,6 +76,19 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                     ),
                 ));
             }
+            let least = crate::factory::SCRIPT_EVERY_LEAST;
+            if let Some(every) = script.every.filter(|every| *every < least) {
+                problems.push(problem(
+                    settings,
+                    settings.lines.field("sweep"),
+                    format!(
+                        "the sweep script `{}` has `every` {}s: it needs to be {}s or more",
+                        script.run,
+                        every.as_secs(),
+                        least.as_secs()
+                    ),
+                ));
+            }
         }
         if let Some(kit) = &settings.value.kit {
             let at = settings.lines.field("kit");
