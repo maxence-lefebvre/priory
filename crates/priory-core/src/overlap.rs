@@ -6,7 +6,8 @@ use std::path::Path;
 
 /// Records the files each task's branch changed at the end of its latest run, then holds each
 /// queued or ready task that changes files an earlier, unfinished task changes, until that task's
-/// pull request merges or, with none, the task ends. A person's release of the hold stays final for
+/// pull request merges or, with none, the task ends. A task never waits on a pull request that is
+/// its own work, even while the task that opened it is active: only it can get that one merged. A person's release of the hold stays final for
 /// that earlier task. Tasks in other repositories never overlap, a task never waits on one that
 /// waits on it, and a stacked batch entry never waits on a task it is stacked on.
 pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusqlite::Result<()> {
@@ -60,7 +61,7 @@ pub(crate) fn tick(db: &mut Connection, factory: &Factory, home: &Path) -> rusql
             if said {
                 continue;
             }
-            let Some(wait) = wait_for(&tx, other)? else {
+            let Some(wait) = wait_for(&tx, task, other)? else {
                 continue;
             };
             let held = Hold {
@@ -85,8 +86,9 @@ struct Wait {
 }
 
 /// What `other` ends or merges to get out of the way: its open pull request, else its end; `None`
-/// when it is done with no pull request left open.
-fn wait_for(tx: &rusqlite::Transaction, other: i64) -> rusqlite::Result<Option<Wait>> {
+/// when it is done with no pull request left open, or when that pull request is `task`'s own work,
+/// since `task` would then wait on itself.
+fn wait_for(tx: &rusqlite::Transaction, task: i64, other: i64) -> rusqlite::Result<Option<Wait>> {
     let open: Option<String> = tx
         .query_row(
             "SELECT resource FROM pull_requests WHERE task = ?1 AND state = 'open' ORDER BY created LIMIT 1",
@@ -95,6 +97,15 @@ fn wait_for(tx: &rusqlite::Transaction, other: i64) -> rusqlite::Result<Option<W
         )
         .optional()?;
     if let Some(resource) = open {
+        let own: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND key = ?2)
+             OR EXISTS (SELECT 1 FROM pull_requests WHERE task = ?1 AND resource = ?2)",
+            params![task, resource],
+            |row| row.get(0),
+        )?;
+        if own {
+            return Ok(None);
+        }
         return Ok(Some(Wait {
             after: None,
             merge: Some(resource.trim_start_matches("github:").to_owned()),
