@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 111;
+const VERSION: i64 = 113;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -1964,8 +1964,44 @@ ALTER TABLE runs ADD COLUMN direnv INTEGER;
 PRAGMA user_version = 110;
 ";
 
-// Marks read each report of a red merge whose every failing check was only cancelled.
+// A memory grant that timed out, whose request time a retry of its task's command keeps.
 const SCHEMA_111: &str = "
+CREATE TABLE lapses (
+  task    INTEGER NOT NULL REFERENCES tasks (id),
+  command TEXT NOT NULL,
+  bytes   INTEGER NOT NULL,
+  created TEXT NOT NULL,
+  lapsed  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+PRAGMA user_version = 111;
+";
+
+// A scheduled sweep script runs outside any stall.
+const SCHEMA_112: &str = concat!(
+    "CREATE TABLE sweeps_112 (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  stall   INTEGER REFERENCES stalls (id),
+  script  TEXT NOT NULL,
+  started TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+  ended   TEXT,
+  status  TEXT,
+  output  TEXT,
+  pid     INTEGER,
+  pid_started INTEGER
+);
+INSERT INTO sweeps_112 SELECT id, stall, script, started, ended, status, output, pid, pid_started
+  FROM sweeps;
+DROP TABLE sweeps;
+ALTER TABLE sweeps_112 RENAME TO sweeps;
+CREATE INDEX sweeps_by_script ON sweeps (script, started);
+",
+    bumps!("sweeps"),
+    "PRAGMA user_version = 112;
+"
+);
+
+// Marks read each report of a red merge whose every failing check was only cancelled.
+const SCHEMA_113: &str = "
 UPDATE inbox SET read = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 WHERE type = 'priory.report' AND subject = 'priory' AND read IS NULL
 AND instr(json_extract(data, '$.line'), ' is red on ') > 0
@@ -1977,7 +2013,7 @@ AND (SELECT min(json_extract(run.data, '$.conclusion') IS 'cancelled')
   WHERE closed.type = 'github.pull_request.closed' AND json_extract(closed.data, '$.merged') = 1
   AND instr(json_extract(inbox.data, '$.line'), 'landed wrong: ' || json_extract(closed.data, '$.repo')
     || '#' || json_extract(closed.data, '$.pull_request') || ' of task') = 1) = 1;
-PRAGMA user_version = 111;
+PRAGMA user_version = 113;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -1995,7 +2031,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_82, SCHEMA_83, SCHEMA_84, SCHEMA_85, SCHEMA_86, SCHEMA_87, SCHEMA_88, SCHEMA_89,
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
-    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111,
+    SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.

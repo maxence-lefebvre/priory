@@ -880,7 +880,7 @@ fn the_upgrade_marks_read_the_alarms_of_merges_whose_only_red_checks_were_cancel
 
     setup
         .db()
-        .execute_batch("PRAGMA user_version = 110;")
+        .execute_batch("PRAGMA user_version = 112;")
         .unwrap();
 
     assert_eq!(
