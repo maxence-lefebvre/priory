@@ -89,6 +89,18 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                     ),
                 ));
             }
+            let most = crate::factory::SCRIPT_EVERY_MOST_DAYS;
+            if let Some(every) = script.every.filter(|every| every.as_secs() > most * 86400) {
+                problems.push(problem(
+                    settings,
+                    settings.lines.field("sweep"),
+                    format!(
+                        "the sweep script `{}` has `every` {}s: it needs to be {most}d or less",
+                        script.run,
+                        every.as_secs()
+                    ),
+                ));
+            }
         }
         if let Some(kit) = &settings.value.kit {
             let at = settings.lines.field("kit");

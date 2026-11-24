@@ -153,10 +153,11 @@ same shell, process group, timeout, output tail and restart handling as a stall'
 start is kept in the state database, so a restarted daemon neither reruns a script early nor
 postpones it. A script with no run on record, such as a new one, runs at the daemon's next tick.
 A script never runs twice at once: its schedule waits while it runs, and a stall that opens during
-a scheduled run of a matching script takes that run as its own instead of starting another. The
-desk lists a scheduled script as a `sweep` row with no task while it runs, and after its last run
-failed until a later run succeeds. A clean scheduled run leaves no row. `every` is at least 10
-seconds.
+a scheduled run of a matching script takes that run as its own instead of starting another. From then on it is a run of the stall: it
+keeps its start, the stall waits for it to end, and the desk lists it only while the stall is open,
+even if it fails. The desk lists a scheduled script as a `sweep` row with no task while it runs. A
+failed run stays there until the script runs again. A clean scheduled run leaves no row. `every` is
+at least 10 seconds and at most 36500 days.
 
 At each tick, the daemon forgets a scheduled run that ended once its script has a later run, so the
 state database keeps the latest one per script. It also forgets a failed last run once no entry of
@@ -187,8 +188,8 @@ Unless the factory defines its own `sweep` workflow, the sweeper runs this built
    rarely, so the ask costs little.
 
 `priory check` refuses a `[sweep]` field it does not know, a malformed duration or resource, a
-script with neither `when` nor `every`, a script's `every` under 10 seconds, an `agent` the factory
-lacks, and a `repo` that is not `owner/name`, with its line.
+script with neither `when` nor `every`, a script's `every` under 10 seconds or over 36500 days, an
+`agent` the factory lacks, and a `repo` that is not `owner/name`, with its line.
 
 Known limits:
 
@@ -203,5 +204,7 @@ Known limits:
   two entries with the same `run` share one schedule.
 - A failed scheduled script you remove and add back runs at the next tick, since its run is
   forgotten.
+- A scheduled run that a daemon restart interrupts counts as a run: its script runs again `every`
+  after the interrupted run started, and the desk lists it as failed until then.
 - Schedules read the wall clock: setting it back delays every script until the clock passes its
   last start by `every` again.

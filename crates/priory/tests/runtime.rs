@@ -55,12 +55,25 @@ key = "issue.number"
 
 const OUTPUT: &str = "factory.intake";
 
-/// Undoes migrations 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
+/// Undoes migration 112, which lets a sweep script run with no stall.
+macro_rules! undo_scheduled_sweeps {
+    () => {
+        "CREATE TABLE sweeps_undone (id INTEGER PRIMARY KEY AUTOINCREMENT,
+    stall INTEGER NOT NULL REFERENCES stalls (id), script TEXT NOT NULL,
+    started TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    ended TEXT, status TEXT, output TEXT, pid INTEGER, pid_started INTEGER);
+  INSERT INTO sweeps_undone SELECT * FROM sweeps WHERE stall IS NOT NULL;
+  DROP TABLE sweeps; ALTER TABLE sweeps_undone RENAME TO sweeps;
+  "
+    };
+}
+
+/// Undoes migrations 112, scheduled sweeps, 111, memory lapses, 110, a run under direnv, 107, a run's sandbox, 106, a run's start time, harness and resumption, 105, a gate's ask and judges, 103, a lesson's step and a gate's lessons, 98, the stated confidence and the
 /// `auto_answer` level, 97, the task's `added_by`, and 93: the `pre` script's task columns and the
 /// pending requests.
 macro_rules! undo_pre {
     () => {
-        "ALTER TABLE asks DROP COLUMN confidence; ALTER TABLE asks DROP COLUMN rationale;
+        concat!(undo_scheduled_sweeps!(), "ALTER TABLE asks DROP COLUMN confidence; ALTER TABLE asks DROP COLUMN rationale;
   ALTER TABLE tasks DROP COLUMN auto_answer; ALTER TABLE tasks DROP COLUMN added_by; DROP VIEW task_text; CREATE VIEW task_text AS SELECT tasks.id AS task,
     coalesce(json_extract(inbox.data, '$.title'), '') AS title,
     coalesce(json_extract(inbox.data, '$.text'), json_extract(inbox.data, '$.body'),
@@ -73,7 +86,7 @@ macro_rules! undo_pre {
   ALTER TABLE memory_candidates DROP COLUMN step; ALTER TABLE gates DROP COLUMN lessons; ALTER TABLE gates DROP COLUMN ask; ALTER TABLE gates DROP COLUMN judges;
   ALTER TABLE runs DROP COLUMN session_started; ALTER TABLE runs DROP COLUMN harness;
   ALTER TABLE runs DROP COLUMN resumes; ALTER TABLE runs DROP COLUMN sandbox; ALTER TABLE runs DROP COLUMN direnv; DROP TABLE lapses;
-  "
+  ")
     };
 }
 
@@ -3045,9 +3058,123 @@ scripts = [{ run = "echo nope; exit 3", every = "1h" }]
             .any(|row| row[1] == "sweep" && row[5] == "echo nope; exit 3: exit 3: nope")
     });
 
+    // The added script starts right after the first prune under the reloaded factory.
+    let added = failing.replace(
+        "every = \"1h\" }]",
+        "every = \"1h\" }, { run = \"echo ran >> \\\"$FAKE_DIR/ran\\\"\", every = \"1h\" }]",
+    );
+    write_atomic(&config, &added);
+    until_fake_lines(&setup, "ran", |lines| lines.len() == 1);
+    assert!(
+        setup
+            .rows("desk")
+            .iter()
+            .any(|row| row[1] == "sweep" && row[5] == "echo nope; exit 3: exit 3: nope")
+    );
+
     write_atomic(&config, &failing.replace("exit 3", "exit 0"));
 
     setup.until("desk", |rows| !rows.iter().any(|row| row[1] == "sweep"));
+}
+
+#[test]
+fn pruning_scheduled_runs_keeps_a_running_one() {
+    let mut setup = Setup::new("scheduled-running");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [{ run = "echo start >> \"$FAKE_DIR/log\"; sleep 60", every = "1h" }]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+    setup.start();
+    until_fake_lines(&setup, "log", |lines| lines == ["start"]);
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "INSERT INTO sweeps (stall, script, ended, status, output)
+         SELECT NULL, value, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), 'exit 0', ''
+         FROM (SELECT script AS value FROM sweeps
+               UNION ALL SELECT 'other' UNION ALL SELECT 'other');",
+    )
+    .unwrap();
+
+    let kept = || -> Vec<(String, bool)> {
+        db.prepare("SELECT script, ended IS NULL FROM sweeps ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while kept().len() > 3 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let script = "echo start >> \"$FAKE_DIR/log\"; sleep 60".to_owned();
+    assert_eq!(
+        kept(),
+        [
+            (script.clone(), true),
+            (script, false),
+            ("other".to_owned(), false),
+        ]
+    );
+}
+
+#[test]
+fn a_state_file_at_111_keeps_its_stall_runs_and_takes_scheduled_ones() {
+    let mut setup = Setup::new("scheduled-upgrade");
+    setup.start();
+    setup.crash();
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(concat!(
+        undo_scheduled_sweeps!(),
+        "PRAGMA foreign_keys = OFF;
+         INSERT INTO stalls (id, resource, missing, task, ended)
+           VALUES (7, 'disk', '1 GB', 1, '2026-01-01T00:00:00Z');
+         INSERT INTO sweeps VALUES (5, 7, 'old', '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z',
+           'exit 3', 'nope', 42, 43);
+         INSERT INTO tasks (id, key, workflow, step, state, trigger, source)
+           VALUES (1, 'k', 'w', 's', 'done', 't', 'e');
+         PRAGMA user_version = 111;"
+    ))
+    .unwrap();
+    let refused = db.execute("INSERT INTO sweeps (script) VALUES ('x')", []);
+    assert!(refused.is_err(), "schema 111 takes a run with no stall");
+    let factory = r#"name = "demo"
+
+[sweep]
+scripts = [{ run = "echo ran >> \"$FAKE_DIR/ran\"", every = "1h" }]
+"#;
+    fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
+
+    setup.start();
+
+    until_fake_lines(&setup, "ran", |lines| lines.len() == 1);
+    let mut rows: Vec<String> = db
+        .prepare(
+            "SELECT concat_ws('|', id, coalesce(stall, '-'), script, started, ended, status, output,
+               pid, pid_started) FROM sweeps WHERE stall IS NOT NULL
+             UNION ALL SELECT 'scheduled ' || id FROM sweeps WHERE stall IS NULL
+             UNION ALL SELECT name FROM sqlite_master
+               WHERE name LIKE 'revision_sweeps_%' OR name = 'sweeps_by_script'",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    rows.sort();
+    assert_eq!(
+        rows,
+        [
+            "5|7|old|2026-01-01T00:00:00Z|2026-01-01T00:00:01Z|exit 3|nope|42|43",
+            "revision_sweeps_delete",
+            "revision_sweeps_insert",
+            "revision_sweeps_update",
+            "scheduled 6",
+            "sweeps_by_script",
+        ]
+    );
 }
 
 #[test]

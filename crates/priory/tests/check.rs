@@ -1692,7 +1692,7 @@ fn a_sweep_script_needs_when_or_every_and_a_valid_every() {
 }
 
 #[test]
-fn a_sweep_script_runs_every_10_seconds_at_most() {
+fn a_sweep_script_runs_every_10_seconds_at_most_and_every_36500_days_at_least() {
     let least =
         "name = \"demo\"\n\n[sweep]\nscripts = [{ run = \"nh clean all\", every = \"10s\" }]\n";
     let ok = check(&factory("sweep-least", &with("factory.toml", least)));
@@ -1705,6 +1705,20 @@ fn a_sweep_script_runs_every_10_seconds_at_most() {
         (
             1,
             "factory.toml:3: the sweep script `nh clean all` has `every` 9s: it needs to be 10s or more\n"
+        )
+    );
+
+    let most = least.replace("\"10s\"", "\"36500d\"");
+    let ok = check(&factory("sweep-most", &with("factory.toml", &most)));
+    let over = least.replace("\"10s\"", "\"36501d\"");
+    let refused = check(&factory("sweep-over", &with("factory.toml", &over)));
+
+    assert_eq!((ok.code, ok.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (refused.code, refused.stderr.as_str()),
+        (
+            1,
+            "factory.toml:3: the sweep script `nh clean all` has `every` 3153686400s: it needs to be 36500d or less\n"
         )
     );
 }

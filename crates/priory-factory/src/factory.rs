@@ -916,6 +916,9 @@ pub const METRICS_EVERY_LEAST: Duration = Duration::from_secs(10);
 /// The least `every` of a sweep script.
 pub const SCRIPT_EVERY_LEAST: Duration = Duration::from_secs(10);
 
+/// The most days of a sweep script's `every`. SQLite's dates turn null far above it.
+pub const SCRIPT_EVERY_MOST_DAYS: u64 = 36500;
+
 /// Where the daemon tells a person that the desk's next item changed, besides Web Push.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1683,7 +1686,7 @@ pub struct Trigger {
     #[serde(default, deserialize_with = "until")]
     #[schemars(
         with = "String",
-        regex(pattern = r"^(([01]?[0-9]|2[0-3]):[0-5][0-9]|0*[1-9][0-9]*[smh])$")
+        regex(pattern = r"^(([01]?[0-9]|2[0-3]):[0-5][0-9]|0*[1-9][0-9]*[smhd])$")
     )]
     pub until: Option<Until>,
     /// The IANA zone `at` is read in, such as `Europe/Paris`; the machine's own when unset.
