@@ -24,12 +24,14 @@ export function autolink(text, links, repo) {
     const regex = /https:\/\/[^\s<>"`\]]+/gu;
     regex.lastIndex = from;
     for (let match = regex.exec(text); match; match = regex.exec(text)) {
-      let url = match[0];
-      for (let last = ""; last !== url;) {
-        last = url;
-        url = url.replace(/[.,;:!?'…]+$/u, "");
-        if (url.endsWith(")") && url.split(")").length > url.split("(").length) url = url.slice(0, -1);
+      let end = match[0].length;
+      let unclosed = match[0].split(")").length - match[0].split("(").length;
+      for (; end > 0; end -= 1) {
+        const last = match[0][end - 1];
+        if (last === ")" && unclosed > 0) unclosed -= 1;
+        else if (!".,;:!?'…".includes(last)) break;
       }
+      const url = match[0].slice(0, end);
       try {
         if (new URL(url).protocol === "https:") return { index: match.index, text: url, url };
       } catch {

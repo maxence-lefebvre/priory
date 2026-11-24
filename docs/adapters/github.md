@@ -76,6 +76,9 @@ answers. A `401` from the daemon signs you out too.
 When a write loses its connection, the daemon may have applied it. The panel keeps the draft, says
 so, and clears the warning once a read shows the answer, or when you send again.
 
+The Ask tab shows no plan: read it in the web view or Herdr before you answer an ask that approves
+one. See [The plan an ask approves](../daemon/asks.md#the-plan-an-ask-approves).
+
 ## If the strip is not above the tabs
 
 When the extension finds no tab row on a pull request page, it draws the strip at the top of the

@@ -592,6 +592,13 @@ pub(crate) fn stop(
             text
         ],
     )?;
+    if options.iter().any(|option| tools::GRADES.contains(option)) {
+        let ask = tx.last_insert_rowid();
+        let author = crate::plan::author(tx, run.task, &run.step, |at| {
+            trace.factory.workflows.get(&run.workflow)?.value.step(at)
+        })?;
+        crate::plan::present(tx, ask, run.task, author.as_deref())?;
+    }
     tools::end(tx, run.id, "asleep")?;
     tx.execute(
         "DELETE FROM outbox WHERE task = ?1 AND state = 'queued' AND nudge = 1",

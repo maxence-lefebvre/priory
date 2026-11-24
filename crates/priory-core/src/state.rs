@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::time::Duration;
 
-const VERSION: i64 = 115;
+const VERSION: i64 = 117;
 
 const SCHEMA: &str = "
 CREATE TABLE tasks (
@@ -2026,13 +2026,55 @@ ALTER TABLE tasks ADD COLUMN slot INTEGER;
 PRAGMA user_version = 114;
 ";
 
+// The plan an approval ask shows, as it was when the ask's revision was raised, and the latest run
+// each task had when a later generation of it began.
+const SCHEMA_115: &str = concat!(
+    "CREATE TABLE IF NOT EXISTS ask_plans (
+  ask       INTEGER PRIMARY KEY,
+  step      TEXT NOT NULL,
+  run       INTEGER NOT NULL,
+  files     TEXT NOT NULL,
+  contents  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS generations (
+  task  INTEGER NOT NULL,
+  after INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS generations_of_task ON generations (task);
+",
+    bumps!("ask_plans"),
+    "PRAGMA user_version = 115;
+"
+);
+
+// Marks read each report of a red merge whose checks all completed and whose every failing one was
+// only cancelled.
+const SCHEMA_116: &str = "
+UPDATE inbox SET read = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+WHERE type = 'priory.report' AND subject = 'priory' AND read IS NULL
+AND instr(json_extract(data, '$.line'), ' is red on ') > 0
+AND (SELECT min(json_extract(run.data, '$.conclusion') IS 'cancelled')
+  FROM inbox AS closed JOIN inbox AS run ON run.type = 'github.check_run.completed'
+    AND json_extract(run.data, '$.repo') = json_extract(closed.data, '$.repo')
+    AND json_extract(run.data, '$.head_sha') = json_extract(closed.data, '$.merge_commit')
+    AND coalesce(json_extract(run.data, '$.conclusion'), '') NOT IN ('success', 'neutral', 'skipped')
+  WHERE closed.type = 'github.pull_request.closed' AND json_extract(closed.data, '$.merged') = 1
+  AND instr(json_extract(inbox.data, '$.line'), 'landed wrong: ' || json_extract(closed.data, '$.repo')
+    || '#' || json_extract(closed.data, '$.pull_request') || ' of task') = 1
+  AND EXISTS (SELECT 1 FROM inbox AS last WHERE last.type = 'github.check_run.completed'
+    AND json_extract(last.data, '$.repo') = json_extract(closed.data, '$.repo')
+    AND json_extract(last.data, '$.head_sha') = json_extract(closed.data, '$.merge_commit')
+    AND json_extract(last.data, '$.pending') = 0)) = 1;
+PRAGMA user_version = 116;
+";
+
 // A task's labels, as a JSON object, which runner filters match, and why a request no runner's
 // filters accept waits.
-const SCHEMA_115: &str = "
+const SCHEMA_117: &str = "
 ALTER TABLE tasks ADD COLUMN labels TEXT;
 ALTER TABLE inbox ADD COLUMN reason TEXT;
 CREATE INDEX inbox_unaccepted ON inbox (subject, seq) WHERE outcome = 'unaccepted';
-PRAGMA user_version = 115;
+PRAGMA user_version = 117;
 ";
 
 /// Each schema change in order: a file at version `n` applies those from index `n` on.
@@ -2051,7 +2093,7 @@ const MIGRATIONS: [&str; VERSION as usize] = [
     SCHEMA_90, SCHEMA_91, SCHEMA_92, SCHEMA_93, SCHEMA_94, SCHEMA_95, SCHEMA_96, SCHEMA_97,
     SCHEMA_98, SCHEMA_99, SCHEMA_100, SCHEMA_101, SCHEMA_102, SCHEMA_103, SCHEMA_104, SCHEMA_105,
     SCHEMA_106, SCHEMA_107, SCHEMA_108, SCHEMA_109, SCHEMA_110, SCHEMA_111, SCHEMA_112, SCHEMA_113,
-    SCHEMA_114, SCHEMA_115,
+    SCHEMA_114, SCHEMA_115, SCHEMA_116, SCHEMA_117,
 ];
 
 /// A task's band rank, null for a band the factory no longer has.
@@ -4791,6 +4833,19 @@ pub(crate) fn unsubmitted(db: &Connection, outbox: i64) -> rusqlite::Result<bool
         )
         .optional()?
         .unwrap_or(false))
+}
+
+/// Whether a person holds the keyboard of the run the prompt `outbox` was pasted into.
+pub(crate) fn keyboard_held(db: &Connection, outbox: i64) -> rusqlite::Result<bool> {
+    db.query_row(
+        &format!(
+            "SELECT EXISTS (SELECT 1 FROM outbox JOIN runs ON runs.id = outbox.run
+               WHERE outbox.id = ?1 AND {})",
+            crate::preempt::KEYBOARD_HELD
+        ),
+        [outbox],
+        |row| row.get(0),
+    )
 }
 
 /// Marks the attempted prompt `outbox` `uncertain`: Enter was pressed twice and no

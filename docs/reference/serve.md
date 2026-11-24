@@ -519,6 +519,7 @@ an object: `answered` and `withdrawn`, the number of each left out, within `band
 | `question` | string | The question |
 | `options` | array of strings | The options |
 | `free_text` | boolean | Whether the ask takes free text and a dismissal. False for a step's ask and a hold's ask, which take only their options |
+| `approves_plan` | boolean | Whether the ask approves a plan, which `plan_file` of [the task](#task-in-detail) holds. See [The plan an ask approves](../daemon/asks.md#the-plan-an-ask-approves) |
 | `recommendation`, `tradeoff` | string or null | What the agent recommends, and the trade-off |
 | `title`, `text` | string or null | The ask's title and its Markdown body. A human step's ask has the task's [merge risk](tools.md#merge-risk) as its body, when it has one |
 | `what_waits`, `next_action` | string or null | What waits on the answer, and what the agent does next |
@@ -697,6 +698,7 @@ And these objects:
 | ----- | ---- | ------- |
 | `brief` | object | `title` and `request`, the request's title and text, each null when it has none, `result`, the latest result of a step named `groom`, or null, `intent`, its trigger's [`intent`](triggers.md#intent-and-noop) or null, and `noop`, its trigger's no-op cases, `[]` with none |
 | `plan` | object or null | The latest result of a step named `plan`, or else of a step whose name starts with `plan-`, such as `plan-implementation`. A result has `run`, `step`, `outcome`, `summary`, `evidence`, `commit_sha` and `created`. When it is null, `progress` holds the plan the agent published |
+| `plan_file` | object or null | The plan the task's latest approval ask shows, as Priory stored it when that ask's revision was raised. It has `ask`, `revision`, `step`, `run` and `files`, one entry per document shown, each with `path`, `text` and `truncated`. `path` is the file it was read from, or null when `text` is the summary of `run`'s result. `text` holds at most the first 64 KB, and `truncated` is true when the file is longer. Null when no ask approved a plan, when a later `plan` result replaced an answered ask's plan, and when another runner holds the task |
 | `pull_request` | object or null | The latest pull request the task owns that has stored GitHub events: `repo`, `number`, `title`, `url`, `branch`, `base`, `head_sha` (each from the newest event that carries it), `state` (`open`, `closed` or `merged`; a reopened pull request stays `closed`, since the intake publishes no reopen event), `review` (the latest review's state, or null) and `checks`, the latest conclusion of each check run on the head: `name`, `conclusion` and `at` |
 
 ## Evidence
