@@ -1341,7 +1341,13 @@ fn tend(
     entering: &mut Entering,
 ) -> Result<(), Error> {
     let factory = trace.factory;
-    for run in state::live(db)? {
+    for mut run in state::live(db)? {
+        if run.direnv == 1
+            && let Some(error) = runtime::direnv_failed(home, &run.session)
+        {
+            direnv_failed(db, trace, &run, &error)?;
+            run.direnv = 2;
+        }
         if runtime::pane(&run.tmux, &run.session).is_none() {
             // A dead pane that remain-on-exit keeps holds the session open.
             runtime::kill(&run.tmux);
@@ -1554,6 +1560,40 @@ fn diagnose(
     }
 }
 
+/// Records that direnv failed with `error` before run `run`'s harness started, which then started
+/// without the `.envrc`: in the trace and as its task's reason.
+fn direnv_failed(
+    db: &mut Connection,
+    trace: &Trace,
+    run: &state::LiveRun,
+    error: &str,
+) -> Result<(), Error> {
+    let error = crate::screen::plain(error);
+    let secrets = crate::screen::secrets(&trace.factory.secret_envs());
+    let error = crate::screen::redact(&error, &secrets, None)
+        .map_or_else(|| "[redacted]".to_owned(), |(shown, _)| shown);
+    let why = if error.is_empty() {
+        "direnv exited before the harness started".to_owned()
+    } else {
+        error
+    };
+    let grant = priory_runtime::trust::Grant {
+        path: run.worktree.as_deref().unwrap_or_default().into(),
+        file: std::path::PathBuf::new(),
+        outcome: priory_runtime::trust::Outcome::Failed,
+        why: Some(why.clone()),
+    };
+    let tx = db.transaction()?;
+    crate::trace::trusted(&tx, trace, run.id, "direnv", &grant, None)?;
+    state::direnv(&tx, run.id, 2)?;
+    tx.execute(
+        "UPDATE tasks SET reason = ?2 WHERE id = ?1",
+        rusqlite::params![run.task, format!("started without its .envrc: {why}")],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Why a live run must end: its harness's trust dialog, no `SessionStart`, a permission prompt, or
 /// a turn past its step's timeout. The flag says the dialog asked for trust that `granted`, the
 /// run's own grant, had recorded.
@@ -1601,12 +1641,26 @@ fn verdict(
         return Some(("exited", reason, false));
     }
     if run.late {
-        let mut reason = format!(
-            "{} showed no SessionStart within {}; {}",
-            harness.program(),
-            state::READY_WITHIN.replace(" seconds", "s"),
-            trust()
-        );
+        let mut reason = if run.direnv == 1 && runtime::direnv_loading(home, &run.session) {
+            format!(
+                "direnv did not finish loading {}/.envrc within {}, so {} never started; warm it \
+                 with `direnv exec <worktree> true`, or fix the .envrc",
+                run.worktree.as_deref().unwrap_or("its folder"),
+                state::DIRENV_READY_WITHIN.replace(" seconds", "s"),
+                harness.program(),
+            )
+        } else {
+            let within = match run.direnv {
+                0 => state::READY_WITHIN,
+                _ => state::DIRENV_READY_WITHIN,
+            };
+            format!(
+                "{} showed no SessionStart within {}; {}",
+                harness.program(),
+                within.replace(" seconds", "s"),
+                trust()
+            )
+        };
         let rows = rows.unwrap_or_default();
         let secrets = crate::screen::secrets(&factory.secret_envs());
         // When a secret still shows after redaction, no row of the pane is kept.
@@ -2549,6 +2603,7 @@ fn start(
                 .iter()
                 .any(|grant| grant.outcome == priory_runtime::trust::Outcome::Granted)
             {
+                state::direnv(db, run, 1)?;
                 direnv = Some(folder);
             }
         }
@@ -2983,6 +3038,41 @@ mod tests {
             ));
         }
         text
+    }
+
+    #[test]
+    fn a_late_run_whose_envrc_still_loads_names_direnv_rather_than_folder_trust() {
+        let home = std::env::temp_dir().join(format!("priory-late-direnv-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let spool = runtime::direnv_spool(&home, "s");
+        fs::create_dir_all(&spool).unwrap();
+        fs::write(spool.join("direnv.error"), "direnv: loading .envrc\n").unwrap();
+        let run = state::LiveRun {
+            id: 1,
+            task: 1,
+            step: "implement".into(),
+            agent: "implementer".into(),
+            workflow: "w".into(),
+            tmux: format!("priory-late-direnv-{}", std::process::id()),
+            session: "s".into(),
+            worktree: Some("/w/1".into()),
+            ready: false,
+            late: true,
+            direnv: 1,
+            turn: None,
+            prompted: None,
+        };
+
+        let (ended_as, reason, _) = verdict(&run, &Factory::default(), &home, &|| false).unwrap();
+
+        assert_eq!(ended_as, "exited");
+        assert!(
+            reason.starts_with(
+                "direnv did not finish loading /w/1/.envrc within 600s, so claude never started"
+            ),
+            "{reason}"
+        );
+        assert!(!reason.contains("trust the"), "{reason}");
     }
 
     /// Writes the factory's file once `reload::EVERY` passed, then polls.

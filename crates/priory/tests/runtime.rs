@@ -3949,8 +3949,12 @@ fn trust_worktrees_off_writes_no_claude_config() {
 }
 
 /// A fake `direnv` that logs its arguments and `DIRENV_CONFIG`, then runs the rest as `exec` does.
+/// As direnv 2.38.2 does, it refuses a folder its `direnv.toml` does not spell in `[whitelist]
+/// exact`, and FAKE_DIR/direnv.fail fails it as an `.envrc` that exits 1 does.
 const DIRENV: &str = "#!/bin/sh\n\
 printf '%s\\n' \"$*\" \"DIRENV_CONFIG=$DIRENV_CONFIG\" >> \"$FAKE_DIR/direnv.log\"\n\
+grep -qF \"\\\"$2\\\"\" \"$DIRENV_CONFIG/direnv.toml\" || { echo \"direnv: error $2/.envrc is blocked\" >&2; exit 1; }\n\
+[ -e \"$FAKE_DIR/direnv.fail\" ] && { echo 'direnv: error exit status 1' >&2; exit 1; }\n\
 shift 2\n\
 exec \"$@\"\n";
 
@@ -3977,10 +3981,16 @@ fn envrc(setup: &Setup) {
 }
 
 /// Starts the daemon with a HOME of its own whose direnv config is `config`, and a fake `direnv`
-/// on PATH when `installed`. Any real `direnv` is off PATH.
-fn start_direnv(setup: &mut Setup, installed: bool, config: &str) {
+/// on PATH when `installed`, and `env` on top. Any real `direnv` is off PATH.
+fn start_direnv(setup: &mut Setup, installed: bool, config: &str, env: &[(&str, &str)]) {
     let home = setup.dir.join("user");
-    fs::create_dir_all(home.join(".config/direnv/lib")).unwrap();
+    // Its `lib` links into a store, as home-manager links it into /nix/store.
+    fs::create_dir_all(home.join("store/lib")).unwrap();
+    fs::create_dir_all(home.join(".config/direnv")).unwrap();
+    let lib = home.join(".config/direnv/lib");
+    if fs::symlink_metadata(&lib).is_err() {
+        std::os::unix::fs::symlink(home.join("store/lib"), &lib).unwrap();
+    }
     fs::write(home.join(".config/direnv/direnv.toml"), config).unwrap();
     let bin = setup.dir.join("direnv-bin");
     fs::create_dir_all(&bin).unwrap();
@@ -4009,15 +4019,15 @@ fn start_direnv(setup: &mut Setup, installed: bool, config: &str) {
     }
     let path = std::env::join_paths(dirs).unwrap();
     let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
-    setup.start_with(
-        exe,
-        &[
-            ("HOME", home.to_str().unwrap()),
-            ("PATH", path.to_str().unwrap()),
-            ("XDG_CONFIG_HOME", home.join(".config").to_str().unwrap()),
-            ("DIRENV_CONFIG", ""),
-        ],
-    );
+    let xdg = home.join(".config");
+    let mut vars = vec![
+        ("HOME", home.to_str().unwrap()),
+        ("PATH", path.to_str().unwrap()),
+        ("XDG_CONFIG_HOME", xdg.to_str().unwrap()),
+        ("DIRENV_CONFIG", ""),
+    ];
+    vars.extend_from_slice(env);
+    setup.start_with(exe, &vars);
 }
 
 fn direnv_records(setup: &Setup) -> Vec<serde_json::Value> {
@@ -4032,7 +4042,7 @@ fn trust_worktrees_makes_direnv_trust_the_worktree_and_starts_the_run_in_its_env
     let mut setup = trusting("trust-direnv");
     envrc(&setup);
     setup.publish(&requested(42));
-    start_direnv(&mut setup, true, "[global]\nwarn_timeout = \"1m\"\n");
+    start_direnv(&mut setup, true, "[global]\nwarn_timeout = \"1m\"\n", &[]);
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
 
@@ -4044,7 +4054,7 @@ fn trust_worktrees_makes_direnv_trust_the_worktree_and_starts_the_run_in_its_env
     let lines: Vec<&str> = log.lines().collect();
     assert!(
         lines[0].starts_with(&format!(
-            "exec {} env ",
+            "exec {} sh -c ",
             setup.dir.join("home/worktrees/owner/repo/1").display()
         )),
         "{log}"
@@ -4064,7 +4074,14 @@ fn trust_worktrees_makes_direnv_trust_the_worktree_and_starts_the_run_in_its_env
     );
     assert_eq!(
         fs::read_link(folder.join("lib")).unwrap(),
-        setup.dir.join("user/.config/direnv/lib")
+        fs::canonicalize(setup.dir.join("user/store/lib")).unwrap()
+    );
+    let mode = fs::metadata(folder.join("direnv.toml"))
+        .unwrap()
+        .permissions();
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
+        0o600
     );
     let records = direnv_records(&setup);
     let outcomes: Vec<(&str, &str)> = records
@@ -4090,11 +4107,114 @@ fn trust_worktrees_makes_direnv_trust_the_worktree_and_starts_the_run_in_its_env
 }
 
 #[test]
+fn direnv_trusts_a_worktree_whose_priory_home_goes_through_a_symlink() {
+    let mut setup = trusting("trust-direnv-symlink");
+    envrc(&setup);
+    setup.publish(&requested(42));
+    let linked = setup.dir.join("linked-home");
+    let _ = fs::remove_file(&linked);
+    fs::create_dir_all(setup.dir.join("home")).unwrap();
+    std::os::unix::fs::symlink(setup.dir.join("home"), &linked).unwrap();
+    start_direnv(
+        &mut setup,
+        true,
+        "",
+        &[("PRIORY_HOME", linked.to_str().unwrap())],
+    );
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    assert!(
+        direnv_records(&setup)
+            .iter()
+            .all(|record| record["data"]["outcome"] == "granted"),
+        "{:?}",
+        direnv_records(&setup)
+    );
+    let log = fs::read_to_string(setup.dir.join("fake/direnv.log")).unwrap();
+    let spelled = linked.join("worktrees/owner/repo/1");
+    assert!(
+        log.starts_with(&format!("exec {} sh -c ", spelled.display())),
+        "{log}"
+    );
+    let session = &setup.rows("runs")[0][4];
+    let config: toml::Table = fs::read_to_string(
+        setup
+            .dir
+            .join("home/direnv")
+            .join(session)
+            .join("direnv.toml"),
+    )
+    .unwrap()
+    .parse()
+    .unwrap();
+    let canonical = fs::canonicalize(&spelled).unwrap();
+    let exact = config["whitelist"]["exact"].as_array().unwrap();
+    for path in [&spelled, &canonical] {
+        assert!(
+            exact.contains(&toml::Value::from(path.display().to_string())),
+            "{exact:?}"
+        );
+    }
+}
+
+#[test]
+fn a_failing_direnv_starts_the_harness_without_the_envrc_and_says_why() {
+    let mut setup = trusting("trust-direnv-failed");
+    envrc(&setup);
+    fs::write(setup.dir.join("fake/direnv.fail"), "").unwrap();
+    setup.publish(&requested(42));
+    start_direnv(&mut setup, true, "", &[]);
+
+    setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
+    setup.until("tasks", |rows| {
+        rows.first()
+            .is_some_and(|row| row.iter().any(|cell| cell.contains("without its .envrc")))
+    });
+
+    let failed: Vec<_> = direnv_records(&setup)
+        .into_iter()
+        .filter(|record| record["data"]["outcome"] == "failed")
+        .collect();
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(
+        failed[0]["data"]["why"].as_str(),
+        Some("direnv: error exit status 1")
+    );
+}
+
+#[test]
+fn a_harness_that_exits_1_under_direnv_is_not_started_again_without_it() {
+    let mut setup = trusting("trust-direnv-harness-exit");
+    envrc(&setup);
+    fs::write(
+        setup.dir.join("fake/probe"),
+        "echo started >> \"$FAKE_DIR/launches\"\n",
+    )
+    .unwrap();
+    setup.hold("die");
+    setup.publish(&requested(42));
+    start_direnv(&mut setup, true, "", &[]);
+
+    setup.until("tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "blocked")
+    });
+
+    let launches = fs::read_to_string(setup.dir.join("fake/launches")).unwrap();
+    assert_eq!(launches.lines().count(), 1, "{launches}");
+    assert!(
+        direnv_records(&setup)
+            .iter()
+            .all(|record| record["data"]["outcome"] != "failed")
+    );
+}
+
+#[test]
 fn without_trust_worktrees_a_run_does_not_start_under_direnv() {
     let mut setup = Setup::new("trust-direnv-off");
     envrc(&setup);
     setup.publish(&requested(42));
-    start_direnv(&mut setup, true, "");
+    start_direnv(&mut setup, true, "", &[]);
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
 
@@ -4114,7 +4234,7 @@ fn trust_worktrees_changes_nothing_for_direnv_without_direnv_or_an_envrc() {
             envrc(&setup);
         }
         setup.publish(&requested(42));
-        start_direnv(&mut setup, installed, "");
+        start_direnv(&mut setup, installed, "", &[]);
 
         setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
 
@@ -4130,7 +4250,12 @@ fn an_unparsable_direnv_toml_refuses_the_grant_and_the_run_starts_without_direnv
     let mut setup = trusting("trust-direnv-refused");
     envrc(&setup);
     setup.publish(&requested(42));
-    start_direnv(&mut setup, true, "[whitelist\ntoken = \"sk-secret-9\"\n");
+    start_direnv(
+        &mut setup,
+        true,
+        "[whitelist\ntoken = \"sk-secret-9\"\n",
+        &[],
+    );
 
     setup.until("outbox", |rows| with(rows, 3, "confirmed") >= 1);
 

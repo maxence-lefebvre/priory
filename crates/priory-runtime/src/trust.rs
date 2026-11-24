@@ -23,6 +23,8 @@ pub enum Outcome {
     Refused,
     /// The harness asked for trust that Priory had recorded.
     Missed,
+    /// direnv failed before the harness started, which then started without the `.envrc`.
+    Failed,
 }
 
 impl Outcome {
@@ -32,6 +34,7 @@ impl Outcome {
             Self::Present => "present",
             Self::Refused => "refused",
             Self::Missed => "missed",
+            Self::Failed => "failed",
         }
     }
 }
@@ -84,6 +87,8 @@ pub fn direnv(home: &Path, repo: &str, worktree: &Path, folder: &Path) -> Vec<Gr
     if !crate::jail::on_path("direnv") || !worktree.join(".envrc").is_file() {
         return Vec::new();
     }
+    // direnv matches `exact` against the path as `direnv exec` gets it, so a symlinked home needs both.
+    let spelled = [worktree.to_path_buf(), home.join("repos").join(repo)];
     let (worktree, clone) = match own(home, repo, worktree) {
         Ok(paths) => paths,
         Err(why) => return grants(folder, &[worktree], Err(why)),
@@ -103,17 +108,18 @@ pub fn direnv(home: &Path, repo: &str, worktree: &Path, folder: &Path) -> Vec<Gr
                     .map_err(|error| format!("{}: {error}", own.display()))?,
                 None => String::new(),
             };
-            let text = whitelisted(&text, &[&worktree, &clone]).map_err(|why| match &own {
+            let paths = [&spelled[0], &worktree, &spelled[1], &clone].map(PathBuf::as_path);
+            let text = whitelisted(&text, &paths).map_err(|why| match &own {
                 Some(own) => format!("{}: {why}", own.display()),
                 None => why,
             })?;
             let failed = |error: std::io::Error| format!("{}: {error}", folder.display());
             let _ = fs::remove_dir_all(folder);
             fs::create_dir_all(folder).map_err(failed)?;
-            fs::write(&file, text).map_err(failed)?;
+            crate::runtime::write_private(&file, &text).map_err(failed)?;
+            // A link into the person's home that leads on, say into /nix/store, dangles in a jail.
             for name in ["direnvrc", "lib"] {
-                let target = person.join(name);
-                if target.exists() {
+                if let Ok(target) = fs::canonicalize(person.join(name)) {
                     std::os::unix::fs::symlink(&target, folder.join(name)).map_err(failed)?;
                 }
             }

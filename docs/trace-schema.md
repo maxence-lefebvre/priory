@@ -100,8 +100,8 @@ count these records, and not the debate step's own.
 ## `factory.run.trusted`
 
 What the daemon did about a harness's or direnv's folder trust in one path of a run, when the
-factory sets `trust_worktrees`. A run gets one record for each path before it starts, and one more
-when its harness asks anyway. See [sessions.md](daemon/sessions.md#with-trust_worktrees).
+factory sets `trust_worktrees`. A run gets one record for each path before it starts, one more
+when its harness asks anyway, and one when direnv fails before its harness starts. See [sessions.md](daemon/sessions.md#with-trust_worktrees).
 
 ```json
 {
@@ -131,8 +131,8 @@ when its harness asks anyway. See [sessions.md](daemon/sessions.md#with-trust_wo
 | `harness` | yes      | `claude-code`, `codex`, or `direnv` for direnv's trust in a worktree with an `.envrc` |
 | `path`    | yes      | The worktree or clone the trust covers |
 | `file`    | no       | The config the daemon wrote or read: Claude's `.claude.json`, `$CODEX_HOME/priory-trust.config.toml`, or the run's `direnv/<session>/direnv.toml` in Priory home |
-| `outcome` | yes      | `granted` when the daemon wrote it, `present` when it was already there, `refused` when it wrote nothing, `missed` when the harness asked anyway |
-| `why`     | no       | For `refused`: why, such as a path outside Priory home or a repository the factory does not name. For `missed`: `the grant was gone from the config` when the harness overwrote it |
+| `outcome` | yes      | `granted` when the daemon wrote it, `present` when it was already there, `refused` when it wrote nothing, `missed` when the harness asked anyway, `failed` when direnv failed before the harness started, which then started without the `.envrc` |
+| `why`     | no       | For `refused`: why, such as a path outside Priory home or a repository the factory does not name. For `missed`: `the grant was gone from the config` when the harness overwrote it. For `failed`: direnv's error, redacted, such as `direnv: error exit status 1` |
 | `version` | no       | For `missed`: the first line of the harness's `--version` |
 
 ## `factory.task.repaired`
