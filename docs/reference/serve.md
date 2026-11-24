@@ -383,6 +383,7 @@ conversation that lacks its `id` or `created_at`, gets `400`.
 | `caps` | array of strings | One line per spend cap reached whose new runs wait, such as `spend cap reached: lane core/intake spent $12.40 of its day cap of $10.00; its new runs wait for the next day` (see [spend.md](../daemon/spend.md)) |
 | `reviews` | array of strings | One line per lane or batch whose review limit holds a queued task, such as `review limit reached: lane core/intake has 5 pull requests waiting for a person, at the limit of 5; its new runs wait` (see [runs.md](../daemon/runs.md#review-limit)) |
 | `banner` | string or null | The stall banner while the queue is stalled |
+| `reclaim` | string or null | `reclaimed <n> GB of build output from <n> folders in the last 24 hours, last at <time>` when the sweep deleted build output in the 24 hours before now (`PRIORY_NOW` when set), else null. See [sweep.md](../daemon/sweep.md#reclaiming-build-output) |
 | `intake` | string or null | The intake banner: `the intake has not polled since <time>: ...` when no source polled in the last 5 minutes, else `the intake fails to poll <source> since <time>: <error>` for each source that reported, or `the intake retries <source> since <time>: <error>` for one that has failed for less than `[intake] alarm_after`, joined by `; `. Null while every source polls. See [desk.md](../daemon/desk.md#intake-banner) |
 | `counts.asleep` | integer | Tasks asleep on a wait |
 | `counts.snoozed` | integer | Items snoozed now, which `items` leaves out |
@@ -437,7 +438,7 @@ group per resource, the group with the newest event first:
 | `resource` | string | The resource, such as `github:owner/name#7` |
 | `task` | object | The newest task that owned it: `id`, `key`, `state`, `workflow` |
 | `events` | array | Its events, newest first: `seq`, `type`, `subject`, `time`, and `line`, the first line of its body, text or title, a check run's name and conclusion such as `test (ubuntu) failure`, or null |
-| `follow_up` | string or null | The command that routes its next event, each argument shell-quoted: `priory revive ID` for a failed or dropped task, `priory add --workflow WORKFLOW 'TEXT'` with the task's workflow and `request_text` for a done one, else `priory subscribe ID RESOURCE`. Null for a done task's resource that `request_text` cannot name, such as a Slack thread |
+| `follow_up` | string or null | The command that routes its next event, each argument shell-quoted: `priory revive ID` for a failed or dropped task, `priory add --workflow WORKFLOW 'TEXT'` with the task's workflow and `request_text` for a done one, else `priory subscribe ID RESOURCE`. Null for a done task's resource that `request_text` cannot name, such as a Slack thread. [`priory say ID TEXT`](../daemon/desk.md#say) reopens a done task whose pull request is open, in place of that command |
 | `request_text` | string or null | For a GitHub or Linear resource, the text of a new task keyed by it: `Follow up on URL after event SEQ`, the issue's URL, which `priory add` turns into the resource as key, and the newest event's sequence number, so each follow-up is a new request |
 
 `dropped` lists the task requests a trigger's `pre` script dropped, newest first, except one whose
@@ -467,7 +468,7 @@ event's `time` against now (`PRIORY_NOW` when set), so a task about to start or 
 | ----- | ---- | ------- |
 | `task` | object | The task that kept them: `id`, `key`, `state`, `workflow` |
 | `events` | array | Its events, newest first, as in `owned` |
-| `follow_up` | string or null | `priory say ID 'Read the events that came while you slept.'` for an `asleep` or `blocked` task, whose next run carries them. For a done, failed or dropped task, the command `owned` gives for its key. Null for a task whose next run reads them anyway, such as a `queued` or `ready` one, and for a task that waits on a step's ask, which shows them |
+| `follow_up` | string or null | `priory say ID 'Read the events that came while you slept.'` for an `asleep` or `blocked` task, whose next run carries them. For a done, failed or dropped task, the command `owned` gives for its key; `priory say` reopens a done one as in `owned`. Null for a task whose next run reads them anyway, such as a `queued` or `ready` one, and for a task that waits on a step's ask, which shows them |
 | `say_text` | string or null | The text `follow_up` says to an `asleep` or `blocked` task, which the web Inbox's Say sends; null for any other task, and for a task that waits on a step's ask |
 | `request_text` | string or null | For a done task, the text of a new task keyed by its key, as in `owned`: null when its key is not a GitHub or Linear resource, and for any other task |
 
