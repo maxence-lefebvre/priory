@@ -598,7 +598,7 @@ pub fn worktree(
 
 /// Runs `phase` of a worktree's start, and times it for the metrics by how it ended.
 fn phased<T>(phase: &'static str, step: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let done = step();
     let outcome = match &done {
         Ok(_) => "ok",
@@ -1474,6 +1474,130 @@ pub fn launch(harness: &dyn Harness, launch: &Launch) -> Result<(), NotStarted> 
     }))
 }
 
+/// Starts `claude --cloud PROMPT` in `dir` inside the detached tmux session `name`, since the CLI
+/// creates a cloud session only in a terminal. Waits up to the command timeout for it to exit, then
+/// returns the `session_<id>` it printed.
+pub fn cloud_start(name: &str, dir: &Path, home: &Path, prompt: &str) -> Result<String, String> {
+    tmux_socket_fits(&tmux_socket())?;
+    // tmux refuses a command over about 16 KiB, so the prompt reaches the CLI through a file.
+    let file = home.join("prompts").join(name);
+    fs::create_dir_all(file.parent().expect("the file has a parent"))
+        .and_then(|()| fs::write(&file, prompt))
+        .map_err(|error| format!("{}: {error}", file.display()))?;
+    run(tmux()
+        .args([
+            "new-session",
+            "-d",
+            "-x",
+            "200",
+            "-y",
+            "50",
+            "-s",
+            name,
+            "-c",
+        ])
+        .arg(dir)
+        .args(["--", "sh", "-c", CLOUD_SCRIPT])
+        .arg(&file)
+        .arg("env")
+        .args(NESTED.iter().flat_map(|name| ["-u", name]))
+        .args(["claude", "--cloud"]))?;
+    let deadline = Instant::now() + command_timeout();
+    loop {
+        let screen = shown(&format!("={name}:"), true);
+        if let Some(code) = screen
+            .iter()
+            .find_map(|line| line.trim().strip_prefix(CLOUD_EXIT))
+        {
+            kill(name);
+            let printed = one_line(
+                &screen
+                    .join("\n")
+                    .replace(&format!("{CLOUD_EXIT}{code}"), ""),
+            );
+            if code != "0" {
+                return Err(format!("claude --cloud exited {code}: {printed}"));
+            }
+            return cloud_session(&printed)
+                .ok_or_else(|| format!("claude --cloud printed no session id: {printed}"));
+        }
+        if ClaudeCode.asks_trust(&screen.join("\n")) {
+            kill(name);
+            return Err(format!(
+                "claude --cloud asked whether to trust {}; Priory never answers it. Set trust_worktrees = true in factory.toml, or trust the folder by hand",
+                dir.display()
+            ));
+        }
+        if Instant::now() >= deadline {
+            kill(name);
+            return Err(format!(
+                "claude --cloud did not exit within {}s",
+                command_timeout().as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+const CLOUD_EXIT: &str = "priory-cloud-exit=";
+
+/// Runs the CLI with the prompt file `$0` as its last argument, then prints its exit code and stays,
+/// so the pane still shows what it printed.
+const CLOUD_SCRIPT: &str = r#"p=$(cat "$0"; printf x); rm -f "$0"; "$@" "${p%x}"; echo "priory-cloud-exit=$?"; exec sleep 600"#;
+
+/// The first `session_<id>` in `printed`, as `claude --cloud` prints it in its `View:` URL.
+pub fn cloud_session(printed: &str) -> Option<String> {
+    let start = printed.find("session_")?;
+    let id: String = printed[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    (id.len() > "session_".len()).then_some(id)
+}
+
+/// The commit `branch` points at on the worktree's `origin`, or none while it is not there.
+pub fn remote_head(worktree: &Path, branch: &str) -> Result<Option<String>, String> {
+    let listed = run(git(worktree).args(["ls-remote", "origin", &format!("refs/heads/{branch}")]))?;
+    Ok(listed.split_whitespace().next().map(str::to_owned))
+}
+
+/// The bytes of `path` on the default branch of Priory's clone of `repo`.
+pub fn repo_file(home: &Path, repo: &str, path: &str) -> Result<Vec<u8>, String> {
+    let clone = home.join("repos").join(repo);
+    let output = git(&clone)
+        .args(["show", &format!("origin/HEAD:{path}")])
+        .output()
+        .map_err(|error| format!("git show in {}: {error}", clone.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git show origin/HEAD:{path} in {}: {}",
+            clone.display(),
+            one_line(&String::from_utf8_lossy(&output.stderr))
+        ));
+    }
+    Ok(output.stdout)
+}
+
+/// A commit a cloud session pushed: its full SHA, subject and body.
+pub struct Pushed {
+    pub commit: String,
+    pub subject: String,
+    pub body: String,
+}
+
+/// Fetches `branch` from `origin` and moves the worktree's own branch to it.
+pub fn adopt(worktree: &Path, branch: &str) -> Result<Pushed, String> {
+    run(git(worktree).args(["fetch", "-q", "origin", &format!("refs/heads/{branch}")]))?;
+    run(git(worktree).args(["reset", "-q", "--hard", "FETCH_HEAD"]))?;
+    let field =
+        |format: &str| run(git(worktree).args(["log", "-1", &format!("--format={format}")]));
+    Ok(Pushed {
+        commit: field("%H")?.trim().to_owned(),
+        subject: field("%s")?.trim().to_owned(),
+        body: field("%b")?.trim().to_owned(),
+    })
+}
+
 /// Writes `files`, by their paths inside the plugin, into `<dir>/plugin` unless that folder holds
 /// them already, and returns it.
 pub fn plugin(dir: &Path, files: &[(PathBuf, &[u8])]) -> Result<PathBuf, String> {
@@ -2164,9 +2288,9 @@ pub struct Snapshot {
 /// after up to `history` rows of its scrollback, read by that pane's id, or none once it is gone or
 /// when tmux takes longer than `deadline`.
 pub fn snapshot(name: &str, session: &str, history: usize, deadline: Duration) -> Option<Snapshot> {
-    let end = std::time::Instant::now() + deadline;
+    let end = Instant::now() + deadline;
     let within = |command: &mut Command| {
-        let left = end.saturating_duration_since(std::time::Instant::now());
+        let left = end.saturating_duration_since(Instant::now());
         let output = fed_within(command, None, left).ok()??;
         output
             .status
@@ -2787,7 +2911,22 @@ mod tests {
         assert_eq!(found(panes, "s9"), None);
     }
 
+    #[test]
+    fn a_cloud_session_id_is_read_from_the_view_url() {
+        let printed = "Created cloud session: Fix it; View: https://claude.ai/code/session_01V4gk?from=cli&m=0";
+        assert_eq!(cloud_session(printed).as_deref(), Some("session_01V4gk"));
+        assert_eq!(cloud_session("Error: session_ expired"), None);
+    }
+
     proptest! {
+        #[test]
+        fn cloud_output_gives_a_session_id_or_none_without_panicking(printed in "(.{0,40}session_[A-Za-z0-9]{0,12}.{0,40})|.{0,80}") {
+            if let Some(id) = cloud_session(&printed) {
+                prop_assert!(printed.contains(&id));
+                prop_assert!(id.len() > "session_".len());
+            }
+        }
+
         #[test]
         fn a_pane_listing_parses_or_is_refused_without_panicking(
             listing in "(%[0-9]{1,3} [01] [0-9]{1,6} [0-9]{1,6} [0-9] [0-9]{1,6} [0-9]{1,6} [0-9]{1,6} s1\n){0,3}|.{0,80}"

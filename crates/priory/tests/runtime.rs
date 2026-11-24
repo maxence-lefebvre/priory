@@ -32412,3 +32412,219 @@ fn a_parked_task_is_left_out_of_the_queue_and_the_task_list() {
     let found = person(&setup, "search", &["Adopted", "--state", "held"]);
     assert!(found.contains("owner/repo#7"), "{found}");
 }
+
+const CLOUD_AGENT: &str = "+++\ndescription = \"Implements one task in a cloud session.\"\nharness = \"claude-cloud\"\n+++\nYou implement one issue.\n";
+
+const CLOUD: &str = r#"
+start = "implement"
+
+[[steps]]
+id = "implement"
+decides = "model"
+agent = "implementer"
+prompt = "Implement the issue."
+effect = "reversible"
+next = { pushed = "approve-pr", failed = "stop" }
+
+[[steps]]
+id = "approve-pr"
+decides = "human"
+effect = "none"
+approves = ["open-pr"]
+options = ["open", "stop"]
+next = { open = "open-pr", stop = "stop" }
+
+[[steps]]
+id = "open-pr"
+decides = "code"
+action = "open-pr"
+effect = "irreversible"
+next = { opened = "done", failed = "stop" }
+"#;
+
+/// A setup whose implementer runs in a cloud session, on `workflow`.
+fn cloud(name: &str, workflow: &str) -> Setup {
+    let setup = Setup::with_workflow(name, workflow);
+    fs::write(
+        setup.dir.join("factory/agents/implementer/agent.md"),
+        CLOUD_AGENT,
+    )
+    .unwrap();
+    setup
+}
+
+impl Setup {
+    /// The prompts the fake `claude --cloud` got, in order.
+    fn cloud_prompts(&self) -> Vec<String> {
+        self.faked("cloud.log")
+            .split_terminator("---\n")
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+#[test]
+fn a_cloud_step_starts_one_cloud_session_and_its_pushed_branch_reaches_open_pr() {
+    let mut setup = cloud("cloud-pushed", CLOUD);
+    fs::write(
+        setup.dir.join("fake/cloud-push"),
+        "Add the widget\n\nIt draws a box.\n",
+    )
+    .unwrap();
+    // A cloud run takes no room here, so a machine with no free memory still starts it.
+    setup.memory(0);
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    setup.until("asks", |rows| rows.len() == 1);
+    let prompts = setup.cloud_prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    let prompt = &prompts[0];
+    assert!(
+        prompt.starts_with("You implement one issue.\n\nImplement the issue.\n\nWhen you are done, commit your work and push it to the branch `claude/priory-1-"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("`git push origin HEAD:claude/priory-1-"),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("result tool"), "{prompt}");
+    assert!(setup.typed().is_empty(), "no local claude ran");
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(runs[0][4], "session_01Fake1");
+    setup.gone("priory-cloud-1");
+    let task = task_json(&setup, "1");
+    let result = &task["results"][0];
+    assert_eq!(result["outcome"], "pushed", "{task}");
+    assert_eq!(result["summary"], "Add the widget", "{task}");
+    let worktree = setup.dir.join("home/worktrees/owner/repo/1");
+    let head = git(&worktree).args(["rev-parse", "HEAD"]).output().unwrap();
+    let head = String::from_utf8(head.stdout).unwrap().trim().to_owned();
+    assert_eq!(result["commit_sha"], head.as_str(), "{task}");
+    assert!(worktree.join("cloud.txt").exists());
+    let factory = setup.dir.join("factory");
+    let costs = setup.priory(&["costs", factory.to_str().unwrap()]);
+    let costs = String::from_utf8_lossy(&costs.stdout);
+    assert!(
+        costs.contains("implement\t-\ttokens unknown for 1 record\n"),
+        "{costs}"
+    );
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    setup.until("actions", |rows| rows.len() == 1);
+    let created: Vec<Vec<String>> = setup
+        .gh()
+        .into_iter()
+        .filter(|call| call[..2] == ["pr", "create"])
+        .collect();
+    assert_eq!(created.len(), 1, "{created:?}");
+    assert_eq!(
+        [&created[0][7], &created[0][9]],
+        ["priory/1", "Add the widget"]
+    );
+    assert_eq!(setup.pushed("priory/1"), head);
+}
+
+#[test]
+fn a_cloud_step_that_pushes_nothing_by_its_timeout_ends_failed_with_the_session_link() {
+    let mut setup = cloud(
+        "cloud-deadline",
+        &CLOUD.replace(
+            "effect = \"reversible\"",
+            "effect = \"reversible\"\ntimeout = \"2s\"",
+        ),
+    );
+    setup.publish(&requested(42));
+
+    setup.start();
+
+    let runs = setup.until("runs", |rows| rows.first().is_some_and(|row| row[7] != "-"));
+    assert_eq!(runs[0][4], "session_01Fake1");
+    let task = task_json(&setup, "1");
+    let result = &task["results"][0];
+    assert_eq!(result["outcome"], "failed", "{task}");
+    let summary = result["summary"].as_str().unwrap();
+    assert!(
+        summary.starts_with("cloud session session_01Fake1 pushed no branch claude/priory-1-"),
+        "{summary}"
+    );
+    assert!(
+        summary.ends_with("within 2s. A cloud run cannot ask, so open the session to see why: https://claude.ai/code/session_01Fake1"),
+        "{summary}"
+    );
+    assert_eq!(setup.cloud_prompts().len(), 1);
+}
+
+#[test]
+fn a_cloud_session_that_fails_to_start_or_prints_no_id_ends_its_step_failed() {
+    for (name, file, says) in [
+        (
+            "cloud-fail",
+            "cloud-fail",
+            "claude --cloud exited 1: Error: Not logged in. Run claude auth login.",
+        ),
+        (
+            "cloud-quiet",
+            "cloud-quiet",
+            "claude --cloud printed no session id",
+        ),
+        (
+            "cloud-trust",
+            "cloud-trust",
+            "claude --cloud asked whether to trust ",
+        ),
+    ] {
+        let mut setup = cloud(name, CLOUD);
+        setup.hold(file);
+        setup.publish(&requested(42));
+
+        setup.start();
+
+        let runs = setup.until("runs", |rows| rows.first().is_some_and(|row| row[7] != "-"));
+        let task = task_json(&setup, "1");
+        let result = &task["results"][0];
+        assert_eq!(result["outcome"], "failed", "{task}");
+        let summary = result["summary"].as_str().unwrap();
+        assert!(
+            summary.starts_with(&format!("the cloud session did not start: {says}")),
+            "{summary}"
+        );
+        assert_eq!(setup.cloud_prompts().len(), 1, "{runs:?}");
+    }
+}
+
+#[test]
+fn cloud_setup_script_prints_a_script_that_writes_the_factorys_instructions_and_skills() {
+    let setup = Setup::new("cloud-setup-script");
+    setup.kit("Run the gate before every result.\n");
+    let factory = setup.dir.join("factory");
+
+    let printed = setup.priory(&["cloud", "setup-script", factory.to_str().unwrap()]);
+
+    assert!(printed.status.success(), "{printed:?}");
+    let home = setup.dir.join("cloud-home");
+    let ran = setup
+        .command("bash")
+        .arg("-c")
+        .arg(String::from_utf8(printed.stdout).unwrap())
+        .env("HOME", &home)
+        .output()
+        .unwrap();
+    assert!(ran.status.success(), "{ran:?}");
+    assert_eq!(
+        fs::read_to_string(home.join(".claude/CLAUDE.md")).unwrap(),
+        "Run the gate before every result.\n"
+    );
+    assert_eq!(
+        fs::read_to_string(home.join(".claude/skills/release-notes/SKILL.md")).unwrap(),
+        SKILL
+    );
+    assert_eq!(
+        fs::read(home.join(".claude/skills/release-notes/templates/notes.md")).unwrap(),
+        b"## Changes\n\xff\n"
+    );
+}

@@ -623,6 +623,13 @@
       "additionalProperties": false,
       "description": "`[repos.\"owner/name\"]`: what the daemon runs in a worktree of the repository, so no run has to\nfind out how to install and build it.",
       "properties": {
+        "cloud_setup": {
+          "description": "A script in the repository that installs what its checks need in a Claude cloud session.\n`priory cloud setup-script` copies it into the cloud environment's setup script. It holds\nno secret: anyone who uses the environment can read it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "resume": {
           "anyOf": [
             {

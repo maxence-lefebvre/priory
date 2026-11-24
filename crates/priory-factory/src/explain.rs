@@ -78,7 +78,7 @@ pub fn debates<'w>(factory: &Factory, workflow: &'w Workflow) -> Vec<(&'w str, S
                 .agents
                 .iter()
                 .filter_map(|name| factory.agents.get(name))
-                .map(|agent| (harness_name(&agent.value.harness), &agent.value.model))
+                .map(|agent| (agent.value.harness.name(), &agent.value.model))
                 .collect();
             if let [first, second] = runs.as_slice()
                 && first == second
@@ -140,13 +140,6 @@ pub fn investigators(factory: &Factory) -> Vec<Investigator> {
                 .collect(),
         })
         .collect()
-}
-
-fn harness_name(harness: &Harness) -> &'static str {
-    match harness {
-        Harness::ClaudeCode => "claude-code",
-        Harness::Codex => "codex",
-    }
 }
 
 /// An irreversible step and what lets it run: the human steps that approve it and lead to it, or

@@ -14,7 +14,7 @@ against it, but `priory check` applies the same rules.
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `description` | string | yes | | One line on what the agent does | `"Implements one task."` |
-| `harness` | `claude-code` or `codex` | yes | | The coding agent CLI that runs it. See [codex.md](../daemon/codex.md) | `"claude-code"` |
+| `harness` | `claude-code`, `codex` or `claude-cloud` | yes | | The coding agent CLI that runs it. `claude-cloud` runs each step in a Claude cloud session. See [codex.md](../daemon/codex.md) and [cloud.md](../daemon/cloud.md) | `"claude-code"` |
 | `model` | string | no | the harness's default | The harness's model name | `"sonnet"` |
 | `effort` | string | no | the harness's default | The harness's reasoning effort | `"high"` |
 | `runner` | string | no | | Reserved for pinning the agent's runs to one runner, by Tailscale hostname, or `any`. `priory check` accepts it and nothing reads it yet: a run starts on the runner whose daemon owns its task | `"any"` |
@@ -232,6 +232,7 @@ Answer in one short paragraph.
 | `` `connectors` names `claude.ai <name>`: write the connector's name as claude.ai shows it, `<name>`, since Claude Code adds `claude.ai ` itself `` | A name with Claude Code's prefix |
 | `` `connectors` names `<a>` and `<b>`, whose tools Claude Code names alike, mcp__claude_ai_<server>__<tool>: keep one `` | Two names that give one tool prefix, such as `Google Drive` and `Google_Drive` |
 | `` a codex agent cannot take `connectors`: claude.ai connectors reach Claude Code alone `` | A Codex agent with `connectors` |
+| `` harness = "claude-cloud" cannot take `<key>`: <why> `` | A cloud agent with `session = "shared"`, `mcpServers`, `connectors`, `permissions`, `memory`, `disk` or `compactAt`. See [cloud.md](../daemon/cloud.md) |
 | `` investigator `<name>` needs a `model` with a price in prices.toml, so its cap can be enforced `` | No `model`. With a model `prices.toml` lacks: `` runs model `<model>`, which prices.toml does not price, so its cap cannot be enforced `` |
 | `invalid value: integer `0`, expected a nonzero u64` | `compactAt = 0` or `idleCompactAt = 0`. A negative or non-integer value gets serde's matching message |
 

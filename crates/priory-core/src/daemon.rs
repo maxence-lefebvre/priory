@@ -1340,6 +1340,14 @@ fn tend(
 ) -> Result<(), Error> {
     let factory = trace.factory;
     for run in state::live(db)? {
+        // A cloud run has no local process: its branch or its deadline ends it.
+        if factory
+            .agents
+            .get(&run.agent)
+            .is_some_and(|agent| crate::cloud::is_cloud(&agent.value))
+        {
+            continue;
+        }
         if runtime::pane(&run.tmux, &run.session).is_none() {
             // A dead pane that remain-on-exit keeps holds the session open.
             runtime::kill(&run.tmux);
@@ -1420,6 +1428,7 @@ fn tend(
             }
         }
     }
+    crate::cloud::tick(db, trace, kit)?;
     state::due(db, factory, &|worktree, branch| {
         runtime::kept_head(home, Path::new(worktree), branch)
     })?;
@@ -2408,6 +2417,59 @@ fn start(
             step.id
         )));
     }
+    if crate::cloud::is_cloud(&agent.value) {
+        let session = uuid::Uuid::new_v4().to_string();
+        let definition = definition(factory, &agent.value, &sources).to_string();
+        let prompt = tools::step_prompt(step);
+        let run = state::start(
+            db,
+            &NewRun {
+                task: admission.task,
+                step: &step.id,
+                agent: name,
+                tmux: &crate::cloud::tmux(admission.task),
+                session: &session,
+                repo,
+                branch: &branch,
+                worktree: &worktree.to_string_lossy(),
+                prompt: admission.fresh.then_some(prompt.as_str()),
+                ending: &tools::ending(step),
+                shared: false,
+                definition: &definition,
+                changed: None,
+                lanes: factory.lanes(),
+                kit_hash: sources.hash().as_deref(),
+                kit_commit: sources.commit,
+                debate: None,
+                memories_commit: sources.memories_commit,
+                harness: agent.value.harness.name(),
+                resumes: false,
+                sandbox: None,
+            },
+        )?;
+        // `claude --cloud` shows Claude's trust dialog in a folder it does not trust.
+        if factory.trust_worktrees() && factory.names_repo(repo) {
+            let grants = priory_runtime::trust::grant(&runtime::ClaudeCode, home, repo, &worktree);
+            let tx = db.transaction()?;
+            for grant in &grants {
+                crate::trace::trusted(&tx, trace, run, agent.value.harness.name(), grant, None)?;
+            }
+            tx.commit()?;
+        }
+        crate::cloud::dispatch(
+            db,
+            trace,
+            kit,
+            home,
+            step,
+            run,
+            admission.task,
+            &session,
+            &worktree,
+            &factory.prompt(&agent.value),
+        )?;
+        return Ok(Ok(()));
+    }
     let turn = match &step.debate {
         Some(debate) => Some(crate::debate::turn(
             db,
@@ -2453,7 +2515,7 @@ fn start(
     let resumed = resumed.filter(|_| !fresh);
     let resume = match (&resumed, &agent.value.harness) {
         (Some(session), Harness::Codex) => state::thread(db, session)?,
-        (Some(session), Harness::ClaudeCode) => {
+        (Some(session), Harness::ClaudeCode | Harness::ClaudeCloud) => {
             (state::thread(db, session)?.is_none()).then(|| session.clone())
         }
         (None, _) => None,
@@ -2497,7 +2559,7 @@ fn start(
     runtime::kill(&tmux);
     let first = match agent.value.harness {
         Harness::Codex => state::claim(db, run)?,
-        Harness::ClaudeCode => None,
+        Harness::ClaudeCode | Harness::ClaudeCloud => None,
     };
     let env: Vec<String> = factory
         .otlp()
@@ -2639,7 +2701,7 @@ fn servers(
     dir: &Path,
 ) -> Result<priory_runtime::servers::Servers, String> {
     match agent.harness {
-        Harness::ClaudeCode => {
+        Harness::ClaudeCode | Harness::ClaudeCloud => {
             priory_runtime::servers::claude(&agent.mcp_servers, &agent.connectors, dir)
         }
         Harness::Codex => priory_runtime::servers::codex(&agent.mcp_servers, dir),
@@ -2876,7 +2938,7 @@ fn harness_of(factory: &Factory, agent: &str) -> &'static dyn runtime::Harness {
 
 fn harness(harness: &Harness) -> &'static dyn runtime::Harness {
     match harness {
-        Harness::ClaudeCode => &runtime::ClaudeCode,
+        Harness::ClaudeCode | Harness::ClaudeCloud => &runtime::ClaudeCode,
         Harness::Codex => &runtime::Codex,
     }
 }

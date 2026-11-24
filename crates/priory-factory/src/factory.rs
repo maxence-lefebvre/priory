@@ -308,6 +308,10 @@ pub struct Repo {
     pub resume: Option<Recipe>,
     /// Runs before the sweep or a retirement removes the worktree. A failure keeps the worktree.
     pub teardown: Option<Recipe>,
+    /// A script in the repository that installs what its checks need in a Claude cloud session.
+    /// `priory cloud setup-script` copies it into the cloud environment's setup script. It holds
+    /// no secret: anyone who uses the environment can read it.
+    pub cloud_setup: Option<String>,
 }
 
 /// One command of a repository's recipe: `argv`, which Priory execs as it is, or `shell`, which it
@@ -1325,14 +1329,17 @@ fn refuse_bypass<'de, D: Deserializer<'de>>(
 pub enum Harness {
     ClaudeCode,
     Codex,
+    /// A Claude cloud session on Anthropic's machines, which reports by pushing a branch.
+    ClaudeCloud,
 }
 
 impl Harness {
-    /// Its name in an agent's file: `claude-code` or `codex`.
+    /// Its name in an agent's file: `claude-code`, `codex` or `claude-cloud`.
     pub fn name(&self) -> &'static str {
         match self {
             Harness::ClaudeCode => "claude-code",
             Harness::Codex => "codex",
+            Harness::ClaudeCloud => "claude-cloud",
         }
     }
 }

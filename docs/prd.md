@@ -75,6 +75,7 @@ The Warp column comes from Warp's public page and is blank where that page says 
 | Workflow   | The typed steps a task goes through                                       |              | brief and rules  |
 | Task       | One unit of work, from intake to an outcome                               |              | pick             |
 | Run        | One agent process working on a task, from start to sleep or exit         | run          | worker launch    |
+| Cloud run  | A run in a Claude cloud session, which ends its step by pushing a branch |              |                  |
 | Session    | An agent's conversation, which survives the runs that resume it          |              | session          |
 | Event      | Something that happened: a poll result, a webhook, a schedule, an answer | delivery     | event            |
 | Intake     | The process that polls sources, matches triggers and publishes events     |              | watch-poll       |

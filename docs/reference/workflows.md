@@ -33,7 +33,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `agent` | string | model steps without `debate` | | The agent that runs the step, by folder name under `agents/` | `"implementer"` |
 | `debate` | table | no | none | Model steps only, in place of `agent`: two agents who debate the step's prompt. `agents`, exactly two different agents in speaking order; `rounds`, the rounds after the openings, 1 to 5; `cap`, the most the debate may cost, such as `"$3.00"`, priced from `prices.toml`. See [Debate steps](#debate-steps) | `{ agents = ["architect", "skeptic"], rounds = 3, cap = "$3.00" }` |
 | `prompt` | string | model steps | | What the step tells its agent | `"Implement the plan."` |
-| `timeout` | duration | no | none, or `command_timeout` for a command | How long one turn of a model step, a `run` action's command, or the command a human step's answer runs, may run before Priory ends it | `"30m"` |
+| `timeout` | duration | no | none, or `command_timeout` for a command, or `"2h"` for a cloud step | How long one turn of a model step, a `run` action's command, or the command a human step's answer runs, may run before Priory ends it. A cloud step that pushed no branch by then ends `failed` | `"30m"` |
 | `budget` | string | no | none | Model steps only. The dollars the task may spend at this step, as an amount above zero. At each turn end, Priory prices the step's tokens with `prices.toml`, by the model the transcript names. A turn over it that sent a result moves the task and its `factory.step.ended` record carries `overrun`. Any other turn over it, or a turn whose cost is unknown, ends the run and fails the task. Inside a turn, the daemon reads the transcript at most once a minute and ends a run that passed the budget, unless it sent its result. See [health.md](../daemon/health.md#budget) | `"1.00"` |
 | `record` | string | no | none | Model steps only. The factory's command that records evidence after the step's result, relative to the factory folder. It must be an executable file inside the folder. The daemon runs it in a checkout of the result's commit, and admits the files it writes as the result's items. See [evidence.md](../daemon/evidence.md) | `"scripts/record-login"` |
 | `options` | array of strings | human steps | `[]` | The answers a person picks from | `["open", "stop"]` |
@@ -341,6 +341,9 @@ Errors about one step start with `` step `<id>`: `` and point at the step's line
 | `` unknown variant `<value>`, expected one of ... `` | A `decides` or `effect` value not listed above |
 | `` step id `<id>` is reserved for the end of a workflow `` | A step is named `done` or `stop` |
 | `` step `<id>` is defined twice `` | Two steps share an id |
+| `` agent `<agent>` runs in the cloud, so the step cannot have <key>: Priory never sees the session's work `` | A step whose agent has `harness = "claude-cloud"` has a `proof`, a `guard`, `plan_requires` or a `gate`. See [cloud.md](../daemon/cloud.md) |
+| `` agent `<agent>` runs in the cloud, so `next` cannot name outcome `<outcome>`: a cloud step ends `pushed` or `failed` `` | A cloud step's `next` names another outcome |
+| `` a debate cannot name a claude-cloud agent: a cloud session has no turns Priory sees `` | A debate names a cloud agent |
 | `` start `<id>` is not a step `` | `start` names no step |
 | `` only a model step has an `agent` `` | `agent` on a human or code step. `prompt`, `options`, `approves` and `action` get the same error on the wrong kind of step |
 | `` agent `<name>` does not exist `` | A model step names no agent under `agents/` |

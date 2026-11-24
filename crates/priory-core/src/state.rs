@@ -3459,6 +3459,8 @@ pub(crate) fn admissible<'r>(
             (Some(reason), _) => Some(reason),
             // The sweeper frees the room the queue waits for, so it never waits for room itself.
             (None, _) if admission.trigger == crate::stall::TRIGGER => None,
+            // A cloud run takes no room here, so it never waits for it or behind a task that does.
+            (None, _) if agent.is_some_and(|(_, agent)| crate::cloud::is_cloud(agent)) => None,
             (None, Some(head)) => Some(format!("waits behind task {head}, which waits for room")),
             (None, None) => {
                 let need = room::need(agent.map(|(_, agent)| agent));

@@ -251,6 +251,21 @@ impl Sources<'_> {
         Ok(Some(folder.join("paths.json")))
     }
 
+    /// The files a Claude user folder holds for these sources: `CLAUDE.md` with the instructions,
+    /// then each skill's files under `skills/<name>/`.
+    pub(crate) fn user_files(&self) -> Vec<(PathBuf, &[u8])> {
+        let mut files = Vec::new();
+        if !self.instructions.is_empty() {
+            files.push((PathBuf::from("CLAUDE.md"), self.instructions.as_bytes()));
+        }
+        for (name, skill) in &self.skills {
+            for (path, bytes) in &skill.files {
+                files.push((Path::new("skills").join(name).join(path), bytes.as_slice()));
+            }
+        }
+        files
+    }
+
     /// The plugin folder that holds the skills, `<home>/kit/<hash>/plugin`, written once per
     /// content, or none without skills.
     pub(crate) fn plugin(&self, home: &Path) -> Result<Option<PathBuf>, String> {

@@ -382,6 +382,14 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 problems.push(problem(settings, at, message));
                 continue;
             }
+            if let Some(setup) = &recipes.cloud_setup {
+                let table = format!("repos.\"{repo}\"");
+                for message in
+                    path_problems(&table, "a cloud setup script", &[("cloud_setup", setup)])
+                {
+                    problems.push(problem(settings, at, message));
+                }
+            }
             for moment in Moment::ALL {
                 if let Some(recipe) = recipes.recipe(moment) {
                     let name = format!("`[repos.\"{repo}\"] {}`", moment.name());
@@ -570,6 +578,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
     for agent in factory.agents.values() {
         check_codex(factory, agent, &mut problems);
         check_shared(agent, &mut problems);
+        check_cloud(agent, &mut problems);
         check_skills(factory, agent, &mut problems);
         check_connectors(agent, &mut problems);
     }
@@ -1322,6 +1331,108 @@ fn check_codex(factory: &Factory, agent: &Loaded<Agent>, problems: &mut Vec<Prob
             ));
         }
     }
+}
+
+/// The outcomes a cloud step may route: the daemon stores the result, and has only these two.
+pub const CLOUD_OUTCOMES: [&str; 2] = ["pushed", "failed"];
+
+/// Refuses what a cloud session cannot take: it runs on Anthropic's machines, with no hook, MCP
+/// server or local process.
+fn check_cloud(agent: &Loaded<Agent>, problems: &mut Vec<Problem>) {
+    let value = &agent.value;
+    if !matches!(value.harness, Harness::ClaudeCloud) {
+        return;
+    }
+    let refused = [
+        (
+            "session",
+            matches!(value.session, Session::Shared),
+            "a cloud session serves one task",
+        ),
+        (
+            "mcpServers",
+            !value.mcp_servers.is_empty(),
+            "a cloud session cannot reach this machine",
+        ),
+        (
+            "connectors",
+            !value.connectors.is_empty(),
+            "Priory cannot check a cloud session's connectors",
+        ),
+        (
+            "permissions",
+            value.permissions.default_mode.is_some()
+                || !value.permissions.allow.is_empty()
+                || !value.permissions.deny.is_empty(),
+            "the cloud environment sets its own",
+        ),
+        (
+            "memory",
+            value.memory.is_some(),
+            "a cloud run takes no room on this machine",
+        ),
+        (
+            "disk",
+            value.disk.is_some(),
+            "a cloud run takes no room on this machine",
+        ),
+        (
+            "compactAt",
+            value.compact_at.is_some(),
+            "Priory cannot read a cloud session's context",
+        ),
+    ];
+    for (field, _, why) in refused.iter().filter(|(_, set, _)| *set) {
+        problems.push(problem(
+            agent,
+            agent.lines.field(field),
+            format!("harness = \"claude-cloud\" cannot take `{field}`: {why}"),
+        ));
+    }
+}
+
+/// What a step whose agent runs in the cloud cannot have: the daemon stores its result from the
+/// branch the session pushes, so nothing checks a proof, a guard or a plan field.
+fn cloud_step_problems(factory: &Factory, step: &Step) -> Vec<String> {
+    let cloud = |name: &String| {
+        factory
+            .agents
+            .get(name)
+            .is_some_and(|agent| matches!(agent.value.harness, Harness::ClaudeCloud))
+    };
+    let mut problems = Vec::new();
+    if let Some(debate) = &step.debate
+        && debate.agents.iter().any(cloud)
+    {
+        problems.push(
+            "a debate cannot name a claude-cloud agent: a cloud session has no turns Priory sees"
+                .into(),
+        );
+    }
+    let Some(agent) = step.agent.as_ref().filter(|name| cloud(name)) else {
+        return problems;
+    };
+    let fields = [
+        (!step.proof.is_empty(), "a `proof`"),
+        (!step.guard.allow.is_empty(), "a `guard`"),
+        (!step.plan_requires.is_empty(), "`plan_requires`"),
+        (!step.gate.is_empty(), "a `gate`"),
+    ];
+    for (_, field) in fields.iter().filter(|(set, _)| *set) {
+        problems.push(format!(
+            "agent `{agent}` runs in the cloud, so the step cannot have {field}: Priory never sees the session's work"
+        ));
+    }
+    for outcome in step
+        .next
+        .keys()
+        .filter(|key| !CLOUD_OUTCOMES.contains(&key.as_str()))
+    {
+        problems.push(format!(
+            "agent `{agent}` runs in the cloud, so `next` cannot name outcome `{outcome}`: a cloud step ends `pushed` or `failed`"
+        ));
+    }
+    problems
 }
 
 /// `auto_answer = "low"` would accept every ask an agent makes, which is `hands-off` with no reader.
@@ -2200,6 +2311,9 @@ fn check_workflow(factory: &Factory, workflow: &Loaded<Workflow>, problems: &mut
         }
         if step.debate.is_some() && step.decides != Decider::Model {
             report("only a model step has a `debate`".into());
+        }
+        for message in cloud_step_problems(factory, step) {
+            report(message);
         }
         match step.decides {
             Decider::Model => {

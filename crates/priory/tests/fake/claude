@@ -40,6 +40,44 @@ if [ "${1-}" = --version ]; then
   echo '2.1.330 (Claude Code)'
   exit 0
 fi
+# `claude --cloud PROMPT` appends PROMPT to cloud.log, ended by ---, then prints what Claude Code
+# 2.1.331 prints once it created a cloud session, with the id session_01Fake<n>. FAKE_DIR/cloud-fail
+# prints an error and exits 1 instead, FAKE_DIR/cloud-quiet prints nothing, and FAKE_DIR/cloud-trust shows
+# Claude's trust dialog and waits, as Claude does in a folder it does not trust. With FAKE_DIR/cloud-push,
+# it pushes a commit whose message is that file's content to the branch the prompt names in
+# `git push origin HEAD:<branch>`, from a clone of the folder's origin, as the cloud session would.
+if [ "${1-}" = --cloud ] && [[ " $* " != *" -p "* ]]; then
+  prompt="${@: -1}"
+  { printf '%s\n' "$prompt"; echo '---'; } >> "$FAKE_DIR/cloud.log"
+  if [ ! -t 1 ]; then
+    echo 'Error: --cloud requires an interactive terminal.' >&2
+    exit 1
+  fi
+  if [ -e "$FAKE_DIR/cloud-fail" ]; then
+    echo 'Error: Not logged in. Run claude auth login.'
+    exit 1
+  fi
+  [ -e "$FAKE_DIR/cloud-quiet" ] && exit 0
+  if [ -e "$FAKE_DIR/cloud-trust" ]; then
+    printf ' Accessing workspace:\n %s\n Quick safety check: Is this a project you created or one you trust?\n \xe2\x9d\xaf No, exit\n   Yes, I trust this folder\n' "$PWD"
+    exec sleep 600
+  fi
+  n=$(grep -c '^---$' "$FAKE_DIR/cloud.log")
+  if [ -e "$FAKE_DIR/cloud-push" ]; then
+    branch=$(printf '%s' "$prompt" | sed -n 's/.*git push origin HEAD:\([^`]*\)`.*/\1/p' | head -n 1)
+    work=$(mktemp -d)
+    git clone -q "$(git remote get-url origin)" "$work/repo"
+    printf 'cloud\n' > "$work/repo/cloud.txt"
+    git -C "$work/repo" add cloud.txt
+    git -C "$work/repo" -c user.name=t -c user.email=t@t commit -qF "$FAKE_DIR/cloud-push"
+    git -C "$work/repo" push -q origin "HEAD:refs/heads/$branch"
+    rm -rf "$work"
+  fi
+  echo 'Created cloud session: Fake task'
+  echo "View: https://claude.ai/code/session_01Fake$n?from=cli&m=0"
+  echo "Resume with: claude --teleport session_01Fake$n"
+  exit 0
+fi
 # `claude mcp get NAME` logs NAME to mcp-get.log, then finds it as Claude Code 2.1.330 does when
 # FAKE_DIR/connectors lists it, one name a line, and otherwise exits 1 naming no such server.
 if [ "${1-}" = mcp ] && [ "${2-}" = get ]; then

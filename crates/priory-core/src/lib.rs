@@ -1,6 +1,7 @@
 pub mod batch;
 pub mod bench;
 pub mod capture;
+pub mod cloud;
 mod command;
 mod connectors;
 pub mod consult;

@@ -3,7 +3,7 @@
 
 use crate::tools::{self, Run};
 use crate::trace::{self, Trace};
-use priory_factory::factory::{Debate, Factory, Harness, Step};
+use priory_factory::factory::{Debate, Factory, Step};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -41,13 +41,6 @@ pub(crate) struct Turn {
 /// The agent who speaks after `taken` positions, and its round: the openings are round 0.
 fn speaker(debate: &Debate, taken: usize) -> (&str, i64) {
     (debate.agents[taken % 2].as_str(), (taken / 2) as i64)
-}
-
-fn harness_name(harness: &Harness) -> &'static str {
-    match harness {
-        Harness::ClaudeCode => "claude-code",
-        Harness::Codex => "codex",
-    }
 }
 
 /// The agent who speaks next in the task's open debate at `step`, or first when none is open.
@@ -278,7 +271,7 @@ pub(crate) fn position(
             run.id,
             taken / 2,
             agent,
-            defined.map_or("", |agent| harness_name(&agent.harness)),
+            defined.map_or("", |agent| agent.harness.name()),
             defined.and_then(|agent| agent.model.clone()),
             verdict,
             argument,
