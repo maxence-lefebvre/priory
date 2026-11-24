@@ -3583,36 +3583,56 @@ fn serving(db: &Connection, agent: &str) -> rusqlite::Result<Option<i64>> {
 }
 
 /// The memory and disk the agents of live runs declared and do not use yet, except those of task
-/// `except`, plus every held memory grant in full. A run's use is its scope's memory, which measured
-/// free memory already leaves out. A run with no scope keeps its whole declaration until it ends.
+/// `except`, plus what each held memory grant does not use yet. A run's use is its scope's memory,
+/// and a grant's the memory of its holder's process tree, which measured free memory already
+/// leaves out. A run with no scope keeps its whole declaration until it ends.
 pub(crate) fn promised(
     db: &Connection,
     factory: &Factory,
     except: Option<i64>,
 ) -> rusqlite::Result<room::Need> {
     let mut live = Vec::new();
-    let promised = promised_with(db, factory, except, |run, tmux, session| {
-        live.push((run, session.to_owned()));
-        crate::usage::memory(run, tmux, session)
-    })?;
+    let promised = promised_with(
+        db,
+        factory,
+        except,
+        |run, tmux, session| {
+            live.push((run, session.to_owned()));
+            crate::usage::memory(run, tmux, session)
+        },
+        crate::memory::used,
+    )?;
     if except.is_none() {
         crate::usage::keep(&live);
     }
     Ok(promised)
 }
 
-/// `promised`, with `used` measuring what a live run, its tmux session and harness session, uses.
+/// `promised`, with `used` measuring what a live run, its tmux session and harness session, uses,
+/// and `holds` what a held grant's holder process, with its start time, uses.
 fn promised_with(
     db: &Connection,
     factory: &Factory,
     except: Option<i64>,
     mut used: impl FnMut(i64, &str, &str) -> Option<u64>,
+    mut holds: impl FnMut(u32, i64) -> Option<u64>,
 ) -> rusqlite::Result<room::Need> {
-    let held: i64 = db.query_row(
-        "SELECT coalesce(sum(bytes), 0) FROM grants WHERE state = 'held'",
-        [],
-        |row| row.get(0),
-    )?;
+    let mut statement =
+        db.prepare("SELECT bytes, pid, started FROM grants WHERE state = 'held'")?;
+    let grants = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)? as u64,
+                row.get::<_, u32>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    // A granted command may not have allocated yet, so a grant keeps what it does not use yet.
+    let held = grants
+        .into_iter()
+        .map(|(bytes, pid, started)| bytes.saturating_sub(holds(pid, started).unwrap_or(0)))
+        .sum();
     let mut statement = db.prepare(
         "SELECT id, agent, tmux, session FROM runs WHERE ended IS NULL AND task IS NOT ?1",
     )?;
@@ -3625,9 +3645,8 @@ fn promised_with(
             row.get::<_, String>(3)?,
         ))
     })?;
-    // A granted command may not have allocated yet, so a held grant counts in full.
     let held = room::Need {
-        memory: held as u64,
+        memory: held,
         disk: 0,
     };
     runs.try_fold(held, |sum, run| {
@@ -4750,14 +4769,14 @@ mod promises {
             _ => None,
         };
 
-        let promised = promised_with(&db, &Factory::default(), None, used).unwrap();
+        let promised = promised_with(&db, &Factory::default(), None, used, |_, _| None).unwrap();
 
         // 0.5 GB each for runs 1 and 2, and none for run 3, which uses more than it promised.
         assert_eq!(promised.memory, GB);
     }
 
     #[test]
-    fn a_run_with_no_scope_keeps_its_full_promise_and_held_grants_count_in_full() {
+    fn a_run_with_no_scope_keeps_its_full_promise_and_an_unmeasured_held_grant_counts_in_full() {
         let db = three_runs();
         db.execute(
             "INSERT INTO grants (bytes, pid, started, command, state)
@@ -4770,10 +4789,38 @@ mod promises {
             (run == 1).then_some(4 * GB)
         };
 
-        let promised = promised_with(&db, &Factory::default(), Some(3), used).unwrap();
+        let promised = promised_with(&db, &Factory::default(), Some(3), used, |_, _| None).unwrap();
 
         // Run 1 uses all of its 4 GB, run 2 has no scope, run 3 is the grant's own, and the grant
         // counts all of its 10 GB.
         assert_eq!(promised.memory, 14 * GB);
+    }
+
+    #[test]
+    fn a_held_grant_reserves_only_what_its_process_tree_does_not_use_yet() {
+        let db = memory();
+        for (bytes, pid) in [(10 * GB, 1), (8 * GB, 2), (2 * GB, 3)] {
+            db.execute(
+                "INSERT INTO grants (bytes, pid, started, command, state)
+                 VALUES (?1, ?2, 7, 'build', 'held')",
+                params![bytes as i64, pid],
+            )
+            .unwrap();
+        }
+        let holds = |pid: u32, started: i64| {
+            assert_eq!(started, 7);
+            match pid {
+                1 => Some(6 * GB),
+                2 => Some(12 * GB),
+                _ => None,
+            }
+        };
+
+        let promised =
+            promised_with(&db, &Factory::default(), None, |_, _, _| None, holds).unwrap();
+
+        // 4 GB the first does not use yet, none for the second, which uses more than it asked,
+        // and all of the unmeasured third.
+        assert_eq!(promised.memory, 6 * GB);
     }
 }

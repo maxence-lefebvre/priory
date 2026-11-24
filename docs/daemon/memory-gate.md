@@ -8,8 +8,8 @@ duration such as `90s`, `15m` or `2h`.
 1. The command asks the daemon over its socket for a grant of N GB. It sends its pid and, inside
    a run, the run's `PRIORY_SESSION`, which names the grant's task.
 2. Grants wait in one queue, in the order they were requested. The daemon grants the oldest waiting grant when the
-   measured free memory, minus the memory live runs promised and do not use yet and every held
-   grant, minus N, stays at or above `(1 - memory share) × MemTotal`, as the room check for runs
+   measured free memory, minus the memory live runs promised and do not use yet and the memory held
+   grants reserved and do not use yet, minus N, stays at or above `(1 - memory share) × MemTotal`, as the room check for runs
    does (see [Room](room.md)). A grant leaves out the promise of its own task's run, which would
    otherwise wait for itself. A waiting grant that does not fit holds back every grant behind it,
    even a smaller one that fits, so a large build is never starved. Once it has waited 5 minutes,
@@ -68,6 +68,8 @@ The MCP server's instructions teach every agent the gate. They ask it to wrap ea
 
 Known limits:
 
+- A held grant keeps the room it asked for and does not use yet until its command ends. A command
+  that asks for far more than its peak holds that room back for its whole life.
 - Between its 5 and 15 minutes, a large grant can wait on while smaller grants take the room it
   needs.
 - A retry keeps its request time only inside a run, and only with the same command text. Another

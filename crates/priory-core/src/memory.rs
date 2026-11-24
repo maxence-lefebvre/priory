@@ -188,6 +188,39 @@ pub(crate) fn started(pid: u32) -> Option<i64> {
     fields.get(19)?.parse().ok()
 }
 
+/// The anonymous and shared memory of the live process `pid` started at `at` and its descendants, in
+/// bytes, which measured free memory already leaves out. None when `pid` is gone or reused, or its
+/// tree cannot be read.
+pub(crate) fn used(pid: u32, at: i64) -> Option<u64> {
+    (started(pid)? == at).then_some(())?;
+    let (mut tree, mut bytes) = (vec![pid], 0);
+    while let Some(pid) = tree.pop() {
+        let process = Path::new("/proc").join(pid.to_string());
+        // A descendant that exited since its parent listed it uses nothing.
+        let Ok(status) = std::fs::read_to_string(process.join("status")) else {
+            continue;
+        };
+        bytes += status
+            .lines()
+            .filter_map(|line| {
+                line.strip_prefix("RssAnon:")
+                    .or_else(|| line.strip_prefix("RssShmem:"))
+            })
+            .filter_map(|kb| kb.trim().strip_suffix(" kB")?.parse::<u64>().ok())
+            .sum::<u64>()
+            * 1024;
+        for thread in std::fs::read_dir(process.join("task")).ok()?.flatten() {
+            let children = std::fs::read_to_string(thread.path().join("children")).ok()?;
+            tree.extend(
+                children
+                    .split_whitespace()
+                    .filter_map(|pid| pid.parse::<u32>().ok()),
+            );
+        }
+    }
+    Some(bytes)
+}
+
 /// How long a waiting grant that does not fit holds back the grants behind it. A build it waits for ends
 /// within minutes, so it is rarely overtaken, and a grant behind a head that cannot fit still has most
 /// of its 1-hour default timeout left to run.
@@ -520,5 +553,23 @@ mod tests {
         );
         let other = send(&mut db, acquire(4, "cargo test"));
         assert_ne!(created(&db, &other), "2026-11-23T10:00:00Z");
+    }
+
+    #[test]
+    fn a_process_tree_uses_what_its_descendants_use_and_a_reused_pid_uses_nothing_known() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let (own, theirs) = (std::process::id(), child.id());
+
+        let tree = used(own, started(own).unwrap()).unwrap();
+        let leaf = used(theirs, started(theirs).unwrap()).unwrap();
+        let reused = used(theirs, started(theirs).unwrap() + 1);
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(leaf > 0 && tree > leaf, "tree {tree}, leaf {leaf}");
+        assert_eq!(reused, None);
     }
 }
