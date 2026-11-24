@@ -209,8 +209,8 @@ fn a_new_ask_is_answered_before_its_lead_and_off_stops_the_next_one() {
 fn the_end_passes_while_the_daemon_is_down_and_the_next_start_reports_it() {
     let mut setup = asleep("pilot-end", WORKFLOW, "high");
     setup.crash();
-    setup.autopilot_on(&["--for", "1s"]);
-    std::thread::sleep(Duration::from_millis(2100));
+    setup.autopilot_on(&["--for", "5s"]);
+    std::thread::sleep(Duration::from_millis(5100));
 
     setup.start();
 
