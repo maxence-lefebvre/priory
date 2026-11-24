@@ -12,10 +12,12 @@ from:
   `instructions.md` and the guide `writing` names.
 - The `.toml`, `.yaml` and `.yml` files directly in `triggers/`, `workflows/`, `views/`,
   `scorers/`, `benchmarks/` and `runners/`.
-- Every file under `agents/`, `skills/` and `memories/`.
+- `agents/<name>/agent.md`.
+- Every file under each folder of `skills/`, hidden files included, as a skill's files are read.
+- Every file under `memories/`.
 
-It skips hidden entries such as `.git`, editor backups such as `foo.toml~` and `#foo.toml#`,
-`__pycache__/` and `node_modules/` folders, and does not follow a linked folder. Any other file in
+Outside `skills/`, it skips hidden entries such as `.git`, editor backups such as `foo.toml~` and
+`#foo.toml#`, and `__pycache__/` and `node_modules/` folders. It does not follow a linked folder. Any other file in
 the factory folder, such as one a `deliver` command writes, never reloads it.
 
 When the files changed, the daemon waits one more second. If nothing changed again, it compares
@@ -80,7 +82,8 @@ workflows/implement.toml: task 12 is at step approve, which this edit removes: e
 Each second, the daemon checks the held edit again. It applies the edit, with no new edit of the
 files, once no task is at a workflow or step it removes: when the task moves on, or after `priory
 cancel` ends it. A cancelled task can start again at a step the edit keeps, with `priory revive
-TASK --step STEP`. A new edit replaces the held one, and an edit back to the live files drops it.
+TASK --step STEP`. While a new edit waits its one second, the held edit waits too. A new edit
+replaces the held one, and an edit back to the live files drops it.
 
 ## Trace records
 

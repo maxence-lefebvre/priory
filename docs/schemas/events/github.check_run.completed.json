@@ -33,7 +33,7 @@
           ]
         },
         "failing": {
-          "description": "Check runs on the same commit completed with a conclusion other than success, neutral or\nskipped.",
+          "description": "Check runs on the same commit completed with a conclusion other than success, neutral or\nskipped, leaving out a cancelled run that `superseded_by` passed.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
@@ -87,6 +87,13 @@
         "repo": {
           "description": "`owner/name`.",
           "type": "string"
+        },
+        "superseded_by": {
+          "description": "For a cancelled run on a merge commit: the later commit of the base branch whose run of the\nsame name succeeded, so the cancelled run counts as passing. Absent otherwise.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "time": {
           "description": "When the event happened, RFC 3339.",

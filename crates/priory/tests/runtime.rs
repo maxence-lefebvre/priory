@@ -5790,6 +5790,30 @@ fn an_outside_ask_takes_an_answer_or_a_dismiss_only_at_its_current_revision() {
 }
 
 #[test]
+fn an_outside_ask_snoozes_by_the_id_asks_lists() {
+    let mut setup = Setup::new("outside-snooze");
+    setup.start();
+    listening(&setup);
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+
+    let snoozed = setup.priory(&["snooze", "ask", "cache.ship", "--for", "20h"]);
+
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    assert_eq!(asks["asks"][0]["id"], "cache.ship");
+    assert!(asks["asks"][0]["snoozed_until"].is_string(), "{asks}");
+    let desk: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["desk", "--json"]).stdout).unwrap();
+    assert_eq!(desk["counts"]["snoozed"], 1, "{desk}");
+    let cleared = setup.priory(&["snooze", "ask", "cache.ship", "--clear"]);
+    assert!(cleared.status.success(), "{cleared:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    assert!(asks["asks"][0]["snoozed_until"].is_null(), "{asks}");
+}
+
+#[test]
 fn a_revised_ask_lists_each_revision_oldest_first() {
     let mut setup = Setup::new("ask-revisions");
     setup.start();
@@ -10056,6 +10080,35 @@ fn an_irreversible_model_step_asks_again_after_a_commit_instead_of_starting() {
 }
 
 #[test]
+fn a_run_that_finds_its_worktree_detached_puts_it_back_and_keeps_its_commit() {
+    let setup = asked_to_open("recover-detached", APPROVE_THEN_SHIP);
+    let worktree = setup.worktree(1);
+    setup.git(&worktree, &["checkout", "-q", "--detach"]);
+    let head = setup.commit(1, "loose.txt");
+    let short = setup.git(&worktree, &["rev-parse", "--short", "HEAD"]);
+    setup.calls(&[passed_with_evidence()]);
+
+    let answered = setup.priory(&["answer", "1", "open", "--revision", "1"]);
+
+    assert!(answered.status.success(), "{answered:?}");
+    let event = until_traced(&setup, "factory.worktree.recovered");
+    let kept = format!("priory/1-kept-{}", short.trim());
+    let data = &event["data"];
+    assert_eq!(data["task"], "1");
+    assert_eq!(data["worktree"], worktree.display().to_string());
+    assert_eq!(data["head"], head);
+    assert_eq!(data["branch"], "priory/1");
+    assert_eq!(data["kept_branch"], kept);
+    assert_eq!(data["kept_commits"], 1);
+    assert!(data.get("from_branch").is_none(), "{event}");
+    assert_eq!(setup.git(&worktree, &["rev-parse", &kept]).trim(), head);
+    assert_eq!(
+        setup.git(&worktree, &["branch", "--show-current"]).trim(),
+        "priory/1"
+    );
+}
+
+#[test]
 fn a_reopened_approval_shows_the_verification_a_later_result_sent() {
     let setup = asked_to_open("ship-reopen-text", APPROVE_THEN_SHIP);
     setup.calls(&[json!({ "name": "result", "arguments": {
@@ -14313,6 +14366,88 @@ fn a_gated_command_runs_and_its_exit_code_passes_through() {
     assert!(setup.rows("memory").is_empty());
 }
 
+/// Starts `priory memory acquire --gb 1 -- <command>` in the test's `fake` directory, with `PATH`.
+fn acquire_on(setup: &Setup, path: &std::ffi::OsStr, command: &[&str]) -> Command {
+    let mut acquire = setup.command(env!("CARGO_BIN_EXE_priory"));
+    acquire
+        .args(["memory", "acquire", "--gb", "1", "--"])
+        .args(command)
+        .current_dir(setup.dir.join("fake"))
+        .env("PATH", path);
+    acquire
+}
+
+#[test]
+fn a_gated_command_finds_a_tool_only_on_acquires_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut setup = Setup::new("gate-path");
+    setup.start();
+    listening(&setup);
+    let tools = setup.dir.join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    let tool = tools.join("only-here");
+    fs::write(&tool, "#!/bin/sh\necho ran-only-here\nexit 5\n").unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(tools).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+
+    let done = acquire_on(&setup, &path, &["only-here"]).output().unwrap();
+
+    assert_eq!(
+        done.status.code(),
+        Some(5),
+        "stderr: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&done.stdout), "ran-only-here\n");
+}
+
+#[test]
+fn a_gated_command_sees_a_variable_set_only_on_acquire() {
+    let mut setup = Setup::new("gate-env");
+    setup.start();
+    listening(&setup);
+
+    let done = acquire_on(
+        &setup,
+        &std::env::var_os("PATH").unwrap(),
+        &["sh", "-c", "echo \"$GATE_PROBE\""],
+    )
+    .env("GATE_PROBE", "from-the-run")
+    .output()
+    .unwrap();
+
+    assert!(
+        done.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&done.stdout), "from-the-run\n");
+}
+
+#[test]
+fn a_gated_tool_missing_from_path_exits_127_naming_the_path_and_takes_no_grant() {
+    let mut setup = Setup::new("gate-missing");
+    setup.start();
+    listening(&setup);
+    let path = format!("{}:/usr/bin:/bin", setup.dir.join("tools").display());
+
+    let done = acquire_on(&setup, path.as_ref(), &["no-such-tool", "run"])
+        .output()
+        .unwrap();
+
+    let said = String::from_utf8_lossy(&done.stderr);
+    assert_eq!(done.status.code(), Some(127), "stderr: {said}");
+    assert!(
+        said.contains(&format!("no-such-tool is not on PATH ({path})")),
+        "stderr: {said}"
+    );
+    assert!(!said.contains("grant"), "stderr: {said}");
+    assert!(setup.rows("memory").is_empty());
+}
+
 #[test]
 fn an_acquire_without_gb_reserves_10_gb() {
     let mut setup = Setup::new("gate-default");
@@ -18071,6 +18206,156 @@ fn a_comment_on_a_row_stores_shows_as_a_thread_and_wakes_the_task_with_one_line(
         Some(
             "The person commented on row fnd-2409 in your report (reply with `priory report reply 1 TEXT`): Check the release branch first"
         )
+    );
+}
+
+#[test]
+fn a_comment_on_a_rows_key_lands_on_that_row() {
+    let setup = asleep_on_a_report("report-comment-key", &ask_rows(&["cache.ship"]));
+
+    let commented = setup.priory(&["report", "comment", "cache.ship", "--expected", "1", "Why?"]);
+
+    assert!(commented.status.success(), "{commented:?}");
+    let comments = &shown(&setup)["sections"][0]["rows"][0]["comments"];
+    assert_eq!(comments[0]["text"], "Why?", "{comments}");
+}
+
+#[test]
+fn a_comment_on_an_id_lands_on_that_row_before_a_newer_reports_key() {
+    let setup = asleep_on_a_report("report-comment-id-first", &ask_rows(&["cache.ship"]));
+    // Task 2's newer report has a row whose key is task 1's row id.
+    let db = rusqlite::Connection::open(setup.dir.join("priory.db")).unwrap();
+    db.execute_batch(
+        "CREATE TEMP TABLE copy AS SELECT * FROM tasks WHERE id = 1;
+         UPDATE copy SET id = 2, key = 'cli:other';
+         INSERT INTO tasks SELECT * FROM copy;
+         INSERT INTO reports SELECT 2, 1, json_set(report,
+             '$.sections[0].rows[0].id', 'other', '$.sections[0].rows[0].key', 'ask-cache.ship'),
+           '9999-01-01T00:00:00Z' FROM reports WHERE task = 1;",
+    )
+    .unwrap();
+    drop(db);
+
+    let commented = setup.priory(&[
+        "report",
+        "comment",
+        "ask-cache.ship",
+        "--expected",
+        "1",
+        "Why?",
+    ]);
+
+    assert!(commented.status.success(), "{commented:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&commented.stdout),
+        "comment 1 on row ask-cache.ship at revision 2\n"
+    );
+}
+
+/// A report with one row per outside ask, whose `Dismiss ask` and `Not today` act on it.
+fn ask_rows(asks: &[&str]) -> serde_json::Value {
+    let rows: Vec<serde_json::Value> = asks
+        .iter()
+        .map(|ask| {
+            json!({
+                "id": format!("ask-{ask}"), "key": ask, "text": "Ship the cache today?",
+                "pick": { "id": format!("2026-11-23_t1_ask_{ask}"),
+                          "options": ["Not today", "Dismiss ask"],
+                          "asks": {
+                              "Not today": { "act": "snooze", "ask": ask, "until": "2099-11-24T06:00:00Z" },
+                              "Dismiss ask": { "act": "dismiss", "ask": ask },
+                          } },
+                "comments": []
+            })
+        })
+        .collect();
+    json!({
+        "date": "2026-11-23",
+        "since": "2026-11-22T18:00:00+01:00",
+        "greeting": "Bonjour, Max",
+        "sections": [{ "id": "agree", "title": "To agree", "rows": rows }]
+    })
+}
+
+#[test]
+fn a_pick_on_an_ask_row_dismisses_or_snoozes_the_ask_and_wakes_no_agent() {
+    let setup = asleep_on_a_report("report-ask-pick", &ask_rows(&["cache.ship", "cache.notes"]));
+    setup.priory(&["ask", "cache.ship", &fleet_ask(&["ship", "wait"])]);
+    setup.priory(&["ask", "cache.notes", &fleet_ask(&["ship", "wait"])]);
+    let prompts = setup.rows("outbox").len();
+
+    let dismissed = setup.priory(&[
+        "report",
+        "pick",
+        "2026-11-23_t1_ask_cache.ship",
+        "Dismiss ask",
+        "--expected",
+        "1",
+    ]);
+    let snoozed = setup.priory(&[
+        "report",
+        "pick",
+        "2026-11-23_t1_ask_cache.notes",
+        "Not today",
+        "--expected",
+        "2",
+    ]);
+
+    assert!(dismissed.status.success(), "{dismissed:?}");
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    let asks = &asks["asks"];
+    assert_eq!(
+        [&asks[0]["id"], &asks[0]["withdrawn_reason"]],
+        ["cache.ship", "dismissed"]
+    );
+    assert_eq!([&asks[1]["id"], &asks[1]["state"]], ["cache.notes", "open"]);
+    assert_eq!(asks[1]["snoozed_until"], "2099-11-24T06:00:00Z");
+    let rows = &shown(&setup)["sections"][0]["rows"];
+    assert_eq!(rows[0]["pick"]["applied"], "dismissed");
+    assert_eq!(
+        rows[1]["pick"]["applied"],
+        "snoozed until 2099-11-24T06:00:00Z"
+    );
+    assert_eq!(
+        setup.rows("outbox").len(),
+        prompts,
+        "no prompt for the agent"
+    );
+}
+
+#[test]
+fn a_snooze_pick_made_after_its_time_snoozes_until_the_next_six_utc() {
+    let mut report = ask_rows(&["cache.notes"]);
+    report["sections"][0]["rows"][0]["pick"]["asks"]["Not today"]["until"] =
+        json!("2020-01-01T06:00:00Z");
+    let setup = asleep_on_a_report("report-ask-snooze-late", &report);
+    setup.priory(&["ask", "cache.notes", &fleet_ask(&["ship", "wait"])]);
+
+    let snoozed = setup.priory(&[
+        "report",
+        "pick",
+        "2026-11-23_t1_ask_cache.notes",
+        "Not today",
+        "--expected",
+        "1",
+    ]);
+
+    assert!(snoozed.status.success(), "{snoozed:?}");
+    let asks: serde_json::Value =
+        serde_json::from_slice(&setup.priory(&["asks", "--json"]).stdout).unwrap();
+    let until = asks["asks"][0]["snoozed_until"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        until.ends_with("T06:00:00Z") && until.as_str() > "2026-11-23",
+        "{until}"
+    );
+    assert_eq!(
+        shown(&setup)["sections"][0]["rows"][0]["pick"]["applied"],
+        format!("snoozed until {until}")
     );
 }
 

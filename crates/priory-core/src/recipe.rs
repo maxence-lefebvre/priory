@@ -129,15 +129,17 @@ pub(crate) fn before_run(
     let owed = match (added, &latest) {
         (Added::New(_), _) => Some(Moment::Setup),
         (Added::Restored, _) => Some(Moment::Resume),
-        (Added::Kept, Some(row)) if row.moment == "teardown" && row.ended => Some(Moment::Resume),
-        (Added::Kept, Some(row)) if row.moment != "teardown" && row.failed() => {
+        (Added::Kept(_), Some(row)) if row.moment == "teardown" && row.ended => {
+            Some(Moment::Resume)
+        }
+        (Added::Kept(_), Some(row)) if row.moment != "teardown" && row.failed() => {
             Some(if row.moment == "setup" {
                 Moment::Setup
             } else {
                 Moment::Resume
             })
         }
-        (Added::Kept, _) => None,
+        (Added::Kept(_), _) => None,
     };
     if let Some(recipe) = owed.and_then(|moment| Some((moment, factory.recipe(repo, moment)?))) {
         owe(db, factory, task, recipe.0, worktree, recipe.1)?;

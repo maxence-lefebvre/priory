@@ -11,6 +11,8 @@ Read it before you change behaviour or name a concept, and use its Concepts tabl
 - `crates/priory-intake`: the GitHub and CLI publishers and the message contract.
 - `crates/priory-runtime`: tmux, git worktrees, the hook socket and the MCP bridge. It depends on no Priory crate.
 - `crates/priory-core`: the state database, routing, tools and the daemon. It depends on the three crates above.
+- `crates/priory-core/web`: the web view, the pnpm workspace's one package. `dist/app.js` is its
+  committed bundle: run `corepack pnpm web:build` after you change its JavaScript.
 - `crates/priory`: `main.rs` only. It builds the `priory` binary, and its CLI tests live in `tests/`.
 - `examples/`: one starter factory per folder. A test runs `priory check` on each folder.
 - `adapters/`: one view host per folder, outside the Cargo workspace. `adapters/herdr/` holds the
@@ -38,9 +40,10 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 node --test adapters/herdr/test/*.test.js adapters/github/test/*.test.js adapters/claude-plugin/test/*.test.js crates/priory-core/web/*.test.js
+corepack pnpm install --frozen-lockfile && corepack pnpm web:check
 ```
 
-CI runs the same four commands on every push to `main` and every pull request.
+CI runs the same five commands on every push to `main` and every pull request.
 
 ## Rules
 
