@@ -526,7 +526,7 @@ pub struct ViewChanged {
     /// Where the issue stands in its project; null without a project, and absent from an issue the
     /// intake last read before it kept the order.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub order: Option<Option<IssueOrder>>,
+    pub order: Option<IssueOrder>,
     #[serde(flatten)]
     pub source: Source,
 }
@@ -872,7 +872,7 @@ pub struct TaskRequested {
     /// Where the Linear issue stands in its project, which orders the task in the queue; null
     /// without a project. Linear view and project sources only.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub order: Option<Option<IssueOrder>>,
+    pub order: Option<IssueOrder>,
     /// The repository the task works in: `priory request --repo` for a CLI request, the pull
     /// request's for a review request. Those sources only. A task whose `repo` is not a GitHub
     /// `owner/name` blocks before its first run.
@@ -1256,7 +1256,7 @@ pub struct Member {
     pub issue: LinearIssue,
     /// Where the issue stands in its project; null without a project.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub order: Option<Option<IssueOrder>>,
+    pub order: Option<IssueOrder>,
 }
 
 /// The members of a set stream.

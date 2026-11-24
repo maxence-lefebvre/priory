@@ -1641,7 +1641,6 @@ pub struct Trigger {
     /// The saved Linear view a `linear.view` trigger reads: its id, or the slug id ending its URL.
     pub view: Option<String>,
     /// The Linear project a `linear.project` trigger reads: its UUID or its slug id.
-    #[schemars(regex(pattern = r"^[A-Za-z0-9_-]+$"))]
     pub project: Option<String>,
     /// The Slack channel id a `slack` trigger reads, such as `C0123`.
     pub channel: Option<String>,
