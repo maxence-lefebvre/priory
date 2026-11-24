@@ -26,6 +26,9 @@ pub(crate) struct NewTask {
     pub lane: Option<String>,
     pub team: Option<String>,
     pub project: Option<String>,
+    /// Where its Linear issue stands in its project, as the intake saw it.
+    #[serde(default)]
+    pub order: serde_json::Value,
     #[serde(skip)]
     pub lane_derived: bool,
     pub trigger: String,

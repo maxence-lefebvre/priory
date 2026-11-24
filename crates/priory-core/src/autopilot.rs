@@ -517,6 +517,10 @@ fn plan(
             ask.grade.as_deref().unwrap_or("nothing")
         )));
     }
+    // A later revision shows a plan, or a word, that the critic never read.
+    if ask.revision > 1 {
+        return Ok(Err("its ask changed after its plan was graded".to_owned()));
+    }
     let Some(critic) = factory.critic() else {
         return Ok(Err("the factory has no critic to read its plan".to_owned()));
     };

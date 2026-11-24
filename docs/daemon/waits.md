@@ -114,7 +114,7 @@ A factory can let autopilot approve plans with
 [`approve_plans`](../reference/factory.md#autopilot). It then approves the plan of a task with
 `intervention = "plan"`, in a workflow that the list names, when the plan is green and a person
 decides again before any irreversible step. The factory's `critic` grades such a plan first, and
-`priory check` refuses `approve_plans` without one. Autopilot leaves a plan the critic did not read.
+`priory check` refuses `approve_plans` without one. Autopilot leaves a plan the critic did not read, and one whose ask changed after it was graded.
 
 An answer is recorded as answered by `autopilot`, with a
 [`factory.ask.autopilot_answered`](../trace-schema.md#factoryaskautopilot_answered) trace record

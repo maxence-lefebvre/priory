@@ -1,8 +1,8 @@
 use crate::factory::{
     ASK_SHAPE, Agent, Backend, Benchmark, CODEX_PROMPT_LIMIT, Confidence, Debate, Decider, Effect,
-    Factory, HELD_SIGNALS, Harness, INSTRUCTIONS, Intervention, Loaded, Moment, OPEN_MEMORIES_PR,
-    OnChange, PermissionMode, Problem, Proof, Recipe, ScoreKind, ScoreOn, Scorer, Session, Step,
-    Trigger, Until, Workflow, join_instructions,
+    Factory, FilterValue, HELD_SIGNALS, Harness, INSTRUCTIONS, Intervention, Loaded, Moment,
+    OPEN_MEMORIES_PR, OnChange, PermissionMode, Problem, Proof, Recipe, ScoreKind, ScoreOn, Scorer,
+    Session, Step, Trigger, Until, Workflow, join_instructions,
 };
 use crate::guard::{NEED_APPROVAL, PERSON, SIGN_IN, UNREADABLE};
 use crate::labels;
@@ -454,7 +454,11 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 }
             }
         }
+        for message in settings.value.private.problems() {
+            problems.push(problem(settings, settings.lines.field("private"), message));
+        }
         let mut named: Vec<&str> = crate::guard::BUILT_IN.to_vec();
+        named.push(crate::guard::PRIVATE);
         for command in &settings.value.guard.commands {
             let message = if named.contains(&command.name.as_str()) {
                 format!(
@@ -521,7 +525,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
         }
         match trigger.value.source.as_str() {
             "github" => check_github(trigger, &mut problems),
-            "linear" | "linear.view" => check_linear(trigger, &mut problems),
+            "linear" | "linear.view" | "linear.project" => check_linear(trigger, &mut problems),
             "slack" => check_slack(trigger, &mut problems),
             "sentry" => check_hooked(
                 trigger,
@@ -564,6 +568,7 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
             "github",
             "linear",
             "linear.view",
+            "linear.project",
             "sentry",
             "cloudwatch",
             "honeycomb",
@@ -583,6 +588,29 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                 trigger,
                 trigger.lines.field("repo"),
                 "a trigger's `repo` is `owner/name`".into(),
+            ));
+        }
+        if trigger.value.source != "linear.project" && trigger.value.project.is_some() {
+            problems.push(problem(
+                trigger,
+                trigger.lines.field("project"),
+                "only a `linear.project` trigger names a `project`".into(),
+            ));
+        }
+        for (key, _) in trigger
+            .value
+            .filter
+            .iter()
+            .flatten()
+            .filter(|(key, value)| {
+                value.one().is_none()
+                    && (trigger.value.source != "linear.project" || *key != "state")
+            })
+        {
+            problems.push(problem(
+                trigger,
+                trigger.lines.field("filter"),
+                format!("filter `{key}` is a string, not a list"),
             ));
         }
         if trigger.value.source != "slack" && trigger.value.channel.is_some() {
@@ -1087,6 +1115,11 @@ pub fn warnings(factory: &Factory) -> Vec<Problem> {
                         .join(", ")
                 ),
             ));
+        }
+    }
+    if let Some(settings) = &factory.settings {
+        for message in settings.value.private.warnings() {
+            warnings.push(problem(settings, settings.lines.field("private"), message));
         }
     }
     warnings.extend(caps_warnings(factory));
@@ -1826,10 +1859,10 @@ fn check_github(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
             ),
         ));
     }
-    let label_only = |filter: &BTreeMap<String, String>| {
+    let label_only = |filter: &BTreeMap<String, FilterValue>| {
         value.on.ends_with(".labeled") && filter.keys().all(|key| key == "label")
     };
-    let by_people = |filter: &BTreeMap<String, String>| {
+    let by_people = |filter: &BTreeMap<String, FilterValue>| {
         filter.contains_key("author")
             && filter
                 .keys()
@@ -1991,16 +2024,40 @@ fn check_hooked(
     }
 }
 
+/// The types of a Linear workflow state.
+const STATES: [&str; 7] = [
+    "triage",
+    "backlog",
+    "unstarted",
+    "started",
+    "completed",
+    "canceled",
+    "duplicate",
+];
+
+/// Whether `user` has the shape of an email or of a Linear id, a UUID.
+fn linear_user(user: &str) -> bool {
+    match user.split_once('@') {
+        Some((name, host)) => {
+            !name.is_empty() && !host.is_empty() && !user.contains(char::is_whitespace)
+        }
+        None => {
+            let groups: Vec<usize> = user.split('-').map(str::len).collect();
+            groups == [8, 4, 4, 4, 12] && user.chars().all(|c| c == '-' || c.is_ascii_hexdigit())
+        }
+    }
+}
+
 fn check_linear(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
     let value = &trigger.value;
     let view = value.source == "linear.view";
-    let (on, filters): (&[&str], &[&str]) = if view {
-        (&["issue.entered", "issue.left"], &[])
-    } else {
-        (
+    let (on, filters): (&[&str], &[&str]) = match value.source.as_str() {
+        "linear.view" => (&["issue.entered", "issue.left"], &[]),
+        "linear.project" => (&["issue.entered", "issue.left"], &["assignee", "state"]),
+        _ => (
             &["issue.created", "issue.state_changed", "comment.created"],
             &["team", "project", "label", "state"],
-        )
+        ),
     };
     let mut report = |field: &str, message: String| {
         let line = trigger.lines.field(field).or(trigger.lines.field("source"));
@@ -2026,16 +2083,56 @@ fn check_linear(trigger: &Loaded<Trigger>, problems: &mut Vec<Problem>) {
             ),
         );
     }
-    let unknown = |filter: &BTreeMap<String, String>| {
+    let unknown = |filter: &BTreeMap<String, FilterValue>| {
         filter.keys().any(|key| !filters.contains(&key.as_str()))
     };
     if value.filter.as_ref().is_some_and(unknown) {
-        let message = if view {
-            "a `linear.view` trigger takes no `filter`: its view filters".to_string()
-        } else {
-            "a `linear` trigger filters on `team`, `project`, `label` or `state`".to_string()
+        let message = match value.source.as_str() {
+            "linear.view" => "a `linear.view` trigger takes no `filter`: its view filters",
+            "linear.project" => "a `linear.project` trigger filters on `assignee` or `state`",
+            _ => "a `linear` trigger filters on `team`, `project`, `label` or `state`",
         };
-        report("filter", message);
+        report("filter", message.to_string());
+    }
+    if value.source == "linear.project" {
+        let named = |project: &str| {
+            !project.is_empty()
+                && project
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
+        };
+        if !value.project.as_deref().is_some_and(named) {
+            report(
+                "project",
+                "a `linear.project` trigger names a `project`: its UUID or its slug id".into(),
+            );
+        }
+        let filter = |key: &str| value.filter.as_ref().and_then(|filter| filter.get(key));
+        if filter("assignee")
+            .and_then(FilterValue::one)
+            .is_some_and(|assignee| !linear_user(assignee))
+        {
+            report(
+                "filter",
+                "filter `assignee` is a Linear user's id or email".into(),
+            );
+        }
+        let states = match filter("state") {
+            Some(FilterValue::One(state)) => std::slice::from_ref(state),
+            Some(FilterValue::Any(states)) => states.as_slice(),
+            None => &[],
+        };
+        if filter("state").is_some()
+            && (states.is_empty() || states.iter().any(|state| !STATES.contains(&state.as_str())))
+        {
+            report(
+                "filter",
+                format!(
+                    "filter `state` lists state types: `{}`",
+                    STATES.join("`, `")
+                ),
+            );
+        }
     }
     if value.repo.as_deref().is_some_and(|repo| !owner_name(repo)) {
         report("repo", "a Linear trigger's `repo` is `owner/name`".into());

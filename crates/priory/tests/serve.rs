@@ -4263,6 +4263,10 @@ fn editing_links_in_a_running_daemons_factory_changes_the_links_endpoint_without
         serde_json::from_slice::<Value>(&cli.stdout).unwrap(),
         edited
     );
+    // serve answers from the new factory before the daemon writes its record.
+    eventually("the reload record", || {
+        !records(&setup, "factory.config.reloaded").is_empty()
+    });
     let reloaded = records(&setup, "factory.config.reloaded");
     assert_eq!(reloaded.len(), 1, "{reloaded:?}");
     assert_eq!(reloaded[0]["factory"], "demo");

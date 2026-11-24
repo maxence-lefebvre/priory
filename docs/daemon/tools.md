@@ -403,7 +403,8 @@ lane. It starts ahead of its band's other tasks, and passes the pause, the revie
 `max_running` (see [runs.md](runs.md#work-already-running)). It starts the built-in workflow `priory/lead/<lead>`: one model step, `answer`, whose
 outcomes `answered` and `skipped` both lead to `done`. Its first prompt carries a
 `priory.ask.routed` event: the task, its key, the ask, its revision, question, options,
-recommendation, trade-off, title and text.
+recommendation, trade-off, title, text and, when it approves one, [the plan](asks.md#the-plan-an-ask-approves)
+as a list of files, each with `path`, `text` and `truncated`.
 
 The lead answers with `result`:
 
@@ -416,8 +417,8 @@ result is refused with `ask <id> takes one of: <options>`. A person can still an
 in free text. In the same
 transaction the daemon applies it to the ask, as a person's answer would, and records it as
 answered by `agent:<lead>`. The asking task then wakes as after any answer. When the answer is
-refused, for example because the ask is no longer open, the result is refused with the reason, and
-the lead ends with `skipped` instead.
+refused, for example because the ask is no longer open or its plan changed, the refusal is kept on
+the ask, the result is refused with the reason, and the lead ends with `skipped` instead.
 
 The routed ask stays on the desk, marked `routed to <lead>` in the CLI and "with <lead>" in the web
 view and the Herdr panels, so a person can still answer it. Its detail says the lead is answering

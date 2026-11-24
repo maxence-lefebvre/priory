@@ -638,6 +638,27 @@ fn a_green_plan_autopilot_may_approve_passes_the_critic_first() {
 }
 
 #[test]
+fn a_plan_whose_ask_changed_after_its_grade_is_left() {
+    let mut setup = intervened("pilot-plan-changed", GRADED, "plan", "");
+    critic(&setup, &[]);
+    approve_plans(&setup);
+    setup.calls(&[result("green")]);
+    setup.publish(&requested(42));
+    setup.start();
+    setup.until("asks", |rows| rows.len() == 1);
+    setup.until("tasks", |rows| rows[0][4] == "asleep");
+    person(&setup, "say", &["1", "Use postgres."]);
+    setup.until("asks", |rows| rows[0][2] == "2");
+
+    setup.autopilot_on(&["--for", "1h"]);
+
+    assert_eq!(
+        left(&setup, "1"),
+        "its ask changed after its plan was graded"
+    );
+}
+
+#[test]
 fn a_plan_the_critic_never_read_is_left() {
     let mut setup = intervened("pilot-critic-late", CRITICIZED, "plan", "");
     critic(&setup, &[]);
