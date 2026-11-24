@@ -28,10 +28,13 @@ const FIRST: u64 = 50;
 const EXCERPT: usize = 200;
 
 const ISSUE: &str = "fragment issue on Issue { id identifier title url createdAt updatedAt \
-    team { key } project { id name } state { name } labels { nodes { name } } creator { displayName } }";
-/// What an issue of a view or project has beyond `ISSUE`. Kept off the other queries, whose cost
-/// the history of each issue already fills.
-const PLACED: &str = "sortOrder projectMilestone { id sortOrder targetDate }";
+    team { key } project { id name } state { name } creator { displayName } }";
+/// An issue's labels, up to Linear's default page of 50.
+const LABELS: &str = "labels { nodes { name } }";
+/// What an issue of a view or project has beyond `ISSUE`. Its order is kept off the other queries,
+/// whose cost the history of each issue already fills, and its labels cost most of a page.
+const PLACED: &str =
+    "labels(first: 20) { nodes { name } } sortOrder projectMilestone { id sortOrder targetDate }";
 /// The issues that block an issue, kept small: Linear multiplies a query's cost by page sizes.
 const BLOCKING: &str = "inverseRelations(first: 20) { nodes { type issue { identifier state { type } } } \
     pageInfo { hasNextPage } }";
@@ -99,9 +102,11 @@ impl<'a> Linear<'a> {
         })
     }
 
-    /// Queries every stream first, so that a failing query publishes nothing. `watching` names the
-    /// Linear issues whose edits the issues stream publishes, from each one's time on.
-    pub(super) fn fetch(&self, watching: &[Watch]) -> Result<Vec<Polled>, String> {
+    /// Queries every stream, so that a failing query publishes nothing of its stream, and the error of
+    /// each view or project that fails. A failing issues or comments query, which come first, fails
+    /// them all, so an outage costs one query. `watching` names the Linear issues whose edits the
+    /// issues stream publishes, from each one's time on.
+    pub(super) fn fetch(&self, watching: &[Watch]) -> Result<(Vec<Polled>, Vec<String>), String> {
         let now = Timestamp::now();
         let mut watched: BTreeMap<&str, Timestamp> = BTreeMap::new();
         for watch in watching {
@@ -111,15 +116,20 @@ impl<'a> Linear<'a> {
             }
         }
         let mut polled = Vec::new();
+        let mut failed = Vec::new();
         for (stream, marker) in &self.streams {
-            polled.push(match stream.as_str() {
-                ISSUES => self.issues(marker.as_ref(), &watched)?,
-                COMMENTS => self.comments(marker.as_ref())?,
-                _ if stream.starts_with(PROJECT) => self.project(stream, marker.as_ref(), now)?,
-                _ => self.view(stream, marker.as_ref(), now)?,
-            });
+            let members = match stream.as_str() {
+                ISSUES => Ok(self.issues(marker.as_ref(), &watched)?),
+                COMMENTS => Ok(self.comments(marker.as_ref())?),
+                _ if stream.starts_with(PROJECT) => self.project(stream, marker.as_ref(), now),
+                _ => self.view(stream, marker.as_ref(), now),
+            };
+            match members {
+                Ok(members) => polled.push(members),
+                Err(error) => failed.push(format!("{stream} skipped: {error}")),
+            }
         }
-        Ok(polled)
+        Ok((polled, failed))
     }
 
     /// Publishes what a poll found. With `hooked`, the factory takes Linear's webhook, so an event it
@@ -311,7 +321,7 @@ impl<'a> Linear<'a> {
             "query Issues($filter: IssueFilter, $first: Int!, $after: String) {{ \
              issues(filter: $filter, first: $first, after: $after, orderBy: updatedAt, \
              includeArchived: true) {{ nodes {{ \
-             ...issue description history(first: 50, orderBy: createdAt) {{ nodes {{ id createdAt \
+             ...issue {LABELS} description history(first: 50, orderBy: createdAt) {{ nodes {{ id createdAt \
              fromState {{ name }} toState {{ name }} fromTeam {{ key }} toTeam {{ key }} \
              actor {{ displayName }} {EDITS} }} }} previousIdentifiers \
              {BLOCKING} relations(first: 20) {{ nodes {{ type relatedIssue {{ id }} }} }} }} {PAGE} }} }} {ISSUE}"
@@ -391,7 +401,7 @@ impl<'a> Linear<'a> {
             let query = format!(
                 "query Blocked($ids: [ID!], $first: Int!) {{ \
                  issues(filter: {{ id: {{ in: $ids }} }}, first: $first) {{ nodes {{ \
-                 ...issue {BLOCKING} }} {PAGE} }} }} {ISSUE}"
+                 ...issue {LABELS} {BLOCKING} }} {PAGE} }} }} {ISSUE}"
             );
             let found = self.nodes(&query, json!({ "ids": ids, "first": 50 }), "/issues", false)?;
             blocked.extend(
@@ -470,7 +480,7 @@ impl<'a> Linear<'a> {
         let query = format!(
             "query Comments($filter: CommentFilter, $first: Int!, $after: String) {{ \
              comments(filter: $filter, first: $first, after: $after, orderBy: createdAt) {{ nodes {{ \
-             id body url createdAt user {{ displayName }} issue {{ ...issue }} }} {PAGE} }} }} {ISSUE}"
+             id body url createdAt user {{ displayName }} issue {{ ...issue {LABELS} }} }} {PAGE} }} }} {ISSUE}"
         );
         let comments = self.nodes(
             &query,

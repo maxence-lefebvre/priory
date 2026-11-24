@@ -439,8 +439,9 @@ pub fn run(
         }
         if let Some(linear) = &mut linear {
             match linear.fetch(&watching) {
-                Ok(polled) => {
-                    linear.publish_all(bus, polled, factory.linear_webhook().is_some())?
+                Ok((polled, errors)) => {
+                    linear.publish_all(bus, polled, factory.linear_webhook().is_some())?;
+                    failed.entry("linear").or_default().extend(errors);
                 }
                 Err(error) => failed.entry("linear").or_default().push(error),
             }

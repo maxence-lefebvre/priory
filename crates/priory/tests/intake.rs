@@ -4028,3 +4028,139 @@ fn milestone_order_holds_within_a_lane_that_takes_turns() {
 
     assert_eq!(setup.queue(), ["ENG-2", "ENG-1"]);
 }
+
+/// A project's page that holds issue `number` and nothing else.
+fn only(number: u64) -> Option<serde_json::Value> {
+    Some(project_page(&[linear_issue(number)], None))
+}
+
+#[test]
+fn a_project_linear_refuses_stops_only_its_own_stream() {
+    let refused = json!({ "data": null, "errors": [{ "message": "Entity not found: Project" }] });
+    let missing = json!({ "data": { "project": null } });
+    for (name, answer, why) in [
+        ("project-refused", refused, "Entity not found: Project"),
+        (
+            "project-missing",
+            missing,
+            "Linear answered no /project/issues",
+        ),
+    ] {
+        let bad = project_trigger(r#"{ state = "backlog" }"#).replace("a1b2c3d4e5f6", "gone");
+        let setup = Setup::linear(
+            name,
+            &[
+                ("bad", &bad),
+                ("joined", PROJECT_TRIGGER),
+                ("agent-ready", VIEW_TRIGGER),
+            ],
+        );
+        let empty = Some(project_page(&[], None));
+        setup.answer_project(&[("gone", only(7)), ("", empty)]);
+        succeeded(&setup.intake());
+        let before = setup.published().len();
+        setup.answer_project(&[("gone", Some(answer)), ("", only(8))]);
+        let page = json!({ "nodes": [linear_issue(9)],
+            "pageInfo": { "hasNextPage": false, "endCursor": null } });
+        let view = json!({ "data": { "customView": { "filterData": null, "issues": page } } });
+        write(&setup.dir.join("linear-customView.json"), &view.to_string());
+        let issues = json!({ "data": { "issues": page } });
+        write(&setup.dir.join("linear-issues.json"), &issues.to_string());
+
+        let failed = setup.intake();
+
+        assert_eq!(failed.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&failed.stderr);
+        assert!(
+            stderr.contains(r#"linear.project:gone:{"state":["backlog"]}"#),
+            "{stderr}"
+        );
+        assert!(stderr.contains(why), "{stderr}");
+        let published: Vec<_> = setup.published()[before..]
+            .iter()
+            .map(|stored| {
+                let data = &stored.message.data;
+                let issue = data["issue"].as_str().or(data["key"].as_str()).unwrap();
+                (stored.message.kind.clone(), issue.to_owned())
+            })
+            .collect();
+        let expected = [
+            ("linear.issue.created", "ENG-9"),
+            ("linear.issue.entered", "ENG-8"),
+            ("factory.task.requested", "linear:ENG-8"),
+            ("linear.issue.entered", "ENG-9"),
+            ("factory.task.requested", "linear:ENG-9"),
+        ]
+        .map(|(kind, issue)| (kind.to_owned(), issue.to_owned()));
+        assert_eq!(published, expected);
+
+        // Read again, the project has lost no member.
+        setup.answer_project(&[("gone", only(7)), ("", only(8))]);
+        write(&setup.dir.join("linear-customView.json"), &view.to_string());
+        succeeded(&setup.intake());
+        assert_eq!(setup.published().len(), before + expected.len());
+    }
+}
+
+#[test]
+fn a_view_linear_refuses_stops_only_its_own_stream() {
+    let setup = Setup::linear(
+        "view-refused",
+        &[("joined", PROJECT_TRIGGER), ("agent-ready", VIEW_TRIGGER)],
+    );
+    setup.poll_project(&[]);
+    setup.answer_project(&[("", only(8))]);
+    let refused = json!({ "errors": [{ "message": "Entity not found: CustomView" }] });
+    write(
+        &setup.dir.join("linear-customView.json"),
+        &refused.to_string(),
+    );
+
+    let failed = setup.intake();
+
+    assert_eq!(failed.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&failed.stderr);
+    assert!(stderr.contains("linear.view:6b3c2f9a1d4e"), "{stderr}");
+    assert!(stderr.contains("Entity not found: CustomView"), "{stderr}");
+    assert_eq!(
+        kinds(&setup.published()),
+        ["linear.issue.entered", "factory.task.requested"]
+    );
+}
+
+#[test]
+fn a_page_of_a_view_or_project_reads_few_labels_per_issue() {
+    let setup = Setup::linear(
+        "membership-labels",
+        &[("joined", PROJECT_TRIGGER), ("agent-ready", VIEW_TRIGGER)],
+    );
+    setup.poll_project(&[]);
+
+    let sent = fs::read_to_string(setup.dir.join("curl-args")).unwrap();
+
+    for (query, labels) in [
+        ("query View", "labels(first: 20)"),
+        ("query Project", "labels(first: 20)"),
+        ("query Issues", "labels {"),
+        ("query Comments", "labels {"),
+    ] {
+        let line = sent.lines().find(|line| line.contains(query)).unwrap();
+        assert!(line.contains(labels), "{line}");
+        assert_eq!(line.matches("labels").count(), 1, "{line}");
+    }
+}
+
+#[test]
+fn a_task_whose_trigger_was_renamed_follows_its_milestone() {
+    let setup = Setup::linear("project-renamed", &[("joined", PROJECT_TRIGGER)]);
+    let (first, second) = (Some((1.0, None)), Some((2.0, None)));
+    setup.poll_project(&[]);
+    setup.poll_project(&[placed(1, "p", first, 0.0), placed(2, "p", second, 0.0)]);
+    assert_eq!(setup.queue(), ["ENG-1", "ENG-2"]);
+    let triggers = setup.dir.join("factory/triggers");
+    fs::rename(triggers.join("joined.toml"), triggers.join("renamed.toml")).unwrap();
+
+    setup.poll_project(&[placed(1, "p", None, 0.0), placed(2, "p", second, 0.0)]);
+
+    assert_eq!(setup.queue(), ["ENG-2", "ENG-1"]);
+}

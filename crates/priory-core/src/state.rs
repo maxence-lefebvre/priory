@@ -2061,8 +2061,8 @@ macro_rules! helper {
 }
 
 /// The order the queue starts tasks in: band, then a waiting lead's or investigator's task, then
-/// a person's order, then age, where the tasks of a Linear project trade places to follow its
-/// milestones. A band the factory no longer has comes after the last one. A task that `[queue] age` moved up starts in the higher
+/// a person's order, then age, where the waiting tasks of a Linear project trade places to follow
+/// its milestones. A band the factory no longer has comes after the last one. A task that `[queue] age` moved up starts in the higher
 /// band after the tasks a person ordered there. With `[queue] fair = "lane"`, the tasks a person has
 /// not ordered take turns between lanes before age: the oldest of each lane first, and among those
 /// the lane whose last run started longest ago, so a lane that never ran comes first.
@@ -4835,6 +4835,8 @@ fn moved(
         .map_err(error)?;
         return Ok(());
     };
+    // A task that started since the last pass still has its place in the queue.
+    crate::milestones::place(tx).map_err(error)?;
     let mut order: Vec<i64> = tx
         .prepare(&format!(
             "SELECT id FROM tasks WHERE coalesce(band, '') = ?1 AND id != ?2

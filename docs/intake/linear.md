@@ -105,8 +105,8 @@ re-baselines the view:
 
 An issue that entered the view by changing during the same poll gets no task either.
 
-A filter that changes while the intake reads the view's pages fails the poll, which publishes
-nothing. The next poll reads the view again.
+A filter that changes while the intake reads the view's pages fails the view's poll, which publishes
+nothing for it. The next poll reads the view again.
 
 A project's filter changes only with its trigger file, so nothing like `linear.view.changed` is
 published for it. The stream's name holds the project and the filter. Triggers with the same project
@@ -212,11 +212,29 @@ leaves no marker, so the next poll is a baseline again. It reports no issue that
 | Endpoint | `https://api.linear.app/graphql`, through `curl` |
 | Timeout | 60 seconds per request; the next poll retries it |
 | Queries per poll | one per view, one per project and filter, two for issues and comments, one per extra page of 100, and one per 50 issues that the updated issues block |
-| Rate limit | Linear allows 2,500 requests an hour per key |
+| Rate limit | Linear allows 2,500 requests an hour per user, across the user's keys. See [Complexity](#complexity) for its other limit |
 
 `curl` reads the key from standard input, so it stays out of process lists. `--disable` makes curl
 ignore `~/.curlrc`, so no trace option can log the key. The intake also replaces the key in any
 error it prints.
+
+A view or project that Linear refuses, such as one deleted, misspelled or not shared with the key's
+user, skips only its own stream. The other streams publish, and the poll's error names the skipped
+stream. Its members stay as they were, so nothing leaves it. The Linear source counts as failing
+until the trigger is fixed, so its desk banner stays. A failed issues or comments query still ends
+the poll, and both run first: an outage or a refused key costs one failed query, not one per stream.
+
+### Complexity
+
+[Linear's limits](https://linear.app/developers/rate-limiting) on an API key are 10,000 points per
+query and 3,000,000 points an hour per user, whichever key asks. A property costs 0.1 point and an
+object 1. A connection multiplies its children by its page size.
+
+A page of 100 issues of a view or project costs about 2,950 points, computed from that formula.
+It reads 20 labels per issue to stay there. At one poll a minute, the hourly budget holds 16 such
+pages per poll, shared by all the factory's views and projects and everything else the user's keys
+read. An unfiltered project also reads its completed issues on each poll, so give a `linear.project`
+trigger a `state` filter, such as `["triage", "backlog", "unstarted", "started"]`.
 
 ## Limits
 
@@ -233,6 +251,13 @@ error it prints.
   is missed, and the task no longer hears the issue.
 - A view or project marker holds every issue of the stream and is published whenever one of them changes, so a
   large, busy view grows the output.
+- A view or project event carries at most 20 of its issue's labels.
+- A task keeps its last milestone order after its issue leaves the stream, or moves to a project that
+  no trigger watches, since another stream can hold the same issue.
+- An issue that a view or project event brought in carries no `blockers`. A task held with
+  `hold = { blockers = true }`, such as a `backfill` one, waits until an event that carries them.
+- A filter put back resumes the members it last had. Each issue that left meanwhile publishes
+  `linear.issue.left`, which can ask a person about a task, and each one that entered requests a task.
 - A state change past the last 50 history entries of an issue between two polls is missed.
 - `blockers` reads 20 relations of an issue, and `linear.issue.blockers` follows 20 relations of
   each updated blocker. An issue with more is unknown. A blocker with more misses some.

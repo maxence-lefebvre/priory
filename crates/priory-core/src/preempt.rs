@@ -107,7 +107,7 @@ pub(crate) fn plan(
     let mut statement = db.prepare(&format!(
         "SELECT runs.id, runs.task, runs.step, coalesce(runs.agent, ''), runs.tmux, tasks.band,
            tasks.workflow, tasks.trigger, tasks.preempted IS NOT NULL, {KEYBOARD_HELD},
-           tasks.position, runs.session, coalesce(tasks.slot, tasks.id)
+           tasks.position, runs.session
          FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL"
     ))?;
     let mut rows = statement.query([])?;
@@ -124,7 +124,7 @@ pub(crate) fn plan(
             (row.get(5)?, row.get(6)?, row.get(7)?);
         let (stopped, held, position): (bool, bool, Option<i64>) =
             (row.get(8)?, row.get(9)?, row.get(10)?);
-        let (session, slot): (String, i64) = (row.get(11)?, row.get(12)?);
+        let session: String = row.get(11)?;
         let defined = factory.agents.get(&agent).map(|agent| &agent.value);
         let own_rank = rank(&bands, own_band.as_deref());
         let own_band = own_band.unwrap_or_else(|| bands.last().copied().unwrap_or_default().into());
@@ -141,7 +141,7 @@ pub(crate) fn plan(
         };
         let used = crate::usage::memory(run, &tmux, &session);
         candidates.push((
-            (own_rank, position.is_none(), position, slot),
+            (own_rank, position.is_none(), position, task),
             Candidate {
                 run,
                 task,

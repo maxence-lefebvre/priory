@@ -86,7 +86,7 @@ On each tick, the daemon marks runs when all of these hold:
 3. Live runs of a lower band, which the next section does not protect, promise enough.
 
 The daemon picks runs in reverse start order: the lowest band first, then the last in a person's
-order, then the last in age order, which [milestones](runs.md#milestone-order) can change. It adds runs until the head fits by the room's own check. When every
+order, then the youngest task. It adds runs until the head fits by the room's own check. When every
 run it may pick still frees too little, it picks none. Each tick works the marks out again, so a
 mark is withdrawn once the head starts, is held or cancelled, or stops being the head. A mark is
 stored in the state file, so it survives a daemon restart.

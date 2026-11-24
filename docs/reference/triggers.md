@@ -202,7 +202,7 @@ and one assigned to someone else leaves. See [linear.md](../intake/linear.md).
 | --- | ---- | -------- | ------- | ------- | ------- |
 | `project` | string | yes | | The project: its UUID, or its slug id. The name and the URL are not taken | `"3f0c9a52-6d1b-4e8f-a7c4-b1d2e3f40516"` |
 | `on` | string | yes | | `issue.entered` or `issue.left` | `"issue.entered"` |
-| `filter` | table | no | | `assignee` (a Linear user's id or email, in any case) and `state` (one state type or a list of them: `triage`, `backlog`, `unstarted`, `started`, `completed`, `canceled`, `duplicate`). Every key must match, and a list matches any of its types | `{ state = ["backlog", "unstarted"] }` |
+| `filter` | table | no | | `assignee` (a Linear user's id or email, in any case) and `state` (one state type or a list of them: `triage`, `backlog`, `unstarted`, `started`, `completed`, `canceled`, `duplicate`). Every key must match, and a list matches any of its types. Set `state`: without it each poll reads every issue of the project (see [Complexity](../intake/linear.md#complexity)) | `{ state = ["backlog", "unstarted"] }` |
 | `key` | string | no | the identifier | `issue.identifier`. The task key is `linear:ENG-7` | `"issue.identifier"` |
 | `backfill` | boolean | no | `false` | Whether the issues in the project at the first poll start tasks. A changed `filter` or `project` has its own first poll (see [Filter changes](../intake/linear.md#filter-changes)) | `true` |
 

@@ -28,10 +28,11 @@ pub(crate) fn read(db: &Connection, factory: &Factory, message: &Message) -> rus
         })
         .map(|(name, _)| name.as_str())
         .collect();
-    // Ended tasks too: no later marker would tell a revived one.
+    // Ended tasks too: no later marker would tell a revived one. Ordered ones whatever their trigger,
+    // which may have been renamed.
     let mut update = db.prepare(
         "UPDATE tasks SET issue_order = ?2 WHERE key = ?1 AND issue_order IS NOT ?2
-         AND trigger IN (SELECT value FROM json_each(?3))",
+         AND (issue_order IS NOT NULL OR trigger IN (SELECT value FROM json_each(?3)))",
     )?;
     for member in message.data["members"].as_array().into_iter().flatten() {
         // A member the intake read before it kept the order has none.
@@ -47,16 +48,18 @@ pub(crate) fn read(db: &Connection, factory: &Factory, message: &Message) -> rus
     place(db)
 }
 
-/// Gives the tasks of each project, in each band, the places their ids give them, in milestone
-/// order. So they never pass other work. A task a person ordered keeps that place instead.
+/// Gives the queued and ready tasks of each project, in each band they start in, the places their
+/// ids give them, in milestone order. So they never pass other work. A task a person ordered keeps
+/// that place instead.
 pub(crate) fn place(db: &Connection) -> rusqlite::Result<()> {
     let mut projects: BTreeMap<(String, String), Vec<(i64, Value)>> = BTreeMap::new();
     let mut before: BTreeMap<i64, Option<i64>> = BTreeMap::new();
-    let mut statement = db.prepare(
-        "SELECT id, coalesce(band, ''), issue_order, slot, position IS NULL
-           AND state NOT IN ('done', 'failed', 'dropped')
-         FROM tasks WHERE issue_order IS NOT NULL OR slot IS NOT NULL ORDER BY id",
-    )?;
+    let mut statement = db.prepare(&format!(
+        "SELECT id, coalesce({}, band, ''), issue_order, slot, waits
+         FROM (SELECT *, position IS NULL AND state IN ('queued', 'ready') AS waits FROM tasks) AS tasks
+         WHERE slot IS NOT NULL OR issue_order IS NOT NULL AND waits ORDER BY id",
+        crate::state::AGED_BAND
+    ))?;
     let mut rows = statement.query([])?;
     while let Some(row) = rows.next()? {
         let id = row.get(0)?;
@@ -114,41 +117,130 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn a_task_that_ends_leaves_no_stale_place() {
+    /// A task per `(milestone, state)`, ids from 1: in project `p` with a milestone, in none without.
+    fn tasks(rows: &[(Option<i64>, &str)]) -> Connection {
         let db = crate::state::memory();
-        let insert = |key: &str, order: Option<i64>| {
-            let order = order.map(|sort| {
+        for (index, (milestone, state)) in rows.iter().enumerate() {
+            let order = milestone.map(|sort| {
                 json!({ "project_id": "p", "milestone": { "sort_order": sort } }).to_string()
             });
             db.execute(
                 "INSERT INTO tasks (key, workflow, step, state, trigger, source, issue_order)
-                 VALUES (?1, 'implement', 'implement', 'queued', 'joined', 'source', ?2)",
-                params![key, order],
+                 VALUES (?1, 'implement', 'implement', ?2, 'joined', 'source', ?3)",
+                params![format!("linear:ENG-{index}"), state, order],
             )
             .unwrap();
-        };
-        insert("linear:ENG-1", Some(2));
-        insert("github:owner/repo#2", None);
-        insert("linear:ENG-3", Some(1));
-        let queue = || -> Vec<i64> {
-            place(&db).unwrap();
-            db.prepare(&format!(
-                "SELECT id FROM tasks WHERE state = 'queued' ORDER BY {}",
-                crate::state::START_ORDER
-            ))
+        }
+        db
+    }
+
+    /// The queued and ready tasks in start order, once placed.
+    fn queue(db: &Connection) -> Vec<i64> {
+        place(db).unwrap();
+        db.prepare(&format!(
+            "SELECT id FROM tasks WHERE state IN ('queued', 'ready') ORDER BY {}",
+            crate::state::START_ORDER
+        ))
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    }
+
+    fn set_state(db: &Connection, task: i64, state: &str) {
+        db.execute(
+            "UPDATE tasks SET state = ?2 WHERE id = ?1",
+            params![task, state],
+        )
+        .unwrap();
+    }
+
+    fn slotted(db: &Connection) -> Vec<i64> {
+        db.prepare("SELECT id FROM tasks WHERE slot IS NOT NULL ORDER BY id")
             .unwrap()
             .query_map([], |row| row.get(0))
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap()
-        };
-        assert_eq!(queue(), [3, 2, 1]);
+    }
 
-        db.execute("UPDATE tasks SET state = 'done' WHERE id = 3", [])
+    #[test]
+    fn a_task_that_ends_leaves_no_stale_place() {
+        let db = tasks(&[(Some(2), "queued"), (None, "queued"), (Some(1), "queued")]);
+        assert_eq!(queue(&db), [3, 2, 1]);
+
+        set_state(&db, 3, "done");
+
+        assert_eq!(queue(&db), [1, 2]);
+    }
+
+    #[test]
+    fn a_task_outside_the_queue_gives_its_place_to_no_one() {
+        for outside in ["running", "asleep", "held", "blocked"] {
+            let db = tasks(&[(Some(3), outside), (None, "queued"), (Some(1), "queued")]);
+
+            assert_eq!(queue(&db), [2, 3], "{outside}");
+            assert_eq!(slotted(&db), [3], "{outside}");
+        }
+    }
+
+    #[test]
+    fn queued_and_ready_tasks_trade_places_around_a_running_one_and_a_held_one() {
+        let db = tasks(&[
+            (Some(9), "running"),
+            (None, "queued"),
+            (Some(8), "held"),
+            (Some(2), "ready"),
+            (None, "queued"),
+            (Some(1), "queued"),
+        ]);
+        assert_eq!(queue(&db), [2, 6, 5, 4]);
+
+        set_state(&db, 6, "running");
+
+        assert_eq!(queue(&db), [2, 4, 5]);
+        assert_eq!(slotted(&db), [4]);
+    }
+
+    #[test]
+    fn a_move_never_orders_a_running_task_by_the_place_it_had_in_the_queue() {
+        let mut db = tasks(&[
+            (Some(2), "queued"),
+            (None, "queued"),
+            (Some(1), "queued"),
+            (None, "queued"),
+        ]);
+        db.execute_batch("UPDATE tasks SET band = 'today'; INSERT INTO bands VALUES ('today', 0);")
             .unwrap();
+        assert_eq!(queue(&db), [3, 2, 1, 4]);
+        set_state(&db, 3, "running");
 
-        assert_eq!(queue(), [1, 2]);
+        crate::state::move_task(&mut db, 4, None, Some(crate::state::Place::Top), None).unwrap();
+
+        let order: Vec<i64> = db
+            .prepare("SELECT id FROM tasks ORDER BY position")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(order, [4, 1, 2, 3]);
+    }
+
+    #[test]
+    fn tasks_that_age_put_in_different_bands_trade_no_places() {
+        let db = tasks(&[(Some(2), "queued"), (None, "queued"), (Some(1), "queued")]);
+        db.execute_batch(
+            "INSERT INTO bands (name, rank) VALUES ('now', 0), ('later', 1);
+             INSERT INTO aging (id, every, top) VALUES (1, 3600, 0);
+             UPDATE tasks SET band = 'later', changed = strftime('%Y-%m-%dT%H:%M:%SZ', 'now');
+             UPDATE tasks SET changed = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-2 hours')
+             WHERE id IN (1, 2);",
+        )
+        .unwrap();
+
+        assert_eq!(queue(&db), [1, 2, 3]);
     }
 
     proptest! {

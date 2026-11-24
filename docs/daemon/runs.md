@@ -191,8 +191,9 @@ own place, and its next run resumes its session. See
 ### Milestone order
 
 The tasks of `linear.view` and `linear.project` triggers follow their project in Linear. Per band, a
-project's tasks keep the places their age gives them in the queue, and fill those places in this
-order:
+project's `queued` and `ready` tasks keep the places their age gives them in the queue, and fill
+those places in this order. A task in any other state, such as running, asleep or held, gives its
+place to no one:
 
 1. Their milestone's order, then its target date. A milestone without a date comes after one with a
    date. Issues without a milestone come last.
@@ -204,6 +205,8 @@ has no project starts by age.
 
 A later milestone queues behind an earlier one. It does not wait until the earlier one has no open
 task, so it can start while the earlier one's tasks run, sleep or are held.
+
+A task that [age](#aging) moved up trades places only with those that start in the same band.
 
 The intake's next poll after a change in Linear reorders the queued tasks. Bands, aging and a
 person's order come first: a task that `priory move` placed keeps its place. Such a move places every
