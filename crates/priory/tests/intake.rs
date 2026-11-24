@@ -3676,8 +3676,8 @@ fn a_baseline_crash_of_a_project_requests_its_backfill_tasks_again() {
 #[test]
 fn an_issue_reassigned_to_and_away_from_the_filters_assignee_enters_and_leaves() {
     let trigger =
-        project_trigger(r#"{ assignee = "Max@Example.com", state = ["unstarted", "backlog"] }"#);
-    let sent = r#""variables":{"filter":{"assignee":{"email":{"eqIgnoreCase":"max@example.com"}},"state":{"type":{"in":["backlog","unstarted"]}}},"project":"a1b2c3d4e5f6"}"#;
+        project_trigger(r#"{ assignee = "Ada@Example.com", state = ["unstarted", "backlog"] }"#);
+    let sent = r#""variables":{"filter":{"assignee":{"email":{"eqIgnoreCase":"ada@example.com"}},"state":{"type":{"in":["backlog","unstarted"]}}},"project":"a1b2c3d4e5f6"}"#;
     let setup = Setup::linear("project-assignee", &[("mine", &trigger)]);
     for issues in [vec![], vec![linear_issue(7)], vec![]] {
         setup.answer_project(&[(sent, Some(project_page(&issues, None)))]);
@@ -3696,7 +3696,7 @@ fn an_issue_reassigned_to_and_away_from_the_filters_assignee_enters_and_leaves()
 
 #[test]
 fn an_assignee_id_reaches_linear_as_an_id() {
-    let user = "134960a1-5996-4f1e-93c9-1464206810c0";
+    let user = "3f0c9a52-6d1b-4e8f-a7c4-b1d2e3f40516";
     let setup = Setup::linear(
         "project-assignee-id",
         &[(
@@ -3845,6 +3845,7 @@ fn entering_one_filter_again_leaves_the_other_filters_ask_open() {
     let asks = asks["asks"].as_array().or(asks.as_array()).unwrap();
     let questions: Vec<_> = asks
         .iter()
+        .filter(|ask| ask["state"] == "open")
         .map(|ask| ask["question"].as_str().unwrap())
         .collect();
     assert_eq!(

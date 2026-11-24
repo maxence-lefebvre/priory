@@ -1,6 +1,6 @@
 #:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
 source = "linear.project"
-project = "134960a1-5996-4f1e-93c9-1464206810c0" # the project's UUID, or its slug id
+project = "3f0c9a52-6d1b-4e8f-a7c4-b1d2e3f40516" # the project's UUID, or its slug id
 on = "issue.entered"           # or issue.left
 repo = "owner/name"            # where its tasks work; without it they block
 workflow = "implement"
@@ -8,5 +8,5 @@ key = "issue.identifier"       # the task key is linear:ENG-7
 band = "today"
 
 [filter]                       # every key must match
-assignee = "max@example.com"   # a Linear user's email or id
+assignee = "ada@example.com"   # a Linear user's email or id
 state = ["triage", "backlog", "unstarted"]

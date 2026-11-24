@@ -200,7 +200,7 @@ and one assigned to someone else leaves. See [linear.md](../intake/linear.md).
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |
-| `project` | string | yes | | The project: its UUID, or its slug id. The name and the URL are not taken | `"134960a1-5996-4f1e-93c9-1464206810c0"` |
+| `project` | string | yes | | The project: its UUID, or its slug id. The name and the URL are not taken | `"3f0c9a52-6d1b-4e8f-a7c4-b1d2e3f40516"` |
 | `on` | string | yes | | `issue.entered` or `issue.left` | `"issue.entered"` |
 | `filter` | table | no | | `assignee` (a Linear user's id or email, in any case) and `state` (one state type or a list of them: `triage`, `backlog`, `unstarted`, `started`, `completed`, `canceled`, `duplicate`). Every key must match, and a list matches any of its types | `{ state = ["backlog", "unstarted"] }` |
 | `key` | string | no | the identifier | `issue.identifier`. The task key is `linear:ENG-7` | `"issue.identifier"` |
@@ -210,7 +210,7 @@ and one assigned to someone else leaves. See [linear.md](../intake/linear.md).
 ```toml
 #:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/trigger.json
 source = "linear.project"
-project = "134960a1-5996-4f1e-93c9-1464206810c0" # the project's UUID, or its slug id
+project = "3f0c9a52-6d1b-4e8f-a7c4-b1d2e3f40516" # the project's UUID, or its slug id
 on = "issue.entered"           # or issue.left
 repo = "owner/name"            # where its tasks work; without it they block
 workflow = "implement"
@@ -218,7 +218,7 @@ key = "issue.identifier"       # the task key is linear:ENG-7
 band = "today"
 
 [filter]                       # every key must match
-assignee = "max@example.com"   # a Linear user's email or id
+assignee = "ada@example.com"   # a Linear user's email or id
 state = ["triage", "backlog", "unstarted"]
 ```
 
