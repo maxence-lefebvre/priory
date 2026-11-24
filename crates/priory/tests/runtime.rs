@@ -34862,10 +34862,13 @@ fn a_stacked_task_never_pushes_its_parents_unpushed_commits() {
 #[test]
 fn a_stacked_task_never_pushes_a_closed_parents_unpushed_commits() {
     let setup = stacked_on_unpushed("cloud-stacked-closed");
+    // The close wakes the parent, whose own cloud step would push the commit.
+    setup.origin_hook("pre-receive", "! grep -q refs/heads/priory/2\n");
 
     resume_after_close(&setup, false);
 
     blocked_on_parent(&setup);
+    setup.origin_hook("pre-receive", "exit 0\n");
     starts_once_pushed(&setup);
 }
 
