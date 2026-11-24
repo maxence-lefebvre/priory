@@ -2035,19 +2035,44 @@ fn the_queue_lists_the_factorys_bands_in_order_even_an_empty_one() {
 }
 
 #[test]
-fn the_queue_lists_the_factorys_workflows_so_a_view_can_offer_them() {
+fn the_queue_lists_the_factorys_requestable_workflows_so_a_view_can_offer_them() {
     let mut setup = Setup::new("queue-workflows", SERVE);
     fs::write(setup.dir.join("factory/workflows/review.toml"), WORKFLOW).unwrap();
+    let scheduled = format!("requestable = false\n{WORKFLOW}");
+    fs::write(setup.dir.join("factory/workflows/sweep.toml"), scheduled).unwrap();
     let address = setup.start(&["serve", &setup.factory()]);
 
     let queue = api(&address, "/api/queue");
 
     assert_eq!(queue["workflows"], json!(["implement", "review"]));
-    assert_eq!(json_of(&setup, "queue")["workflows"], queue["workflows"]);
+    assert_eq!(queue["opted_out"], json!(["sweep"]));
+    let cli = json_of(&setup, "queue");
+    assert_eq!(cli["workflows"], queue["workflows"]);
+    assert_eq!(cli["opted_out"], queue["opted_out"]);
     let output = setup.priory(&["queue", "--json"]);
     succeeded(&output);
     let without_factory: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(without_factory["workflows"], json!([]));
+    assert_eq!(without_factory["workflows"], Value::Null);
+    assert_eq!(without_factory["opted_out"], Value::Null);
+}
+
+#[test]
+fn the_queue_names_the_request_tables_workflow_so_a_view_can_show_the_default() {
+    let mut setup = Setup::new("queue-default-workflow", DEFAULTS);
+    let address = setup.start(&["serve", &setup.factory()]);
+    let mut bare = Setup::new("queue-no-default-workflow", SERVE);
+    let bare_address = bare.start(&["serve", &bare.factory()]);
+
+    let queue = api(&address, "/api/queue");
+    assert_eq!(queue["default_workflow"], "implement");
+    assert_eq!(json_of(&setup, "queue")["default_workflow"], "implement");
+    let output = setup.priory(&["queue", "--json"]);
+    succeeded(&output);
+    let without_factory: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let bare_queue = api(&bare_address, "/api/queue");
+    for queue in [without_factory, bare_queue, json_of(&bare, "queue")] {
+        assert_eq!(queue.get("default_workflow"), Some(&Value::Null));
+    }
 }
 
 #[test]
@@ -4567,8 +4592,90 @@ fn a_request_without_a_daemon_gets_503() {
 }
 
 #[test]
+fn a_request_for_a_workflow_that_is_not_requestable_gets_400_before_it_reaches_the_daemon() {
+    let mut setup = Setup::new("web-request-scheduled", DEFAULTS);
+    let scheduled = format!("requestable = false\n{WORKFLOW}");
+    fs::write(setup.dir.join("factory/workflows/sweep.toml"), scheduled).unwrap();
+    // No daemon runs: a request that got past the check would get 503.
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let (status, body) = post(
+        &address,
+        "/api/request",
+        "",
+        r#"{"text": "Sweep now", "workflow": "sweep"}"#,
+    );
+
+    assert_eq!(status, 400, "{body}");
+    assert!(
+        body.contains("workflow `sweep` is not requestable"),
+        "{body}"
+    );
+    for workflow in ["implement", "nope"] {
+        let body = json!({"text": "Fix it", "workflow": workflow}).to_string();
+        let (status, body) = post(&address, "/api/request", "", &body);
+        assert_eq!(status, 503, "{workflow}: {body}");
+    }
+}
+
+#[test]
+fn the_request_default_stays_requestable_when_its_workflow_opts_out() {
+    let mut setup = Setup::new("web-request-default-out", DEFAULTS);
+    let opted_out = format!("requestable = false\n{WORKFLOW}");
+    fs::write(
+        setup.dir.join("factory/workflows/implement.toml"),
+        opted_out,
+    )
+    .unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+
+    let offered = api(&address, "/api/request")["workflows"].clone();
+    let (status, body) = post(
+        &address,
+        "/api/request",
+        "",
+        r#"{"text": "Fix it", "workflow": "implement"}"#,
+    );
+
+    assert_eq!(offered, json!(["implement"]));
+    assert_eq!(status, 503, "{body}");
+}
+
+#[test]
+fn editing_requestable_under_a_running_serve_changes_what_it_offers_and_refuses() {
+    let mut setup = Setup::new("reload-requestable", DEFAULTS);
+    let sweep = setup.dir.join("factory/workflows/sweep.toml");
+    fs::write(&sweep, WORKFLOW).unwrap();
+    let address = setup.start(&["serve", &setup.factory()]);
+    let request = r#"{"text": "Sweep now", "workflow": "sweep"}"#;
+    assert_eq!(
+        api(&address, "/api/request")["workflows"],
+        json!(["implement", "sweep"])
+    );
+
+    fs::write(&sweep, format!("requestable = false\n{WORKFLOW}")).unwrap();
+    eventually("the opt-out", || {
+        api(&address, "/api/request")["opted_out"] == json!(["sweep"])
+    });
+    assert_eq!(
+        api(&address, "/api/queue")["workflows"],
+        json!(["implement"])
+    );
+    assert_eq!(post(&address, "/api/request", "", request).0, 400);
+
+    fs::write(&sweep, WORKFLOW).unwrap();
+    eventually("the opt-in", || {
+        api(&address, "/api/request")["opted_out"] == json!([])
+    });
+    // No daemon runs, so a request that passes the check gets 503.
+    assert_eq!(post(&address, "/api/request", "", request).0, 503);
+}
+
+#[test]
 fn the_request_endpoint_reads_the_defaults_and_choices_the_add_control_offers() {
     let mut setup = Setup::new("web-request-defaults", DEFAULTS);
+    let scheduled = format!("requestable = false\n{WORKFLOW}");
+    fs::write(setup.dir.join("factory/workflows/sweep.toml"), scheduled).unwrap();
     let address = setup.start(&["serve", &setup.factory()]);
     let mut bare = Setup::new("web-request-no-defaults", SERVE);
     let bare_address = bare.start(&["serve", &bare.factory()]);
@@ -4579,6 +4686,7 @@ fn the_request_endpoint_reads_the_defaults_and_choices_the_add_control_offers() 
             "workflow": "implement",
             "band": "today",
             "workflows": ["implement"],
+            "opted_out": ["sweep"],
             "bands": ["blocker", "now", "today", "later"],
         })
     );
@@ -4926,8 +5034,21 @@ fn decrypt(body: &[u8], key: &p256::SecretKey, auth: &[u8]) -> Vec<u8> {
 impl Setup {
     /// Subscribes a browser at `endpoint` through the API, and returns its private key and auth.
     fn subscribe(&self, address: &str, endpoint: &str) -> (p256::SecretKey, Vec<u8>) {
+        self.subscribe_to(address, endpoint, None)
+    }
+
+    /// As `subscribe`, with the kinds the browser chose.
+    fn subscribe_to(
+        &self,
+        address: &str,
+        endpoint: &str,
+        kinds: Option<Value>,
+    ) -> (p256::SecretKey, Vec<u8>) {
         use base64ct::{Base64UrlUnpadded, Encoding};
-        let (browser, key) = subscription(endpoint);
+        let (mut browser, key) = subscription(endpoint);
+        if let Some(kinds) = kinds {
+            browser["kinds"] = kinds;
+        }
         let (status, body) = post(address, "/api/push/subscribe", "", &browser.to_string());
         assert_eq!(status, 200, "{body}");
         let auth = Base64UrlUnpadded::decode_vec(browser["keys"]["auth"].as_str().unwrap());
@@ -5051,6 +5172,85 @@ fn a_new_ask_pushes_one_notification_per_subscription_with_only_its_title_and_ur
             .1
             .contains(secret)
     );
+}
+
+#[test]
+fn each_subscription_gets_the_kinds_it_chose() {
+    const PHONE: &str = "https://web.push.apple.com/phone";
+    const LAPTOP: &str = "https://fcm.googleapis.com/laptop";
+    const DESKTOP: &str = "https://fcm.googleapis.com/desktop";
+    let mut setup = Setup::new("push-kinds", SERVE);
+    setup.seed();
+    // No task starts, so none turns blocked and sends an alarm of its own.
+    succeeded(&setup.priory(&["pause"]));
+    let address = setup.start(&["daemon", &setup.factory()]);
+    let ask_only =
+        json!({ "ask": true, "stopped": false, "intake": false, "uncertain": false, "cap": false });
+    setup.subscribe_to(&address, PHONE, Some(ask_only));
+    let resend = |endpoint: &str, kinds: Option<Value>| {
+        let (mut browser, _) = subscription(endpoint);
+        if let Some(kinds) = kinds {
+            browser["kinds"] = kinds;
+        }
+        post(&address, "/api/push/subscribe", "", &browser.to_string())
+    };
+    for refused in [
+        json!({ "weather": true }),
+        json!(["ask"]),
+        json!({ "ask": "yes" }),
+    ] {
+        let (status, body) = resend(PHONE, Some(refused));
+        assert_eq!(status, 400, "{body}");
+    }
+    // A page that knows no kinds sends the subscription again, and the choice stays.
+    let kinds = |reply: (u16, String)| -> Value {
+        let reply: Value = serde_json::from_str(&reply.1).unwrap();
+        assert_eq!(reply["ok"], "subscribed");
+        reply["kinds"].clone()
+    };
+    assert_eq!(
+        kinds(resend(PHONE, Some(json!({ "cap": true }))))["stopped"],
+        false
+    );
+    resend(PHONE, Some(json!({ "cap": false })));
+    setup.subscribe(&address, LAPTOP);
+    assert_eq!(
+        kinds(resend(LAPTOP, None)),
+        json!({ "ask": true, "stopped": true, "intake": true, "uncertain": true, "cap": true, "landed": false, "stall": false })
+    );
+    assert_eq!(
+        kinds(resend(PHONE, None)),
+        json!({ "ask": true, "stopped": false, "intake": false, "uncertain": false, "cap": false, "landed": false, "stall": false })
+    );
+    let urls = |from: usize, count: usize| {
+        setup.until_pushes(from + count);
+        std::thread::sleep(Duration::from_millis(1500));
+        let mut urls: Vec<String> = setup.pushes()[from..]
+            .iter()
+            .map(|push| push["url"].as_str().unwrap().to_owned())
+            .collect();
+        urls.sort();
+        urls
+    };
+    let db = setup.db();
+
+    setup.ask_more(&db, "Merge it?");
+    db.execute("UPDATE tasks SET state = 'blocked' WHERE id = 1", [])
+        .unwrap();
+    assert_eq!(urls(0, 3), [LAPTOP, LAPTOP, PHONE]);
+
+    // The desk, which a landed-wrong notice reads, parses an open ask's command as JSON.
+    db.execute("UPDATE asks SET answer = 'yes'", []).unwrap();
+    let late = json!({ "stopped": false, "landed": true, "stall": true });
+    setup.subscribe_to(&address, DESKTOP, Some(late));
+    db.execute(
+        "INSERT INTO inbox (id, time, type, subject, data, links, outcome)
+         VALUES ('r900', '2026-11-17T09:00:00Z', 'priory.report', 'priory',
+           '{\"line\":\"landed wrong: o/r#4 of task 1 is red on main\"}', '[]', 'report')",
+        [],
+    )
+    .unwrap();
+    assert_eq!(urls(3, 1), [DESKTOP]);
 }
 
 #[test]

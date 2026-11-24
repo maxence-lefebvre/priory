@@ -44,6 +44,54 @@ fn example_factory(to: &Path) {
     }
 }
 
+/// The tutorial's files: each fenced block whose paragraph starts with the file's path.
+fn tutorial_files(page: &str) -> Vec<(&str, &str)> {
+    let fences = page.split("\n```").collect::<Vec<_>>();
+    let mut found = Vec::new();
+    for pair in fences.chunks_exact(2) {
+        let intro = pair[0].trim_end().rsplit("\n\n").next().unwrap();
+        let path = intro
+            .strip_prefix('`')
+            .and_then(|rest| rest.split_once('`'))
+            .map(|(path, _)| path)
+            .filter(|path| path.ends_with(".toml") || path.ends_with(".md"));
+        if let (Some(path), Some((_, content))) = (path, pair[1].split_once('\n')) {
+            found.push((path, content));
+        }
+    }
+    found
+}
+
+#[test]
+fn the_tutorials_factory_passes_check_and_prints_the_line_the_page_quotes() {
+    let page = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../GETTING_STARTED.md");
+    let page = fs::read_to_string(page).unwrap();
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("tutorial");
+    let _ = fs::remove_dir_all(&dir);
+    let files = tutorial_files(&page);
+    for (path, content) in &files {
+        let file = dir.join(path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, format!("{content}\n")).unwrap();
+    }
+
+    let output = harness::priory().arg("check").arg(&dir).output().unwrap();
+
+    assert_eq!(
+        files.iter().map(|(path, _)| *path).collect::<Vec<_>>(),
+        [
+            "factory.toml",
+            "agents/implementer/agent.md",
+            "workflows/implement.toml",
+            "triggers/agent-label.toml"
+        ]
+    );
+    let printed = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{printed}{stderr}");
+    assert!(page.contains(&format!("`{}`", printed.trim())), "{printed}");
+}
+
 #[test]
 fn the_example_factory_passes_check() {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("reference-example");

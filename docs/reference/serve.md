@@ -30,7 +30,7 @@ does, with every count in `older` at 0. Their rows match the CLI's JSON only wit
 | `/api/batches` | `priory batch show --json` | `batches`: every batch, newest first, without its entries and closes. See [batches.md](../daemon/batches.md#priory-batch-show) |
 | `/api/batches/{id}` | `priory batch show ID --json` | one batch with its entries, closes and splits. `ID` is the batch's id or its key |
 | `/api/views` | `priory views --json` | an object: [Views](#views) |
-| `/api/request` | | what the web view's Add prefills: `workflow` and `band`, the [`[request]`](factory.md#request) defaults, each `null` when unset; `workflows`, the factory's workflow names; and `bands`, its bands in order |
+| `/api/request` | | what the web view's Add prefills: `workflow` and `band`, the [`[request]`](factory.md#request) defaults, each `null` when unset; `workflows`, the names of its [requestable](workflows.md#top-level-keys) workflows, sorted; `opted_out`, the names of its other workflows, sorted; and `bands`, its bands in order |
 | `/api/links` | `priory links --json` | an object: [Links](#links) |
 | `/api/flows` | `priory flows --json` | an object: [Flows](#flows) |
 | `/api/reports` | `priory report list --json` | `reports`: each task's report as `task`, `date`, `greeting` and `put`, newest first |
@@ -214,7 +214,7 @@ application/json` and a JSON body of at most 16 KiB with exactly the fields belo
 | `POST /api/reports/comment` | `row`, the row's id, `text`, a string, and `revision`, the report's revision the client showed. A comment verb takes `text` only with `comment` and `reply`, and `revision` only with `comment` |
 | `POST /api/reports/reply` | `comment`, an integer, and `text`, a string |
 | `POST /api/reports/resolve`, `POST /api/reports/reopen` | `comment`, an integer |
-| `POST /api/push/subscribe` | the browser's `PushSubscription.toJSON()`: `endpoint`, a string, `keys`, an object of `p256dh` and `auth`, base64url strings, and optionally `expirationTime`, which is ignored. See [Notifications](#notifications) |
+| `POST /api/push/subscribe` | the browser's `PushSubscription.toJSON()`: `endpoint`, a string, `keys`, an object of `p256dh` and `auth`, base64url strings, and optionally `expirationTime`, which is ignored, and `kinds`, an object of booleans. An unknown kind gets `400`. See [Notifications](#notifications) |
 | `POST /api/push/unsubscribe` | `endpoint`, a string |
 | `POST /api/todos` | `text`, one line, then optionally `band`, one of the factory's bands, and `due`, an RFC 3339 time, as `priory todo add`. The reply's `ok` is the new to-do's id |
 | `POST /api/todos/{id}/done` | `{}`, as `priory todo done`. A to-do already done gets `422` |
@@ -253,6 +253,7 @@ curl -X POST http://127.0.0.1:7340/api/asks/42/answer -H "Authorization: Bearer 
 | `200` `{"key": "cli:2026-11-20-1", "id": 7, "outcome": "created"}` | For `/api/request`: the daemon published the request and task `id` holds `key`. `id` is `null` when no task took the key. `outcome` is `created` for a new task; `said` when the text joined an active task that hears it now, or that shows it on its open step's ask; `kept` when it joined a task with no run yet, which reads it in its first prompt; `null` while the log has not handed the request back |
 | `409` `{"error", "ask"}` | The ask's revision is no longer the one sent, or it was answered, dismissed or withdrawn. `ask` is its current state |
 | `409` `{"error"}` | Another runner's task is held by a third runner, or is at another generation than the one sent. Or a cancel's or a move's `revision` is no longer the state's. Or a pick's report is at another revision than the one sent, or the pick already holds that choice or an applied one: read the report again |
+| `400` `{"error"}` | For `/api/request`: `workflow` names a workflow of the factory that is not [requestable](workflows.md#top-level-keys), so nothing was sent. The daemon answers a name the factory lacks |
 | `409` `{"error", "key", "id"}` | For `/api/request`: the same text already went to `key`, so nothing was added. `id` is the active task that holds `key`, or `null` |
 | `404`, `422` `{"error"}` | The ask, task or pick is gone, or the daemon refused for another reason, such as a resume of a task that is not blocked, a say to a task with no run yet, or a comment on a stale report revision. `error` is the CLI's sentence |
 | `503` `{"error"}` | No daemon listens on the socket, or the log cannot be reached for another runner's ask or task, so nothing was sent. Reads keep working |
@@ -716,7 +717,9 @@ image or a video `Content-Disposition: inline`. See [evidence.md](../daemon/evid
 | Field | Each entry |
 | ----- | ---------- |
 | `bands` | The name of one of the factory's bands, highest first, as the daemon last recorded them. A band that holds no task is listed too |
-| `workflows` | The name of one of the factory's workflows, sorted. `priory queue --json` without `DIR` lists none |
+| `workflows` | The name of one of the factory's [requestable](workflows.md#top-level-keys) workflows, sorted. `null` from `priory queue --json` without `DIR` |
+| `opted_out` | The name of one of the factory's other workflows, sorted. `null` as `workflows` is |
+| `default_workflow` | Not a list: the [`[request]`](factory.md#request) workflow. It is null when the factory sets none, and in `priory queue --json` without `DIR` |
 | `up_next` | One of the next three runs, soonest first: `at`, `kind`, `task`, `key`, `title`, `trigger` and `why`. See [Up next](#up-next) |
 | `waiting` | A queued or ready task in start order, then each held task by when it was held: `position` and `band_position` (its place in the queue and in its band, null for a held task), `id`, `key`, `title`, `workflow`, `step`, `state`, `band`, `aged` (the band [`[queue] age`](../daemon/runs.md#aging) moved it up to in start order, null when it starts in its own band or is held), `lane`, `reason`, `since`, `conditions` (see [Conditions](#conditions)), null for a task that is not held, `stops`, the tasks whose runs stop at their next turn end to make room for it, and `protected`, each live run's task that it may not stop, as `{task, reason}` (see [room.md](../daemon/room.md#urgent-wakes)); both are `[]` for any other task |
 | `asleep` | An asleep task, longest asleep first: `id`, `key`, `title`, `workflow`, `step`, `band`, `lane`, `since` (when it fell asleep), `retired`, and `waits`, each open wait as `kind`, `on` (what it waits on, as `priory waits` shows it) and `since` (when it was stored). A task asleep only on an ask has no waits |
@@ -944,7 +947,22 @@ same `endpoint`. The daemon refuses it with `422` when:
 - 20 other subscriptions exist.
 
 `POST /api/push/unsubscribe` drops the subscription with that `endpoint`, and answers `200` even
-when none had it. Both reply `{"ok": "subscribed"}` or `{"ok": "unsubscribed"}`.
+when none had it, with `{"ok": "unsubscribed"}`.
+
+`kinds` turns kinds of notification on or off for that subscription. It adds to the stored choice,
+and a kind no one turned on or off takes its default. Without `kinds`, a known `endpoint`
+keeps its choice. The reply is `{"ok": "subscribed", "kinds": {...}}`, with every kind and whether the subscription
+gets it:
+
+| Kind | Default | Notifies for |
+| ---- | ------- | ------------ |
+| `ask` | on | a new ask, and an ask asked again |
+| `stopped` | on | a task that turns `blocked` or `failed` |
+| `intake` | on | a report the intake posts when a poll fails |
+| `uncertain` | on | a prompt or an answer's command that turns `uncertain` |
+| `cap` | on | a `day` or `week` spend cap reached |
+| `landed` | off | a merge that landed wrong |
+| `stall` | off | a queue that stays stalled for 5 minutes |
 
 Each notification is a Web Push message encrypted as RFC 8291 says (`Content-Encoding:
 aes128gcm`), signed with VAPID (RFC 8292), with `TTL: 86400` and `Urgency: high`. Its plaintext is
@@ -953,8 +971,8 @@ JSON with three fields and nothing else:
 | Field | For a new ask | For an alarm |
 | ----- | ------------- | ------------ |
 | `id` | `<queued>/<row>`: when the daemon queued the notification and its row, so a service worker drops a copy | as for an ask |
-| `title` | the ask's title, cut to 120 characters; without one, `task <key> asks at <step>`, or `ask <name>` for an outside ask | `task <key> <state>`, such as `task gh:o/r#42 blocked`; for a spend cap reached, the desk's line for it, cut to 120 characters |
-| `url` | `/asks/<id>`, with the ask's `id` as `/api/asks` lists it: an outside ask's or the daemon's ask's name, else its number | `/tasks/<id>`, with the task's `id` as `/api/tasks` lists it, or `/` for a spend cap or an intake report |
+| `title` | the ask's title, cut to 120 characters; without one, `task <key> asks at <step>`, or `ask <name>` for an outside ask | `task <key> <state>`, such as `task gh:o/r#42 blocked`; for a spend cap reached, the desk's line for it, cut to 120 characters; for a stall, `the queue is stalled: short of <resource>` |
+| `url` | `/asks/<id>`, with the ask's `id` as `/api/asks` lists it: an outside ask's or the daemon's ask's name, else its number | `/tasks/<id>`, with the task's `id` as `/api/tasks` lists it, `/` for a spend cap or a report, or `/queue` for a stall |
 
 ## Report
 

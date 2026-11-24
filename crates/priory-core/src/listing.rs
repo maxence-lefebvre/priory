@@ -192,9 +192,13 @@ const DESK: &str = concat!(
                WHERE actions.action = 'answer' AND actions.status = 'uncertain'
                  AND tasks.state NOT IN ('done', 'failed', 'dropped')
                UNION ALL
-               SELECT 0, holds.created, 'held', holds.id, holds.task, tasks.lane, tasks.reason
+               SELECT 0, holds.created, 'held', holds.id, holds.task, tasks.lane,
+                 CASE tasks.state WHEN 'held' THEN tasks.reason
+                   WHEN 'running' THEN 'holds after this turn: ' || holds.reason
+                   ELSE 'holds once it is ready: ' || holds.reason END
                FROM holds JOIN tasks ON tasks.id = holds.task
-               WHERE holds.released IS NULL AND tasks.state = 'held' AND holds.id = (
+               WHERE holds.released IS NULL AND tasks.state NOT IN ('done', 'failed', 'dropped')
+                 AND holds.id = (
                  SELECT min(id) FROM holds AS hold WHERE hold.task = holds.task
                  AND hold.released IS NULL) AND holds.kind != 'parked'
                  AND (tasks.batch_entry IS NULL OR EXISTS (SELECT 1 FROM holds AS hold
@@ -987,12 +991,13 @@ fn asks_of(
     Ok(asks)
 }
 
-/// The factory's bands highest first, its workflow names, the waiting tasks in start order, then the held ones with
+/// The factory's bands highest first, its requestable and opted-out workflows (`null` without the factory), its `[request]` workflow, the waiting tasks in start order, then the held ones with
 /// their hold, the live runs, and the tasks that ended in the last day, each with its title, and up next: the next three runs, with `schedules`' firings.
 pub fn queue(
     db: &Connection,
     schedules: &[(String, Trigger)],
-    workflows: &[String],
+    offered: Option<(&[String], &[String])>,
+    default_workflow: Option<&str>,
     now: Timestamp,
 ) -> rusqlite::Result<Value> {
     let waiting = format!(
@@ -1024,7 +1029,9 @@ pub fn queue(
         .for_each(parse_json);
     Ok(json!({
         "bands": state::band_names(db)?,
-        "workflows": workflows,
+        "workflows": offered.map(|(requestable, _)| requestable),
+        "opted_out": offered.map(|(_, opted_out)| opted_out),
+        "default_workflow": default_workflow,
         "up_next": up_next(db, &waiting, schedules, now)?,
         "waiting": waiting,
         "asleep": asleep(db)?,

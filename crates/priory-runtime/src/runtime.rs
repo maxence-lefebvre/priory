@@ -825,8 +825,39 @@ pub fn is_ancestor(worktree: &Path, below: &str, commit: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// The origin branches, as last pushed or fetched, that hold every commit of the local branch
+/// `branch` of `worktree`'s clone, or the other way round. A branch already in the trunk has none.
+/// `None` when git cannot say.
+pub fn in_line(home: &Path, worktree: &Path, branch: &str) -> Option<Vec<String>> {
+    let repo = worktree
+        .parent()?
+        .strip_prefix(home.join("worktrees"))
+        .ok()?;
+    let clone = home.join("repos").join(repo);
+    let head = kept_head(home, worktree, branch)?;
+    if is_ancestor(&clone, &head, "origin/HEAD") {
+        return Some(Vec::new());
+    }
+    let refs = |filter: &[&str]| {
+        run(git(&clone)
+            .args(["for-each-ref", "--format=%(refname:lstrip=3)"])
+            .args(filter)
+            .arg("refs/remotes/origin"))
+        .ok()
+    };
+    let ahead = refs(&["--contains", &head])?;
+    let behind = refs(&["--merged", &head, "--no-merged", "origin/HEAD"])?;
+    Some(
+        ahead
+            .lines()
+            .chain(behind.lines())
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
 /// The open pull requests of `repo` that `author` opened, or every open one without an author,
-/// each with its `number`, `title` and `url`.
+/// each with its `number`, `title`, `url`, `headRefName` and `isCrossRepository`.
 pub fn open_pull_requests(
     repo: &str,
     author: Option<&str>,
@@ -842,7 +873,7 @@ pub fn open_pull_requests(
         "--limit",
         "1000",
         "--json",
-        "number,title,url",
+        "number,title,url,headRefName,isCrossRepository",
     ]);
     if let Some(author) = author {
         command.args(["--author", author]);

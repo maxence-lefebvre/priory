@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { droppedNote, droppedWhy, emptyDetail, eventWords, handled, sinceWords, unheardActs, unheardNote, unroutedNote, routeAction, neverOwned } from "./inbox.js";
+import { droppedNote, droppedWhy, emptyDetail, eventWords, handled, requestedWorkflow, sinceWords, unheardActs, unheardNote, unroutedNote, routeAction, neverOwned } from "./inbox.js";
 
 const event = (fields) => ({ seq: 4, type: "github.pull_request.comment", subject: "o/r#7", time: "2026-11-21T09:00:00Z", task: 1, outcome: "kept", prompt: null, wait: null, ...fields });
 
@@ -26,6 +26,13 @@ test("an owned group's action follows its owner, as priory inbox --unrouted prin
   assert.equal(routeAction({ state: "failed" }), "revive");
   assert.equal(routeAction({ state: "done" }), "request");
   assert.equal(routeAction({ state: "asleep" }), "subscribe");
+});
+
+test("Request a task swaps only a workflow the factory opts out, and keeps one the factory lacks", () => {
+  assert.equal(requestedWorkflow("bonjour", ["bonjour"]), undefined);
+  assert.equal(requestedWorkflow("removed", ["bonjour"]), "removed");
+  assert.equal(requestedWorkflow("bonjour", []), "bonjour");
+  assert.equal(requestedWorkflow("bonjour", undefined), "bonjour");
 });
 
 test("the desk's unheard note is calm, and empty with none", () => {
