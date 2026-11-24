@@ -1682,8 +1682,15 @@ fn snooze(args: Vec<String>) -> ExitCode {
     let [kind, id, rest @ ..] = &args[..] else {
         return usage();
     };
-    let Ok(id) = id.parse() else {
-        return usage();
+    let id = match kind.as_str() {
+        "ask" => match ask_id(id) {
+            Ok(id) => id,
+            Err(error) => return exit("snooze", Err(error)),
+        },
+        _ => match id.parse() {
+            Ok(id) => id,
+            Err(_) => return usage(),
+        },
     };
     let until = match rest {
         [flag] if flag == "--clear" => snooze::until(None, None),

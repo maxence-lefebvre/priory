@@ -101,7 +101,8 @@ a group. `PRIORY_METRICS` replaces that list for one process, such as `process,l
 - `priory ask ID JSON`: stores an ask from a session Priory did not start. See
   [tools.md](tools.md#asks-from-outside-priory).
 - `priory snooze (ask | blocked | failed | prompt) ID (--for DURATION | --until TIME | --clear)`:
-  hides a desk item until then, or brings it back. See [desk.md](../daemon/desk.md#snooze).
+  hides a desk item until then, or brings it back. An ask's `ID` is the id `priory asks` lists, a
+  number or an outside ask's name. See [desk.md](../daemon/desk.md#snooze).
 - `priory todo add TEXT [--band B] [--due TIME]`, `priory todo done ID`, `priory todo list [--json]`:
   adds a to-do of your own to the desk, marks it done, or lists them. See
   [desk.md](../daemon/desk.md#to-dos).

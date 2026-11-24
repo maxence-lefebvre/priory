@@ -1688,6 +1688,7 @@ impl Seen {
     fn red(&self) -> bool {
         self.kind == CHECKED
             && !PASSING.contains(&self.data["conclusion"].as_str().unwrap_or("none"))
+            && self.data["superseded_by"].is_null()
     }
 }
 

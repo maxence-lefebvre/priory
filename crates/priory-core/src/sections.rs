@@ -81,6 +81,19 @@ pub struct Pick {
     /// Options that request a task instead of waking the report's task, by option.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub requests: BTreeMap<String, priory_intake::request::Request>,
+    /// Options that dismiss or snooze an ask instead of waking the report's task, by option.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub asks: BTreeMap<String, AskAct>,
+}
+
+/// What a pick's option does to an open ask, named by the id `priory asks` lists.
+#[derive(Serialize, Deserialize, JsonSchema, Clone)]
+#[serde(tag = "act", rename_all = "lowercase", deny_unknown_fields)]
+pub enum AskAct {
+    /// Closes the ask with no answer, as `priory dismiss` does.
+    Dismiss { ask: String },
+    /// Hides the ask from the desk until `until`, an RFC 3339 UTC time, as `priory snooze` does.
+    Snooze { ask: String, until: String },
 }
 
 /// The report in `text`, or why its shape is refused.
@@ -119,7 +132,21 @@ fn check(report: &Report) -> Result<(), String> {
             if pick.options.is_empty() {
                 return Err(format!("pick {:?} has no options", pick.id));
             }
-            let named = pick.recommended.iter().chain(pick.requests.keys());
+            if let Some(both) = pick
+                .asks
+                .keys()
+                .find(|option| pick.requests.contains_key(*option))
+            {
+                return Err(format!(
+                    "pick {:?}: {both:?} both requests a task and acts on an ask",
+                    pick.id
+                ));
+            }
+            let named = pick
+                .recommended
+                .iter()
+                .chain(pick.requests.keys())
+                .chain(pick.asks.keys());
             if let Some(stray) = named.into_iter().find(|name| !pick.options.contains(name)) {
                 return Err(format!(
                     "pick {:?}: {stray:?} is not one of its options {:?}",
@@ -336,8 +363,9 @@ pub struct Choice {
 pub(crate) fn pick(
     db: &mut Connection,
     choice: &Choice,
-    factory: &priory_factory::factory::Factory,
+    trace: &crate::trace::Trace,
 ) -> rusqlite::Result<Result<String, String>> {
+    let factory = trace.factory;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let found = tx
         .query_row(
@@ -386,7 +414,24 @@ pub(crate) fn pick(
             pick.options.join(", ")
         )));
     }
+    if let Some(act) = pick.asks.get(&choice.option).cloned() {
+        let applied = match on_ask(&tx, &act, trace)? {
+            Ok(applied) => applied,
+            Err(error) => return Ok(Err(format!("pick {}: {error}", pick.id))),
+        };
+        if let Some(before) = &pick.chosen {
+            let text = format!(
+                "The person changed their pick on {} in your report from {before} to {}: do not apply {before}. Priory applied {} and filled the pick's applied.",
+                pick.id, choice.option, choice.option
+            );
+            if let Err(error) = crate::tools::say(&tx, task, &text, &state, &factory.workflows)? {
+                return Ok(Err(format!("pick {}: {error}", pick.id)));
+            }
+        }
+        pick.applied = Some(applied);
+    }
     match pick.requests.get(&choice.option) {
+        _ if pick.asks.contains_key(&choice.option) => {}
         Some(request) => {
             if let Err(error) = priory_intake::request::check(factory, request) {
                 return Ok(Err(format!("pick {}: {error}", pick.id)));
@@ -450,6 +495,51 @@ pub(crate) fn pick(
     })
 }
 
+/// Applies `act` to its ask in `tx`, and returns what goes in the pick's `applied`.
+fn on_ask(
+    tx: &rusqlite::Transaction,
+    act: &AskAct,
+    trace: &crate::trace::Trace,
+) -> rusqlite::Result<Result<String, String>> {
+    let (AskAct::Dismiss { ask } | AskAct::Snooze { ask, .. }) = act;
+    let id = match crate::tools::ask_named(tx, ask) {
+        Ok(id) => id,
+        Err(_) => match ask.parse::<i64>() {
+            Ok(id) => id,
+            Err(_) => return Ok(Err(format!("there is no ask {ask}"))),
+        },
+    };
+    Ok(match act {
+        AskAct::Dismiss { .. } => {
+            let dismiss = crate::tools::Dismiss {
+                dismiss: id,
+                revision: None,
+            };
+            crate::tools::dismiss_in_tx(tx, &dismiss, trace.factory, None)?
+                .map(|_| "dismissed".to_owned())
+        }
+        AskAct::Snooze { until, .. } => {
+            // A pick made after the report's time snoozes until the next 06:00 UTC instead.
+            let until: String = tx.query_row(
+                "SELECT CASE WHEN ?1 > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                   OR strftime('%Y-%m-%dT%H:%M:%SZ', ?1) IS NOT ?1 THEN ?1
+                   ELSE strftime('%Y-%m-%dT06:00:00Z', 'now', '-6 hours', '+1 day') END",
+                [until],
+                |row| row.get(0),
+            )?;
+            let snooze = crate::snooze::Snooze {
+                snooze: crate::snooze::Item {
+                    kind: "ask".to_owned(),
+                    id,
+                },
+                until: Some(until.clone()),
+            };
+            crate::snooze::snooze_in_tx(tx, &snooze, trace)?
+                .map(|_| format!("snoozed until {until}"))
+        }
+    })
+}
+
 /// What a comment line does: a new thread on a row, a reply in a thread, or a thread's resolve or
 /// reopen.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
@@ -479,7 +569,7 @@ pub struct Comment {
 }
 
 /// Applies a comment line to the report that holds its row: the written last of those that have
-/// a row with that id. A comment or reply from anyone but a live run of the report's own task
+/// a row with that id or key. A comment or reply from anyone but a live run of the report's own task
 /// tells its agent, as `priory say` does, and is refused when `say` would refuse it.
 pub(crate) fn comment(
     db: &mut Connection,
@@ -490,14 +580,18 @@ pub(crate) fn comment(
     let found = match comment.comment {
         Remark::Comment => tx
             .query_row(
-                "SELECT reports.task, reports.revision, tasks.state, NULL, 0
-                 FROM reports JOIN tasks ON tasks.id = reports.task
-                 WHERE EXISTS (SELECT 1 FROM json_each(reports.report, '$.sections') AS section,
+                // A row is named by its id, or by its key when it has an id to take comments.
+                "SELECT reports.task, reports.revision, tasks.state, NULL, 0,
+                   json_extract(row.value, '$.id')
+                 FROM reports JOIN tasks ON tasks.id = reports.task,
+                   json_each(reports.report, '$.sections') AS section,
                    json_each(section.value, '$.rows') AS row
-                   WHERE json_extract(row.value, '$.id') = ?1)
-                 ORDER BY reports.put DESC, reports.task DESC LIMIT 1",
+                 WHERE json_extract(row.value, '$.id') IS NOT NULL
+                   AND ?1 IN (json_extract(row.value, '$.id'), json_extract(row.value, '$.key'))
+                 ORDER BY json_extract(row.value, '$.id') = ?1 DESC, reports.put DESC,
+                   reports.task DESC LIMIT 1",
                 [&comment.on],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, comment.on.clone())),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
             )
             .optional()?
             .ok_or_else(|| format!("no report has the row {}", comment.on)),
