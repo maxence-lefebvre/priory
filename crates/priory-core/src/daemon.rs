@@ -1016,6 +1016,7 @@ fn apply(
 #[serde(untagged)]
 enum Input {
     Guard(crate::guard::Line),
+    Private(crate::private::Line),
     Evidence(crate::evidence::AddLine),
     Connector(crate::todo::ConnectorLine),
     Scoped(crate::scoped::Line),
@@ -1200,6 +1201,11 @@ fn take(
     match serde_json::from_str::<Input>(line) {
         Ok(Input::Guard(line)) => {
             Ok((replied(crate::guard::decide(db, &line.guard, trace)?), None))
+        }
+        Ok(Input::Private(_)) => {
+            let private = trace.factory.private().cloned().unwrap_or_default();
+            let rules = serde_json::to_string(&private).expect("the rules serialize");
+            Ok((replied(Ok(rules)), None))
         }
         Ok(Input::Evidence(line)) => Ok((
             replied(crate::evidence::add(
@@ -1610,7 +1616,7 @@ fn diagnose(
 ) -> Result<Repair, Error> {
     let need = crate::room::need(factory.agents.get(agent).map(|agent| &agent.value));
     let short = |db: &Connection| -> Result<Result<Option<crate::room::Short>, String>, Error> {
-        let promised = state::promised(db, factory, None)?;
+        let promised = state::promised(db, factory)?;
         Ok(room::measure(home).map(|room| crate::room::wait(&room, share, promised, need)))
     };
     let missing = |short: &crate::room::Short| {
@@ -2247,7 +2253,15 @@ fn open_pr(
                 branches: &branches,
                 base: base.as_deref(),
             };
-            open_stack(Path::new(worktree), repo, &stack, commit, title, &body)
+            let worktree = Path::new(worktree);
+            factory
+                .private()
+                .map_or(Ok(()), |private| {
+                    crate::private::screen_stack(
+                        private, worktree, repo, commit, stack.base, title, &body,
+                    )
+                })
+                .and_then(|()| open_stack(worktree, repo, &stack, commit, title, &body))
         }
     };
     Ok(match opened {
@@ -3034,7 +3048,7 @@ fn compact_idle(
             trust: false,
             direnv: None,
         };
-        let env: Vec<String> = guard_env(trace.factory).into_iter().collect();
+        let env: Vec<String> = guard_env(trace.factory).collect();
         if let Err(error) = launch(
             trace.factory,
             &agent.value,
@@ -3051,13 +3065,16 @@ fn compact_idle(
     Ok(())
 }
 
-/// `PRIORY_GUARD`: the factory's own guards, which the run's tool guard hook adds to the built-in ones.
-fn guard_env(factory: &Factory) -> Option<String> {
+/// `PRIORY_GUARD`: the factory's own guards, which the run's tool guard hook adds to the built-in
+/// ones. `PRIORY_PRIVATE`: the factory has private terms, which the hook asks the daemon for.
+fn guard_env(factory: &Factory) -> impl Iterator<Item = String> {
     let guards = factory.guards();
-    (guards != Default::default()).then(|| {
+    let guards = (guards != Default::default()).then(|| {
         let json = serde_json::to_string(&guards).expect("guards serialize");
         format!("PRIORY_GUARD={json}")
-    })
+    });
+    let private = factory.private().map(|_| "PRIORY_PRIVATE=1".to_owned());
+    guards.into_iter().chain(private)
 }
 
 /// The repository a task works in: its own, else its trigger's for a task stored before tasks

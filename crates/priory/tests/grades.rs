@@ -371,7 +371,9 @@ const NOW: &str = "2026-11-21T12:00:00Z";
 impl Setup {
     /// Makes `owner/repo` polled and installs a `gh` that logs its calls to `gh.log`, answers the
     /// check runs of commit `sha` from `checks-<sha>.json` (`heads/main` from `checks-heads-main.json`),
-    /// or a 404 when `404-<sha>` exists, a compare from `compare.json`, and reads `[]` elsewhere.
+    /// or a 404, 422 or 403 when `404-<sha>`, `422-<sha>` or `403-<sha>` exists, a compare from `compare.json`,
+    /// workflow 1 for an Actions run unless `workflow-<run>.json` exists, or the 403 of a token without the
+    /// permission when `403-run-<run>` exists, and reads `[]` elsewhere.
     fn polled_repo(&self) {
         let trigger = "source = \"github\"\nrepo = \"owner/repo\"\non = \"issues.labeled\"\n\
                        filter = { label = \"agent\" }\nworkflow = \"plan\"\nkey = \"issue.number\"\nband = \"today\"\n";
@@ -382,9 +384,15 @@ impl Setup {
             "#!/bin/sh\necho \"$*\" >> '{dir}/gh.log'\ncase \"$2\" in\n  repos/owner/repo/commits/*)\n    \
              sha=${{2#repos/owner/repo/commits/}}\n    sha=$(echo \"${{sha%%/check-runs*}}\" | tr / -)\n    \
              [ -f \"{dir}/404-$sha\" ] && {{ echo 'gh: Not Found (HTTP 404)' >&2; exit 1; }}\n    \
+             [ -f \"{dir}/422-$sha\" ] && {{ echo 'gh: No commit found (HTTP 422)' >&2; exit 1; }}\n    \
+             [ -f \"{dir}/403-$sha\" ] && {{ echo 'gh: Forbidden (HTTP 403)' >&2; exit 1; }}\n    \
              cat \"{dir}/checks-$sha.json\" 2>/dev/null || \
              echo '{{\"total_count\":0,\"check_runs\":[]}}' ;;\n  repos/owner/repo/compare/*)\n    \
              cat \"{dir}/compare.json\" 2>/dev/null || echo '{{\"status\":\"diverged\"}}' ;;\n  \
+             repos/owner/repo/actions/runs/*)\n    \
+             [ -f \"{dir}/403-run-${{2##*/}}\" ] && {{ echo 'gh: Resource not accessible by personal access token (HTTP 403)' >&2; exit 1; }}\n    \
+             cat \"{dir}/workflow-${{2##*/}}.json\" 2>/dev/null || \
+             echo '{{\"workflow_id\":1}}' ;;\n  \
              *) echo '[]' ;;\nesac\n",
             dir = self.dir.display()
         );
@@ -406,7 +414,7 @@ impl Setup {
             .map(|(id, status, conclusion)| {
                 json!({ "id": id, "name": "ci", "status": status, "conclusion": conclusion,
                         "completed_at": completed,
-                        "html_url": format!("https://github.com/owner/repo/runs/{id}"),
+                        "html_url": format!("https://github.com/owner/repo/actions/runs/{id}/job/{id}"),
                         "app": { "slug": "github-actions" } })
             })
             .collect();
@@ -423,7 +431,8 @@ impl Setup {
     fn tip_run(&self, name: &str, sha: &str, status: &str, conclusion: &str, compare: &str) {
         let run = json!({ "id": 500, "name": name, "head_sha": sha, "status": status,
                           "conclusion": conclusion, "completed_at": "2026-11-20T10:30:00Z",
-                          "html_url": "https://github.com/owner/repo/runs/500" });
+                          "html_url": "https://github.com/owner/repo/actions/runs/500/job/500",
+                          "app": { "slug": "github-actions" } });
         let answer = json!({ "total_count": 1, "check_runs": [run] });
         fs::write(self.dir.join("checks-heads-main.json"), answer.to_string()).unwrap();
         let compare = json!({ "status": compare });
@@ -467,20 +476,54 @@ impl Setup {
 
     /// One intake poll at `now`, then the daemon reading what it published.
     fn poll_at(&self, now: &str) {
+        succeeded(&self.intake(now));
+        succeeded(&self.priory(&["daemon", &self.factory(), "--once"]));
+    }
+
+    /// One intake poll at `now`.
+    fn intake(&self, now: &str) -> Output {
+        self.intake_command(now)
+            .args(["intake", "--once", &self.factory()])
+            .output()
+            .unwrap()
+    }
+
+    /// A `priory` at `now` that finds the stub `gh`.
+    fn intake_command(&self, now: &str) -> Command {
         let path = format!(
             "{}:{}",
             self.dir.join("bin").display(),
             std::env::var("PATH").unwrap()
         );
-        let output = self
-            .command()
-            .args(["intake", "--once", &self.factory()])
-            .env("PATH", path)
-            .env("PRIORY_NOW", now)
-            .output()
-            .unwrap();
-        succeeded(&output);
-        succeeded(&self.priory(&["daemon", &self.factory(), "--once"]));
+        let mut command = self.command();
+        command.env("PATH", path).env("PRIORY_NOW", now);
+        command
+    }
+
+    /// Makes the Actions run `run` one of `workflow`.
+    fn workflow(&self, run: u64, workflow: u64) {
+        fs::write(
+            self.dir.join(format!("workflow-{run}.json")),
+            json!({ "workflow_id": workflow }).to_string(),
+        )
+        .unwrap();
+    }
+
+    /// The error of the last GitHub poll.
+    fn github_error(&self) -> Option<String> {
+        self.db()
+            .query_row(
+                "SELECT error FROM intake_sources WHERE source = 'github'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    /// How many `gh` calls named `path`.
+    fn calls(&self, path: &str) -> usize {
+        let log = fs::read_to_string(self.dir.join("gh.log")).unwrap_or_default();
+        log.lines().filter(|line| line.contains(path)).count()
     }
 
     /// How many times the intake read the check runs at `sha`.
@@ -645,7 +688,7 @@ fn a_cancelled_run_waits_for_the_later_run_then_counts_as_it_did() {
     assert_eq!(
         setup.alarms(),
         [
-            "priory: landed wrong: owner/repo#10 of task 1 is red on main: ci cancelled https://github.com/owner/repo/runs/1"
+            "priory: landed wrong: owner/repo#10 of task 1 is red on main: ci cancelled https://github.com/owner/repo/actions/runs/1/job/1"
         ]
     );
 }
@@ -693,6 +736,521 @@ fn a_cancelled_run_with_no_later_run_on_a_descendant_is_red() {
 
     assert_eq!(setup.red_after_merge(), 1);
     assert_eq!(setup.alarms().len(), 1);
+}
+
+/// A merge of task 1 at `m10` whose `ci` run failed, with its alarm on the desk.
+fn red_at_merge(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    setup.polled_repo();
+    setup.task(1, "green");
+    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z")]);
+    setup.checks_at("m10", &[(1, "completed", "failure")]);
+    setup.poll();
+    assert_eq!(setup.alarms().len(), 1);
+    setup
+}
+
+#[test]
+fn a_later_run_that_passes_on_a_commit_with_the_merge_clears_the_alarm_and_keeps_the_label() {
+    let setup = red_at_merge("red-recovers");
+    setup.tip_run("ci", "m11", "completed", "success", "ahead");
+
+    setup.poll();
+
+    assert_eq!(setup.alarms(), Vec::<String>::new());
+    assert_eq!(setup.red_after_merge(), 1);
+}
+
+#[test]
+fn a_run_that_passes_on_a_commit_without_the_merge_keeps_the_alarm() {
+    let setup = red_at_merge("red-not-contained");
+    for compare in ["diverged", "behind"] {
+        setup.tip_run("ci", "m11", "completed", "success", compare);
+
+        setup.poll();
+
+        assert_eq!(setup.alarms().len(), 1, "{compare}");
+    }
+}
+
+#[test]
+fn a_later_run_that_does_not_succeed_keeps_the_alarm() {
+    let setup = red_at_merge("red-still");
+    for (status, conclusion) in [
+        ("in_progress", ""),
+        ("completed", "failure"),
+        ("completed", "cancelled"),
+        ("completed", "skipped"),
+    ] {
+        setup.tip_run("ci", "m11", status, conclusion, "ahead");
+
+        setup.poll();
+
+        assert_eq!(setup.alarms().len(), 1, "{status} {conclusion}");
+    }
+}
+
+#[test]
+fn a_rerun_that_passes_on_the_merge_commit_clears_the_alarm() {
+    let setup = red_at_merge("red-rerun");
+    setup.tip_run("ci", "m10", "completed", "success", "identical");
+
+    setup.poll();
+
+    assert_eq!(setup.alarms(), Vec::<String>::new());
+}
+
+#[test]
+fn a_later_merge_that_passed_clears_the_alarm_while_the_tip_still_runs() {
+    let setup = red_at_merge("red-recovers-at-a-merge");
+    setup.tip_run("ci", "m12", "in_progress", "", "ahead");
+    setup.task(2, "green");
+    setup.handle(&[merged_on(11, 2, "bbb", "m11", "2026-11-20T11:00:00Z")]);
+    setup.checks_at("m11", &[(2, "completed", "success")]);
+    setup.poll();
+    assert_eq!(setup.alarms().len(), 1);
+
+    setup.poll();
+
+    assert_eq!(setup.alarms(), Vec::<String>::new());
+}
+
+#[test]
+fn a_gone_base_branch_keeps_the_alarm_and_the_poll_goes_on() {
+    let setup = red_at_merge("red-base-gone");
+    for status in ["404", "422"] {
+        fs::write(setup.dir.join(format!("{status}-heads-main")), "").unwrap();
+
+        setup.poll();
+
+        assert_eq!(setup.alarms().len(), 1);
+        assert_eq!(setup.github_error(), None, "{status}");
+        fs::remove_file(setup.dir.join(format!("{status}-heads-main"))).unwrap();
+    }
+}
+
+#[test]
+fn a_failed_read_of_the_base_branch_keeps_the_alarm_and_shows_in_the_intakes_health() {
+    let setup = red_at_merge("red-read-fails");
+    fs::write(setup.dir.join("403-heads-main"), "").unwrap();
+
+    let output = setup.intake(NOW);
+
+    assert!(!output.status.success());
+    assert!(setup.github_error().unwrap().contains("HTTP 403"));
+    assert_eq!(setup.alarms().len(), 1);
+}
+
+#[test]
+fn a_passing_run_of_the_same_name_on_the_merge_commit_keeps_the_alarm() {
+    for (name, red, passed) in [("lower", 1, 2), ("higher", 2, 1)] {
+        let setup = Setup::new(&format!("red-same-name-{name}"));
+        setup.polled_repo();
+        setup.task(1, "green");
+        setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z")]);
+        setup.checks_at(
+            "m10",
+            &[
+                (red, "completed", "failure"),
+                (passed, "completed", "success"),
+            ],
+        );
+        setup.poll();
+        // The tip is the merge commit, and both runs stand there.
+        fs::copy(
+            setup.dir.join("checks-m10.json"),
+            setup.dir.join("checks-heads-main.json"),
+        )
+        .unwrap();
+
+        setup.poll();
+
+        assert_eq!(setup.alarms().len(), 1, "the red run's id is {name}");
+    }
+}
+
+/// A red merge at `m10` whose `ci` run is 10, and a later merge at `m11` with `runs` of `ci`, where
+/// every commit but the merge commit descends from it.
+fn later_merge(name: &str, runs: &[(u64, &str, &str)]) -> Setup {
+    let setup = Setup::new(name);
+    setup.polled_repo();
+    setup.task(1, "green");
+    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z")]);
+    setup.checks_at("m10", &[(10, "completed", "failure")]);
+    setup.poll();
+    setup.tip_run("ci", "m12", "in_progress", "", "ahead");
+    setup.task(2, "green");
+    setup.handle(&[merged_on(11, 2, "bbb", "m11", "2026-11-20T11:00:00Z")]);
+    setup.checks_at("m11", runs);
+    setup.poll();
+    setup.poll();
+    setup
+}
+
+/// Whether `setup` still shows the alarm of the merge at `m10`.
+fn still_red(setup: &Setup) -> bool {
+    setup
+        .alarms()
+        .iter()
+        .any(|line| line.contains("owner/repo#10 "))
+}
+
+#[test]
+fn a_later_merge_with_a_failing_run_of_the_same_name_keeps_the_alarm_in_both_id_orders() {
+    for (name, red, passed) in [("lower", 11, 12), ("higher", 12, 11)] {
+        let setup = later_merge(
+            &format!("red-later-{name}"),
+            &[
+                (red, "completed", "failure"),
+                (passed, "completed", "success"),
+            ],
+        );
+        assert!(still_red(&setup), "the red run's id is {name}");
+    }
+}
+
+#[test]
+fn a_later_merge_with_a_run_still_going_keeps_the_alarm() {
+    let setup = later_merge(
+        "red-later-pending",
+        &[(11, "completed", "success"), (12, "in_progress", "")],
+    );
+    assert!(still_red(&setup));
+}
+
+#[test]
+fn a_run_before_the_red_one_does_not_keep_the_alarm() {
+    let setup = later_merge(
+        "red-later-older-run",
+        &[(9, "completed", "failure"), (11, "completed", "success")],
+    );
+    assert!(!still_red(&setup));
+}
+
+#[test]
+fn a_run_of_another_workflow_keeps_the_alarm_on_the_tip_and_on_a_later_merge() {
+    let setup = red_at_merge("red-other-workflow-tip");
+    setup.workflow(500, 2);
+    setup.tip_run("ci", "m11", "completed", "success", "ahead");
+    setup.poll();
+    assert_eq!(setup.alarms().len(), 1);
+
+    let setup = Setup::new("red-other-workflow-merge");
+    setup.polled_repo();
+    setup.workflow(11, 2);
+    setup.task(1, "green");
+    setup.task(2, "green");
+    setup.handle(&[
+        merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z"),
+        merged_on(11, 2, "bbb", "m11", "2026-11-20T11:00:00Z"),
+    ]);
+    setup.checks_at("m10", &[(10, "completed", "failure")]);
+    setup.checks_at("m11", &[(11, "completed", "success")]);
+    setup.tip_run("ci", "m12", "in_progress", "", "ahead");
+    setup.poll();
+    setup.poll();
+    assert_eq!(setup.alarms().len(), 1);
+}
+
+/// A merge at `m10` where the job `ci` of workflow 1, run 10, and of workflow 2, run 11, both failed.
+fn red_in_two_workflows(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    setup.polled_repo();
+    for (run, workflow) in [(10, 1), (11, 2), (12, 2), (13, 1)] {
+        setup.workflow(run, workflow);
+    }
+    setup.task(1, "green");
+    setup.handle(&[merged_on(10, 1, "aaa", "m10", "2026-11-20T10:00:00Z")]);
+    setup.checks_at(
+        "m10",
+        &[(10, "completed", "failure"), (11, "completed", "failure")],
+    );
+    setup.poll();
+    assert_eq!(setup.alarms().len(), 1);
+    setup
+}
+
+#[test]
+fn a_tip_where_one_of_two_red_workflows_passed_keeps_the_alarm_until_both_did() {
+    let setup = red_in_two_workflows("red-two-workflows-tip");
+    fs::write(setup.dir.join("compare.json"), r#"{"status":"ahead"}"#).unwrap();
+    let tip = |runs: &[u64]| {
+        let runs: Vec<Value> = runs
+            .iter()
+            .map(|id| {
+                json!({ "id": id, "name": "ci", "head_sha": "m12", "status": "completed",
+                        "conclusion": "success", "completed_at": "2026-11-20T10:30:00Z",
+                        "html_url": format!("https://github.com/owner/repo/actions/runs/{id}/job/{id}"),
+                        "app": { "slug": "github-actions" } })
+            })
+            .collect();
+        let answer = json!({ "total_count": runs.len(), "check_runs": runs });
+        fs::write(setup.dir.join("checks-heads-main.json"), answer.to_string()).unwrap();
+    };
+
+    for alone in [12, 13] {
+        tip(&[alone]);
+        setup.poll();
+        assert_eq!(setup.alarms().len(), 1, "only run {alone} passed");
+    }
+
+    tip(&[12, 13]);
+    setup.poll();
+    assert_eq!(setup.alarms(), Vec::<String>::new());
+}
+
+#[test]
+fn a_later_merge_where_one_of_two_red_workflows_passed_keeps_the_alarm_until_both_did() {
+    for (name, runs, red) in [
+        ("one", &[(12, "completed", "success")][..], true),
+        (
+            "both",
+            &[(12, "completed", "success"), (13, "completed", "success")][..],
+            false,
+        ),
+    ] {
+        let setup = red_in_two_workflows(&format!("red-two-workflows-merge-{name}"));
+        setup.tip_run("ci", "m12", "in_progress", "", "ahead");
+        setup.task(2, "green");
+        setup.handle(&[merged_on(11, 2, "bbb", "m11", "2026-11-20T11:00:00Z")]);
+        setup.checks_at("m11", runs);
+        setup.poll();
+        setup.poll();
+        assert_eq!(still_red(&setup), red, "{name}");
+    }
+}
+
+#[test]
+fn a_token_that_cannot_read_actions_runs_keeps_the_alarm_and_the_source_does_not_fail() {
+    let setup = red_at_merge("red-no-actions-permission");
+    setup.tip_run("ci", "m11", "completed", "success", "ahead");
+    fs::write(setup.dir.join("403-run-1"), "").unwrap();
+
+    setup.poll();
+
+    assert_eq!(setup.alarms().len(), 1);
+    assert_eq!(setup.github_error(), None);
+}
+
+#[test]
+fn a_red_merge_older_than_seven_days_is_neither_read_nor_cleared() {
+    let setup = red_at_merge("red-too-old");
+    setup.tip_run("ci", "m11", "completed", "success", "ahead");
+
+    setup.poll_at("2026-11-28T10:00:00Z");
+
+    assert_eq!(setup.reads_of("heads/main"), 0);
+    assert_eq!(setup.alarms().len(), 1);
+}
+
+#[test]
+fn a_commit_without_the_merge_is_compared_once_per_process() {
+    let setup = red_at_merge("red-compared-once");
+    let checks = |id: u64, name: &str| {
+        on_pull(
+            "github.check_run.completed",
+            10,
+            1,
+            "m10",
+            json!({ "conclusion": "failure", "name": name, "app": "other", "github_id": id,
+                    "pending": 0, "failing": 2 }),
+        )
+    };
+    setup.handle(&[checks(2, "lint")]);
+    setup.task(2, "green");
+    setup.handle(&[merged_on(11, 2, "bbb", "m11", "2026-11-20T11:00:00Z")]);
+    setup.checks_at("m11", &[(3, "completed", "success")]);
+    setup.tip_run("ci", "m11", "completed", "success", "diverged");
+    setup.poll();
+    let before = setup.calls("compare/");
+
+    setup.poll();
+
+    // The tip and the newest later merge are the same commit, so the poll's second look is cached.
+    assert_eq!(setup.calls("compare/") - before, 1);
+    assert_eq!(setup.alarms().len(), 1);
+}
+
+#[test]
+fn a_failing_run_without_an_id_keeps_its_alarm_and_another_one_still_clears() {
+    let setup = red_at_merge("red-no-id");
+    setup.task(2, "green");
+    setup.handle(&[
+        merged_on(11, 2, "bbb", "m11", "2026-11-20T11:00:00Z"),
+        on_pull(
+            "github.check_run.completed",
+            11,
+            2,
+            "m11",
+            json!({ "conclusion": "failure", "name": "lint", "app": "other", "github_id": null,
+                    "pending": 0, "failing": 1 }),
+        ),
+    ]);
+    assert_eq!(setup.alarms().len(), 2);
+    setup.tip_run("ci", "m12", "completed", "success", "ahead");
+
+    setup.poll();
+
+    let alarms = setup.alarms();
+    assert_eq!(alarms.len(), 1, "{alarms:?}");
+    assert!(alarms[0].contains("owner/repo#11 "), "{alarms:?}");
+}
+
+#[test]
+fn a_poll_that_could_not_read_the_merges_clears_nothing() {
+    let setup = red_at_merge("red-merges-unread");
+    setup.tip_run("ci", "m11", "completed", "success", "ahead");
+    // Only the read of the merges names this table.
+    setup
+        .db()
+        .execute_batch("DELETE FROM intake_sources; ALTER TABLE pull_requests RENAME TO gone;")
+        .unwrap();
+
+    let mut intake = setup.intake_command(NOW);
+    let mut intake = intake
+        .args(["intake", &setup.factory()])
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let polled = || {
+        setup
+            .db()
+            .query_row("SELECT count(*) FROM intake_sources", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap()
+    };
+    while polled() == 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = intake.kill();
+    let _ = intake.wait();
+    assert_eq!(polled(), 1, "the intake recorded its poll");
+
+    setup
+        .db()
+        .execute_batch("ALTER TABLE gone RENAME TO pull_requests;")
+        .unwrap();
+    assert_eq!(setup.alarms().len(), 1);
+}
+
+#[test]
+fn an_alarm_clears_only_once_every_check_that_failed_there_passed() {
+    let setup = red_at_merge("red-two-checks");
+    setup.handle(&[on_pull(
+        "github.check_run.completed",
+        10,
+        1,
+        "m10",
+        json!({ "conclusion": "failure", "name": "lint", "app": "other", "github_id": 2,
+                "url": "https://github.com/owner/repo/runs/2", "pending": 0, "failing": 2 }),
+    )]);
+    setup.tip_run("ci", "m11", "completed", "success", "ahead");
+    setup.poll();
+    assert_eq!(setup.alarms().len(), 1, "only ci passed");
+
+    // A later merge is where `lint` passed.
+    setup.task(2, "green");
+    setup.handle(&[
+        merged_on(11, 2, "bbb", "m11", "2026-11-20T11:00:00Z"),
+        on_pull(
+            "github.check_run.completed",
+            11,
+            2,
+            "m11",
+            json!({ "conclusion": "success", "name": "lint", "app": "other", "github_id": 3,
+                    "pending": 0, "failing": 0 }),
+        ),
+    ]);
+    setup.poll();
+
+    assert_eq!(setup.alarms(), Vec::<String>::new());
+}
+
+#[test]
+fn a_reverts_alarm_stays_when_the_base_branch_passes_again() {
+    let setup = red_at_merge("red-reverted");
+    setup.handle(&[on_pull(
+        "github.pull_request.closed",
+        40,
+        9,
+        "fff",
+        json!({ "merged": true, "merge_commit": "m40", "actor": "octocat",
+                "title": "Revert \"Fix 1\"", "body": "Reverts owner/repo#10", "github_id": 940 }),
+    )
+    .time("2026-11-20T11:00:00Z".parse().unwrap())]);
+    assert_eq!(setup.alarms().len(), 2);
+    setup.tip_run("ci", "m40", "completed", "success", "ahead");
+
+    setup.poll();
+
+    assert_eq!(
+        setup.alarms(),
+        [
+            "priory: landed wrong: owner/repo#10 of task 1 was reverted by #40: https://github.com/owner/repo/pull/40"
+        ]
+    );
+}
+
+#[test]
+fn the_upgrade_marks_read_the_alarms_of_merges_whose_only_red_checks_were_cancelled() {
+    let setup = Setup::new("red-upgrade");
+    let check = |number: u64, conclusion: &str, id: u64| {
+        on_pull(
+            "github.check_run.completed",
+            number,
+            number / 10,
+            &format!("m{number}"),
+            json!({ "conclusion": conclusion, "name": format!("check {id}"), "github_id": id,
+                    "url": format!("https://github.com/owner/repo/runs/{id}"),
+                    "pending": 0, "failing": 1 }),
+        )
+    };
+    for task in 1..=5 {
+        setup.task(task, "green");
+    }
+    let mut running = check(50, "cancelled", 6);
+    running.data["pending"] = json!(1);
+    setup.handle(&[
+        merged(10, 1, "aaa", "m10"),
+        merged(20, 2, "bbb", "m20"),
+        merged(30, 3, "ccc", "m30"),
+        merged(50, 5, "eee", "m50"),
+        check(10, "cancelled", 1),
+        check(10, "success", 2),
+        check(20, "cancelled", 3),
+        check(20, "failure", 4),
+        check(30, "cancelled", 5),
+        running,
+        on_pull(
+            "github.pull_request.closed",
+            40,
+            9,
+            "fff",
+            json!({ "merged": true, "merge_commit": "m40", "actor": "octocat",
+                    "title": "Revert \"Fix 3\"", "body": "Reverts owner/repo#30", "github_id": 940 }),
+        ),
+    ]);
+    assert_eq!(setup.alarms().len(), 5);
+    let newest: i64 = setup
+        .db()
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+
+    setup
+        .db()
+        .execute_batch(&format!("PRAGMA user_version = {};", newest - 1))
+        .unwrap();
+
+    assert_eq!(
+        setup.alarms(),
+        [
+            "priory: landed wrong: owner/repo#20 of task 2 is red on main: check 3 cancelled https://github.com/owner/repo/runs/3",
+            "priory: landed wrong: owner/repo#50 of task 5 is red on main: check 6 cancelled https://github.com/owner/repo/runs/6",
+            "priory: landed wrong: owner/repo#30 of task 3 was reverted by #40: https://github.com/owner/repo/pull/40",
+        ]
+    );
 }
 
 #[test]

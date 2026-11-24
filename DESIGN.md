@@ -697,13 +697,20 @@ underline, with no fill.
    "What waits." as two facts with the `scale` and `hourglass` icons.
 2. **Brief**: the task's brief file as Markdown, with its file name and an open link.
 3. **Plan**: the task's plan as Markdown; a checklist shows done items with `check` in
-   `--ok-text`.
+   `--ok-text`. Each file of it has its own `.sh` line with its path.
 4. **PR**: the pull request summary (below).
 5. **Trace**: the runs that led to the ask, as a waterfall (below).
 6. **History**: the answer history (below).
 7. **Command**: for a command ask, the command and its target (below).
 
 A section the task lacks, such as a plan, is left out with its chip.
+
+An open ask that **approves a plan** puts Plan first, before Why, as the section the detail opens on.
+Its options are disabled until the plan of its revision on screen is read, under a `layers` note,
+"Reading the plan of revision 2 before you answer.", or "Could not read the plan: ..." when the read
+fails. The answer bar shows the same note. When a file is cut, a `.note.warn` under the options, in the
+answer bar and in the answer sheet says "The plan is cut at 64 KB. Read the rest at ... before you
+answer.".
 
 A **go ask**, the human step of a batch's planning task, reads the batch first. Its chips start with
 Plan, Closes and Splits, then Why and the task's other sections. Plan is the [lane graph](#batch-page-and-lane-graph) with
@@ -787,7 +794,8 @@ Ask text, briefs and plans render as sanitized Markdown, never as HTML (principl
 
 - The web view parses a subset itself: paragraphs, headings, bullet, numbered and check lists,
   bold, inline code, fenced code blocks, links and images. Anything else, raw HTML included, shows
-  as escaped text. A link or image whose target is not `https:` shows as its source text.
+  as escaped text. A fence line's other words show as a `.info` line in mono over the block, and only
+  a bare fence at least as long as the opening one closes it. A link or image whose target is not `https:` shows as its source text.
 - A check list's open item shows an empty box in `--text-3`.
 
 - Body in `--type-read`, at most `--measure` wide. Headings: h1 in `--type-read-h1`, h2 and h3 in
@@ -1545,7 +1553,7 @@ Every ask, with the web's ask detail fitted to the pane.
   question in its detail. An answered row and the history say who answered.
 - The detail keeps the web's order: context line, History line, heading, recommendation with what happens next,
   options with keys `1` to `9`, write an answer, then the section chips Why, Brief, Plan, PR,
-  Trace and History.
+  Trace and History. An ask that approves a plan leads with Plan, and waits for it as on the web.
 - Once the options scroll out of view, the sticky answer bar shows "3 options", the recommended
   option and the overflow menu.
 - On an ask that belongs to a task, the overflow menu offers Open task, which opens the

@@ -61,7 +61,9 @@ fn main() -> ExitCode {
             };
             let run = if verb == "intake" {
                 |factory: &factory::Factory, once| {
-                    intake::run(factory, once, watched, merged, health, ended, pre_ran)
+                    intake::run(
+                        factory, once, watched, merged, red, recovered, health, ended, pre_ran,
+                    )
                 }
             } else {
                 daemon::run
@@ -305,6 +307,20 @@ fn merged(since: &str) -> Result<Vec<intake::Merge>, String> {
     }
     let db = state::open()?;
     state::merges(&db, since).map_err(|error| format!("merged pull requests: {error}"))
+}
+
+/// The unread reports of merges since `since` that are red; none when the intake runs without a state file.
+fn red(since: &str) -> Result<Vec<intake::Red>, String> {
+    if std::env::var_os("PRIORY_DB").is_none() {
+        return Ok(Vec::new());
+    }
+    let db = state::open()?;
+    grades::red(&db, since).map_err(|error| format!("red merges: {error}"))
+}
+
+/// Marks read the report of a red merge whose checks passed again.
+fn recovered(report: i64) -> Result<(), String> {
+    post::read(&state::open()?, report)
 }
 
 /// How many tasks with `key` ended, from `PRIORY_DB`; none when the intake runs without a state
@@ -2316,7 +2332,8 @@ fn adopt(args: Vec<String>) -> ExitCode {
         trigger
             .filter
             .as_ref()
-            .and_then(|filter| filter.get("author")),
+            .and_then(|filter| filter.get("author"))
+            .and_then(factory::FilterValue::one),
     ) else {
         return fail(&format!(
             "trigger {name} is not a pull request comment or review trigger"
@@ -2778,9 +2795,14 @@ fn held(
         pid: child.id(),
     };
     // The daemon takes the same pid again, so a lost reply only delays the hand-over.
+    let mut said = String::new();
     let taken = loop {
         match call(&run, runtime::call_through_restart) {
-            Err(_) if matches!(child.try_wait(), Ok(None)) => {
+            Err(error) if matches!(child.try_wait(), Ok(None)) => {
+                if said != error {
+                    eprintln!("priory memory: grant {grant} waits to start its command: {error}");
+                    said = error;
+                }
                 std::thread::sleep(Duration::from_millis(250));
             }
             taken => break taken.flatten(),
@@ -4438,8 +4460,54 @@ fn guard(input: &Value) -> Option<String> {
             }
         }
     }
+    if let Some(reason) = private_terms(input, tool, command.as_deref(), &session) {
+        return deny(&reason);
+    }
     report_connector_use(tool);
     None
+}
+
+/// Why the call may not publish, when the factory has private terms: one is in what it would
+/// publish to a repository the factory lists, or Priory cannot read what it would publish.
+fn private_terms(
+    input: &Value,
+    tool: &str,
+    command: Option<&str>,
+    session: &str,
+) -> Option<String> {
+    std::env::var_os("PRIORY_PRIVATE").filter(|flag| !flag.is_empty())?;
+    let publishes = priory_factory::publish::calls(tool, command, &input["tool_input"]);
+    if publishes.is_empty() {
+        return None;
+    }
+    let asked = runtime::call(&runtime::home(), r#"{"private":{}}"#, GUARD_WAIT)
+        .and_then(|reply| {
+            serde_json::from_str::<Result<String, String>>(&reply)
+                .map_err(|_| "unreadable reply".to_owned())
+        })
+        .and_then(|rules| rules)
+        .and_then(|rules| serde_json::from_str(&rules).map_err(|_| "unreadable rules".to_owned()));
+    let rules: priory_factory::private::Private = match asked {
+        Ok(rules) => rules,
+        Err(error) => {
+            return Some(format!(
+                "Priory denied this call: it publishes, and the daemon did not give the factory's private terms ({error}). Try again."
+            ));
+        }
+    };
+    let cwd = input["cwd"]
+        .as_str()
+        .map_or_else(|| PathBuf::from("."), PathBuf::from);
+    publishes.iter().find_map(|publish| {
+        let reason = priory_core::private::screen(&rules, &cwd, publish).err()?;
+        let line = serde_json::json!({ "guard": {
+            "session": session, "guard": priory_factory::guard::PRIVATE,
+            "call": publish.call, "tool": tool, "moves_head": false,
+        } });
+        // Best effort: the daemon records the denial, which stands either way.
+        let _ = runtime::call(&runtime::home(), &line.to_string(), Duration::from_secs(1));
+        Some(reason)
+    })
 }
 
 /// The denial of an MCP tool whose server is none of `servers`, the comma-separated servers a run
@@ -4687,7 +4755,7 @@ fn hook(event: &str) -> ExitCode {
         });
         let (denied, input) = receiver.recv_timeout(GUARD_DEADLINE).unwrap_or_else(|_| {
             let reason = format!(
-                "Priory's tool guard failed or did not finish within {}s on this call, so it denied it.",
+                "Priory's tool guard failed or did not finish within {}s on this call, so it denied it. If it pushes, fetch the remote first, or push fewer commits at a time.",
                 GUARD_DEADLINE.as_secs()
             );
             (Some(reason), None)

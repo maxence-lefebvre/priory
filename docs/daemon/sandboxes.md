@@ -89,7 +89,7 @@ The shell in the jail runs `env -i` with only these variables, each when it is s
 
 - `PATH`, `LANG`, `TERM`, `HOME` and `XDG_RUNTIME_DIR`;
 - `PRIORY_HOME`, `PRIORY_SESSION`, `PRIORY_SPOOL` and the variables Priory gives the run, such as
-  `PRIORY_GUARD` and `OTEL_RESOURCE_ATTRIBUTES`;
+  `PRIORY_GUARD`, `PRIORY_PRIVATE` and `OTEL_RESOURCE_ATTRIBUTES`;
 - `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, which move the harness's own home;
 - `DIRENV_CONFIG`, for a run that starts under direnv;
 - the sandbox's `env`.

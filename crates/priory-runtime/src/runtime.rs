@@ -166,7 +166,7 @@ fn post(url: &str, body: &Path) -> Command {
 }
 
 /// Runs `command` and returns its stdout, or an error naming it with its stderr.
-pub(crate) fn run(command: &mut Command) -> Result<String, String> {
+pub fn run(command: &mut Command) -> Result<String, String> {
     fed(command, None)
 }
 
