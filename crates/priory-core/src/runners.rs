@@ -805,7 +805,7 @@ impl<'a> Dropping<'a> {
 }
 
 /// Takes back this runner's claims of `key`, and with `extended` of the keys that extend it with a
-/// `.` suffix, that are not on the log yet: their requests are unaccepted again. A claim on the log
+/// `.` suffix, that are not on the log yet: their requests wait again, unless another runner won. A claim on the log
 /// stays, since builds that know no drop accept it, so every build must.
 pub(crate) fn unclaim(tx: &Transaction, key: &str, extended: bool) -> rusqlite::Result<()> {
     let queued = tx
@@ -813,7 +813,9 @@ pub(crate) fn unclaim(tx: &Transaction, key: &str, extended: bool) -> rusqlite::
             "SELECT sends.id, inbox.id FROM sends
              JOIN inbox ON inbox.id = json_extract(message, '$.data.request')
              WHERE json_extract(message, '$.type') = ?3
-               AND json_extract(message, '$.data.from') IS NULL AND inbox.outcome = 'claiming'
+               AND json_extract(message, '$.data.from') IS NULL
+               -- A request that became a task here is adopted by its claim, which stays.
+               AND inbox.outcome IN ('claiming', 'elsewhere')
                AND (inbox.subject = ?1
                  OR ?2 AND substr(inbox.subject, 1, length(?1) + 1) = ?1 || '.')",
         )?
@@ -824,7 +826,7 @@ pub(crate) fn unclaim(tx: &Transaction, key: &str, extended: bool) -> rusqlite::
     for (send, request) in queued {
         tx.execute("DELETE FROM sends WHERE id = ?1", [send])?;
         tx.execute(
-            "UPDATE inbox SET outcome = 'unaccepted' WHERE id = ?1",
+            "UPDATE inbox SET outcome = 'unaccepted' WHERE id = ?1 AND outcome = 'claiming'",
             [request],
         )?;
     }

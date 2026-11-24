@@ -35609,6 +35609,28 @@ fn a_move_read_with_its_request_leaves_no_claim_of_the_old_key() {
 }
 
 #[test]
+fn a_claim_that_lost_before_a_move_is_not_published_under_the_old_key_after_it() {
+    let mut desktop = placed("filter-move-lost", "desktop", NO_OSS, NO_OSS, None);
+    let request = linear_requested("ENG-7", "first");
+    desktop.publish(&request);
+    desktop.publish(
+        &Message::new(
+            "priory.task.claimed",
+            json!({ "key": "linear:ENG-7", "runner": "server", "request": request.id.to_string() }),
+        )
+        .subject("linear:ENG-7"),
+    );
+    desktop.publish(&team_moved("ENG-7", "OPS-3"));
+    desktop.publish(&requested(2));
+    let exe = Path::new(env!("CARGO_BIN_EXE_priory"));
+    desktop.start_with(exe, &[("PRIORY_NOW", WORK_HOURS)]);
+    desktop.until_own_tasks(|rows| with(rows, 4, "running") == 1);
+    assert_eq!(claimants(&desktop, "linear:ENG-7"), ["server"]);
+    assert_eq!(desktop.own_tasks().len(), 1);
+    desktop.crash();
+}
+
+#[test]
 fn a_move_ahead_of_a_given_back_hold_leaves_the_task_able_to_start() {
     let mut desktop = placed("filter-move-hold", "desktop", OSS_OFF_BY_DAY, NO_OSS, None);
     desktop.memory(0);

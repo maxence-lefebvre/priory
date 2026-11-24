@@ -130,7 +130,9 @@ key does. The same holds when an owner says it holds a key again, as after feedb
 ended task: on a hold other than `ended`, the owner routes its own unaccepted requests of the key,
 and every other machine records them as `elsewhere`. So a request the owner served is never claimed
 again once its task ends. A Linear issue that moves to another team takes its unaccepted requests to
-its new key, and a claim of the old key not published yet is taken back. A factory that goes from several runner files to one routes its unaccepted requests when
+its new key, and a claim of the old
+key not published yet is taken back. A claim of the old key that reaches the log in the seconds
+between the move and its runner reading it still wins that key. A factory that goes from several runner files to one routes its unaccepted requests when
 its daemon starts. A view-only machine reads the reason again at any
 runner's alive message, so it can be out of date while every runner is off. The web Desk's queue
 does not show these requests.
