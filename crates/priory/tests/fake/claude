@@ -4,7 +4,8 @@
 # the hold files hold-submit, hold-call (after the submit, before the turn's tool call) and hold-stop,
 # drop-enter (the number of Enters after a paste to lose), burst (lose an Enter that comes within 0.2s
 # of its paste), dropped.log (one line per lost Enter),
-# silent (show its content and never report a hook, as when Claude waits on its trust dialog), and
+# silent (show its content and never report a hook, as when Claude waits on its trust dialog),
+# silent-once (removed by the start it silences, as a Claude that starts slowly once), and
 # die (show its content and exit before any hook, as a harness that fails to start), and
 # crash (exit before the turn's Stop, leaving a dead pane as a tmux with remain-on-exit does).
 # A prompt after `--` is the first turn. FAKE_LAZY_START fires SessionStart with the first turn, as
@@ -210,6 +211,10 @@ if [ -e "$FAKE_DIR/die" ]; then
 fi
 if [ -e "$FAKE_DIR/silent" ]; then
   cat "$FAKE_DIR/silent"
+  exec sleep infinity
+fi
+if [ -e "$FAKE_DIR/silent-once" ]; then
+  rm "$FAKE_DIR/silent-once"
   exec sleep infinity
 fi
 [ -n "${FAKE_LAZY_START-}" ] || start

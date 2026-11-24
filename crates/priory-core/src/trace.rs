@@ -422,6 +422,7 @@ pub(crate) fn granted(db: &Connection, run: i64) -> bool {
     db.query_row(
         "SELECT EXISTS (SELECT 1 FROM trace WHERE type = 'factory.run.trusted'
            AND json_extract(event, '$.data.run') = ?1
+           AND json_extract(event, '$.data.harness') <> 'direnv'
            AND json_extract(event, '$.data.outcome') IN ('granted', 'present'))",
         [run.to_string()],
         |row| row.get(0),

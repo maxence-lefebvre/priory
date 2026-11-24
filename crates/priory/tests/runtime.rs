@@ -4420,6 +4420,53 @@ fn a_grant_claude_overwrote_restarts_the_run_once_then_fails_the_task() {
     assert_eq!(repaired[0]["data"]["outcome"], "ready");
 }
 
+#[test]
+fn a_trusted_run_that_starts_slowly_restarts_once_without_trust_advice() {
+    let mut setup = trusting("trust-slow-once");
+    setup.publish(&requested(42));
+    setup.hold("silent-once");
+    start_trusting(&mut setup);
+
+    setup.within(150, "outbox", |rows| with(rows, 3, "confirmed") >= 1);
+
+    let runs = setup.rows("runs");
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0][7], "exited");
+    let repaired = traced(&setup, "factory.task.repaired");
+    assert_eq!(repaired.len(), 1);
+    assert_eq!(repaired[0]["data"]["cause"], "claude started slowly");
+    assert_eq!(repaired[0]["data"]["action"], "restart");
+    assert_eq!(repaired[0]["data"]["outcome"], "ready");
+    let typed = setup.typed();
+    assert!(
+        typed[0].starts_with(
+            "Priory repaired this task after: claude showed no SessionStart within 60s although Priory recorded its trust; it started too slowly. Cause: claude started slowly. Action: restart."
+        ),
+        "{}",
+        typed[0]
+    );
+    assert!(!typed[0].contains("trust the worktrees folder"));
+}
+
+#[test]
+fn a_trusted_run_that_starts_slowly_twice_fails_its_task_with_the_slow_start() {
+    let mut setup = trusting("trust-slow-twice");
+    setup.publish(&requested(42));
+    setup.hold("silent");
+    start_trusting(&mut setup);
+
+    let tasks = setup.within(150, "tasks", |rows| {
+        rows.first().is_some_and(|row| row[4] == "failed")
+    });
+
+    assert_eq!(
+        tasks[0][7],
+        "claude showed no SessionStart within 60s although Priory recorded its trust; it started too slowly; it failed again after its repair, so Priory did not restart the agent"
+    );
+    assert_eq!(setup.rows("runs").len(), 2);
+    assert_eq!(traced(&setup, "factory.task.repaired").len(), 1);
+}
+
 fn codex_profile(setup: &Setup) -> PathBuf {
     setup.dir.join("codex/priory-trust.config.toml")
 }

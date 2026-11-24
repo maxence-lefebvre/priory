@@ -4334,9 +4334,8 @@ pub(crate) struct LiveRun {
     pub worktree: Option<String>,
     /// Its `SessionStart` arrived.
     pub ready: bool,
-    /// No `SessionStart` arrived within `READY_WITHIN` of the start, or `DIRENV_READY_WITHIN` under
-    /// direnv.
-    pub late: bool,
+    /// Seconds since its start while no `SessionStart` has arrived.
+    pub waited: Option<i64>,
     /// 1 when it started under `direnv exec`, 2 once direnv failed and it started without, else 0.
     pub direnv: i64,
     /// How long its current turn has run, in seconds.
@@ -4344,11 +4343,6 @@ pub(crate) struct LiveRun {
     /// Claude's message for the permission prompt it shows, if any.
     pub prompted: Option<String>,
 }
-
-pub(crate) const READY_WITHIN: &str = "60 seconds";
-
-/// `READY_WITHIN` for a run under direnv, whose `.envrc` may build a cold nix shell first.
-pub(crate) const DIRENV_READY_WITHIN: &str = "600 seconds";
 
 /// Marks run `run` as started under direnv (1), or as started without its `.envrc` after direnv
 /// failed (2).
@@ -4361,14 +4355,13 @@ pub(crate) fn direnv(db: &Connection, run: i64, state: i64) -> rusqlite::Result<
 }
 
 pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
-    let mut statement = db.prepare(&format!(
+    let mut statement = db.prepare(
         "SELECT runs.id, runs.task, runs.step, tasks.workflow, runs.tmux, runs.session, tasks.worktree,
-         NOT runs.ready AND runs.started <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now',
-           CASE WHEN runs.direnv THEN '-{DIRENV_READY_WITHIN}' ELSE '-{READY_WITHIN}' END),
+         CASE WHEN NOT runs.ready THEN unixepoch('now') - unixepoch(runs.started) END,
          unixepoch('now') - unixepoch(runs.turn), runs.prompted, coalesce(runs.agent, ''), runs.ready,
          coalesce(runs.direnv, 0)
-         FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id"
-    ))?;
+         FROM runs JOIN tasks ON tasks.id = runs.task WHERE runs.ended IS NULL ORDER BY runs.id",
+    )?;
     statement
         .query_map([], |row| {
             Ok(LiveRun {
@@ -4379,7 +4372,7 @@ pub(crate) fn live(db: &Connection) -> rusqlite::Result<Vec<LiveRun>> {
                 tmux: row.get(4)?,
                 session: row.get(5)?,
                 worktree: row.get(6)?,
-                late: row.get(7)?,
+                waited: row.get(7)?,
                 turn: row.get(8)?,
                 prompted: row.get(9)?,
                 agent: row.get(10)?,

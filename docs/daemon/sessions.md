@@ -344,13 +344,23 @@ exit, then cd <clone path> && claude, accept, exit`. The desk shows the blocked 
 reason. After both folders are trusted, `priory resume` starts the task again.
 
 A run that sends no `SessionStart` within 60 seconds of its start, for another reason, also ends
-as `exited`. The daemon kills its tmux session and blocks its task with the reason `claude showed
-no SessionStart within 60s; trust the worktrees folder and the clone once: ...`, the same commands,
-then `. Its pane ended with: ` and the last 5 non-empty lines of its pane, joined by ` | `, so a
-person sees the dialog or warning that stopped it. The daemon log gets the last 30. A line the
+as `exited`. While the machine's 1-minute load is above its core count, the run gets 180 seconds
+instead, since Claude Code then takes minutes to start. The daemon kills its tmux session and
+blocks its task with the reason `claude showed no SessionStart within 60s; trust the worktrees
+folder and the clone once: ...`, the same commands, then `. Its pane ended with: ` and the last 5
+non-empty lines of its pane, joined by ` | `, so a person sees the dialog or warning that stopped
+it. The daemon log gets the last 30. A line the
 pane wrapped counts as one line, so a secret that wraps is hidden whole. Both hide secrets as the
 screen does (see [serve.md](serve.md#a-runs-screen)), and show `[redacted]` alone when one still
 shows.
+
+When Priory recorded the run's trust as `granted` or `present` (see
+[With trust_worktrees](#with-trust_worktrees)), the folders are not the cause, so the reason drops
+the commands: `claude showed no SessionStart within 60s although Priory recorded its trust; it
+started too slowly under a load of 78 on 22 cores`, with the load part only while the load is above
+the cores. The daemon then restarts the run once, as a repair with the cause `claude started
+slowly`, followed by the same load part. A second slow start fails the task, and the reason ends
+with `it failed again after its repair, so Priory did not restart the agent`.
 
 The daemon's `runs` metrics group counts both as starts that ended in `error`, and shows a start
 still waiting for `SessionStart` by its age. See [metrics.md](metrics.md#the-runs-group).

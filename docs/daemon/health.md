@@ -6,7 +6,7 @@ Each second, the daemon gives every live run one of these verdicts, in this orde
 | ------- | ----------- | -------- | ---- | ------ |
 | Unexpected exit | the tagged pane is gone, or dead under `remain-on-exit`, and no result, ask or wait ended the turn | `exited` | `failed`, then repaired: see Repair | `run <id> exited: claude no longer runs in tmux session <name>` |
 | Trust dialog | the screen of a run with no `SessionStart` shows Claude's trust dialog | `exited` | `blocked` | `claude asked whether to trust <worktree>; Priory never answers it. ...` |
-| No `SessionStart` | 60 seconds with no `SessionStart`, as under [Trusting the worktrees and the clone](sessions.md#trusting-the-worktrees-and-the-clone) | `exited` | `blocked` | `claude showed no SessionStart within 60s; ...` |
+| No `SessionStart` | 60 seconds with no `SessionStart`, 180 while the load exceeds the cores, or 600 under direnv, as under [Trusting the worktrees and the clone](sessions.md#trusting-the-worktrees-and-the-clone) | `exited` | `blocked`, or `failed` then restarted once when Priory recorded the run's trust | `claude showed no SessionStart within 60s; ...` |
 | Permission prompt | a `PermissionPrompt` signal | `permission` | `blocked` | `run <id> stopped on a permission prompt: <message>` |
 | Timeout | a turn older than its step's `timeout` | `timeout` | `blocked` | `run <id> timed out: its turn ran past <n>s` |
 
@@ -29,8 +29,9 @@ These ends make a task `failed`:
   wait.
 - A turn over its step's `budget`, or one whose cost Priory cannot price, at its end or inside it,
   as Budget says.
+- A second slow start: no `SessionStart` from the run that the repair of a slow start restarted.
 
-Everything else that stops a task needs a person and makes it `blocked`: no `SessionStart`, an exit
+Everything else that stops a task needs a person and makes it `blocked`: no `SessionStart` without recorded trust, an exit
 before `SessionStart`, a permission prompt, a timeout, a run lost twice, a code step's action that
 is not built, a step with no known agent, a task with no repo, and a git or tmux error at the
 start of a run. `open-pr`'s own failure is not an end. It is the `failed` outcome, which the
