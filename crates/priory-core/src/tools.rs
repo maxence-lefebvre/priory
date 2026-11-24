@@ -3981,10 +3981,11 @@ pub(crate) fn answer_in_tx(
 ) -> rusqlite::Result<Result<String, String>> {
     let applied = answer_in(tx, answer, trace, head)?;
     if let Err(why) = &applied {
+        let refused: String = answer.text.chars().take(REFUSED_CHARS).collect();
         tx.execute(
             "INSERT INTO ask_refusals (ask, revision, answer, by, why)
              SELECT id, ?2, ?3, ?4, ?5 FROM asks WHERE id = ?1",
-            params![answer.ask, answer.revision, answer.text, answer.by, why],
+            params![answer.ask, answer.revision, refused, answer.by, why],
         )?;
     }
     Ok(applied)
@@ -3992,6 +3993,9 @@ pub(crate) fn answer_in_tx(
 
 /// The longest answer an ask takes.
 const ANSWER_BYTES: usize = 16 * 1024;
+
+/// How much of a refused answer an ask keeps.
+const REFUSED_CHARS: usize = 200;
 
 /// Applies `answer` in `tx`, writing nothing when it refuses it.
 fn answer_in(
@@ -4055,7 +4059,10 @@ fn answer_in(
         )));
     }
     let written = hold.is_some()
-        || (kind == "step" && asked.is_some_and(|asked| asked.decides == Decider::Human));
+        || (kind == "step"
+            && asked.is_some_and(|asked| asked.decides == Decider::Human)
+            // Going back can rerun an autonomous irreversible step with no person deciding.
+            && !answer.by.starts_with(SESSION));
     if written
         && !options.contains(&chosen)
         && let Some(task) = task

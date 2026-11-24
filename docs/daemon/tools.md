@@ -98,7 +98,9 @@ ask 14 waits for a person: step approve-pr approves irreversible step open-pr. A
 `ask` is the ask's number, or an outside ask's name. `revision` is required, as it is for `priory
 answer`: an ask at another revision is refused with `ask 14 is at revision 2, not 1`, and the
 session reads it again with `asks`. An answer applies as a person's does: it moves a step's task by
-its option, or wakes an agent with `Answer to ask 14 (revision 1): ...`. A dismissal wakes the agent
+its option, or wakes an agent with `Answer to ask 14 (revision 1): ...`. A human step's ask takes
+only its options from a session, with or without a note: text is
+refused with `ask 14 takes one of: ship, wait`. A dismissal wakes the agent
 with `Session <session> dismissed ask 14 without an answer. Continue your task.`
 
 Priory never records the decision as a person's. The ask's `answered_by` is `session:` and the
