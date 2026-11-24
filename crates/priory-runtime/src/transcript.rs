@@ -158,13 +158,54 @@ impl Codex {
 /// made in its latest message holds no result yet. `None` when the file holds no line of either, or
 /// its last line is cut short.
 pub fn in_tool_call(bytes: &[u8]) -> Option<bool> {
+    open_call(bytes).0
+}
+
+/// How much of a file's end `in_tool_call_at` reads first.
+const TAIL: u64 = 256 << 10;
+
+/// `in_tool_call` of the file `path`, read from its end only as far as the answer needs.
+pub fn in_tool_call_at(path: &Path) -> std::io::Result<Option<bool>> {
+    tail_call(path, TAIL)
+}
+
+fn tail_call(path: &Path, mut tail: u64) -> std::io::Result<Option<bool>> {
+    let mut file = std::fs::File::open(path)?;
+    let size = file.metadata()?.len();
+    loop {
+        let from = size.saturating_sub(tail);
+        file.seek(SeekFrom::Start(from))?;
+        let mut bytes = Vec::new();
+        (&mut file).take(size - from).read_to_end(&mut bytes)?;
+        if from == 0 {
+            return Ok(in_tool_call(&bytes));
+        }
+        // The first line may be cut. Without a whole one, the next read reaches further.
+        let whole = bytes.iter().position(|&byte| byte == b'\n');
+        let (open, settled) = open_call(whole.map_or(&[], |end| &bytes[end + 1..]));
+        if settled {
+            return Ok(open);
+        }
+        tail = tail.saturating_mul(4);
+    }
+}
+
+/// What `in_tool_call` says, and whether no line before `bytes` could change it: a point in them
+/// closed every earlier call.
+fn open_call(bytes: &[u8]) -> (Option<bool>, bool) {
+    let mut settled = false;
+    let mut spoke = false;
     let mut open: Vec<String> = Vec::new();
     let (mut known, mut message) = (false, None);
     let last = bytes
         .trim_ascii_end()
         .split(|&byte| byte == b'\n')
-        .next_back()?;
-    serde_json::from_slice::<Value>(last).ok()?;
+        .next_back()
+        .unwrap_or_default();
+    if serde_json::from_slice::<Value>(last).is_err() {
+        // No earlier line changes that the last one is cut.
+        return (None, !last.is_empty());
+    }
     for line in bytes.split(|&byte| byte == b'\n') {
         let Ok(entry) = serde_json::from_slice::<Value>(line) else {
             continue;
@@ -190,6 +231,7 @@ pub fn in_tool_call(bytes: &[u8]) -> Option<bool> {
                 Some("task_complete" | "turn_aborted")
             ) {
                 open.clear();
+                settled = true;
             }
         }
         let assistant = entry["type"] == "assistant";
@@ -201,7 +243,9 @@ pub fn in_tool_call(bytes: &[u8]) -> Option<bool> {
         if assistant && message.as_ref() != entry["message"].get("id") {
             message = entry["message"].get("id").cloned();
             open.clear();
+            settled |= spoke;
         }
+        spoke |= assistant;
         for block in entry["message"]["content"].as_array().into_iter().flatten() {
             match (block["type"].as_str(), &block["id"], &block["tool_use_id"]) {
                 (Some("tool_use"), Value::String(id), _) => open.push(id.clone()),
@@ -210,7 +254,7 @@ pub fn in_tool_call(bytes: &[u8]) -> Option<bool> {
             }
         }
     }
-    known.then_some(!open.is_empty())
+    (known.then_some(!open.is_empty()), settled)
 }
 
 /// A Bash call in a Claude Code session transcript, with what it printed.
@@ -328,6 +372,30 @@ mod tests {
     }
 
     proptest::proptest! {
+        #[test]
+        fn the_end_of_a_file_answers_as_the_whole_file_does(
+            codex in proptest::bool::ANY,
+            picks in proptest::collection::vec((0..4_usize, 0..3_u8), 0..40),
+            tail in 1..600_u64,
+        ) {
+            let line = |(kind, id): &(usize, u8)| match kind + 4 * usize::from(codex) {
+                0 => format!(r#"{{"type":"assistant","message":{{"id":"m{id}","content":[{{"type":"text"}}]}}}}"#),
+                1 | 2 => format!(r#"{{"type":"assistant","message":{{"id":"m{id}","content":[{{"type":"tool_use","id":"t{id}"}}]}}}}"#),
+                3 => format!(r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"t{id}"}}]}}}}"#),
+                4 => format!(r#"{{"type":"response_item","payload":{{"type":"function_call","call_id":"c{id}"}}}}"#),
+                5 => format!(r#"{{"type":"response_item","payload":{{"type":"function_call_output","call_id":"c{id}"}}}}"#),
+                6 => r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#.to_owned(),
+                _ => r#"{"type":"attachment"}"#.to_owned(),
+            };
+            let lines: Vec<String> = picks.iter().map(line).collect();
+            let text = lines.join("\n");
+            let path = std::env::temp_dir().join(format!("priory-tail-{}", std::process::id()));
+            std::fs::write(&path, &text).unwrap();
+            let read = tail_call(&path, tail).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            proptest::prop_assert_eq!(read, in_tool_call(text.as_bytes()));
+        }
+
         #[test]
         fn any_transcript_reads_without_panicking(
             lines in proptest::collection::vec("[^\n]{0,60}", 0..8),

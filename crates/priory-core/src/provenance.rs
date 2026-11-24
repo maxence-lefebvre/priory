@@ -21,6 +21,30 @@ const EXTENDED_KEY_USAGE: &[u8] = &[0x55, 0x1d, 0x25];
 const ALT_NAME: &[u8] = &[0x55, 0x1d, 0x11];
 /// 1.3.6.1.4.1.57264.1.8, Fulcio's OIDC issuer.
 const OIDC_ISSUER: &[u8] = &[0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xbf, 0x30, 0x01, 0x08];
+/// 1.3.6.1.4.1.57264.1.11, .15, .17 and .20: the runner, the repository's and its owner's numbers,
+/// which outlive a rename and a name someone else takes, and the event. Each with what it must say.
+const CLAIMS: [(&[u8], &str, &str); 4] = [
+    (
+        &[0x2b, 6, 1, 4, 1, 0x83, 0xbf, 0x30, 1, 11],
+        "runner environment",
+        "github-hosted",
+    ),
+    (
+        &[0x2b, 6, 1, 4, 1, 0x83, 0xbf, 0x30, 1, 15],
+        "repository id",
+        "1461545818",
+    ),
+    (
+        &[0x2b, 6, 1, 4, 1, 0x83, 0xbf, 0x30, 1, 17],
+        "owner id",
+        "15971247",
+    ),
+    (
+        &[0x2b, 6, 1, 4, 1, 0x83, 0xbf, 0x30, 1, 20],
+        "event",
+        "push",
+    ),
+];
 /// The sequence that holds code signing (1.3.6.1.5.5.7.3.3) alone.
 const CODE_SIGNING: &[u8] = &[0x30, 0x0a, 0x06, 0x08, 0x2b, 6, 1, 5, 5, 7, 3, 3];
 
@@ -28,7 +52,8 @@ type Checked<T> = Result<T, String>;
 
 #[derive(Deserialize)]
 struct Attestations {
-    attestations: Vec<Attestation>,
+    /// Parsed one by one, so one of another shape hides no other.
+    attestations: Vec<Value>,
 }
 
 #[derive(Deserialize)]
@@ -107,7 +132,10 @@ pub(crate) fn verify(
     );
     let mut refused = "GitHub holds no attestation of it".to_owned();
     for attestation in &answer.attestations {
-        match bundle(&attestation.bundle, &identity, name, sha256) {
+        let checked = Attestation::deserialize(attestation)
+            .map_err(|error| format!("an attestation does not parse: {error}"))
+            .and_then(|attestation| bundle(&attestation.bundle, &identity, name, sha256));
+        match checked {
             Ok(()) => return Ok(()),
             Err(error) => refused = error,
         }
@@ -129,6 +157,7 @@ fn bundle(bundle: &Bundle, identity: &str, name: &str, sha256: &str) -> Checked<
             String::from_utf8_lossy(leaf.identity)
         ));
     }
+    claims(&leaf)?;
     let envelope = &bundle.dsse_envelope;
     let [signature] = &envelope.signatures[..] else {
         return Err("its envelope does not hold one signature".into());
@@ -154,6 +183,17 @@ fn bundle(bundle: &Bundle, identity: &str, name: &str, sha256: &str) -> Checked<
         return Err("no Rekor entry proves it was signed while its certificate was valid".into());
     }
     states(&payload, name, sha256)
+}
+
+/// Whether the certificate is of a push to this very repository, built on GitHub's own runner.
+fn claims(leaf: &Leaf) -> Checked<()> {
+    for ((_, what, wanted), found) in CLAIMS.iter().zip(leaf.claims) {
+        if found != wanted.as_bytes() {
+            let found = String::from_utf8_lossy(found);
+            return Err(format!("its {what} is {found}, not {wanted}"));
+        }
+    }
+    Ok(())
 }
 
 /// Whether the in-toto statement `payload` is a build provenance of the file.
@@ -243,6 +283,8 @@ struct Leaf<'a> {
     key: &'a [u8],
     identity: &'a [u8],
     issuer: &'a [u8],
+    /// The value of each of `CLAIMS`.
+    claims: [&'a [u8]; 4],
     from: i64,
     until: i64,
 }
@@ -284,6 +326,7 @@ impl<'a> Leaf<'a> {
         let mut extensions = Der(wrapped.take(0x30)?);
         wrapped.end()?;
         let (mut identity, mut issuer, mut usage, mut purpose) = (None, None, None, None);
+        let mut claims = [None; 4];
         let mut seen: Vec<&[u8]> = Vec::new();
         while !extensions.0.is_empty() {
             let mut extension = Der(extensions.take(0x30)?);
@@ -308,10 +351,13 @@ impl<'a> Leaf<'a> {
                     names.end()?;
                 }
                 OIDC_ISSUER => issuer = Some(inner.take(0x0c)?),
-                _ if critical => return None,
-                _ => {
-                    inner.all();
-                }
+                _ => match CLAIMS.iter().position(|claim| claim.0 == id) {
+                    Some(at) => claims[at] = Some(inner.take(0x0c)?),
+                    None if critical => return None,
+                    None => {
+                        inner.all();
+                    }
+                },
             }
             inner.end()?;
         }
@@ -325,6 +371,7 @@ impl<'a> Leaf<'a> {
             key,
             identity: identity?,
             issuer: issuer?,
+            claims: [claims[0]?, claims[1]?, claims[2]?, claims[3]?],
             from,
             until,
         })
@@ -519,6 +566,26 @@ mod tests {
     }
 
     #[test]
+    fn a_certificate_of_another_repository_owner_event_or_runner_is_refused() {
+        let der = certificate();
+        assert_eq!(claims(&Leaf::parse(&der).unwrap()), Ok(()));
+        for (at, (_, what, wanted)) in CLAIMS.iter().enumerate() {
+            let mut leaf = Leaf::parse(&der).unwrap();
+            leaf.claims[at] = b"another";
+            let refused = format!("its {what} is another, not {wanted}");
+            assert_eq!(claims(&leaf), Err(refused));
+        }
+    }
+
+    #[test]
+    fn an_attestation_of_another_shape_hides_no_other() {
+        let mut answer: Value = serde_json::from_str(ANSWER).unwrap();
+        let bundles = answer["attestations"].as_array_mut().unwrap();
+        bundles.insert(0, serde_json::json!({ "bundle": { "newShape": true } }));
+        assert_eq!(check(&answer.to_string()), Ok(()));
+    }
+
+    #[test]
     fn no_attestation_is_refused() {
         let refused = check(r#"{"attestations":[]}"#);
         assert_eq!(refused, Err("GitHub holds no attestation of it".into()));
@@ -544,7 +611,9 @@ mod tests {
     #[test]
     fn the_time_of_the_log_entry_must_be_inside_the_certificate_s_validity() {
         let answer: Attestations = serde_json::from_str(ANSWER).unwrap();
-        let bundle = &answer.attestations[0].bundle;
+        let bundle = Attestation::deserialize(&answer.attestations[0])
+            .unwrap()
+            .bundle;
         let der = certificate();
         let payload = base64(&bundle.dsse_envelope.payload).unwrap();
         let signature = &bundle.dsse_envelope.signatures[0].sig;

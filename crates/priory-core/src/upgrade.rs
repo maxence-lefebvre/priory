@@ -1,8 +1,9 @@
 //! The daemon's part of an upgrade: it finds a release, verifies and stages it, waits for a quiet
 //! moment, rehearses it on copies of the databases, and starts the helper that swaps the binary.
 
+use crate::swap::{self, Fault};
 use crate::trace::{self, Trace};
-use crate::{memory, post, provenance, swap};
+use crate::{memory, post};
 use jiff::Timestamp;
 use priory_factory::factory::{Channel, Upgrade};
 use priory_runtime::upgrade::{self as journal, Journal, Phase};
@@ -12,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -23,16 +24,15 @@ type Error = Box<dyn std::error::Error>;
 pub(crate) const INSTALLED: &str = "factory.upgrade.installed";
 pub(crate) const ROLLED_BACK: &str = "factory.upgrade.rolled_back";
 pub(crate) const REFUSED: &str = "factory.upgrade.refused";
-/// An upgrade the helper put off, which no record holds.
-pub(crate) const PUT_OFF: &str = "put-off";
+pub(crate) const PUT_OFF: &str = "factory.upgrade.put_off";
 
-const REPOSITORY: &str = "maxence-lefebvre/priory";
+pub(crate) const REPOSITORY: &str = "maxence-lefebvre/priory";
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
 const EVERY: Duration = Duration::from_secs(3600);
 /// How often a staged release looks for a quiet moment.
 const LOOK: Duration = Duration::from_secs(5);
-/// How long a release waits after the helper put it off.
-const PUT_OFF_FOR: Duration = Duration::from_secs(3600);
+/// How many hours a release waits after it was put off: twice as many each time, up to a day.
+const PUT_OFF_HOURS: i64 = 24;
 /// How long a release waits for a quiet moment before the desk says why.
 const PATIENCE: jiff::SignedDuration = jiff::SignedDuration::from_hours(24);
 const ANSWERS_WITHIN: u64 = 120;
@@ -57,9 +57,20 @@ fn target() -> Option<&'static str> {
 pub(crate) struct Store {
     /// The versions never tried again, each with why.
     pub refused: BTreeMap<String, String>,
+    /// The versions that wait after they were put off.
+    pub put_off: BTreeMap<String, PutOff>,
     /// The lines the desk already got.
     pub noted: Vec<String>,
     pub kept: Vec<Kept>,
+}
+
+/// How often a version was put off, and until when it waits.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct PutOff {
+    pub times: u32,
+    pub until: Timestamp,
+    /// The last upgrade that counted, which counts once.
+    pub op: String,
 }
 
 /// The old binary and the backups one upgrade keeps.
@@ -78,8 +89,19 @@ impl Store {
         Ok(read_json(&Self::path(home))?.unwrap_or_default())
     }
 
-    pub(crate) fn write(&self, home: &Path) -> Result<(), String> {
-        write_json(&Self::path(home), self)
+    /// Changes it, one process at a time: the daemon, the helper and `priory upgrade retry` do.
+    pub(crate) fn update<T>(
+        home: &Path,
+        change: impl FnOnce(&mut Store) -> T,
+    ) -> Result<T, String> {
+        journal::private(home)?;
+        let path = journal::dir(home).join("state.lock");
+        let lock = fs::File::create(&path).and_then(|file| file.lock().map(|()| file));
+        let _lock = lock.map_err(|error| format!("{}: {error}", path.display()))?;
+        let mut store = Store::read(home)?;
+        let changed = change(&mut store);
+        write_json(&Self::path(home), &store)?;
+        Ok(changed)
     }
 }
 
@@ -107,11 +129,11 @@ pub(crate) struct Outcome {
     pub kind: String,
     pub from: String,
     pub to: String,
-    pub schema_from: i64,
-    pub schema_to: i64,
+    pub schema_from: Option<i64>,
+    pub schema_to: Option<i64>,
     pub reason: Option<String>,
     pub backups: Vec<PathBuf>,
-    pub kept: PathBuf,
+    pub kept: Option<PathBuf>,
 }
 
 fn outcomes(home: &Path) -> PathBuf {
@@ -126,16 +148,25 @@ impl Outcome {
     fn line(&self) -> String {
         let Outcome { from, to, .. } = self;
         let reason = self.reason.as_deref().unwrap_or("no reason");
-        let kept = self.kept.display();
+        if self.kind == PUT_OFF {
+            return put_off_line(to, reason);
+        }
         if self.kind == INSTALLED {
+            let kept = self.kept.as_ref().map_or(String::new(), |kept| {
+                format!("; the old binary is {}", kept.display())
+            });
             let but = self
                 .reason
                 .as_ref()
                 .map_or(String::new(), |reason| format!(", but {reason}"));
-            return format!("priory upgraded from {from} to {to}{but}; the old binary is {kept}");
+            return format!("priory upgraded from {from} to {to}{but}{kept}");
         }
         format!("priory went back from {to} to {from} and will not try {to} again: {reason}")
     }
+}
+
+fn put_off_line(version: &str, reason: &str) -> String {
+    format!("priory put the upgrade to {version} off: {reason}")
 }
 
 /// A verified release that waits for a quiet moment.
@@ -154,23 +185,33 @@ fn staged_binary(home: &Path) -> PathBuf {
     journal::dir(home).join("staged")
 }
 
+/// GitHub's attestations of the staged binary, and of the one it replaces.
+fn attestations(home: &Path) -> PathBuf {
+    journal::dir(home).join("attestations.json")
+}
+
+fn own_attestations(home: &Path) -> PathBuf {
+    journal::dir(home).join("own.json")
+}
+
 /// What the new binary does to copies of the databases.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Rehearsal {
     schema_from: i64,
     schema_to: i64,
-    migrates: bool,
+    migrates_state: bool,
+    migrates_bus: bool,
 }
 
-/// How a rehearsal failed: the release is at fault, or this machine is.
-enum Unrehearsed {
-    Release(String),
-    Machine(String),
+impl Rehearsal {
+    fn migrates(&self) -> bool {
+        self.migrates_state || self.migrates_bus
+    }
 }
 
 enum Work {
     Looking(Receiver<Result<Option<Staged>, String>>),
-    Rehearsing(Receiver<Result<Rehearsal, Unrehearsed>>),
+    Rehearsing(Receiver<Result<Rehearsal, Fault>>),
 }
 
 /// The daemon's upgrades: what it looks for, has staged and rehearsed.
@@ -179,31 +220,21 @@ pub(crate) struct Upgrader {
     work: Option<Work>,
     looked: Option<Instant>,
     checked: Option<Instant>,
-    /// Not before, after an upgrade was put off.
-    after: Option<Instant>,
+    /// The running binary is no release, which no look changes.
+    not_a_release: bool,
     rehearsed: Option<(String, Rehearsal)>,
     error: Option<String>,
 }
 
 impl Upgrader {
-    /// Moves an upgrade on. Returns whether its helper started, so the daemon must stop.
-    pub(crate) fn tick(
-        &mut self,
-        db: &mut Connection,
-        trace: &Trace,
-        home: &Path,
-        working: bool,
-    ) -> Result<bool, Error> {
-        match self.moved(db, trace, home, working) {
-            Ok(started) => Ok(started),
-            // An upgrade that cannot go on never stops the daemon.
-            Err(error) => {
-                let error = error.to_string();
-                if self.error.as_ref() != Some(&error) {
-                    eprintln!("priory daemon: upgrade: {error}");
-                    self.error = Some(error);
-                }
-                Ok(false)
+    /// Moves an upgrade on. Once its helper runs, it stops this process from here.
+    pub(crate) fn tick(&mut self, db: &mut Connection, trace: &Trace, home: &Path, working: bool) {
+        // An upgrade that cannot go on never stops the daemon.
+        if let Err(error) = self.moved(db, trace, home, working) {
+            let error = error.to_string();
+            if self.error.as_ref() != Some(&error) {
+                eprintln!("priory daemon: upgrade: {error}");
+                self.error = Some(error);
             }
         }
     }
@@ -214,42 +245,41 @@ impl Upgrader {
         trace: &Trace,
         home: &Path,
         working: bool,
-    ) -> Result<bool, Error> {
+    ) -> Result<(), Error> {
         self.import(db, trace, home)?;
         let runner = trace
             .machine
             .as_deref()
             .and_then(|machine| trace.factory.runners.get(machine));
         let Some(upgrade) = trace.factory.upgrade() else {
-            return Ok(false);
+            return Ok(());
         };
         if runner.is_some_and(|runner| !runner.value.upgrade) {
-            return Ok(false);
+            return Ok(());
         }
         self.landed(db, trace, home)?;
         if self.work.is_some() || journal::read(home)?.is_some() {
-            return Ok(false);
+            return Ok(());
         }
         let every = upgrade.every.unwrap_or(EVERY);
         if self.looked.is_none_or(|at| at.elapsed() >= every) {
             self.looked = Some(Instant::now());
             match host(upgrade) {
+                Ok(_) if self.not_a_release => {}
                 Ok(_) => self.look(upgrade, home)?,
                 Err(reason) => {
                     let line = format!("priory cannot upgrade itself here: {reason}");
                     note(db, trace, home, &line, json!({ "reason": reason }))?;
                 }
             }
-            return Ok(false);
+            return Ok(());
         }
-        if self.checked.is_some_and(|at| at.elapsed() < LOOK)
-            || self.after.is_some_and(|after| Instant::now() < after)
-        {
-            return Ok(false);
+        if self.checked.is_some_and(|at| at.elapsed() < LOOK) {
+            return Ok(());
         }
         self.checked = Some(Instant::now());
         let Some(staged) = read_json::<Staged>(&staged_file(home))? else {
-            return Ok(false);
+            return Ok(());
         };
         self.attempt(db, trace, home, upgrade, &staged, working)
     }
@@ -263,19 +293,24 @@ impl Upgrader {
         upgrade: &Upgrade,
         staged: &Staged,
         working: bool,
-    ) -> Result<bool, Error> {
+    ) -> Result<(), Error> {
         let now = Timestamp::now();
         // A person may have installed it, or narrowed the channel, since it was staged.
-        if !Store::read(home)?.accepts(upgrade.channel, &staged.version) {
+        let store = Store::read(home)?;
+        if !store.accepts(upgrade.channel, &staged.version) {
             fs::remove_file(staged_file(home))?;
-            return Ok(false);
+            return Ok(());
+        }
+        let put_off = store.put_off.get(&staged.version);
+        if put_off.is_some_and(|put_off| now < put_off.until) {
+            return Ok(());
         }
         if upgrade
-            .window
+            .not_during
             .as_ref()
-            .is_some_and(|window| window.holds(now))
+            .is_some_and(|hours| hours.hold(now))
         {
-            return Ok(false);
+            return Ok(());
         }
         let rehearsed = self
             .rehearsed
@@ -285,7 +320,7 @@ impl Upgrader {
         memory::reclaim(db)?;
         let busy = match working {
             true => Some("the daemon runs a command".to_owned()),
-            false => busy(db, rehearsed.is_some_and(|rehearsal| rehearsal.migrates))?,
+            false => busy(db, rehearsed.is_some_and(|rehearsal| rehearsal.migrates()))?,
         };
         if let Some(busy) = busy {
             if now.duration_since(staged.since) >= PATIENCE {
@@ -293,23 +328,56 @@ impl Upgrader {
                 let line = format!("priory {version} waits for a quiet moment for a day: {busy}");
                 note_once(db, home, &format!("waits {version}"), &line)?;
             }
-            return Ok(false);
+            return Ok(());
         }
         let host = host(upgrade)?;
+        if let Err(short) = room_for(home, &host, &staged_binary(home)) {
+            return self.put_off(db, trace, home, &staged.version, &short);
+        }
         let Some(rehearsal) = rehearsed else {
             self.rehearse(home, staged, &host, &trace.factory.dir);
-            return Ok(false);
+            return Ok(());
         };
         let journal = plan(home, staged, rehearsal, host, upgrade, &trace.factory.dir)?;
-        room_for(home, &journal)?;
-        journal::copy(&journal.exe, &journal::helper(home))?;
-        journal::write(home, &journal)?;
-        if let Err(error) = journal::start(home, &journal) {
-            journal::remove(home)?;
-            return Err(error.into());
+        let started = journal::copy(&journal.exe, &journal::helper(home))
+            .and_then(|()| journal::write(home, &journal))
+            .and_then(|()| {
+                println!("priory daemon: upgrading to {}", journal.to);
+                journal::start(home, &journal)
+            })
+            // Nothing starts meanwhile: the helper stops this process, or puts the upgrade off.
+            .and_then(|()| journal::wait(home));
+        if let Err(error) = started {
+            return self.put_off(db, trace, home, &staged.version, &error);
         }
-        println!("priory daemon: upgrading to {}", journal.to);
-        Ok(true)
+        Ok(())
+    }
+
+    /// Records why the daemon put `version` off, and when it tries again.
+    fn put_off(
+        &mut self,
+        db: &mut Connection,
+        trace: &Trace,
+        home: &Path,
+        version: &str,
+        reason: &str,
+    ) -> Result<(), Error> {
+        self.rehearsed = None;
+        let now = Timestamp::now();
+        let outcome = Outcome {
+            op: format!("{}-{}", now.as_millisecond(), std::process::id()),
+            kind: PUT_OFF.to_owned(),
+            from: CURRENT.to_owned(),
+            to: version.to_owned(),
+            schema_from: None,
+            schema_to: None,
+            reason: Some(reason.to_owned()),
+            backups: Vec::new(),
+            kept: None,
+        };
+        // As the helper leaves it, so a state that takes no record yet gets it later.
+        outcome.write(home)?;
+        self.import(db, trace, home)
     }
 
     /// Records what the helpers of ended upgrades left, each once.
@@ -325,12 +393,19 @@ impl Upgrader {
             let Some(outcome) = read_json::<Outcome>(&path)? else {
                 continue;
             };
-            if outcome.kind == PUT_OFF {
-                self.after = Some(Instant::now() + PUT_OFF_FOR);
-                fs::remove_file(&path)?;
-                continue;
+            match &*outcome.kind {
+                PUT_OFF => {
+                    self.rehearsed = None;
+                    delay(home, &outcome)?;
+                }
+                // The helper may have found no room to write it.
+                ROLLED_BACK => Store::update(home, |store| {
+                    let reason = outcome.reason.clone().unwrap_or_default();
+                    store.refused.entry(outcome.to.clone()).or_insert(reason);
+                })?,
+                _ => {}
             }
-            record(db, trace, &outcome)?;
+            record(db, trace, home, &outcome)?;
             fs::remove_file(&path)?;
         }
         Ok(())
@@ -345,7 +420,10 @@ impl Upgrader {
                     self.error = None;
                 }
                 Ok(Ok(None)) => self.error = None,
-                Ok(Err(error)) if error.starts_with(UNVERIFIED) => {
+                Ok(Err(error))
+                    if error.starts_with(UNVERIFIED) || error.starts_with(NOT_A_RELEASE) =>
+                {
+                    self.not_a_release = error.starts_with(NOT_A_RELEASE);
                     note(db, trace, home, &error, json!({ "reason": error }))?;
                 }
                 Ok(Err(error)) => return Err(error.into()),
@@ -359,17 +437,18 @@ impl Upgrader {
                         self.checked = None;
                     }
                 }
-                Ok(Err(Unrehearsed::Machine(error))) => {
-                    self.after = Some(Instant::now() + PUT_OFF_FOR);
-                    return Err(error.into());
+                Ok(Err(Fault::Machine(reason))) => {
+                    if let Some(staged) = read_json::<Staged>(&staged_file(home))? {
+                        self.put_off(db, trace, home, &staged.version, &reason)?;
+                    }
                 }
-                Ok(Err(Unrehearsed::Release(reason))) => {
+                Ok(Err(Fault::Release(reason))) => {
                     let Some(staged) = read_json::<Staged>(&staged_file(home))? else {
                         return Ok(());
                     };
-                    let mut store = Store::read(home)?;
-                    store.refused.insert(staged.version.clone(), reason.clone());
-                    store.write(home)?;
+                    Store::update(home, |store| {
+                        store.refused.insert(staged.version.clone(), reason.clone());
+                    })?;
                     fs::remove_file(staged_file(home))?;
                     let version = staged.version;
                     let line = format!("priory refuses {version} and will not try it: {reason}");
@@ -410,6 +489,38 @@ impl Upgrader {
         });
         self.work = Some(Work::Rehearsing(receiver));
     }
+}
+
+/// Makes the version that `outcome` put off wait, longer each time.
+fn delay(home: &Path, outcome: &Outcome) -> Result<(), String> {
+    Store::update(home, |store| {
+        let before = store.put_off.get(&outcome.to);
+        if before.is_some_and(|before| before.op == outcome.op) {
+            return;
+        }
+        let times = before.map_or(0, |before| before.times);
+        let hours = 2_i64.saturating_pow(times).min(PUT_OFF_HOURS);
+        let put_off = PutOff {
+            times: times.saturating_add(1),
+            until: Timestamp::now() + jiff::SignedDuration::from_hours(hours),
+            op: outcome.op.clone(),
+        };
+        store.put_off.insert(outcome.to.clone(), put_off);
+    })
+}
+
+/// `priory upgrade retry`: forgets that `version` was refused or put off.
+pub fn retry(version: &str) -> Result<(), String> {
+    let known = Store::update(&priory_runtime::runtime::home(), |store| {
+        store.noted.retain(|line| !line.contains(version));
+        let refused = store.refused.remove(version).is_some();
+        store.put_off.remove(version).is_some() || refused
+    })?;
+    if !known {
+        return Err(format!("{version} is neither refused nor put off"));
+    }
+    println!("the daemon tries {version} again");
+    Ok(())
 }
 
 impl Store {
@@ -465,6 +576,9 @@ fn newest(releases: &[u8], channel: Channel, store: &Store) -> Result<Option<Str
 /// How the error of a release that fails its checks starts.
 const UNVERIFIED: &str = "priory refuses a release it cannot verify";
 
+/// How the error of a running binary that no release holds starts.
+const NOT_A_RELEASE: &str = "priory cannot upgrade itself here: its binary is not a release";
+
 /// Looks for a release, downloads it and checks it. `None` without one newer than `staged`.
 fn find(
     home: &Path,
@@ -476,7 +590,7 @@ fn find(
         return Ok(None);
     };
     let dir = journal::dir(home);
-    fs::create_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    journal::private(home)?;
     let api = format!("https://api.github.com/repos/{REPOSITORY}");
     let answer = dir.join("answer");
     let get = |url: &str, most: u64| -> Result<Vec<u8>, String> {
@@ -500,9 +614,22 @@ fn find(
     if String::from_utf8_lossy(&sum).split_whitespace().next() != Some(&sha256) {
         return Err(refused("its checksum differs from its .sha256"));
     }
-    let attestations = get(&format!("{api}/attestations/sha256:{sha256}"), ANSWER_MAX)?;
-    provenance::verify(&attestations, REPOSITORY, &version, &name, &sha256)
-        .map_err(|error| refused(&error))?;
+    let attested = get(&format!("{api}/attestations/sha256:{sha256}"), ANSWER_MAX)?;
+    swap::genuine(&attested, &version, &name, &sha256).map_err(|error| refused(&error))?;
+    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    let running = swap::digest(&exe)?;
+    let not_a_release = |error: &str| format!("{NOT_A_RELEASE}: {error}");
+    let own =
+        get(&format!("{api}/attestations/sha256:{running}"), ANSWER_MAX).map_err(|error| {
+            // GitHub's answer for a file it never attested.
+            match error.contains("error: 404") {
+                true => not_a_release("GitHub holds no attestation of it"),
+                false => error,
+            }
+        })?;
+    swap::genuine(&own, CURRENT, &name, &running).map_err(|error| not_a_release(&error))?;
+    journal::replace(&own_attestations(home), &own)?;
+    journal::replace(&attestations(home), &attested)?;
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))
         .and_then(|()| fs::rename(&binary, staged_binary(home)))
         .map_err(|error| format!("{}: {error}", binary.display()))?;
@@ -595,6 +722,8 @@ fn host(upgrade: &Upgrade) -> Result<Host, String> {
         std::env::var_os(name)
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
+            // A rollback renames over it, which must not replace a link.
+            .and_then(|path| path.canonicalize().ok())
             .ok_or_else(|| format!("{name} does not name a file by its absolute path"))
     };
     Ok(Host {
@@ -604,10 +733,13 @@ fn host(upgrade: &Upgrade) -> Result<Host, String> {
     })
 }
 
-/// What an upgrade must wait for, if anything: a memory grant, a compaction, or a run inside a tool
+/// What an upgrade must wait for, if anything: a pause, a memory grant, a compaction, or a run inside a tool
 /// call, or with `none_live` any live run. A run whose transcript does not tell counts as busy.
 pub(crate) fn busy(db: &Connection, none_live: bool) -> rusqlite::Result<Option<String>> {
     let count = |query: &str| db.query_row(query, [], |row| row.get::<_, i64>(0));
+    if count("SELECT count(*) FROM pause")? > 0 {
+        return Ok(Some("priory is paused".to_owned()));
+    }
     if count("SELECT count(*) FROM grants")? > 0 {
         return Ok(Some("a memory grant is held or waits".to_owned()));
     }
@@ -622,8 +754,8 @@ pub(crate) fn busy(db: &Connection, none_live: bool) -> rusqlite::Result<Option<
         if none_live {
             return Ok(Some(format!("run {run} is live and the release migrates")));
         }
-        let read = path.and_then(|path| fs::read(path).ok());
-        match read.and_then(|bytes| transcript::in_tool_call(&bytes)) {
+        let path = path.map(PathBuf::from);
+        match path.and_then(|path| transcript::in_tool_call_at(&path).ok().flatten()) {
             Some(false) => {}
             Some(true) => return Ok(Some(format!("run {run} is inside a tool call"))),
             None => return Ok(Some(format!("run {run}'s transcript cannot be read"))),
@@ -634,14 +766,14 @@ pub(crate) fn busy(db: &Connection, none_live: bool) -> rusqlite::Result<Option<
 
 /// Runs the staged binary on copies of the databases, so a migration that fails, or a factory the
 /// release refuses, shows before anything stops.
-fn rehearse(
-    home: &Path,
-    staged: &Staged,
-    host: &Host,
-    factory: &Path,
-) -> Result<Rehearsal, Unrehearsed> {
+fn rehearse(home: &Path, staged: &Staged, host: &Host, factory: &Path) -> Result<Rehearsal, Fault> {
     let dir = journal::dir(home).join("rehearsal");
-    let ran = rehearse_in(&dir, &staged_binary(home), staged, host, factory);
+    let ran = match rehearse_in(&dir, &staged_binary(home), staged, host, factory) {
+        Err(Fault::Release(reason)) if swap::short(home) => Err(Fault::Machine(format!(
+            "{reason} (the disk is almost full)"
+        ))),
+        ran => ran,
+    };
     let _ = fs::remove_dir_all(&dir);
     ran
 }
@@ -652,9 +784,8 @@ fn rehearse_in(
     staged: &Staged,
     host: &Host,
     factory: &Path,
-) -> Result<Rehearsal, Unrehearsed> {
-    let machine = Unrehearsed::Machine;
-    let release = Unrehearsed::Release;
+) -> Result<Rehearsal, Fault> {
+    let machine = Fault::Machine;
     let _ = fs::remove_dir_all(dir);
     fs::create_dir_all(dir).map_err(|error| machine(format!("{}: {error}", dir.display())))?;
     if swap::digest(binary).map_err(machine)? != staged.sha256 {
@@ -666,22 +797,31 @@ fn rehearse_in(
     let (state, bus) = (dir.join("state.db"), dir.join("bus.db"));
     swap::backup(&host.state, &state).map_err(machine)?;
     swap::backup(&host.bus, &bus).map_err(machine)?;
-    swap::version_is(binary, &staged.version).map_err(release)?;
-    swap::run(Command::new(binary).arg("check").arg(factory))
-        .map_err(|error| release(format!("priory check failed: {error}")))?;
+    swap::version_is(binary, &staged.version)?;
+    swap::check(&host.exe, binary, factory)?;
+    let probe = |exe: &Path| {
+        swap::run(
+            Command::new(exe)
+                .args(["upgrade", "probe"])
+                .arg(factory)
+                .env("PRIORY_HOME", dir)
+                .env("PRIORY_DB", &state)
+                .env("HERDR_BUS_DB", &bus)
+                .env_remove("PRIORY_SESSION"),
+        )
+        .map(drop)
+        .map_err(|fault| fault.because("it cannot open a copy of the databases"))
+    };
+    probe(&host.exe).map_err(|fault| match fault {
+        Fault::Release(error) | Fault::Machine(error) => {
+            machine(format!("the running version: {error}"))
+        }
+    })?;
     let before = (
         schema(&state).map_err(machine)?,
         schema(&bus).map_err(machine)?,
     );
-    swap::run(
-        Command::new(binary)
-            .args(["upgrade", "probe"])
-            .arg(factory)
-            .env("PRIORY_HOME", dir)
-            .env("PRIORY_DB", &state)
-            .env("HERDR_BUS_DB", &bus),
-    )
-    .map_err(|error| release(format!("it cannot open a copy of the databases: {error}")))?;
+    probe(binary)?;
     let after = (
         schema(&state).map_err(machine)?,
         schema(&bus).map_err(machine)?,
@@ -689,7 +829,8 @@ fn rehearse_in(
     Ok(Rehearsal {
         schema_from: before.0.0,
         schema_to: after.0.0,
-        migrates: before != after,
+        migrates_state: before.0 != after.0,
+        migrates_bus: before.1 != after.1,
     })
 }
 
@@ -738,10 +879,14 @@ fn plan(
         to: staged.version.clone(),
         schema_from: rehearsal.schema_from,
         schema_to: rehearsal.schema_to,
-        migrates: rehearsal.migrates,
+        migrates_state: rehearsal.migrates_state,
+        migrates_bus: rehearsal.migrates_bus,
         opened: false,
         staged: staged_binary(home),
         sha256: staged.sha256.clone(),
+        asset: format!("priory-{}", target().unwrap_or_default()),
+        attestations: attestations(home),
+        own: own_attestations(home),
         kept,
         factory,
         state_backup: backup(&host.state),
@@ -753,26 +898,49 @@ fn plan(
         answers_within: ANSWERS_WITHIN,
         watch: WATCH,
         reason: None,
+        refuse: false,
+        running: None,
         op,
     })
 }
 
-/// Refuses an upgrade whose backups and binaries could fill the disk.
-fn room_for(home: &Path, journal: &Journal) -> Result<(), String> {
-    let size = |path: &Path| fs::metadata(path).map_or(0, |file| file.len());
-    let databases = size(&journal.state) + size(&journal.bus);
-    let needed = 2 * (databases + size(&journal.exe) + size(&journal.staged));
-    let free = room::measure(home)?.disk_free;
-    match free >= needed {
-        true => Ok(()),
-        false => Err(format!(
-            "{free} bytes of disk are free and it needs {needed}"
-        )),
+/// Refuses an upgrade whose copies could fill a disk, each measured for what goes there.
+fn room_for(home: &Path, host: &Host, staged: &Path) -> Result<(), String> {
+    let size = |path: &Path| {
+        let mut wal = path.as_os_str().to_owned();
+        wal.push("-wal");
+        let files = [path.to_owned(), PathBuf::from(wal)];
+        let sizes = files.map(|file| fs::metadata(file).map_or(0, |file| file.len()));
+        sizes.iter().sum::<u64>()
+    };
+    let (state, bus) = (size(&host.state), size(&host.bus));
+    let mut needs: BTreeMap<u64, (&Path, u64)> = BTreeMap::new();
+    for (place, bytes) in [
+        // The rehearsal's copies and the helper.
+        (home, state + bus + size(&host.exe)),
+        (&host.state, state),
+        (&host.bus, bus),
+        (&host.exe, size(staged)),
+    ] {
+        let folder = swap::folder(place);
+        let found =
+            fs::metadata(folder).map_err(|error| format!("{}: {error}", folder.display()))?;
+        needs.entry(found.dev()).or_insert((folder, 0)).1 += 2 * bytes;
     }
+    for (folder, needed) in needs.into_values() {
+        let free = room::free(folder)?;
+        if free < needed {
+            let folder = folder.display();
+            return Err(format!(
+                "{free} bytes are free on the disk of {folder} and it needs {needed}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Appends the trace record and the desk line of `outcome`, unless an earlier try did.
-fn record(db: &mut Connection, trace: &Trace, outcome: &Outcome) -> Result<(), Error> {
+fn record(db: &mut Connection, trace: &Trace, home: &Path, outcome: &Outcome) -> Result<(), Error> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let recorded = tx
         .query_row(
@@ -787,7 +955,12 @@ fn record(db: &mut Connection, trace: &Trace, outcome: &Outcome) -> Result<(), E
             fields.remove("kind");
         }
         append(&tx, trace, &outcome.kind, data)?;
-        post::report(&tx, "upgrade", &outcome.line())?;
+        let line = outcome.line();
+        match &*outcome.kind {
+            // The same reason comes back with each try, and shows once.
+            PUT_OFF => note_once(&tx, home, &line, &line)?,
+            _ => post::report(&tx, "upgrade", &line)?,
+        }
     }
     tx.commit()?;
     Ok(())
@@ -833,16 +1006,16 @@ fn noted(store: &Store, key: &str) -> bool {
 
 /// Says `line` on the desk unless `key` already did.
 fn note_once(db: &Connection, home: &Path, key: &str, line: &str) -> Result<(), Error> {
-    let mut store = Store::read(home)?;
-    if noted(&store, key) {
+    if noted(&Store::read(home)?, key) {
         return Ok(());
     }
     post::report(db, "upgrade", line)?;
-    store.noted.push(key.to_owned());
-    if store.noted.len() > NOTED {
-        store.noted.remove(0);
-    }
-    store.write(home)?;
+    Store::update(home, |store| {
+        store.noted.push(key.to_owned());
+        if store.noted.len() > NOTED {
+            store.noted.remove(0);
+        }
+    })?;
     Ok(())
 }
 

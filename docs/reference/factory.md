@@ -201,9 +201,9 @@ how, and [How to upgrade Priory automatically](../upgrading-automatically.md) to
 | `channel` | `"patch"` or `"minor"` | yes | | `patch` takes releases of the running major and minor version, `minor` those of the running major version. Neither takes a pre-release or an older version | `"patch"` |
 | `every` | duration | no | `"1h"` | How often the daemon looks for a release. At least `"10m"` | `"6h"` |
 | `units` | list of two strings | no | `["priory-daemon.service", "priory-intake.service"]` | The systemd user units of the daemon and the intake, in that order | `["acme-daemon.service", "acme-intake.service"]` |
-| `window` | table | no | it may upgrade at any time | When the daemon never upgrades. See below | |
+| `not_during` | table | no | it may upgrade at any time | When the daemon never upgrades. See below | |
 
-### `[upgrade.window]`
+### `[upgrade.not_during]`
 
 | Key | Type | Required | Default | Meaning | Example |
 | --- | ---- | -------- | ------- | ------- | ------- |

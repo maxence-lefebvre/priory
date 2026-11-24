@@ -176,14 +176,11 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         upgrade::admit(&runtime::home(), true)?;
     }
     let mut db = state::open()?;
-    tools::backfill_endings(&mut db, &factory.workflows)?;
     let bus = log::open(factory.log())?;
+    tools::backfill_endings(&mut db, &factory.workflows)?;
     state::bands(&mut db, &factory.bands(), factory.age())?;
     state::fairness(&db, factory.fair())?;
     state::irreversible_asks(&mut db, &factory.workflows)?;
-    for error in sections::dispatch(&db, factory, None)? {
-        eprintln!("priory daemon: {error}");
-    }
     let embedder = factory.search().embedder().map(|spec| embed::name(&spec));
     search::configure(&db, embedder.as_deref())?;
     let home = runtime::home();
@@ -202,6 +199,14 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     };
     let consumer = runners::consumer(trace.runner.as_deref());
     runners::name(&db, trace.runner.as_deref())?;
+    // What came before writes the state alone, which a rollback puts back. A dispatch reaches further.
+    let held = match !once && upgrade::held(&home) {
+        true => Some(hold(factory, &home)?),
+        false => None,
+    };
+    for error in sections::dispatch(&db, factory, None)? {
+        eprintln!("priory daemon: {error}");
+    }
     if once {
         drain(&*bus, &consumer, &mut db, &trace, counting.get(&home))?;
         runners::flush(&db, &*bus)?;
@@ -224,10 +229,11 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
         eprintln!("priory daemon: notifications are off: {error}");
     }
     let searching = search::answering(state::read_only()?, home.clone());
-    let listening = runtime::listen(&home)?;
+    let listening = match held {
+        Some(listening) => listening,
+        None => runtime::listen(&home)?,
+    };
     let headers = otlp::header_file(factory, &home, "otlp-headers")?;
-    // Before the server, whose webhooks would reach a log the upgrade may still put back.
-    hold(factory, &home, &listening)?;
     let server = match factory.serve() {
         Some(config) => Some(crate::serve::start(factory, config.listen)?),
         None => None,
@@ -530,10 +536,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             && summarizing.is_empty()
             && stalls.calls.is_empty()
             && deliveries.is_empty());
-        if upgrader.tick(&mut db, &trace, &home, working)? {
-            // Nothing starts from here: the helper stops this service and starts the new one.
-            return Ok(());
-        }
+        upgrader.tick(&mut db, &trace, &home, working);
         priory_runtime::ticks::record(tick.elapsed());
         // A pasted prompt's Enter is due before the next whole tick.
         let wait = entering.due().map_or(EVERY, |due| due.min(EVERY));
@@ -1081,10 +1084,8 @@ fn version(_: &VersionLine) -> Result<String, String> {
 
 /// Waits until a migration's upgrade is committed. The daemon then answers its version alone, so a
 /// rollback to the backups loses nothing.
-fn hold(factory: &Factory, home: &Path, listening: &runtime::Listening) -> Result<(), Error> {
-    if !upgrade::held(home) {
-        return Ok(());
-    }
+fn hold(factory: &Factory, home: &Path) -> Result<runtime::Listening, Error> {
+    let listening = runtime::listen(home)?;
     if let Some(config) = factory.serve() {
         drop(std::net::TcpListener::bind(config.listen)?);
     }
@@ -1102,7 +1103,7 @@ fn hold(factory: &Factory, home: &Path, listening: &runtime::Listening) -> Resul
             Err(RecvTimeoutError::Disconnected) => return Err("the signal socket closed".into()),
         }
     }
-    Ok(())
+    Ok(listening)
 }
 
 /// `POST /api/request`'s line: `{"add": {...}}`.

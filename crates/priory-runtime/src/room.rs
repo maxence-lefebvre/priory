@@ -126,6 +126,11 @@ fn read(path: &Path) -> Result<String, String> {
 /// How long `df` may take, since a hung mount would hold the daemon's thread.
 const DF: Duration = Duration::from_secs(5);
 
+/// Free disk on the filesystem of `path` for an unprivileged user, in bytes.
+pub fn free(path: &Path) -> Result<u64, String> {
+    disk(path).map(|(_, free)| free)
+}
+
 /// Total and available bytes of the file system holding `path`, from POSIX `df -Pk`.
 fn disk(path: &Path) -> Result<(u64, u64), String> {
     let output = fed_within(Command::new("df").arg("-Pk").arg(path), None, DF)

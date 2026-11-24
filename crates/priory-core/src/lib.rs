@@ -75,5 +75,5 @@ pub mod todo;
 pub mod tools;
 pub mod trace;
 mod triage;
-mod upgrade;
+pub mod upgrade;
 mod usage;

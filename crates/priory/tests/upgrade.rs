@@ -34,15 +34,19 @@ case "$verb" in
       running=$(pid "$unit")
       [ "$running" != 0 ] && kill "$running" 2>/dev/null
       while [ "$running" != 0 ] && alive "$running"; do sleep 0.05; done
+      [ "$running" != 0 ] && : > "$FAKE/$unit.stopped"
       rm -f "$FAKE/$unit.pid"
-    done ;;
+    done
+    [ -e "$FAKE/on-stop" ] && . "$FAKE/on-stop" ;;
   start)
     for unit in "$@"; do
       alive "$(pid "$unit")" && continue
       verb_of=daemon
       case "$unit" in *intake*) verb_of=intake ;; esac
+      ulimit -S -f unlimited 2>/dev/null
       "$FAKE/exe" "$verb_of" "$FAKE/factory" >> "$FAKE/$unit.log" 2>&1 < /dev/null &
       echo $! > "$FAKE/$unit.pid"
+      rm -f "$FAKE/$unit.stopped"
     done ;;
   show)
     for unit in "$@"; do :; done
@@ -50,7 +54,9 @@ case "$verb" in
     alive "$running" || running=0
     case "$*" in
       *MainPID*) echo "$running" ;;
-      *ActiveState*) [ "$running" = 0 ] && echo failed || echo active ;;
+      *ActiveState*) [ "$running" = 0 ] && { [ -e "$FAKE/$unit.stopped" ] && echo inactive || { [ -e "$FAKE/$unit.pid" ] && echo failed || echo inactive; }; } || echo active ;;
+      *ExecMainCode*) [ -e "$FAKE/$unit.stopped" ] && echo 2 || echo 1 ;;
+      *ExecMainStatus*) [ -e "$FAKE/$unit.stopped" ] && echo 15 || echo 1 ;;
       *ExecStart*) echo "{ path=$FAKE/exe ; argv[]=$FAKE/exe daemon ; }" ;;
     esac ;;
 esac
@@ -75,7 +81,8 @@ done
 shift
 [ $scope = yes ] && exec "$@"
 echo "$*" >> "$FAKE/systemd-run.log"
-"$@" >> "$FAKE/helper.log" 2>&1 < /dev/null &
+[ -e "$FAKE/no-helper" ] && exit 0
+"$FAKE/as-helper" >> "$FAKE/helper.log" 2>&1 < /dev/null &
 "#;
 
 /// Serves `$FAKE/releases/<the url's last part>`, or fails as curl does when it cannot connect.
@@ -90,6 +97,27 @@ name=${name%%\?*}
 [ -e "$FAKE/releases/$name" ] || { echo 'curl: (7) no server' >&2; exit 7; }
 cp "$FAKE/releases/$name" "$to"
 "#;
+
+/// What the fake binaries' attestation holds, since no test can sign a real one.
+const GENUINE: &[u8] = b"genuine";
+
+/// Not a test: the process that runs the helper, as `priory upgrade resume` does, but with a check
+/// the fake binaries pass.
+#[test]
+#[ignore = "the other tests run it"]
+fn helper_process() {
+    let verify = |answer: &[u8], _: &str, name: &str, sha256: &str| match answer == GENUINE
+        && name == target()
+        && sha256.len() == 64
+    {
+        true => Ok(()),
+        false => Err("it is not genuine".to_owned()),
+    };
+    if let Err(error) = priory_core::swap::resume(&verify) {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+}
 
 struct Setup {
     dir: PathBuf,
@@ -131,6 +159,15 @@ impl Setup {
         script(&dir.join("bin/systemctl"), SYSTEMCTL);
         script(&dir.join("bin/systemd-run"), SYSTEMD_RUN);
         script(&dir.join("bin/curl"), CURL);
+        let me = std::env::current_exe().unwrap();
+        let me = me.display();
+        script(
+            &dir.join("as-helper"),
+            &format!("#!/bin/sh\nexec '{me}' --exact helper_process --ignored --nocapture\n"),
+        );
+        for name in ["attestations.json", "own.json"] {
+            fs::write(dir.join("home/upgrade").join(name), GENUINE).unwrap();
+        }
         let setup = Setup {
             tmux: TmuxDir::new(&dir),
             dir,
@@ -180,7 +217,9 @@ impl Setup {
         script(&self.path("home/upgrade/helper"), &old());
         let mut journal = json!({
             "op": "op", "phase": "stopping", "from": "0.0.1", "to": CURRENT,
-            "schema_from": 1, "schema_to": 1, "migrates": false,
+            "schema_from": 1, "schema_to": 1, "asset": target(),
+            "attestations": self.path("home/upgrade/attestations.json"),
+            "own": self.path("home/upgrade/own.json"),
             "exe": self.path("exe"), "staged": self.path("home/upgrade/staged"),
             "sha256": sha256(new.as_bytes()), "kept": self.path("exe.0.0.1"),
             "factory": self.path("factory"),
@@ -197,11 +236,19 @@ impl Setup {
     /// Runs the helper as its unit does: again while it fails or is killed.
     fn helper(&self) {
         for _ in 0..5 {
-            if self.priory(&["upgrade", "resume"]).status.success() {
+            let output = self
+                .command(self.path("as-helper").to_str().unwrap())
+                .output();
+            let output = output.unwrap();
+            let log = [&output.stdout[..], &output.stderr[..]].concat();
+            let path = self.path("helper.log");
+            let before = fs::read(&path).unwrap_or_default();
+            fs::write(path, [before, log].concat()).unwrap();
+            if output.status.success() {
                 return;
             }
         }
-        panic!("the helper never ended");
+        panic!("the helper never ended\n{}", self.logs());
     }
 
     fn answers(&self) -> bool {
@@ -259,6 +306,37 @@ impl Setup {
         found
     }
 
+    /// The old binary serves again with its data, and the release may be tried again later.
+    fn assert_put_off(&self, name: &str, why: &str) {
+        assert_eq!(self.installed(), old(), "{name}\n{}", self.logs());
+        let record = self.recorded();
+        assert_eq!(record["type"], "factory.upgrade.put_off", "{name}");
+        let reason = record["data"]["reason"].as_str().unwrap();
+        assert!(reason.contains(why), "{name}: {reason}");
+        assert!(self.desk().contains("off: "), "{name}: {}", self.desk());
+        self.wait("the old daemon answers", || self.answers());
+        let inbox = self.priory(&["inbox"]);
+        let inbox = String::from_utf8_lossy(&inbox.stdout).into_owned();
+        assert!(inbox.contains("kept"), "{name}: {inbox}");
+        assert!(!self.path("home/upgrade/journal.json").exists(), "{name}");
+        let store = self.store();
+        assert_eq!(store["refused"], json!({}), "{name}");
+        assert!(store["put_off"][CURRENT]["until"].is_string(), "{name}");
+        for left in ["exe.next", "exe.back", "home/upgrade/reserve"] {
+            assert!(!self.path(left).exists(), "{name}: {left}");
+        }
+        for left in ["priory.db.backup", "bus.db.backup"] {
+            assert!(!self.path(left).exists(), "{name}: {left}");
+            let partial = self.path(&format!("{left}.partial"));
+            assert!(!partial.exists(), "{name}: {left}.partial");
+        }
+    }
+
+    fn store(&self) -> Value {
+        let store = fs::read_to_string(self.path("home/upgrade/state.json")).unwrap();
+        serde_json::from_str(&store).unwrap()
+    }
+
     fn desk(&self) -> String {
         String::from_utf8_lossy(&self.priory(&["desk"]).stdout).into_owned()
     }
@@ -280,8 +358,7 @@ impl Setup {
             "{name}: {inbox:?}"
         );
         assert!(!self.path("home/upgrade/journal.json").exists(), "{name}");
-        let store = fs::read_to_string(self.path("home/upgrade/state.json")).unwrap();
-        let store: Value = serde_json::from_str(&store).unwrap();
+        let store = self.store();
         assert!(store["refused"][new].is_string(), "{name}: {store}");
         record
     }
@@ -333,13 +410,7 @@ fn a_release_that_fails_goes_back_to_the_old_binary() {
             fake(CURRENT, "echo broken >&2; exit 1", ":"),
             "broken",
         ),
-        ("exits", fake(CURRENT, "exit 0", "exit 1"), "did not answer"),
-        (
-            "hangs",
-            fake(CURRENT, "exit 0", "exec sleep 600"),
-            "did not answer",
-        ),
-        ("wrong", fake("9.9.9", "exit 0", ":"), "it says it is"),
+        ("exits", fake(CURRENT, "exit 0", "exit 1"), "stopped before"),
         (
             "dies",
             fake(CURRENT, "exit 0", "exec timeout 4 \"$0\" serves; exit 0"),
@@ -383,30 +454,186 @@ fn a_daemon_that_answers_as_another_version_goes_back() {
 }
 
 #[test]
-fn a_changed_download_is_never_installed() {
-    let setup = Setup::new("changed", "");
-    setup.upgrade(&fake(CURRENT, "exit 0", ":"), |journal| {
-        journal["sha256"] = json!("0")
-    });
+fn a_release_that_is_not_what_was_verified_stops_nothing() {
+    let edits: [(&str, &dyn Fn(&Setup), &str); 3] = [
+        (
+            "changed",
+            &|setup| script(&setup.path("home/upgrade/staged"), "#!/bin/sh\n"),
+            "changed after its check",
+        ),
+        (
+            "forged",
+            &|setup| fs::write(setup.path("home/upgrade/attestations.json"), "forged").unwrap(),
+            "its attestation does not verify",
+        ),
+        (
+            "own-build",
+            &|setup| fs::write(setup.path("home/upgrade/own.json"), "forged").unwrap(),
+            "the installed binary is not a release",
+        ),
+    ];
+    for (name, edit, why) in edits {
+        let setup = Setup::new(&format!("unverified-{name}"), "");
+        setup.upgrade(&fake(CURRENT, "exit 0", ":"), |_| {});
+        edit(&setup);
 
-    setup.helper();
+        setup.helper();
 
-    setup.assert_back("changed", CURRENT);
+        setup.assert_put_off(name, why);
+        let log = fs::read_to_string(setup.path("systemctl.log")).unwrap();
+        assert!(!log.contains("stop "), "{name}: {log}");
+        assert!(!setup.path("home/upgrade/staged").exists(), "{name}");
+    }
+}
+
+/// The real verb, with the real check, which the fake attestation fails.
+#[test]
+fn the_real_helper_refuses_a_forged_attestation_and_a_run_s_shell() {
+    let setup = Setup::new("real-helper", "");
+    setup.upgrade(&fake(CURRENT, "exit 0", ":"), |_| {});
+
+    for args in [
+        &["upgrade", "resume"][..],
+        &["upgrade", "retry", "1.0.0"],
+        &["upgrade", "probe", "x"],
+    ] {
+        let refused = setup
+            .command(REAL)
+            .args(args)
+            .env("PRIORY_SESSION", "run")
+            .output()
+            .unwrap();
+        assert_eq!(refused.status.code(), Some(2), "{args:?}");
+    }
+    assert!(setup.path("home/upgrade/journal.json").exists());
+    succeeded(&setup.priory(&["upgrade", "resume"]));
+
+    setup.assert_put_off("real", "its attestation does not verify");
 }
 
 #[test]
-fn a_migration_that_fails_puts_both_databases_back() {
-    let setup = Setup::new("migration", "");
-    let spoil = "\"$0\" desk > \"$FAKE/refused\" 2>&1; \
-                 echo spoiled > \"$PRIORY_DB\"; echo spoiled > \"$HERDR_BUS_DB\"; exit 1";
-    setup.upgrade(&fake(CURRENT, "exit 0", spoil), |journal| {
-        journal["migrates"] = json!(true);
-        journal["answers_within"] = json!(2);
+fn a_fault_of_this_machine_puts_the_upgrade_off() {
+    let half_edited = "[ -e \"$FAKE/edited\" ] && exit 1; : > \"$FAKE/edited\"; exit 0";
+    for (name, old_check, new, why) in [
+        (
+            "factory",
+            "echo half-edited >&2; exit 1",
+            fake(CURRENT, "exit 1", ":"),
+            "the running version's priory check failed",
+        ),
+        (
+            "edited-meanwhile",
+            half_edited,
+            fake(CURRENT, "exit 1", ":"),
+            "the running version's priory check failed",
+        ),
+        (
+            "killed-check",
+            "exit 0",
+            fake(CURRENT, "kill -9 $$", ":"),
+            "signal: 9",
+        ),
+        (
+            "hangs",
+            "exit 0",
+            fake(CURRENT, "exit 0", "exec sleep 600"),
+            "did not answer within",
+        ),
+    ] {
+        let setup = Setup::new(&format!("machine-{name}"), "");
+        setup.upgrade(&new, |journal| journal["answers_within"] = json!(3));
+        let old = fake("0.0.1", old_check, ":");
+        fs::remove_file(setup.path("exe")).unwrap();
+        script(&setup.path("exe"), &old);
+
+        setup.helper();
+
+        // The comparison below is against the plain old binary.
+        assert_eq!(setup.installed(), old, "{name}");
+        fs::remove_file(setup.path("exe")).unwrap();
+        script(&setup.path("exe"), &fake("0.0.1", "exit 0", ":"));
+        setup.assert_put_off(name, why);
+    }
+}
+
+fn add_table(path: &Path, table: &str) {
+    let db = rusqlite::Connection::open(path).unwrap();
+    db.execute_batch(&format!(
+        "CREATE TABLE {table} (a); INSERT INTO {table} VALUES ('old')"
+    ))
+    .unwrap();
+}
+
+fn tables(path: &Path, name: &str) -> i64 {
+    let db = rusqlite::Connection::open(path).unwrap();
+    db.query_row(
+        "SELECT count(*) FROM sqlite_schema WHERE name = ?1",
+        [name],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+/// A daemon that migrates `state` and, when `bus`, the log, and then dies.
+fn migrating(bus: bool) -> String {
+    let test = std::env::current_exe().unwrap();
+    let test = test.display();
+    let bus = if bus { "both" } else { "state" };
+    let daemon =
+        format!("MIGRATE={bus} '{test}' --exact migrate_process --ignored >/dev/null; exit 1");
+    fake(CURRENT, "exit 0", &daemon)
+}
+
+/// Not a test: the migration of a fake release.
+#[test]
+#[ignore = "the other tests run it"]
+fn migrate_process() {
+    let path = |name: &str| PathBuf::from(std::env::var_os(name).unwrap());
+    let state = rusqlite::Connection::open(path("PRIORY_DB")).unwrap();
+    state
+        .execute_batch("CREATE TABLE migrated (a); PRAGMA user_version = 9999")
+        .unwrap();
+    let bus = rusqlite::Connection::open(path("HERDR_BUS_DB")).unwrap();
+    if std::env::var("MIGRATE").unwrap() == "both" {
+        bus.execute_batch("CREATE TABLE migrated (a)").unwrap();
+    }
+    bus.execute_batch("CREATE TABLE webhook (a)").unwrap();
+}
+
+#[test]
+fn a_migration_that_fails_puts_back_the_databases_it_changes_alone() {
+    for (name, bus) in [("state", false), ("both", true)] {
+        let setup = Setup::new(&format!("migration-{name}"), "");
+        add_table(&setup.path("priory.db"), "marker");
+        setup.upgrade(&migrating(bus), |journal| {
+            journal["migrates_state"] = json!(true);
+            journal["migrates_bus"] = json!(bus);
+            journal["answers_within"] = json!(20);
+        });
+
+        setup.helper();
+
+        setup.assert_back(name, CURRENT);
+        assert_eq!(tables(&setup.path("priory.db"), "migrated"), 0, "{name}");
+        assert_eq!(tables(&setup.path("priory.db"), "marker"), 1, "{name}");
+        assert_eq!(tables(&setup.path("bus.db"), "migrated"), 0, "{name}");
+        // What another process stored in a log the release does not migrate stays.
+        let kept = i64::from(!bus);
+        assert_eq!(tables(&setup.path("bus.db"), "webhook"), kept, "{name}");
+    }
+}
+
+#[test]
+fn a_verb_is_refused_while_a_migration_may_be_put_back() {
+    let setup = Setup::new("migration-verb", "");
+    let verb = "\"$0\" desk > \"$FAKE/refused\" 2>&1; exit 1";
+    setup.upgrade(&fake(CURRENT, "exit 0", verb), |journal| {
+        journal["migrates_state"] = json!(true);
     });
 
     setup.helper();
 
-    setup.assert_back("migration", CURRENT);
+    setup.assert_back("verb", CURRENT);
     let refused = fs::read_to_string(setup.path("refused")).unwrap();
     assert!(
         refused.contains("an upgrade of priory is in progress"),
@@ -414,17 +641,83 @@ fn a_migration_that_fails_puts_both_databases_back() {
     );
 }
 
+/// A kill after one database is back and before the other is: the backup that is gone was used.
+#[test]
+fn a_rollback_killed_between_two_restores_ends_with_both() {
+    let setup = Setup::new("between-restores", "");
+    setup.upgrade(&fake(CURRENT, "exit 0", ":"), |journal| {
+        journal["phase"] = json!("rolling-back");
+        journal["migrates_state"] = json!(true);
+        journal["migrates_bus"] = json!(true);
+        journal["opened"] = json!(true);
+        journal["running"] = json!([true, true]);
+        journal["refuse"] = json!(true);
+        journal["reason"] = json!("it failed");
+    });
+    script(&setup.path("exe.0.0.1"), &old());
+    let stopped = setup
+        .command("systemctl")
+        .args(["--user", "stop", "priory-daemon.service"])
+        .status();
+    assert!(stopped.unwrap().success());
+    let bus = rusqlite::Connection::open(setup.path("bus.db")).unwrap();
+    let to = setup.path("bus.db.backup");
+    bus.execute("VACUUM INTO ?1", [to.to_str().unwrap()])
+        .unwrap();
+    bus.execute_batch("CREATE TABLE migrated (a)").unwrap();
+    drop(bus);
+    // The state is back already: what it holds now is the backup's.
+    add_table(&setup.path("priory.db"), "marker");
+
+    setup.helper();
+
+    setup.assert_back("between", CURRENT);
+    assert_eq!(tables(&setup.path("priory.db"), "marker"), 1);
+    assert_eq!(tables(&setup.path("bus.db"), "migrated"), 0);
+}
+
+#[test]
+fn a_process_that_holds_a_database_a_migration_changes_puts_it_off() {
+    for (name, stage) in [("before", false), ("after", true)] {
+        let setup = Setup::new(&format!("holder-{name}"), "");
+        setup.upgrade(&fake(CURRENT, "exit 0", ":"), |journal| {
+            journal["migrates_bus"] = json!(true);
+        });
+        let hold = format!(
+            "sh -c 'exec 9< \"{}\"; sleep 30' >/dev/null 2>&1 &\necho $! > \"$FAKE/holder\"; sleep 0.5\n",
+            setup.path("bus.db").display()
+        );
+        if stage {
+            fs::write(
+                setup.path("on-stop"),
+                format!("[ -e \"$FAKE/holder\" ] || {{ {hold} }}"),
+            )
+            .unwrap();
+        } else {
+            let status = setup.command("sh").args(["-c", &hold]).status();
+            assert!(status.unwrap().success());
+        }
+
+        setup.helper();
+
+        setup.assert_put_off(name, "bus.db open");
+        let log = fs::read_to_string(setup.path("systemctl.log")).unwrap();
+        assert_eq!(log.contains("stop "), stage, "{name}: {log}");
+        let holder = fs::read_to_string(setup.path("holder")).unwrap();
+        let _ = setup.command("kill").arg(holder.trim()).status();
+    }
+}
+
 #[test]
 fn a_migration_s_daemon_does_no_work_until_its_commit() {
     let setup = Setup::new("held", "");
     let new = fake(CURRENT, "exit 0", ":");
     setup.upgrade(&new, |journal| {
-        journal["migrates"] = json!(true);
+        journal["migrates_state"] = json!(true);
         journal["watch"] = json!(6);
     });
     let mut helper = setup
-        .command(REAL)
-        .args(["upgrade", "resume"])
+        .command(setup.path("as-helper").to_str().unwrap())
         .spawn()
         .unwrap();
     let mut refused = String::new();
@@ -455,29 +748,173 @@ fn a_backup_that_fails_starts_the_old_binary_again() {
 
     setup.helper();
 
-    assert_eq!(setup.installed(), old());
-    setup.wait("the old daemon answers", || setup.answers());
+    setup.assert_put_off("backup", "missing");
 }
 
+/// A file size limit fails the copy of a large log part of the way, as a full disk does.
 #[test]
-fn a_grant_that_waits_puts_the_upgrade_off() {
-    let setup = Setup::new("put-off", "");
+fn a_backup_that_runs_out_of_room_leaves_no_partial_and_starts_the_old_binary() {
+    let setup = Setup::new("no-room", "");
     setup.upgrade(&fake(CURRENT, "exit 0", ":"), |_| {});
-    let db = rusqlite::Connection::open(setup.path("priory.db")).unwrap();
-    db.execute(
-        "INSERT INTO grants (bytes, pid, started, command) VALUES (1, 1, 1, 'build')",
-        [],
-    )
-    .unwrap();
+    let db = rusqlite::Connection::open(setup.path("bus.db")).unwrap();
+    db.execute_batch("CREATE TABLE filler (a); INSERT INTO filler VALUES (randomblob(6000000))")
+        .unwrap();
     drop(db);
+    let helper = setup.path("as-helper");
+    let limited = fs::read_to_string(&helper)
+        .unwrap()
+        .replace("exec", "trap '' XFSZ\nulimit -S -f 8192\nexec");
+    script(&helper, &limited);
+    // One an interrupted backup of the same upgrade left.
+    fs::write(setup.path("bus.db.backup.partial"), "left").unwrap();
 
     setup.helper();
 
-    assert_eq!(setup.installed(), old());
-    assert!(setup.path("home/upgrade/staged").exists());
-    assert!(!setup.path("priory.db.backup").exists());
+    setup.assert_put_off("room", "bus.db.backup");
+}
+
+/// Each write of the journal, the store and the outcome fails with ENOSPC from the stop on.
+#[test]
+fn a_full_disk_starts_the_old_services_without_a_journal() {
+    for (name, full) in [
+        ("once", "ln -sf /dev/full \"$FAKE/home/upgrade/$file.next\""),
+        (
+            "for-good",
+            "rm -rf \"$FAKE/home/upgrade/$file.next\"; mkdir -p \"$FAKE/home/upgrade/$file.next/x\"",
+        ),
+    ] {
+        let setup = Setup::new(&format!("full-disk-{name}"), "");
+        setup.upgrade(&fake(CURRENT, "exit 0", "exit 1"), |journal| {
+            journal["state_backup"] = json!(setup.path("missing/priory.db"));
+        });
+        fs::write(
+            setup.path("on-stop"),
+            format!("for file in journal.json state.json; do {full}; done\n"),
+        )
+        .unwrap();
+
+        setup.helper();
+
+        assert_eq!(setup.installed(), old(), "{name}");
+        assert!(!setup.path("home/upgrade/journal.json").exists(), "{name}");
+        setup.wait("the old daemon answers", || setup.answers());
+        for unit in ["priory-daemon.service", "priory-intake.service"] {
+            assert!(setup.path(&format!("{unit}.pid")).exists(), "{name} {unit}");
+        }
+        assert!(!setup.path("missing").exists(), "{name}");
+    }
+}
+
+/// A rollback with a disk where the journal and the store take nothing more.
+#[test]
+fn a_full_disk_does_not_stop_a_rollback() {
+    let setup = Setup::new("full-rollback", "");
+    let fill = "for file in journal.json state.json; do \
+                mkdir -p \"$FAKE/home/upgrade/$file.next/x\"; done; exit 1";
+    setup.upgrade(&fake(CURRENT, "exit 0", fill), |journal| {
+        journal["migrates_state"] = json!(true);
+    });
+
+    setup.helper();
+
+    assert_eq!(setup.installed(), old(), "{}", setup.logs());
+    assert!(!setup.path("home/upgrade/journal.json").exists());
     setup.wait("the old daemon answers", || setup.answers());
-    assert!(!setup.desk().contains("upgrade"), "{}", setup.desk());
+    let outcome = fs::read_dir(setup.path("home/upgrade/outcomes")).unwrap();
+    assert_eq!(outcome.count(), 1);
+    // Once there is room again, the daemon refuses and records it.
+    for file in ["journal.json", "state.json"] {
+        fs::remove_dir_all(setup.path(&format!("home/upgrade/{file}.next"))).unwrap();
+    }
+    setup.assert_back("full", CURRENT);
+}
+
+#[test]
+fn a_quiet_moment_that_passed_puts_the_upgrade_off_and_stops_nothing() {
+    for (name, busy, why) in [
+        (
+            "grant",
+            "INSERT INTO grants (bytes, pid, started, command) VALUES (1, 1, 1, 'build')",
+            "a memory grant",
+        ),
+        (
+            "pause",
+            "INSERT INTO pause (id, reason, since) VALUES (1, 'x', 'now')",
+            "priory is paused",
+        ),
+    ] {
+        let setup = Setup::new(&format!("put-off-{name}"), "");
+        setup.upgrade(&fake(CURRENT, "exit 0", ":"), |_| {});
+        let db = rusqlite::Connection::open(setup.path("priory.db")).unwrap();
+        db.execute(busy, []).unwrap();
+        drop(db);
+
+        setup.helper();
+
+        assert!(setup.path("home/upgrade/staged").exists());
+        setup.assert_put_off(name, why);
+        let log = fs::read_to_string(setup.path("systemctl.log")).unwrap();
+        assert!(!log.contains("stop "), "{name}: {log}");
+    }
+}
+
+#[test]
+fn a_service_a_person_stopped_stays_stopped() {
+    for (name, new, migrates) in [
+        ("installed", fake(CURRENT, "exit 0", ":"), false),
+        ("migrated", fake(CURRENT, "exit 0", ":"), true),
+        ("back", fake(CURRENT, "exit 0", "exit 1"), false),
+    ] {
+        let setup = Setup::new(&format!("stopped-{name}"), "");
+        setup.upgrade(&new, |journal| journal["migrates_state"] = json!(migrates));
+        let stop = |unit: &str| {
+            let mut stopped = setup.command("systemctl");
+            assert!(
+                stopped
+                    .args(["--user", "stop", unit])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        stop("priory-intake.service");
+
+        setup.helper();
+
+        assert!(!setup.path("priory-intake.service.pid").exists(), "{name}");
+        match name {
+            "back" => drop(setup.assert_back(name, CURRENT)),
+            _ => assert_eq!(setup.installed(), new, "{name}\n{}", setup.logs()),
+        }
+        assert!(setup.answers(), "{name}");
+    }
+}
+
+#[test]
+fn a_daemon_a_person_stops_during_the_watch_stays_stopped() {
+    let setup = Setup::new("stopped-watched", "");
+    let new = fake(CURRENT, "exit 0", ":");
+    setup.upgrade(&new, |journal| journal["watch"] = json!(20));
+    let mut helper = setup
+        .command(setup.path("as-helper").to_str().unwrap())
+        .spawn()
+        .unwrap();
+    setup.wait("the new daemon answers", || {
+        setup.installed() == new && setup.answers()
+    });
+    let stopped = setup
+        .command("systemctl")
+        .args(["--user", "stop", "priory-daemon.service"])
+        .status();
+    assert!(stopped.unwrap().success());
+
+    assert!(helper.wait().unwrap().success());
+
+    assert_eq!(setup.installed(), old());
+    assert!(!setup.path("priory-daemon.service.pid").exists());
+    assert!(setup.path("priory-intake.service.pid").exists());
+    let store = setup.path("home/upgrade/state.json");
+    assert!(!store.exists() || setup.store()["refused"] == json!({}));
 }
 
 /// The helper's unit starts it again after a kill. Before the swap it goes on; after it, it goes back.
@@ -486,17 +923,19 @@ fn a_helper_killed_in_any_phase_ends_on_one_binary() {
     let good = fake(CURRENT, "exit 0", ":");
     let killed_in_check = fake(
         CURRENT,
-        "[ -e \"$FAKE/killed\" ] || { : > \"$FAKE/killed\"; kill -9 $PPID; }; exit 0",
+        "case $0 in *next) exit 0 ;; esac; \
+         [ -e \"$FAKE/killed\" ] || { : > \"$FAKE/killed\"; kill -9 $PPID; }; exit 0",
         ":",
     );
-    let failing = fake(CURRENT, "exit 1", ":");
-    for (name, new, kill, installs) in [
-        ("stopping", &good, Some("stop"), true),
-        ("installing", &killed_in_check, None, false),
-        ("starting", &good, Some("start"), false),
-        ("watching", &good, Some("show"), false),
-        ("rolling-back", &failing, Some("stop-2"), false),
-        ("restarting", &failing, Some("start"), false),
+    // Checked beside the old binary first, so it fails only in its place.
+    let failing = fake(CURRENT, "case $0 in *next) exit 0 ;; esac; exit 1", ":");
+    for (name, new, kill, installs, refused) in [
+        ("stopping", &good, Some("stop"), true, false),
+        ("installing", &killed_in_check, None, false, false),
+        ("starting", &good, Some("start"), false, false),
+        ("watching", &good, Some("show"), false, false),
+        ("rolling-back", &failing, Some("stop-2"), false, true),
+        ("restarting", &failing, Some("start"), false, true),
     ] {
         let setup = Setup::new(&format!("killed-{name}"), "");
         setup.upgrade(new, |journal| journal["answers_within"] = json!(10));
@@ -510,6 +949,16 @@ fn a_helper_killed_in_any_phase_ends_on_one_binary() {
                 );
                 script(&path, &text);
                 fs::write(setup.path("kill-stop"), "").unwrap();
+            }
+            // The helper asks systemd before the stop too, where a kill changes nothing.
+            Some("show") => {
+                let path = setup.path("bin/systemctl");
+                let text = fs::read_to_string(&path).unwrap().replace(
+                    "[ -e \"$FAKE/kill-$verb\" ]",
+                    "[ -e \"$FAKE/kill-$verb\" ] && grep -q '\"starting\"' \"$FAKE/home/upgrade/journal.json\"",
+                );
+                script(&path, &text);
+                fs::write(setup.path("kill-show"), "").unwrap();
             }
             Some(verb) => fs::write(setup.path(format!("kill-{verb}").as_str()), "").unwrap(),
             None => {}
@@ -529,8 +978,10 @@ fn a_helper_killed_in_any_phase_ends_on_one_binary() {
                 "factory.upgrade.installed",
                 "{name}"
             );
-        } else {
+        } else if refused {
             setup.assert_back(name, CURRENT);
+        } else {
+            setup.assert_put_off(name, "the helper of the upgrade stopped");
         }
     }
 }
@@ -550,7 +1001,13 @@ fn a_helper_resumes_from_each_phase_of_the_journal() {
         let new = fake(CURRENT, "exit 0", ":");
         setup.upgrade(&new, |journal| {
             journal["phase"] = json!(phase);
-            journal["migrates"] = json!(migrates);
+            journal["migrates_state"] = json!(migrates);
+            journal["migrates_bus"] = json!(migrates);
+            if phase != "stopping" {
+                journal["running"] = json!([true, true]);
+            }
+            journal["refuse"] = json!(matches!(phase, "rolling-back" | "restarting"));
+            journal["reason"] = json!("it failed");
             journal["opened"] = json!(matches!(phase, "starting" | "rolling-back"));
         });
         if phase != "stopping" {
@@ -579,6 +1036,8 @@ fn a_helper_resumes_from_each_phase_of_the_journal() {
                 "factory.upgrade.installed",
                 "{phase}"
             );
+        } else if matches!(phase, "installing" | "starting") {
+            setup.assert_put_off(phase, "the helper of the upgrade stopped");
         } else {
             setup.assert_back(phase, CURRENT);
         }
@@ -590,7 +1049,8 @@ fn a_service_that_starts_inside_an_interrupted_upgrade_starts_its_helper() {
     for verb in ["daemon", "intake"] {
         let setup = Setup::new(&format!("interrupted-{verb}"), "");
         setup.upgrade(&fake(CURRENT, "exit 0", ":"), |journal| {
-            journal["phase"] = json!("installing")
+            journal["phase"] = json!("installing");
+            journal["running"] = json!([true, true]);
         });
         script(&setup.path("exe.0.0.1"), &old());
 
@@ -602,7 +1062,7 @@ fn a_service_that_starts_inside_an_interrupted_upgrade_starts_its_helper() {
         setup.wait("the helper ends", || {
             !setup.path("home/upgrade/journal.json").exists()
         });
-        setup.assert_back(verb, CURRENT);
+        setup.assert_put_off(verb, "the helper of the upgrade stopped");
     }
 }
 
@@ -738,6 +1198,78 @@ impl Setup {
     }
 }
 
+/// Neither a `systemd-run` that starts nothing nor a helper that does not run stops the daemon.
+#[test]
+fn a_helper_that_never_starts_leaves_the_daemon_at_work() {
+    let setup = Setup::new("no-helper", UPGRADE);
+    fs::write(setup.path("no-helper"), "").unwrap();
+    setup.stage(&fake(&next(), "exit 0", ":"));
+    setup.serve();
+
+    let record = setup.recorded();
+
+    assert_eq!(record["type"], "factory.upgrade.put_off");
+    let reason = record["data"]["reason"].as_str().unwrap();
+    assert!(reason.contains("did not start within"), "{reason}");
+    assert!(!setup.path("home/upgrade/journal.json").exists());
+    assert!(setup.answers());
+    let log = fs::read_to_string(setup.path("systemctl.log")).unwrap();
+    assert!(!log.contains("stop priory-daemon"), "{log}");
+    let run = fs::read_to_string(setup.path("systemd-run.log")).unwrap();
+    assert!(run.contains("upgrade resume"), "{run}");
+    let until = setup.store()["put_off"][next()]["until"].clone();
+    let until: jiff::Timestamp = until.as_str().unwrap().parse().unwrap();
+    let wait = until.duration_since(jiff::Timestamp::now());
+    assert!(wait.as_mins() > 50 && wait.as_mins() <= 60, "{wait:?}");
+
+    // A second time waits twice as long, and `retry` waits no more.
+    let mut store = setup.store();
+    store["put_off"][next()]["until"] = json!("2026-01-01T00:00:00Z");
+    store["put_off"][next()]["op"] = json!("earlier");
+    fs::write(setup.path("home/upgrade/state.json"), store.to_string()).unwrap();
+    setup.wait("it is put off again", || {
+        setup.store()["put_off"][next()]["times"] == 2
+    });
+    succeeded(&setup.priory(&["upgrade", "retry", &next()]));
+    assert_eq!(setup.store()["put_off"], json!({}));
+    let unknown = setup.priory(&["upgrade", "retry", "9.9.9"]);
+    assert!(!unknown.status.success());
+}
+
+#[test]
+fn a_service_goes_on_when_the_helper_of_an_unstarted_upgrade_does_not_run() {
+    let setup = Setup::new("broken-helper", "");
+    setup.upgrade(&fake(CURRENT, "exit 0", ":"), |_| {});
+    let stopped = setup
+        .command("systemctl")
+        .args(["--user", "stop", "priory-daemon.service"])
+        .status();
+    assert!(stopped.unwrap().success());
+    script(&setup.path("home/upgrade/helper"), "#!/bin/sh\nexit 1\n");
+
+    let started = setup
+        .command("systemctl")
+        .args(["--user", "start", "priory-daemon.service"])
+        .status();
+    assert!(started.unwrap().success());
+
+    setup.wait("the old daemon answers", || setup.answers());
+    assert!(!setup.path("home/upgrade/journal.json").exists());
+    assert!(!setup.path("systemd-run.log").exists());
+}
+
+#[test]
+fn a_refused_version_is_tried_again_once_a_person_says_so() {
+    let setup = Setup::new("retry", "");
+    setup.upgrade(&fake(CURRENT, "exit 0", "exit 1"), |_| {});
+    setup.helper();
+    setup.assert_back("retry", CURRENT);
+
+    succeeded(&setup.priory(&["upgrade", "retry", CURRENT]));
+
+    assert_eq!(setup.store()["refused"], json!({}));
+}
+
 /// The whole way from a verified release to a rollback: the fake answers as the running version.
 #[test]
 fn a_staged_release_is_rehearsed_swapped_in_and_rolled_back() {
@@ -791,9 +1323,9 @@ fn a_release_the_factory_does_not_pass_is_refused_before_anything_stops() {
 }
 
 #[test]
-fn a_staged_release_waits_inside_its_window() {
-    let window = "[upgrade.window]\nfrom = \"00:00\"\nuntil = \"00:00\"\n";
-    let setup = Setup::new("window", &format!("{UPGRADE}{window}"));
+fn a_staged_release_waits_while_it_must_not_upgrade() {
+    let hours = "[upgrade.not_during]\nfrom = \"00:00\"\nuntil = \"00:00\"\n";
+    let setup = Setup::new("not-during", &format!("{UPGRADE}{hours}"));
     setup.stage(&fake(&next(), "exit 0", ":"));
     setup.serve();
     setup.wait("the daemon answers", || setup.answers());
@@ -816,7 +1348,7 @@ fn check_refuses_an_upgrade_key_that_cannot_work() {
             "under 10 minutes",
         ),
         (
-            "[upgrade]\nchannel = \"patch\"\nwindow = { from = \"09:00\" }\n",
+            "[upgrade]\nchannel = \"patch\"\nnot_during = { from = \"09:00\" }\n",
             "missing field `until`",
         ),
         (

@@ -125,7 +125,7 @@ pub struct Upgrade {
     #[schemars(with = "String", regex(pattern = r"^0*[1-9][0-9]*[smh]$"))]
     pub every: Option<Duration>,
     /// When the daemon never upgrades, such as working hours; it may at any time when unset.
-    pub window: Option<Quiet>,
+    pub not_during: Option<Quiet>,
     /// The systemd user units of the daemon and the intake, in that order.
     #[serde(default = "units")]
     pub units: [String; 2],
@@ -171,7 +171,7 @@ pub struct Quiet {
 
 impl Quiet {
     /// Whether the daemon must not upgrade at `at`.
-    pub fn holds(&self, at: jiff::Timestamp) -> bool {
+    pub fn hold(&self, at: jiff::Timestamp) -> bool {
         let zone = self
             .timezone
             .clone()
@@ -182,7 +182,7 @@ impl Quiet {
                 .as_ref()
                 .is_none_or(|days| days.contains(&date.weekday()))
         };
-        // Serde refuses a window without either.
+        // Serde refuses hours without either.
         let (Some(from), Some(until)) = (self.from, self.until) else {
             return true;
         };

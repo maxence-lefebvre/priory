@@ -20,6 +20,8 @@ The attestation is a Sigstore bundle. Priory checks it offline, with two keys in
 
 1. Fulcio's intermediate key signed the certificate, which GitHub Actions asked for.
 2. The certificate names `.github/workflows/release.yml` of this repository, at the tag `v<version>`.
+   It also holds this repository's and its owner's numbers, which a rename does not change, the event
+   `push`, and a GitHub-hosted runner.
 3. The certificate's key signed the statement, and the statement names the binary and its sha256.
 4. Rekor's key signed an entry of this very signature, at a time inside the certificate's 10 minutes.
 
@@ -27,13 +29,19 @@ It does not check the Merkle proof of that entry, nor the certificate's timestam
 transparency log. When Sigstore rotates either key, each release is refused with a line on the desk
 until a person installs one that holds the new key.
 
-A check that fails changes nothing and shows on the desk once.
+The running binary must verify the same way, or the daemon would replace a build someone made
+themselves. A check that fails changes nothing and shows on the desk once.
+
+The right to push a `v*` tag to the repository is enough to make a release that passes all of this:
+the workflow that runs is the one at the tag. Protect the tags, not only the default branch.
 
 ## A quiet moment
 
-A verified release waits in `$PRIORY_HOME/upgrade/` until all of these hold:
+A verified release waits in `$PRIORY_HOME/upgrade/`, which only the daemon's user may enter and
+which a jail hides, until all of these hold:
 
-- no `[upgrade.window]` is open,
+- it is outside `[upgrade.not_during]`,
+- priory is not paused,
 - no memory grant is held or waits,
 - the daemon runs no command, recipe, sweep script, handler, summary or delivery, and no shared
   session is being compacted, and
@@ -47,44 +55,76 @@ down waits up to 30 seconds, as in an upgrade by hand. A call in flight at the s
 
 ## The rehearsal
 
-Before anything stops, the new binary runs `priory check` on the factory, then
-`priory upgrade probe` on copies of the state and the log. A release that fails either is refused.
+Before anything stops, the old binary and then the new one run `priory check` on the factory, and
+`priory upgrade probe` on copies of the state and the log. A release that fails where the old binary
+passes is refused. When the old one fails too, the fault is this machine's and the upgrade is put
+off.
 When the copies' version or tables changed, the release migrates. It then needs no live run at all,
 not only a quiet moment.
 
 ## The swap
 
-The daemon starts a helper, a private copy of the old binary, in a transient user unit, and exits.
-The helper, `priory upgrade resume`:
+The daemon starts a helper, a private copy of the old binary, in a transient user unit. It runs the
+copy's `--version` first, then waits up to 10 seconds until the helper holds its lock. Without that,
+the daemon removes the journal, puts the upgrade off and goes on. With it, the daemon starts nothing
+more until the helper stops it.
 
-1. stops both services, and looks for a quiet moment again now that nothing can start. Without one,
-   or when step 2 fails, it starts them again, and the daemon waits an hour;
-2. copies both databases beside themselves with `VACUUM INTO`, and keeps the old binary as
-   `priory.<old version>`, or with a longer name when that file exists;
-3. renames the new binary over the old one, then runs `priory check` with it;
-4. starts the services, waits up to 2 minutes for the daemon to answer its version on the socket,
+The helper, `priory upgrade resume`, first gets ready while both services run:
+
+1. it copies the new binary beside the old one, and checks that copy's sha256 and attestation, the
+   old binary's attestation, and `priory check` with both;
+2. it gives the old binary two more names, `priory.<old version>` and one for a rollback, and
+   reserves 64 KiB for a rollback's last records;
+3. it looks for a quiet moment again. For a release that migrates, no other process may have either
+   database open, such as a standalone `priory serve`, whose webhooks a rollback would lose;
+4. it records which of the two units run. It later starts those alone, never one a person stopped.
+
+A failure so far stops nothing. Then it:
+
+5. stops both services, looks for a quiet moment once more, and copies both databases beside
+   themselves with `VACUUM INTO`. When this fails, it starts them again;
+6. renames the new binary over the old one, then runs `priory check` with it;
+7. starts the services, waits up to 2 minutes for the daemon to answer its version on the socket,
    and watches for a minute that it stays the same process.
 
-After a migration, only the daemon starts at step 4. It opens its databases and answers its version,
-but reads no message, serves nothing and starts no run. Any other process that would open the state
-or the log is refused with `an upgrade of priory is in progress: try again in a few minutes`. The
-helper commits once the minute passed, and the daemon goes on and the intake starts.
+After a migration, only the daemon starts at step 7. It opens its databases and answers its version,
+but reads no message, serves nothing, dispatches nothing and starts no run. Any other process that
+would open the state or the log is refused with
+`an upgrade of priory is in progress: try again in a few minutes`. The helper commits once the minute
+passed, and the daemon goes on and the intake starts.
 
 Priory keeps the old binaries and backups of the last 3 upgrades, and removes older ones that it
 made itself.
 
 ## Rollback
 
-When a step fails from step 3 on, the helper stops the services, puts the old binary back, and
-starts them. After a migration it puts both backups back first. Nothing else wrote to them, so
-nothing is lost. A release that changed no schema leaves the databases alone.
+When a step fails from step 6 on, the helper stops the services, puts the old binary back, and
+starts them. It first moves back the backup of each database whose own schema the release changes,
+and leaves the other as it is. A rollback only renames and unlinks, so a full disk does not stop it.
+Where the disk does not take the journal either, the helper removes the journal and starts the
+services without it.
 
 The helper writes each phase to `$PRIORY_HOME/upgrade/journal.json` before it starts it. Systemd
-starts a killed helper again. Before the swap it goes on, and after it, it rolls back. A service that
-starts and finds a journal that no helper works on, as after a reboot, starts the helper and exits.
+starts a killed helper again. Before the swap it goes on, and after it, it rolls back and puts the
+upgrade off. A service that starts and finds a journal that no helper works on, as after a reboot,
+starts the helper and exits. When that helper does not start and nothing was changed yet, the
+service removes the journal and runs.
 
-Each end writes one `factory.upgrade.installed` or `factory.upgrade.rolled_back` record, and one
-report on the desk (see [the trace schema](../trace-schema.md#factoryupgradeinstalled-factoryupgraderolled_back-and-factoryupgraderefused)).
+## Refused or put off
+
+A release is refused for good when the fault is its own: it fails `priory check` where the old binary
+passes, it says another version, or its daemon ends by itself.
+
+Everything else puts the upgrade off: a factory the old binary refuses too, a missing tool, a step
+that ran out of its time, a daemon that is up but does not answer in time, an almost full disk, a
+killed helper or daemon, a busy moment, or a service a person stopped meanwhile. It waits 1 hour, then 2, 4, 8
+and 16, then 24 each time, also across a restart. So a release whose daemon hangs is tried again
+once a day until a newer one comes. Each try stops the services, and the trace holds each reason.
+
+`priory upgrade retry VERSION` forgets a refusal or a wait.
+
+Each end writes one `factory.upgrade.installed`, `factory.upgrade.rolled_back` or
+`factory.upgrade.put_off` record, and one report on the desk (see [the trace schema](../trace-schema.md#factoryupgradeinstalled-factoryupgraderolled_back-factoryupgradeput_off-and-factoryupgraderefused)).
 The helper leaves it in a file, outside the databases a rollback replaces, and the daemon that runs
 records it once.
 
@@ -98,6 +138,16 @@ factory on a herdr-bus log.
 ## Limits
 
 - Once a migration is committed, going back is a person's choice: it loses what came after the backup.
+- A rollback compares tables, indexes, triggers and the schema's number. What a release writes into
+  unchanged tables before it fails stays.
+- After a migration, what the daemon does only after the commit, such as its server's start, is not
+  watched.
+- The binary's folder must be on a filesystem with hard links.
+- Only this user's processes are seen to hold a database, and one that opens it after the last look
+  is not.
+- A service that SIGTERM ended by any other way than `systemctl stop` counts as stopped by a person.
+- A run outside a jail is the same user, so it can write to `$PRIORY_HOME/upgrade/`. The attestation
+  is checked again on the copy that is installed, but not against a write after that.
 - A release that a compromised release workflow built verifies like any other.
 - A reboot in the middle of an upgrade, with a new binary that does not even start, leaves the
   services down.

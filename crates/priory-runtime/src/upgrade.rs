@@ -37,8 +37,11 @@ pub struct Journal {
     pub to: String,
     pub schema_from: i64,
     pub schema_to: i64,
-    /// The new binary changes the schema of the state or of the log.
-    pub migrates: bool,
+    /// The new binary changes the schema of the state, or of the log.
+    #[serde(default)]
+    pub migrates_state: bool,
+    #[serde(default)]
+    pub migrates_bus: bool,
     /// The new binary may have opened the databases.
     #[serde(default)]
     pub opened: bool,
@@ -46,6 +49,11 @@ pub struct Journal {
     pub staged: PathBuf,
     /// The verified digest of `staged`, as lower-case hex.
     pub sha256: String,
+    /// The release's name of the binary.
+    pub asset: String,
+    /// GitHub's attestations of `staged`, and of the binary it replaces.
+    pub attestations: PathBuf,
+    pub own: PathBuf,
     pub kept: PathBuf,
     pub factory: PathBuf,
     pub state: PathBuf,
@@ -60,11 +68,29 @@ pub struct Journal {
     /// Why it rolls back or stopped short.
     #[serde(default)]
     pub reason: Option<String>,
+    /// The release is at fault, so it is never tried again.
+    #[serde(default)]
+    pub refuse: bool,
+    /// Whether each unit ran before the helper stopped both; `None` until it does.
+    #[serde(default)]
+    pub running: Option<[bool; 2]>,
+}
+
+impl Journal {
+    pub fn migrates(&self) -> bool {
+        self.migrates_state || self.migrates_bus
+    }
 }
 
 /// The folder of the upgrade's own files.
 pub fn dir(home: &Path) -> PathBuf {
     home.join("upgrade")
+}
+
+/// Makes that folder, which no other user may enter: a file in it becomes the daemon's binary.
+pub fn private(home: &Path) -> Result<(), String> {
+    fs::create_dir_all(home).map_err(|error| format!("{}: {error}", home.display()))?;
+    crate::runtime::private_dir(&dir(home), crate::runtime::uid(), None)
 }
 
 fn path(home: &Path) -> PathBuf {
@@ -104,7 +130,17 @@ pub fn replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
         .and_then(|()| fs::rename(&next, path))
         .and_then(|()| sync_dir(path));
-    written.map_err(|error| format!("{}: {error}", path.display()))
+    written.map_err(|error| {
+        let _ = fs::remove_file(&next);
+        format!("{}: {error}", path.display())
+    })
+}
+
+/// Renames `from` over `to`, which needs no room on the disk.
+pub fn rename(from: &Path, to: &Path) -> Result<(), String> {
+    fs::rename(from, to)
+        .and_then(|()| sync_dir(to))
+        .map_err(|error| format!("{} to {}: {error}", from.display(), to.display()))
 }
 
 /// Copies `from` over `to` so that a crash leaves either the old file or the new one, with the same
@@ -115,7 +151,10 @@ pub fn copy(from: &Path, to: &Path) -> Result<(), String> {
         .and_then(|_| File::open(&next)?.sync_all())
         .and_then(|()| fs::rename(&next, to))
         .and_then(|()| sync_dir(to));
-    copied.map_err(|error| format!("{} to {}: {error}", from.display(), to.display()))
+    copied.map_err(|error| {
+        let _ = fs::remove_file(&next);
+        format!("{} to {}: {error}", from.display(), to.display())
+    })
 }
 
 /// `path` with `.suffix` after its name.
@@ -132,9 +171,8 @@ fn sync_dir(path: &Path) -> std::io::Result<()> {
 /// The helper's lock, held while it runs; `None` when another process holds it past `wait`.
 pub fn lock(home: &Path, wait: Duration) -> Result<Option<File>, String> {
     let path = dir(home).join("lock");
-    let file = fs::create_dir_all(dir(home))
-        .and_then(|()| File::create(&path))
-        .map_err(|error| format!("{}: {error}", path.display()))?;
+    private(home)?;
+    let file = File::create(&path).map_err(|error| format!("{}: {error}", path.display()))?;
     let deadline = Instant::now() + wait;
     while file.try_lock().is_err() {
         if Instant::now() >= deadline {
@@ -158,7 +196,7 @@ pub fn barrier() -> Result<(), String> {
     }
     match read(&crate::runtime::home())? {
         Some(journal)
-            if journal.migrates
+            if journal.migrates()
                 && !matches!(journal.phase, Phase::Committed | Phase::Restarting) =>
         {
             Err(IN_PROGRESS.to_owned())
@@ -175,12 +213,23 @@ pub fn admit(home: &Path, daemon: bool) -> Result<(), String> {
         return Ok(());
     };
     if lock(home, Duration::ZERO)?.is_some() {
-        start(home, &journal)?;
+        if let Err(error) = start(home, &journal) {
+            // Its journal is gone when nothing was changed yet, so the service goes on.
+            return match read(home)?.map(|journal| journal.phase) {
+                None | Some(Phase::Committed | Phase::Restarting) => Ok(()),
+                Some(_) => Err(error),
+            };
+        }
+        // The binary is settled, and the helper only has its end to record.
+        if matches!(journal.phase, Phase::Committed | Phase::Restarting) {
+            STARTED.store(daemon, Ordering::Relaxed);
+            return Ok(());
+        }
         return Err("an upgrade of priory was interrupted: its helper starts again".to_owned());
     }
     match journal.phase {
         Phase::Committed | Phase::Restarting => {}
-        Phase::Starting if daemon || !journal.migrates => {}
+        Phase::Starting if daemon || !journal.migrates() => {}
         _ => return Err(IN_PROGRESS.to_owned()),
     }
     if daemon {
@@ -193,7 +242,7 @@ pub fn admit(home: &Path, daemon: bool) -> Result<(), String> {
 pub fn held(home: &Path) -> bool {
     matches!(
         read(home),
-        Ok(Some(journal)) if journal.migrates && journal.phase == Phase::Starting
+        Ok(Some(journal)) if journal.migrates() && journal.phase == Phase::Starting
     )
 }
 
@@ -214,16 +263,62 @@ pub fn helper(home: &Path) -> PathBuf {
     dir(home).join("helper")
 }
 
-/// Starts the helper as a transient user unit, so stopping the services does not stop it.
+/// How long the helper has to say its version, and then to take its lock.
+const HELPER: Duration = Duration::from_secs(10);
+
+/// Starts the helper as a transient user unit, so stopping the services does not stop it, and waits
+/// until it runs. Without it, a journal that changed nothing yet is removed.
 pub fn start(home: &Path, journal: &Journal) -> Result<(), String> {
+    let unit = format!("priory-upgrade-{}-{}", journal.op, std::process::id());
+    let launched = launch(home, journal, &unit).and_then(|()| {
+        let until = Instant::now() + HELPER;
+        loop {
+            // A helper that already ended leaves no journal.
+            if lock(home, Duration::ZERO)?.is_none() || read(home)?.is_none() {
+                return Ok(());
+            }
+            if Instant::now() >= until {
+                return Err(format!(
+                    "the helper of the upgrade did not start within {} seconds",
+                    HELPER.as_secs()
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
+    let Err(error) = launched else { return Ok(()) };
+    // Under the lock, so a helper that starts late finds no journal.
+    let Some(_lock) = lock(home, Duration::ZERO)? else {
+        return Ok(());
+    };
+    let _ = systemctl(&["stop", &unit]);
+    match read(home)? {
+        Some(journal) if journal.phase == Phase::Stopping => remove(home)?,
+        _ => {}
+    }
+    Err(error)
+}
+
+fn launch(home: &Path, journal: &Journal, unit: &str) -> Result<(), String> {
+    let helper = helper(home);
+    let said = crate::runtime::fed_within(Command::new(&helper).arg("--version"), None, HELPER);
+    let said = said.map_err(|error| format!("{}: {error}", helper.display()))?;
+    let said = said.map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
+    if said != Some(format!("priory {}", journal.from)) {
+        return Err(format!(
+            "the helper of the upgrade does not run: it says {}",
+            said.as_deref().unwrap_or("nothing")
+        ));
+    }
     let mut command = Command::new("systemd-run");
     command.args(["--user", "--quiet", "--collect"]);
-    command.arg(format!(
-        "--unit=priory-upgrade-{}-{}",
-        journal.op,
-        std::process::id()
-    ));
-    command.args(["--property=Restart=on-failure", "--property=RestartSec=2"]);
+    command.arg(format!("--unit={unit}"));
+    command.args([
+        "--property=Type=exec",
+        "--property=Restart=on-failure",
+        "--property=RestartSec=2",
+        "--property=StartLimitIntervalSec=0",
+    ]);
     let path = std::env::var_os("PATH").unwrap_or_default();
     for (name, value) in [
         ("PRIORY_HOME", home.as_os_str()),
@@ -235,11 +330,35 @@ pub fn start(home: &Path, journal: &Journal) -> Result<(), String> {
         setting.push(value);
         command.arg(setting);
     }
-    command
-        .arg("--")
-        .arg(helper(home))
-        .args(["upgrade", "resume"]);
+    command.arg("--").arg(helper).args(["upgrade", "resume"]);
     crate::runtime::run(&mut command).map(drop)
+}
+
+/// How long a helper that died has to be started again by its unit.
+const GONE: Duration = Duration::from_secs(30);
+
+/// Waits while the helper works, until it stops this process or puts the upgrade off. A helper that
+/// is gone for good before it changed anything is given up.
+pub fn wait(home: &Path) -> Result<(), String> {
+    let mut gone = None;
+    while read(home)?.is_some() {
+        match lock(home, Duration::ZERO)? {
+            None => gone = None,
+            Some(_lock) => {
+                let since = *gone.get_or_insert_with(Instant::now);
+                if since.elapsed() >= GONE {
+                    // Read again, under the lock.
+                    match read(home)? {
+                        Some(journal) if journal.phase == Phase::Stopping => remove(home)?,
+                        _ => {}
+                    }
+                    return Err("the helper of the upgrade is gone".to_owned());
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
 }
 
 /// Runs `systemctl --user` with `args` and returns what it printed.

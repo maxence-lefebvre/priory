@@ -253,6 +253,9 @@ An agent's settings and its shell call these. A person rarely does.
 - `priory hook PreToolUse --outside`: the `PreToolUse` hook of a person's own session. It denies a
   shell call that runs a verb only a person runs, and asks no daemon. See
   [tools.md](../daemon/tools.md#the-outside-hook).
+- `priory upgrade retry VERSION`: forgets that an automatic upgrade to the version was refused or put
+  off, so the daemon tries it again. It exits 1 for a version that is neither. Only a person runs
+  `priory upgrade`.
 - `priory upgrade resume`: the helper of an automatic upgrade, which the daemon starts. It takes the
   upgrade in progress to its end, and does nothing without one. See
   [upgrades.md](../daemon/upgrades.md).

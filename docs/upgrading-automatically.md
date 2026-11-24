@@ -27,7 +27,7 @@ In `factory.toml`:
 [upgrade]
 channel = "patch"
 
-[upgrade.window]
+[upgrade.not_during]
 from = "09:00"
 until = "19:00"
 days = ["mon", "tue", "wed", "thu", "fri"]
@@ -35,7 +35,7 @@ timezone = "Europe/Paris"
 ```
 
 `patch` stays on the running major and minor version. `minor` stays on the major version. The
-daemon never upgrades inside the window. Leave the window out to allow any time.
+daemon never upgrades inside `not_during`. Leave the table out to allow any time.
 [`[upgrade]`](reference/factory.md#upgrade) lists every key. The daemon follows the edit without a
 restart.
 
@@ -47,7 +47,7 @@ Check: `priory check` passes, and within an hour the desk shows no line that sta
 
 ## 3. Read what it did
 
-Each upgrade and each rollback writes one report on the desk and one record in the trace:
+Each upgrade, rollback and put-off writes one report on the desk and one record in the trace:
 
 ```sh
 priory desk
@@ -55,13 +55,19 @@ priory trace | grep factory.upgrade
 journalctl --user -u 'priory-upgrade-*'
 ```
 
-A version that failed is never tried again. Priory takes the next one. To try it again yourself,
-remove it from `refused` in `$PRIORY_HOME/upgrade/state.json` while the daemon is stopped.
+A version that failed by its own fault is never tried again. Priory takes the next one. A version
+that this machine got in the way of is put off, for 1 hour first and for up to a day later. To try
+either again:
+
+```sh
+priory upgrade retry 1.4.0
+```
 
 ## Go back by hand
 
 An upgrade that changed the schema is not rolled back once it was committed, since that would lose
-what happened after it. The `factory.upgrade.installed` record names the old binary in `kept` and
+what happened after it. Expect to lose every event, answer and run the factory recorded since the upgrade: the copies are
+from before it. The `factory.upgrade.installed` record names the old binary in `kept` and
 the two copies in `backups`:
 
 ```sh
