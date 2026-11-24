@@ -144,6 +144,11 @@
           },
           "type": "array"
         },
+        "attach": {
+          "default": false,
+          "description": "Model steps only: whether each new run of the step runs the factory's `[runs] attach`\ncommand, which opens the run where a person can watch it.",
+          "type": "boolean"
+        },
         "autonomous": {
           "description": "Why an irreversible step may run without a person's approval.",
           "type": [

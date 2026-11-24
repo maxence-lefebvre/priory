@@ -74,6 +74,8 @@ pub struct Settings {
     pub slack: Option<Slack>,
     #[serde(default)]
     pub asks: Asks,
+    #[serde(default)]
+    pub runs: Runs,
     pub request: Option<RequestDefaults>,
     pub batch: Option<BatchDefaults>,
     /// Irreversible commands and MCP tools on top of the built-in ones.
@@ -641,6 +643,16 @@ pub struct Asks {
     /// folder. It gets the ask's id, revision, session, `answered` or `dismissed`, and the answer
     /// as its arguments. Without it, the answer is only stored.
     pub deliver: Option<PathBuf>,
+}
+
+/// What happens when a run starts.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Runs {
+    /// The command that opens a run where a person can watch it, relative to the factory folder.
+    /// The daemon runs it once per new run of a step with `attach = true`, with the task id and
+    /// run id as its arguments.
+    pub attach: Option<PathBuf>,
 }
 
 /// The HTTP server over the factory's state, in the daemon and in `priory serve`.
@@ -2018,6 +2030,10 @@ pub struct Step {
     /// Model steps only: the factory's command that records evidence after the step's result, in a
     /// checkout of the result's commit, relative to the factory folder.
     pub record: Option<PathBuf>,
+    /// Model steps only: whether each new run of the step runs the factory's `[runs] attach`
+    /// command, which opens the run where a person can watch it.
+    #[serde(default)]
+    pub attach: bool,
 }
 
 impl Step {
@@ -2705,6 +2721,12 @@ impl Factory {
     pub fn deliver(&self) -> Option<PathBuf> {
         let deliver = self.settings.as_ref()?.value.asks.deliver.as_ref()?;
         Some(self.dir.join(deliver))
+    }
+
+    /// The command that opens a new run of a step with `attach = true`, under the factory folder.
+    pub fn attach(&self) -> Option<PathBuf> {
+        let attach = self.settings.as_ref()?.value.runs.attach.as_ref()?;
+        Some(self.dir.join(attach))
     }
 
     /// The folder of the ask command target `name`, under the factory folder when relative.

@@ -75,7 +75,7 @@ gained since the step's count. It prices the count plus those tokens as at a tur
 | `prices.toml` has no price for the transcript's model | Ends the run as `budget` and fails the task: `step <id> has a budget, and run <n>'s cost is unknown: price missing for <model>` |
 | The run sent its result, or a gate holds it | Leaves it to its turn end, where an overrun stands |
 | The run is at an `irreversible` step, a person holds its keyboard, or its agent's session is `shared` | Leaves it to its turn end, where an overrun stands, as a [spend cap](spend.md) does |
-| A tmux client is attached to the run's session, or tmux cannot tell | Leaves it to its turn end, where an overrun stands |
+| A tmux client that can type is attached to the run's session, or tmux cannot tell | Leaves it to its turn end, where an overrun stands |
 
 The check reads tokens Claude has written, so a turn can still pass the budget by up to a minute of
 its spending, and by the message it is writing. The step's `timeout` bounds the turn. A run left to

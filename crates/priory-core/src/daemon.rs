@@ -358,6 +358,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
     let mut probes = crate::connectors::Probes::default();
     let mut records = crate::evidence::Records::default();
     let mut deliveries = deliver::adopt(&db)?;
+    let mut attaching = Vec::new();
     let mut pushing = push::Sending::default();
     let mut desktop = factory
         .desktop_notifications()
@@ -443,6 +444,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             &mut probes,
             fetched,
             &mut entering,
+            &mut attaching,
         )?;
         // Committed first, so a crash before the kill leaves an ended run, not a lost one.
         for tmux in tools::over_budget_in_turn(&mut db, &trace, &mut peeked, &watched)? {
@@ -456,6 +458,7 @@ fn serve(factory: &Factory, once: bool) -> Result<(), Error> {
             send_spans(&db, &trace, &home, export)?;
         }
         deliver::tick(&db, factory, &home, &mut deliveries)?;
+        crate::attach::tick(&mut db, &trace, &mut attaching)?;
         push::tick(&db, &home, &mut pushing)?;
         if let Some(desktop) = &mut desktop {
             notify::tick(&db, desktop)?;
@@ -1338,6 +1341,7 @@ fn tend(
     probes: &mut crate::connectors::Probes,
     kit: crate::kit::Current<'_>,
     entering: &mut Entering,
+    attaching: &mut Vec<crate::attach::Attaching>,
 ) -> Result<(), Error> {
     let factory = trace.factory;
     for mut run in state::live(db)? {
@@ -1486,6 +1490,7 @@ fn tend(
             recipes,
             probes,
             kit,
+            attaching,
         )? {
             state::block(db, trace, admission.task, "failed", &reason)?;
         }
@@ -1509,8 +1514,8 @@ fn tend(
     Ok(())
 }
 
-/// Whether a person may be watching the tmux session `name`: a client is attached, or tmux
-/// cannot tell.
+/// Whether a person may be typing in the tmux session `name`: a client that can type is attached,
+/// or tmux cannot tell. A read-only view, as Herdr opens by itself, protects nothing.
 fn watched(name: &str) -> bool {
     runtime::clients(name).is_none_or(|clients| clients > 0)
 }
@@ -2369,6 +2374,7 @@ fn start(
     recipes: &mut crate::recipe::Running,
     probes: &mut crate::connectors::Probes,
     kit: crate::kit::Current<'_>,
+    attaching: &mut Vec<crate::attach::Attaching>,
 ) -> Result<Result<(), String>, Error> {
     let factory = trace.factory;
     let step = factory.workflows[&admission.workflow]
@@ -2620,15 +2626,11 @@ fn start(
         trust,
         direnv: direnv.as_deref(),
     };
-    Ok(launch(
-        factory,
-        &agent.value,
-        &sources,
-        home,
-        scope,
-        &env,
-        &started,
-    ))
+    let launched = launch(factory, &agent.value, &sources, home, scope, &env, &started);
+    if launched.is_ok() && step.attach {
+        crate::attach::start(db, trace, home, admission.task, run, &tmux, attaching)?;
+    }
+    Ok(launched)
 }
 
 /// What a shared session starts with: digests of its agent's prompt, tools, model and flags.
