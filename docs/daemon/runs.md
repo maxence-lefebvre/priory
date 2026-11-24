@@ -471,6 +471,7 @@ Known limits:
   entry.
 - The daemon keeps a match until the task's next run, the pull request's close or its own restart,
   even when the pull request's branch is rewritten.
+- When git cannot compare the branches, the daemon places no hold and asks again on the next tick.
 - The files come from the end of a run. Later commits in a running task show at its next run's end.
 
 
