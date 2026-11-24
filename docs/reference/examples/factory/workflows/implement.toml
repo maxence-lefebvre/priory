@@ -1,7 +1,6 @@
 #:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
 start = "plan"
 band = "today"                 # when neither the request nor the trigger sets one
-requestable = true             # the Add controls offer it, and POST /api/request takes it
 
 [[steps]]
 id = "plan"

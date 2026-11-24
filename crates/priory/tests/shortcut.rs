@@ -21,7 +21,6 @@ const CHANNEL: &str = "C0123";
 const THREAD: &str = "1763500000.000100";
 
 const WORKFLOW: &str = r#"
-requestable = true
 start = "implement"
 
 [[steps]]
@@ -256,6 +255,45 @@ fn body(call: &str) -> Value {
         .expect("a data line");
     let quoted = line.strip_suffix('"').unwrap();
     serde_json::from_str(&quoted.replace("\\\"", "\"").replace("\\\\", "\\")).unwrap()
+}
+
+#[test]
+fn the_form_offers_only_the_requestable_workflows() {
+    let mut slack = Slack::new("requestable");
+    let folder = slack.dir.join("factory/workflows");
+    write(&folder.join("review.toml"), WORKFLOW);
+    let opted_out = format!("requestable = false\n{WORKFLOW}");
+    write(&folder.join("sweep.toml"), &opted_out);
+    slack.start();
+    let mut socket = slack.accept();
+
+    socket.send(envelope("e1", shortcut(ALLOWED))).unwrap();
+    read(&mut socket);
+    let opened = body(&slack.call("views.open"));
+
+    let options = &opened["view"]["blocks"][0]["element"]["options"];
+    let offered: Vec<_> = options.as_array().unwrap().iter().collect();
+    let offered: Vec<_> = offered.iter().map(|option| &option["value"]).collect();
+    assert_eq!(offered, ["implement", "review"]);
+}
+
+#[test]
+fn with_no_requestable_workflow_the_shortcut_says_so_and_opens_no_form() {
+    let mut slack = Slack::new("none-requestable");
+    let settings = format!("name = \"demo\"\n\n[slack.shortcut]\nusers = [\"{ALLOWED}\"]\n");
+    write(&slack.dir.join("factory/factory.toml"), &settings);
+    let opted_out = format!("requestable = false\n{WORKFLOW}");
+    let workflow = slack.dir.join("factory/workflows/implement.toml");
+    write(&workflow, &opted_out);
+    slack.start();
+    let mut socket = slack.accept();
+
+    socket.send(envelope("e1", shortcut(ALLOWED))).unwrap();
+    read(&mut socket);
+    wait_for("the reply", || replies(&slack).len() == 1);
+
+    assert!(replies(&slack)[0].contains("requestable = false"));
+    assert!(!slack.calls().iter().any(|call| call.contains("views.open")));
 }
 
 /// The submission of the form `views.open` opened, by `user`, with `note`.

@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 
 const WORKFLOW: &str = r#"
-requestable = true
 start = "implement"
 
 [[steps]]

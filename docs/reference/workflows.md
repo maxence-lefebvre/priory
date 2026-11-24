@@ -20,7 +20,7 @@ Schema: [`config/workflow.json`](../schemas/config/workflow.json).
 | `reopen` | string | no | the step that opened the pull request | The model step a done task goes back to when its open pull request gets feedback (see [routing.md](../daemon/routing.md#feedback-reopens-a-done-task)) | `"implement"` |
 | `max_prs` | integer, at least 1 | no | no cap | The most pull requests a task's stack may hold. `open-pr` fails with more branches (see [tools.md](../daemon/tools.md#code-steps)) | `3` |
 | `sandbox` | string | no | none: agents run as the person's whole user | A sandbox of [`[sandboxes]`](factory.md#sandboxesname) that every model step of the workflow, debate turns included, starts its agent in. `priory check` refuses it on a machine without `bwrap`. See [sandboxes.md](../daemon/sandboxes.md) | `"jail"` |
-| `requestable` | boolean | no | `false` | Whether the web view's and Herdr's Add controls offer the workflow, and `POST /api/request` takes it. `[request] workflow` must name a requestable workflow. `priory add` and triggers start any workflow | `true` |
+| `requestable` | boolean | no | `true` | Whether the web view's and Herdr's Add controls and the [Slack shortcut](../intake/slack.md#message-shortcut) offer the workflow, and `POST /api/request` takes it. `[request] workflow` is always requestable, whatever this key says. `priory add`, `priory request`, the MCP `add` tool, batches and triggers start any workflow | `false` |
 | `guard` | table | no | none allowed | `allow`: the guards whose calls every step of the workflow may make with no approval, built-in or from `[guard]`. It cannot name `gh-pr-merge`, `gh-pr-approve`, `priory-person`, `connector-sign-in` or `unreadable`. See [guard.md](../daemon/guard.md) | `{ allow = ["git-push-default"] }` |
 | `steps` | array of tables | yes | | The steps, in any order | see below |
 
@@ -82,7 +82,6 @@ show it to the person. See Merge risk in
 #:schema https://raw.githubusercontent.com/maxence-lefebvre/priory/main/docs/schemas/config/workflow.json
 start = "plan"
 band = "today"                 # when neither the request nor the trigger sets one
-requestable = true             # the Add controls offer it, and POST /api/request takes it
 
 [[steps]]
 id = "plan"

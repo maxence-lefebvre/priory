@@ -374,8 +374,8 @@
       ]
     },
     "requestable": {
-      "default": false,
-      "description": "Whether the web view's and Herdr's Add controls offer it, and `POST /api/request` takes it.\n`priory add` and triggers start any workflow.",
+      "default": true,
+      "description": "Whether the web view's and Herdr's Add controls and the Slack shortcut offer it, and\n`POST /api/request` takes it. The `[request] workflow` is always requestable. `priory add`,\n`priory request`, the MCP `add` tool, batches and triggers start any workflow.",
       "type": "boolean"
     },
     "sandbox": {

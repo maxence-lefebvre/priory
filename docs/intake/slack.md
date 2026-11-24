@@ -127,7 +127,7 @@ URL Slack returns. Nothing listens on the machine. `priory intake --once` opens 
 | Step | What Priory does |
 | ---- | ---------------- |
 | Any envelope | Acknowledges it with its `envelope_id` before anything else, since Slack shows the person an error after 3 seconds. Then hands the payload to a worker. Up to 16 payloads wait; up to 16 more get a "busy" reply, and the rest are dropped |
-| Shortcut (`callback_id` `priory_queue`) | Opens the form with `views.open`. The workflow starts at `[request] workflow`; an empty repository means `triggers/cli.toml`'s; the note starts as the message's text |
+| Shortcut (`callback_id` `priory_queue`) | Opens the form with `views.open`, or replies that there is nothing to queue when no workflow is [requestable](../reference/workflows.md#top-level-keys). The form lists the requestable workflows. The workflow starts at `[request] workflow`; an empty repository means `triggers/cli.toml`'s; the note starts as the message's text |
 | Form submitted | Queues the task through the same request code as `priory add`, so `check_repo`, workflow and band rules apply. The task's text is the note and a link to the message. The `priory.task.requested.cli` event's `person` is the Slack user who sent the form, as `<username> (<user id>)` |
 | Reply | Posts an ephemeral message to the shortcut's `response_url`: the task key, "already queued", or why nothing was queued |
 | `disconnect` | Opens a new connection at once. Slack sends one every few hours |

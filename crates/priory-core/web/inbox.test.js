@@ -31,7 +31,7 @@ test("an owned group's action follows its owner, as priory inbox --unrouted prin
 test("Request a task prefills the task's workflow only when the factory lets a person request it", () => {
   assert.equal(requestedWorkflow("implement", ["implement", "review"]), "implement");
   assert.equal(requestedWorkflow("bonjour", ["implement", "review"]), undefined);
-  assert.equal(requestedWorkflow("bonjour", []), undefined);
+  assert.equal(requestedWorkflow("bonjour", []), "bonjour");
   assert.equal(requestedWorkflow("bonjour", null), "bonjour");
 });
 

@@ -394,8 +394,10 @@ struct Served {
     /// The gates of each irreversible step, for the flows' `risk_estimate`.
     gates: crate::risk::Gates,
     schedules: Vec<(String, Trigger)>,
-    /// The requestable workflows: the Add controls' choices, and all `POST /api/request` takes.
+    /// The requestable workflows: the Add controls' choices.
     workflows: Vec<String>,
+    /// The workflows `POST /api/request` refuses.
+    opted_out: Vec<String>,
     /// `GET /api/request`: what the Add control prefills and offers.
     request: String,
     prices: BTreeMap<String, Price>,
@@ -423,6 +425,13 @@ impl Served {
             gates: crate::risk::Gates::of(factory),
             schedules: listing::schedule_triggers(factory),
             workflows: factory.requestable(),
+            opted_out: {
+                let names = factory.workflows.keys();
+                names
+                    .filter(|name| factory.opted_out(name))
+                    .cloned()
+                    .collect()
+            },
             request: serde_json::json!({
                 "workflow": factory.request().map(|defaults| &defaults.workflow),
                 "band": factory.request().and_then(|defaults| defaults.band.as_ref()),
@@ -987,7 +996,7 @@ fn write(
     if let Write::Memory(id, accept) = write {
         return decide_memory(db, remote, id, accept, request.body);
     }
-    let (line, sent) = match write_line(db, &write, request.body, &served.workflows) {
+    let (line, sent) = match write_line(db, &write, request.body, &served.opted_out) {
         Ok(line) => line,
         Err(reply) => return reply,
     };
@@ -1371,7 +1380,7 @@ fn write_line(
     db: &Connection,
     write: &Write,
     body: &[u8],
-    requestable: &[String],
+    opted_out: &[String],
 ) -> Result<(String, Sent), Reply> {
     let bad = |error: serde_json::Error| Reply::error(400, &error.to_string());
     match write {
@@ -1459,9 +1468,9 @@ fn write_line(
         }
         Write::Add => {
             let add: priory_intake::request::Add = serde_json::from_slice(body).map_err(bad)?;
-            if let Some(workflow) = add.workflow.as_ref().filter(|w| !requestable.contains(w)) {
+            if let Some(workflow) = add.workflow.as_ref().filter(|w| opted_out.contains(w)) {
                 let message = format!(
-                    "workflow `{workflow}` is not requestable: its file under workflows/ needs `requestable = true`"
+                    "workflow `{workflow}` is not requestable: its file under workflows/ sets `requestable = false`"
                 );
                 return Err(Reply::error(400, &message));
             }

@@ -239,7 +239,8 @@ export default class PrioryInbox extends View {
         // A workflow the factory does not let a person request falls back to its [request] default.
         const { workflows } = await client.queue().catch(() => ({ workflows: null }));
         const workflow = requestedWorkflow(task.workflow, workflows);
-        return `Requested ${await client.add(group.request_text ?? "", { workflow })}. It owns this resource's next event.`;
+        const swapped = workflow ? "" : ` Workflow ${task.workflow} is not requestable, so it starts the factory's default.`;
+        return `Requested ${await client.add(group.request_text ?? "", { workflow })}. It owns this resource's next event.${swapped}`;
       }],
       subscribe: [`Subscribe task ${task.id}`, async (client) => `Subscribed: ${(await client.subscribe(task.id, group.resource, this.revision)).trim()}. Its next event goes to task ${task.id}.`],
     };

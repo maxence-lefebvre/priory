@@ -62,10 +62,17 @@ test("a done owner's resource requests a new task with the group's text and the 
   assert.match(text(drawn()), /Requested "?github:owner\/repo#7"?\. It owns/);
 });
 
-test("a done owner whose workflow is not requestable requests the factory's default workflow instead", async () => {
-  const { argv } = await route("github:owner/repo#7", "add", "github:owner/repo#7", { queue: { workflows: ["review"], waiting: [] } });
+test("a done owner whose workflow is not requestable requests the factory's default workflow instead, and says so", async () => {
+  const { drawn, argv } = await route("github:owner/repo#7", "add", "github:owner/repo#7", { queue: { workflows: ["review"], waiting: [] } });
 
   assert.deepEqual(argv, [["add", "--", "Follow up on https://github.com/owner/repo/issues/7 after event 30"]]);
+  assert.match(text(drawn()), /Workflow implement is not requestable, so it starts the factory's default\./);
+});
+
+test("an older priory's empty workflows keep the done owner's", async () => {
+  const { argv } = await route("github:owner/repo#7", "add", "github:owner/repo#7", { queue: { workflows: [], waiting: [] } });
+
+  assert.deepEqual(argv, [["add", "--workflow", "implement", "--", "Follow up on https://github.com/owner/repo/issues/7 after event 30"]]);
 });
 
 test("a done owner whose workflow is requestable keeps it", async () => {

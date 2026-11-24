@@ -1937,9 +1937,10 @@ pub struct Workflow {
     /// The sandbox of `factory.toml` that every model step of the workflow runs its agent in.
     /// None runs agents with the person's whole user, as before.
     pub sandbox: Option<String>,
-    /// Whether the web view's and Herdr's Add controls offer it, and `POST /api/request` takes it.
-    /// `priory add` and triggers start any workflow.
-    #[serde(default)]
+    /// Whether the web view's and Herdr's Add controls and the Slack shortcut offer it, and
+    /// `POST /api/request` takes it. The `[request] workflow` is always requestable. `priory add`,
+    /// `priory request`, the MCP `add` tool, batches and triggers start any workflow.
+    #[serde(default = "on")]
     pub requestable: bool,
     pub steps: Vec<Step>,
 }
@@ -2696,9 +2697,15 @@ impl Factory {
 
     /// The workflows a person may request from the Add controls, by name.
     pub fn requestable(&self) -> Vec<String> {
-        let workflows = self.workflows.iter();
-        let requestable = workflows.filter(|(_, workflow)| workflow.value.requestable);
-        requestable.map(|(name, _)| name.clone()).collect()
+        let names = self.workflows.keys().filter(|name| !self.opted_out(name));
+        names.cloned().collect()
+    }
+
+    /// Whether the factory has workflow `name` and keeps it from the Add controls.
+    pub fn opted_out(&self, name: &str) -> bool {
+        let default = self.request().map(|request| request.workflow.as_str());
+        let workflow = self.workflows.get(name);
+        default != Some(name) && workflow.is_some_and(|workflow| !workflow.value.requestable)
     }
 
     /// The `[batch]` table: how `priory batch add` plans batches.
