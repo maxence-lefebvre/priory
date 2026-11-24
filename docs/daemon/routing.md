@@ -179,14 +179,17 @@ not match stays kept, and the next run reads it. `priory release` starts the tas
 
 While the task is parked, the pull request's `github.pull_request.closed` ends it: `done` with
 the reason `<key> merged while parked` when it merged, else `dropped` with `<key> closed while
-parked`. The newest event that says whether the pull request is open decides, even one older than
-the adopt request: a `github.pull_request.closed`, or any event with an `open` field. The desk,
-the Queue's waiting list and `priory tasks` list no row for a parked task. `priory tasks --all`
-shows it held, with the reason
+parked`. The newest closed event decides, even one older than the adopt request, unless a later
+event from before the adopt carries `open: true`. A merge stands whatever came after it. A reopen
+after the drop does not bring the task back. An event with `open: false` ends nothing: only the
+closed event says whether the pull request merged. If a parked task's close never arrives, run
+`priory cancel ID`. The desk, the Queue's waiting list and `priory tasks` list no row for a parked
+task. `priory tasks --all` shows it held, with the reason
 `held: adopted for trigger <name>, until a comment or review trigger fires on <key>`.
 
-`priory adopt` skips a pull request that a task in any state owns. A comment reopens a done task,
-and `priory revive` brings back a failed or dropped one.
+`priory adopt` skips a pull request that a task in any state owns, and one whose head branch in
+the repository an active task owns, even before its first event arrives. A comment reopens a done
+task, and `priory revive` brings back a failed or dropped one.
 
 Events of the pull request from before the adopt stay unrouted: the daemon routes only new
 messages.
@@ -450,6 +453,8 @@ Feedback reopened this done task as generation 2: Ana replied in slack:C0123:176
 
 The task is `ready`, so its next run resumes the session of the step's agent. The daemon appends a
 `factory.task.reopened` trace record (see [trace.md](trace.md)).
+
+A person reopens a done task with [`priory say`](desk.md#say) while its pull request is open.
 
 A prompt that carries feedback, on a reopen or any wake, ends with the rule to sort each item as
 `trivial`, `nothing-to-do` or `persons-call`, and the result records the classes (see [Review

@@ -13,6 +13,7 @@ agent = "implementer"                          # the sweeper agent
 repo = "owner/name"                            # where the sweeper files its issue
 scripts = [
   { run = "rm -rf \"$PRIORY_HOME/cache\"", when = "disk", timeout = "5m" },
+  { run = "docker system prune -f", every = "4h" },    # also on a schedule, from its last run
 ]
 
 [search]

@@ -789,7 +789,7 @@ pub fn is_ancestor(worktree: &Path, below: &str, commit: &str) -> bool {
 }
 
 /// The open pull requests of `repo` that `author` opened, or every open one without an author,
-/// each with its `number`, `title` and `url`.
+/// each with its `number`, `title`, `url`, `headRefName` and `isCrossRepository`.
 pub fn open_pull_requests(
     repo: &str,
     author: Option<&str>,
@@ -805,7 +805,7 @@ pub fn open_pull_requests(
         "--limit",
         "1000",
         "--json",
-        "number,title,url",
+        "number,title,url,headRefName,isCrossRepository",
     ]);
     if let Some(author) = author {
         command.args(["--author", author]);
@@ -973,6 +973,14 @@ pub trait Harness {
     fn trust(&self, exe: &Path, clone: &str, worktrees: &str) -> String;
     /// Whether `screen` shows the harness's dialog asking to trust its folder.
     fn asks_trust(&self, _screen: &str) -> bool {
+        false
+    }
+    /// Whether a person must trust Priory's hooks too, which a folder grant does not cover.
+    fn reviews_hooks(&self) -> bool {
+        false
+    }
+    /// Whether `screen` shows the harness at its own prompt, which it reaches only past its dialogs.
+    fn at_prompt(&self, _screen: &str) -> bool {
         false
     }
     /// Records the harness's trust in `worktree` and its `clone`, each a real path Priory owns.
@@ -1164,6 +1172,16 @@ impl Harness for ClaudeCode {
                 || screen.contains("Quick safety check"))
     }
 
+    /// Claude draws its input box between two rules; a dialog's `❯` has no rule right above it.
+    fn at_prompt(&self, screen: &str) -> bool {
+        let lines: Vec<_> = screen.lines().collect();
+        lines.windows(2).enumerate().any(|(at, pair)| {
+            pair[0].starts_with("───")
+                && pair[1].starts_with('❯')
+                && lines[at + 2..].iter().any(|line| line.starts_with("───"))
+        })
+    }
+
     /// The servers' definitions can hold tokens, which a command line would show to every process.
     fn private_file(&self, exe: &Path, launch: &Launch) -> Option<(PathBuf, String)> {
         let name = format!("{}.mcp.json", launch.session);
@@ -1279,6 +1297,10 @@ impl Harness for Codex {
 
     fn asks_trust(&self, screen: &str) -> bool {
         screen.contains("Trust this folder?") && screen.contains("Trust and continue")
+    }
+
+    fn reviews_hooks(&self) -> bool {
+        true
     }
 
     /// Codex runs only hooks a person trusted in its `/hooks` review, by their hash, so Priory's
@@ -2442,7 +2464,7 @@ pub fn socket_in(run: Option<&Path>, home: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(format!("/tmp/priory-{}", uid())).join(name))
 }
 
-fn uid() -> u32 {
+pub(crate) fn uid() -> u32 {
     if let Ok(own) = fs::metadata("/proc/self") {
         return own.uid();
     }
@@ -2465,7 +2487,7 @@ fn fallback_reason(run: Option<&Path>, home: &Path) -> Option<String> {
 /// Makes `dir` for the socket, readable by its owner only, and tightens one of the user `owner`
 /// that others can enter. It refuses one that is not a folder or belongs to another user; `why`
 /// says why the socket is there.
-fn private_dir(dir: &Path, owner: u32, why: Option<&str>) -> Result<(), String> {
+pub(crate) fn private_dir(dir: &Path, owner: u32, why: Option<&str>) -> Result<(), String> {
     let at = |error: std::io::Error| format!("{}: {error}", dir.display());
     let private = fs::Permissions::from_mode(0o700);
     match fs::DirBuilder::new().mode(0o700).create(dir) {

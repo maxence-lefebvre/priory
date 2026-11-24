@@ -259,9 +259,10 @@ built-in `#n` link.
 
 The Desk and Queue panels share one Add form, `lib/add-form.js`, over the view model `lib/add.js`.
 It holds one field, then a dropdown each for workflow, band and lane. The bands are the factory's
-from `priory queue --json`, and the workflows its `workflows`. A queue read without the factory
-folder lists no workflows, so the dropdown then offers those the listed tasks carry. The lanes are
-those the listed tasks carry. A dropdown with nothing to offer is left out.
+from `priory queue --json`, and the workflows its `workflows`, the
+[requestable](workflows.md#top-level-keys) ones. A queue read without the factory folder has
+`workflows` null, or `[]` from an older priory, so the dropdown then offers those the listed tasks
+carry. The lanes are those the listed tasks carry. A dropdown with nothing to offer is left out.
 
 With no pick, the dropdowns show `default (WORKFLOW)`, `default` and `routed`. `WORKFLOW` is the
 queue's `default_workflow`; without one, the dropdown shows `default`. An unpicked dropdown leaves
@@ -394,7 +395,10 @@ DESIGN.md's "Inbox" section holds its visual rules; this section says how it wor
   `priory subscribe N RESOURCE --expected REVISION`, with the revision the panel read, for an
   active owner. Revive task N runs `priory revive N` for a
   failed or dropped one. Request a task runs `priory add FACTORY --workflow W -- TEXT` with the
-  group's `request_text` for a done one, so the new task owns the resource. A note under the
+  group's `request_text` for a done one, so the new task owns the resource. `W` is the done
+  task's workflow. When `priory queue --json` lists it in `opted_out`, the panel leaves
+  `--workflow` out, the factory's `[request] workflow` applies, and the note says so, also on a
+  refusal. A workflow the factory lacks stays, so priory refuses it by name. A note under the
   group says what the verb did, or why priory refused it. One verb runs at a time, and after one
   succeeds the buttons stay disabled until a read shows its result.
 - **Unheard.** Before the owned groups, under Unheard, each task that kept events no agent read

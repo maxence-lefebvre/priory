@@ -72,6 +72,15 @@ export function routeAction(task) {
   return task.state === "done" ? "request" : "subscribe";
 }
 
+/**
+ * The workflow "Request a task" prefills: the group's task's, or none when the factory opts it out,
+ * so the `[request]` default applies. One the factory lacks stays, so priory refuses it by name.
+ * @param {string} workflow @param {string[] | null | undefined} optedOut none from an older priory
+ */
+export function requestedWorkflow(workflow, optedOut) {
+  return optedOut?.includes(workflow) ? undefined : workflow;
+}
+
 /** The line for the events no task ever owned, one count per source, or "" with none. */
 export function neverOwned(other) {
   if (!other.length) return "";
