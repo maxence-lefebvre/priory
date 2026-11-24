@@ -727,6 +727,7 @@ day = 10.0                                     # dollars the lane may spend in a
 | `` `[consult.allow]` lets `<asker>` consult `<name>`, which is no agent `` | A target with no folder under `agents/` |
 | `` `[consult.allow]` lets `<asker>` consult `<name>`, which is no investigator: set `investigator = true` on it `` | A target that is no investigator |
 | `` `[upgrade]` needs the herdr-bus log: Priory cannot tell whether a release changes a Postgres log's tables, so upgrade these machines by hand `` | `[upgrade]` beside `[log] backend = "postgres"` |
+| `` `[upgrade] units` names one unit twice: give the daemon's, then the intake's `` | The same unit twice in `units` |
 | `` `[upgrade] every` is under 10 minutes: GitHub limits anonymous requests `` | `every` under `"10m"` |
 | `invalid socket address syntax` | `listen` is not an IP address and port, such as `127.0.0.1:7340` |
 

@@ -32,7 +32,7 @@ const EVERY: Duration = Duration::from_secs(3600);
 /// How often a staged release looks for a quiet moment.
 const LOOK: Duration = Duration::from_secs(5);
 /// How long a release waits after the helper put it off.
-const PUT_OFF_FOR: Duration = Duration::from_secs(300);
+const PUT_OFF_FOR: Duration = Duration::from_secs(3600);
 /// How long a release waits for a quiet moment before the desk says why.
 const PATIENCE: jiff::SignedDuration = jiff::SignedDuration::from_hours(24);
 const ANSWERS_WITHIN: u64 = 120;
@@ -128,7 +128,11 @@ impl Outcome {
         let reason = self.reason.as_deref().unwrap_or("no reason");
         let kept = self.kept.display();
         if self.kind == INSTALLED {
-            return format!("priory upgraded from {from} to {to}; the old binary is {kept}");
+            let but = self
+                .reason
+                .as_ref()
+                .map_or(String::new(), |reason| format!(", but {reason}"));
+            return format!("priory upgraded from {from} to {to}{but}; the old binary is {kept}");
         }
         format!("priory went back from {to} to {from} and will not try {to} again: {reason}")
     }
@@ -812,29 +816,34 @@ fn note(
     line: &str,
     mut data: serde_json::Value,
 ) -> Result<(), Error> {
-    if !note_once(db, home, line, line)? {
+    if noted(&Store::read(home)?, line) {
         return Ok(());
     }
     data["from"] = json!(CURRENT);
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     append(&tx, trace, REFUSED, data)?;
+    note_once(&tx, home, line, line)?;
     tx.commit()?;
     Ok(())
 }
 
-/// Says `line` on the desk unless `key` already did, and whether it said it.
-fn note_once(db: &Connection, home: &Path, key: &str, line: &str) -> Result<bool, Error> {
+fn noted(store: &Store, key: &str) -> bool {
+    store.noted.iter().any(|noted| noted == key)
+}
+
+/// Says `line` on the desk unless `key` already did.
+fn note_once(db: &Connection, home: &Path, key: &str, line: &str) -> Result<(), Error> {
     let mut store = Store::read(home)?;
-    if store.noted.iter().any(|noted| noted == key) {
-        return Ok(false);
+    if noted(&store, key) {
+        return Ok(());
     }
+    post::report(db, "upgrade", line)?;
     store.noted.push(key.to_owned());
     if store.noted.len() > NOTED {
         store.noted.remove(0);
     }
     store.write(home)?;
-    post::report(db, "upgrade", line)?;
-    Ok(true)
+    Ok(())
 }
 
 #[cfg(test)]

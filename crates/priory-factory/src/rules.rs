@@ -234,6 +234,11 @@ pub fn check(factory: &Factory) -> Vec<Problem> {
                      changes a Postgres log's tables, so upgrade these machines by hand",
                 );
             }
+            if upgrade.units[0] == upgrade.units[1] {
+                refuse(
+                    "`[upgrade] units` names one unit twice: give the daemon's, then the intake's",
+                );
+            }
             if upgrade.every.is_some_and(|every| every.as_secs() < 600) {
                 refuse("`[upgrade] every` is under 10 minutes: GitHub limits anonymous requests");
             }

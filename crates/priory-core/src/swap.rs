@@ -32,7 +32,7 @@ pub fn resume() -> Result<(), String> {
     loop {
         match journal.phase {
             Phase::Stopping => {
-                let (phase, reason) = match prepare(&journal)? {
+                let (phase, reason) = match prepare(&journal) {
                     Ok(()) => (Phase::Installing, None),
                     Err(reason) => (Phase::Restarting, Some(reason)),
                 };
@@ -51,7 +51,8 @@ pub fn resume() -> Result<(), String> {
             },
             Phase::Committed => {
                 start(&journal.units)?;
-                return finish(&home, &journal, upgrade::INSTALLED, None);
+                let answered = answer(&home, &journal).err();
+                return finish(&home, &journal, upgrade::INSTALLED, answered);
             }
             Phase::RollingBack => {
                 roll_back(&home, &journal)?;
@@ -92,19 +93,18 @@ fn to(
     journal::write(home, journal)
 }
 
-/// Stops both services and makes the backups. Gives the reason to put the upgrade off when a run or
-/// a grant is busy after all, now that nothing new can start.
-fn prepare(journal: &Journal) -> Result<Result<(), String>, String> {
+/// Stops both services and makes the backups. Its error puts the upgrade off: a run or a grant is
+/// busy after all, now that nothing new can start, or a backup failed.
+fn prepare(journal: &Journal) -> Result<(), String> {
     stop(&journal.units)?;
     let db = read_only(&journal.state)?;
     if let Some(busy) = upgrade::busy(&db, journal.migrates).map_err(|error| error.to_string())? {
-        return Ok(Err(busy));
+        return Err(busy);
     }
     drop(db);
     backup(&journal.state, &journal.state_backup)?;
     backup(&journal.bus, &journal.bus_backup)?;
-    journal::copy(&journal.exe, &journal.kept)?;
-    Ok(Ok(()))
+    journal::copy(&journal.exe, &journal.kept)
 }
 
 pub(crate) fn read_only(path: &Path) -> Result<Connection, String> {
@@ -124,6 +124,10 @@ pub(crate) fn backup(from: &Path, to: &Path) -> Result<(), String> {
     if partial.exists() {
         fs::remove_file(&partial).map_err(|error| at(&error))?;
     }
+    // VACUUM INTO fills an empty file, so the copy is as private as the database from its first byte.
+    fs::File::create_new(&partial)
+        .and_then(|file| file.set_permissions(fs::metadata(from)?.permissions()))
+        .map_err(|error| at(&error))?;
     read_only(from)?
         .execute("VACUUM INTO ?1", [partial.to_string_lossy()])
         .map_err(|error| at(&error))?;
@@ -273,7 +277,7 @@ fn finish(
     let mut reason = journal.reason.clone();
     if let Some(error) = unanswered {
         let first = reason.map_or(String::new(), |reason| format!("{reason}; "));
-        reason = Some(format!("{first}the old daemon does not answer: {error}"));
+        reason = Some(format!("{first}the daemon does not answer: {error}"));
     }
     let outcome = Outcome {
         op: journal.op.clone(),
@@ -307,6 +311,11 @@ fn finish(
     }
     store.write(home)?;
     journal::remove(home)?;
+    if !mine {
+        for file in [&journal.kept, &journal.state_backup, &journal.bus_backup] {
+            let _ = fs::remove_file(file);
+        }
+    }
     if mine {
         let _ = fs::remove_file(&journal.staged);
         let _ = fs::remove_file(upgrade::staged_file(home));

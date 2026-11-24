@@ -305,10 +305,13 @@ fn a_healthy_release_replaces_the_binary_and_keeps_the_old_one_and_backups() {
     let new = fake(CURRENT, "exit 0", ":");
     setup.upgrade(&new, |_| {});
 
+    fs::set_permissions(setup.path("priory.db"), fs::Permissions::from_mode(0o600)).unwrap();
     setup.helper();
 
     assert_eq!(setup.installed(), new);
     assert_eq!(fs::read_to_string(setup.path("exe.0.0.1")).unwrap(), old());
+    let mode = |name: &str| fs::metadata(setup.path(name)).unwrap().permissions().mode();
+    assert_eq!(mode("priory.db.backup") & 0o777, 0o600);
     assert!(setup.path("priory.db.backup").exists() && setup.path("bus.db.backup").exists());
     assert!(!setup.path("home/upgrade/journal.json").exists());
     let record = setup.recorded();
@@ -441,6 +444,19 @@ fn a_migration_s_daemon_does_no_work_until_its_commit() {
     assert_eq!(setup.installed(), new);
     assert_eq!(setup.recorded()["type"], "factory.upgrade.installed");
     assert!(setup.answers());
+}
+
+#[test]
+fn a_backup_that_fails_starts_the_old_binary_again() {
+    let setup = Setup::new("no-backup", "");
+    setup.upgrade(&fake(CURRENT, "exit 0", ":"), |journal| {
+        journal["state_backup"] = json!(setup.path("missing/priory.db"));
+    });
+
+    setup.helper();
+
+    assert_eq!(setup.installed(), old());
+    setup.wait("the old daemon answers", || setup.answers());
 }
 
 #[test]
@@ -802,6 +818,10 @@ fn check_refuses_an_upgrade_key_that_cannot_work() {
         (
             "[upgrade]\nchannel = \"patch\"\nwindow = { from = \"09:00\" }\n",
             "missing field `until`",
+        ),
+        (
+            "[upgrade]\nchannel = \"patch\"\nunits = [\"a.service\", \"a.service\"]\n",
+            "names one unit twice",
         ),
         (
             "[upgrade]\nchannel = \"patch\"\n[log]\nbackend = \"postgres\"\n",

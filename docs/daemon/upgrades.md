@@ -57,8 +57,8 @@ not only a quiet moment.
 The daemon starts a helper, a private copy of the old binary, in a transient user unit, and exits.
 The helper, `priory upgrade resume`:
 
-1. stops both services, and looks for a quiet moment again now that nothing can start. Without one it
-   starts them again, and the daemon waits 5 minutes;
+1. stops both services, and looks for a quiet moment again now that nothing can start. Without one,
+   or when step 2 fails, it starts them again, and the daemon waits an hour;
 2. copies both databases beside themselves with `VACUUM INTO`, and keeps the old binary as
    `priory.<old version>`, or with a longer name when that file exists;
 3. renames the new binary over the old one, then runs `priory check` with it;

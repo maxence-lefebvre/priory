@@ -197,6 +197,18 @@ pub fn held(home: &Path) -> bool {
     )
 }
 
+/// Whether a held daemon still waits. A rollback never lets it go on: the helper stops it.
+pub fn uncommitted(home: &Path) -> bool {
+    !matches!(
+        read(home),
+        Ok(None)
+            | Ok(Some(Journal {
+                phase: Phase::Committed,
+                ..
+            }))
+    )
+}
+
 /// The private copy of the old binary that runs the upgrade.
 pub fn helper(home: &Path) -> PathBuf {
     dir(home).join("helper")

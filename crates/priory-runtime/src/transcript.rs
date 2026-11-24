@@ -155,10 +155,16 @@ impl Codex {
 }
 
 /// Whether the agent of a Claude Code transcript or Codex session file is inside a tool call: one it
-/// made in its latest message holds no result yet. `None` when the file holds no line of either.
+/// made in its latest message holds no result yet. `None` when the file holds no line of either, or
+/// its last line is cut short.
 pub fn in_tool_call(bytes: &[u8]) -> Option<bool> {
     let mut open: Vec<String> = Vec::new();
     let (mut known, mut message) = (false, None);
+    let last = bytes
+        .trim_ascii_end()
+        .split(|&byte| byte == b'\n')
+        .next_back()?;
+    serde_json::from_slice::<Value>(last).ok()?;
     for line in bytes.split(|&byte| byte == b'\n') {
         let Ok(entry) = serde_json::from_slice::<Value>(line) else {
             continue;
@@ -306,6 +312,7 @@ mod tests {
         assert_eq!(read(&[call, &result("t1"), &result("t2")]), Some(false));
         assert_eq!(read(&[call, later]), Some(false));
         assert_eq!(read(&["", "not json", "{}"]), None);
+        assert_eq!(read(&[call, later, &call[..40]]), None);
     }
 
     #[test]

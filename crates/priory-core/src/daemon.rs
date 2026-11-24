@@ -1036,7 +1036,7 @@ fn hold(factory: &Factory, home: &Path, listening: &runtime::Listening) -> Resul
     if let Some(config) = factory.serve() {
         drop(std::net::TcpListener::bind(config.listen)?);
     }
-    while upgrade::held(home) {
+    while upgrade::uncommitted(home) {
         match listening.lines.recv_timeout(EVERY) {
             Ok(line) => {
                 let reply = match serde_json::from_str::<Input>(&line.text) {
