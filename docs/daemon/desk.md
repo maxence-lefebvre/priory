@@ -20,7 +20,7 @@ reading each task.
 | `memories` | `memories` | `` <n> memory candidates wait for a person: <name>, <name>; see them with `priory memories` ``. One row while any candidate waits (see Memory candidates) | the oldest candidate was written |
 | `pattern` | the failure pattern's id | `` <workflow>/<step>: <n> tasks stopped for one reason: <text>; see it with `priory patterns show <id>` ``, for an open pattern of at least 2 tasks (see [patterns.md](patterns.md)) | its latest task stopped |
 | `queue` | the task's place in the queue | its band, then its reason when it has one | the task last changed state |
-| `sweep` | the script's run | its command, then `running`, or its status and output, for the open stall | it started |
+| `sweep` | the script's run | its command, then `running`, or its status and output: for the open stall, or for a scheduled run, with no task, while it runs or after it failed | it started |
 | `report` | the report's inbox sequence number | `<source>: <line>`, for an unread report | it was posted |
 | `todo` | the to-do | its text, then `, due <time>` when it has one (see To-dos). `priory desk` prints the time in UTC; the web and Herdr Desks show it in local time | it was added |
 | `retired` | the task | `its worktree was removed to free disk; it resurrects from <branch> when its wait fires` | it retired |
