@@ -21055,6 +21055,19 @@ fn overlapping(name: &str, second: &str, factory: &str) -> Setup {
 }
 
 fn overlapping_after(name: &str, second: &str, factory: &str, first: impl Fn(&Setup)) -> Setup {
+    overlapping_as(name, &requested(43), factory, first, |setup| {
+        setup.commit(2, second);
+    })
+}
+
+/// `request` starts task 2, and `work` is what its `implement` run does.
+fn overlapping_as(
+    name: &str,
+    request: &Message,
+    factory: &str,
+    first: impl Fn(&Setup),
+    work: impl Fn(&Setup),
+) -> Setup {
     let mut setup = Setup::with_workflow(name, TWO_MODEL_STEPS);
     fs::write(setup.dir.join("factory/factory.toml"), factory).unwrap();
     setup.publish(&requested(42));
@@ -21072,9 +21085,9 @@ fn overlapping_after(name: &str, second: &str, factory: &str, first: impl Fn(&Se
         })
     });
     first(&setup);
-    setup.publish(&requested(43));
+    setup.publish(request);
     setup.until("tasks", |rows| with(rows, 4, "running") == 2);
-    setup.commit(2, second);
+    work(&setup);
     setup.calls(&[passed_with_evidence()]);
     setup.until("tasks", |rows| {
         rows.iter()
@@ -21141,6 +21154,7 @@ fn a_task_overlapping_one_with_an_open_pull_request_is_held_until_it_merges() {
             [],
         )
         .unwrap();
+        setup.push_to(1, "priory/1");
     });
     setup.until("tasks", |rows| {
         rows.iter().any(|row| row[0] == "2" && row[4] != "ready")
@@ -21202,6 +21216,134 @@ fn a_task_keyed_on_the_open_pull_request_it_overlaps_is_not_held_on_it() {
     );
 
     assert_runs_its_check(&setup);
+}
+
+/// A task request keyed `key`, as `priory request` publishes it.
+fn requested_as(key: &str) -> Message {
+    let mut request = requested(43);
+    request.data["key"] = json!(key);
+    request.subject(key)
+}
+
+/// Task 1's branch is pushed and is the head of the open pull request 7.
+fn opened_pull_request(setup: &Setup) {
+    setup.push_to(1, "priory/1");
+    rusqlite::Connection::open(setup.dir.join("priory.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO pull_requests (task, resource, branch, base)
+             VALUES (1, 'github:owner/repo#7', 'priory/1', 'main')",
+            [],
+        )
+        .unwrap();
+}
+
+/// Moves task 2's branch to the pull request's head.
+fn checks_out_the_pull_request(setup: &Setup) {
+    setup.git(
+        &setup.worktree(2),
+        &["reset", "-q", "--hard", "origin/priory/1"],
+    );
+}
+
+#[test]
+fn a_task_that_pushed_to_the_open_pull_request_it_overlaps_is_not_held_on_it() {
+    let setup = overlapping_as(
+        "overlap-pushed",
+        &requested_as("cli:fix-435"),
+        "name = \"demo\"",
+        opened_pull_request,
+        |setup| {
+            checks_out_the_pull_request(setup);
+            setup.commit(2, "fix.txt");
+            setup.push_to(2, "priory/1");
+            // Task 1 pushes on top, so the pull request is ahead of task 2.
+            setup.commit(2, "more.txt");
+            setup.push_to(2, "priory/1");
+            setup.git(&setup.worktree(2), &["reset", "-q", "--hard", "HEAD~1"]);
+        },
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+#[test]
+fn a_task_built_on_the_open_pull_request_it_overlaps_is_not_held_on_it_before_it_pushes() {
+    let setup = overlapping_as(
+        "overlap-built-on",
+        &requested_as("cli:fix-435"),
+        "name = \"demo\"",
+        opened_pull_request,
+        |setup| {
+            checks_out_the_pull_request(setup);
+            setup.commit(2, "fix.txt");
+        },
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+#[test]
+fn a_task_whose_cli_key_names_the_open_pull_request_it_overlaps_is_not_held_on_it() {
+    let setup = overlapping_as(
+        "overlap-cli-key",
+        &requested_as("cli:github:owner/repo#7"),
+        "name = \"demo\"",
+        opened_pull_request,
+        |setup| {
+            setup.commit(2, "shared.txt");
+        },
+    );
+
+    assert_runs_its_check(&setup);
+}
+
+/// Task 2 is held on pull request 7, which its branch diverged from.
+fn held_on_the_pull_request(name: &str) -> Setup {
+    let setup = overlapping_as(
+        name,
+        &requested_as("cli:fix-435"),
+        "name = \"demo\"",
+        opened_pull_request,
+        |setup| {
+            setup.commit(2, "shared.txt");
+            setup.commit(2, "fix.txt");
+        },
+    );
+    setup.until("tasks", |rows| {
+        rows.iter().any(|row| row[0] == "2" && row[4] == "held")
+    });
+    setup
+}
+
+#[test]
+fn a_restart_releases_a_task_held_on_its_own_pull_request() {
+    let mut setup = held_on_the_pull_request("overlap-restart");
+    setup.crash();
+    setup.git(
+        &setup.worktree(2),
+        &["push", "-qf", "origin", "HEAD:refs/heads/priory/1"],
+    );
+
+    setup.start();
+
+    setup.until("tasks", |rows| {
+        rows.iter()
+            .any(|row| row[0] == "2" && row[3] == "check" && row[4] == "running")
+    });
+}
+
+#[test]
+fn a_restart_keeps_a_task_held_on_another_tasks_pull_request() {
+    let mut setup = held_on_the_pull_request("overlap-restart-held");
+    setup.crash();
+
+    setup.start();
+    // A request the restarted daemon routes proves that its start, and so the release, is over.
+    setup.publish(&requested(44));
+    setup.until("tasks", |rows| rows.iter().any(|row| row[0] == "3"));
+
+    assert_eq!(state_of(&setup, "2").0, "held");
 }
 
 const FIX: &str = r#"
