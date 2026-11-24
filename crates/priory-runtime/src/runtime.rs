@@ -64,6 +64,9 @@ pub fn output_within(command: &mut Command) -> std::io::Result<Option<Output>> {
     fed_within(command, None, command_timeout())
 }
 
+/// How long a killed command may take to end before its caller goes on.
+const REAP: Duration = Duration::from_secs(1);
+
 /// As `output_within`, with `input` written to the command's stdin, and `timeout` as its deadline.
 pub fn fed_within(
     command: &mut Command,
@@ -103,7 +106,8 @@ pub fn fed_within(
         return output.map(Some);
     }
     crate::script::kill(group);
-    let _ = receiver.recv();
+    // A process blocked on a hung mount outlives SIGKILL, so its end is not waited for without bound.
+    let _ = receiver.recv_timeout(REAP);
     Ok(None)
 }
 

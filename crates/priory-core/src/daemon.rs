@@ -1501,7 +1501,7 @@ fn tend(
     };
     if metrics::wants_room(last.is_some()) {
         let room = last.unwrap_or_else(|| room::measure(home));
-        metrics::sample_room(db, share, &room, promised.memory, waiting)?;
+        metrics::sample_room(db, share, &room, promised.memory, waiting);
     }
     // A marked run idle between turns has no turn end to wait for.
     for session in crate::hold::idle(db)? {
