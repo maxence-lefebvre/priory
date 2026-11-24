@@ -41,7 +41,7 @@ crates/priory-core/web/
   router.js, queries.js, events.js, store.js   # the shell's plain modules, with node:test files
   dist/app.js              # the built bundle, committed
   *.js, *.test.js          # view models and their tests: unchanged, same place
-  app.js                   # the legacy drawing: the bundle's entry, shrinking page by page
+  app.js                   # the legacy drawing: drawn inside LegacyPage, shrinking page by page
   app.css, sw.js, boot.js  # served as files, as before
 ```
 
@@ -134,8 +134,7 @@ Rejected:
    - `LegacyPage` renders `#app` once and lets `app.js` draw inside it, frame included. A draw that
      throws is reported and leaves the page as it was, since React would unmount the root.
    The person approved that the frame (navigation, the top bar, the page title) moves to React with
-   slice 2b,
-   since the compact and wide layouts compose it around each page differently.
+   slice 2b, since the compact and wide layouts compose it around each page differently.
 3. **Slice 2b, the task page**, stacked on 2a. The Say textarea bug lives there. The frame moves
    with it.
 4. Then one pull request per page: Asks with the answer sheet, Desk, Tasks, Runs, Queue, Inbox,
@@ -145,7 +144,7 @@ Rejected:
    event delegation.
 
 There are no islands and no `[data-island]` event contract. Inside `LegacyPage` the legacy handlers
-keep working as they do today, on the legacy container only. Controls React draws use React handlers.
+keep working as they do today, on `document`. A port removes its page's cases from them. Controls React draws use React handlers.
 The shell's links are plain `<a href>` that one click handler routes, as `app.js` does today, so
 modified clicks and hashes keep their behaviour.
 
@@ -209,7 +208,8 @@ Tests:
   samples the DOM every animation frame. It fails on the ask drawer losing a section it drew
   (`/asks/1`: Brief, Inbox, Trace), and on a task page drawing "Loading task" or its Say field
   losing focus, text or caret. It drives Chromium over the DevTools protocol with Node's own
-  WebSocket, so it needs no package. CI has no browser, so each port's pull request runs it against
+  WebSocket, so it needs no package, only the `sqlite3` command. It also checks that a visit to the
+  same address draws, a superseded refresh does not, and a draw that throws keeps the page. CI has no browser, so each port's pull request runs it against
   the demo and pastes its output. Run against a build from before #418, it fails on both pages.
 
 ## 8. The GitHub extension
@@ -239,8 +239,8 @@ The person approved it on 2026-11-24: https://claude.ai/artifact/DJzXheB2nzY27bS
 
 ## Risks
 
-1. Legacy and React handlers both acting on one click: legacy delegation listens on the
-   `LegacyPage` container only, with a test per page.
+1. Legacy and React handlers both acting on one click: legacy delegation listens on `document`,
+   so each port removes its page's cases, with a test per page.
 2. Offline start after the upgrade: the cache rename and cleanup, tested in `sw.test.js`.
 3. Bundle size over plain HTTP: minifying the legacy code offsets part of React. The budget fails
    the build past 500 KB.

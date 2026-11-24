@@ -45,8 +45,13 @@ function Shell() {
   return <LegacyPage visit={visit} />;
 }
 
+// The page keeps the id the earlier app.js draws in: an offline start or a restart mid-load can pair
+// an old index with a new bundle, or the reverse, and neither may draw a blank page.
+const root = document.getElementById("app");
+root.id = "root";
+
 // The desk can take seconds: the kept listing or the loading line shows before this returns.
-flushSync(() => createRoot(document.getElementById("root")).render(
+flushSync(() => createRoot(root).render(
   <QueryClientProvider client={legacy.cache}>
     <Shell />
   </QueryClientProvider>,

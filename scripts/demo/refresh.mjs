@@ -1,9 +1,10 @@
 // Checks that a refresh keeps the page drawn: it changes the demo's data while a page is open, samples
 // the page every animation frame, and fails on a frame that lost a section, the Say field's focus,
-// value or caret, or that drew "Loading task".
+// value or caret, or that drew "Loading task". It also checks that a visit to the same address draws,
+// a superseded refresh does not, and a draw that throws keeps the page.
 // Usage: node scripts/demo/refresh.mjs DIR [CHROMIUM]
 // DIR is the folder scripts/demo/serve.sh serves. CHROMIUM defaults to $CHROMIUM, then `chromium`.
-// It drives Chromium over the DevTools protocol with Node's own WebSocket, so it needs no package.
+// It drives Chromium over the DevTools protocol with Node's own WebSocket, so it needs no package, only the `sqlite3` command.
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -117,6 +118,43 @@ await check("the Say field keeps focus, text and caret", "/tasks/1", 'document.g
     await page("Input.insertText", { text: "hello" });
     await evaluate('document.getElementById("say").setSelectionRange(2, 2)');
   });
+
+// The page at PATH, after SCRIPT ran in it, must say true.
+async function holds(name, path, ready, script) {
+  await page("Page.navigate", { url: BASE + path });
+  await until(ready, `${path} to draw`);
+  await sleep(2000);
+  const ok = await evaluate(script);
+  results.push(ok);
+  console.log(`${ok ? "ok" : "FAILED"} ${name}`);
+}
+const COUNT = `let draws = 0; const inner = Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML");
+  Object.defineProperty(Element.prototype, "innerHTML", { ...inner, set(text) { if (this.id === "app") { draws++; if (globalThis.failDraw) { globalThis.failDraw = false; throw new Error("a draw that throws"); } } inner.set.call(this, text); } });`;
+const SETTLE = (ms) => `await new Promise((done) => setTimeout(done, ${ms}));`;
+const ROW = 'document.querySelector(".row")';
+
+await holds("Back to the same address draws", "/", ROW,
+  `(async () => { ${COUNT} history.pushState(null, "", location.href); history.back(); ${SETTLE(800)} return draws > 0; })()`);
+await holds("a draw that throws keeps the page", "/", ROW,
+  `(async () => { ${COUNT} globalThis.failDraw = true; document.querySelector('a[href="/runs"]').click(); ${SETTLE(800)} return document.getElementById("app").innerText.length > 100; })()`);
+await holds("a superseded refresh never draws", "/", ROW,
+  `(async () => {
+    const read = fetch; let hold = true;
+    globalThis.fetch = async (path, options) => {
+      const late = path === "/api/desk" && hold;
+      if (late) hold = false;
+      const reply = await read(path, options);
+      if (!late) return reply;
+      const body = { ...(await reply.json()), paused: "SUPERSEDED since 2026-01-01T00:00:00Z" };
+      await new Promise((done) => setTimeout(done, 1500));
+      return new Response(JSON.stringify(body), { status: 200 });
+    };
+    let seen = false;
+    new MutationObserver(() => { seen ||= document.getElementById("app").innerText.includes("SUPERSEDED"); }).observe(document.getElementById("app"), { childList: true });
+    const again = () => document.dispatchEvent(new Event("visibilitychange"));
+    again(); ${SETTLE(300)} again(); ${SETTLE(3000)}
+    return !hold && !seen;
+  })()`);
 
 socket.close();
 browser.kill();

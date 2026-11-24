@@ -47,6 +47,13 @@ export function land(cache, listings, wanted) {
   return notifyManager.batch(() => Object.fromEntries(reads(wanted).map(([name, queryKey], i) => [name, cache.setQueryData(queryKey, listings[i])])));
 }
 
-// Whether two reads hold the same listings. Structural sharing keeps an unchanged listing the same
-// object, so this compares references, not contents.
-export const sameListings = (a, b) => Boolean(a && b) && Object.keys(a).length === Object.keys(b).length && Object.keys(a).every((name) => a[name] === b[name]);
+// What a page draws of each listing: a changed revision alone must not draw it again.
+const drawn = ({ desk, queue, report, reports, asks, tasks, runs }) => [desk, queue, report, reports, asks.asks, asks.older, tasks.tasks, tasks.older, runs.runs, runs.older];
+
+// Whether two reads draw the same. Structural sharing keeps what did not change the same object, so
+// this compares references, not contents.
+export function sameListings(a, b) {
+  if (!a || !b) return false;
+  const before = drawn(a);
+  return drawn(b).every((part, i) => part === before[i]);
+}

@@ -137,3 +137,13 @@ test("overlapping reads each ask the server, and write nothing until they land",
   assert.equal(cache.getQueryData(["tasks", false]), first.tasks);
   assert.equal(land(cache, await latest, params()).tasks.tasks[0].title, "b");
 });
+
+test("a listing read at another revision with the same rows draws nothing", async (t) => {
+  const { api, body } = server();
+  const cache = fresh(t);
+  const first = await refresh(cache, api);
+  for (const listing of [body.asks, body.tasks, body.runs]) listing.revision = 2;
+  assert.ok(sameListings(first, await refresh(cache, api)));
+  body.desk.revision = 2;
+  assert.ok(!sameListings(first, await refresh(cache, api)));
+});
