@@ -180,9 +180,10 @@ not match stays kept, and the next run reads it. `priory release` starts the tas
 While the task is parked, the pull request's `github.pull_request.closed` ends it: `done` with
 the reason `<key> merged while parked` when it merged, else `dropped` with `<key> closed while
 parked`. The newest closed event decides, even one older than the adopt request, unless a later
-event carries `open: true`. An event with `open: false` ends nothing: only the closed event says
-whether the pull request merged. The desk, the Queue's waiting list and `priory tasks` list no row
-for a parked task. `priory tasks --all` shows it held, with the reason
+event from before the adopt carries `open: true`. A reopen after the drop does not bring the task
+back. An event with `open: false` ends nothing: only the closed event says whether the pull request
+merged. The desk, the Queue's waiting list and `priory tasks` list no row for a parked task.
+`priory tasks --all` shows it held, with the reason
 `held: adopted for trigger <name>, until a comment or review trigger fires on <key>`.
 
 `priory adopt` skips a pull request that a task in any state owns, and one whose head branch in

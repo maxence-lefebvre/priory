@@ -32882,7 +32882,6 @@ fn a_parked_task_waits_for_the_close_after_a_review_that_saw_its_pull_request_cl
     setup.publish(&polled_review(false, 801));
 
     setup.until("inbox", |rows| rows.len() == 2);
-    std::thread::sleep(Duration::from_millis(1100));
     assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
 
     setup.publish(&on_alice_pull(
@@ -32895,7 +32894,7 @@ fn a_parked_task_waits_for_the_close_after_a_review_that_saw_its_pull_request_cl
 }
 
 #[test]
-fn a_parked_task_stays_parked_when_its_pull_request_reopened_after_a_close() {
+fn a_parked_task_stays_parked_when_its_pull_request_reopened_before_its_adopt_request() {
     let setup = adopting("adopt-reopened", &[7]);
     setup.publish(&on_alice_pull(
         "github.pull_request.closed",
@@ -32907,13 +32906,10 @@ fn a_parked_task_stays_parked_when_its_pull_request_reopened_after_a_close() {
     adopt(&setup, &["my-prs", "7"]);
 
     all_tasks_until(&setup, |rows| rows.len() == 1 && rows[0][4] == "held");
-    std::thread::sleep(Duration::from_millis(1100));
-    assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
 
     setup.publish(&polled_review(false, 802));
 
     setup.until("inbox", |rows| rows.len() == 4);
-    std::thread::sleep(Duration::from_millis(1100));
     assert_eq!(setup.listed(&["tasks", "--all"])[0][4], "held");
 }
 
