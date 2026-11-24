@@ -124,7 +124,7 @@ async function holds(name, path, ready, script) {
   await page("Page.navigate", { url: BASE + path });
   await until(ready, `${path} to draw`);
   await sleep(2000);
-  const ok = await evaluate(script);
+  const ok = (await evaluate(script)) === true;
   results.push(ok);
   console.log(`${ok ? "ok" : "FAILED"} ${name}`);
 }
@@ -133,10 +133,10 @@ const COUNT = `let draws = 0; const inner = Object.getOwnPropertyDescriptor(Elem
 const SETTLE = (ms) => `await new Promise((done) => setTimeout(done, ${ms}));`;
 const ROW = 'document.querySelector(".row")';
 
-await holds("Back to the same address draws", "/", ROW,
+await holds("Back to the same address draws", "/tasks/1", 'document.getElementById("say")',
   `(async () => { ${COUNT} history.pushState(null, "", location.href); history.back(); ${SETTLE(800)} return draws > 0; })()`);
 await holds("a draw that throws keeps the page", "/", ROW,
-  `(async () => { ${COUNT} globalThis.failDraw = true; document.querySelector('a[href="/runs"]').click(); ${SETTLE(800)} return document.getElementById("app").innerText.length > 100; })()`);
+  `(async () => { ${COUNT} globalThis.failDraw = true; document.querySelector('a[href="/runs"]').click(); ${SETTLE(800)} return globalThis.failDraw === false && document.getElementById("app")?.innerText.length > 100; })()`);
 await holds("a superseded refresh never draws", "/", ROW,
   `(async () => {
     const read = fetch; let hold = true;
